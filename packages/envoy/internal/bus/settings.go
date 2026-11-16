@@ -66,11 +66,13 @@ func ParseStreamMaxBytes(raw string) (int64, error) {
 // bucket. envoy-listener (config.Load) reads the setting through it.
 //
 // A deployment sets it because the bucket's age is the backstop a record is dropped at, and a
-// record dropped before the gone horizon leaves an unresponsive session reading gone: with the
-// 5-minute default and a 1-hour horizon, a session stalled for six minutes loses the record that
-// says it is only unresponsive. The listener applies the value at open and on every pass of its
-// session reaper (session.SessionRegistry), so a raise reaches a running deployment within one
-// pass.
+// record dropped before the gone horizon leaves an unresponsive session reading gone. A bucket that
+// the listener creates with the setting unset keeps a record for the gone horizon plus one hour
+// (session.BucketMaxAge: 2 hours with the 1-hour horizon). A bucket an older build created keeps
+// its 5 minutes until this setting raises it, and there a session stalled for six minutes loses
+// the record that says it is only unresponsive. The listener applies the value at open and on
+// every pass of its session reaper (session.SessionRegistry), so a raise reaches a running
+// deployment within one pass.
 func ParseSessionMaxAge(raw string) (time.Duration, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {

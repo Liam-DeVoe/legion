@@ -1792,14 +1792,11 @@ func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contr
 
 // PublishStoredAs publishes item to the notification stream on subject, under Nats-Msg-Id msgID
 // instead of the one publishJetStream derives, within ctx's bound as PublishWithin's, for a caller
-// that names both the subject it is stored on and the stored message itself:
-//   - the listener's exception about a stored message, published on the exception's own topic,
-//     which every listener that raises it from its own durable publishes under one id, so the
-//     stream keeps one copy;
-//   - a role message the listener could not deliver, stored on that role's kept subject
-//     (KeptRoleSubject) while the envelope keeps its own topic field, so the holder that later
-//     takes the role is handed the message as its sender sent it. Every listener that kept the
-//     same message writes it under one id (KeptMsgID).
+// that names both the subject it is stored on and the stored message itself. Its one caller is the
+// listener's keep of a role message it could not deliver (cmd/listener's role_keep.go): the
+// message is stored on that role's kept subject (KeptRoleSubject) while the envelope keeps its own
+// topic field, so the holder that later takes the role is handed the message as its sender sent
+// it. Every listener that kept the same message writes it under one id (KeptMsgID).
 //
 // A duplicate the stream drops counts as published, which is the ordinary case for a kept copy
 // rather than a fault. Its refusals are publishJetStream's (ErrTooLarge, ErrRefused); subject must

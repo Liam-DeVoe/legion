@@ -5133,9 +5133,13 @@ The wakes are these:
 - a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
-- a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon, one sent with `keep: false` included: that message is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
+- a message published to the role topic of a role of the pod, which the Envoy listener reports to the daemon, one sent with `keep: false` included.
+  A message that Envoy kept for the role reaches the woken role, for one hour after Envoy kept it.
+  A message that Envoy did not keep, such as one sent with `keep: false`, does not reach it, and its sender must send it again;
 
-- a message sent to the agent subject of a released session: an Envoy direct message, or a person's answer, comment or message that a Dispatch claim routes to that session;
+- a message sent to the agent subject of a released session: an Envoy direct message, or a person's answer, comment or message that a Dispatch claim routes to that session.
+  A message that Envoy stored reaches the woken session from its own consumer, for 72 hours after Envoy stored it.
+  A message that Envoy did not store, such as a direct send that Envoy refused, does not reach it, and its sender must send it again;
 
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
@@ -5158,7 +5162,13 @@ The first boot of this release also queues, once, a start for each merger that t
 That merger starts when its tree's design gate allows it, as at any start of the `merging` phase, which holds no admission slot.
 A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod; after that moment the wake waits for the release to finish and then resumes the pod.
 A cancel is one act: in one transaction the daemon queues the resume of each claim that release had suspended — the roles its own mark recorded, never a claim an earlier release left `released` — and deletes the mark.
+A wake report of the Envoy listener, for a role message or a session message, that names a claim the release is stopping does not cancel the release: that claim is not `released` yet, so the report has nothing to wake.
+The daemon applies such a report again every 30 seconds until the release ends, for at most 15 minutes after the report's own time.
+Once the release records the claim `released`, the report wakes the role.
+A report still waiting 15 minutes after its time is dropped with one warning, `wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report`.
 Each woken role is given one task or message that names the wake, so an agent reads why its pod came back.
+A listener's wake report that finds the role's start already queued by a cancelled release adds no task and no second start, since the pod never went away:
+the daemon logs `wake: the role is coming back on a start already queued; this wake takes nothing`.
 From the wake to the woken role's first turn is 5 minutes or less for 90% of wakes and 10 minutes or less for each one; a resume with no first turn 10 minutes after its wake writes a warning naming the issue, the role and the step it waits on.
 
 A release of a pod no claim owns suspends no claim, so it leaves no released claim and owes no wake.

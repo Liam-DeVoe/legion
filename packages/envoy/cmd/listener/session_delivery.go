@@ -139,9 +139,9 @@ type sessionDeliveryOutcome struct {
 }
 
 // relayed reports whether the session's entry records consumer delivery (session.DeliveryConsumer):
-// its consumer is held and the relay serves it, so the durable path skips the stored messages that
-// consumer holds. It is the answer's own mode, so the entry the registration writes and the answer
-// the session reads can never say different things.
+// its consumer is held and the relay serves it, so the listener's durable skips each stored message
+// on a followed topic that consumer holds. It is the answer's own mode, so the entry the
+// registration writes and the answer the session reads can never say different things.
 func (o sessionDeliveryOutcome) relayed() bool {
 	return o.answer != nil && o.answer.Mode == deliveryModeConsumer
 }

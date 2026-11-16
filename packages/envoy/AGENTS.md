@@ -68,9 +68,9 @@ Each item below names a task and where its code is, then notes on it.
 
   `/v1` routes; the one record of each send and publish; a role's holder resolved through to the buckets
 
-- **Unplaceable agent delivery**: `cmd/listener/unplaceable_delivery.go`
+- **Agent message to a session with no record**: `cmd/listener/unplaceable_delivery.go`
 
-  retry bounds, the deferral set and its slot expiry, defer or give up
+  the one wait before the wake report, the set of waiting messages and its slot expiry, the unanswered read, the stored wake report
 
 - **NATS client**: `internal/bus/nats.go`, `internal/bus/recovery.go`
 
@@ -136,10 +136,11 @@ Each item below names a task and where its code is, then notes on it.
   so a deployment on a server before v2.12.5 whose stream holds a positive cap below 24000 cannot start a listener of this release.
   A create carries the cap on every nats-server, a stream already at the cap needs no change, and a stream with no cap is sent none on a server before 2.15, so only such a deployment upgrades the nats-server first, keeping its store, and the listener's next start sets the cap
 
-- **Session delivery**: `internal/session/session.go`
+- **Session delivery**: `internal/session/session.go`, `internal/session/handler.go`
 
-  what a delivery to a resolved session comes to (`session.Resolve(item, sessionID, entry, storedSeq, captured)`, `captured` being whether the deployed stream captures the topic, `bus.Client.DeployedStreamCaptures`, which the caller reads from its own bus client): the session's own consumer relays the message, or the entry records no way of receiving at all (`session.ErrNoSessionRecord`, which a nil entry gives too).
-  The agent path reaches it through one call, `session.HandleAgentMessage(item, sessionID, machineID, interest, entry, storedSeq, captured)`.
+  what a topic fan-out delivery to a resolved session comes to (`session.Resolve(item, sessionID, entry, storedSeq, captured)`, `captured` being whether the deployed stream captures the topic, `bus.Client.DeployedStreamCaptures`, which the caller reads from its own bus client): the session's own consumer relays the message, or the entry records no way of receiving at all (`session.ErrNoSessionRecord`, which a nil entry gives too).
+  A message on a session's agent subject is decided by `session.HandleAgentMessage(machineID, interest, readErr)` instead, from the session's interest row and the answer of the read of its record:
+  another listener's row (`AgentOwnedElsewhere`), a record (`AgentHasRecord`), no record (`AgentNoRecord`) or a read that did not answer (`AgentRecordUnread`).
 
 - **Session consumers**: `internal/bus/session_consumers.go`, `cmd/listener/session_delivery.go`, `cmd/listener/session_relay.go`
 
@@ -3454,7 +3455,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   keeping is chosen on the publish route alone, and the senders that opt out of it - the Legion daemon's notice queue and a phase worker's stall reminder - publish through that route.
   The lane's attempt cache holds an entry only while a forward is in flight and a failure rolls it back, while the dedupe cache, which the route shares, records a forward only once the stream stored it
   — so a publish that re-uses a `dedupe_key` after a failure is forwarded again, while one after a stored forward is skipped.
-  An agent delivery this listener cannot place clears its own attempt entry before each NAK (`clearAttempt`, `agentSubjectDelivery`), because the redelivery that NAK asks for would otherwise find the entry still there and be dropped as `listener attempt-dedupe skip` before it reached the session at all.
+  An agent message this listener sends back for the agent wait clears its own attempt entry first (`sendAgentMessageBack`, `cmd/listener/unplaceable_delivery.go`), because the redelivery that NAK asks for would otherwise find the entry still there and be dropped as `listener attempt-dedupe skip` before the listener read the session record again.
   The route's bounded retry inside its window is the one retry a role message gets:
   do not add a durable role consumer, or retry role messages anywhere else
   — the role lane stays core, and a holder's stored forward is its own session consumer's to deliver.
@@ -3590,13 +3591,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   That removes every revision of the key, every listener's cache drops it at once, and the purge marker it leaves is collected as any other (the interest bucket's marker collection, `nats kv compact <bucket>` for the others).
   A JetStream purge filtered to the subject (`nats req '$JS.API.STREAM.PURGE.KV_<bucket>' '{"filter":"$KV.<bucket>.<key>"}'`) leaves no marker, but nothing a watcher sees, so a listener's interest cache keeps the key, and its reaper keeps warning, until the listener restarts.
 
-- A failed control delivery or a terminal capability refusal during generic fanout emits `notifications.envoy.exceptions.<original-topic>`, published on the transport that lane takes (`bus.Client.Publish`, `bus.Client.UsesCoreTransport`).
+- A failed role delivery or a terminal capability refusal during generic fanout emits `notifications.envoy.exceptions.<original-topic>`, published on the transport that lane takes (`bus.Client.Publish`, `bus.Client.UsesCoreTransport`).
   The stream captures two of those lanes: an agent subject's `notifications.envoy.exceptions.notifications.agent.<id>` and a team topic's `notifications.envoy.exceptions.notifications.team.<name>`, so both keep JetStream and are retained for the stream's whole window, where the core copy reached only a reader subscribed at that moment.
+  No path of this listener publishes on an agent subject's lane: a message on an agent subject raises no exception (below).
   No session reads either from its consumer: both are private stream subjects (`bus.ReachesPrivateStreamSubject`), which `/v1/interests/subscribe` leaves out of every registration and `store.MergedTopics` out of every row, since such a report carries the undelivered message's payload and the session it was for.
   A stored report is read from the listener's own `listener delivery failed` line, which names the session, the topic, the event and the reason, and from the stream itself (`nats stream view ENVOY_NOTIFICATIONS --subject 'notifications.envoy.exceptions.>'`).
   A role lane's `notifications.envoy.exceptions.notifications.role.<role>` keeps core NATS, since no stream subject captures it.
   A fanout refusal's original topic is never a control topic, since `listenerDeliveryHandler` sends a `notifications.role.` topic to `roleTopicDelivery` and a `notifications.agent.` topic to `agentSubjectDelivery` and only what remains to `fanoutDelivery`, the one place `fanoutRefusal` is set;
-  its exception subject is therefore never one the stream captures either, so `bus.Client.UsesCoreTransport` - which judges capture on the subjects of the deployed stream as this client last read them, so a topic only a newer build captures is not sent over core NATS by an older one - routes it over core NATS through the plain `client.Publish` in `publishDeliveryException`.
+  its exception subject is one the stream captures only for a team topic, so `bus.Client.UsesCoreTransport` - which judges capture on the subjects of the deployed stream as this client last read them, so a topic only a newer build captures is not sent over core NATS by an older one - routes every other one over core NATS through the plain `client.Publish` in `publishDeliveryException`.
 
 - The payload preserves `original_topic`, `event_id`, `reason` (`no_holder` or `delivery_failed`;
   a listener of a release before dispatch://INFRA-771 also raised `receipt_timeout`, which the Legion daemon still handles until that rollout finishes), `recipient_session` when a recipient is known (the receiving session, not `source_session`;
@@ -3621,10 +3623,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The daemon's consumer handles only its own architect notices, and it treats those two reasons as a never-re-hold (`roleholder.IsNoHolderReason`, the list the listener and `notify.Publish` both read): the refused row is still held and retries on its own backoff, so a copy would send the notice twice.
   Upgrade every Legion daemon before this listener: an older daemon sends `unclaimed` and `holder_lapsed` to its malformed-exception branch and logs `ERROR role-lane exception not re-held` once for each refused attempt to publish its own notice.
 
-- An exception on a lane the deployed stream captures (`bus.Client.DeployedStreamCaptures`; the failed-delivery lane of an agent subject is one), raised by the durable path for a stored message, carries `Nats-Msg-Id` `exception.<reason>.<origin>`, the origin being the message's own `Nats-Msg-Id`, else its stream sequence (`exceptionOrigin`, `bus.Client.PublishStoredAs`), so the stream keeps one copy however many listeners raise it from their own durables:
-  an agent delivery's `no_holder` at give-up, and its `delivery_failed`.
-  A stored message on the agent subject of a live session on consumer delivery raises none:
-  the durable acknowledges it unread, and it waits in the session's consumer.
+- A message on an agent subject raises no delivery exception: the session's own consumer delivers it, and the listener's durable decides only whether to report the session's wake (the agent subject's bullets under "Operational notes").
+  Every exception the listener raises carries a dedupe key of its own, `envoy.exception.<event id>` (`deliveryExceptionEnvelope`), and none is named after the message it reports.
 
 - **Source-specific vs generic ingestion**:
   Envoy has two ingestion paths: listener-hosted webhook handlers behind the listener's starting gate (`internal/webhook/{github,slack,ghostwispr}.go`, `startingGate` in `cmd/listener/main.go`) and the generic MCP bridge (`cmd/mcp/`).
@@ -4134,51 +4134,70 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   Each request a starting gate refuses logs `request refused while starting` with `gate` (`webhook` or `v1`), `method` and `path`, the listener's only record of a caller it turned away.
   `packages/envoy/scripts/listener-deploy-probe.sh` watches a deploy from a client's seat (`packages/envoy/scripts/README.md`).
 
-- An agent delivery (`notifications.agent.<session>`) reads the session it delivers to from the session bucket itself, bounded by `deliverySessionReadTimeout` (2 s), and one cause answers an unplaced attempt:
-  no session record it could deliver through (`session.ErrNoSessionRecord`, logged and labelled `no_session_record`), which is no entry at all or an entry that records no way the session receives a message.
-  A session another listener owns never reaches that branch:
-  `session.HandleAgentMessage` reports it as `OwnedElsewhere`, and the agent delivery acknowledges it silently, with no delivery, no exception and no NAK.
-  A delivery this listener cannot place is NAK'd with a 5 s delay (`unplaceableRetryDelay`) and redelivered, and its window is counted from the message's first delivery, never from the time the stream stored it:
-  `ENVOY_UNPLACEABLE_RETRY_WINDOW` (`defaultUnplaceableRetryWindow`, 60 s;
-  a value `time.ParseDuration` refuses is one WARN and the default stands) is spent as whole deferrals of that delay, so it buys `window / unplaceableRetryDelay` of them (12 at the default), `md.NumDelivered` counts them, and the delivery after the last deferral its cause is allowed is given up.
-  `no_session_record` delivers nothing, so retrying it repeats nothing, and it is allowed the window's whole count.
-  The window is a bound, not a promise of that much wall-clock time:
-  a delivery this listener never asked for, one whose AckWait expired because the handler holding it died, counts too.
-  The hard stop beside it is `unplaceableMaxDeliveries` (`consumerMaxDeliver - 2`, 18), so this listener writes its give-up record before JetStream stops redelivering, which it does silently.
-  A second bound is `unplaceableDeferralCap` (`consumerMaxAckPending / 4`, 64), the agent deliveries this listener holds deferred at one time:
-  a deferred message is NAK'd rather than ACKed, so it keeps one of the durable's 256 ack-pending slots for its whole window where the ACKed skip gave it back at once, and without the cap enough concurrently unplaceable messages would hold every slot this machine's durable has and stall it for every topic, including the deliveries that would land on their first attempt.
+- A message on a session's agent subject (`notifications.agent.<session>`) reaches the session from that session's own consumer alone, so the listener's durable delivers it to nobody.
+  The durable decides only whether the session needs a wake report: it never tries to deliver the message, so it retries no delivery and gives no message up.
+  It acknowledges the message, with one skipped delivery counted, when this listener's cached record of the session reads `live` or `unresponsive`, whatever that consumer holds (`agentSubjectNeedsDelivery`, `cmd/listener/durable.go`):
+  the consumer delivers the message, or the consumer that the session's next registration starts does.
+  A cached record past the gone horizon counts as none.
+  It acknowledges the message with nothing counted when its cached interest row names another listener, which decides the message from its own durable.
+  Every other message goes to `agentSubjectDelivery` (`cmd/listener/delivery.go`), which reads the interest row and then the session record from the session bucket itself, bounded by `deliverySessionReadTimeout` (2 s), since the cache trails the bucket.
+  `session.HandleAgentMessage` (`internal/session/handler.go`) answers one of four outcomes from those two reads.
+  A row that names another listener is `AgentOwnedElsewhere`, and the message is acknowledged with no line above DEBUG.
+  A record, live or unresponsive, is `AgentHasRecord`, and the message is acknowledged and counted `skipped`, with no wake.
+  No record (`nats.ErrKeyNotFound`), or a record past the gone horizon, is `AgentNoRecord`, the wait below.
+  Any other error, a timeout included, is `AgentRecordUnread`, the unanswered read below.
+  So the listener whose interest row names the session reports its wake, and where no row names a listener, every listener reports it from its own durable.
+  No outcome publishes a delivery exception.
+
+- A message to a session with no record waits once, and then the listener stores one wake report for the session (`noRecordAgentDelivery`, `cmd/listener/unplaceable_delivery.go`).
+  At the first delivery the message takes a slot in the listener's set of waiting messages and is sent back for the agent wait, with no line logged.
+  The wait is `ENVOY_UNPLACEABLE_RETRY_WINDOW` (`defaultUnplaceableRetryWindow`, 60 s;
+  a value `time.ParseDuration` refuses is one WARN and the default stands), counted from the message's first delivery and never from the time the stream stored it.
+  A session that is only restarting registers again in that time, and its consumer delivers the message with no wake.
+  At the next delivery the listener reads the record again, and when there is still none it reports the wake at once, since the one wait is spent.
+  A wait at or below zero is no wait, and the wake is reported at the first delivery.
+  A core delivery, and a durable one whose JetStream metadata does not parse, report at once too, since nothing bounds their wait.
+
+- The report is one publish on `notifications.legion.wake` (`bus.LegionWakeTopic`), made inside the delivery and bounded by `wakeReportAttempt` (2 s), which the stream must store (`storeAgentWake`, `cmd/listener/wake.go`).
+  Each attempt is a report with an event id of its own, and the daemon takes the first wake of a released role and no second one (`TakePodWake`).
+  A stored report logs INFO `listener agent wake reported` with the event id, the session and the topic, counts `envoy_messages_delivered_total{delivery_status="wake_reported"}`, and acknowledges the message.
+  The message keeps its attempt-cache entry, so a redelivery that a lost acknowledgement brings is dropped as `listener attempt-dedupe skip` and reports no second wake.
+  A report the stream did not store sends the message back for the agent wait, so the next delivery reads the record again and tries the report again.
+  At the stream's last delivery (`consumerMaxDeliver`, 20), and for a core delivery or metadata that does not parse, a report not stored logs WARN `listener agent wake not stored` with the event id, the session and the error, and the message is acknowledged, since nothing delivers it again.
+  That WARN is the end of the message: nothing tries its report again.
+
+- A read of the session record that did not answer is neither a record nor the lack of one (`unreadAgentDelivery`).
+  Below the stream's last delivery the message is sent back for the agent wait and decided again at its next delivery.
+  The listener logs WARN `listener agent record unread` with the event id, the session and the error once for each message, however many deliveries the failing read spans (`unplaceableDeferrals.firstUnread`).
+  At the last delivery the message is decided as one with no record, so the listener reports the wake, and the message never ends in silence.
+  A message that waited behind an unanswered read and then reads no record reports at once, since its one wait is spent.
+
+- The set of waiting messages bounds how many wait at once to `unplaceableDeferralCap` (`consumerMaxAckPending / 4`, 64).
+  A message that waits is NAK'd rather than ACKed, so it keeps one of the durable's 256 ack-pending slots for the whole wait, and without the cap enough messages to sessions with no record would hold every slot this machine's durable has and stall it for every topic.
+  A first delivery that finds 64 messages already waiting reports its wake at once.
+  A message sent back after a report the stream did not store, or after an unanswered read, takes a free slot when there is one, and is sent back whether or not it got one.
+  Each message sent back clears its attempt-cache entry, or the redelivery would be dropped as `listener attempt-dedupe skip`, and counts one `envoy_messages_naked_total`.
 
 - The cap counts one set for the whole process (`unplaceableDeferrals`, `cmd/listener/unplaceable_delivery.go`):
   `main.go` makes it once, in its `deliveryConfig`, and every handler built from that config shares it
   — the role lane's, the durable's, and the one the self-health rebind builds after a NATS flap
   — so a rebind draws on the budget the handler it replaces was holding rather than opening a second 64 beside it, and `listenerDeliveryHandler` panics on a config without one rather than drawing a private set.
   The set is keyed on each message's JetStream stream sequence (`nats.MsgMetadata.Sequence.Stream`):
-  a deferral takes that message's slot, and only that message's next delivery gives it back, so a redelivery this listener never deferred
-  — the interest path's NAK, an expired AckWait — returns nothing.
-  Being this process's memory, it forgets its deferrals on a restart (the previous process's stay pending until each is redelivered, and twice the cap is still below 256), and it cannot see a message deferred and never delivered here again
+  a message that waits takes its own slot, and only that message's next delivery gives it back, so a redelivery of a message this listener never sent back
+  — an expired AckWait — returns nothing.
+  The durable gives the slot back too when it acknowledges such a message before it decodes it, because the session registered during the wait (`jetStreamDeliveryHandler`).
+  Being this process's memory, it forgets its slots on a restart (the previous process's waiting messages stay pending until each is redelivered, and twice the cap is still below 256), and it cannot see a message that waits and is never delivered here again
   — one the stream dropped or purged, or whose redelivery reached another subscriber.
-  Such a slot expires `unplaceableDeferralExpiry` (125 s:
-  `unplaceableRetryDelay` plus two of the durable's 60 s `consumerAckWait`) after the deferral that took it, the longest a deferred message can legitimately stay pending before a delivery of it reaches this handler, and the next deferral sweeps it out;
+  Such a slot expires `unplaceableDeferralExpiry` after the delivery that took it: the agent wait plus two of the durable's 60 s `consumerAckWait`, 180 s at the default wait.
+  That is the longest a waiting message can stay pending before a delivery of it reaches this handler, and the next take sweeps the slot out;
   a message still pending past that, behind a handler further behind than the margin allows, loses its slot early and the set undercounts by one until its delivery arrives.
-  A message that arrives while the cap is reached is given up now, with the ordinary give-up record.
-  Each deferral clears the message's attempt-cache entry, or the redelivery would be dropped as `listener attempt-dedupe skip`, and logs INFO `listener agent delivery deferred` with `reason`, `attempt` and `window_deferrals`, the deferrals that message's cause is allowed;
-  no `age_ms`, since the stream age bounds nothing.
-  The give-up first counts `envoy_messages_delivered_total{delivery_status="unplaceable_no_record"}` and logs WARN `listener agent delivery given up` with the same `reason`, and only then publishes the `no_holder` delivery exception, once per message rather than once per attempt (`applyDeliveryOutcome`).
-  The give-up is terminal whatever becomes of that notice:
-  one that cannot be published — the notice embeds the original payload, so an envelope near the server's max payload has its notice refused `bus.ErrTooLarge` on every attempt
-  — logs ERROR `listener exception publish failed` beside the give-up line and nothing else.
-  The message is not NAK'd, it keeps its attempt-cache entry, so a redelivery that a lost ACK brings is dropped as `listener attempt-dedupe skip` rather than delivered again, and it is ACKed.
+  The set keeps its marks of the unanswered reads it logged on the same keys and with the same expiry.
 
-- No path NAKs a message whose `no_holder` notice could not be published:
-  an exception no publish took is logged `listener exception publish failed` and nothing else, and the one outcome that reads that failure is the fan-out's refusal, which clears the attempt record it had written (`exceptionFailureClearsAttempt`) and still acknowledges the message.
-  That cause is deferred, and so is a bucket read that did not answer, which says nothing about the session:
-  it leaves no entry, and the branch where no stored subscription names an owner (`session.HandleAgentMessage`, `internal/session/handler.go`) answers an attempt with no entry as undelivered and carrying no error at all: it drops `session.ErrNoSessionRecord` there, and that shape - undelivered, with no error - is what holds the window open (`cmd/listener/delivery.go`, the result `unplaceableAgentDelivery` takes).
-  What is given up at once is a core delivery or a message whose JetStream metadata cannot be read, which nothing would redeliver or bound.
-  The interest path's own failures never reach that branch: they NAK with an error and are counted `failed`.
+- An exception no publish took is logged `listener exception publish failed` and nothing else, and the one outcome that reads that failure is the fan-out's refusal, which clears the attempt record it had written (`exceptionFailureClearsAttempt`) and still acknowledges the message.
   A fanout delivery that fails to a session that is live is NAK'd for retry (up to MaxDeliver attempts over the stream's MaxAge window);
   one whose session is not live is counted a dead delivery and acknowledged.
 
-- A durable message is settled once, by the handler that took it: `finalize` acknowledges it, or NAKs it after `durableRetryDelay` (30 s) when the path asks for a retry, and `finalizeAfter` NAKs it after the delay the path names (a deferral's `unplaceableRetryDelay`, 5 s).
+- A durable message is settled once, by the handler that took it: `finalize` acknowledges it, or NAKs it after `durableRetryDelay` (30 s) when the fan-out asks for a retry, and `finalizeAfter` NAKs it after the agent wait (`agentWait`), the one delay a message on an agent subject asks for.
   Every path of the handler settles the message and returns, so no two settle one message, and a core or role-lane message is settled by nothing: nothing redelivers one.
 
 - CI settlements are published by the listeners that receive GitHub webhooks, which in production is the Fargate listener behind the webhook load balancer (its deployment sets `ENVOY_WEBHOOKS=github,slack`).
@@ -4410,6 +4429,9 @@ Each item below names an endpoint and its method, then its contract, and an item
   `connected_only` is a boolean field of the request body, which Dispatch sets on the send of a model or thinking switch the session would run as its own turn (a person's own Send or Aside, not one an agent wrote for them, on no issue, no broadcast's copy, whose body is one `/model` or `/effort` line: `isSessionSwitch`) and on every send of a message whose request to `POST /api/v1/agents/{session_id}/messages` set it, and absent it changes nothing.
   `connected_only` refuses no other state: a `no_receiver` target runs, and its message is stored.
   A target with no entry within the gone horizon raises the wake report whatever its record says, on the `404` and the `stopped` answer alike, and one whose probe met no-responders raises none, nor does a `no_receiver` target.
+  The route raises that report off its answer, and publishes it again until the bus takes it or `wakeReportBudget` ends (`reportAgentWake`, `cmd/listener/wake.go`).
+  The copy that such a `stopped` answer stored also reaches each listener's durable: when the session still has no record after the one wait, the listener that decides the message stores one more wake report and acknowledges its copy (the agent subject's bullets under "Operational notes").
+  The daemon takes the first wake of a released role and no second one.
 
 - The connection probe (`probeSessionConnection`, `cmd/listener/connection_probe.go`) is one core NATS request on the target's relay subject, `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`), with a reply inbox of its own, no body and the one header `Envoy-Probe: 1`, waiting at most 1 s (`connectionProbeTimeout`).
   It is sent only to a target whose entry records consumer delivery, since both plugins subscribe the relay subject before they register.
@@ -4933,7 +4955,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   A caller's start is the one the registration's `resume` asks for or the one a repair passes (`sessionDelivery.registeredTarget`), and the record rule lowers it: a caller's start above the resume record's floor plus one starts at that floor plus one instead, where the record names the stream's current `envoy_stream_id` ("The resume record each delete writes" below).
   A start a restart left pending reads no record, because it comes from the floor of the consumer that restart deleted, which is newer than any record.
   Every start, from each of these sources, that is past the sequence after the stream's last is then clamped to the stream's first sequence, so no consumer is created past the stream's end ("Past the stream's end" below).
-  That start is recorded on the session's entry and carried in the registration's answer, both as `consumer_start`: the entry's is what the durable path skips by, the answer's is the floor the plugin keeps for its resume point.
+  That start is recorded on the session's entry and carried in the registration's answer, both as `consumer_start`: the entry's is what the listener's durable skips a followed topic's message by, the answer's is the floor the plugin keeps for its resume point.
   When the registration's `resume` names the stream's current `envoy_stream_id` and carries a `seq`, the caller's start is `resume.seq + 1`, a `seq` of 0 included (a session that holds nothing of the stream starts at sequence 1), and a start below the stream's first sequence answers `gap: true`.
   A `resume` without `seq`, or naming another `envoy_stream_id`, leaves the start to the session's resume record, then to that agent subject, and to the stream's end only where neither holds anything.
   An agent subject is one session's alone and nothing can be stored there before the session id exists, so that start is never older than the session itself, and it hands the session what was stored for it before it could register: a message published while its NATS connection was down, or one that raced its first registration, which the deleted `/v1/replay` sweep used to back-fill (sjawhar/legion#2720, dispatch://INFRA-771).
@@ -5170,9 +5192,10 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Every other client is told to update to a build of its own that sends the field, and that an Oh My Pi session needs `@sjawhar/pi-envoy` 14.1.0 or later.
   `@sjawhar/claude-envoy` reports its build as the marketplace commit it runs from or `source`, so a Claude Code session that asks for no consumer is always told to update its own build.
 
-- **A consumer holds it:** the durable path acknowledges, unread, a stored message for a live session whose entry records consumer delivery and whose consumer covers it (`session.SessionEntry.ConsumerHoldsStored`):
+- **A consumer holds it:** the listener's durable acknowledges, unread, a stored message on a followed topic for a live session whose entry records consumer delivery and whose consumer covers it (`session.SessionEntry.ConsumerHoldsStored`):
   the message waits in the session's consumer.
-  It records nothing for such a session -- no attempt, no dedupe key (`session.SessionEntry.ConsumerRelaysStored`, which the fan-out and the agent-subject path both skip by, on the deployed stream's capture of the topic) -- since the relay of that consumer is what delivers the message:
+  A message on the session's own agent subject is acknowledged while the session has a record, whatever its consumer covers (`agentSubjectNeedsDelivery`, the agent subject's bullets under "Operational notes").
+  The fan-out records nothing for such a session -- no attempt, no dedupe key (`session.SessionEntry.ConsumerRelaysStored`, which it skips by, on the deployed stream's capture of the topic) -- since the relay of that consumer is what delivers the message:
   a dedupe key written for a message this listener handed to nobody would have the next copy of the same event skipped as one the session already has, and an attempt record would have a redelivery of it skipped as one already on its way, so the fan-out records nothing for such a session, its own refusals included.
   The fan-out decides that once per recipient, from the session's entry, which `judgeFollowedTopic` reads for every verdict and not only the ones it judges against that entry, so a delivery mode it cannot read unambiguously -- a mode no session can be shown to advertise, and one any publisher can send on a followed topic -- is judged for such a session too rather than left to a resolution that only skips it.
   The relay publishes every frame unjudged (`sessionRelays.relayNATS`), and the plugin drops a frame whose delivery mode it cannot read without a word, so the fan-out publishes that session's `delivery_failed` itself -- and records no attempt for it, since it records only where it resolved the session and left the message to no relay.
@@ -5180,7 +5203,8 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   So an attempt record names a delivery this path made, or a refusal it resolved and reported, and never a message it left to a relay or a session it could not read.
   What those two branches cost is the exception dedupe: each further copy of the event, and each redelivery of it, is reported again rather than skipped as an attempt already made.
   The entry records the sequence that consumer starts at (`consumer_start`, written by the registration from `bus.SessionConsumers.Ensure`, the same number that registration's answer carries), and only a message at or after it is the consumer's:
-  one stored below that start -- one deferred as unplaceable before the session's first consumer was created, say -- is in no consumer, and the durable path does not deliver it; which message it NAKs, defers or skips, and what it logs, is decided by `agentSubjectDelivery` and `fanoutDelivery` in `cmd/listener/delivery.go`.
+  one stored below that start is in no consumer, and the topic fan-out counts it as a delivery that failed (`fanoutDelivery` in `cmd/listener/delivery.go`).
+  A message on the session's own agent subject is not judged by that start.
   Only a registration writes that start (`sessionEntryFromSubscribe`), so a repair or a relay restart that creates the consumer below it leaves the entry above the consumer's real start until the session's next registration, every 90 s, rewrites it from `Ensure`'s answer.
   A create that clamps a start past the end to the stream's first sequence does that where an earlier build or a restored stream left a start past the end on the entry, and so does a restart at a floor the server lowered after data loss ("Data loss" above) or at the stream's first sequence after its sequences went back.
   In that window a message between the two starts reads as in no consumer, as above, though the consumer holds it and its relay delivers it; once the next registration rewrites the start, `ConsumerHoldsStored` answers that the consumer holds it.

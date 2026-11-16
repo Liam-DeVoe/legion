@@ -281,11 +281,11 @@ writes, and a request the starting gate turns away while the routes are still op
 | `delivery_status` | Attempt it counts |
 | --- | --- |
 | `delivered` | A role forward the stream acknowledged storing for its holder |
-| `skipped` | Nothing to deliver: the session's own consumer holds the message and the relay of that consumer delivers it, the durable's subject matches no session of this machine, or a role message would echo back to the session that holds the role |
+| `skipped` | Nothing to deliver: the session's own consumer holds the message and the relay of that consumer delivers it, a message on a session's agent subject finds the session's record, the durable's subject matches no session of this machine, or a role message would echo back to the session that holds the role |
 | `dedupe` | A repeat the dedupe cache recognised as already delivered, or the attempt cache as already attempted |
 | `kept` | A role message no live holder could take, kept for the session that claims the role next |
 | `failed` | The delivery, the role forward, or the delivery-mode guard before either, failed |
-| `unplaceable_no_record` | An agent delivery given up: no session record this listener could read |
+| `wake_reported` | A message on the agent subject of a session with no record, once the stream stored the session's wake report and the listener acknowledged the message. A report the stream never stored is the WARN `listener agent wake not stored`, which no label counts |
 
 `envoy_delivery_duration_seconds` carries the same label for the attempts it times.
 
@@ -483,7 +483,7 @@ envelopes can share a key their sender chose.
 So the stream stores one copy of a message per recipient however often it is forwarded, and
 two messages under one key as two.
 
-When a control delivery has no holder, or the stream stored no forward for the holder it found,
+When a role delivery has no holder, or the stream stored no forward for the holder it found,
 Envoy emits an envelope on `notifications.envoy.exceptions.<original-topic>`. So does a role-lane
 publish the API refuses because no live session holds the role: that refusal is still answered
 `404`, and the exception goes out behind the answer, on a goroutine of its own, so it never delays
@@ -504,41 +504,41 @@ exception payload preserves the original delivery fields:
 | `dedupe_key` | Original envelope dedupe key |
 | `source`, `source_session` | Original envelope source fields |
 
-An agent subject's `no_holder` is published once per message, at give-up rather than on the first
-attempt that failed to place it, and only after the give-up itself is recorded. A delivery this
-listener cannot place — no session record it could read — is NAKed for redelivery every five
-seconds, counted from the message's first delivery rather than from its age in the stream:
-`ENVOY_UNPLACEABLE_RETRY_WINDOW` (default 60 s) is
-spent as whole five-second deferrals, so it buys twelve of them at that default, and the delivery
-count stops the retries at 18 whatever the window says. That cause delivers nothing, so
-retrying it repeats nothing, and it keeps the window's whole allowance.
-At most 64 agent deliveries are held deferred at once — a
-quarter of the durable's 256 ack-pending slots, one of which a deferred message holds for its whole
-window — and a message that arrives while that cap is reached is given up at once. The 64 is one
-budget for the whole listener: a single set, made once at start and shared by every delivery
-handler built from it, the one a self-health rebind builds after a NATS flap included, so a rebind
-opens no second budget beside the first. The set is keyed on each message's JetStream stream
-sequence, so only that message's next delivery gives its slot back; a redelivery this listener
-never deferred (another branch's NAK, an expired ack wait) frees nothing. A slot whose message
-never comes back here (the stream dropped or purged it, or its redelivery reached another
-subscriber) expires 125 s after the deferral that took it, the 5 s delay plus two 60 s ack waits,
-the longest a deferred message can legitimately stay pending, so such slots cannot hold the budget
-for longer than that. Each deferral logs
-`listener agent delivery deferred` with `reason`, `attempt` and `window_deferrals`, the deferrals
-that message's cause is allowed; only the give-up counts
-`unplaceable_no_record`, logs WARN
-`listener agent delivery given up`, and then publishes the exception. A notice that cannot be
-published — it embeds the original payload, so an envelope near the server's max payload has its
-notice refused as too large on every attempt — logs ERROR `listener exception publish failed`
-beside the give-up line and changes nothing else: the message is not NAKed, it keeps the
-attempt-cache entry that turns a redelivery a lost ACK brings into `listener attempt-dedupe skip`,
-and it is ACKed. No other path NAKs on a notice it could not publish: the generic fanout, the one
-that still could, owes no `no_holder` notice at all, since the handler routes every role and agent
-topic elsewhere and a topic reaching the fanout is never a control topic.
-A role lane publishes its exception on the attempt itself, since nothing redelivers a core message.
-The `no_holder` exception the durable path stores carries
-`Nats-Msg-Id` `exception.no_holder.<origin>` (the message's own `Nats-Msg-Id`, else its stream
-sequence), so the stream keeps one copy however many listeners give the message up.
+A message on a session's agent subject raises no exception. The session's own consumer delivers
+every such message, so the listener's durable delivers it to nobody, retries no delivery and gives
+no message up: it decides only whether the session needs a wake report. A message to a session
+with a record, `live` or `unresponsive`, is acknowledged and counted `skipped`, whatever the
+session's consumer holds: that consumer delivers it, or the consumer of the session's next
+registration does. A message whose session's interest row names another listener is that
+listener's to decide, and this one acknowledges it. A message to a session with no record, or
+with a record past the gone horizon, waits once. Its first delivery is sent back for
+`ENVOY_UNPLACEABLE_RETRY_WINDOW` (default 60 s), counted from that delivery and not from the
+message's age in the stream, so a session that is only restarting registers again and gets the
+message from its consumer with no wake. When the session still has no record at the next
+delivery, the listener publishes one wake report on `notifications.legion.wake` and waits up to
+2 s for the stream to store it. A stored report logs INFO `listener agent wake reported`, counts
+`wake_reported`, and the message is acknowledged. A report the stream did not store sends the
+message back for the same wait, and at the stream's 20th and last delivery the listener logs WARN
+`listener agent wake not stored` and acknowledges the message. A read of the record that does not
+answer is neither a record nor the lack of one: the message is sent back for the wait, the
+listener logs WARN `listener agent record unread` once for that message, and at the last delivery
+it reports the wake as for no record. A wait at or below zero, a core delivery and a durable
+message whose metadata does not parse report at once.
 
-Role exceptions use core NATS with the role lane. Other control exceptions retain ordinary
-JetStream transport. Exception topics do not produce further exception events.
+At most 64 messages wait at once — a quarter of the durable's 256 ack-pending slots, one of which
+a waiting message holds for its whole wait — and a first delivery that finds that cap reached
+reports its wake at once. The 64 is one budget for the whole listener: a single set, made once at
+start and shared by every delivery handler built from it, the one a self-health rebind builds
+after a NATS flap included, so a rebind opens no second budget beside the first. The set is keyed
+on each message's JetStream stream sequence, so only that message's next delivery gives its slot
+back, and a redelivery of a message this listener never sent back (an expired ack wait) frees
+nothing. A slot whose message never comes back here (the stream dropped or purged it, or its
+redelivery reached another subscriber) expires after the wait plus two 60 s ack waits, 180 s at
+the default, the longest a waiting message can stay pending, so such slots cannot hold the budget
+for longer than that.
+
+A role lane publishes its exception on the attempt itself, since nothing redelivers a core message.
+No path NAKs a message because its exception could not be published: such a failure logs ERROR
+`listener exception publish failed` and nothing else. Role exceptions use core NATS with the role
+lane. A team topic's exception keeps JetStream, since the stream captures its lane. Exception
+topics do not produce further exception events.

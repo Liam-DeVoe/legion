@@ -295,10 +295,11 @@ role_reap_interval=20s
 heartbeat_ms=5000
 max_age=2h
 max_age_shown=2h0m0s
-# shipping_max_age is the 5m of a bucket an older listener created, which the live bucket keeps
-# until ENVOY_SESSION_MAX_AGE raises it; a listener of this build creates a bucket at 2h.
-shipping_max_age=5m
-shipping_max_age_shown=5m0s
+# older_bucket_max_age is the 5m maximum age of a bucket an older listener created. The live
+# bucket keeps that age until ENVOY_SESSION_MAX_AGE raises it. A listener of this build creates a
+# bucket at 2h.
+older_bucket_max_age=5m
+older_bucket_max_age_shown=5m0s
 
 # own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid to PIDFILE.
 # Every agent this proof stalls needs one. A stopped process in the run's own process group makes
@@ -1688,12 +1689,12 @@ check_every_plugin_shows_the_state() {
 # JetStream has already removed. That restatement is this issue's architect's.
 check_max_age_change_reaches_both_listeners() {
   local late=ses_ess_maxage_$$ stall=420
-  set_max_age "$shipping_max_age"
-  wait_until 120 "listener A to read the shipping $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_a" "$shipping_max_age_shown" || return 1
-  wait_until 120 "listener B to read the shipping $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_b" "$shipping_max_age_shown" || return 1
-  note "the bucket is at the shipping maximum age, which both listeners now report"
+  set_max_age "$older_bucket_max_age"
+  wait_until 120 "listener A to read the older bucket's $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_a" "$older_bucket_max_age_shown" || return 1
+  wait_until 120 "listener B to read the older bucket's $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_b" "$older_bucket_max_age_shown" || return 1
+  note "the bucket is at the older bucket's maximum age, which both listeners now report"
   set_max_age "$max_age"
   wait_until 120 "listener A to read the raised $max_age maximum age" \
     healthz_max_age_is "$port_a" "$max_age_shown" || return 1
@@ -1701,21 +1702,21 @@ check_max_age_change_reaches_both_listeners() {
     healthz_max_age_is "$port_b" "$max_age_shown" || return 1
   note "the raise to $max_age reached both running listeners' /healthz"
   registered "$late" "notifications.agent.$late" || return 1
-  note "registered $late after the raise; stalling it ${stall}s, past the shipping maximum age"
+  note "registered $late after the raise; stalling it ${stall}s, past the older bucket's maximum age"
   sleep "$stall"
   state_is "$port_a" "$late" unresponsive unresponsive ||
-    refuse "a session stalled ${stall}s after the raise reads '$state', not unresponsive; at the shipping maximum age its key would be gone by now" || return 1
+    refuse "a session stalled ${stall}s after the raise reads '$state', not unresponsive; at the older bucket's maximum age its key would be gone by now" || return 1
   state_is "$port_b" "$late" unresponsive unresponsive ||
     refuse "listener B reads the stalled session '$state', not unresponsive" || return 1
-  set_max_age "$shipping_max_age"
-  wait_until 120 "listener A to read the rolled-back $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_a" "$shipping_max_age_shown" || return 1
-  wait_until 120 "listener B to read the rolled-back $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_b" "$shipping_max_age_shown" || return 1
+  set_max_age "$older_bucket_max_age"
+  wait_until 120 "listener A to read the rolled-back $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_a" "$older_bucket_max_age_shown" || return 1
+  wait_until 120 "listener B to read the rolled-back $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_b" "$older_bucket_max_age_shown" || return 1
   wait_until 300 "the stalled session to be gone under the rolled-back maximum age" \
     state_is "$port_a" "$late" unresponsive gone || return 1
   wait_until 120 "listener B to read it gone too" state_is "$port_b" "$late" unresponsive gone || return 1
-  note "the rollback to $shipping_max_age reached both listeners, and the session stalled past it then reads gone"
+  note "the rollback to $older_bucket_max_age reached both listeners, and the session stalled past it then reads gone"
 }
 
 # ---- the run -----------------------------------------------------------------------------------------
