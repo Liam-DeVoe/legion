@@ -5,12 +5,13 @@ import "slices"
 // StatementState is the state of one statement at the subject (R10): State "not_built", "met",
 // "not_met" or "unknown", with the Reason code of the rule that decided it and Detail, the id that
 // the reason names: the statement that is not built, the check that is false or unknown, the
-// supporter, or the leaf with no check, and "" for "checks_true". HeldVersion is the approved
-// version of the statement that the files hold, 0 when they hold none, and EarlierText marks a
-// version that is not the current one (R10: "Where the files hold the text of an earlier approval,
-// the page says so"). PartlyChecked marks a met statement whose checks decide only part of it, as
-// the reviewer of its level judged (R10). Own is the state over the statement's own checks that
-// read the subject, which a wait on the statement reads (R29).
+// supporter, or the statement with no check where the tree rules ask for one (lacksCheck), and ""
+// for "checks_true". HeldVersion is the approved version of the statement that the files hold, 0
+// when they hold none, and EarlierText marks a version that is not the current one (R10: "Where
+// the files hold the text of an earlier approval, the page says so"). PartlyChecked marks a met
+// statement whose checks decide only part of it, as the reviewer of its level judged (R10). Own is
+// the state over the statement's own checks that read the subject, which a wait on the statement
+// reads (R29).
 type StatementState struct {
 	ID            string `json:"id"`
 	State         string `json:"state"`
@@ -135,15 +136,14 @@ func (j *statementJudge) state(id string) StatementState {
 // byChecks is the state, reason and detail of the statement id, whose files hold its current text
 // and the current text of each statement under it, in under: its own checks and the checks of each
 // statement under it that read the subject, in the search order, then its supporters by id. A
-// statement of under that the approved spec gives no statement under it and no check, a leaf with
-// no check, is unknown, no_check, in its place of the search order (R6: "Each leaf statement has
-// one or more checks"; R7: "silence is not a pass"). A supporter that id supports in its turn,
-// directly or through other supporters, is in a loop of supporters, which Validate refuses: it
-// reads unknown, so that no state depends on the order of the derivation.
+// statement of under that lacks a check that the tree rules ask for (lacksCheck) is unknown,
+// no_check, in its place of the search order (R7: "silence is not a pass"). A supporter that id
+// supports in its turn, directly or through other supporters, is in a loop of supporters, which
+// Validate refuses: it reads unknown, so that no state depends on the order of the derivation.
 func (j *statementJudge) byChecks(id string, under []string) (state, reason, detail string) {
 	var notMet, unknown finding
 	for _, s := range under {
-		if len(j.own[s]) == 0 && len(j.children[s]) == 0 {
+		if j.lacksCheck(s) {
 			unknown.keep(reasonNoCheck, s)
 		}
 		for _, c := range j.own[s] {
@@ -210,17 +210,27 @@ func (j *statementJudge) supportedBy(statement, target string) bool {
 	return false
 }
 
+// lacksCheck is whether the approved spec gives the statement id no check where the tree rules ask
+// for one, by the pair of rules of Validate: a leaf (leaf-without-check, R6: "Each leaf statement
+// has one or more checks"), or a statement that other statements serve (supported-without-check,
+// R5: "A statement that other statements support still has checks of its own"). A statement with
+// statements under it, no supporter and no check of its own is neither: the rules take it. A
+// statement that serves itself is in a loop, which Validate refuses too, and lacks a check here.
+func (j *statementJudge) lacksCheck(id string) bool {
+	return len(j.own[id]) == 0 && (len(j.children[id]) == 0 || len(j.supporters[id]) > 0)
+}
+
 // ownState is the state of the statement id over those of its own checks that read the subject
 // (R29, with R10: "Only the checks that read the subject count"): not built when the files do not
-// hold its current text; unknown when it is a leaf that the approved spec gives no check (R6: "Each
-// leaf statement has one or more checks"; R10: "Met means that its checks pass"); else not met
-// when one of them is false, unknown when one is unknown, and met when all are true, also when a
-// statement with statements under it has no own check, or none of its checks reads the subject.
+// hold its current text; unknown when it lacks a check that the tree rules ask for (lacksCheck;
+// R10: "Met means that its checks pass"); else not met when one of them is false, unknown when one
+// is unknown, and met when all are true, also when a statement with statements under it and no
+// supporter has no own check, or none of its checks reads the subject.
 func (j *statementJudge) ownState(id string) string {
 	if j.notBuilt(id) {
 		return statementNotBuilt
 	}
-	if len(j.own[id]) == 0 && len(j.children[id]) == 0 {
+	if j.lacksCheck(id) {
 		return statementUnknown
 	}
 	state := statementMet
