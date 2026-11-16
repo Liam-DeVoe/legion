@@ -187,6 +187,24 @@ func TestTheOtherRules(t *testing.T) {
 			want: Problem{pos(1), "a-claim-survives-a-restart", "missing-target", `missing-target: serves names "legion-keeps-each-claim", which the files do not hold`},
 		},
 		{
+			name: "a statement that another statement serves and that has no check of its own",
+			tree: servedTree(false),
+			want: Problem{Position{"x.md", 10}, "legion-keeps-each-claim", "supported-without-check", "supported-without-check: other statements serve it and no check serves it"},
+		},
+		{
+			name: "a leaf that another statement serves and that has no check, named once",
+			tree: Tree{
+				Statements: []Statement{leaf(nil), {
+					ID: "a-lost-claim-is-reported", Text: "Legion reports each lost claim.", Kind: KindBehavior,
+					Serves: []string{"a-claim-survives-a-restart"}, Pos: pos(20),
+				}},
+				Checks: []Check{check(func(c *Check) {
+					c.ID, c.Serves, c.Pos = "a-lost-claim-is-in-the-log", "a-lost-claim-is-reported", pos(25)
+				})},
+			},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "leaf-without-check", "leaf-without-check: no statement is under it and no check serves it"},
+		},
+		{
 			name: "a statement about a node that is no component",
 			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.About = []string{"a-restart-keeps-the-claim"} })}, Checks: []Check{check(nil)}},
 			want: Problem{pos(1), "a-claim-survives-a-restart", "missing-target", `missing-target: about names "a-restart-keeps-the-claim", which is a check, not a component or an interface`},
@@ -311,6 +329,40 @@ func TestAPurposeOfOneSentenceIsValid(t *testing.T) {
 			t.Errorf("purpose %q: %+v, want none", purpose, problems)
 		}
 	}
+}
+
+// R5: "A statement that other statements support still has checks of its own." With a check of
+// its own, the served statement of servedTree is valid: the control of the supported-without-check
+// row of TestTheOtherRules.
+func TestAServedStatementWithACheckOfItsOwnIsValid(t *testing.T) {
+	t.Parallel()
+	if problems := Validate(servedTree(true), Options{}); len(problems) != 0 {
+		t.Errorf("Validate: %+v, want none", problems)
+	}
+}
+
+// servedTree is a statement with one child and a statement that serves it, each leaf with a check,
+// and a check of the served statement's own when checked is true.
+func servedTree(checked bool) Tree {
+	pos := func(line int) Position { return Position{File: "x.md", Line: line} }
+	check := func(id, serves string, line int) Check {
+		return Check{
+			ID: id, Serves: serves, Claim: "The daemon reads the claim.", ProcedureText: "An agent reads the claims.",
+			FailingExample: "A daemon with no store.", Subject: SubjectCode, Procedure: ProcedureAgent, Pos: pos(line),
+		}
+	}
+	tree := Tree{
+		Statements: []Statement{
+			{ID: "a-claim-survives-a-restart", Text: "Legion keeps each claim after a restart.", Kind: KindBehavior, Parent: "legion-keeps-each-claim", Pos: pos(1)},
+			{ID: "a-lost-claim-is-reported", Text: "Legion reports each lost claim.", Kind: KindBehavior, Serves: []string{"legion-keeps-each-claim"}, Pos: pos(20)},
+			{ID: "legion-keeps-each-claim", Text: "Legion keeps each claim in Dispatch.", Kind: KindBehavior, Pos: pos(10)},
+		},
+		Checks: []Check{check("a-lost-claim-is-in-the-log", "a-lost-claim-is-reported", 25), check("a-restart-keeps-the-claim", "a-claim-survives-a-restart", 5)},
+	}
+	if checked {
+		tree.Checks = append(tree.Checks, check("dispatch-holds-each-claim", "legion-keeps-each-claim", 15))
+	}
+	return tree
 }
 
 // A program check of another runner than go keeps its selector as its runner writes it: the go

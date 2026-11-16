@@ -22,8 +22,10 @@ type Options struct {
 //     hyphens, or a word that states a position), retired-id (an id the approved spec removed);
 //   - a statement: no-text, bad-kind, no-parent, missing-target (a serves or about relation to a
 //     node the files do not hold as a statement, or as a component or interface), no-about (a
-//     structure statement about no component), leaf-without-check, and loop (a cycle through
-//     parent and serves relations, or through the parents of components);
+//     structure statement about no component), leaf-without-check, supported-without-check (a
+//     statement with statements under it that other statements serve, and that no check serves:
+//     R5), and loop (a cycle through parent and serves relations, or through the parents of
+//     components);
 //   - a check: check-serves (not exactly one statement), no-claim, no-procedure,
 //     no-failing-example, bad-subject, bad-procedure, no-test and no-job (a program check without
 //     its test part), test-on-non-program, bad-selector (a go selector that picks no one test);
@@ -174,10 +176,21 @@ func (v *validator) statement(s Statement) {
 	if s.Kind == KindStructure && len(s.About) == 0 {
 		v.problem(s.Pos, s.ID, "no-about: a statement of kind structure names its components or interfaces")
 	}
-	if s.ID != "" && len(v.tree.Children(s.ID)) == 0 && len(v.tree.ChecksOf(s.ID)) == 0 {
-		v.problem(s.Pos, s.ID, "leaf-without-check: no statement is under it and no check serves it")
+	if s.ID != "" && len(v.tree.ChecksOf(s.ID)) == 0 {
+		switch {
+		case len(v.tree.Children(s.ID)) == 0:
+			v.problem(s.Pos, s.ID, "leaf-without-check: no statement is under it and no check serves it")
+		case v.served(s.ID):
+			v.problem(s.Pos, s.ID, "supported-without-check: other statements serve it and no check serves it")
+		}
 	}
 	v.code(s.Pos, s.ID, "text", s.Text)
+}
+
+// served reports whether another statement serves the statement id: one that other statements
+// support still has checks of its own (R5).
+func (v *validator) served(id string) bool {
+	return slices.ContainsFunc(v.tree.Statements, func(s Statement) bool { return s.ID != id && slices.Contains(s.Serves, id) })
 }
 
 func (v *validator) check(c Check) {
