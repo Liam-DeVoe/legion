@@ -25,10 +25,13 @@ import type {
   UserState,
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
+import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { buildDispatchReference } from "../refs/routes";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
@@ -1224,7 +1227,7 @@ test("the Labels row of an issue with no label draws its name one time", async (
     const row = await waitFor(() => rowAt("labels"));
     expect(row).toHaveTextContent(CONTROL_LABELS.none);
     expect(
-      within(row).getByRole("button", { name: "Edit labels" }),
+      within(row).getByRole("button", { name: labelsControlName([], "CORE-1", CONTROL_LABELS) }),
       "the Labels row of an issue with no label draws no Edit labels"
     ).toBeEnabled();
     expect(
@@ -1233,6 +1236,69 @@ test("the Labels row of an issue with no label draws its name one time", async (
     ).toBe(1);
   } finally {
     unmount();
+    restore();
+  }
+});
+
+/** The issue page's scope of keys, pushed as the page pushes it (`useIssueKeymap.ts`), so a key
+ *  the details slot binds in that scope is read. */
+function IssueKeys(): null {
+  useKeymapScope("issue");
+  return null;
+}
+
+// R4, R5 and decision 112 of the parts: on an issue with no label the labels' control is named
+// for adding one (`labelsControlName`), and the add menu's Labels and the key `l` find it by that
+// name. While both looked for "Edit labels", the menu listed no Labels on such an issue and `l`
+// did nothing.
+test("on an issue with no label, the Add menu's Labels and the key l reach the labels control", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  // The labels' popover reads the project's issues for the labels it offers.
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueKeys />
+          <MarginProvider>
+            <MarginSlotProvider drawsSlot>
+              <DetailsSlot issue={issue} route={{ key: "CORE-1", kind: "issue" }} />
+              <MarginBody />
+            </MarginSlotProvider>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const control = within(await waitFor(() => rowAt("labels"))).getByRole("button", {
+      name: labelsControlName([], "CORE-1", CONTROL_LABELS),
+    });
+    expect(control).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.labels }));
+    await waitFor(() =>
+      expect(control, "the add menu's Labels did not open the labels control").toHaveAttribute(
+        "aria-expanded",
+        "true"
+      )
+    );
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
+
+    await user.keyboard("l");
+    await waitFor(() =>
+      expect(control, "l did not open the labels control").toHaveAttribute("aria-expanded", "true")
+    );
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
     restore();
   }
 });

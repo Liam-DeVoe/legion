@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import { labelsControlName } from "../web/src/features/issue/IssueLabels";
 import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
 import {
   MARGIN_SECTION_ORDER,
@@ -1047,8 +1048,11 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await nextFrames(page);
     await expect(marginShell(page), "l opened Details on a closed issue").toBeHidden();
     await openDetails(page);
+    // TWO has no label, so its control is named for adding one.
     await expect(
-      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", { name: "Edit labels" }),
+      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+        name: labelsControlName([], two, CONTROL_LABELS),
+      }),
       "a closed issue's labels can be edited"
     ).toBeDisabled();
     await expect(addControl(page), "a closed issue draws the add control").toHaveCount(0);

@@ -301,6 +301,7 @@ export function IssueMarginPanel({
           <IssueLabels
             chipClassName={`rounded-md border px-[7px] text-xs leading-[18px] font-medium ${pageLabelChip}`}
             disabled={isClosed}
+            issueKey={issue.key}
             labels={labels}
             onSave={(next) => writes.labels.mutateAsync(next)}
             project={issue.project}
