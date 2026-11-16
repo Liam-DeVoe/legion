@@ -83,8 +83,12 @@ import {
  * lists none of them: a binding of the page's keymap is a row of that list (part V's departure
  * 3).
  *
- * What it says of a statement and of a check is `statement-state.ts`, which is pure. Four
- * rules of R17 are drawn here:
+ * What it says of a statement and of a check is `statement-state.ts`, which is pure. What it
+ * says of the issue - the summary, the chips' counts, how each statement stands and so the
+ * state a chip narrows by - is read from the view with no words query, and what it draws, the
+ * cards, the checks and their results, from the view the query left: a query narrows the rows
+ * and never changes how a statement reads or what the summary counts (part V's departure 10).
+ * Four rules of R17 are drawn here:
  *
  * - **One commit, drawn once.** The summary names the commit the issue's results are read
  *   against; no result draws a commit of its own on its line, and a result recorded against
@@ -112,6 +116,7 @@ export function VerificationFilterBody({
   context,
   emptyLine,
   view,
+  whole = view,
 }: {
   /** Whether the coverage read and the results read have both answered. Until they have, the
    *  body draws its tree with no row and no line in it, so it never says that an issue has no
@@ -129,18 +134,24 @@ export function VerificationFilterBody({
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
   /** The Verification view with no words query: what the issue holds, whatever a query left of
-   *  it. Where it is not given it is `view`, as it is where no query is typed. */
+   *  it. The summary, the chips' counts, each statement's state and R9's count are read from it.
+   *  Where it is not given it is `view`, as it is where no query is typed. */
   whole?: TreeNode;
 }): ReactNode {
+  // The query's reading, which the body draws, and the issue's, which it says how the issue
+  // stands by (part V's departure 10). With no query typed the two are one reading.
   const read = useMemo(() => verificationReading({ checks, view }), [checks, view]);
+  const issue = useMemo(
+    () => (whole === view ? read : verificationReading({ checks, view: whole })),
+    [checks, read, view, whole]
+  );
+  const statements = useMemo(() => drawnStatements(read, issue), [issue, read]);
   // Which state the reader narrowed the body to, as the picture's chips do; nothing is
   // narrowed until they press one.
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
-  const counts = statementCounts(read.statements);
+  const counts = statementCounts(issue.statements);
   const shown =
-    only === undefined
-      ? read.statements
-      : read.statements.filter((statement) => statement.state === only);
+    only === undefined ? statements : statements.filter((statement) => statement.state === only);
   const loose = only === undefined ? read.loose : [];
   const others = only === undefined ? read.others : [];
   // The issue's row is drawn where the view holds a row of any kind, so an issue with no
@@ -293,17 +304,17 @@ export function VerificationFilterBody({
               tabIndex={tabIndexFor(view.id)}
             >
               <Summary
-                checks={read}
-                commit={read.commit}
+                checks={issue}
+                commit={issue.commit}
                 counts={counts}
-                covered={read.covered}
-                total={read.statements.length}
+                covered={issue.covered}
+                total={issue.statements.length}
               />
               <Chips
                 counts={counts}
                 onlyState={only}
                 onPress={setOnly}
-                total={read.statements.length}
+                total={issue.statements.length}
               />
             </div>
             <div className={TABLE} data-verification-table="">
@@ -320,7 +331,8 @@ export function VerificationFilterBody({
                 />
               ))}
               {/* What the table says where the state the reader narrowed to holds no statement,
-                  rather than headings over nothing. */}
+                  rather than headings over nothing: a chip whose count is 0 is a press too, as
+                  is a chip whose statements the query left out (part V's departure 4). */}
               {only !== undefined && shown.length === 0 ? (
                 <p
                   className={`${CELL} text-sm leading-5 ${pageQuietText}`}
@@ -351,6 +363,32 @@ export function VerificationFilterBody({
       </div>
     </div>
   );
+}
+
+/** A statement as the body draws it: the query's reading of it, with the state the issue's
+ *  reading gives it and the count of R9's line. */
+interface DrawnStatement extends StatementReading {
+  /** How many checks the coverage read counts for the statement beyond those the view with no
+   *  query draws under it, which serve it from an issue under this one (part V's R9). At 0 or
+   *  less the statement draws no line for them. */
+  readonly elsewhere: number;
+}
+
+/**
+ * Each statement of the query's reading (`read`), as the issue's reading (`issue`, the view with
+ * no query) says it stands, so a query that leaves out a statement's own check never changes its
+ * state (part V's departure 10). Its R9 count is the checks the coverage read counts for it less
+ * the distinct checks the issue's reading draws under it, so a query never calls this issue's
+ * own checks "elsewhere" (departure 2). A statement the issue's reading does not hold is read
+ * from the query's reading alone.
+ */
+function drawnStatements(read: VerificationReading, issue: VerificationReading): DrawnStatement[] {
+  const standing = new Map(issue.statements.map((statement) => [statement.node.id, statement]));
+  return read.statements.map((statement) => {
+    const held = standing.get(statement.node.id) ?? statement;
+    const drawn = new Set(held.checks.map((check) => check.node.id)).size;
+    return { ...statement, elsewhere: (held.node.counts?.checks ?? 0) - drawn, state: held.state };
+  });
 }
 
 /** The ids of the rows the tree draws, in the order they stand on the page: the issue's row,
@@ -444,6 +482,12 @@ const STATEMENT_FILLS: Readonly<Record<StatementState, string>> = {
   unknown: "bg-page-hair",
 };
 
+/** The pressed chip's mark under forced colours, where the system draws every chip's fill and
+ *  border alike: an outline in the system's text colour, so the chip that is on is still told
+ *  from the rest by more than its `aria-pressed` (part V's departure 4). */
+const FORCED_PRESSED =
+  "forced-colors:aria-pressed:outline-2 forced-colors:aria-pressed:outline-offset-2 forced-colors:aria-pressed:outline-[CanvasText]";
+
 /** How a check's state is coloured: the passed green and the failed red the page already draws
  *  a check in, and the quiet grey for the five that are neither. */
 function checkTone(state: CheckState): string {
@@ -455,8 +499,9 @@ function checkTone(state: CheckState): string {
  * How the issue stands, in one card over the table (the prototype's `.vsum`): how many
  * statements carry a check, the bar of how they stand, the count in each state, the one commit
  * the page names for the issue's results, drawn here and nowhere else (R17), and how many of
- * the checks it draws stand in each of the seven states a check can be in, each by its word and
- * its shape, so the shapes the table draws are named once over it (R6).
+ * the issue's checks stand in each of the seven states a check can be in, each by its word and
+ * its shape, so the shapes the table draws are named once over it (R6). It is the issue's
+ * whatever a words query left of it (part V's departure 10).
  */
 function Summary({
   checks,
@@ -465,12 +510,13 @@ function Summary({
   covered,
   total,
 }: {
-  /** The checks the body draws, each counted once however many statements it serves. */
+  /** The issue's checks, as the view with no query draws them, each counted once however many
+   *  statements it serves. */
   checks: Pick<VerificationReading, "loose" | "statements">;
   commit: string | undefined;
   counts: Readonly<Record<StatementState, number>>;
   covered: number;
-  /** How many statements the filter drew, which the covered count is out of. */
+  /** How many statements the issue holds, which the covered count is out of. */
   total: number;
 }): ReactNode {
   const byState = new Map<string, CheckState | undefined>();
@@ -556,8 +602,10 @@ function Summary({
 }
 
 /** The chips over the table (the prototype's `.vchips`): All, and one per state a statement can
- *  be in with how many stand in it. Pressing one draws those statements alone, pressing it
- *  again or pressing All draws them all, as the filter row's own controls work (R2). */
+ *  be in with how many of the issue's stand in it. Pressing one draws those statements alone,
+ *  pressing it again or pressing All draws them all, as the filter row's own controls work
+ *  (R2). Every chip is a press the keyboard reaches, one whose state holds no statement too,
+ *  which draws the page's line for it (part V's departure 4). */
 function Chips({
   counts,
   onlyState,
@@ -570,7 +618,7 @@ function Chips({
   total: number;
 }): ReactNode {
   const chip = (on: boolean): string =>
-    `rounded-full border px-3 py-0.5 text-sm leading-5 font-semibold ${focusVisibleRing} ${
+    `rounded-full border px-3 py-0.5 text-sm leading-5 font-semibold ${focusVisibleRing} ${FORCED_PRESSED} ${
       on
         ? `${pageInkBg} ${pageInkBorder} text-page-paper`
         : `${pageHairBorder} ${pagePaperBg} ${pageMutedText}`
@@ -595,8 +643,6 @@ function Chips({
           aria-pressed={onlyState === state}
           className={chip(onlyState === state)}
           data-verification-chip={state}
-          // A chip with nothing in its state draws nothing, so it is no press to offer.
-          disabled={counts[state] === 0 && onlyState !== state}
           key={state}
           onClick={() => onPress(onlyState === state ? undefined : state)}
           type="button"
@@ -651,7 +697,13 @@ function Headings(): ReactNode {
  * F21); a press on its "more" control or on a link in its words is that control's own. The
  * control and the links are tab stops, as every control of the view is (R8). As a card its left
  * edge is the statement's teal, or the failed red where it reads Not met or no check serves it,
- * so the card says so before its words are read (R6).
+ * so the card says so before its words are read (R6). How it stands is the issue's reading of
+ * it, whatever a words query left of its checks (part V's departure 10).
+ *
+ * Where the coverage read counts more checks for it than the view with no query draws under it,
+ * the rest serve it from issues under this one, and it says how many in one line after its
+ * checks, inside its card (part V's R9). The line is no row of the tree, since the view draws
+ * none of those checks, and it is drawn only once the reads have answered, as every row is.
  */
 function Statement({
   context,
@@ -669,7 +721,7 @@ function Statement({
   onPressChecks: (row: Element) => void;
   /** Each drawn check's press, by its row's id. */
   presses: ReadonlyMap<string, boolean>;
-  statement: StatementReading;
+  statement: DrawnStatement;
   /** The tab index of the row with this id, which is 0 for the tree's one tab stop. */
   tabIndexFor: (id: string) => 0 | -1;
 }): ReactNode {
@@ -742,6 +794,20 @@ function Statement({
             })}
           </div>
         )}
+        {statement.elsewhere > 0 ? (
+          <p
+            className={`${CELL} text-xs leading-5 break-words ${pageQuietText} ${
+              statement.checks.length === 0 ? "" : `border-t ${pageLineBorder}`
+            }`}
+            data-verification-elsewhere=""
+            {...pageChrome}
+          >
+            <span {...authorText}>{statement.elsewhere.toLocaleString()}</span>{" "}
+            {statement.elsewhere === 1
+              ? VERIFICATION_WORDS.elsewhere_one
+              : VERIFICATION_WORDS.elsewhere_many}
+          </p>
+        ) : null}
       </div>
     </div>
   );

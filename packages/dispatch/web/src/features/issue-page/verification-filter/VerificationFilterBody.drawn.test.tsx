@@ -38,6 +38,7 @@ import {
   OTHER_COMMIT,
   result,
   statementNode,
+  verificationView,
 } from "./verification-fixtures";
 
 /**
@@ -319,6 +320,160 @@ test("a statement no check serves carries its gap in full", () => {
   }
 });
 
+// Part V's R9 and departures 2 and 10: where the coverage read counts more checks for a
+// statement than the view with no query draws under it, the rest serve it from an issue under
+// this one. The statement is covered, carries no gap, and draws one line after its checks with
+// how many. A words query that leaves out the statement's own check neither calls that check
+// "elsewhere" nor changes how the statement stands, what the summary counts or what the chips
+// count and narrow by.
+test("a statement that a child's check covers draws one line of the checks drawn elsewhere", async () => {
+  const user = userEvent.setup();
+  const own = passing("c-one");
+  const partly = {
+    ...statementNode("r1", "One check of this issue serves it.", [checkNode(own)]),
+    counts: { checks: 2, planTasks: 0 },
+  };
+  const childOnly = {
+    ...statementNode("r2", "Only the checks of an issue under this one serve it.", []),
+    counts: { checks: 3, planTasks: 0 },
+  };
+  /** Each line of the checks drawn elsewhere: the statement whose card holds it, what it reads,
+   *  its count as text of the reader's own, and whether its words are the page's. */
+  const linesOf = (drawn: RenderResult) =>
+    [...drawn.container.querySelectorAll("[data-verification-elsewhere]")].map((line) => [
+      line.closest("[data-verification-card]")?.getAttribute("data-node-id"),
+      (line.textContent ?? "").replace(/\s+/gu, " ").trim(),
+      line.querySelector("[data-author-text]")?.textContent,
+      line.hasAttribute("data-page-chrome"),
+    ]);
+
+  const view = drawBody([partly, childOnly], [own]);
+  try {
+    expect(linesOf(view)).toEqual([
+      [partly.id, `1 ${VERIFICATION_WORDS.elsewhere_one}`, "1", true],
+      [childOnly.id, `3 ${VERIFICATION_WORDS.elsewhere_many}`, "3", true],
+    ]);
+    expect([VERIFICATION_WORDS.elsewhere_one, VERIFICATION_WORDS.elsewhere_many]).toEqual([
+      "more check elsewhere",
+      "more checks elsewhere",
+    ]);
+    // The line stands after the statement's group of checks, inside its card.
+    const line = view.container.querySelector("[data-verification-elsewhere]");
+    expect(line?.previousElementSibling?.getAttribute("role")).toBe("group");
+    // A statement only a child's checks serve carries no gap, and the covered count holds it.
+    expect(view.container.querySelectorAll("[data-gap]")).toHaveLength(0);
+    expect(textsOf(view, "[data-verification-covered]")).toEqual([
+      `2 ${VERIFICATION_WORDS.of} 2 ${VERIFICATION_WORDS.covered}`,
+    ]);
+  } finally {
+    view.unmount();
+  }
+
+  // The query's words are the first statement's and no check's, so it leaves that statement with
+  // no check drawn under it, and the second statement out.
+  const unfiltered = drawBody([partly, childOnly], [own]);
+  const filtered = drawBody([partly, childOnly], [own], {
+    query: "this issue serves",
+    whole: verificationView([partly, childOnly]),
+  });
+  try {
+    expect(filtered.container.querySelectorAll("[data-verification-check]")).toHaveLength(0);
+    expect(
+      [...filtered.container.querySelectorAll("[data-verification-card]")].map((card) =>
+        card.getAttribute("data-node-id")
+      )
+    ).toEqual([partly.id]);
+    // Its own check is still not "elsewhere".
+    expect(linesOf(filtered)).toEqual([
+      [partly.id, `1 ${VERIFICATION_WORDS.elsewhere_one}`, "1", true],
+    ]);
+    /** How the first statement stands: its state, its word, its shape and its card's edge. */
+    const standing = (drawn: RenderResult) => {
+      const card = drawn.container.querySelector("[data-verification-card]");
+      return [
+        card?.getAttribute("data-statement-state"),
+        card?.querySelector("[data-statement-state]")?.textContent,
+        card?.querySelector("svg[data-glyph]")?.getAttribute("data-glyph"),
+        card?.classList.contains("border-l-page-failed"),
+      ];
+    };
+    expect(standing(unfiltered)).toEqual([
+      "met",
+      VERIFICATION_WORDS.states.met,
+      GLYPH_TOKENS.statements.met,
+      false,
+    ]);
+    expect(standing(filtered)).toEqual(standing(unfiltered));
+    // The summary and the chips are the issue's, as they are with no query.
+    for (const selector of [
+      "[data-verification-covered]",
+      "[data-verification-legend]",
+      "[data-verification-check-legend]",
+      "[data-verification-chip]",
+    ]) {
+      expect(textsOf(filtered, selector)).toEqual(textsOf(unfiltered, selector));
+    }
+    // The bar's fills, each by its width, in both.
+    const [filteredBar, unfilteredBar] = [filtered, unfiltered].map((drawn) =>
+      [...drawn.container.querySelectorAll("[data-verification-bar] > i")].map((fill) =>
+        fill.getAttribute("style")
+      )
+    );
+    expect(filteredBar).toEqual(unfilteredBar);
+    expect(textsOf(filtered, "[data-verification-covered]")).toEqual([
+      `2 ${VERIFICATION_WORDS.of} 2 ${VERIFICATION_WORDS.covered}`,
+    ]);
+    expect(textsOf(filtered, "[data-verification-chip]")).toEqual([
+      `${VERIFICATION_WORDS.all} 2`,
+      `${VERIFICATION_WORDS.states.met} 1`,
+      `${VERIFICATION_WORDS.states.not_met} 0`,
+      `${VERIFICATION_WORDS.states.unknown} 1`,
+    ]);
+    // The chip Met narrows by the state the statement reads, so it draws it.
+    await user.click(filtered.container.querySelector('[data-verification-chip="met"]') as Element);
+    expect(
+      [...filtered.container.querySelectorAll("[data-verification-card]")].map((card) =>
+        card.getAttribute("data-node-id")
+      )
+    ).toEqual([partly.id]);
+  } finally {
+    filtered.unmount();
+    unfiltered.unmount();
+  }
+
+  // A count at or below the checks the view draws under the statement draws no line, nor does a
+  // statement the coverage read counts nothing for; and until the reads have answered no line is
+  // drawn at all.
+  const two = passing("c-two");
+  const even = {
+    ...statementNode("r3", "Its one check is all the coverage read counts.", [checkNode(own)]),
+    counts: { checks: 1, planTasks: 0 },
+  };
+  const fewer = {
+    ...statementNode("r4", "The coverage read counts fewer checks than are drawn.", [
+      checkNode(own),
+      checkNode(two),
+    ]),
+    counts: { checks: 1, planTasks: 0 },
+  };
+  const uncounted = statementNode("r5", "The coverage read counts nothing for it.", [
+    checkNode(two),
+  ]);
+  const none = drawBody([even, fewer, uncounted], [own, two]);
+  try {
+    expect(none.container.querySelectorAll("[data-verification-card]")).toHaveLength(3);
+    expect(linesOf(none)).toEqual([]);
+  } finally {
+    none.unmount();
+  }
+  const waiting = drawBody([partly, childOnly], [own], { answered: false });
+  try {
+    expect(linesOf(waiting)).toEqual([]);
+  } finally {
+    waiting.unmount();
+  }
+});
+
 // R17: "a command renders as code with a copy control ... and `when` reads as words", and R15:
 // a check draws all four of its attributes and a result what it recorded. The body opens where
 // the reader's focus reaches the check and closes when the focus leaves it; a press keeps it
@@ -543,6 +698,52 @@ test("a chip draws the statements in one state alone, and pressing it again draw
     await user.click(metChip as Element);
     expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(2);
     expect(metChip?.getAttribute("aria-pressed")).toBe("false");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Part V's departure 4, the reviewer's finding at the checkpoint's `VerificationFilterBody.tsx:128`:
+// no chip is held back from the reader. The keyboard reaches a chip whose state holds no
+// statement, as it reaches every chip, and its press draws the page's line for that state rather
+// than a table with nothing in it.
+test("a chip whose state holds no statement draws the page's line for it", async () => {
+  const user = userEvent.setup();
+  const met = passing("c-one");
+  const view = drawBody(
+    [statementNode("r1", "Every check of this one passed.", [checkNode(met)])],
+    [met]
+  );
+  try {
+    const unknown = view.container.querySelector<HTMLButtonElement>(
+      '[data-verification-chip="unknown"]'
+    );
+    expect(textsOf(view, '[data-verification-chip="unknown"]')).toEqual([
+      `${VERIFICATION_WORDS.states.unknown} 0`,
+    ]);
+    expect([unknown?.disabled, unknown?.hasAttribute("disabled")]).toEqual([false, false]);
+    expect(view.container.querySelectorAll("[data-verification-chip][disabled]")).toHaveLength(0);
+    expect(view.container.querySelectorAll("[data-verification-none]")).toHaveLength(0);
+
+    // From the chip All, Tab reaches Met, then Not met, which holds no statement either, then
+    // Unknown; Enter presses it.
+    act(() => view.container.querySelector<HTMLElement>('[data-verification-chip="all"]')?.focus());
+    await user.tab();
+    await user.tab();
+    await user.tab();
+    expect(document.activeElement).toBe(unknown);
+    await user.keyboard("{Enter}");
+    expect(unknown?.getAttribute("aria-pressed")).toBe("true");
+    expect(textsOf(view, "[data-verification-none]")).toEqual([
+      EMPTY_STATE_LINES.verification_none,
+    ]);
+    expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(0);
+
+    // A second press draws every statement again, and the line goes.
+    await user.click(unknown as Element);
+    expect(unknown?.getAttribute("aria-pressed")).toBe("false");
+    expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(1);
+    expect(view.container.querySelectorAll("[data-verification-none]")).toHaveLength(0);
   } finally {
     view.unmount();
   }
