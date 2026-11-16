@@ -19,9 +19,7 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 /**
  * A property of the issue the identity block opens an editor for, one editor at a time: the
  * two the reader types rather than picks. Every other property is edited by the control that
- * draws it, so it needs no editor of its own - the issues this one waits on are edited beside
- * their own value in the panel (`BlockedByControl.tsx`), as the repository and the components
- * are.
+ * draws it, as the repository and the components are, so it needs no editor of its own.
  */
 export type IssueField = "parent" | "route";
 
@@ -63,10 +61,10 @@ export function IssueFieldForms({
   return null;
 }
 
-/** The buttons every editor of an issue's fields ends on: save, then cancel. The panel's own
- *  editors end on these too (`BlockedByControl.tsx`), so the two draw one pair of buttons and
- *  cannot drift apart. `saveLabel` is the editor's own word for its save, which is what says
- *  a save is out ("Saving…"). */
+/** The buttons every editor of an issue's fields ends on: save, then cancel. The editors a later
+ *  part adds share these, so every editor draws one pair of buttons and none can drift apart.
+ *  `saveLabel` is the editor's own word for its save, drawn on Save whether or not a save is
+ *  out: a save that is out only makes Save a button that cannot be pressed (`saving`). */
 export function FormActions({
   cancel,
   saveLabel,
@@ -78,9 +76,8 @@ export function FormActions({
   /** Whether Save cannot be pressed: a save is out, or the value cannot be saved. */
   saving: boolean;
   /** Whether the editor waits for the answer to a save that is out, and nothing closes it until
-   *  that lands: the blocked-by editor, whose refusal is drawn in it. Cancel is held with Save
-   *  then, drawn and announced as a control that cannot be pressed rather than one whose press
-   *  does nothing. */
+   *  that lands: an editor that draws its refusal in itself. Cancel is held with Save then, drawn
+   *  and announced as a control that cannot be pressed rather than one whose press does nothing. */
   waiting?: boolean;
 }): ReactNode {
   return (
@@ -131,6 +128,10 @@ function RouteForm({
       onClose();
     }
   };
+  const cancel = () => {
+    drafts.discardRoute();
+    onClose();
+  };
   return (
     <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
       <label
@@ -148,8 +149,13 @@ function RouteForm({
         onChange={(event) => drafts.writeRoute(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
-            drafts.discardRoute();
-            onClose();
+            // The press is the box's: it closes the box and nothing around it. On a phone the
+            // box sits in Details, a sheet that closes on Escape through the key registry's
+            // dialog binding (`useDialog`), which takes a press inside a field and passes over
+            // one already `defaultPrevented` (`keymap.ts`); unmarked, one Escape would close the
+            // box and the whole sheet with it.
+            event.preventDefault();
+            cancel();
           }
         }}
         placeholder="role:legion-controller-core"
@@ -157,11 +163,8 @@ function RouteForm({
         value={drafts.route}
       />
       <FormActions
-        cancel={() => {
-          drafts.discardRoute();
-          onClose();
-        }}
-        saveLabel="Save route"
+        cancel={cancel}
+        saveLabel={CONTROL_LABELS.save_route}
         saving={isClosed || !drafts.routeIsValid || saving}
       />
       {/* What the box takes, in words (`HELP_LINES.route_shape`): a refusal while the draft is
@@ -201,6 +204,10 @@ function ParentForm({
       onClose();
     }
   };
+  const cancel = () => {
+    drafts.discardParent();
+    onClose();
+  };
   return (
     <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
       <label
@@ -218,8 +225,10 @@ function ParentForm({
         onChange={(event) => drafts.writeParent(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
-            drafts.discardParent();
-            onClose();
+            // Escape closes the box alone, as in the route box above: marked, the press passes
+            // the dialog binding that would close the Details sheet around it.
+            event.preventDefault();
+            cancel();
           }
         }}
         placeholder={`${issue.project}-12`}
@@ -227,11 +236,8 @@ function ParentForm({
         value={drafts.parent}
       />
       <FormActions
-        cancel={() => {
-          drafts.discardParent();
-          onClose();
-        }}
-        saveLabel="Save parent"
+        cancel={cancel}
+        saveLabel={CONTROL_LABELS.save_parent}
         saving={isClosed || saving}
       />
       <span className="sr-only" id="issue-parent-help">

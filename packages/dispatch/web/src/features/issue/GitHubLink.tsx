@@ -4,9 +4,17 @@ import type { ReactNode } from "react";
 import { ApiError, api } from "../../api/client";
 import type { ExternalLink } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
-import { usePageWords } from "../../components/tooltips";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import { safeExternalHref } from "../../lib/external-href";
-import { badgeLow, linkHoverText, linkText, textMutedOnSurface } from "../../theme/classes";
+import {
+  badgeLow,
+  linkHoverText,
+  linkText,
+  pageInkText,
+  pageLabelChip,
+  pageQuietText,
+  textMutedOnSurface,
+} from "../../theme/classes";
 
 interface GitHubReference {
   head?: { sha?: string };
@@ -96,11 +104,19 @@ function newestCheckRuns(checkRuns: CheckRun[], workflowRuns: WorkflowRun[]): Ch
  * phone; the title is truncated and carried in full by the link's tooltip.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) no link carries a
- * `title`, so what the tooltip said is drawn instead (dispatch://INFRA-1196 R19): the title
- * whole and wrapping, a link with no GitHub reading as its whole address, and an unsafe link
- * says so in words.
+ * `title`, so what the tooltip said is drawn instead (dispatch://INFRA-1196 R19): a GitHub
+ * issue or pull request reads as `<owner>/<repo>#<n>` and its title, whole; while the title
+ * loads, or when it could not be read, as its whole address; and when Dispatch holds no GitHub
+ * token for the repository, as `<owner>/<repo>#<n>` and the sentence saying so. A link with no
+ * GitHub reading is its whole address, and an unsafe link says so in words. Every text there
+ * wraps with `[overflow-wrap:anywhere]`, not `break-all`, so a line breaks between words where
+ * it can and cuts a word only where it cannot. There each colour is one of that page's
+ * (dispatch://INFRA-3935 R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): a
+ * link is its ink with the underline, an unsafe address its quiet words, and the state and the
+ * checks its label chips.
  */
 export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
+  const tooltips = useTooltips();
   const page = usePageWords();
   const href = safeExternalHref(link.url);
   const match =
@@ -160,8 +176,8 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
         {link.url}
       </span>
     ) : (
-      <span className={`inline-block text-sm ${textMutedOnSurface}`} {...page.pageChrome}>
-        <span className="break-all" {...page.authorText}>
+      <span className={`inline-block text-sm ${pageQuietText}`} {...page.pageChrome}>
+        <span className="[overflow-wrap:anywhere]" {...page.authorText}>
           {link.url}
         </span>
         <span className="ml-1">({page.CONTROL_LABELS.external_link_unsafe})</span>
@@ -179,7 +195,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       </a>
     ) : (
       <a
-        className={`inline-block max-w-full break-all text-sm underline ${linkText} ${linkHoverText}`}
+        className={`inline-block max-w-full text-sm underline [overflow-wrap:anywhere] ${pageInkText}`}
         href={href}
         {...page.authorText}
       >
@@ -202,35 +218,47 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       : isPullRequest && reference.merged
         ? "merged"
         : reference.state;
+  const linkTitle = unavailable
+    ? "GitHub details are unavailable for this repository."
+    : reference === undefined
+      ? link.url
+      : `${repository}${number}: ${reference.title}`;
   return (
     <a
-      className={`inline-flex max-w-full ${page === null ? "" : "flex-wrap "}items-center gap-2 text-sm underline ${linkText} ${linkHoverText}`}
+      className={`inline-flex max-w-full ${page === null ? `items-center gap-2 text-sm underline ${linkText} ${linkHoverText}` : `flex-wrap items-center gap-2 text-sm underline ${pageInkText}`}`}
       href={href}
-      title={
-        page !== null
-          ? undefined
-          : unavailable
-            ? "GitHub details are unavailable for this repository."
-            : reference === undefined
-              ? link.url
-              : `${repository}${number}: ${reference.title}`
-      }
+      title={tooltips ? linkTitle : undefined}
     >
-      <span className="shrink-0 font-medium" {...page?.authorText}>
-        {number}
-      </span>
       {page === null ? (
-        <TruncatedText className="max-w-[18ch] sm:max-w-[32ch]">
-          {reference === undefined ? repository : reference.title}
-        </TruncatedText>
-      ) : (
-        <span className="min-w-0 break-all" {...page.authorText}>
-          {reference === undefined ? repository : reference.title}
+        <>
+          <span className="shrink-0 font-medium">{number}</span>
+          <TruncatedText className="max-w-[18ch] sm:max-w-[32ch]">
+            {reference === undefined ? repository : reference.title}
+          </TruncatedText>
+        </>
+      ) : reference === undefined && !unavailable ? (
+        <span className="min-w-0 [overflow-wrap:anywhere]" {...page.authorText}>
+          {link.url}
         </span>
+      ) : (
+        <>
+          <span className="min-w-0 font-medium [overflow-wrap:anywhere]" {...page.authorText}>
+            {`${repository}${number}`}
+          </span>
+          {reference === undefined ? (
+            <span className="min-w-0 [overflow-wrap:anywhere]" {...page.pageChrome}>
+              {page.STATE_LINES.github_unreadable}
+            </span>
+          ) : (
+            <span className="min-w-0 [overflow-wrap:anywhere]" {...page.authorText}>
+              {reference.title}
+            </span>
+          )}
+        </>
       )}
       {state === undefined ? null : (
         <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeLow.bg} ${badgeLow.text}`}
+          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
           {...page?.authorText}
         >
           {state}
@@ -238,7 +266,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       )}
       {isPullRequest && !checks.isError && checks.data !== undefined ? (
         <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeLow.bg} ${badgeLow.text}`}
+          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
           {...page?.pageChrome}
         >
           {page === null ? (

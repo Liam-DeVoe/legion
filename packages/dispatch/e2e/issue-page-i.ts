@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { FOOT_HEIGHT_PROPERTY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
 import { gotoIssue, issuePage, openMenu, presetChooser, presetRow } from "./issue-page";
@@ -14,7 +15,14 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  * What the outline draws, beyond what G's file names:
  *
  * - **The tree** `role="tree"` named `CONTROL_LABELS.tree` (G's `tree`), its rows `treeitem`s
- *   carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop.
+ *   carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop. A row of the
+ *   outline carries `data-row-key`, which G's `NodeRow.tsx` draws and no view's row does: every
+ *   view draws a tree of its own (decision 59), so a tree is no sign that the outline is drawn.
+ * - **The stage** the outline is drawn in: the column `[data-testid="issue-column"]` that holds
+ *   the stage and the foot (`IssueOutlinePage.tsx`).
+ * - **A row's bullet** `[data-node-bullet]`: its column, or its fold control where its node holds
+ *   others; its tag `[data-node-tag]` in its margin; and a link its words draw for a reference,
+ *   `a[data-row-reference]` naming the reference it links.
  * - **A node's body** `[data-node-body]`, drawn for the focused row and each row pinned open
  *   (`[data-node-body][data-pinned]`), and for no other row.
  * - **A branch deeper than the drawn levels**, one row `[data-branch-more]` whose text says how
@@ -27,6 +35,11 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  *   which no address draws now.
  * - **What stays at the top of the screen**: the header's band `[data-identity-block]` from
  *   761 px up, and the view row's band at 760 px and below.
+ * - **What stays at the foot of the screen**: part L's box, whose height the page publishes on
+ *   the document element as `--issue-composer-height` (`FOOT_HEIGHT_PROPERTY` of
+ *   `identity-block.ts`). Until L draws it, `standInFootBox` draws a box in its place.
+ * - **A control under the outline**, which a body closing above it moves: none of the page's own
+ *   at this head. `standInControlBelow` draws one in its place.
  */
 
 /** The selectors the readers pass into the browser. */
@@ -37,8 +50,13 @@ const SELECTORS = {
   gap: "[data-gap]",
   issuePage: "[data-issue-page]",
   nodeBody: "[data-node-body]",
+  nodeBullet: "[data-node-bullet]",
   nodeRow: "[data-node-row]",
+  nodeTag: "[data-node-margin] [data-node-tag]",
+  /** A row of the outline, and of no view's tree. */
+  outlineRow: "[data-node-row][data-row-key]",
   presetRow: '[data-testid="issue-presets"]',
+  stage: '[data-testid="issue-column"]',
   tree: '[role="tree"]',
 } as const;
 
@@ -103,6 +121,24 @@ export function pageStatus(page: Page): Locator {
   return tree(page).locator("[data-row-report]");
 }
 
+/** The outline's own rows, by the mark a row of the outline carries and no view's row does: a
+ *  view's tree is named as the outline's is, so the tree alone does not say which is drawn. */
+export function outlineRows(page: Page): Locator {
+  return issuePage(page).locator(SELECTORS.outlineRow);
+}
+
+/** The outline's one row in the tab order, which takes the focus back when the reader comes
+ *  back to the tree (the WAI-ARIA tree pattern, R9). */
+export function tabStopRow(page: Page): Locator {
+  return tree(page).locator(`${SELECTORS.nodeRow}[tabindex="0"]`);
+}
+
+/** The link `row`'s words draw for `reference` (`dispatch://<key>` for an issue), which names
+ *  what it links by the page's batched read (`row-references.ts`). */
+export function rowReference(row: Locator, reference: string): Locator {
+  return row.locator(`[data-node-words] a[data-row-reference="${cssValue(reference)}"]`);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The readers: one `page.evaluate` each, so a page that draws none of this answers an empty
 // list or null instead of timing out.
@@ -111,6 +147,129 @@ export function pageStatus(page: Page): Locator {
 /** The ids of `rows`, in order, a row with none named so in a failure. */
 export function idsOf(rows: readonly DrawnRow[]): string[] {
   return rows.map((row) => row.id ?? "<no id>");
+}
+
+/** The text of each row's tag, by its node's id: a typed kind's word, or a child's key (the
+ *  architect's ruling 5). A row that draws no tag is not in it. */
+export async function rowTags(page: Page): Promise<ReadonlyMap<string, string>> {
+  const tags = await page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)].flatMap(
+        (row): [string, string][] => {
+          const id = row.getAttribute("data-node-id");
+          const tag = row.querySelector(selectors.nodeTag);
+          return id === null || tag === null ? [] : [[id, (tag.textContent ?? "").trim()]];
+        }
+      ),
+    SELECTORS
+  );
+  return new Map(tags);
+}
+
+/** Where `scope` stands in the stage, the column that holds the stage and the foot, inside the
+ *  column's insets: its width, and its gap to the column's inner edge at each side. Null where
+ *  `scope` stands in no such column. */
+export function placeInStage(
+  scope: Locator
+): Promise<{ readonly left: number; readonly right: number; readonly width: number } | null> {
+  return scope.first().evaluate((element, selectors) => {
+    const column = element.closest(selectors.stage);
+    if (column === null) return null;
+    const style = getComputedStyle(column);
+    const inner = column.getBoundingClientRect().left + column.clientLeft;
+    const start = inner + Number.parseFloat(style.paddingLeft);
+    const end = inner + column.clientWidth - Number.parseFloat(style.paddingRight);
+    const box = element.getBoundingClientRect();
+    return { left: box.left - start, right: end - box.right, width: box.width };
+  }, SELECTORS);
+}
+
+/** The box of each visible row's bullet, in document order, as G's `rowLayouts` reads the rows:
+ *  the bullet's column on a node that holds no other, and its fold control on one that does.
+ *  G's reader gives the left of the bullet's dot, which stands where every bullet's does, and
+ *  not the edges of the box it stands in. */
+export function bulletBoxes(
+  page: Page
+): Promise<{ readonly id: string; readonly left: number; readonly right: number }[]> {
+  return page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)]
+        .filter((row) => row.getClientRects().length > 0)
+        .map((row) => {
+          const box = row.querySelector(selectors.nodeBullet)?.getBoundingClientRect();
+          return {
+            id: row.getAttribute("data-node-id") ?? "",
+            left: box?.left ?? -1,
+            right: box?.right ?? -1,
+          };
+        }),
+    SELECTORS
+  );
+}
+
+/** Every item the tree draws, in order, with its `aria-level`: a node's row by its node's id,
+ *  and the one line a branch below the drawn levels folds to by its text, which counts what it
+ *  holds. */
+export function drawnItems(
+  page: Page
+): Promise<
+  { readonly id: string | null; readonly level: string | null; readonly more: string | null }[]
+> {
+  return page.evaluate(
+    (selectors) =>
+      [
+        ...document.querySelectorAll(
+          `${selectors.issuePage} ${selectors.tree} :is(${selectors.nodeRow}, ${selectors.branchMore})`
+        ),
+      ].map((item) => ({
+        id: item.getAttribute("data-node-id"),
+        level: item.getAttribute("aria-level"),
+        more: item.matches(selectors.branchMore)
+          ? (item.textContent ?? "").replace(/\s+/g, " ").trim()
+          : null,
+      })),
+    SELECTORS
+  );
+}
+
+/** Each deeper branch's one line: the `--row-depth` it is drawn at and its computed left
+ *  padding, in pixels, which is its indent (`TreeRows.tsx`'s `BranchMore`). */
+export function branchMoreIndents(
+  page: Page
+): Promise<{ readonly depth: number; readonly padding: number }[]> {
+  return page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.branchMore}`)].map(
+        (line) => {
+          const style = getComputedStyle(line);
+          return {
+            depth: Number.parseFloat(style.getPropertyValue("--row-depth")),
+            padding: Number.parseFloat(style.paddingLeft),
+          };
+        }
+      ),
+    SELECTORS
+  );
+}
+
+/** The `data-enabled` of each line of the open Keys list (`ShortcutHelp.tsx`) whose keys are
+ *  `chord`, such as `t h`: the list greys a binding that cannot run where the focus is, and
+ *  does not hide it. */
+export function keysListLines(page: Page, chord: string): Promise<(string | null)[]> {
+  return page
+    .getByRole("dialog", { name: "Keyboard shortcuts" })
+    .evaluate(
+      (dialog, keys) =>
+        [...dialog.querySelectorAll("li[data-enabled]")]
+          .filter(
+            (line) =>
+              [...line.querySelectorAll("kbd")]
+                .map((kbd) => (kbd.textContent ?? "").trim())
+                .join(" ") === keys
+          )
+          .map((line) => line.getAttribute("data-enabled")),
+      chord
+    );
 }
 
 /** The chain of ancestors above `id`, outermost first, as the drawn levels give it. */
@@ -151,39 +310,50 @@ export async function focusInside(scope: Locator): Promise<boolean> {
 }
 
 /**
- * Whether every pixel of `scope` is inside the viewport and clear of what stays at the top of
- * the screen, which is what "on screen" is read as, and what the page's own `bringOnScreen`
- * (`web/src/features/issue-page/identity-block.ts`) places a target by. Details' drawer is a
- * layer over the page, so a target inside it needs only the viewport.
+ * Whether every pixel of `scope` is inside the viewport, clear of what stays at the top of the
+ * screen and above the box that stays at its foot, which is what "on screen" is read as, and what
+ * the page's own `bringOnScreen` (`web/src/features/issue-page/identity-block.ts`) places a target
+ * by. Details' drawer is a layer over the page, so a target inside it needs only the viewport.
  *
  * A scope taller than the screen can satisfy neither, by construction, so a caller reads the
  * control the page leaves the reader on rather than the whole part around it.
  */
 export async function onScreen(scope: Locator): Promise<boolean> {
   if ((await scope.count()) === 0) return false;
-  return await scope.first().evaluate((element, selectors) => {
-    const rect = element.getBoundingClientRect();
-    // What stays at the top of the screen: the header's band from 761 px up, and the view
-    // row's band at 760 px and below - whichever is `position: sticky` and at the top now.
-    let sticky = 0;
-    if (element.closest('[data-testid="desktop-margin-shell"]') === null) {
-      for (const start of [selectors.identityBand, selectors.presetRow]) {
-        for (let at = document.querySelector(start); at !== null; at = at.parentElement) {
-          if (getComputedStyle(at).position !== "sticky") continue;
-          const band = at.getBoundingClientRect();
-          if (band.top <= 1) sticky = Math.max(sticky, band.bottom);
-          break;
+  return await scope.first().evaluate(
+    (element, { footHeight, selectors }) => {
+      const rect = element.getBoundingClientRect();
+      // What stays at the top of the screen: the header's band from 761 px up, and the view
+      // row's band at 760 px and below - whichever is `position: sticky` and at the top now.
+      // What stays at the foot: the box whose height the page publishes on the document element,
+      // as `bringOnScreen` reads it, unset while no box is drawn, which bounds the scope by the
+      // window alone.
+      let sticky = 0;
+      let foot = 0;
+      if (element.closest('[data-testid="desktop-margin-shell"]') === null) {
+        for (const start of [selectors.identityBand, selectors.presetRow]) {
+          for (let at = document.querySelector(start); at !== null; at = at.parentElement) {
+            if (getComputedStyle(at).position !== "sticky") continue;
+            const band = at.getBoundingClientRect();
+            if (band.top <= 1) sticky = Math.max(sticky, band.bottom);
+            break;
+          }
         }
+        foot =
+          Number.parseFloat(
+            getComputedStyle(document.documentElement).getPropertyValue(footHeight)
+          ) || 0;
       }
-    }
-    return (
-      rect.height > 0 &&
-      rect.top >= sticky - 1 &&
-      rect.bottom <= window.innerHeight + 1 &&
-      rect.left >= -1 &&
-      rect.right <= window.innerWidth + 1
-    );
-  }, SELECTORS);
+      return (
+        rect.height > 0 &&
+        rect.top >= sticky - 1 &&
+        rect.bottom <= window.innerHeight - foot + 1 &&
+        rect.left >= -1 &&
+        rect.right <= window.innerWidth + 1
+      );
+    },
+    { footHeight: FOOT_HEIGHT_PROPERTY, selectors: SELECTORS }
+  );
 }
 
 /** Whether the caret is in a node's own text: the focus is inside an editable inside a row,
@@ -272,6 +442,84 @@ export function activePreset(page: Page): Promise<string | null> {
 /** Opens the view `preset` on `key` at its own address. */
 export async function openPreset(page: Page, key: string, preset: Preset): Promise<void> {
   await gotoIssue(page, presetPath(key, preset));
+}
+
+/**
+ * Draws a stand-in for the box part L draws at the foot of the screen (`slots/foot.tsx`),
+ * `height` px tall, until L draws it: the column's last part, staying at the screen's foot, with
+ * its height published on the document element as L's box publishes it, which is how the page's
+ * `bringOnScreen` and this file's `onScreen` know it is there. It takes its height at the
+ * column's end as a box at the foot does, so the outline's last row can be scrolled above it.
+ * Answers what takes it away again.
+ */
+export async function standInFootBox(page: Page, height: number): Promise<() => Promise<void>> {
+  const drawn = await page.evaluate(
+    ({ footHeight, height, stage }) => {
+      const column = document.querySelector(stage);
+      if (column === null) return false;
+      const box = document.createElement("div");
+      box.setAttribute("data-foot-stand-in", "");
+      box.style.cssText = `position: sticky; bottom: 0; flex: none; height: ${height}px;`;
+      column.append(box);
+      document.documentElement.style.setProperty(footHeight, `${height}px`);
+      return true;
+    },
+    { footHeight: FOOT_HEIGHT_PROPERTY, height, stage: SELECTORS.stage }
+  );
+  expect(drawn, "the page draws no stage column to stand a box at the foot of").toBe(true);
+  return async () => {
+    await page.evaluate((footHeight) => {
+      document.querySelector("[data-foot-stand-in]")?.remove();
+      document.documentElement.style.removeProperty(footHeight);
+    }, FOOT_HEIGHT_PROPERTY);
+  };
+}
+
+/**
+ * Draws a stand-in for a control of the page under the outline: nothing of the page's own stands
+ * there at this head - part L's line at the foot is not drawn (`slots/foot.tsx`), Details is a
+ * drawer fixed at the right of the screen, and the Contents pane stays where it is as the page
+ * scrolls - and a control under the outline is the one a body closing above it moves. It is a
+ * button, the column's last part, where L's line will stand, that counts the presses that fire
+ * it, with a screen's height of page under it: a row can put it in the middle of the screen,
+ * where a body closing above it moves it. With the page scrolled to its foot, the browser keeps
+ * the foot on the screen as the page shortens, and the button with it, so no press there could
+ * tell a body closing from one that stays. Answers the button, how many presses fired it, and
+ * what takes it away again.
+ */
+export async function standInControlBelow(page: Page): Promise<{
+  readonly control: Locator;
+  readonly presses: () => Promise<number>;
+  readonly remove: () => Promise<void>;
+}> {
+  const drawn = await page.evaluate((stage) => {
+    const column = document.querySelector(stage);
+    if (column === null) return false;
+    const box = document.createElement("div");
+    box.setAttribute("data-control-stand-in", "");
+    box.style.cssText = "flex: none; padding-bottom: 100vh;";
+    const control = document.createElement("button");
+    control.type = "button";
+    control.textContent = "A control under the outline";
+    control.dataset.presses = "0";
+    control.addEventListener("click", () => {
+      control.dataset.presses = String(Number(control.dataset.presses) + 1);
+    });
+    box.append(control);
+    column.append(box);
+    return true;
+  }, SELECTORS.stage);
+  expect(drawn, "the page draws no stage column to stand a control under the outline in").toBe(
+    true
+  );
+  const control = page.locator("[data-control-stand-in] button");
+  return {
+    control,
+    presses: async () => Number(await control.getAttribute("data-presses")),
+    remove: async () => {
+      await page.evaluate(() => document.querySelector("[data-control-stand-in]")?.remove());
+    },
+  };
 }
 
 /** How many presses `openEveryDeeperBranch` makes before it gives up: well past the branches any

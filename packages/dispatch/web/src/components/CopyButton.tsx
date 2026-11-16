@@ -1,7 +1,16 @@
 import type { MouseEvent, ReactNode } from "react";
 
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
-import { dangerText, linkHoverText, linkText, successText } from "../theme/classes";
+import {
+  dangerText,
+  linkHoverText,
+  linkText,
+  pageFailedText,
+  pageMutedText,
+  pageRowAct,
+  pageStatusDoneText,
+  successText,
+} from "../theme/classes";
 import { useTooltips } from "./tooltips";
 
 /** Copies `value` to the clipboard and confirms inline for 1.5 s ("Copied") or reports the
@@ -28,6 +37,11 @@ export function CopyButton({
   what: string;
 }): ReactNode {
   const tooltips = useTooltips();
+  // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
+  // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the control is that
+  // page's quiet act, muted words that turn ink and underline under the pointer, and its
+  // confirmation is the page's passed green or failed red.
+  const look = tooltips ? `${linkText} ${linkHoverText}` : `${pageMutedText} ${pageRowAct}`;
   const { copy, status } = useCopyFeedback();
   const name = label ?? (typeof value === "string" ? `Copy ${what} ${value}` : `Copy ${what}`);
   const shape =
@@ -39,7 +53,7 @@ export function CopyButton({
     <>
       <button
         aria-label={name}
-        className={`inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 ${shape} ${linkText} ${linkHoverText} ${className ?? ""}`}
+        className={`inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 ${shape} ${look} ${className ?? ""}`}
         onClick={(event) => copy(typeof value === "string" ? value : value(event))}
         title={tooltips ? name : undefined}
         type="button"
@@ -62,7 +76,15 @@ export function CopyButton({
       {status === "idle" ? null : (
         <span
           aria-live="polite"
-          className={`ml-1 text-xs font-medium ${status === "copied" ? successText : dangerText}`}
+          className={`ml-1 text-xs font-medium ${
+            status === "copied"
+              ? tooltips
+                ? successText
+                : pageStatusDoneText
+              : tooltips
+                ? dangerText
+                : pageFailedText
+          }`}
         >
           {status === "copied" ? (
             "Copied"

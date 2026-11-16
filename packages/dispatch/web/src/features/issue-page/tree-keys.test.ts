@@ -114,7 +114,16 @@ test("the last state of the cycle opens every branch of the tree", () => {
   const opened = everythingOpened(issue());
   expect(opened.branches.has("spec")).toBe(true);
   expect(opened.deeper.has("spec")).toBe(true);
-  expect(opened.branches.size).toBe(nodesInOrder(issue()).length);
+  expect([...opened.branches]).toEqual([
+    "CORE-1",
+    "spec",
+    "spec#b-q1",
+    "spec#b-r1",
+    "spec#b-q2",
+    "spec#b-answered",
+    "decisions-md#b-d1",
+    "decisions-md#b-d2",
+  ]);
 });
 
 test("a row is told from another by the path from the root down to it", () => {

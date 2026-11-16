@@ -1,3 +1,4 @@
+import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { openRail } from "./rail";
@@ -95,15 +96,22 @@ function newPageHeading(page: Page): Locator {
 }
 
 /** The new page as the parts so far draw it: the key and the title as the page's one `h1`, no
- *  tab, the view row that part D fills, and nothing else. */
+ *  tab, the view row that part D fills, the outline's one line for an issue that holds nothing,
+ *  and nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
+  await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
   // The part that fills a slot changes these two: part D fills the view row
-  // (`[data-filter-row]`), and each other slot drawn so far adds no text or control.
+  // (`[data-filter-row]`), part I's outline draws its one line for an issue that holds nothing at
+  // the issue's own address, and each other slot drawn so far adds no text or control: a view's
+  // address (`/spec`) draws nothing in the body until part J fills it.
   const row = newPage.locator("[data-filter-row]");
   await expect(row).toHaveCount(1);
+  const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
+  const body = atIssue ? ` ${EMPTY_STATE_LINES.conversation}` : "";
   await expect
     .poll(
       () =>
@@ -113,7 +121,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
         }),
       { message: "the new page draws text outside its header and its view row" }
     )
-    .toBe(`${issue.key} ${issue.title}`);
+    .toBe(`${issue.key} ${issue.title}${body}`);
   const controls = "button, a, input, select, textarea";
   expect(
     await newPage.locator(controls).count(),
@@ -170,7 +178,8 @@ test("a reader turns the new issue page on in Settings and off again, by links a
     const label = await preview.locator("label", { has: page.getByRole("checkbox") }).boundingBox();
     expect(label?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
-  // Settings is read once every section has drawn what it read.
+  // Settings is read once no section shows a loading line. The Preview section, the only text this
+  // part adds to Settings, is drawn by then.
   const main = page.getByRole("main");
   await expect(main.getByText(/^Loading/)).toHaveCount(0);
   expect(await main.innerText()).not.toMatch(/\b(outline|tabs)\b/i);
@@ -206,6 +215,7 @@ test("a reader turns the new issue page on in Settings and off again, by links a
   await signIn(page.context(), "alice");
   await page.goto(`/issues/${issue.key}`);
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
 
   await setMarker(page);
   await openSettings(page);
@@ -242,6 +252,7 @@ test("a second tab of the same login follows the setting with no reload @phone",
     .getByRole("checkbox", { exact: true, name: "New issue page" });
   await checkbox.check();
   await expect(newPageHeading(second)).toHaveText(issue.title);
+  await expect(second.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   expect(await marked(second)).toBe(true);
   if (isPhone) await assertPageFits(second);
 
@@ -267,6 +278,7 @@ test("withIssuePage turns the new issue page on at the first load of the default
   if (!isPhone) await page.setViewportSize(desktop);
   await page.goto(`/issues/${issue.key}`);
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   if (isPhone) await assertPageFits(page);
 
   await withAlice(browser, async (alice) => {
@@ -274,6 +286,7 @@ test("withIssuePage turns the new issue page on at the first load of the default
     if (!isPhone) await alice.setViewportSize(desktop);
     await alice.goto(`/issues/${issue.key}`);
     await expect(newPageHeading(alice)).toHaveText(issue.title);
+    await expect(alice.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
     if (isPhone) await assertPageFits(alice);
   });
 });

@@ -5,6 +5,10 @@ import { projectIssuesQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
 import { usePageWords } from "../../components/tooltips";
 import {
+  pageLabelChip,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
@@ -157,7 +161,7 @@ export function IssueLabels({
           <span
             className={
               chipClassName === undefined
-                ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
+                ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface}` : pageLabelChip}`
                 : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
             }
             key={label}
@@ -185,7 +189,15 @@ export function IssueLabels({
           searchLabel="Search or create label"
           selected={draft}
           triggerAriaLabel="Edit labels"
-          triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+          // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935
+          // R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): a label above is
+          // its label chip (the prototype's `.lchip`), and this trigger its secondary control, the
+          // header control's rule and muted words on the paper, with quiet words while it is busy.
+          triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${
+            page === null
+              ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`
+              : `${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`
+          }`}
         >
           {page === null ? (
             saving ? (

@@ -108,11 +108,11 @@ function unanswered(node: TreeNode): boolean {
     // asks the reader nothing.
     case "ask":
       return node.question;
-    // A check that has not passed: any of the six other states `checkState` returns
-    // (`tree-drafts.ts`), which the page draws as Failed, Out of date, Retracted, Cannot tell,
-    // Could not read and No result (`NODE_STATE_WORDS.check`). Each leaves the work it covers
-    // unproved, which is what the reader came to see; only `passed` says the issue need not
-    // look.
+    // A check that has not passed: any of the six other states the page's one reading of a
+    // check gives at the commit it names (`tree-drafts.ts`'s `checkStanding`), which the page
+    // draws as Failed, Out of date, Retracted, Cannot tell, Could not read and No result
+    // (`NODE_STATE_WORDS.check`). Each leaves the work it covers unproved, which is what the
+    // reader came to see; only `passed` says the issue need not look.
     case "check":
       return node.state !== "passed";
     // A decision that waits for the reader's review: Keep and Change are drawn on exactly
@@ -144,8 +144,8 @@ function unanswered(node: TreeNode): boolean {
     case "requirement":
       return node.counts !== undefined && node.counts.checks === 0;
     // Nothing else holds an answer of its own for the reader to wait on. A note is what
-    // somebody wrote; a child issue is read and answered on its own page, and the children
-    // section is where a reader waits on one (R12); a comment and a message are what somebody
+    // somebody wrote; a child issue is read and answered on its own page, and is one row of
+    // the outline's group of children (R12); a comment and a message are what somebody
     // said, and what is unanswered in a conversation is the ask inside it, which puts its turn
     // on the frontier as that ask's ancestor; a result is a record of what a run saw, and its
     // check carries the verdict; and the issue itself is the root, which is drawn whatever this

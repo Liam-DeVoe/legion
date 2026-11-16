@@ -6,10 +6,18 @@ import {
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
+  pageStateText,
+  pageWaitingChip,
   textMutedOnSurface,
 } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionOfAddress } from "../refs/routes";
+
+// Inside `NoTooltips` every marker here is the new issue page's warning, the waiting orange of
+// what needs a person's eye: a route that reaches nobody is the page's waiting chip, and a reach
+// nobody could judge or a holder that stopped answering is its words in that colour, as the
+// page's margin says such a state (dispatch://INFRA-3935 R6, decision 56 of
+// dispatch://INFRA-1196/artifact/part-decisions-md).
 
 type RoutedIssue = Pick<
   IssueDetails,
@@ -34,7 +42,7 @@ export function RouteReachUnknownMarker({
   const tooltips = useTooltips();
   return (
     <span
-      className={`${className === undefined ? "" : `${className} `}text-xs ${textMutedOnSurface}`}
+      className={`${className === undefined ? "" : `${className} `}text-xs ${tooltips ? textMutedOnSurface : pageStateText.waiting}`}
       data-testid={testId}
       title={
         tooltips
@@ -105,7 +113,7 @@ export function UnresponsiveRouteMarker({
   const explanation = `${named} has missed its heartbeats without ending, so it still holds this route: what is sent to this issue is stored for it and waits until it answers. Nothing has to be done about it unless it stays this way - a session past the listener's gone horizon leaves the role unheld, and the route then reads as reaching nobody.`;
   return (
     <span
-      className={`inline-flex min-w-0 max-w-full items-center gap-1 text-xs ${textMutedOnSurface}`}
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 text-xs ${tooltips ? textMutedOnSurface : pageStateText.waiting}`}
       data-testid="issue-route-unresponsive"
       style={{ flexShrink: showRoute ? 1 : 0 }}
       title={tooltips ? explanation : undefined}
@@ -132,7 +140,7 @@ function UnreachableRoute({
   const explanation = `${sessionId === undefined ? `No running session holds ${route} right now` : `${text.sessionText(sessionId, undefined)} is not running right now`}, so this issue's messages reach nobody at the moment. A session that is restarting or moving between boxes drops out of the listener for minutes and comes back under the same id, so this is a vacancy only when it is still true on a read ten minutes later; then staff the role, re-route it to a live holder, or clear the route and assign it.`;
   return (
     <span
-      className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${tooltips ? `${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}` : pageWaitingChip}`}
       data-testid={testId}
       style={{ flexShrink: showRoute ? 1 : 0 }}
       title={tooltips ? explanation : undefined}

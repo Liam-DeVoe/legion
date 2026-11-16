@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { CSSProperties, ReactNode } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
-import type { Actor, Artifact } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { documentOfNode } from "./issue-artifacts";
@@ -10,7 +10,7 @@ import type { TreeNode } from "./issue-tree";
 import { NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
-import { authorKind, CONTROL_LABELS } from "./page-words";
+import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 
@@ -39,6 +39,7 @@ export function TreeRows({
   rows,
   tabStop,
   threads,
+  unplaced,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
@@ -48,7 +49,9 @@ export function TreeRows({
   cycle: number;
   /** The row the reader is editing in and the document its editor belongs to. */
   editing: { readonly artifactId: string; readonly row: string } | undefined;
-  /** The key of the row that holds the focus. */
+  /** The key of the row whose body and acts the focus opened: the row that holds the focus, or
+   *  the one it left for another control of the page, which keeps them drawn until another row
+   *  takes the focus or Escape is pressed (`IssueTree.tsx`'s `useReleaseFocus`). */
   focused: string | undefined;
   isClosed: boolean;
   onFocus: (row: string, node: TreeNode) => void;
@@ -67,6 +70,9 @@ export function TreeRows({
   tabStop: string | undefined;
   /** Each thread's newest write by the node that draws it (`threadMarks`). */
   threads: ReadonlyMap<string, ThreadMark>;
+  /** The key of the row that, focused, does not place itself on screen (`NodeRow`'s
+   *  `placesItself`): the outline's first row the page opens on, until the reader acts. */
+  unplaced: string | undefined;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
   // every row rather than once a row: a name and a shape for every node, the page's own words
@@ -122,6 +128,7 @@ export function TreeRows({
             onToggle={() => onToggle(row.node, row.expanded)}
             ownAnswer={isReader(row.node.answer?.by, reader)}
             pinned={pinned.has(key)}
+            placesItself={unplaced !== key}
             {...(report?.row === key ? { report: report.line } : {})}
             rowKey={key}
             tabStop={tabStop === key}
@@ -130,17 +137,6 @@ export function TreeRows({
         );
       })}
     </>
-  );
-}
-
-/** Whether `actor` is the reader writing as themselves: a person signed in as `reader`, and not
- *  an agent acting for them, whose words are the agent's (R9). */
-function isReader(actor: Actor | undefined, reader: string | undefined): boolean {
-  return (
-    reader !== undefined &&
-    actor?.kind === "user" &&
-    actor.id === reader &&
-    (actor.act?.session ?? "") === ""
   );
 }
 
@@ -179,7 +175,7 @@ function BranchMore({
   return (
     <div
       aria-level={level}
-      className={`relative flex min-w-0 pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[760px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
+      className={`relative flex min-w-0 pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[761px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
       data-branch-more=""
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
@@ -188,7 +184,7 @@ function BranchMore({
       {Array.from({ length: depth }, (_unused, guide) => (
         <span
           aria-hidden="true"
-          className={`absolute inset-y-0 w-px left-[calc(var(--guide)*23px+9px)] max-[760px]:left-[calc(var(--guide)*17px+8px)] ${pageGuideLineBg}`}
+          className={`absolute inset-y-0 w-px left-[calc(var(--guide)*23px+9px)] max-[761px]:left-[calc(var(--guide)*17px+8px)] ${pageGuideLineBg}`}
           // biome-ignore lint/suspicious/noArrayIndexKey: a guide is its level and nothing else.
           key={guide}
           style={{ "--guide": guide } as CSSProperties}
