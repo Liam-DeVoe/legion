@@ -69,7 +69,8 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 	}
 	rows, err := q.Query(ctx, `
 		select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_revision, b.changed_at, b.removed_at,
-		       t.id::text, t.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), `+maker+`
+		       t.id::text, t.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), `+maker+`,
+		       `+storedNode(kind.BlockKind(), "b.node_id")+`
 		from `+tables.blocks+` b
 		join `+tables.items+` t on t.id = b.`+tables.item+`
 		left join issues i on i.key = t.issue_key
@@ -89,8 +90,9 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 		var changedAt time.Time
 		var changedRevision int
 		var author []byte
+		var stored []string
 		if err := rows.Scan(&nodeID, &blockID, &block.excerpt, &madeAt, &changedRevision, &changedAt, &block.removedAt,
-			&itemID, &issueKey, &project, &slug, &author); err != nil {
+			&itemID, &issueKey, &project, &slug, &author, &stored); err != nil {
 			return nil, fmt.Errorf("scan %s block node: %w", string(kind), err)
 		}
 		authors, err := storedActor(author)
@@ -112,6 +114,9 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 			Parent:         itemParent(string(kind), issueKey, project, slug, itemID),
 			ParentVersion:  &changedRevision,
 		}
+		if err := setStored(&block.node, stored); err != nil {
+			return nil, err
+		}
 		blocks = append(blocks, block)
 	}
 	return blocks, rows.Err()
@@ -127,7 +132,8 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 // them under the conversation's read rule.
 func loadMessageBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
-		select b.node_id, b.block_id, b.excerpt, m.id::text, m.issue_key, coalesce(i.project_key, ''), m.author, m.created_at
+		select b.node_id, b.block_id, b.excerpt, m.id::text, m.issue_key, coalesce(i.project_key, ''), m.author, m.created_at,
+		       `+storedNode("message_block", "b.node_id")+`
 		from message_blocks b
 		join messages m on m.id = b.message_id
 		left join issues i on i.key = m.issue_key
@@ -142,7 +148,8 @@ func loadMessageBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind
 		var issueKey *string
 		var author []byte
 		var createdAt time.Time
-		if err := rows.Scan(&nodeID, &blockID, &excerpt, &messageID, &issueKey, &project, &author, &createdAt); err != nil {
+		var stored []string
+		if err := rows.Scan(&nodeID, &blockID, &excerpt, &messageID, &issueKey, &project, &author, &createdAt, &stored); err != nil {
 			return fmt.Errorf("scan message block node: %w", err)
 		}
 		node := model.GraphNode{
@@ -155,6 +162,9 @@ func loadMessageBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind
 			Parent:   itemParent("message", issueKey, project, "", messageID),
 		}
 		if err := setMadeAndChanged(&node, author, createdAt, nil, nil, storedActor); err != nil {
+			return err
+		}
+		if err := setStored(&node, stored); err != nil {
 			return err
 		}
 		nodes[[2]string{kind, nodeID}] = resolvedNode{GraphNode: node, text: excerpt}

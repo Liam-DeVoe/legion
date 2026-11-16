@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -75,7 +76,7 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "comments", fate: "a reply's replies_to a comment's block; dispatch://INFRA-1152 writes it"},
 	{relation: "comments", fate: "a reply's replies_to an ask's part; dispatch://INFRA-1152 writes it"},
 	{relation: "messages", fate: "a message's replies_to a message's block; dispatch://INFRA-1152 writes it"},
-	{relation: "graph_tuples", fate: "the store itself, which answers an edge of a moved kind while the row that names it carries its node; it stays"},
+	{relation: "graph_tuples", fate: "the store itself, which answers an edge of a moved kind while the row that names it carries its node, and the store's own relations, which no row projects; it stays"},
 }
 
 // graphEdgeRow is one row of graph_edges, every column of it, as both readings compare them: the
@@ -132,7 +133,11 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // row for row with each row's time and causing write. Each row of a moved kind the previous
 // release reads goes to exactly one arm, decided by its own projection row: the four arms answer
 // exactly the rows whose row carries no node, and the tuple arm exactly those whose row carries it
-// and nothing else, so it answers no edge whose row is gone or names no node.
+// and nothing else, so it answers no edge whose row is gone or names no node. Beside them the
+// tuple arm answers its class `store`, the relations the store holds with no projection row behind
+// them, which no arm of the previous release answers: one tuple of each such kind, and a part_of
+// out of a lens, which the fixture states, and in every reading exactly those, from the tuple arm
+// alone.
 //
 // The readings, in order. Before the backfill, one document's rows and the comments name no node
 // beside documents the index wrote, and each of the four arms answers rows of its own. After the
@@ -168,7 +173,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	// The rows of one document are put back in the shape the release before this one left
 	// them in, so the four old arms answer rows of their own while the store answers the rest.
 	unwriteTheStoreOfADocument(t, database, graphEdgeLegacyRefKey)
-	before := readEachArm(t, database, "before the backfill", moved, tuple)
+	before := readEachArm(t, database, "before the backfill", moved, tuple, fixture.stored)
 	projected := before.view
 	projectedCounts := graphEdgeBacklinkCounts(t, database, projected)
 	// Each of the four answers rows of its own before the backfill, so finding it empty after
@@ -192,7 +197,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 			t.Fatalf("the backfill left %s with rows that name no node: %#v", kind.Kind, kind)
 		}
 	}
-	after := readEachArm(t, database, "after the backfill", moved, tuple)
+	after := readEachArm(t, database, "after the backfill", moved, tuple, fixture.stored)
 	stored := after.view
 	storedCounts := graphEdgeBacklinkCounts(t, database, projected)
 	for index, arm := range moved {
@@ -226,14 +231,14 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 
 	// Pods of the previous release write beside this one, during a roll or after a rollback.
 	written := writeAsThePreviousRelease(t, database, fixture)
-	beside := readEachArm(t, database, "beside rows the previous release wrote", moved, tuple)
+	beside := readEachArm(t, database, "beside rows the previous release wrote", moved, tuple, fixture.stored)
 	for _, edge := range written {
 		requireAnsweredOnceByItsOldArm(t, "a row the previous release wrote", beside, moved, edge)
 	}
 
 	// The rollback.
 	deleted, rewritten := rollBackAsThePreviousRelease(t, database, fixture)
-	rolledBack := readEachArm(t, database, "after the rollback", moved, tuple)
+	rolledBack := readEachArm(t, database, "after the rollback", moved, tuple, fixture.stored)
 	for _, edge := range deleted {
 		if view, arms, tupled := rolledBack.answering(edge); view != 0 || tupled != 0 || slices.ContainsFunc(arms, func(n int) bool { return n != 0 }) {
 			t.Errorf("after the rollback the view answers the deleted row %s %d times (the four arms %v, the tuple arm %d), want no arm: a build of the previous release deleted it",
@@ -383,8 +388,11 @@ func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tupl
 // readEachArm takes one reading and fails unless every row was answered by the arm its own
 // projection row decides: the whole view equals the previous release's over the same rows, each of
 // the four arms answers exactly the rows of its kind whose row carries no node, and the tuple arm
-// exactly the rows of the moved kinds whose row carries it.
-func readEachArm(t *testing.T, database *store.Store, stage string, moved []movedArm, tuple movedArm) graphEdgesReading {
+// exactly the rows of the moved kinds whose row carries it. The rows of the tuple arm's class
+// `store` (storeClass), which the previous release has no arm for, are set apart from both
+// readings first and held, in the whole view and in the tuple arm alike, to exactly the rows the
+// fixture stated of them (stored).
+func readEachArm(t *testing.T, database *store.Store, stage string, moved []movedArm, tuple movedArm, stored []graphEdgeRow) graphEdgesReading {
 	t.Helper()
 	reading := graphEdgesReading{
 		view:     graphEdgeRows(t, database, "graph_edges"),
@@ -392,7 +400,12 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 		arms:     make([][]graphEdgeRow, len(moved)),
 		tuple:    armAnswers(t, database, tuple),
 	}
-	requireSameEdges(t, stage, "graph_edges answers it", reading.view, "the previous release's view reads it", reading.previous)
+	view, viewStored := splitStoreClass(reading.view)
+	tupled, tupleStored := splitStoreClass(reading.tuple)
+	requireSameEdges(t, stage, "graph_edges answers it", view, "the previous release's view reads it", reading.previous)
+	requireSameEdges(t, stage+", the store class", "graph_edges answers it", viewStored, "the fixture states it", stored)
+	requireSameEdges(t, fmt.Sprintf("%s, arm %d (graph_tuples), the store class", stage, tuple.place),
+		"the tuple arm answers it", tupleStored, "the fixture states it", stored)
 	unmarked := make([][]graphEdgeRow, len(moved))
 	var marked []graphEdgeRow
 	for _, row := range reading.previous {
@@ -412,8 +425,40 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 			"the arm answers it", reading.arms[index], "the previous release reads it from a row of the arm's table that carries no node", unmarked[index])
 	}
 	requireSameEdges(t, fmt.Sprintf("%s, arm %d (graph_tuples)", stage, tuple.place),
-		"the tuple arm answers it", reading.tuple, "the previous release reads it from a row that carries its node", marked)
+		"the tuple arm answers it", tupled, "the previous release reads it from a row that carries its node", marked)
 	return reading
+}
+
+// storeClass is whether row is one the tuple arm answers as its class `store` (migration
+// 20261116091932): a relation the store holds with no projection row behind it, of a kind
+// changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any node, or
+// part_of or authored_by out of an interaction, a lens, a risk or a constraint. It is the
+// migration's own rule, read over a row: a row it leaves out - a comment's authored_by, a block's
+// part_of its parent - that the view answers is held to the previous release's reading, which
+// answers none of them.
+func storeClass(row graphEdgeRow) bool {
+	switch row.kind {
+	case graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
+		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy:
+		return true
+	case graphstore.TuplePartOf, graphstore.TupleAuthoredBy:
+		return slices.Contains([]string{
+			graphstore.KindInteraction, graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint,
+		}, row.fromKind)
+	}
+	return false
+}
+
+// splitStoreClass is rows without the rows of the class `store`, and those rows apart.
+func splitStoreClass(rows []graphEdgeRow) (rest, stored []graphEdgeRow) {
+	for _, row := range rows {
+		if storeClass(row) {
+			stored = append(stored, row)
+		} else {
+			rest = append(rest, row)
+		}
+	}
+	return rest, stored
 }
 
 // movedArmOf is the arm over a moved kind whose table holds row's edge, as an index of moved, and
@@ -505,8 +550,11 @@ func requireEveryMovedKind(t *testing.T, rows []graphEdgeRow) {
 // requireTheTupleArmRendersTheList fails unless every kind the tuple arm answers is one of
 // refs.TupleKinds, a block's part_of to its document read as the in_document it renders, and
 // every kind of that list but the pointer kinds the fixture writes none of is answered: the arm
-// renders the list the announcement carries and nothing else, so the store's authored_by and a
-// block's part_of its parent, which the fixture holds too, are no edge of it.
+// renders the list the announcement carries and nothing else. The list holds authored_by and
+// part_of for the class `store`, so the tuples of those kinds the fixture holds out of other
+// nodes - a comment's authored_by, a block's part_of its parent - are kept out of the arm by the
+// reading itself, which holds every row outside that class to the previous release's
+// (readEachArm).
 func requireTheTupleArmRendersTheList(t *testing.T, rows []graphEdgeRow) {
 	t.Helper()
 	list := refs.TupleKinds()
@@ -1052,9 +1100,11 @@ const (
 const graphEdgeLegacyRefKey = "CORE-1/legacy"
 
 // graphEdgeFixture is what seedGraphEdgeFixture wrote that the rollback names: the ids of the
-// target and the plan, and of the comment anchored on the plan.
+// target and the plan, and of the comment anchored on the plan; and the rows of the tuple arm's
+// class `store` it stated, which every reading holds the view to (readEachArm).
 type graphEdgeFixture struct {
 	target, plan, anchored string
+	stored                 []graphEdgeRow
 }
 
 // seedGraphEdgeFixture writes what the four moved arms carry, through the paths that write it in
@@ -1062,7 +1112,8 @@ type graphEdgeFixture struct {
 // so that a block is dropped and brought back and so that a version's edges carry the
 // source_seq of the event that recorded it, and three comments written as a build before the
 // store existed wrote them, which the backfill states. The third document, legacy.md, is the
-// one the caller unwrites the store of.
+// one the caller unwrites the store of. Beside them it states the store's own relations, which
+// no arm but the tuple arm answers (writeTheStoreClass).
 func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service) graphEdgeFixture {
 	t.Helper()
 	ctx := context.Background()
@@ -1143,7 +1194,90 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	`, plan, owner); err != nil {
 		t.Fatalf("write the reply: %v", err)
 	}
-	return graphEdgeFixture{target: target, plan: plan, anchored: anchored}
+	stored := writeTheStoreClass(t, database)
+	return graphEdgeFixture{target: target, plan: plan, anchored: anchored, stored: stored}
+}
+
+// graphEdgeStoredAt is when the fixture states the store's own relations: one instant, at the
+// microsecond Postgres keeps, so each row the view answers of them is the row stated here.
+var graphEdgeStoredAt = time.Date(2026, time.November, 16, 9, 0, 0, 0, time.UTC)
+
+// graphEdgeConstrained is the block the fixture holds to a constraint and a risk's check points
+// at: the target's first requirement, which every version of the target holds and the rollback
+// leaves alone.
+const graphEdgeConstrained = "CORE-1/target#r1"
+
+// writeTheStoreClass states, through the store's own writer, one tuple of each kind the view's
+// tuple arm answers as its class `store` (migration 20261116091932) and a part_of out of a lens:
+// a lens placed under CORE-1, of the kind pre-mortem, triggered by a second lens, written by
+// alice and changed by a run; a risk that a check block covers; and the target's r1, held to a
+// constraint. No writer of those kinds exists at this head, so the nodes are written as their
+// writers will write them, project-visible and live, in CORE. It answers the rows the view is to
+// answer of them, each dated by its tuple and carrying no source_seq.
+func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
+	t.Helper()
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	const (
+		lens       = "5a1e0000-0000-4000-8000-000000000001"
+		trigger    = "5a1e0000-0000-4000-8000-000000000002"
+		risk       = "5a1e0000-0000-4000-8000-000000000003"
+		constraint = "5a1e0000-0000-4000-8000-000000000004"
+		run        = "5a1e0000-0000-4000-8000-000000000005"
+	)
+	var nodes []graphstore.Node
+	for _, node := range [][2]string{
+		{graphstore.KindLens, lens}, {graphstore.KindLens, trigger}, {graphstore.KindRisk, risk},
+		{graphstore.KindConstraint, constraint}, {graphstore.KindInteraction, run},
+	} {
+		nodes = append(nodes, graphstore.Node{
+			Kind: node[0], ID: node[1], Supertag: node[0],
+			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: "CORE",
+			MadeAt: graphEdgeStoredAt, MadeBy: alice, SourceEvent: graphstore.NoEvent,
+		})
+	}
+	authorKind, author, named := graphstore.AuthorOf(alice)
+	if !named {
+		t.Fatalf("alice names no author node: %#v", alice)
+	}
+	edges := []graphEdge{
+		{graphstore.KindLens, lens, graphstore.TuplePartOf, "issue", "CORE-1"},
+		{graphstore.KindLens, lens, graphstore.TupleAuthoredBy, authorKind, author},
+		{graphstore.KindLens, lens, graphstore.TupleHasKind, graphstore.KindLensKind, "pre-mortem"},
+		{graphstore.KindLens, lens, graphstore.TupleTriggeredBy, graphstore.KindLens, trigger},
+		{graphstore.KindLens, lens, graphstore.TupleChangedByRun, graphstore.KindInteraction, run},
+		{refs.BlockNodeKind, graphEdgeConstrained, graphstore.TupleConstrainedBy, graphstore.KindConstraint, constraint},
+		{graphstore.KindRisk, risk, graphstore.TuplePreventedBy, refs.BlockNodeKind, graphEdgeConstrained},
+	}
+	tuples := make([]graphstore.Tuple, 0, len(edges))
+	rows := make([]graphEdgeRow, 0, len(edges))
+	for _, edge := range edges {
+		tuples = append(tuples, graphstore.Tuple{
+			FromKind: edge.fromKind, FromID: edge.fromID, Kind: edge.kind, ToKind: edge.toKind, ToID: edge.toID,
+			At: graphEdgeStoredAt, Who: alice, SourceEvent: graphstore.NoEvent, Asserted: true,
+		})
+		rows = append(rows, graphEdgeRow{
+			fromKind: edge.fromKind, fromID: edge.fromID, kind: edge.kind, toKind: edge.toKind, toID: edge.toID,
+			createdAt: graphEdgeStoredAt,
+		})
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the store's own relations: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		t.Fatalf("write the store's own relations: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the store's own relations: %v", err)
+	}
+	for _, row := range rows {
+		if !storeClass(row) {
+			t.Fatalf("the fixture states %s as of the class store, which the view's rule does not read it as", row)
+		}
+	}
+	return rows
 }
 
 // writeVersionAsAnOlderBuild replaces the document's live text with markdown and writes the

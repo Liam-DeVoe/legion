@@ -19742,6 +19742,24 @@
             "type": "string"
           },
           "kind": {
+            "enum": [
+              "artifact",
+              "ask",
+              "ask_block",
+              "attribute",
+              "block",
+              "comment",
+              "comment_block",
+              "component",
+              "issue",
+              "message",
+              "message_block",
+              "page",
+              "person",
+              "role",
+              "session",
+              "supertag"
+            ],
             "type": "string"
           },
           "made_at": {
@@ -19785,7 +19803,24 @@
           "ref": {
             "type": "string"
           },
+          "state": {
+            "enum": [
+              "live",
+              "gone",
+              "proposed",
+              "settled",
+              "overtaken"
+            ],
+            "type": "string"
+          },
           "text": {
+            "type": "string"
+          },
+          "visibility": {
+            "enum": [
+              "project",
+              "author"
+            ],
             "type": "string"
           }
         },
@@ -19797,7 +19832,9 @@
           "changed_by",
           "changed_at",
           "parent",
-          "parent_version"
+          "parent_version",
+          "state",
+          "visibility"
         ],
         "type": "object"
       },
@@ -19853,6 +19890,24 @@
             "type": "string"
           },
           "kind": {
+            "enum": [
+              "artifact",
+              "ask",
+              "ask_block",
+              "attribute",
+              "block",
+              "comment",
+              "comment_block",
+              "component",
+              "issue",
+              "message",
+              "message_block",
+              "page",
+              "person",
+              "role",
+              "session",
+              "supertag"
+            ],
             "type": "string"
           },
           "made_at": {
@@ -19896,6 +19951,16 @@
           "ref": {
             "type": "string"
           },
+          "state": {
+            "enum": [
+              "live",
+              "gone",
+              "proposed",
+              "settled",
+              "overtaken"
+            ],
+            "type": "string"
+          },
           "text": {
             "type": "string"
           },
@@ -19911,6 +19976,13 @@
               "type"
             ],
             "type": "object"
+          },
+          "visibility": {
+            "enum": [
+              "project",
+              "author"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -19921,7 +19993,9 @@
           "changed_by",
           "changed_at",
           "parent",
-          "parent_version"
+          "parent_version",
+          "state",
+          "visibility"
         ],
         "type": "object"
       },

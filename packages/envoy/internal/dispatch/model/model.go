@@ -3077,11 +3077,20 @@ type ArtifactReferences struct {
 // the kinds beside it, which that doc names the id of). The edges into and out of a node are the
 // reads `?to=` and `?from=` of its Ref.
 //
-// Every node carries six facts, whatever its kind: MadeBy and MadeAt, who made it and when;
+// Kind is one of the node kinds the read registry holds (refs.VisibilityKinds), and the OpenAPI
+// document closes it over them: a kind a later build registers is a member that build adds, and
+// api's TestTheGraphNodeKindEnumIsTheRegistrysKinds holds the tag to the registry. A reader that
+// meets a kind it does not know skips that node rather than failing on it.
+//
+// Every node carries eight facts, whatever its kind: MadeBy and MadeAt, who made it and when;
 // ChangedBy and ChangedAt, who last changed its own text or fields and when (its maker while
-// nothing has changed it since); Parent, the node it belongs to; and ParentVersion, the version of
-// the parent it belongs to. A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then
-// `[]`, never null, and the others null.
+// nothing has changed it since); Parent, the node it belongs to; ParentVersion, the version of
+// the parent it belongs to; and State and Visibility, the node state and the visibility the node
+// and tuple store holds for it (graphstore.NodeStates; graphstore.VisibilityProject or
+// VisibilityAuthor), which are live and project for a node the store holds no row of. A node
+// reserved for its author reaches that author alone, so only its author reads Visibility author.
+// A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then `[]`, never null, and
+// the others null.
 //
 // A block node (kind `block`, id `<document ref_key>#<block id>`) also carries BlockID, its
 // document's reference as Document, and ChangedVersion, the document version in which its text
@@ -3089,7 +3098,7 @@ type ArtifactReferences struct {
 // reference read names: Text is the block's whole current text, and Pin answers a reference pinned
 // to a version.
 type GraphNode struct {
-	Kind           string      `json:"kind"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,issue,message,message_block,page,person,role,session,supertag"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`
@@ -3103,6 +3112,8 @@ type GraphNode struct {
 	ChangedAt      *time.Time  `json:"changed_at"`
 	Parent         *NodeParent `json:"parent"`
 	ParentVersion  *int        `json:"parent_version"`
+	State          string      `json:"state" enum:"live,gone,proposed,settled,overtaken"`
+	Visibility     string      `json:"visibility" enum:"project,author"`
 	Text           string      `json:"text,omitempty"`
 	Pin            *BlockPin   `json:"pin,omitempty"`
 }
@@ -3135,10 +3146,15 @@ type GraphExcerpt struct {
 	Text    string `json:"text"`
 }
 
-// GraphEdgeKinds is every structural edge kind graph_edges emits. A typed block's `block[]`
-// attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds), which is never one of
-// these: a schema name equal to one would merge silently with it in every reader.
-var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects"}
+// GraphEdgeKinds is every structural edge kind graph_edges emits: the kinds its arms over the
+// projections write, and the six the node and tuple store states with no projection row behind
+// them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy of
+// the kinds dispatch://INFRA-1950 adds), which the view answers from the tuples alone. A typed
+// block's `block[]` attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds),
+// which is never one of these: a schema name equal to one would merge silently with it in every
+// reader.
+var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
+	"changed_by_run", "has_kind", "triggered_by", "constrained_by", "prevented_by", "authored_by"}
 
 // GraphEdge is one typed, timestamped edge of graph_edges seen from the queried node: Node is
 // the other end, Direction is "in" for edges pointing at the queried node and "out" for edges

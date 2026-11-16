@@ -86,7 +86,10 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		var marks, tests int
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
-			statementTests := strings.Count(statement, ".visibility")
+			// The column every loader selects to answer a node's stored state and visibility
+			// (storedNode) reads `visibility` once and tests nothing, and the registry opens it
+			// with a marker of its own; every other `visibility` a statement reads is a test.
+			statementTests := strings.Count(statement, ".visibility") - strings.Count(statement, StoredNodeMarker)
 			marks, tests = marks+statementMarks, tests+statementTests
 			// A statement may bind no predicate where another statement of its read filters
 			// its rows, but a test of `visibility` that no marker opens is a rule the

@@ -2,6 +2,7 @@ package refs
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -183,6 +184,12 @@ func VisibilityKinds() []string {
 	return slices.Sorted(maps.Keys(nodeRegistry))
 }
 
+// ResolvesNodeKind is whether a read of the graph answers nodes of kind at all: the registry
+// holds a loader for it (nodeKinds). A kind it does not resolve is the address of no node.
+func ResolvesNodeKind(kind string) bool {
+	return slices.Contains(nodeKinds, kind)
+}
+
 // VisibilityArg is the one argument every rendered predicate binds: the acting credential, as
 // graphstore's one author rule compares it. A read binds it once and names its placeholder in
 // each predicate it renders.
@@ -209,6 +216,48 @@ func VisibleKind(kind, address, param string) string {
 		return "false"
 	}
 	return VisibilityMarker + kind + ` */` + visibleWhere(`'`+kind+`'`, address, param)
+}
+
+// StoredNodeMarker opens the one read of `visibility` that is no test of it: the column a loader
+// selects to answer a node's own stored state and visibility (storedNode). It decides nothing
+// about which nodes a read answers, which the kind's predicate has already decided, so the census
+// of the registry (TestEveryNodeKindAnswersAVisibilityPredicate) tells it from a predicate by
+// this marker, and still holds every other `visibility` a statement reads to a predicate the
+// registry rendered.
+const StoredNodeMarker = "/* the node's stored state and visibility */"
+
+// storedNode is the column every loader of kind selects for the node whose id address names, as
+// `graph_nodes` keys it - the address that kind's predicate reads (VisibleKind): the state and
+// the visibility the store holds for the node, as a text array of two, or null where the store
+// holds no row of it (setStored). It reads `visibility` once, which StoredNodeMarker accounts
+// for.
+//
+// It is a column and not a test, so it runs only for a row the read's own filters kept: one more
+// probe of the `graph_nodes` primary key for each node a read answers, beside the predicate's own
+// probe of the same row. That is a choice. Folding the two into one read of the row would move
+// every loader's predicate from VisibleKind's scalar sub-plan to a join over the row it holds
+// (VisibleKindRow): a rewrite of each loader's plan to save one index probe per answered node,
+// 8,001 of them on a read that answers every block of an 8,001-block document.
+func storedNode(kind, address string) string {
+	return StoredNodeMarker + `(select array[stored_node.state, stored_node.visibility] from graph_nodes stored_node
+		where stored_node.kind = '` + kind + `' and stored_node.id = ` + address + `)`
+}
+
+// setStored gives node the state and visibility storedNode read for it, and live and project
+// where the store holds no row of it, as VisibleKind reads such a node: `graph_nodes` is the
+// store's own list, and a node no write has recorded there is as live and as project-visible as
+// every node Dispatch wrote before the store existed. A row is two values; anything else fails
+// the read, naming the node.
+func setStored(node *model.GraphNode, stored []string) error {
+	switch len(stored) {
+	case 0:
+		node.State, node.Visibility = graphstore.StateLive, graphstore.VisibilityProject
+	case 2:
+		node.State, node.Visibility = stored[0], stored[1]
+	default:
+		return fmt.Errorf("read the stored state and visibility of %s %s: %d values, want 2", node.Kind, node.ID, len(stored))
+	}
+	return nil
 }
 
 // VisibleEnd is the predicate over an end of an edge, whose node kind is a column rather than a

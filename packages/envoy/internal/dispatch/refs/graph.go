@@ -488,11 +488,12 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 // the store has no row for, or holds gone, is absent from the answer, as every other loader leaves
 // out a node that does not exist: a session Dispatch has recorded nothing of is no node of the
 // graph, and the edges at it are omitted until a write records it. A node at any other state is
-// present. None of the four carries a dispatch:// address or belongs to a node here: what a
-// session is part of is a tuple, which the reads that show one follow for themselves.
+// present, and answers the state and the visibility its own row holds. None of the four carries a
+// dispatch:// address or belongs to a node here: what a session is part of is a tuple, which the
+// reads that show one follow for themselves.
 func loadStoreNodes(ctx context.Context, q Queryer, who model.Actor, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
-		select id, made_by, made_at from graph_nodes
+		select id, made_by, made_at, state, visibility from graph_nodes
 		where kind = $1 and id = any($2) and state <> $3 and `+VisibleRow("graph_nodes", "$4"),
 		kind, ids, graphstore.StateGone, VisibilityArg(who))
 	if err != nil {
@@ -500,17 +501,16 @@ func loadStoreNodes(ctx context.Context, q Queryer, who model.Actor, kind string
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id string
+		node := model.GraphNode{Kind: kind}
 		var madeBy []byte
 		var madeAt time.Time
-		if err := rows.Scan(&id, &madeBy, &madeAt); err != nil {
+		if err := rows.Scan(&node.ID, &madeBy, &madeAt, &node.State, &node.Visibility); err != nil {
 			return fmt.Errorf("scan %s node: %w", kind, err)
 		}
-		node := model.GraphNode{Kind: kind, ID: id}
 		if err := setMadeAndChanged(&node, madeBy, madeAt, nil, nil, storedActors); err != nil {
 			return err
 		}
-		nodes[[2]string{kind, id}] = resolvedNode{GraphNode: node}
+		nodes[[2]string{kind, node.ID}] = resolvedNode{GraphNode: node}
 	}
 	return rows.Err()
 }
@@ -521,7 +521,8 @@ func loadStoreNodes(ctx context.Context, q Queryer, who model.Actor, kind string
 // issue, which has no versions.
 func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, keys []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
-		select i.key, i.project_key, i.title, i.created_by, i.created_at, i.parent_key, change.actor, change.created_at
+		select i.key, i.project_key, i.title, i.created_by, i.created_at, i.parent_key, change.actor, change.created_at,
+		       `+storedNode("issue", "i.key")+`
 		from issues i
 		left join lateral (
 			select e.actor, e.created_at from events e
@@ -539,11 +540,15 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 		var createdAt time.Time
 		var changedAt *time.Time
 		var parentKey *string
-		if err := rows.Scan(&key, &project, &title, &createdBy, &createdAt, &parentKey, &changedBy, &changedAt); err != nil {
+		var stored []string
+		if err := rows.Scan(&key, &project, &title, &createdBy, &createdAt, &parentKey, &changedBy, &changedAt, &stored); err != nil {
 			return fmt.Errorf("scan issue node: %w", err)
 		}
 		node := model.GraphNode{Kind: "issue", ID: key, IssueKey: new(key), Project: project, Ref: "dispatch://" + key, Parent: issueParent(parentKey)}
 		if err := setMadeAndChanged(&node, createdBy, createdAt, changedBy, changedAt, storedActor); err != nil {
+			return err
+		}
+		if err := setStored(&node, stored); err != nil {
 			return err
 		}
 		nodes[[2]string{"issue", key}] = resolvedNode{GraphNode: node, text: title}
@@ -561,7 +566,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 	}
 	rows, err := q.Query(ctx, `
 		select a.id::text, a.ref_key, a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.name, a.kind, a.is_primary,
-		       a.created_by, a.created_at, latest.authors, latest.created_at
+		       a.created_by, a.created_at, latest.authors, latest.created_at, `+storedNode("artifact", "a.ref_key")+`
 		from artifacts a
 		left join lateral (
 			select v.authors, v.created_at from artifact_versions v
@@ -579,7 +584,8 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		var createdBy, authors []byte
 		var createdAt time.Time
 		var versionAt *time.Time
-		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt); err != nil {
+		var stored []string
+		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt, &stored); err != nil {
 			return fmt.Errorf("scan artifact node: %w", err)
 		}
 		lookup := id
@@ -588,6 +594,9 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		}
 		node := model.GraphNode{Kind: "artifact", ID: id, IssueKey: issueKey, Project: project, Ref: ArtifactRef(issueKey, project, session, slug, kind, primary)}
 		if err := setMadeAndChanged(&node, createdBy, createdAt, authors, versionAt, storedActors); err != nil {
+			return err
+		}
+		if err := setStored(&node, stored); err != nil {
 			return err
 		}
 		switch {
@@ -611,7 +620,7 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 	held, args := blockNodesAddressed(ids, who)
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
-		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`
+		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+storedNode("block", "d.node_id")+`
 		from document_blocks d join artifacts a on a.id = d.artifact_id
 		left join artifact_versions changed on changed.artifact_id = d.artifact_id and changed.number = d.changed_version
 		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
@@ -627,8 +636,9 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 		var changedBy []byte
 		var document documentParent
 		var first blockFirst
+		var stored []string
 		targets := append([]any{&nodeID, &blockID, &excerpt, &changedVersion, &changedAt, &changedBy}, document.targets()...)
-		if err := rows.Scan(append(targets, first.targets()...)...); err != nil {
+		if err := rows.Scan(append(append(targets, first.targets()...), &stored)...); err != nil {
 			return fmt.Errorf("scan block node: %w", err)
 		}
 		changers, err := storedActors(changedBy)
@@ -652,6 +662,9 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 		}
 		if node.MadeBy, node.MadeAt, err = first.maker(); err != nil {
 			return fmt.Errorf("decode the maker of block %s: %w", nodeID, err)
+		}
+		if err := setStored(&node, stored); err != nil {
+			return err
 		}
 		nodes[[2]string{"block", nodeID}] = resolvedNode{GraphNode: node, text: excerpt}
 	}
@@ -721,7 +734,7 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		         when `+anchorArtifact+` is not null then `+anchorVersion("k")+`
 		         when k.block_artifact_id is not null then case when first.known then first.version end
 		         else k.written_version
-		       end
+		       end, `+storedNode("ask", "k.id::text")+`
 		from asks k
 		left join issues i on i.key = k.issue_key
 		left join artifacts a on a.id = k.artifact_id
@@ -751,12 +764,16 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		var editedAt *time.Time
 		var document documentParent
 		var version *int
+		var stored []string
 		targets := append([]any{&id, &issueKey, &project, &slug, &question, &author, &createdAt, &editedAt, &editedBy}, document.targets()...)
-		if err := rows.Scan(append(targets, &version)...); err != nil {
+		if err := rows.Scan(append(targets, &version, &stored)...); err != nil {
 			return fmt.Errorf("scan ask node: %w", err)
 		}
 		node := model.GraphNode{Kind: "ask", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("ask", issueKey, project, slug, id)}
 		if err := setMadeAndChanged(&node, author, createdAt, editedBy, editedAt, storedActor); err != nil {
+			return err
+		}
+		if err := setStored(&node, stored); err != nil {
 			return err
 		}
 		node.Parent = issueParent(issueKey)
@@ -780,7 +797,8 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
 		       c.author, c.created_at, c.edited_at, c.reply_to::text, c.replies_to_block, c.ask_id::text, `+documentColumns("doc")+`,
-		       case when c.anchor->>'artifact_id' is not null then `+anchorVersion("c")+` else c.written_version end
+		       case when c.anchor->>'artifact_id' is not null then `+anchorVersion("c")+` else c.written_version end,
+		       `+storedNode("comment", "c.id::text")+`
 		from comments c
 		left join issues i on i.key = c.issue_key
 		left join artifacts a on a.id = c.artifact_id
@@ -798,12 +816,16 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 		var editedAt *time.Time
 		var document documentParent
 		var version *int
+		var stored []string
 		targets := append([]any{&id, &issueKey, &project, &slug, &body, &author, &createdAt, &editedAt, &replyTo, &replyBlock, &askID}, document.targets()...)
-		if err := rows.Scan(append(targets, &version)...); err != nil {
+		if err := rows.Scan(append(targets, &version, &stored)...); err != nil {
 			return fmt.Errorf("scan comment node: %w", err)
 		}
 		node := model.GraphNode{Kind: "comment", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("comment", issueKey, project, slug, id)}
 		if err := setMadeAndChanged(&node, author, createdAt, author, editedAt, storedActor); err != nil {
+			return err
+		}
+		if err := setStored(&node, stored); err != nil {
 			return err
 		}
 		switch parent := document.parent(); {
@@ -829,7 +851,8 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 // to no node.
 func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
-		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.in_reply_to::text, m.replies_to_block
+		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.in_reply_to::text, m.replies_to_block,
+		       `+storedNode("message", "m.id::text")+`
 		from messages m
 		left join issues i on i.key = m.issue_key
 		where m.id::text = any($1) and `+VisibleKind("message", "m.id::text", "$2"), ids, VisibilityArg(who))
@@ -842,11 +865,15 @@ func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 		var issueKey, inReplyTo, replyBlock *string
 		var author []byte
 		var createdAt time.Time
-		if err := rows.Scan(&id, &issueKey, &project, &body, &author, &createdAt, &inReplyTo, &replyBlock); err != nil {
+		var stored []string
+		if err := rows.Scan(&id, &issueKey, &project, &body, &author, &createdAt, &inReplyTo, &replyBlock, &stored); err != nil {
 			return fmt.Errorf("scan message node: %w", err)
 		}
 		node := model.GraphNode{Kind: "message", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("message", issueKey, project, "", id)}
 		if err := setMadeAndChanged(&node, author, createdAt, nil, nil, storedActor); err != nil {
+			return err
+		}
+		if err := setStored(&node, stored); err != nil {
 			return err
 		}
 		switch {
@@ -870,7 +897,7 @@ func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 // model holds it.
 func loadComponentNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
-		select c.project_key, c.id, c.title, f.made_at, f.changed_at, p.id
+		select c.project_key, c.id, c.title, f.made_at, f.changed_at, p.id, `+storedNode("component", "c.project_key || '/' || c.id")+`
 		from components c
 		left join component_facts f on f.project_key = c.project_key and f.id = c.id
 		left join components p on p.project_key = c.project_key and p.id = c.parent
@@ -884,13 +911,17 @@ func loadComponentNodes(ctx context.Context, q Queryer, who model.Actor, _ strin
 		var project, id, title string
 		var madeAt, changedAt *time.Time
 		var parent *string
-		if err := rows.Scan(&project, &id, &title, &madeAt, &changedAt, &parent); err != nil {
+		var stored []string
+		if err := rows.Scan(&project, &id, &title, &madeAt, &changedAt, &parent, &stored); err != nil {
 			return fmt.Errorf("scan component node: %w", err)
 		}
 		address := project + "/" + id
 		node := model.GraphNode{
 			Kind: "component", ID: address, Project: project, Ref: componentRef(project, id),
 			MadeBy: []model.Actor{}, MadeAt: madeAt, ChangedBy: []model.Actor{}, ChangedAt: changedAt,
+		}
+		if err := setStored(&node, stored); err != nil {
+			return err
 		}
 		if parent != nil {
 			node.Parent = &model.NodeParent{Kind: "component", ID: project + "/" + *parent, Ref: componentRef(project, *parent)}

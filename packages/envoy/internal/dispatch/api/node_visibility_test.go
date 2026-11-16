@@ -389,7 +389,9 @@ var storeTableRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:graph_nodes|gr
 //     statement that stopped binding it fails here, whatever else the read binds; a count of
 //     the markers against the rules a statement states would pass such a statement at 0 == 0;
 //   - every visibility rule a statement states is one the registry rendered
-//     (refs.VisibilityMarker opens each of them), so no read carries a copy of the rule.
+//     (refs.VisibilityMarker opens each of them), so no read carries a copy of the rule; the
+//     column a loader selects to answer a node's stored state and visibility reads
+//     `visibility` too and tests nothing, and refs.StoredNodeMarker opens each such read.
 func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 	t.Helper()
 	if len(reads) == 0 {
@@ -410,7 +412,7 @@ func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 				t.Errorf("%s reads the store's tables in a statement that binds no predicate of the registry's:\n%s",
 					read.name, statement.SQL)
 			}
-			if rules := strings.Count(statement.SQL, ".visibility"); markers != rules {
+			if rules := strings.Count(statement.SQL, ".visibility") - strings.Count(statement.SQL, refs.StoredNodeMarker); markers != rules {
 				t.Errorf("%s states %d visibility rule and the registry rendered %d of them:\n%s",
 					read.name, rules, markers, statement.SQL)
 			}

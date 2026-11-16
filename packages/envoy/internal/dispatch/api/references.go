@@ -508,7 +508,7 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 		if pinsAMessageBlock(raw, serverURL) {
 			return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
 		}
-		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, component, interaction, lens, lens finding, risk, constraint, or lens kind", raw)
 	}
 	// The node as graph_edges stores it: an ask's part and a comment's or message's block under
 	// its storage kind.

@@ -4746,7 +4746,24 @@ export interface components {
       document?: string;
       id: string;
       issue_key?: string;
-      kind: string;
+      /** @enum {string} */
+      kind:
+        | "artifact"
+        | "ask"
+        | "ask_block"
+        | "attribute"
+        | "block"
+        | "comment"
+        | "comment_block"
+        | "component"
+        | "issue"
+        | "message"
+        | "message_block"
+        | "page"
+        | "person"
+        | "role"
+        | "session"
+        | "supertag";
       /** Format: date-time */
       made_at: null | string;
       made_by: components["schemas"]["Actor"][] | null;
@@ -4755,7 +4772,11 @@ export interface components {
       pin?: components["schemas"]["BlockPin"];
       project?: string;
       ref?: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
       text?: string;
+      /** @enum {string} */
+      visibility: "project" | "author";
     };
     GraphNodeParent: {
       id: string;
@@ -4771,7 +4792,24 @@ export interface components {
       document?: string;
       id: string;
       issue_key?: string;
-      kind: string;
+      /** @enum {string} */
+      kind:
+        | "artifact"
+        | "ask"
+        | "ask_block"
+        | "attribute"
+        | "block"
+        | "comment"
+        | "comment_block"
+        | "component"
+        | "issue"
+        | "message"
+        | "message_block"
+        | "page"
+        | "person"
+        | "role"
+        | "session"
+        | "supertag";
       /** Format: date-time */
       made_at: null | string;
       made_by: components["schemas"]["Actor"][] | null;
@@ -4780,6 +4818,8 @@ export interface components {
       pin?: components["schemas"]["BlockPinRead"];
       project?: string;
       ref?: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
       text?: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       text_tree?: {
@@ -4787,6 +4827,8 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** @enum {string} */
+      visibility: "project" | "author";
     };
     GraphReferences: {
       edges: components["schemas"]["GraphEdge"][] | null;
