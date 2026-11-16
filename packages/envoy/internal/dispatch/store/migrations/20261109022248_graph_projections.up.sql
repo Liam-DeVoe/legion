@@ -36,6 +36,24 @@
 -- Postgres checks the key on every insert and update from the moment the constraint exists,
 -- which is the rule R16 rests on, and the only thing it gives up is the claim in the catalogue
 -- that every stored row was read once.
+--
+-- NOT VALID takes the scan away and leaves the lock: each ALTER holds ACCESS EXCLUSIVE on its
+-- table for the rest of this one transaction, so the migration holds document_blocks while it
+-- waits for block_refs and holds both while it waits for comments. A live writer that takes two
+-- of these tables in the other order closes a cycle with it: acceptComment reads comments first
+-- (api/comment_actions.go's lockedComment) and then writes document_blocks through
+-- AcceptSuggestion's version. Under the runner's five-second bound (pgmigrate.LockTimeout)
+-- either side can lose that race, and the runner retries only 55P03 (store/store.go
+-- RetryLockTimeouts), so a 40P01 deadlock either answers a request 500 or fails the boot. Half a
+-- second, shorter than deadlock_timeout (1 s by default), makes this migration give up first
+-- instead, before either deadlock check runs: it fails with 55P03 having applied nothing, the
+-- comment write finishes, and the runner applies it again, up to pgmigrate.LockTimeoutAttempts
+-- times in the same boot, then at the next boot. This is what 0066 and 20261101182522 do, for
+-- the same cycle on the same tables, and it carries their cost: Postgres cancels an autovacuum
+-- that holds a lock only after the waiter has waited deadlock_timeout, so an autovacuum of these
+-- three tables outlasts this migration's wait and fails that attempt.
+set local lock_timeout = '500ms';
+
 alter table document_blocks add column node_kind text, add column node_address text,
   add column parent_block_id text,
   add constraint document_blocks_node foreign key (node_kind, node_address) references graph_nodes (kind, id) not valid;

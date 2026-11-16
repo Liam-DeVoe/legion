@@ -36,8 +36,9 @@ type ErasedReview struct {
 	State    string `json:"state"`
 }
 
-// ErasedDocument is the node's own document, whose stored history the erase replaces, named as a
-// reader addresses it, with what replacing it costs. It carries no text.
+// ErasedDocument is one document whose stored history the erase replaces - the node's own, or
+// one whose margin record holds an erased comment's body - named as a reader addresses it, with
+// what replacing it costs. It carries no text.
 type ErasedDocument struct {
 	Document string `json:"document"`
 	Issue    string `json:"issue,omitempty"`
@@ -51,10 +52,11 @@ type ErasedDocument struct {
 	// takes the document's owner row and its room lock (docs.ReadErasedLiveText), and a run
 	// without --confirm takes no lock. The fields below are read with it.
 	Read bool `json:"-"`
-	// Held is whether its live text held the erased text, which then reads as the marker. A
-	// document whose live text held none - a version of it held the text, and an edit took it
-	// out since - has its history replaced alone, since the items that edit deleted can still
-	// hold the bytes there.
+	// Held is whether the erased block's own text stood in its live text, which then reads as
+	// the marker. A document whose live text held none - a version of it held the text, and an
+	// edit took it out since, or the body erased stood in its margin and never in its text - has
+	// its history replaced alone, since the items that edit deleted, and the margin records, can
+	// still hold the bytes there.
 	Held bool `json:"live_text_held"`
 	// Left is whether its live text holds the erased bytes where its markdown spells them
 	// otherwise than the erased text is written - an escaped `*` or `_`, for one - so no marker
@@ -64,7 +66,10 @@ type ErasedDocument struct {
 	AnchorMarks   int `json:"anchor_marks"`
 	MarginRecords int `json:"margin_records"`
 	artifact      string
-	live          *docs.ErasedLiveText
+	// blockID is the block of this document the seed is redacted in, empty where the run
+	// redacts none of its text (docs.ReadErasedLiveText).
+	blockID string
+	live    *docs.ErasedLiveText
 }
 
 // Operator is who ran the erase: the database role the credential is, and the account and host

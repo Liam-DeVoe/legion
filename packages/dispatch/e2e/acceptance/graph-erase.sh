@@ -730,7 +730,7 @@ listed_digest E4 "$work/block.listing"
 readonly block_digest="$digest"
 grep -Eq "^  versions holding the erased text: [1-9][0-9]*\$" "$work/block.listing" ||
   fail E4 "list the versions it would end" "$(<"$work/block.listing")"
-grep -Fqx "    $document_ref version $version of $key" "$work/block.listing" ||
+grep -Fq "    $document_ref version $version of $key: the erased block holds the text at that version" "$work/block.listing" ||
   fail E4 "list the versions it would end" "no $document_ref version $version in: $(<"$work/block.listing")"
 pass E4 "the list holds $document_ref version $version"
 grep -Eq "^  reviews over those bytes: [1-9][0-9]*\$" "$work/block.listing" ||

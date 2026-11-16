@@ -347,8 +347,11 @@ func TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode(t *testi
 	ctx := context.Background()
 	seeded := seedAgreeingStore(t, database)
 	const text = "Block inner."
+	// The outer block's excerpt is its own text cut short, and a container's text is the
+	// document cut across the blocks inside it, so the inner block's text stands in it at a
+	// line of its own, as the renderer writes it (refs.IndexBlocks).
 	if tag, err := database.Pool.Exec(ctx, `
-		update document_blocks set excerpt = 'Block outer holds ' || $2 where artifact_id = $1::uuid and block_id = 'outer'
+		update document_blocks set excerpt = 'Block outer holds' || chr(10) || $2 where artifact_id = $1::uuid and block_id = 'outer'
 	`, seeded.document.artifactID, text); err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("write the outer block's excerpt around the inner block's text: %d rows, %v", tag.RowsAffected(), err)
 	}
@@ -405,7 +408,7 @@ func TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode(t *testi
 		&outerExcerpt, &quoteExcerpt, &ownWindow, &otherWindow); err != nil {
 		t.Fatalf("read the blocks and the windows that quoted the block: %v", err)
 	}
-	if want := "Block outer holds " + erasure.marker(); outerExcerpt != want || ownWindow {
+	if want := "Block outer holds\n" + erasure.marker(); outerExcerpt != want || ownWindow {
 		t.Errorf("after the erase the outer excerpt reads %q and the document's own window stands: %t; want %q and no window: the run the test followed is not one that wrote them",
 			outerExcerpt, ownWindow, want)
 	}

@@ -502,14 +502,16 @@ var indexPasses = map[string]string{
 	"grapherase/erase.go#apply": "the node the operator named",
 	// The same erase's rewrite of the rows it may take no row out of, which is the other half
 	// of that one input: the text of the node the operator named, read before any delete
-	// (erasedTexts). It rewrites the block text and the excerpt cut from it together, in one
-	// statement, so it never reads either to decide what the other should say.
+	// (readTexts). It writes back the block text and the excerpt cut from it as one read
+	// computed both (readAncestors), so it never reads either to decide what the other should
+	// say.
 	"grapherase/redaction.go#redactBlocks": "the text of the node the operator named",
 	"graphstore/arms.go#nodeArm":           "the nodes its caller states",
 	"graphstore/arms.go#claimArms":         "the claims its caller states",
 	"graphstore/arms.go#tupleInsert":       "the tuples its caller states",
-	// EraseNode is the erase's delete of a node and every tuple on both sides of it: it reads
-	// nothing, and deletes the node its one caller names.
+	// EraseNode is the erase's delete of a node and the tuples its caller listed: it reads the
+	// tuples left of the node to refuse a run whose set moved, and deletes the node its one
+	// caller names.
 	"graphstore/erase.go#EraseNode": "the node its caller names",
 	// A node write's two statements (writeNodes): the insert of the nodes the store lacks, which
 	// locks the ones it holds, and the move of the ones it holds. The move reads each row it
