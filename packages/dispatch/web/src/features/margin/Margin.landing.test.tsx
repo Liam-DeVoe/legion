@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -308,6 +309,48 @@ test("a link to a card beside its document opens Details on it, and a link to a 
   } finally {
     restoreMatchMedia();
     scrollTo.mockRestore();
+  }
+});
+
+// R14 of INFRA-1196: on a phone Details is a sheet over the whole page, so a link followed inside
+// it closes the sheet. The page draws its panels into the drawer through a portal, outside the
+// drawer's React tree, so the drawer must hear the link's click from the DOM.
+test("on a phone, a link followed in a panel portaled into Details closes the sheet", async () => {
+  const restoreMatchMedia = stubMatchMedia(true);
+  const tree = (target: Element | null) => (
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={landingClient([])}>
+        <MarginProvider>
+          <Details open>
+            <Margin />
+          </Details>
+          {target === null
+            ? null
+            : createPortal(
+                <a href="/issues/CORE-2" onClick={(event) => event.preventDefault()}>
+                  a panel's link
+                </a>,
+                target
+              )}
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(null));
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    view.rerender(tree(details));
+    fireEvent.click(screen.getByRole("link", { name: "a panel's link" }));
+    await waitFor(() =>
+      expect(
+        details.hasAttribute("hidden"),
+        "a link followed in a portaled panel left the phone's Details open"
+      ).toBe(true)
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
   }
 });
 

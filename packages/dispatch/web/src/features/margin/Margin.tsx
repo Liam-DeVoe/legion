@@ -330,6 +330,24 @@ function DetailsDrawer({
       }
     };
   }, [isPhoneViewport, open]);
+  // On a phone the sheet covers the whole page, so a link followed inside it - a pin, an entry
+  // of the history, a file - would land under it: the sheet closes as the link is followed. The
+  // listener is the DOM's own, in the capture phase, because a panel the page draws into the
+  // drawer through a portal is outside the drawer's React tree, and a React handler here never
+  // sees its clicks.
+  useEffect(() => {
+    const drawerBox = box.current;
+    if (drawerBox === null || !open || !isPhoneViewport) return;
+    const closeOnLink = (event: MouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const link = event.target.closest("a[href]");
+      if (link !== null && !link.hasAttribute("download") && link.getAttribute("target") === null) {
+        setOpenNow.current(false);
+      }
+    };
+    drawerBox.addEventListener("click", closeOnLink, true);
+    return () => drawerBox.removeEventListener("click", closeOnLink, true);
+  }, [isPhoneViewport, open]);
 
   return (
     <>
@@ -352,20 +370,6 @@ function DetailsDrawer({
         data-testid="desktop-margin-shell"
         {...{ [DETAILS_ATTRIBUTE]: "", [NO_HOVER_PREVIEW_ATTRIBUTE]: "" }}
         hidden={!open}
-        // On a phone the sheet covers the whole page, so a link followed inside it - a pin, an
-        // entry of the history, a file - would land under it: the sheet closes as the link is
-        // followed.
-        onClickCapture={(event) => {
-          if (!isPhoneViewport || !(event.target instanceof Element)) return;
-          const link = event.target.closest("a[href]");
-          if (
-            link !== null &&
-            !link.hasAttribute("download") &&
-            link.getAttribute("target") === null
-          ) {
-            setOpen(false);
-          }
-        }}
         ref={(element) => {
           box.current = element;
           sheet.containerRef.current = element;
