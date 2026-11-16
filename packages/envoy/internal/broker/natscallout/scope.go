@@ -84,8 +84,11 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	if pass == nil {
 		return natsgrant.Permissions{}, refuse(labelSharedLane, "no complete read of Dispatch's project answers and repository mapping is held yet: service "+entry.name())
 	}
-	if pass.mappingRefused {
-		return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so which projects map a repository's lane is not known: service "+entry.name())
+	if pass.refused {
+		// The token exchange refuses every trade that asks Dispatch while it refuses the broker's
+		// token (oauth's refusedByDispatch), so every held connection is refused too, whichever
+		// question of the pass Dispatch refused.
+		return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so what the account's person may see is not known: service "+entry.name())
 	}
 	var repositories, every []string // every repository the answers map, and those not withheld
 	withheld := 0
@@ -96,10 +99,6 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 			// A pass asks about every project an entry names (newHeldAccess), so a complete one
 			// answers each; one that does not is no answer to admit on.
 			return natsgrant.Permissions{}, refuse(labelSharedLane, "the complete read of Dispatch's answers holds none about project "+project)
-		case held.refused:
-			// The token exchange refuses every trade that asks Dispatch while it refuses the
-			// broker's token (oauth's refusedByDispatch), so the connection is refused too.
-			return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so whether the account's person may see the project is not known: "+project)
 		case held.notFound:
 			return natsgrant.Permissions{}, refuse(labelProjectNotFound, "project not found: "+project)
 		case !held.answer.Visible:
@@ -148,10 +147,11 @@ const accessFetchTimeout = 10 * time.Second
 // repository neither alone would. A pass every question of which Dispatch answered replaces the
 // one held; a pass any question of which failed (Dispatch unreachable, a timeout) replaces nothing,
 // so the last complete pass stands, and each failure is logged at warn. Dispatch refusing the
-// broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused) is an answer and no
-// failure: the token exchange refuses every trade that asks Dispatch then (oauth's
-// refusedByDispatch), so a pass holding it is complete, refuses every connection held to what it
-// refused, and is logged at error once a pass. With no complete pass held yet, a held connection
+// broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused) on any question of a
+// pass, a project's answer or the mapping, is the pass's outcome whatever its other questions
+// did, failures included: the token exchange refuses every trade that asks Dispatch then (oauth's
+// refusedByDispatch), so that pass is held, refuses every held connection until a later pass
+// replaces it, and is logged at error once a pass. With no complete pass held yet, a held connection
 // is refused, and its client retries; the newest complete pass is used however old it is, so while
 // Dispatch cannot be reached a connection is admitted or refused as Dispatch last answered a whole
 // pass. While Dispatch answers every question, the pass held is at most about a minute old: the
@@ -173,17 +173,16 @@ type heldAccess struct {
 // repositories it maps to the project.
 type heldKey struct{ project, person string }
 
-// heldAnswer is one question's answer: Dispatch's, that Dispatch holds no such project, or that
-// Dispatch refused the broker's own account token when asked.
+// heldAnswer is one question's answer: Dispatch's, or that Dispatch holds no such project.
 type heldAnswer struct {
 	answer   projectaccess.Answer
 	notFound bool
-	refused  bool
 }
 
-// heldPass is one complete pass: every held question's answer and the lanes of Dispatch's
-// repository mapping, as one pass read them, from began, read before its first question was
-// sent. Nothing changes a pass once it is held.
+// heldPass is one pass a decision reads: every held question's answer and the lanes of
+// Dispatch's repository mapping, as one pass read them, from began, read before its first question
+// was sent; or, when refused, that Dispatch refused the broker's own account token on one of them.
+// Nothing changes a pass once it is held.
 type heldPass struct {
 	began   time.Time
 	answers map[heldKey]heldAnswer
@@ -191,8 +190,9 @@ type heldPass struct {
 	// repository or by the repository it was renamed to, and the projects, sorted, that map one
 	// to it (lanesOf).
 	lanes map[string][]string
-	// mappingRefused is Dispatch refusing the broker's own account token on the mapping's read.
-	mappingRefused bool
+	// refused is Dispatch refusing the broker's own account token on any of the pass's questions,
+	// the mapping's read or a project's answer; the rest of a refused pass is never read.
+	refused bool
 }
 
 // sharedWith reports whether a project entry does not name maps a repository to repository's lane
@@ -277,14 +277,15 @@ func (h *heldAccess) run(ctx context.Context) {
 
 // refresh makes one pass: it asks Dispatch every held question and reads its repository mapping,
 // all at once, each bounded by accessFetchTimeout, and holds the pass once every one has come back
-// answered (hold).
+// answered, or once any came back refused, whatever the others did (hold).
 func (h *heldAccess) refresh(ctx context.Context) {
 	pass := &heldPass{began: h.now()}
 	answers := make([]heldAnswer, len(h.asks))
-	var failed atomic.Bool
-	var refused sync.Once
+	var failed, refused atomic.Bool
+	var logRefusal sync.Once
 	refusedBy := func(err error) {
-		refused.Do(func() {
+		refused.Store(true)
+		logRefusal.Do(func() {
 			h.log.Error("natscallout: Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so every connection held to its exchange projects is refused until it answers", "error", err.Error())
 		})
 	}
@@ -298,7 +299,6 @@ func (h *heldAccess) refresh(ctx context.Context) {
 			case errors.Is(err, projectaccess.ErrProjectNotFound):
 				answers[i] = heldAnswer{notFound: true}
 			case errors.Is(err, projectaccess.ErrBrokerRefused):
-				answers[i] = heldAnswer{refused: true}
 				refusedBy(err)
 			case err != nil:
 				failed.Store(true)
@@ -316,7 +316,6 @@ func (h *heldAccess) refresh(ctx context.Context) {
 		rows, err := h.repoProjects(fetch)
 		switch {
 		case errors.Is(err, projectaccess.ErrBrokerRefused):
-			pass.mappingRefused = true
 			refusedBy(err)
 		case err != nil:
 			failed.Store(true)
@@ -328,14 +327,17 @@ func (h *heldAccess) refresh(ctx context.Context) {
 		}
 	})
 	wait.Wait()
-	if failed.Load() {
-		return
+	switch {
+	case refused.Load():
+		h.hold(&heldPass{began: pass.began, refused: true})
+	case failed.Load():
+	default:
+		pass.answers = make(map[heldKey]heldAnswer, len(h.asks))
+		for i, ask := range h.asks {
+			pass.answers[ask] = answers[i]
+		}
+		h.hold(pass)
 	}
-	pass.answers = make(map[heldKey]heldAnswer, len(h.asks))
-	for i, ask := range h.asks {
-		pass.answers[ask] = answers[i]
-	}
-	h.hold(pass)
 }
 
 // hold holds pass in place of the one held, unless that one began later, which a slower pass must

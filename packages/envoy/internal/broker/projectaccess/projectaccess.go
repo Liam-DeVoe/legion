@@ -318,9 +318,37 @@ func (c *Client) sweepLocked() {
 // Every other status, an account token it could not read, a transport failure and a body it could
 // not read or decode are errors naming what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
+	status, body, err := c.ask(ctx, path, query, maxAnswerBytes)
+	if err != nil {
+		return 0, err
+	}
+	switch status {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		code := refusalCode(bytes.NewReader(body))
+		if code == projectNotFoundCode {
+			return http.StatusNotFound, nil
+		}
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
+	default:
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, status, refusalCode(bytes.NewReader(body)))
+	}
+	if err := json.Unmarshal(body, into); err != nil {
+		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
+	}
+	return http.StatusOK, nil
+}
+
+// ask is the one request every route here is asked with: a GET of path presenting the broker's
+// own account token, bounded by requestTimeout, answering the status and at most limit bytes of
+// the body, each caller deciding what its route's statuses mean (get, RepoProjects). A 401 or a
+// 403 is ErrBrokerRefused, decided by the status before any of the body is read; an account token
+// it could not read, a transport failure, a body it could not read and one past limit are errors
+// naming what failed and never the token.
+func (c *Client) ask(ctx context.Context, path string, query url.Values, limit int64) (int, []byte, error) {
 	bearer, err := c.account.Read()
 	if err != nil {
-		return 0, fmt.Errorf("projectaccess: read the broker's account token: %w", err)
+		return 0, nil, fmt.Errorf("projectaccess: read the broker's account token: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -330,40 +358,26 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return 0, fmt.Errorf("projectaccess: build the request: %w", err)
+		return 0, nil, fmt.Errorf("projectaccess: build the request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	request.Header.Set("Accept", "application/json")
 	response, err := c.http.Do(request)
 	if err != nil {
-		return 0, fmt.Errorf("projectaccess: ask dispatch: %w", err)
+		return 0, nil, fmt.Errorf("projectaccess: ask dispatch: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusalCode(response.Body))
+		return 0, nil, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusalCode(response.Body))
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxAnswerBytes+1))
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return 0, fmt.Errorf("projectaccess: read dispatch's answer: %w", err)
+		return 0, nil, fmt.Errorf("projectaccess: read dispatch's answer: %w", err)
 	}
-	if len(body) > maxAnswerBytes {
-		return 0, fmt.Errorf("projectaccess: dispatch's answer to %s is over %d bytes", path, maxAnswerBytes)
+	if int64(len(body)) > limit {
+		return 0, nil, fmt.Errorf("projectaccess: dispatch's answer to %s is over %d bytes", path, limit)
 	}
-	switch response.StatusCode {
-	case http.StatusOK:
-	case http.StatusNotFound:
-		code := refusalCode(bytes.NewReader(body))
-		if code == projectNotFoundCode {
-			return http.StatusNotFound, nil
-		}
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
-	default:
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, response.StatusCode, refusalCode(bytes.NewReader(body)))
-	}
-	if err := json.Unmarshal(body, into); err != nil {
-		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
-	}
-	return http.StatusOK, nil
+	return response.StatusCode, body, nil
 }
 
 // refusalCode is the code a refusal's body names, read from at most maxAnswerBytes of it: empty
