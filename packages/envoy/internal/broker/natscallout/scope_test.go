@@ -2,10 +2,13 @@ package natscallout
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natscred"
@@ -46,10 +50,10 @@ func exchangeOf(projects map[string][]string) func(string) (string, []string, bo
 	}
 }
 
-// dispatchAnswers is a Deps.Access standing in for Dispatch: each project's answer, or
-// projectaccess.ErrProjectNotFound for one it does not hold, counting the asks about each. As
-// Dispatch answers, a project is visible to no person when it is private, and to entryPerson
-// unless unseen names it.
+// dispatchAnswers is a Deps.Access and a Deps.RepoProjects standing in for Dispatch: each
+// project's answer, or projectaccess.ErrProjectNotFound for one it does not hold, counting the
+// asks about each, and the repository mapping. As Dispatch answers, a project is visible to no
+// person when it is private, and to entryPerson unless unseen names it.
 type dispatchAnswers struct {
 	mu      sync.Mutex
 	answers map[string][]string // project → repositories
@@ -58,10 +62,15 @@ type dispatchAnswers struct {
 	failing error
 	asked   map[string]int
 	// blockAfter is how many asks about a project answer at once; each later ask blocks for
-	// block, or until its context ends. A project in blockAlways blocks on every ask.
-	blockAfter  int
-	block       time.Duration
-	blockAlways map[string]bool
+	// block, or until its context ends.
+	blockAfter int
+	block      time.Duration
+	// mapping is the repository mapping's rows, nil for a row of each repository answers maps to
+	// its project, never renamed. Its read fails with mappingFailing when that is set, and with
+	// mappingBlocks blocks until its context ends.
+	mapping        []projectaccess.RepoProject
+	mappingFailing error
+	mappingBlocks  bool
 }
 
 func (d *dispatchAnswers) access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
@@ -73,7 +82,7 @@ func (d *dispatchAnswers) access(ctx context.Context, project, person string) (p
 	asks, repositories, failing := d.asked[project], d.answers[project], d.failing
 	_, held := d.answers[project]
 	private, unseen := d.private[project], d.unseen[project]
-	blocks := d.blockAlways[project] || (d.block > 0 && asks > d.blockAfter)
+	blocks := d.block > 0 && asks > d.blockAfter
 	d.mu.Unlock()
 	if blocks {
 		select {
@@ -94,6 +103,27 @@ func (d *dispatchAnswers) access(ctx context.Context, project, person string) (p
 		answer.Visible = person == entryPerson && !unseen
 	}
 	return answer, nil
+}
+
+func (d *dispatchAnswers) repoProjects(ctx context.Context) ([]projectaccess.RepoProject, error) {
+	d.mu.Lock()
+	rows, failing, blocks := slices.Clone(d.mapping), cmp.Or(d.failing, d.mappingFailing), d.mappingBlocks
+	if rows == nil {
+		for project, repositories := range d.answers {
+			for _, repository := range repositories {
+				rows = append(rows, projectaccess.RepoProject{Repo: repository, Project: project})
+			}
+		}
+	}
+	d.mu.Unlock()
+	if blocks {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if failing != nil {
+		return nil, failing
+	}
+	return rows, nil
 }
 
 func (d *dispatchAnswers) set(project string, repositories ...string) {
@@ -119,11 +149,11 @@ func (d *dispatchAnswers) hide(project string, hidden bool) {
 }
 
 // heldDeps are Deps whose ServiceToken verifies tokens, whose exchange list is exchange, and
-// whose Dispatch is dispatch, with the answers about every project services can name asked for
-// once, as Start's first ask does.
+// whose Dispatch is dispatch, with one pass over every project services can name made, as Start's
+// first pass is.
 func heldDeps(t *testing.T, tokens map[string]platformToken, exchange map[string][]string, dispatch *dispatchAnswers, services []ServiceEntry) Deps {
 	t.Helper()
-	deps := Deps{ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(exchange), Access: dispatch.access}
+	deps := Deps{ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(exchange), Access: dispatch.access, RepoProjects: dispatch.repoProjects}
 	deps.held = newHeldAccess(deps, services)
 	require.NotNil(t, deps.held, "no service entry names a project to ask Dispatch about")
 	deps.held.refresh(t.Context())
@@ -179,7 +209,7 @@ func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	static, staticSeed := publisher(t)
 	url := testnats.StartWithCallout(t, keys, static)
-	startServiceOf(t, url, keys, services, Deps{ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(exchange), Access: dispatch.access})
+	startServiceOf(t, url, keys, services, Deps{ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(exchange), Access: dispatch.access, RepoProjects: dispatch.repoProjects})
 	errs := make(chan error, 16)
 	var nc *nats.Conn
 	testwait.Eventually(t, "the hub to admit the PUB daemon", func() bool {
@@ -216,31 +246,26 @@ func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 	require.Equal(t, "PUB's exception", string(msg.Data))
 }
 
-// No admission waits on Dispatch: the service asks about every project at its start and every
-// 20 s after, and a decision reads only the answers it holds. Dispatch here answers its first ask
-// about PUB at once and blocks three seconds on every later one, and never answers about SLOW
-// within the test. With a second round of asks blocked, PUB's daemon is admitted in under 100 ms
-// from the held answer, and SLOW's is refused as not yet known, as fast. The control reads Access
-// inside the decision: the admission waits the three seconds, and this test fails naming how long
-// it took.
+// No admission waits on Dispatch: the service makes a pass at its start and every 20 s after,
+// and a decision reads only the pass it holds. Dispatch here answers its first ask about PUB at
+// once and blocks three seconds on every later one. With a second pass blocked, PUB's daemon is
+// admitted in under 100 ms from the first pass. The control reads Access inside the decision: the
+// admission waits the three seconds, and this test fails naming how long it took.
 func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
-	tokens := map[string]platformToken{
-		"pub-daemon-token":  {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
-		"slow-daemon-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, blockAfter: 1, block: 3 * time.Second}
+	deps := Deps{
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}}),
+		Access: dispatch.access, RepoProjects: dispatch.repoProjects,
 	}
-	dispatch := &dispatchAnswers{
-		answers:    map[string][]string{"PUB": {"acme/pub"}, "SLOW": {"acme/slow"}},
-		blockAfter: 1, block: 3 * time.Second, blockAlways: map[string]bool{"SLOW": true},
-	}
-	deps := Deps{ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}, slowDaemonAccount: {"SLOW"}}), Access: dispatch.access}
 	deps.held = newHeldAccess(deps, services)
 	require.NotNil(t, deps.held)
 	asks, stop := context.WithCancel(t.Context())
 	t.Cleanup(stop)
 	go deps.held.refresh(asks)
-	testwait.Eventually(t, "the first answer about PUB", func() bool { _, known := deps.held.answer("PUB", entryPerson); return known })
+	testwait.Eventually(t, "the first pass held", func() bool { return deps.held.latest() != nil })
 	go deps.held.refresh(asks) // its ask about PUB blocks three seconds
 	testwait.Eventually(t, "a second ask about PUB in flight", func() bool {
 		dispatch.mu.Lock()
@@ -254,16 +279,48 @@ func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 	require.NoError(t, err)
 	require.Less(t, took, 100*time.Millisecond, "the PUB daemon's admission took %s: it waited on Dispatch", took)
 	require.Contains(t, decision.Grant.Subscribe, bus.ExceptionTopicPrefix+contracts.RoleTopicPrefix+"PUB.>")
-
-	began = time.Now()
-	_, err = Decide(t.Context(), deps, services, serviceRequest("slow-daemon-token"))
-	took = time.Since(began)
-	requireRefused(t, err, labelProjectNotKnown, "project access not yet known: SLOW")
-	require.Less(t, took, 100*time.Millisecond, "the SLOW daemon's refusal took %s: it waited on Dispatch", took)
 }
 
-// An answer once held is kept while Dispatch cannot be reached, and the next answer Dispatch
-// gives replaces it.
+// A held daemon's grant comes from one complete pass, never from two mixed: a mapping from one
+// pass beside answers from another could serve a repository neither pass alone would. Pass 1
+// reads mapping M1 (PUB1 maps acme/a, PUB2 acme/c) and PUB1's answer acme/a. Dispatch then renames
+// acme/a to acme/b, which PUB2 maps too (M2 shares acme/b's lane), and answers PUB1 acme/a and
+// acme/b; pass 2's read of the mapping fails. PUB1's held daemon is answered with pass 1's grant
+// whole: acme/a's lane, and not acme/b's. The control mixes pass 1's mapping with pass 2's
+// answers: PUB1's grant holds acme/b's lane, which M1 gives no other project.
+func TestAHeldDaemonsGrantComesFromOnePass(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	tokens := map[string]platformToken{"pub1-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	dispatch := &dispatchAnswers{
+		answers: map[string][]string{"PUB1": {"acme/a"}, "PUB2": {"acme/c"}},
+		mapping: []projectaccess.RepoProject{{Repo: "acme/a", Project: "PUB1"}, {Repo: "acme/c", Project: "PUB2"}},
+	}
+	deps := Deps{
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB1"}, slowDaemonAccount: {"PUB2"}}),
+		Access: dispatch.access, RepoProjects: dispatch.repoProjects,
+	}
+	deps.held = newHeldAccess(deps, services)
+	require.NotNil(t, deps.held)
+	deps.held.refresh(t.Context())
+	want, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB1"}, Repositories: []string{"acme/a"}, Identity: pubDaemonAccount})
+	require.NoError(t, err)
+
+	renamed := "acme/b"
+	dispatch.mu.Lock()
+	dispatch.answers = map[string][]string{"PUB1": {"acme/a", "acme/b"}, "PUB2": {"acme/b", "acme/c"}}
+	dispatch.mapping = []projectaccess.RepoProject{{Repo: "acme/a", Project: "PUB1", RenamedTo: &renamed}, {Repo: "acme/b", Project: "PUB2"}, {Repo: "acme/c", Project: "PUB2"}}
+	dispatch.mappingFailing = errors.New("projectaccess: dispatch answered /api/v1/settings/repo-projects 503 with the code \"\"")
+	dispatch.mu.Unlock()
+	deps.held.refresh(t.Context())
+	decision, err := Decide(t.Context(), deps, services, serviceRequest("pub1-token"))
+	require.NoError(t, err)
+	require.False(t, holdsLane(decision.Grant, "acme/b"), "PUB1's grant holds acme/b's lane: pass 1's mapping was mixed with pass 2's answers")
+	require.Equal(t, want, decision.Grant, "PUB1's grant is not pass 1's whole")
+}
+
+// A complete pass once held is kept while Dispatch cannot be reached, and the next complete pass
+// replaces it.
 func TestAHeldAnswerFollowsDispatchAndOutlivesItsOutage(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
@@ -293,13 +350,14 @@ func TestAHeldAnswerFollowsDispatchAndOutlivesItsOutage(t *testing.T) {
 
 // Dispatch refusing the broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused)
 // is no outage to admit through: the token exchange refuses every trade that asks Dispatch then
-// (oauth's refusedByDispatch), so the auth service refuses a connection held to a project it holds
-// that refusal about, under its own label and naming why, and logs it at error once a round of
-// asks. Here Dispatch answers that PUB's person sees OPS and PUB, then refuses the broker's token
-// while that person is off both access lists: PUB's daemon is refused, and one error line names
-// the refusal for the round's two asks. The next answer Dispatch gives replaces the refusal: once
-// it answers again, with the person back, the daemon is admitted. The control keeps the last
-// answer on a refusal, as on an outage: the daemon is admitted on the answer from before.
+// (oauth's refusedByDispatch), so a pass holding that refusal is complete, the auth service
+// refuses a connection held to what it refused, under its own label and naming why, and logs it
+// at error once a pass. Here Dispatch answers that PUB's person sees OPS and PUB, then refuses
+// the broker's token while that person is off both access lists: PUB's daemon is refused, and one
+// error line names the refusal for the pass's three questions (two projects and the mapping). The
+// next pass replaces the refusal: once Dispatch answers again, with the person back, the daemon is
+// admitted. The control keeps the last pass on a refusal, as on an outage: the daemon is admitted
+// on the pass from before.
 func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
@@ -310,7 +368,8 @@ func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 	}
 	var logged bytes.Buffer
 	deps := Deps{
-		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"OPS", "PUB"}}), Access: dispatch.access,
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"OPS", "PUB"}}),
+		Access: dispatch.access, RepoProjects: dispatch.repoProjects,
 		Log: slog.New(slog.NewTextHandler(&logged, nil)),
 	}
 	deps.held = newHeldAccess(deps, services)
@@ -325,7 +384,7 @@ func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 	deps.held.refresh(t.Context())
 	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
 	requireRefused(t, err, labelAccessRefused, "Dispatch refuses the broker's own account token")
-	require.Equal(t, 1, strings.Count(logged.String(), "level=ERROR"), "want one error line for the round's two refused asks:\n%s", logged.String())
+	require.Equal(t, 1, strings.Count(logged.String(), "level=ERROR"), "want one error line for the pass's three refused questions:\n%s", logged.String())
 	require.Contains(t, logged.String(), "ACCESS_ACCOUNT_REQUIRED")
 	require.NotContains(t, logged.String(), "level=WARN", "a refusal of the broker's token was logged as an outage:\n%s", logged.String())
 
@@ -340,7 +399,7 @@ func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 // The service asks Dispatch again every accessRefresh on its own (heldAccess.run, which Start
 // runs), the one thing that bounds how old a held answer is, so an answer changed at Dispatch
 // reaches a decision with no ask the test makes. With the re-ask every 100 ms, PUB's daemon is
-// admitted through the hub on the answer Start's first ask holds; then PUB's person is taken off
+// admitted through the hub on Start's first pass; then PUB's person is taken off
 // its access list at Dispatch, and within seconds the daemon's connection is refused, naming PUB as
 // one its person cannot see. The control asks once at Start and never again: the daemon is
 // admitted on that first answer for the whole wait.
@@ -354,7 +413,8 @@ func TestTheServiceAsksDispatchAgainOnItsOwn(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
 	startServiceOf(t, url, keys, services, Deps{
-		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}}), Access: dispatch.access,
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}}),
+		Access: dispatch.access, RepoProjects: dispatch.repoProjects,
 		Log: slog.New(slog.NewTextHandler(log, nil)),
 	})
 	connect := func() error {
@@ -455,6 +515,119 @@ func TestAGrantThatCannotBeHeldToItsProjectsIsRefusedByName(t *testing.T) {
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
 	requireRefused(t, err, labelGrantNotHoldable, "grant cannot be held to its projects: service daemon/"+pubDaemonAccount+`: natsgrant: scope repository "not-a-repository" is not owner/name`)
+}
+
+// holdsLane reports whether an entry of grant names repository's GitHub lane
+// (natsgrant.GitHubFilter).
+func holdsLane(grant natsgrant.Permissions, repository string) bool {
+	return slices.ContainsFunc(slices.Concat(grant.Publish, grant.Subscribe), func(entry string) bool {
+		return strings.Contains(entry, natsgrant.GitHubFilter(repository))
+	})
+}
+
+// Two public projects can map repositories onto one GitHub lane: a rename (PUB1's acme/a, renamed
+// to acme/b, which PUB2 maps) or two spellings of one lane (PUB1's acme/a.b and PUB2's acme/a_b,
+// a dot written "_"). Neither project's held daemon is served that lane, PUB1's keeps acme/a's,
+// the broker logs the lane and both projects at error once for the pass, and each
+// repository withheld is counted (broker_nats_callout_shared_lanes_dropped_total). The control
+// builds the grant without the drop: PUB1's grant holds the shared lane.
+func TestAHeldDaemonIsNotServedASharedLane(t *testing.T) {
+	renamed := "acme/b"
+	for _, row := range []struct {
+		name         string
+		answers      map[string][]string
+		mapping      []projectaccess.RepoProject
+		kept, shared string
+	}{
+		{
+			name:    "a rename onto another project's repository",
+			answers: map[string][]string{"PUB1": {"acme/a", "acme/b"}, "PUB2": {"acme/b"}},
+			mapping: []projectaccess.RepoProject{{Repo: "acme/a", Project: "PUB1", RenamedTo: &renamed}, {Repo: "acme/b", Project: "PUB2"}},
+			kept:    "acme/a", shared: "acme/b",
+		},
+		{
+			name:    "two spellings of one lane",
+			answers: map[string][]string{"PUB1": {"acme/a", "acme/a.b"}, "PUB2": {"acme/a_b"}},
+			kept:    "acme/a", shared: "acme/a.b",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			now := time.Now()
+			services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+			tokens := map[string]platformToken{
+				"pub1-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+				"pub2-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+			}
+			dispatch := &dispatchAnswers{answers: row.answers, mapping: row.mapping}
+			var logged bytes.Buffer
+			registry := metrics.New()
+			deps := Deps{
+				ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB1"}, slowDaemonAccount: {"PUB2"}}),
+				Access: dispatch.access, RepoProjects: dispatch.repoProjects,
+				Log: slog.New(slog.NewTextHandler(&logged, nil)), Metrics: NewMetrics(registry),
+			}
+			deps.held = newHeldAccess(deps, services)
+			require.NotNil(t, deps.held)
+			deps.held.refresh(t.Context())
+
+			pub1, err := Decide(t.Context(), deps, services, serviceRequest("pub1-token"))
+			require.NoError(t, err)
+			pub2, err := Decide(t.Context(), deps, services, serviceRequest("pub2-token"))
+			require.NoError(t, err)
+			require.True(t, holdsLane(pub1.Grant, row.kept), "PUB1's held daemon lost %s, which no other project maps", row.kept)
+			for project, grant := range map[string]natsgrant.Permissions{"PUB1": pub1.Grant, "PUB2": pub2.Grant} {
+				require.False(t, holdsLane(grant, row.shared), "%s's held daemon is served the lane PUB1 and PUB2 share", project)
+			}
+			require.Equal(t, 1, strings.Count(logged.String(), "level=ERROR"), "want one error line for the shared lane:\n%s", logged.String())
+			require.Contains(t, logged.String(), "lane="+natsgrant.GitHubPrefix(row.shared)+" ")
+			require.Contains(t, logged.String(), `projects="[PUB1 PUB2]"`)
+
+			scrape := httptest.NewRecorder()
+			registry.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			require.Contains(t, scrape.Body.String(), "\nbroker_nats_callout_shared_lanes_dropped_total 2\n", "want one repository withheld from each grant:\n%s", scrape.Body.String())
+		})
+	}
+}
+
+// A held daemon is refused under shared_lane, inside the budget, until Dispatch's repository
+// mapping has been read once: until then no repository is known to be no other project's. Here
+// Dispatch answers about PUB at once and never answers the mapping: PUB's held daemon is refused
+// in under 100 ms, and Dispatch's own connection, an all-projects entry, is admitted with its
+// grant as before. The control takes an unread mapping as one with no row: the daemon is
+// admitted.
+func TestAHeldDaemonIsRefusedUntilTheLanesAreKnown(t *testing.T) {
+	now := time.Now()
+	dispatchEntry := ServiceEntry{Kind: KindDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true}
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, dispatchEntry}
+	tokens := map[string]platformToken{
+		"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+		"dispatch-token":   {account: dispatchEntry.Account, issued: now, expiry: now.Add(time.Hour)},
+	}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, mappingBlocks: true}
+	deps := Deps{
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}}),
+		Access: dispatch.access, RepoProjects: dispatch.repoProjects,
+	}
+	deps.held = newHeldAccess(deps, services)
+	require.NotNil(t, deps.held)
+	asks, stop := context.WithCancel(t.Context())
+	t.Cleanup(stop)
+	go deps.held.refresh(asks)
+	testwait.Eventually(t, "the first pass's ask about PUB", func() bool {
+		dispatch.mu.Lock()
+		defer dispatch.mu.Unlock()
+		return dispatch.asked["PUB"] >= 1
+	})
+
+	began := time.Now()
+	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
+	took := time.Since(began)
+	requireRefused(t, err, labelSharedLane, "no complete read of Dispatch's project answers and repository mapping is held yet")
+	require.Less(t, took, 100*time.Millisecond, "the refusal took %s: it waited on Dispatch", took)
+
+	decision, err := Decide(t.Context(), deps, services, serviceRequest("dispatch-token"))
+	require.NoError(t, err, "Dispatch's own connection waited on the mapping")
+	require.Equal(t, dispatchCalloutGrant("example-dispatch"), decision.Grant)
 }
 
 // Through the auth service, Dispatch's grant may write the private-projects bucket and a
