@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
@@ -19,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/testbinary"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -126,22 +126,9 @@ func TestAKilledTestBinaryLeavesNoContainer(t *testing.T) {
 }
 
 // This test binary, which TestAKilledTestBinaryLeavesNoContainer starts again, links no module of
-// testcontainers-go, so no start of it pays that library's package init (container.go). It reads
-// the modules the binary was built from, as `go version -m` prints them.
-func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		t.Fatal("this test binary carries no build information to read its modules from")
-	}
-	if len(info.Deps) == 0 {
-		t.Fatal("this test binary's build information lists no module, so it cannot say what is linked")
-	}
-	for _, dep := range info.Deps {
-		if strings.HasPrefix(dep.Path, "github.com/testcontainers/") {
-			t.Errorf("this test binary links %s %s, and every start of it pays that module's package init; `go list -deps -test -f '{{.ImportPath}} {{.Imports}}' ./internal/testnats/` names the package that imports it", dep.Path, dep.Version)
-		}
-	}
-}
+// testcontainers-go (testbinary.LinksNoTestcontainers), so no start of it pays that library's
+// package init (container.go).
+func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) { testbinary.LinksNoTestcontainers(t) }
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
 

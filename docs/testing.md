@@ -540,7 +540,9 @@ that other work shares.
   `packages/daemon/internal/testnats/container.go` does, whose reaper removes the containers of a
   test binary that is killed before it removes them.
   `TestThisTestBinaryLinksNoTestcontainers` in the daemon's `cmd/legion`, `internal/daemon` and
-  `internal/testnats` fails when the library is linked again.
+  `internal/testnats` calls `internal/testbinary`'s `LinksNoTestcontainers`, which fails when the
+  library is linked again; `.github/scripts/testcontainers_links.py` holds every command and every
+  self-starting test binary of both modules to the same rule in CI and names the import chain.
 - In a script, `docker run` takes `--cpus` and `--memory` before the image. A Postgres whose data
   directory is a `tmpfs` mount counts that data against its memory limit. `scripts/e2e/README.md`
   lists each proof's containers and their limits.
