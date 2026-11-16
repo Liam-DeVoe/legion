@@ -736,7 +736,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 
 	keptSubject := bus.KeptRoleSubject(role)
 	lane := &roleKeepLaneCursor{cfg: cfg, role: role, holder: holder, subject: bus.KeptRoleCursorSubject(role), seq: head.cursorSeq}
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	// The record the role lane judges a forward against, read the same way here: what the holder
 	// already took, and what is already on its way to it.
 	seen := func(key, recipient string) bool {

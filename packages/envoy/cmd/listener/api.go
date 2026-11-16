@@ -174,6 +174,14 @@ type subscribeResponse struct {
 	Delivery *deliveryAnswer `json:"delivery,omitempty"`
 }
 
+// roleSetResponse is POST /v1/roles/set's answer to a claim that landed: the claimant's interest
+// record, and a warning when the claim named its role in the old form, its name alone, which names
+// the new form, the project first (store.Registry.ClaimedRole).
+type roleSetResponse struct {
+	store.Interest
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 const unwiredRepositoryWarningTimeout = 750 * time.Millisecond
 
 // hasCapability reports whether capabilities includes value. The Dispatch
@@ -853,7 +861,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			idempotencyKey = id.New()
 		}
 		dedupeKey := contracts.AgentSendDedupeKey(targetSession, idempotencyKey)
-		item := messageEnvelope(body, contracts.AgentSubject(targetSession), dedupeKey, bodyExpectsReply)
+		item := messageEnvelope(body, contracts.LegacyAgentSubject(targetSession), dedupeKey, bodyExpectsReply)
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
@@ -1253,7 +1261,12 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// The answer's own expects_reply, read from the request before any path answers: the three
 		// of them below each write it, and none of them changes the envelope that goes on the bus.
 		expectsReply := expectsReplyAnswer(request.ExpectsReply)
-		if role, ok := strings.CutPrefix(request.Topic, contracts.RoleTopicPrefix); ok {
+		if lane, ok := strings.CutPrefix(request.Topic, contracts.RoleTopicPrefix); ok {
+			// The lane names its role in either form while every reader takes both: its project
+			// and then the role, or the role alone. A claim is keyed by the bare role name
+			// whichever form claimed it (store.Registry.ClaimedRole), so the role this send
+			// resolves is the name CanonicalRole reads, never the lane's tokens as they stand.
+			_, role, _ := contracts.CanonicalRole(lane)
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
 			// The request's keep flag is read here and nowhere else: it belongs to this route's
@@ -2039,10 +2052,16 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			writeJSONError(w, http.StatusBadRequest, "role is required", "role")
 			return
 		}
-		if !roles.Valid(body.Role) {
-			writeJSONError(w, http.StatusBadRequest, "role must match "+roles.PatternString, "role")
+		// The role is read in either form, its project first (INFRA.legion-infra-infra-12-architect,
+		// _.lead-reviewer) or its name alone, and everything below works on the name, which is what
+		// its claim record is keyed by. The old form is counted and named back in the answer's
+		// warnings with its new form (store.Registry.ClaimedRole); nothing is refused for it.
+		if _, name, _ := contracts.CanonicalRole(body.Role); !roles.Valid(name) {
+			writeJSONError(w, http.StatusBadRequest, "role must match "+roles.PatternString+", after its project and a dot when it names one", "role")
 			return
 		}
+		var roleWarning string
+		body.Role, roleWarning = d.registry.ClaimedRole(body.Role)
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		entry, err := d.sessions.Get(body.SessionID)
@@ -2290,7 +2309,11 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			go runKeptRoleDrain(*d.delivery, body.Role)
-			writeJSON(w, http.StatusOK, item)
+			answer := roleSetResponse{Interest: item}
+			if roleWarning != "" {
+				answer.Warnings = []string{roleWarning}
+			}
+			writeJSON(w, http.StatusOK, answer)
 			return
 		}
 	}
@@ -2341,11 +2364,15 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
-		if role == "" {
+		name := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
+		if name == "" {
 			writeJSONError(w, http.StatusBadRequest, "role is required", "role")
 			return
 		}
+		// The path names the role in either form, its project first or its name alone, and a
+		// claim is keyed by the bare name either way (store.Registry.ClaimedRole), so the holder
+		// is read under that name.
+		_, role, _ := contracts.CanonicalRole(name)
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		result, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
@@ -2902,7 +2929,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// consumer's filter, and a notice published while the lane is out of it reaches the
 		// controller on no later path. The row's own read is the registry cache's on every
 		// heartbeat, and one that fails refuses the registration as the write it precedes would.
-		requested := append(slices.Clone(body.Topics), contracts.AgentSubject(body.SessionID))
+		requested := append(slices.Clone(body.Topics), contracts.LegacyAgentSubject(body.SessionID))
 		// The topics that would deliver to no session are split off once, here
 		// (splitUncapturedTopics): they are neither planned, stored nor filtered on, and the
 		// loop below names each in its warning, after the private rule has had its say. The
@@ -2980,7 +3007,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		for _, topic := range requested {
 			if bus.ReachesPrivateStreamSubject(body.SessionID, topic, plan.Roles) {
 				warnings = append(warnings, fmt.Sprintf("%s was not registered: it reaches a private stream subject (another session's inbox, a failed-delivery lane, or a Legion controller notice lane), and of those a session registers only its own agent subject, %s, and the notice lane of a project whose controller role it holds",
-					topic, contracts.AgentSubject(body.SessionID)))
+					topic, contracts.LegacyAgentSubject(body.SessionID)))
 				continue
 			}
 			if _, dropped := uncaptured[topic]; dropped {
@@ -2991,6 +3018,18 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			logger.Warn("listener subscribe left topics out of the registration",
 				slog.String("session_id", body.SessionID), slog.Any("dropped", warnings))
 		}
+		// A topic the registration stored in the old form of its name, an issue's without its
+		// project or a role's or an agent's without one, is stored as the caller wrote it and
+		// every reader takes both forms; the answer names its new form, and the registry counts
+		// it (store.Registry.LegacyTopicWarnings). Only the caller's own topics are weighed, so
+		// the agent subject this route adds itself is never counted for a caller that has moved.
+		var stored []string
+		for _, topic := range body.Topics {
+			if _, dropped := uncaptured[topic]; !dropped && !bus.ReachesPrivateStreamSubject(body.SessionID, topic, plan.Roles) {
+				stored = append(stored, topic)
+			}
+		}
+		warnings = append(warnings, d.registry.LegacyTopicWarnings(body.SessionID, stored)...)
 		if delivery.relayed() {
 			// The mark tells it which of its runs restarted after this registration: those
 			// need no restart for its epoch (sessionRelays.apply).

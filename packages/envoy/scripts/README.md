@@ -483,6 +483,44 @@ Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
 kernel chose, behind a fake `getent`; CI runs it in the `envoy-go` job of
 `.github/workflows/ci.yaml`.
 
+## daemon-release-gate.sh
+
+Says whether every production reader of a message name runs a build of cybermonklabs/legion at or
+after a commit: the reading a pull request quotes before it moves a producer onto the new form of a
+name (dispatch://INFRA-3862). A Legion daemon whose image predates the both-forms reader takes an
+issue event named in the new form for another project's and acknowledges it with no fact, so a
+producer that moves first stops the fleet's workflow in silence.
+
+```bash
+packages/envoy/scripts/daemon-release-gate.sh <commit>
+packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
+```
+
+Without `--listeners` it reads the image each Legion daemon runs: each entry of
+theorem-labs/agent-infra `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
+`image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. With `--listeners`
+it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
+dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
+Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
+that key (agent-infra `dispatch/main.go`) and the listener runs no other image. Each pin's
+`org.opencontainers.image.source` and `.revision`
+labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
+(its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
+platform agreeing. A pin built from any repository but `https://github.com/cybermonklabs/legion` is
+refused by name and never compared; any other passes when GitHub's compare of `<commit>...<revision>`
+answers `ahead` or `identical`.
+
+It prints a line per pin (`PASS`, `GATE SHUT`, `UNKNOWN` or `SKIPPED`) and the verdict on the last:
+`GATE OPEN` (exit 0) only when every pin it read passed and it read at least one, `GATE SHUT`
+(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error exits
+2. It needs `gh` with read access to both repositories, docker with buildx able to read each pin's
+registry (for ghcr.io, `gh auth token | docker login ghcr.io -u x --password-stdin` into a
+`DOCKER_CONFIG` of your own), `jq` and python3 with PyYAML.
+
+`daemon-release-gate.test.sh` proves every verdict behind a fake `gh` and a fake `docker` that
+answers a single image and an index the way the real one does; CI runs it in the
+`envoy-go-checks` job of `.github/workflows/ci.yaml`.
+
 ## Measuring search on a copy of the corpus
 
 Three scripts measure a change to Dispatch search against the real corpus rather than a seeded

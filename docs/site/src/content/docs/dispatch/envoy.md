@@ -180,6 +180,13 @@ An agent subscribes with Envoy's `envoy_subscribe` tool, which stores the subscr
 listener. A subscription to `<subject>.>` also covers `<subject>` itself, so subscribing to a pull
 request's `.>` gets its lifecycle events as well as its comments and checks.
 
+An issue's topic, a session's inbox and a role's lane each have a second form that names the
+project too: `notifications.dispatch.issue.<PROJECT>.<KEY>.>`, `notifications.agent.<PROJECT>.<session_id>`
+(`_` for no project) and `notifications.role.<PROJECT>.<role>`. While Envoy moves to it, a session
+receives each event in either form, whichever form it subscribed with. A subscription or a role
+claim that names the form without the project is kept as written and answered with a warning that
+names the new form; nothing is refused for it yet.
+
 A publish to a role through the API resolves the role's holder, waits for the stream to store the
 forward to it, and answers `200` naming the holder and its `holder_state`. If no session holds
 the role at all, the listener keeps the message and answers `202` with `kept: true` and

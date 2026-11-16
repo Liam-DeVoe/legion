@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -613,9 +614,10 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 // message handled is recorded in progress at spec.Now.
 func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Consumer, progress *consumerProgress, handlers []Handler) error {
 	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: time.Now}
+	names := &issueNames{}
 	consuming, err := consumer.Consume(func(message jetstream.Msg) {
 		lag.observe(message)
-		if consumeMessage(ctx, message, c.spec, c.repositories(), c.pool, handlers) {
+		if consumeMessage(ctx, message, c.spec, c.repositories(), c.pool, handlers, names) {
 			progress.handle(c.spec.Now())
 		}
 	}, jetstream.PullMaxMessages(consumerFetchBatch))
@@ -633,6 +635,34 @@ func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Cons
 		}
 		return fmt.Errorf("durable consumer %s stopped unexpectedly", consumer.CachedInfo().Name)
 	}
+}
+
+// issueNames counts, for one durable consumer, the issue events it read named in the old form and
+// the ones whose name carries a key in neither form (subjectforms.IssueEventKey), while both forms
+// are read (dispatch://INFRA-3862). A name in neither form is a fault, and each is logged at ERROR
+// as the poison it is. An old-form name is not: Dispatch publishes every issue event in the old
+// form until its producers move, and every daemon hears every project's, so the first is logged at
+// INFO at once and then at most one each issueNameLogEvery, each line with the running count, which
+// is what tells an operator the old form is still read here without a line per event.
+type issueNames struct {
+	legacy, neither atomic.Uint64
+	// legacyLogged is when the last old-form name was logged, in Unix nanoseconds of the consumer
+	// spec's clock; zero before the first.
+	legacyLogged atomic.Int64
+}
+
+// issueNameLogEvery is the most often an old-form issue name is logged (issueNames).
+const issueNameLogEvery = time.Minute
+
+// legacyRead counts one issue event named in the old form, read at now, and answers the running
+// count and whether this one is due to be logged.
+func (n *issueNames) legacyRead(now time.Time) (uint64, bool) {
+	count := n.legacy.Add(1)
+	last := n.legacyLogged.Load()
+	if last != 0 && now.Sub(time.Unix(0, last)) < issueNameLogEvery {
+		return count, false
+	}
+	return count, n.legacyLogged.CompareAndSwap(last, now.UnixNano())
 }
 
 const (
@@ -702,10 +732,17 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // long as it hangs (the delivery mechanism: ConsumerSpec.HandlerLimit's comment). The handler is
 // cut at that limit instead, its message naked and delivered again rather than held for the
 // length of the hang.
-func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool Pool, handlers []Handler) bool {
+//
+// names counts the issue events this consumer read named in the old form, and the ones named in
+// neither form, which are poison (issueNames).
+func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool Pool, handlers []Handler, names *issueNames) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
-		logMessage(spec.Logger, slog.LevelError, "poison JetStream message", message, "error", err)
+		attributes := []any{"error", err}
+		if errors.Is(err, errIssueNameInNeitherForm) {
+			attributes = append(attributes, "neither_form_count", names.neither.Add(1))
+		}
+		logMessage(spec.Logger, slog.LevelError, "poison JetStream message", message, attributes...)
 		if termErr := message.Term(); termErr != nil {
 			logMessage(spec.Logger, slog.LevelError, "term poison JetStream message", message, "error", termErr)
 			return false
@@ -714,6 +751,11 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	}
 	for _, field := range decoded.Unread {
 		logMessage(spec.Logger, slog.LevelWarn, "unreadable field taken as absent", message, "event_id", decoded.EventID, "field", field)
+	}
+	if decoded.LegacyName {
+		if count, due := names.legacyRead(spec.Now()); due {
+			logMessage(spec.Logger, slog.LevelInfo, "an issue event named in the old form", message, "legacy_count", count)
+		}
 	}
 
 	// A message that decodes to no fact is acknowledged here rather than inside the work, for the

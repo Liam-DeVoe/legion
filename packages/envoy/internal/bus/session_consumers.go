@@ -863,19 +863,35 @@ func (s *SessionConsumers) StreamID(ctx context.Context) (string, error) {
 	return state.id, nil
 }
 
-// sessionConsumerTarget names sessionID's consumer and reduces subjects to its filters, refusing a
-// session that can have no consumer and a filter set that is empty, which would deliver the whole
-// stream.
+// sessionConsumerTarget names sessionID's consumer and reduces subjects to its filters
+// (SessionConsumerFilters), refusing a session that can have no consumer and a filter set that is
+// empty, which would deliver the whole stream.
 func sessionConsumerTarget(sessionID string, subjects []string) (string, []string, error) {
 	name, err := sessionConsumerNameOf(sessionID)
 	if err != nil {
 		return "", nil, err
 	}
-	filters := ReduceFilterSubjects(subjects)
+	filters := SessionConsumerFilters(subjects)
 	if len(filters) == 0 {
 		return "", nil, fmt.Errorf("bus: no filter subject for the consumer of session %q", sessionID)
 	}
 	return name, filters, nil
+}
+
+// SessionConsumerFilters is the filter set a session consumer asked to follow subjects carries:
+// every form of each subject (contracts.TopicForms), reduced so no two overlap
+// (ReduceFilterSubjects). The forms are there while readers take the old form of a name too: an
+// issue's topic in either form, and the session's agent subject in the old form and under any
+// project, so a producer can move to the new form without the session missing one message,
+// whichever form the session registered. The two forms of a name never overlap, since they differ
+// in their token count or in the token after the family's prefix. It is the one computation of
+// that set, which a caller comparing a consumer with the row it was built from reads too.
+func SessionConsumerFilters(subjects []string) []string {
+	forms := make([]string, 0, 2*len(subjects))
+	for _, subject := range subjects {
+		forms = append(forms, contracts.TopicForms(subject)...)
+	}
+	return ReduceFilterSubjects(forms)
 }
 
 // applySettings sets the session consumer settings and filters on config, leaving what an update
@@ -924,7 +940,7 @@ func (s *SessionConsumers) updated(current jetstream.ConsumerConfig, filters []s
 // than a pending one a restart left (RestartAtFloor). A startSeq of 0 starts it at the floor the
 // session's resume record holds (SessionResumeSubject) plus one; when the stream holds no record
 // of this stream's own identity, at the first sequence the stream holds on the session's own
-// agent subject (Client.NextStoredMessage); and when it holds none of those either, at the
+// agent subject in either form (firstOwnMessage); and when it holds none of those either, at the
 // sequence after the stream's last, which delivers what the stream stores from then on, as
 // DeliverNew does (Ensure).
 //
@@ -1002,15 +1018,7 @@ func (s *SessionConsumers) create(ctx context.Context, sessionID, name string, f
 	case recorded:
 		startSeq = floor + 1
 	default:
-		// One stored-message read of the session's own agent subject, which creates nothing on
-		// the server: its nats.ErrMsgNotFound is the stream holding nothing there, no failure but
-		// a session nothing was ever sent to, whose start is then the stream's end.
-		switch stored, err := s.client.NextStoredMessage(ctx, contracts.AgentSubject(sessionID), 1); {
-		case err == nil:
-			startSeq = stored.Sequence
-		case errors.Is(err, nats.ErrMsgNotFound):
-			startSeq = state.lastSeq + 1
-		default:
+		if startSeq, err = s.firstOwnMessage(ctx, sessionID, state.lastSeq+1); err != nil {
 			return SessionConsumerStart{}, err
 		}
 	}
@@ -1057,6 +1065,25 @@ func (s *SessionConsumers) create(ctx context.Context, sessionID, name string, f
 			slog.Uint64("consumer_start", startSeq))
 	}
 	return SessionConsumerStart{Created: true, StartSeq: startSeq, Gap: startSeq < bound.firstSeq, StreamID: bound.id, AckFloor: startSeq - 1}, nil
+}
+
+// firstOwnMessage is the first sequence the stream holds on sessionID's own agent subject, in
+// either form (contracts.TopicForms of contracts.LegacyAgentSubject: the old form, and the new
+// one under any project), and none when it holds nothing there. It makes one stored-message read
+// per form, which creates nothing on the server: a read's nats.ErrMsgNotFound is the stream
+// holding nothing on that form, no failure, and a session nothing was ever sent to starts at none,
+// the stream's end. Any other error is returned.
+func (s *SessionConsumers) firstOwnMessage(ctx context.Context, sessionID string, none uint64) (uint64, error) {
+	first := none
+	for _, subject := range contracts.TopicForms(contracts.LegacyAgentSubject(sessionID)) {
+		switch stored, err := s.client.NextStoredMessage(ctx, subject, 1); {
+		case err == nil:
+			first = min(first, stored.Sequence)
+		case !errors.Is(err, nats.ErrMsgNotFound):
+			return 0, err
+		}
+	}
+	return first, nil
 }
 
 // consumerAPI is the JetStream API subject of operation op on consumer name of the stream.
