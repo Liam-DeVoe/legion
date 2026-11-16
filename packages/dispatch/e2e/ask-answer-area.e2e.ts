@@ -572,10 +572,12 @@ async function seedTurns() {
   };
 }
 
-/** An ask card's own line: the width of its `@container` row and of the viewport, the two
- *  conditions that pick its layout, whether the copy control shares the label's line, and
- *  whether who asked and when opens a line of its own under that one. The row and who asked
- *  are read by their own marks (`CardAskHeader`), so a row that lost either says which. */
+/** An ask card's own line: the width of its `@container` row, the one condition that picks its
+ *  layout (`CardAskHeader`: one line from 27.5rem, two lines beside the copy control from 19.5rem,
+ *  the phone's lines below that), the viewport's width, which no longer picks it and which a row
+ *  reads only to say which reader it stands for, whether the copy control shares the label's
+ *  line, and whether who asked and when opens a line of its own under that one. The row and who
+ *  asked are read by their own marks, so a row that lost either says which. */
 async function copyLine(card: Locator) {
   await expect(card.locator("[data-ask-header] [data-copy-ref] button")).toBeVisible();
   const viewport = card.page().viewportSize();
@@ -608,10 +610,10 @@ test("the Inbox card's copy control ends the label's one line, whoever's turn it
       const card = await askCard(page, ask.id);
       await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
       const line = await copyLine(card);
-      // The card's widest layout: a row of 24rem or more, where label, turn, asker and copy
+      // The card's widest layout: a row of 27.5rem or more, where label, turn, asker and copy
       // control are one line.
-      expect(line.row, `${turn}: the Inbox card's row is 24rem or wider`).toBeGreaterThanOrEqual(
-        384
+      expect(line.row, `${turn}: the Inbox card's row is 27.5rem or wider`).toBeGreaterThanOrEqual(
+        440
       );
       expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
     }
@@ -633,10 +635,14 @@ test("the margin card's copy control stands beside its two lines, on the label's
       const card = marginCard(page, ask.id);
       await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
       const line = await copyLine(card);
-      // The margin: a row under 24rem, which breaks the label and turn from the asker, at a
-      // viewport from `md`, where the copy control stands beside both lines.
+      // The margin: a row from 19.5rem to under 27.5rem, which breaks the label and turn from the
+      // asker and stands the copy control beside both lines. The viewport check no longer picks
+      // that layout; it says this row reads the margin as a desktop reader does, at `md` or wider.
       expect(line.viewport, `${turn}: the viewport is md or wider`).toBeGreaterThanOrEqual(768);
-      expect(line.row, `${turn}: the margin card's row is under 24rem`).toBeLessThan(384);
+      expect(line.row, `${turn}: the margin card's row is 19.5rem or wider`).toBeGreaterThanOrEqual(
+        312
+      );
+      expect(line.row, `${turn}: the margin card's row is under 27.5rem`).toBeLessThan(440);
       expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
     }
   } finally {
@@ -656,10 +662,12 @@ test("on a phone the Inbox card's copy control ends the label's line and the ask
       const card = await askCard(page, ask.id);
       await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
       const line = await copyLine(card);
-      // A phone: a row under 24rem at a viewport under `md`, where the copy control is a 44 px
-      // touch box at the end of the label's line and the asker has the next line to itself.
+      // A phone: a row under 19.5rem, where the copy control ends the label's line and the asker
+      // has the next line to itself. The viewport check no longer picks that layout; it says
+      // this row reads the card as a phone does, under `md`, where the copy control and the live
+      // link are 44 px touch boxes.
       expect(line.viewport, `${turn}: the viewport is under md`).toBeLessThan(768);
-      expect(line.row, `${turn}: the phone card's row is under 24rem`).toBeLessThan(384);
+      expect(line.row, `${turn}: the phone card's row is under 19.5rem`).toBeLessThan(312);
       expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
       expect(line.askerOwnLine, `${turn}: the asker opens the next line`).toBe(true);
       const name = card.locator(

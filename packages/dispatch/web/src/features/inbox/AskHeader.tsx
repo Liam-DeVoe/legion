@@ -222,6 +222,7 @@ function askHeaderFacts(
       <span
         aria-hidden="true"
         className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[askUrgency(ask.urgency)]}`}
+        data-ask-urgency-notch=""
       >
         {URGENCY_LABELS[askUrgency(ask.urgency)].toUpperCase()}
       </span>
@@ -257,21 +258,30 @@ function askHeaderFacts(
 
 /** The parts every place draws, in the order every place draws them: the urgency, the place's
  *  own `leading` part, the state label and the place's provenance. Each place draws its copy
- *  control (`facts.copy`) and its `trailing` parts after them, in the boxes its layout needs. */
+ *  control (`facts.copy`) and its `trailing` parts after them, in the boxes its layout needs.
+ *  A place that wraps the urgency, its `leading` part and the label as one group names that
+ *  group's box as `lead`. */
 function AskHeaderRow({
   facts,
+  lead,
   leading,
   provenance,
 }: {
   facts: AskHeaderFacts;
+  lead?: string;
   leading: ReactNode;
   provenance: ReactNode;
 }): ReactNode {
-  return (
+  const opening = (
     <>
       {facts.urgencyPill}
       {leading}
       {facts.stateLabel}
+    </>
+  );
+  return (
+    <>
+      {lead === undefined ? opening : <span className={lead}>{opening}</span>}
       {provenance}
     </>
   );
@@ -304,8 +314,12 @@ function DrawnAskHeader(props: AskHeaderProps & { asker: AskHeaderAsker | undefi
  *  on the next where it does not. Only the name gives up width, so a narrower line would cut it
  *  to nothing, then draw the time over the copy control and push the control out of the
  *  header. Below 36rem the line gives way to rows instead, as a phone's does: the urgency,
- *  `Decision`, the label and the copy control at the end of the row it wraps to, who asked and
- *  when on the next (`order-1`), and "Answered by" on the row after it (`order-2`). */
+ *  `Decision` and the label, then the copy control at the end of their row, who asked and when
+ *  on the next (`order-1`), and "Answered by" on the row after it (`order-2`). The urgency,
+ *  `Decision` and the label are one group that takes the row from a zero basis and wraps in
+ *  itself, so where even those three and the copy control do not fit on one line (under about
+ *  290 px of header) the label takes a second line of the group and the copy control stays at
+ *  the end of the first, rather than wrapping to a line of its own. */
 function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): ReactNode {
   const author = ask?.author;
   return (
@@ -316,6 +330,7 @@ function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): R
       <span className="flex min-w-0 items-center gap-x-2 whitespace-nowrap @max-[36rem]:contents">
         <AskHeaderRow
           facts={facts}
+          lead="flex shrink-0 items-center gap-x-2 @max-[36rem]:flex-1 @max-[36rem]:flex-wrap @max-[36rem]:gap-y-1"
           leading={leading}
           provenance={
             !facts.provenance || author === undefined ? null : (
@@ -340,7 +355,7 @@ function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): R
             )
           }
         />
-        {facts.copy("@max-[36rem]:ml-auto")}
+        {facts.copy("@max-[36rem]:self-start")}
       </span>
       {trailing}
     </header>
@@ -375,25 +390,33 @@ function CardAskHeader({
         data-ask-card-row=""
       >
         {/* The label and the provenance are one group whose names truncate, and the copy
-            control stands beside the group, so the line holding both never wraps and the
-            control stays on the label's line at every width the card is drawn at. A separator
-            that wrapped left a line opening - or ending - on a bare "·", and the agents are the
-            only parts that can give up width ("Waiting on you" never does; an agent's turn
-            gives up all of it below 24rem, `flex-1` from a zero basis, so its name truncates
-            instead of pushing what follows it off the line). Below 24rem of line (a phone, a
-            margin) the group breaks in two: the label, as tall as the line's text, and the turn
-            share the first line, and the asker and time take the next, with no separator -
-            beside the turn, and beside the label, the asker's name kept a few letters. Below
-            `md` (a phone, its review sheet) the copy control and the live link are 44 px touch
-            boxes, so the group gives way to one wrapping line: the control ends the first line,
-            and the asker's line is the card's whole width, which is what reads a name whole
-            beside its live link (`e2e/agent-name.e2e.ts`). From `md` (the 280 px margin) the
-            control's 32 px box stands beside both lines, so the card is no taller than it was
-            before it drew a label. `e2e/ask-answer-area.e2e.ts` holds the control to the
-            label's line in all three, and reads the line and the asker by their own marks
-            (`data-ask-card-row`, `data-ask-card-asked`). */}
-        <span className="flex min-w-0 items-center gap-x-1.5 max-md:@max-sm:flex-wrap">
-          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap @max-sm:[&>[data-ask-state-label]]:py-0 max-md:@max-sm:contents">
+            control stands beside the group, so the control stays on the label's line at every
+            width. A separator that wrapped left a line opening - or ending - on a bare "·", and
+            the agents are the only parts that can give up width ("Waiting on you" never does).
+            Every choice below reads the row's own width (`@container`), never the viewport: one
+            card stands in the Inbox, its reading pane, a margin, a phone's review sheet and a
+            decision block, and a reader narrows the pane and the margin. So each layout holds
+            the copy control and the live link at both of their sizes, 32 px and the 44 px touch
+            boxes every button is below 1280 px (`styles.css`).
+            From 27.5rem of row the group is one line. An agent's turn gives up its width faster
+            than the asker (`shrink-[1.5]`), so the asker's live link and time keep clear of each
+            other down to that width with touch boxes, where "Waiting on you" beside the asker
+            needs 436 px. From 19.5rem to 27.5rem (the 323 px of a margin at its default width)
+            the group breaks in two beside the control: the label, as tall as the line's text,
+            and the turn share the first line, and the asker and time take the next, with no
+            separator - two lines no taller than the control's 32 px box, so the card is no
+            taller than it was before it drew a label. An agent's turn there gives up all of its
+            width, `flex-1` from a zero basis, so its name truncates instead of pushing what
+            follows it off the line. Below 19.5rem (a phone's 306 px, the narrowest margin and
+            reading pane) the group gives way to one wrapping line: the control ends the first
+            line, and the asker's line is the card's whole width, which is what reads a name
+            whole beside its live link (`e2e/agent-name.e2e.ts`).
+            `e2e/ask-header-sweep.e2e.ts` sweeps the row from 220 px up at both control sizes;
+            `e2e/ask-answer-area.e2e.ts` holds the control to the label's line in all three, and
+            reads the line and the asker by their own marks (`data-ask-card-row`,
+            `data-ask-card-asked`). */}
+        <span className="flex min-w-0 items-center gap-x-1.5 @max-[19.5rem]:flex-wrap">
+          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-[27.5rem]:flex-wrap @max-[27.5rem]:[&>[data-ask-state-label]]:py-0 @max-[19.5rem]:contents">
             <AskHeaderRow
               facts={facts}
               leading={leading}
@@ -402,7 +425,7 @@ function CardAskHeader({
                   <>
                     {turnHolder === null ? null : (
                       <span
-                        className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate @max-sm:flex-1"} font-semibold ${textSecondaryOnSurface}`}
+                        className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 shrink-[1.5] truncate @max-[27.5rem]:flex-1"} font-semibold ${textSecondaryOnSurface}`}
                         data-testid={`turn-${ask.id}`}
                       >
                         Waiting on{" "}
@@ -410,12 +433,12 @@ function CardAskHeader({
                       </span>
                     )}
                     {turnHolder === null ? null : (
-                      <span className="shrink-0 @max-sm:hidden" aria-hidden="true">
+                      <span className="shrink-0 @max-[27.5rem]:hidden" aria-hidden="true">
                         ·
                       </span>
                     )}
                     <span
-                      className="flex min-w-0 items-center gap-x-1.5 @max-sm:basis-full max-md:@max-sm:order-1"
+                      className="flex min-w-0 items-center gap-x-1.5 @max-[27.5rem]:basis-full @max-[19.5rem]:order-1"
                       data-ask-card-asked=""
                     >
                       {session === undefined || control === undefined ? (
@@ -450,7 +473,7 @@ function CardAskHeader({
               }
             />
           </span>
-          {facts.copy("max-md:@max-sm:ml-auto")}
+          {facts.copy("@max-[19.5rem]:ml-auto")}
         </span>
         {trailing}
       </div>
@@ -459,7 +482,10 @@ function CardAskHeader({
 }
 
 /** The answered and resolved records (`AskCompletionCard`): one sentence of provenance, in the
- *  tone of the frame it stands in. */
+ *  tone of the frame it stands in, with the copy control at the end of its first line. The
+ *  sentence wraps as text does, in a box of its own beside the control, so the control stays
+ *  on the label's line at every width rather than following the time onto whichever line the
+ *  time wraps to. */
 function RecordAskHeader({
   ask,
   asker,
@@ -485,27 +511,30 @@ function RecordAskHeader({
       )}
       {children}
       <div
-        className={`mt-2 text-xs [&>[data-ask-state-label]]:mr-1.5 ${answered ? calloutSuccessTimestampText : textMutedOnSurface}`}
+        className={`mt-2 flex items-start gap-x-1.5 text-xs ${answered ? calloutSuccessTimestampText : textMutedOnSurface}`}
+        data-ask-record-row=""
       >
-        <AskHeaderRow
-          facts={facts}
-          leading={leading}
-          provenance={
-            !facts.provenance || author === undefined ? null : (
-              <>
-                {asker === undefined ? null : (
-                  <>
-                    <AgentName actor={author} inline />
-                    {" · "}
-                  </>
-                )}
-                Asked {facts.askedAt}
-              </>
-            )
-          }
-        />
-        {facts.copy()}
-        {trailing}
+        <span className="min-w-0 [&>[data-ask-state-label]]:mr-1.5">
+          <AskHeaderRow
+            facts={facts}
+            leading={leading}
+            provenance={
+              !facts.provenance || author === undefined ? null : (
+                <>
+                  {asker === undefined ? null : (
+                    <>
+                      <AgentName actor={author} inline />
+                      {" · "}
+                    </>
+                  )}
+                  Asked {facts.askedAt}
+                </>
+              )
+            }
+          />
+          {trailing}
+        </span>
+        {facts.copy("shrink-0")}
       </div>
     </div>
   );
