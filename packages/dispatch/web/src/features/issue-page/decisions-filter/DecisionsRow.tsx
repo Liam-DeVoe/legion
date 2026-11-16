@@ -102,6 +102,7 @@ export function DecisionsRow({
   level,
   onFocus,
   onPin,
+  onReviewed,
   ownAnswer,
   pinned,
   report,
@@ -133,6 +134,10 @@ export function DecisionsRow({
   level: number;
   onFocus: () => void;
   onPin: () => void;
+  /** Says the reader reviewed this decision on its row: they pressed Keep, or sent a Change
+   *  with words in it. Either takes it off the review list, and only the reader's own review
+   *  moves the focus on to the next decision there. */
+  onReviewed: () => void;
   /** Whether the answer this ask carries is the reader's own, which carries the ink rule. */
   ownAnswer: boolean;
   pinned: boolean;
@@ -319,14 +324,17 @@ export function DecisionsRow({
               the row that held it, the rows under it move up before the release, and the click
               is lost. The pressed row takes the focus as the click lands instead, before the
               control acts, as `Shift+K` and `Shift+C` find it focused. The form Change opens
-              keeps its own default. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only steer where the focus goes for the two buttons inside, which carry the role. */}
+              keeps its own default. A Keep, by a press or by `Shift+K`, which presses it, and a
+              Change sent with words are the reader's own review of the decision, which the row
+              says to the list: a Change sent empty writes nothing (`DecisionActions.tsx`). */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only steer where the focus goes for the controls inside, which carry the role, and say which of them the reader used. */}
           <div
             className="mt-1 mb-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 [&>[role=alert]]:order-last [&>[role=alert]]:basis-full [&>form]:order-last [&>form]:basis-full"
             data-entry-actions=""
             onClickCapture={(event) => {
               if (!(event.target instanceof Element) || event.target.closest(ROW_ACTIONS) === null)
                 return;
+              if (event.target.closest(KEEP) !== null) onReviewed();
               // The row's own page: this component's `document` is the decisions document.
               const element = row.current;
               if (element === null || element.contains(element.ownerDocument.activeElement)) return;
@@ -335,6 +343,11 @@ export function DecisionsRow({
             onMouseDown={(event) => {
               if (event.target instanceof Element && event.target.closest(ROW_ACTIONS) !== null)
                 event.preventDefault();
+            }}
+            onSubmitCapture={(event) => {
+              const field =
+                event.target instanceof Element ? event.target.querySelector("textarea") : null;
+              if (field !== null && field.value.trim() !== "") onReviewed();
             }}
           >
             {review ? (
@@ -425,7 +438,8 @@ export function DecisionsRow({
 
 /** Keep and Change, by the mark `DecisionActions.tsx` writes and reads through its own
  *  `rowActionSelector`, so this file does not spell it. */
-const ROW_ACTIONS = `${rowActionSelector("keep")}, ${rowActionSelector("change")}`;
+const KEEP = rowActionSelector("keep");
+const ROW_ACTIONS = `${KEEP}, ${rowActionSelector("change")}`;
 
 /** A row's colour, as `pageKindBullet` and `pageKindTag` name them. */
 type Tone = "context" | "decision" | "question";

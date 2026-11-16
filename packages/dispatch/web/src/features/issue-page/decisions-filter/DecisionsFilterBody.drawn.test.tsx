@@ -570,6 +570,75 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
   }
 });
 
+// R6: the focus goes on to the next decision for the reader's own Keep or Change alone. A
+// decision that leaves the review list by no act of the reader on this list - a Change sent
+// from another page, or a read that says another person kept it or that it was replaced -
+// keeps the focus where it now stands: under Your decisions, or in the foot, which unfolds
+// for it.
+test("a decision that leaves the review list by no act of the reader keeps the focus", async () => {
+  // The address names the decision, and a Change on it arrives in the comments read.
+  const changed = renderBody(wholeIssue(), { reveal: D("second") });
+  await waitFor(() => expect(focusedRow(changed)).toBe(D("second")));
+  await act(async () =>
+    changed.client.setQueryData(
+      ["comments", KEY],
+      [changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.")]
+    )
+  );
+  await waitFor(() => expect(rowsOfPart(changed, "review")).toEqual([D("first")]));
+  expect(rowsOfPart(changed, "yours")[0]).toBe(D("second"));
+  expect(rowOf(changed, D("second")).getAttribute("data-node-state")).toBe("change_requested");
+  expect(focusedRow(changed)).toBe(D("second"));
+  changed.unmount();
+
+  // The reader is on the decision, and a decisions read says bob kept it.
+  const whole = wholeIssue();
+  const kept = renderBody(whole);
+  await act(async () => rowOf(kept, D("second")).focus());
+  await act(async () =>
+    kept.client.setQueryData(
+      ["decisions", KEY],
+      decisionsRead(
+        whole.made.map((made) =>
+          made.block_id === "second"
+            ? {
+                ...made,
+                kept: { ...KEPT, block_id: "second", kept_by: "bob" },
+                waiting_review: false,
+              }
+            : made
+        )
+      )
+    )
+  );
+  await waitFor(() => expect(rowsOfPart(kept, "review")).toEqual([D("first")]));
+  expect(rowsOfPart(kept, "yours")).toContain(D("second"));
+  expect(
+    words(rowOf(kept, D("second")).querySelector("[data-node-margin] [data-node-state]"))
+  ).toBe("Kept by bob");
+  expect(focusedRow(kept)).toBe(D("second"));
+  kept.unmount();
+
+  // The reader is on the decision, and a decisions read says it was replaced, which puts it in
+  // the folded foot.
+  const replaced = renderBody(whole);
+  await act(async () => rowOf(replaced, D("second")).focus());
+  await act(async () =>
+    replaced.client.setQueryData(
+      ["decisions", KEY],
+      decisionsRead(
+        whole.made.map((made) =>
+          made.block_id === "second" ? { ...made, replaced: true, waiting_review: false } : made
+        )
+      )
+    )
+  );
+  await waitFor(() => expect(rowsOfPart(replaced, "review")).toEqual([D("first")]));
+  await waitFor(() => expect(rowsOfPart(replaced, "agents")).toContain(D("second")));
+  expect(rowOf(replaced, D("second")).getAttribute("data-node-state")).toBe("replaced");
+  await waitFor(() => expect(focusedRow(replaced)).toBe(D("second")));
+});
+
 // A closed issue takes no write, so the review list keeps its rows and draws no control.
 test("a closed issue draws the review list with no Keep and no Change", () => {
   const view = renderBody(wholeIssue(), { isClosed: true });
@@ -782,6 +851,16 @@ test("the outline's keys move through the parts and work a row's controls", asyn
     await waitFor(() =>
       expect(view.getByTestId("where").textContent).toBe(`/issues/${KEY}/asks/q-open`)
     );
+
+    // A fold with the focus on one of the foot's rows puts it on the foot's control, which
+    // stays, rather than dropping it to the page with the row.
+    await user.keyboard("z");
+    await act(async () => rowOf(view, D("minor")).focus());
+    await user.keyboard("z");
+    expect(rowsOfPart(view, "agents")).toEqual([]);
+    expect(document.activeElement).toBe(
+      view.container.querySelector('[data-decisions-part="agents"] button')
+    );
   } finally {
     kept.mockRestore();
   }
@@ -879,7 +958,8 @@ test("a body drawn again does not act on a request the page already took", async
 // R4, R6: a list that holds only the foot draws no row, so it has no tab stop to take the
 // focus. A page opened on it with nothing focused gives the focus to the foot's control, and
 // so does a focus on the tree, which is where `t d` puts it when the tree holds no tab stop
-// (`useIssueKeymap.ts`): the tree element never keeps the focus.
+// (`useIssueKeymap.ts`): the tree element keeps no focus while the list draws a row or the
+// foot.
 test("a list that holds only the foot gives the focus to the foot's control", async () => {
   const user = userEvent.setup();
   const control = (drawn: RenderResult) =>
@@ -986,6 +1066,8 @@ test("a decision the reader sent a Change on says so, leaves the review list and
 
     // The comments are read again, and the decision is no longer the reader's to review.
     await waitFor(() => expect(rowsOfPart(view, "review")).toEqual([D("first")]));
+    // The reader sent it, so the focus goes on to the next decision of the review list.
+    await waitFor(() => expect(focusedRow(view)).toBe(D("first")));
     expect(list).toHaveBeenCalled();
     expect(rowsOfPart(view, "yours")[0]).toBe(D("second"));
     const row = rowOf(view, D("second"));
@@ -1028,7 +1110,8 @@ test("another person's answer stands under Your decisions with their name", () =
 });
 
 // The tester's F16: a key with nowhere to go says so at the row it was pressed on, and the
-// report goes when the reader moves on, to another row or out of the list.
+// report goes when the reader moves on, to another row or out of the list. Pressed on no row,
+// on the foot's control say, it says so at the list's tab stop, as the outline's keys do.
 test("a key with nowhere to go reports at the row it was pressed on", async () => {
   const user = userEvent.setup();
   const view = renderBody(wholeIssue(), {}, { requests: true });
@@ -1046,6 +1129,24 @@ test("a key with nowhere to go reports at the row it was pressed on", async () =
   expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
   await act(async () => view.getByRole("button", { name: "Elsewhere" }).focus());
   expect(view.container.querySelector("[data-row-report]")).toBeNull();
+  view.unmount();
+
+  // An issue with no open question, and `q` pressed on the foot's control.
+  const whole = wholeIssue();
+  const noQuestion = renderBody({
+    ...whole,
+    children: whole.children.filter((child) => child.id !== "q-open"),
+  });
+  const control = noQuestion.container.querySelector<HTMLElement>(
+    '[data-decisions-part="agents"] button'
+  );
+  await act(async () => control?.focus());
+  await user.keyboard("q");
+  expect(document.activeElement).toBe(control);
+  expect(words(rowOf(noQuestion, D("second")).querySelector("[data-row-report]"))).toBe(
+    KEY_REPORTS.no_next_question
+  );
+  expect(noQuestion.container.querySelectorAll("[data-row-report]").length).toBe(1);
 });
 
 // R20: the filter by words narrows the list to the nodes the filter's own view kept, and the

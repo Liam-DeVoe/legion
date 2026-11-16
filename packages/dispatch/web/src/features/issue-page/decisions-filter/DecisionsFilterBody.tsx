@@ -82,10 +82,12 @@ const NOTHING = (): void => {};
  * `f` steps through a row's links, Enter goes to the entry's node in the conversation, and the
  * key that cycles how much is drawn unfolds the foot. The foot's own control is a plain button
  * in the tab order, as the prototype's is, so Tab reaches it where the foot is all the list
- * holds. The tree element never keeps the focus: a focus on it goes on to the tab stop, or to
- * the foot's control where the list draws no row, which is how `t d` and a page opened here
- * reach a list that holds only the foot. A key with nowhere to go says so at the row it was
- * pressed on (the tester's F16).
+ * holds. The tree element keeps no focus while the list draws a row or the foot: a focus on it
+ * goes on to the tab stop, or to the foot's control where the list draws no row, which is how
+ * `t d` and a page opened here reach a list that holds only the foot. On an issue the view
+ * draws nothing for, with no row and no foot, there is nowhere to pass it, and the tree keeps
+ * it. A key with nowhere to go says so at the row it was pressed on, or at the list's tab stop
+ * where it was pressed on no row, as the outline's keys do (the tester's F16).
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
  * by (`useIssueTree.ts`), so the body costs no request of its own (R20).
@@ -177,11 +179,18 @@ export function DecisionsFilterBody({
   const [everything, setEverything] = useState(false);
   // The node a key or the page is taking the reader to, once its row is drawn.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
-  // What a key reported when it had nowhere to go, and the row it was pressed on, which draws
-  // it until the reader moves on (`NodeRow`'s `report`).
+  // What a key reported when it had nowhere to go, and the row it was pressed on, or the list's
+  // tab stop where it was pressed on no row - on the foot's control, or with the focus on the
+  // page - which draws it until the reader moves on (`NodeRow`'s `report`). A list with no tab
+  // stop draws none. The control's own focus clears a report, so one made while the focus is
+  // already on it stays.
   const [report, setReport] = useState<{ readonly line: string; readonly row: string }>();
+  // The list's tab stop as last drawn, which a report made on no row stands at.
+  const drawnStop = useRef<string | undefined>(undefined);
   const reportHere = useCallback((line: string) => {
-    const row = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
+    const row =
+      document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId ??
+      drawnStop.current;
     setReport(line === "" || row === undefined ? undefined : { line, row });
   }, []);
 
@@ -203,11 +212,16 @@ export function DecisionsFilterBody({
     [drawn]
   );
 
+  // The decision the reader last pressed Keep on, or sent a Change on, on its row here. It
+  // holds only while the reader stays on that row: a Keep the server refused, or any act left
+  // behind, goes with a move to another row, so it never moves the focus on later.
+  const ownReview = useRef<string | undefined>(undefined);
   const takeFocus = useCallback(
     (entry: DecisionsEntry | NamedEntry, state: string | undefined) => {
       const node = entry.node;
       setFocused(node.id);
       setStop(node.id);
+      if (ownReview.current !== node.id) ownReview.current = undefined;
       // A move to a row is the reader going on from what a key reported.
       setReport((held) => (held?.row === node.id ? held : undefined));
       const item = conversationItem(node);
@@ -315,11 +329,12 @@ export function DecisionsFilterBody({
     row.focus();
   }, [drawn, footed, reveal]);
 
-  // The tree element takes the focus only to pass it on, so it never keeps it: to the list's
-  // tab stop, else, where the list draws no row, to the foot's control. `t d` focuses the tree
-  // where it finds no tab stop in it (`useIssueKeymap.ts`), and a list that holds only the foot
-  // has none. A focus that came up from a row is the row's own. The tab stop is looked for in
-  // the whole list, since the foot's rows stand after the tree element and are its rows all
+  // The tree element takes the focus only to pass it on: to the list's tab stop, else, where
+  // the list draws no row, to the foot's control. `t d` focuses the tree where it finds no tab
+  // stop in it (`useIssueKeymap.ts`), and a list that holds only the foot has none. On an issue
+  // the view draws nothing for there is neither, and the tree keeps the focus, which leaves it
+  // in the list. A focus that came up from a row is the row's own. The tab stop is looked for
+  // in the whole list, since the foot's rows stand after the tree element and are its rows all
   // the same (`aria-owns`).
   const passFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
@@ -361,8 +376,12 @@ export function DecisionsFilterBody({
   // A decision the reader kept or asked to change leaves the review list for their own
   // decisions, and its row with it, which drops the focus to the page. The reader is working
   // down the list, so the focus goes to the decision that stood after it, else the one before
-  // it (the prototype's `keepDecision`), else to the decision where it now stands. A reader who
-  // has moved somewhere else on the page keeps their place.
+  // it (the prototype's `keepDecision`), else to the decision where it now stands. A decision
+  // that leaves the list by no act of the reader here - a read that says another person kept
+  // it or that it was replaced, or a Change sent from another page - keeps the focus where it
+  // now stands: the reader asked to go nowhere, and the focus stays on the entry they were on
+  // (R6), the foot unfolded for it where it is one of the foot's own. A reader who has moved
+  // somewhere else on the page keeps their place.
   const reviewing = useMemo(() => parts.review.map((entry) => entry.node.id), [parts.review]);
   const reviewed = useRef(reviewing);
   useLayoutEffect(() => {
@@ -373,6 +392,11 @@ export function DecisionsFilterBody({
     if (at === -1) return;
     const active = document.activeElement;
     if (active !== null && active !== document.body && active.isConnected) return;
+    if (ownReview.current !== focused) {
+      goTo(focused);
+      return;
+    }
+    ownReview.current = undefined;
     const next =
       before.slice(at + 1).find((id) => reviewing.includes(id)) ??
       before
@@ -381,12 +405,17 @@ export function DecisionsFilterBody({
         .find((id) => reviewing.includes(id)) ??
       focused;
     rowOf(body.current, next)?.focus();
-  }, [focused, reviewing]);
+  }, [focused, goTo, reviewing]);
 
   useTreeKeymap({
     container: body,
     holdsEscape,
     onCycle: () => {
+      // Folding the foot takes its rows away, and a focus on one of them would drop to the
+      // page: it goes to the foot's control, which stays where the rows were.
+      const on = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
+      if (everything && on !== undefined && footed.has(on))
+        footControl.current?.focus({ preventScroll: true });
       setEverything(!everything);
       setFootShown(!everything);
     },
@@ -415,6 +444,9 @@ export function DecisionsFilterBody({
   const first = drawn[0]?.node.id;
   const tabStop =
     stop !== undefined && drawn.some((entry) => entry.node.id === stop) ? stop : first;
+  useLayoutEffect(() => {
+    drawnStop.current = tabStop;
+  });
   const rowFor = (entry: DecisionsEntry | NamedEntry, part: DecisionsPart): ReactNode => {
     const node = entry.node;
     const id = node.id;
@@ -452,6 +484,9 @@ export function DecisionsFilterBody({
         level={part === "agents" ? 2 : 1}
         onFocus={() => takeFocus(entry, state)}
         onPin={() => pin(id)}
+        onReviewed={() => {
+          ownReview.current = id;
+        }}
         ownAnswer={isReader(node.answer?.by, reader)}
         pinned={pinned.has(id)}
         {...(report?.row === id ? { report: report.line } : {})}
