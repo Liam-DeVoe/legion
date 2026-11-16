@@ -780,7 +780,7 @@ func TestScenarios(t *testing.T) {
 			t.Errorf("the checks at m2: %+v, want %+v", states[1].Checks, want)
 		}
 		want3 := []specgraph.StatementState{
-			{ID: "delivery-is-fast", State: "met", Reason: "checks_true", Own: "unknown", HeldVersion: 1},
+			{ID: "delivery-is-fast", State: "met", Reason: "checks_true", Own: "met", HeldVersion: 1},
 			{ID: "messages-reach-sessions", State: "unknown", Reason: "check_unknown", Detail: "a-restart-loses-no-message", Own: "met", HeldVersion: 1},
 			{ID: "a-stored-message-survives-a-restart", State: "unknown", Reason: "check_unknown", Detail: "a-restart-loses-no-message", Own: "unknown", HeldVersion: 1},
 		}
@@ -822,6 +822,14 @@ func TestScenarioRefusals(t *testing.T) {
 	result1 := func(version, kind, outcome string) func(t *testing.T, dir string) {
 		return write("results.json", `[{"check":"a-restart-loses-no-message","check_version":`+version+`,"kind":"`+kind+`","outcome":"`+outcome+`","commit":"c1"}]`)
 	}
+	replace := func(file, old, new string) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) { replaceIn(t, filepath.Join(dir, file), old, new) }
+	}
+	const failingExample = "Failing example: A listener that deletes its stored messages when it starts.\n"
+	const firstOutcome = `"outcome": "pass",`
+	serving := ":::requirement{#messages-reach-sessions kind=\"behavior\"}"
+	loop := ":::requirement{#messages-reach-sessions kind=\"behavior\" serves=\"a-stored-message-survives-a-restart\"}"
+	loopDetail := "loop: a-stored-message-survives-a-restart -[parent]-> messages-reach-sessions -[serves]-> a-stored-message-survives-a-restart"
 	for _, row := range []struct {
 		name, scenario string
 		change         func(t *testing.T, dir string)
@@ -829,7 +837,46 @@ func TestScenarioRefusals(t *testing.T) {
 	}{
 		{"an unknown field in results.json", "carry",
 			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","bogus":true}]`),
-			"results.json", `result 1: json: unknown field "bogus"`},
+			"results.json", `result 1: member "/bogus" is not in the format`},
+		// R9: "No setting makes the failing example optional." The files of each commit pass the rules
+		// of spec-check tree, or the scenario is refused with the first problem.
+		{"a check with no failing example", "carry", func(t *testing.T, dir string) {
+			editApproved(t, dir, func(nodes []map[string]any) {
+				block := nodes[nodeIndex(t, nodes, "a-restart-loses-no-message")]["versions"].([]any)[0].(map[string]any)
+				block["block"] = strings.Replace(block["block"].(string), failingExample, "", 1)
+			})
+			editSpecFiles(t, dir, failingExample, "")
+		}, filepath.Join("files", "c2", "spec.md") + ":20", "a-restart-loses-no-message: no-failing-example: the check has no failing example"},
+		// R6: "Each leaf statement has one or more checks."
+		{"a leaf with no check", "carry", func(t *testing.T, dir string) { removeCheck(t, dir, "production-delivery-takes-under-a-second") },
+			filepath.Join("files", "c2", "spec.md") + ":1", "delivery-is-fast: leaf-without-check: no statement is under it and no check serves it"},
+		// R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a
+		// change that makes one."
+		{"a loop of parent and support relations in the files", "carry", func(t *testing.T, dir string) { editSpecFiles(t, dir, serving, loop) },
+			filepath.Join("files", "c2", "spec.md") + ":16", "a-stored-message-survives-a-restart: " + loopDetail},
+		{"a loop of parent and support relations in the approved spec", "carry", func(t *testing.T, dir string) {
+			looping := specgraph.Statement{ID: "messages-reach-sessions", Kind: specgraph.KindBehavior,
+				Serves: []string{"a-stored-message-survives-a-restart"}, Text: "Envoy delivers each message to the session that it is for."}
+			block, err := looping.Print()
+			if err != nil {
+				t.Fatal(err)
+			}
+			editApproved(t, dir, func(nodes []map[string]any) {
+				nodes[nodeIndex(t, nodes, "messages-reach-sessions")]["versions"].([]any)[0].(map[string]any)["block"] = block
+			})
+		}, "approved.json", loopDetail},
+		// The one strict JSON reader: RFC 8259 "JSON text … MUST be encoded using UTF-8", and a member
+		// is the format's, in its own letters, one time in its object.
+		{"a field name in capitals", "carry", replace("results.json", firstOutcome, `"OUTCOME": "pass",`),
+			"results.json", `result 1: member "/OUTCOME" is not in the format`},
+		{"one field two times, in two cases", "carry", replace("results.json", firstOutcome, `"outcome": "fail", "Outcome": "pass",`),
+			"results.json", `result 1: member "/Outcome" is not in the format`},
+		{"one field two times", "carry", replace("results.json", firstOutcome, `"outcome": "fail", "outcome": "pass",`),
+			"results.json", `member "/0/outcome" is in one object two times`},
+		{"a byte that is not UTF-8", "carry", replace("subjects.json", `"branch": "main"`, "\"branch\": \"ma\xffin\""),
+			"subjects.json", "it is not UTF-8"},
+		{"one tie two times", "carry", write("ties.json", `{"a-restart-loses-no-message":["packages/envoy/go.mod"],"a-restart-loses-no-message":["docs/x.md"]}`),
+			"ties.json", `member "/a-restart-loses-no-message" is in one object two times`},
 		{"a tie glob", "carry", write("ties.json", `{"a-restart-loses-no-message":["p/*.go"]}`),
 			"ties.json", `check "a-restart-loses-no-message": specgraph: tie entry "p/*.go" is not a repository path, <dir>/* or <dir>/**`},
 		{"a subject with a branch and a deploy", "carry",
@@ -876,6 +923,274 @@ func TestScenarioRefusals(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "missing")
 		expect(t, runBinary(t, binary, "", "state", "--scenario", missing), result{code: 2, stderr: "spec-check: " + missing + ": does not exist\n"})
 	})
+}
+
+// The approved side is read by what Dispatch refuses at a change, not by the rules of the files:
+// the person approves a level before the checks of its statements exist, so the approved spec can
+// hold a leaf with no check. The files do not hold it, and it reads not built (R10).
+func TestAnApprovedLeafWithNoCheckReadsNotBuilt(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	dir := copyScenario(t, "carry")
+	leaf := specgraph.Statement{ID: "a-session-reads-old-messages", Kind: specgraph.KindBehavior,
+		Text: "A session reads each message that Envoy stored before the session connected."}
+	addApproved(t, dir, "a-session-reads-old-messages", leaf)
+	got := runBinary(t, binary, "", "state", "--scenario", dir)
+	if got.code != 0 || got.stderr != "" {
+		t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+	}
+	line := "statement a-session-reads-old-messages: not built (the files do not hold its approved text)"
+	for _, subject := range []string{"c2, the head of listener-restart", "m2, the head of main", "c3, the head of contract-fixture", "c4, the head of listener-change"} {
+		if lines := subjectLines(got.stdout, subject); len(lines) == 0 || lines[0] != line {
+			t.Errorf("at subject %s: %q, want the first line %q", subject, lines, line)
+		}
+	}
+}
+
+// R29: "That wait ends when main holds the statement's approved text and its own checks read true
+// there." R10: "Only the checks that read the subject count." At the head of main an own check of
+// production decides nothing, so the wait reads the own checks that read main. It ends beside a
+// production check with no result, with only a production check and with no own check, and it
+// holds while an own check that reads main is false: u-b's wait, in each row.
+func TestAWaitReadsTheOwnChecksThatReadTheSubject(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	production := specgraph.Check{ID: "a-late-session-gets-messages-in-production", Serves: "a-message-reaches-a-late-session",
+		Subject: specgraph.SubjectProduction, Procedure: specgraph.ProcedureQuery,
+		Claim:          "Each session of the last hour got each message that was written before it connected.",
+		ProcedureText:  "The query reads the messages and the sessions of the last hour.\nIt returns each message that a session did not get.",
+		FailingExample: "A copy of the records with one message that a late session did not get."}
+	addProduction := func(t *testing.T, dir string) {
+		addApproved(t, dir, production.ID, production)
+		block, err := production.Print()
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := filepath.Join(dir, "files", "m1", "spec.md")
+		content, err := os.ReadFile(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, spec, append(append(content, '\n'), block...))
+	}
+	holds := "wait of u-b on a-message-survives-a-restart: holds (not met)"
+	for _, row := range []struct {
+		name   string
+		change func(t *testing.T, dir string)
+		want   []string
+	}{
+		{"a code check that is true beside a production check with no result", addProduction,
+			[]string{"statement a-message-reaches-a-late-session: met", "wait of u-a on a-message-reaches-a-late-session: ends", holds}},
+		{"a production check alone", func(t *testing.T, dir string) {
+			addProduction(t, dir)
+			removeCheck(t, dir, "a-late-session-gets-the-message")
+		}, []string{"statement a-message-reaches-a-late-session: met", "wait of u-a on a-message-reaches-a-late-session: ends", holds}},
+		{"no own check", func(t *testing.T, dir string) { removeCheck(t, dir, "a-sent-message-reaches-a-listener") },
+			[]string{"wait of u-c on envoy-delivers-messages: ends", holds}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := copyScenario(t, "wait-cycle")
+			row.change(t, dir)
+			got := runBinary(t, binary, "", "state", "--scenario", dir)
+			if got.code != 0 || got.stderr != "" {
+				t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+			}
+			lines := strings.Split(got.stdout, "\n")
+			for _, want := range row.want {
+				if !slices.Contains(lines, want) {
+					t.Errorf("no line %q in:\n%s", want, got.stdout)
+				}
+			}
+		})
+	}
+}
+
+// compare and print read approved.json through the one strict JSON reader, as state does: a member
+// written in other letters or given two times, and a byte that is not UTF-8, are exit 2 with one
+// line that names the file.
+func TestTheApprovedSpecIsReadStrictly(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	const first = `"removed": false,`
+	for _, row := range []struct{ name, old, new, fault string }{
+		{"a field name in capitals", first, `"REMOVED": false,`, `member "/nodes/0/REMOVED" is not in the format`},
+		{"one field two times, in two cases", first, `"removed": false, "Removed": true,`, `member "/nodes/0/Removed" is not in the format`},
+		{"one field two times", first, `"removed": false, "removed": true,`, `member "/nodes/0/removed" is in one object two times`},
+		{"a byte that is not UTF-8", `"id": "acme-keeps-each-order"`, "\"id\": \"acme-keeps-each-\xfforder\"", "it is not UTF-8"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			fixtureDir := copyOf(t, fixture(t, "compare", "approved-text"))
+			approved := filepath.Join(fixtureDir, "approved.json")
+			replaceIn(t, approved, row.old, row.new)
+			want := result{code: 2, stderr: "spec-check: " + approved + ": specgraph: approved spec: " + row.fault + "\n"}
+			expect(t, runBinary(t, binary, "", "compare", "--dir", filepath.Join(fixtureDir, "spec"), "--approved", approved), want)
+			expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "acme-keeps-each-order"), want)
+		})
+	}
+}
+
+// editApproved decodes approved.json of dir, lets edit change its nodes in place, and writes it
+// back.
+func editApproved(t *testing.T, dir string, edit func(nodes []map[string]any)) {
+	t.Helper()
+	path := filepath.Join(dir, "approved.json")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Nodes []map[string]any `json:"nodes"`
+	}
+	if err := json.Unmarshal(content, &file); err != nil {
+		t.Fatal(err)
+	}
+	edit(file.Nodes)
+	out, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, out)
+}
+
+// addApproved adds node, version 1 of id approved when the scenarios' nodes were, to approved.json
+// of dir.
+func addApproved(t *testing.T, dir, id string, node interface{ Print() (string, error) }) {
+	t.Helper()
+	block, err := node.Print()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "approved.json")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Nodes []map[string]any `json:"nodes"`
+	}
+	if err := json.Unmarshal(content, &file); err != nil {
+		t.Fatal(err)
+	}
+	file.Nodes = append(file.Nodes, map[string]any{"id": id, "removed": false, "partly_checked": false,
+		"versions": []any{map[string]any{"version": 1, "at": "2026-11-10T00:00:00Z", "block": block}}})
+	out, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, out)
+}
+
+// nodeIndex is the index of the node id in nodes; the test fails when nodes holds none.
+func nodeIndex(t *testing.T, nodes []map[string]any, id string) int {
+	t.Helper()
+	i := slices.IndexFunc(nodes, func(n map[string]any) bool { return n["id"] == id })
+	if i < 0 {
+		t.Fatalf("the approved spec holds no node %q", id)
+	}
+	return i
+}
+
+// removeCheck takes the check id out of the scenario at dir: its node of approved.json, its block
+// from each spec file (the block of its version 1, which the files hold), its results and its tie.
+func removeCheck(t *testing.T, dir, id string) {
+	t.Helper()
+	var file struct {
+		Nodes []map[string]any `json:"nodes"`
+	}
+	readJSONFile(t, filepath.Join(dir, "approved.json"), &file)
+	block := file.Nodes[nodeIndex(t, file.Nodes, id)]["versions"].([]any)[0].(map[string]any)["block"].(string)
+	removeNode(t, dir, id)
+	paths, err := filepath.Glob(filepath.Join(dir, "files", "*", "spec.md"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("no spec file under %s: %v", dir, err)
+	}
+	for _, path := range paths {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(content)
+		switch {
+		case strings.Contains(text, block+"\n"):
+			text = strings.Replace(text, block+"\n", "", 1)
+		case strings.Contains(text, "\n"+block):
+			text = strings.Replace(text, "\n"+block, "", 1)
+		default:
+			t.Fatalf("%s does not hold the block of %s", path, id)
+		}
+		writeFile(t, path, []byte(text))
+	}
+	var results []map[string]any
+	readJSONFile(t, filepath.Join(dir, "results.json"), &results)
+	results = slices.DeleteFunc(results, func(r map[string]any) bool { return r["check"] == id })
+	writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+	var ties map[string]any
+	readJSONFile(t, filepath.Join(dir, "ties.json"), &ties)
+	delete(ties, id)
+	writeJSONFile(t, filepath.Join(dir, "ties.json"), ties)
+}
+
+// removeNode takes the node id out of approved.json of dir.
+func removeNode(t *testing.T, dir, id string) {
+	t.Helper()
+	path := filepath.Join(dir, "approved.json")
+	var file struct {
+		Nodes []map[string]any `json:"nodes"`
+	}
+	readJSONFile(t, path, &file)
+	file.Nodes = slices.DeleteFunc(file.Nodes, func(n map[string]any) bool { return n["id"] == id })
+	writeJSONFile(t, path, file)
+}
+
+// readJSONFile decodes the JSON file at path into v.
+func readJSONFile(t *testing.T, path string, v any) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(content, v); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+}
+
+// writeJSONFile writes v as JSON to path.
+func writeJSONFile(t *testing.T, path string, v any) {
+	t.Helper()
+	out, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, out)
+}
+
+// editSpecFiles replaces old by new in each files/<commit>/spec.md of dir, and fails when one of
+// them does not hold old, so that no row passes on a change that changed nothing.
+func editSpecFiles(t *testing.T, dir, old, new string) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "files", "*", "spec.md"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("no spec file under %s: %v", dir, err)
+	}
+	for _, path := range paths {
+		replaceIn(t, path, old, new)
+	}
+}
+
+// replaceIn replaces the first old by new in the file at path, and fails when the file does not
+// hold old.
+func replaceIn(t *testing.T, path, old, new string) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), old) {
+		t.Fatalf("%s does not hold %q", path, old)
+	}
+	writeFile(t, path, []byte(strings.Replace(string(content), old, new, 1)))
 }
 
 // wantOf is the want.txt of the scenario at dir; the test fails, naming dir, when it has none or

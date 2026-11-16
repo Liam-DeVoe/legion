@@ -159,6 +159,11 @@ func statementText(s specgraph.StatementState, checks map[string]specgraph.Check
 		return fmt.Sprintf("unknown (supporter %s: unknown)", s.Detail)
 	case "supporter_not_built":
 		return fmt.Sprintf("unknown (supporter %s: not built)", s.Detail)
+	case "no_check":
+		if s.Detail == s.ID {
+			return "unknown (no check serves it)"
+		}
+		return fmt.Sprintf("unknown (statement %s has no check)", s.Detail)
 	}
 	return fmt.Sprintf("%s (%s %s)", stateWords(s.State), s.Reason, s.Detail)
 }

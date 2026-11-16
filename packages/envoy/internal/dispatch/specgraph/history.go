@@ -2,7 +2,6 @@ package specgraph
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -36,17 +35,12 @@ type FixtureCommit struct {
 	Files  map[string]string `json:"files"`
 }
 
-// ReadFixtureHistory reads a history.json. It refuses a field it does not know, text after the
-// history, a commit with no id, and an id on two commits.
+// ReadFixtureHistory reads a history.json. It refuses what decodeJSON refuses, a commit with no
+// id, and an id on two commits.
 func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
-	dec := json.NewDecoder(r)
-	dec.DisallowUnknownFields()
 	var h FixtureHistory
-	if err := dec.Decode(&h); err != nil {
+	if err := decodeJSONFrom(r, &h); err != nil {
 		return FixtureHistory{}, fmt.Errorf("specgraph: history: %w", err)
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return FixtureHistory{}, errors.New("specgraph: history: text after the history")
 	}
 	seen := map[string]bool{}
 	for _, c := range h.Commits {

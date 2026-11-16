@@ -27,17 +27,22 @@ type State struct {
 //     at that commit do not hold the approved text of the statement, or of a statement under it").
 //  2. A check that counts is false, or a supporter is not met: not_met, check_false or
 //     supporter_not_met (R10: "Not met: one of them is false").
-//  3. A check that counts is unknown, or a supporter is unknown or not built: unknown,
-//     check_unknown, supporter_unknown or supporter_not_built (R10: "Unknown: every other case").
+//  3. A check that counts is unknown, S or a statement under it is a leaf that the approved spec
+//     gives no check, or a supporter is unknown or not built: unknown, check_unknown, no_check,
+//     supporter_unknown or supporter_not_built (R10: "Unknown: every other case"; R6: "Each leaf
+//     statement has one or more checks"; R7: "silence is not a pass").
 //  4. Else met, checks_true, also when no check counts (R10: "Met: all of them are true"), and
 //     PartlyChecked when the approved spec marks S (R10: "The page then says partly checked beside
 //     met"). R37 needs that reading of no check: a statement whose only checks read production is
-//     met at the head of main before its issue is done and its production checks run.
+//     met at the head of main before its issue is done and its production checks run. A leaf
+//     whose checks all read production is such a statement, and not a leaf with no check.
 //
-// Own is the state of S over its own checks alone, which a wait on S reads (R29: "its own checks
-// read true there. The statements under it do not count for that wait"): not_built when the files
-// do not hold S's current text; met when S has no check; unknown when none of its checks reads the
-// subject; else not_met when one is false, unknown when one is unknown, and met when all are true.
+// Own is the state of S over its own checks that read the subject, which a wait on S reads (R29:
+// "its own checks read true there. The statements under it do not count for that wait"; R10:
+// "Only the checks that read the subject count"): not_built when the files do not hold S's current
+// text; else not_met when one of them is false, unknown when one is unknown, and met when all are
+// true, also when S has no check or none of its checks reads the subject. So at the head of main a
+// wait on S never waits for a check of production.
 func Derive(in Input) State {
 	checks := newCheckJudge(in)
 	s := State{Subject: in.Subject, Checks: checks.states()}

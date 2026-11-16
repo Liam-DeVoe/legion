@@ -1,8 +1,7 @@
 package specgraph
 
 import (
-	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -83,13 +82,19 @@ type scenarioResult struct {
 }
 
 // ReadScenario reads the scenario at the root of fsys, and refuses any file or field that the
-// format does not hold, with a *ScenarioError that names the file:
+// format does not hold, with a *ScenarioError that names the file. Each JSON file is read by
+// decodeJSON, which refuses a byte that is not UTF-8, a member that the format does not name in
+// its own letters, a member that one object gives two times, and text after the value:
 //
-//   - approved.json, as ReadApproved reads it;
+//   - approved.json, as ReadApproved reads it, and with no cycle of parent and support relations
+//     among the current statements (R5: "Dispatch refuses a change that makes one"). The rules of
+//     the files are not run on it: the person approves a level before the checks of its
+//     statements exist, so an approved leaf can have no check, and the files then do not hold it;
 //   - subjects.json, [{"commit","branch","deploy","now"}]: at least one subject, each with a commit,
 //     a now, and exactly one of branch and deploy;
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
-//     it that Parse reads with no problem, and no directory that no subject reads;
+//     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
+//     directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it;
 //   - ties.json, {"<check id>":["<path or glob>", …]}, each tie as NewTie takes it; a check that
 //     it does not name has a tie that is not known;
@@ -123,6 +128,9 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 
 	if s.Approved, err = readWith(fsys, "approved.json", ReadApproved); err != nil {
 		return s, err
+	}
+	if cycle := approvedLoop(s.Approved); cycle != nil {
+		return s, scenarioFault("approved.json", "loop: %s", loopDetail(cycle))
 	}
 	if s.Subjects, err = readSubjects(fsys); err != nil {
 		return s, err
@@ -190,8 +198,9 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 	return subjects, nil
 }
 
-// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md, and
-// parses them.
+// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md,
+// parses them and judges the tree by Validate, and refuses the first problem of Parse, or else of
+// Validate, with its file and line.
 func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree, error) {
 	trees := map[string]Tree{}
 	for i, sub := range subjects {
@@ -223,6 +232,9 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 			return nil, scenarioFault(dir, "holds no spec file")
 		}
 		tree, problems := Parse(files)
+		if len(problems) == 0 {
+			problems = Validate(tree, Options{})
+		}
 		if len(problems) > 0 {
 			SortProblems(problems)
 			p := problems[0]
@@ -240,6 +252,31 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 		}
 	}
 	return trees, nil
+}
+
+// approvedLoop is a cycle of parent and serves relations among the current statements of a, as
+// Validate's loop rule writes it, or nil when there is none.
+func approvedLoop(a Approved) []string {
+	current, _ := a.Current() // ReadApproved refused every block that would be a problem here
+	held := make(map[string]bool, len(current.Statements))
+	for _, s := range current.Statements {
+		held[s.ID] = true
+	}
+	edges := map[string][]edge{}
+	for _, s := range current.Statements {
+		if held[s.Parent] {
+			edges[s.ID] = append(edges[s.ID], edge{to: s.Parent, relation: "parent"})
+		}
+		for _, id := range s.Serves {
+			if held[id] {
+				edges[s.ID] = append(edges[s.ID], edge{to: id, relation: "serves"})
+			}
+		}
+	}
+	if loops := findLoops(edges); len(loops) > 0 {
+		return loops[0]
+	}
+	return nil
 }
 
 // readWith reads the file name with read, and names the file in its fault.
@@ -359,38 +396,30 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 	return units, nil
 }
 
-// readEach reads the JSON array of the file name, each element a T with no field that T does not
-// hold; a fault names the element as "<noun> <n>", from 1.
+// readEach reads the JSON array of the file name, each element a T as decodeJSON reads it; a fault
+// of an element names it as "<noun> <n>", from 1.
 func readEach[T any](fsys fs.FS, name, noun string) ([]T, error) {
-	var raw []json.RawMessage
+	var raw []jsontext.Value
 	if err := readJSON(fsys, name, &raw); err != nil {
 		return nil, err
 	}
 	all := make([]T, len(raw))
 	for i, element := range raw {
-		dec := json.NewDecoder(bytes.NewReader(element))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&all[i]); err != nil {
+		if err := decodeJSON(element, &all[i]); err != nil {
 			return nil, scenarioFault(name, "%s %d: %w", noun, i+1, err)
 		}
 	}
 	return all, nil
 }
 
-// readJSON decodes the file name into v, refusing a field that v does not hold and text after the
-// value.
+// readJSON decodes the file name into v with decodeJSON.
 func readJSON(fsys fs.FS, name string, v any) error {
 	content, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return &ScenarioError{File: name, Err: err}
 	}
-	dec := json.NewDecoder(bytes.NewReader(content))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
+	if err := decodeJSON(content, v); err != nil {
 		return &ScenarioError{File: name, Err: err}
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return scenarioFault(name, "text after the JSON value")
 	}
 	return nil
 }

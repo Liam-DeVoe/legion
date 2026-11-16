@@ -3186,6 +3186,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Otherwise it is exit 0, with `spec-check: <dir>: every text the files hold is approved; <m> of <n> approved statements are in the files at their current text`, then one line for each other approved statement: `spec-check: statement <id>: not in the files`, or `spec-check: statement <id>: the files hold approved version 1, and version 2 is current`.
   Files that do not parse are exit 2 and no comparison, since a block that does not parse is missing from the tree and its text would pass;
   so is a directory that holds no spec file, since every text of no file is approved.
+  So is an `approved.json` that `ReadApproved` refuses, and it reads JSON with the package's one strict reader (`internal/dispatch/specgraph/strictjson.go`, on `encoding/json/v2`).
+  That reader refuses a byte that is not UTF-8, a member that the format does not name in its own letters, a member that one object gives two times, and text after the value, so no JSON text reads as another.
   It does not judge the tree, which is `tree`'s work.
   `spec-check print --approved <approved.json> --id <id> [--id <id>...]` writes the current approved block of each node named, in the order named, and after a statement the block of each current check that serves it, each block once and the blocks separated by one blank line (`cmd/spec-check/print.go`):
   the block as the approved spec holds it, which `ReadApproved` checked is the block `Print` writes, so a change copies it into the files byte for byte and no agent types it (R2 of The Spec).
@@ -3217,10 +3219,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Then it prints each current approved statement in preorder with its state from `specgraph.Derive`: `statement <id>: met`, `met, partly checked`, `not built (…)`, `not met (…)` or `unknown (…)`.
   After each statement come its own checks that read the subject: `  check <id>: true (passed, counted from <commit>)`, `false (failed, counted from <commit>)` or `unknown (<reason>)`.
   With `units.json`, at the head of main it prints `wait of <unit> on <statement>: ends` or `holds (<own state>)` for each wait (`State.WaitEnds`, R29).
+  A wait reads the statement's own checks that read main (R10: "Only the checks that read the subject count"), so an own check of production holds no wait.
   After the last subject it then prints `spec-check: cycle of waits: <unit> -> <statement> -> … -> <unit>` or `spec-check: cycle of waits: none` (`specgraph.WaitCycle`).
   `--json` prints one line of JSON instead: `[]State`, or with `units.json` `{"states":[…],"cycle":[…]}`.
   A scenario it reads is exit 0 with nothing on stderr.
   A file or a field that the format does not hold, a missing file, or a spec file that does not parse is exit 2 with one line on stderr, `spec-check: <dir>/<file>: <fault>`.
+  Every JSON file of the scenario goes through the strict reader that `compare` uses, and the spec files of each commit through `Validate`, as `tree` judges them, with the file and line of the first problem.
+  Beyond what `ReadApproved` refuses, the reader refuses in `approved.json` only a loop of parent and support relations (R5), since the person approves a level before the checks of its statements exist.
+  The derivation itself reads a check whose text names no failing example as `unknown (no_failing_example)`, and a leaf with no check as `unknown`, since the pilot calls it with no reader.
   The statement, check and wait lines have no `spec-check: ` prefix: each starts with its fixed word and passes through `runnerlog.Printable`.
   `TestScenarios` runs the built binary on each scenario and compares its stdout with `want.txt` byte for byte.
   No flag of a test writes `want.txt`, so a difference is a fault of the code or a question about the spec.
