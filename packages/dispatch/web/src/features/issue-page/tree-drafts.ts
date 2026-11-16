@@ -1,7 +1,9 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
+import { primarySpec } from "../../api/issue-cache";
 import type {
   Actor,
+  Artifact,
   ArtifactWithTrees,
   Ask,
   CheckBlock,
@@ -12,7 +14,7 @@ import type {
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
-import { compareTimestamps } from "../../lib/timestamps";
+import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { referenceSpans } from "../refs/reference-spans";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
@@ -203,7 +205,7 @@ export function treeContext(
   const artifacts = reads.issue.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
   const documents = new Map(artifacts.map((artifact) => [artifact.slug, artifact]));
-  const spec = artifacts.find((artifact) => artifact.primary);
+  const spec = specOf(reads.issue);
   const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
   const nodeIdOf = (reference: string): string | undefined => {
@@ -259,6 +261,18 @@ export function treeContext(
     treeOf: (reference: string) => names.get(reference)?.text_tree,
     viewer: reads.viewer,
   };
+}
+
+/**
+ * The issue's spec: the document the issue read names by its id (`primarySpec`), the one the
+ * tree reads the blocks of (`useIssueTree.ts`), so a reference to the spec resolves against the
+ * document whose blocks are drawn. The document's own flag answers only where the issue names
+ * no spec (`""`), as `documentWord` reads it.
+ */
+function specOf(issue: IssueDetails): Artifact | undefined {
+  return issue.primary_artifact_id === ""
+    ? issue.artifacts?.find((artifact) => artifact.primary)
+    : primarySpec(issue);
 }
 
 /**
@@ -413,13 +427,14 @@ function addDocumentChips(
   }
 }
 
-/** Where each document of the issue stands among its own, by its artifact id: the spec first
- *  and the rest in the order the issue carries them, which is the order their blocks are drawn
- *  in under the issue (`ROOT_ORDER.block`). */
+/** Where each document of the issue stands among its own, by its artifact id: the spec
+ *  (`specOf`) first and the rest in the order the issue carries them, which is the order their
+ *  blocks are drawn in under the issue (`ROOT_ORDER.block`). */
 function documentRanks(reads: IssueTreeReads): ReadonlyMap<string, number> {
+  const specId = specOf(reads.issue)?.id;
   const ranks = new Map<string, number>();
   (reads.issue.artifacts ?? []).forEach((artifact, index) => {
-    ranks.set(artifact.id, artifact.primary ? 0 : index + 1);
+    ranks.set(artifact.id, artifact.id === specId ? 0 : index + 1);
   });
   return ranks;
 }
@@ -823,7 +838,7 @@ function addRequirements(
     }
   }
   // The spec, which a statement's words are a block of and its references resolve against.
-  const specId = (reads.issue.artifacts ?? []).find((artifact) => artifact.primary)?.id;
+  const specId = specOf(reads.issue)?.id;
   (reads.coverage?.requirements ?? []).forEach((requirement, index) => {
     const id = blockNodeId(context.specSlug, requirement.block_id);
     const held = drafts.get(id);
@@ -1047,14 +1062,18 @@ function standingResults(check: CheckStateReads): readonly CheckResult[] {
  *  first; this reads the times themselves, so the order is the model's own and no caller
  *  depends on the order a read happened to arrive in. */
 export function newestFirst(results: readonly CheckResult[]): readonly CheckResult[] {
-  return [...results].sort((first, second) => recordedAt(second) - recordedAt(first));
+  return [...results].sort(newerFirst);
 }
 
-/** When a result was recorded, and the oldest possible time for one whose time cannot be read,
- *  so a result with no readable time never outranks one that has one. */
-function recordedAt(result: CheckResult): number {
-  const time = Date.parse(result.created_at);
-  return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
+/** Orders two results newest first by the time each was recorded, to the microsecond the server
+ *  writes (`compareTimestamps`), which `Date.parse` would cut to the millisecond and so tie. A
+ *  time that cannot be read (`isTimestamp`) is the oldest possible, so a result with no readable
+ *  time never outranks one that has one, two such tie, and no time throws. */
+function newerFirst(first: CheckResult, second: CheckResult): number {
+  const firstRead = isTimestamp(first.created_at);
+  const secondRead = isTimestamp(second.created_at);
+  if (firstRead && secondRead) return compareTimestamps(second.created_at, first.created_at);
+  return Number(secondRead) - Number(firstRead);
 }
 
 /**

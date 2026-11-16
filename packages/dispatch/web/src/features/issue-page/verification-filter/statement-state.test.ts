@@ -231,6 +231,38 @@ test("the commit the page names is the newest standing result's, whatever order 
   expect(namedCommit([newer, older])).toBe(COMMIT);
 });
 
+// The server writes its times to the microsecond, and `Date.parse` reads them to the
+// millisecond: two results recorded inside one millisecond are still read newest first by the
+// server's own time, and not left in the order the read happened to send them in.
+test("of two results recorded in one millisecond, the later microsecond is the newest", () => {
+  const rerun = check({
+    block_id: "c-one",
+    results: [
+      result({
+        commit_sha: OTHER_COMMIT,
+        created_at: "2026-11-05T10:00:00.000100Z",
+        failed: 1,
+        id: "fail-first",
+        verdict: "fail",
+      }),
+      result({ commit_sha: COMMIT, created_at: "2026-11-05T10:00:00.000900Z", id: "pass-later" }),
+    ],
+  });
+
+  expect(namedCommit([rerun])).toBe(COMMIT);
+});
+
+// A result whose time the page cannot read is older than every result whose time it can, wherever
+// it arrives, so it never names the commit over a result the page can place; and it throws nothing.
+test("a result whose time is not a timestamp is the oldest, wherever it arrives", () => {
+  const unread = result({ commit_sha: OTHER_COMMIT, created_at: "not a time", id: "unread" });
+  const placed = result({ created_at: "2026-11-01T00:00:00Z", id: "placed" });
+
+  expect(namedCommit([check({ block_id: "c-one", results: [unread, placed] })])).toBe(COMMIT);
+  expect(namedCommit([check({ block_id: "c-one", results: [placed, unread] })])).toBe(COMMIT);
+  expect(namedCommit([check({ block_id: "c-one", results: [unread] })])).toBe(OTHER_COMMIT);
+});
+
 // A payload with no answer over the check's results at all is the page's own blindness, and no
 // verdict of the check's: it reads "Could not read" and proves nothing.
 test("a check whose results the page cannot read draws Could not read and no met statement", () => {

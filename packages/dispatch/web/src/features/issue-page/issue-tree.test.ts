@@ -912,6 +912,43 @@ test("no document is a node, and each typed block and child sits under the issue
   ]);
 });
 
+// R3, R4: the spec is the document the issue read names by its id (`primary_artifact_id`), the
+// one the page reads the blocks of (`useIssueTree.ts`), whichever document carries the primary
+// flag: a reference to the spec resolves to a block of the document the id names, and that
+// document's blocks are drawn first.
+test("the spec is the document the issue names by its id, not the one flagged primary", () => {
+  const flagged = artifact("artifact-old-spec", "old-spec-md", "old-spec.md", true);
+  const named = artifact("artifact-spec", SPEC, "spec.md");
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const root = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first.")]),
+    documents: [
+      { artifactId: flagged.id, blocks: [block("o1", "callout")] },
+      { artifactId: named.id, blocks: [block("summary", "callout"), block("r1", "requirement")] },
+      {
+        artifactId: plan.id,
+        blocks: [
+          block("t1", "plan_task", { serves: `dispatch://${KEY}/spec#b-r1` }),
+          block("t2", "plan_task"),
+        ],
+      },
+    ],
+    issue: { ...issueDetails([flagged, named, plan]), primary_artifact_id: named.id },
+  });
+
+  expect(placementsOf(root, blockNodeId("plan-md", "t1")).map((one) => one.parent)).toEqual([
+    blockNodeId(SPEC, "r1"),
+  ]);
+  expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.type).toBe("requirement");
+  expect(nodeOf(root, blockNodeId("old-spec-md", "r1"))).toBeUndefined();
+  expect(root.children.map((child) => child.id)).toEqual([
+    blockNodeId(SPEC, "summary"),
+    blockNodeId("old-spec-md", "o1"),
+    blockNodeId("plan-md", "t2"),
+    blockNodeId(SPEC, "r1"),
+  ]);
+});
+
 // The coverage read names a requirement by its words with every `://` word left out
 // (`blockWords`, `api/results.go`), so the document a requirement cites is read from the
 // block's own source, which the reference read names it by. A document of no role is named by
