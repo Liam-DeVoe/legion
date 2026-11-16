@@ -1,6 +1,14 @@
-import type { UseQueryResult } from "@tanstack/react-query";
-import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import type { MutationKey, UseQueryResult } from "@tanstack/react-query";
+import { hashKey, useQueryClient } from "@tanstack/react-query";
+import {
+  type FormEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
@@ -26,6 +34,14 @@ import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
 import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
+import {
+  onQuote,
+  ownWords,
+  placeCaret,
+  type QuoteRef,
+  takeQuote,
+  withQuote,
+} from "../threads/quote-reply";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -85,10 +101,15 @@ export type AskThreadQuery = UseQueryResult<AskRead, Error>;
 export function AskReplyComposer({
   ask,
   createReply: reply = createReply,
+  quoteKey,
   uploadOwner,
 }: {
   ask: Ask;
   createReply?: CreateReply;
+  /** The name a Quote reply on the ask's record or its replies hands this box its words under
+   *  (`quoteInto` in `threads/quote-reply.ts`): the card's own, so the box beside the words takes
+   *  them where the page draws the ask twice. */
+  quoteKey?: MutationKey;
   /** Where a file pasted or dropped into the reply goes: the ask's issue, or its document's
    *  project. Without one the field takes a paste as text. */
   uploadOwner?: ArtifactOwner;
@@ -104,6 +125,37 @@ export function AskReplyComposer({
   const { sending } = useSending(mutationKey);
   const upload = useDraftUpload((text) => setBody((current) => appendToDraft(current, text)));
   const uploading = upload.pending > 0;
+  // A Quote reply's words go at the end of the draft, and the cursor waits on the empty line
+  // under them once the field holds them: one handed over while this box is mounted wakes it,
+  // and one that opened the box (`AskThreadDisclosure`) is taken as it mounts.
+  const field = useRef<HTMLTextAreaElement>(null);
+  const quoteCaret = useRef<number | null>(null);
+  const quoteName = quoteKey === undefined ? undefined : hashKey(quoteKey);
+  const [quoteWake, setQuoteWake] = useState(0);
+  useEffect(
+    () =>
+      quoteName === undefined
+        ? undefined
+        : onQuote(quoteName, () => setQuoteWake((wake) => wake + 1)),
+    [quoteName]
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `quoteWake` is the trigger
+  useEffect(() => {
+    const blocks = takeQuote(quoteName);
+    if (blocks === undefined) return;
+    setBody((current) => {
+      const quoted = withQuote(current, blocks);
+      if (quoted === null) return current;
+      quoteCaret.current = quoted.caret;
+      return quoted.text;
+    });
+  }, [quoteName, quoteWake, setBody]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the draft a quote wrote is the trigger
+  useLayoutEffect(() => {
+    if (quoteCaret.current === null || field.current === null) return;
+    placeCaret(field.current, quoteCaret.current);
+    quoteCaret.current = null;
+  }, [body]);
   // The form shows a refused reply itself, with Retry, under the draft it kept.
   const submit = useKeyedWrite({
     write: (text: string, bounds) => {
@@ -126,12 +178,12 @@ export function AskReplyComposer({
 
   const submitReply = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const text = body.trim();
-    // A reply sent while a picture is still uploading would go without it.
-    if (text === "" || sending || uploading) {
+    // A reply sent while a picture is still uploading would go without it; a quote alone
+    // (`> ` lines) is the words the reply answers, not a reply.
+    if (ownWords(body).trim() === "" || sending || uploading) {
       return;
     }
-    submit.mutate(text);
+    submit.mutate(body.trim());
   };
 
   return (
@@ -150,13 +202,14 @@ export function AskReplyComposer({
           onPaste={
             uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
           }
+          ref={field}
           value={body}
         />
       </label>
       <DraftUploadStatus upload={upload} />
       <button
         className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} disabled:cursor-not-allowed disabled:opacity-50`}
-        disabled={body.trim() === "" || sending || uploading}
+        disabled={ownWords(body).trim() === "" || sending || uploading}
         type="submit"
       >
         {sending ? "Replying…" : "Reply"}
@@ -197,6 +250,9 @@ export interface AskThreadProps {
   /** The order the thread reads in: the reader's own choice, which the card holds
    *  (`threads/thread-order.ts`). */
   order: ThreadOrder;
+  /** An answered ask's thread as a text of Quote reply (`AskCard`): `ref` records the thread's
+   *  replies as words a reader may quote, and `key` names the reply box their quote goes to. */
+  quote?: { readonly key: MutationKey; readonly ref: QuoteRef };
   /** The ids of the replies the reader has not read (`unreadWrites` in
    *  `threads/thread-layout.ts`): an unread reply is never folded away. */
   unread?: ReadonlySet<string>;
@@ -221,6 +277,7 @@ export function AskThread({
   markNewest,
   currentReplyId,
   order,
+  quote,
   unread,
 }: AskThreadProps): ReactNode {
   const replies = thread.data?.replies ?? [];
@@ -268,7 +325,12 @@ export function AskThread({
   );
   const composer =
     showComposer && ask.state === "answered" ? (
-      <AskReplyComposer ask={ask} createReply={reply} uploadOwner={uploadOwner} />
+      <AskReplyComposer
+        ask={ask}
+        createReply={reply}
+        quoteKey={quote?.key}
+        uploadOwner={uploadOwner}
+      />
     ) : null;
 
   return (
@@ -276,6 +338,7 @@ export function AskThread({
       aria-label="Replies"
       className={embedded ? "space-y-3" : `mt-4 space-y-3 border-t pt-4 ${borderDefault}`}
       data-testid={`thread-${ask.id}`}
+      ref={quote?.ref}
     >
       {/* Three slots, so a change of order moves the ends and leaves the replies where they
           are: the box the reader writes in sits next to the newest message, the fold over the

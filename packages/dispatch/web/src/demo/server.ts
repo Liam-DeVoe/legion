@@ -14,7 +14,9 @@ import type { Ask, AskRead, Comment, DispatchEvent, InboxRow, Message } from "..
 import type { AskRewrite, Definition } from "../features/inbox/ask-rewrite";
 import { DOCUMENT_ROUTES } from "./documents";
 import {
+  AGENT_MESSAGES,
   AGENTS,
+  ASK_REPLIES,
   ASKS,
   type DemoAsk,
   definitionOf,
@@ -70,6 +72,7 @@ export class DemoServer {
       this.asks.set(plan.row.id, structuredClone(plan.row));
       this.plans.set(plan.row.id, plan);
     }
+    for (const [id, list] of Object.entries(ASK_REPLIES)) this.replies.set(id, [...list]);
     const kept = readKept();
     if (kept !== null) {
       for (const [id, row] of Object.entries(kept.asks)) this.asks.set(id, row);
@@ -202,6 +205,23 @@ export class DemoServer {
         ),
     },
     { method: "GET", pattern: /^\/api\/v1\/agents$/, answer: () => ok(AGENTS) },
+    {
+      // The reader's conversation with a session, which its row on the Agents page draws.
+      method: "GET",
+      pattern: /^\/api\/v1\/agents\/([^/]+)\/messages$/,
+      answer: ([session]) => ok(AGENT_MESSAGES[session] ?? []),
+    },
+    {
+      // A message to a session, as a Quote reply on the Agents page ends in: taken and kept
+      // nowhere, as a reply to an issue's message is.
+      method: "POST",
+      pattern: /^\/api\/v1\/agents\/([^/]+)\/messages$/,
+      answer: ([session], _, body) =>
+        this.message(null, {
+          ...(body as { body: string; in_reply_to?: string | null }),
+          target: `session:${session}`,
+        }),
+    },
     { method: "GET", pattern: /^\/api\/v1\/me\/state$/, answer: () => ok({}) },
     { method: "GET", pattern: /^\/api\/v1\/me\/agents\/state$/, answer: () => ok({}) },
     {
@@ -475,7 +495,8 @@ export class DemoServer {
         askId,
         (row) => ({
           ...row,
-          waiting_on: "agent",
+          // A question back hands the turn to the asker; a reply under an answer moves no turn.
+          ...(row.state === "open" ? { waiting_on: "agent" as const } : {}),
           last_reply: { author: comment.author, created_at: comment.created_at },
         }),
         "comment.created"
@@ -484,7 +505,10 @@ export class DemoServer {
     return { status: 201, body: comment };
   }
 
-  private message(key: string, input: { body: string; in_reply_to?: string | null }): DemoAnswer {
+  private message(
+    key: string | null,
+    input: { body: string; in_reply_to?: string | null; target?: string }
+  ): DemoAnswer {
     const message = {
       author: { id: READER, kind: "user" },
       body: input.body,
@@ -495,7 +519,7 @@ export class DemoServer {
       in_reply_to: input.in_reply_to ?? null,
       issue_key: key,
       reply_block: null,
-      target: null,
+      target: input.target ?? null,
     } as unknown as Message;
     return { status: 201, body: message };
   }

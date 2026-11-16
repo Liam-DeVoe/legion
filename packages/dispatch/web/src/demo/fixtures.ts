@@ -272,6 +272,9 @@ const DRY_RUN_ORIGINAL = {
 
 /** The question handed on from one person to another. */
 export const HANDED_ON_ASK_ID = "a7000000-0000-4000-8000-000000000007";
+/** The question the reader answered, with the agent's reply under the answer: a Quote reply on
+ *  its words goes into the reply box of its thread. */
+export const ANSWERED_ASK_ID = "a8000000-0000-4000-8000-000000000008";
 
 export const ASKS: DemoAsk[] = [
   {
@@ -408,6 +411,26 @@ export const ASKS: DemoAsk[] = [
       waiting_on_person: "bruno",
     }),
   },
+  {
+    // A question the reader answered three hours ago, on PANE-2's Conversation tab; it is no row
+    // of the Inbox, which lists open questions.
+    row: ask(ANSWERED_ASK_ID, "PANE-2", TOOL, 60 * 4, {
+      question: "Should `--dry-run` also print the leases it would skip?",
+      options: [
+        { label: "Print them", description: "One line for each lease the tool leaves alone." },
+        { label: "Leave them out", description: "Only the leases it would hand back." },
+      ],
+      urgency: "low",
+      state: "answered",
+      waiting_on: undefined,
+      answer: {
+        at: minutesAgo(60 * 3),
+        selected: ["Print them"],
+        text: null,
+        user: READER,
+      },
+    }),
+  },
 ];
 
 /** The comments of each issue's Conversation tab, the reviewer's rewrite on the one it rewrote
@@ -446,6 +469,34 @@ export const COMMENTS: Record<string, (Comment & { rewrite?: CommentRewrite })[]
   ],
 };
 
+/** The replies under each ask the fixtures open with, oldest first: the lease-tool implementer's
+ *  reply under the reader's answer, whose formatting a Quote reply keeps. */
+export const ASK_REPLIES: Record<string, Comment[]> = {
+  [ANSWERED_ASK_ID]: [
+    {
+      anchor: null,
+      answers: null,
+      artifact_id: null,
+      ask_id: ANSWERED_ASK_ID,
+      author: TOOL,
+      body: "Done in the next build. `--dry-run` now prints each lease it leaves alone, after the leases it would hand back:\n\n- `skip` and the lease's id, for a lease another holder has\n- `stale` and the id, for a lease past its renewal\n\n**One thing changed:** the summary line counts the skipped leases too.",
+      created_at: minutesAgo(60 * 2),
+      deliveries: [],
+      edited_at: null,
+      id: "c8000000-0000-4000-8000-000000000001",
+      issue_key: "PANE-2",
+      mentions: [],
+      reply_block: null,
+      reply_to: null,
+      resolved: false,
+      resolved_at: null,
+      resolved_by: null,
+      suggestion: null,
+      turn: "human",
+    } as unknown as Comment,
+  ],
+};
+
 /** The messages of each issue's Conversation tab: a note the rollout architect wrote on PANE-3,
  *  whose words a Quote reply answers from the tab's composer. */
 export const MESSAGES: Record<string, MessageRead[]> = {
@@ -464,6 +515,42 @@ export const MESSAGES: Record<string, MessageRead[]> = {
         target: null,
       },
       replies: [],
+    } as unknown as MessageRead,
+  ],
+};
+
+/** The reader's conversation with each session, as its row on the Agents page draws it: a
+ *  question the reader sent the lease-mirror reviewer and the session's reply, whose words a
+ *  Quote reply answers from the row's own composer. */
+export const AGENT_MESSAGES: Record<string, MessageRead[]> = {
+  [REVIEWER.id]: [
+    {
+      message: {
+        author: { id: READER, kind: "user" },
+        body: "Which checks of the lease mirror's spec have you read so far?",
+        broadcast_id: null,
+        created_at: minutesAgo(50),
+        deliveries: [],
+        id: "e9000000-0000-4000-8000-000000000001",
+        in_reply_to: null,
+        issue_key: null,
+        reply_block: null,
+        target: `session:${REVIEWER.id}`,
+      },
+      replies: [
+        {
+          author: REVIEWER,
+          body: "R1 and R2 so far. Both hold: the mirror keeps **one lease per shard**, and `renew` runs every 20 seconds.\n\nR3 waits on the flip audit, so I have not read it.",
+          broadcast_id: null,
+          created_at: minutesAgo(46),
+          deliveries: [],
+          id: "e9000000-0000-4000-8000-000000000002",
+          in_reply_to: "e9000000-0000-4000-8000-000000000001",
+          issue_key: null,
+          reply_block: null,
+          target: null,
+        },
+      ],
     } as unknown as MessageRead,
   ],
 };

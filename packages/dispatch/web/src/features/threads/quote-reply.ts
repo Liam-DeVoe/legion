@@ -1,43 +1,57 @@
 // Quote reply (prototype, `e2e/ask-card-demo/README.md`): the reader selects words of an ask, a
-// comment or a message and presses Quote reply on the selection bar (`SelectionBar.tsx`), or `q`.
-// The reply box of that same thread opens, or is used where it is open, and takes the words as a
-// Markdown quote at the end of what it holds, with the cursor on the empty line under it.
+// comment, a reply or a message and presses Quote reply on the selection bar
+// (`SelectionBar.tsx`), or `q`. The reply box of that same thread opens, or is used where it is
+// open, and takes the words as a Markdown quote of the Markdown that draws them
+// (`selection-markdown.ts`), at the end of what it holds, with the cursor on the empty line under
+// it.
 import { hashKey, type MutationKey } from "@tanstack/react-query";
-import { type RefObject, useLayoutEffect } from "react";
+import { type RefObject, useCallback, useLayoutEffect, useRef } from "react";
 
 import { type KeyBinding, type KeymapScope, useKeymap } from "../shell/keymap";
+import { selectionMarkdown } from "./selection-markdown";
 
 /**
- * The selected text as Markdown quote lines, read as the page shows it rather than from the
- * source Markdown: each line of the selection becomes a paragraph of the quote, `> ` before it
- * and a bare `>` between two of them, so the lines the page draws apart stay apart where the quote
- * is drawn. Blank and trailing space goes; an empty selection quotes nothing (`""`).
+ * The Markdown blocks of a selection (`selectionMarkdown`) as one Markdown quote: each line of a
+ * block after `> ` (a bare `>` for a line a code block leaves empty), and a bare `>` line between
+ * two blocks, so each block the page draws apart stays its own where the quote is drawn. No block
+ * quotes nothing (`""`).
  */
-export function quoteMarkdown(selected: string): string {
-  return selected
-    .replace(/\r\n?/g, "\n")
-    .replace(/\u00a0/g, " ")
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim() !== "")
-    .map((line) => `> ${line}`)
+export function quoteBlocks(blocks: readonly string[]): string {
+  return blocks
+    .filter((block) => block.trim() !== "")
+    .map((block) =>
+      block
+        .split("\n")
+        .map((line) => (line === "" ? ">" : `> ${line}`))
+        .join("\n")
+    )
     .join("\n>\n");
 }
 
 /**
- * What a reply box holds once `selected` is quoted into it: `current`, then a blank line where it
+ * What a reply box holds once `blocks` are quoted into it: `current`, then a blank line where it
  * holds any text, then the quote and a blank line, and where the cursor goes, the empty line
  * under that. Null where the selection quotes nothing.
  */
 export function withQuote(
   current: string,
-  selected: string
+  blocks: readonly string[]
 ): { readonly caret: number; readonly text: string } | null {
-  const quote = quoteMarkdown(selected);
+  const quote = quoteBlocks(blocks);
   if (quote === "") return null;
   const kept = current.trimEnd();
   const text = `${kept === "" ? "" : `${kept}\n\n`}${quote}\n\n`;
   return { caret: text.length, text };
+}
+
+/** The lines of a box's text that are the reader's own words: every line but a quote's (`>`,
+ *  after at most three spaces, as Markdown reads one). What a check of what the reader wrote
+ *  reads - an empty answer, an answer shaped as a question - so a quote is never taken for it. */
+export function ownWords(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !/^ {0,3}>/.test(line))
+    .join("\n");
 }
 
 /** Grows a reply box to show what a quote put in it, as one the reader typed into grows. */
@@ -62,29 +76,56 @@ export function placeCaret(field: HTMLTextAreaElement, caret: number): void {
 
 /** What one text a reader may quote does with a selection of its words. */
 export interface QuoteTarget {
-  /** Quotes `selected` into the reply box of the text's own thread: opens it, or takes the one
-   *  open, and gives it the focus. */
-  readonly quote: (selected: string) => void;
+  /** Quotes the selection's Markdown blocks into the reply box of the text's own thread: opens
+   *  it, or takes the one open, and gives it the focus. */
+  readonly quote: (blocks: readonly string[]) => void;
   /** Present where the text offers Define (an ask's words): opens it on the selection. */
   readonly define?: () => void;
 }
 
-const targets = new WeakMap<Element, QuoteTarget>();
+/** Each text's target; `null` for a text whose thread takes no reply now, which no text around
+ *  it answers for either. */
+const targets = new WeakMap<Element, QuoteTarget | null>();
 
 /** Records `target` for the text drawn under `ref`, again on every commit so it reaches that
- *  render's state; `undefined` records nothing. A selection is the innermost text's that holds it. */
-export function useQuoteTarget(
-  ref: RefObject<Element | null>,
-  target: QuoteTarget | undefined
-): void {
+ *  render's state: `null` while its thread takes no reply (a decided suggestion's, a resolved
+ *  ask's, one whose send is out). A selection is the innermost recorded text's that holds it. */
+export function useQuoteTarget(ref: RefObject<Element | null>, target: QuoteTarget | null): void {
   useLayoutEffect(() => {
     const element = ref.current;
-    if (element === null || target === undefined) return undefined;
+    if (element === null) return undefined;
     targets.set(element, target);
     return () => {
       if (targets.get(element) === target) targets.delete(element);
     };
   });
+}
+
+/** The callback ref `useQuoteTargetRef` hands out: it records the element it is given, and the
+ *  function it answers lets the element go. */
+export type QuoteRef = (element: Element | null) => () => void;
+
+/** `useQuoteTarget` for a text drawn in more than one element - an answered ask's record and the
+ *  thread under it, each another component's - as the callback ref each of them takes. */
+export function useQuoteTargetRef(target: QuoteTarget | null): QuoteRef {
+  const elements = useRef(new Set<Element>());
+  const current = useRef(target);
+  current.current = target;
+  useLayoutEffect(() => {
+    for (const element of elements.current) targets.set(element, target);
+  });
+  return useCallback((element: Element | null) => {
+    const held = elements.current;
+    if (element !== null) {
+      held.add(element);
+      targets.set(element, current.current);
+    }
+    return () => {
+      if (element === null) return;
+      held.delete(element);
+      targets.delete(element);
+    };
+  }, []);
 }
 
 /** The `<input>` types that take no typed text: while one of them has the focus, a selection on
@@ -108,36 +149,44 @@ function typingIn(element: Element | null): boolean {
   return element instanceof HTMLElement && element.isContentEditable;
 }
 
-/** A selection of words the reader may quote: the text that holds them, the words as the page
- *  shows them, and where they and that text stand on screen: the whole selection's box, its first
- *  line's, and the text's own column. */
+/** A selection of words the reader may quote: the text that holds them, their Markdown blocks,
+ *  and where they and that text stand on screen: the whole selection's box, its first line's,
+ *  and the text's own column. */
 export interface QuotableSelection {
   readonly target: QuoteTarget;
-  readonly text: string;
+  readonly blocks: readonly string[];
   readonly rect: DOMRect;
   readonly firstLine: DOMRect;
   readonly column: DOMRect;
 }
 
-/** The selection, where it lies inside one text a reader may quote and no field has the focus:
- *  a document's editor draws its own bar, and a field's words are the reader's own. */
+/** The selection, where it lies inside one text a reader may quote and no field has the focus.
+ *  A field's words are the reader's own, and a document's text stays out, edited or only read
+ *  (its editor's root, `.ProseMirror`): the document draws its own bar, and a decision block's
+ *  words are the document's. */
 export function quotableSelection(): QuotableSelection | null {
   if (typingIn(document.activeElement)) return null;
   const selection = window.getSelection();
   if (selection === null || selection.rangeCount === 0 || selection.isCollapsed) return null;
   const range = selection.getRangeAt(0);
   for (let node: Node | null = range.commonAncestorContainer; node !== null; ) {
-    if (node instanceof HTMLElement && node.isContentEditable) return null;
-    const target = node instanceof Element ? targets.get(node) : undefined;
-    if (target !== undefined && node instanceof Element) {
-      const text = selection.toString();
-      if (quoteMarkdown(text) === "") return null;
+    if (
+      node instanceof HTMLElement &&
+      (node.isContentEditable || node.classList.contains("ProseMirror"))
+    ) {
+      return null;
+    }
+    if (node instanceof Element && targets.has(node)) {
+      const target = targets.get(node);
+      if (target == null) return null;
+      const blocks = selectionMarkdown(range, node);
+      if (quoteBlocks(blocks) === "") return null;
       // A text drawn without a box of its own (`QuotableText`) stands in its parent's column.
       const box = node.getBoundingClientRect();
       const column = box.width > 0 ? box : (node.parentElement?.getBoundingClientRect() ?? box);
       const rect = range.getBoundingClientRect();
       const firstLine = [...range.getClientRects()].find((line) => line.width > 0) ?? rect;
-      return { column, firstLine, rect, target, text };
+      return { blocks, column, firstLine, rect, target };
     }
     node = node.parentNode;
   }
@@ -148,12 +197,12 @@ export function quotableSelection(): QuotableSelection | null {
 export function quoteSelection(): boolean {
   const selected = quotableSelection();
   if (selected === null) return false;
-  selected.target.quote(selected.text);
+  selected.target.quote(selected.blocks);
   return true;
 }
 
-/** `q`, in `scope`'s section of the shortcut help: quotes the selected words of an ask, a comment
- *  or a message on the page in a reply. */
+/** `q`, in `scope`'s section of the shortcut help: quotes the selected words of an ask, a comment,
+ *  a reply or a message on the page in a reply. */
 export function useQuoteReplyKey(scope: KeymapScope): void {
   useKeymap(scope, [quoteReplyKey("Quote selected words in a reply", quoteSelection)]);
 }
@@ -181,22 +230,22 @@ export function quoteReplyKey(
 
 /** The selection each composer is to quote, by its send's name, until the composer takes it: one
  *  that is mounted at once, one the press opens as it mounts. */
-const waiting = new Map<string, string>();
-const wakers = new Map<string, () => void>();
+const waiting = new Map<string, readonly string[]>();
+const wakers = new Map<string, Set<() => void>>();
 
-/** Hands `selected` to the composer whose send is named `mutationKey`, mounted or about to be. */
-export function quoteInto(mutationKey: MutationKey, selected: string): void {
+/** Hands `blocks` to the composer whose send is named `mutationKey`, mounted or about to be. */
+export function quoteInto(mutationKey: MutationKey, blocks: readonly string[]): void {
   const name = hashKey(mutationKey);
-  waiting.set(name, selected);
-  wakers.get(name)?.();
+  waiting.set(name, blocks);
+  for (const wake of wakers.get(name) ?? []) wake();
 }
 
 /** The selection waiting for the composer named `name`, taken; undefined where none waits. */
-export function takeQuote(name: string | undefined): string | undefined {
+export function takeQuote(name: string | undefined): readonly string[] | undefined {
   if (name === undefined) return undefined;
-  const selected = waiting.get(name);
+  const blocks = waiting.get(name);
   waiting.delete(name);
-  return selected;
+  return blocks;
 }
 
 /** Whether a selection waits for the composer named `name`, left where it is. */
@@ -204,10 +253,14 @@ export function quoteWaiting(name: string | undefined): boolean {
   return name !== undefined && waiting.has(name);
 }
 
-/** Calls `wake` whenever a selection is handed to the mounted composer named `name`. */
+/** Calls `wake` whenever a selection is handed to the composer named `name`: the composer itself,
+ *  and a control that opens it (`AskThreadDisclosure`'s Write a reply). */
 export function onQuote(name: string, wake: () => void): () => void {
-  wakers.set(name, wake);
+  const set = wakers.get(name) ?? new Set();
+  set.add(wake);
+  wakers.set(name, set);
   return () => {
-    if (wakers.get(name) === wake) wakers.delete(name);
+    set.delete(wake);
+    if (set.size === 0 && wakers.get(name) === set) wakers.delete(name);
   };
 }

@@ -46,6 +46,10 @@ const MESSAGE = '[data-turn="message:e3000000-0000-4000-8000-000000000001"]';
 /** The selection bar over words selected outside a document, and the Conversation's composer. */
 const BAR = "[data-selection-bar]";
 const DOCKED = 'form[aria-label="Comment composer"] textarea[aria-label="Comment"]';
+/** PANE-2's question the reader answered, on its Conversation tab, with the reply under it. */
+const ANSWERED = "a8000000-0000-4000-8000-000000000008";
+/** The lease-mirror reviewer's row on the Agents page. */
+const REVIEWER_ROW = '[data-agent-row="5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b"]';
 
 /** PANE-5's Conversation tab with the rewritten comment's thread open. */
 async function openComment(page: Page): Promise<void> {
@@ -74,6 +78,8 @@ interface Shot {
   take: (page: Page) => Promise<void>;
   /** Draws the text cursor, where the picture is of where it waits. */
   caret?: boolean;
+  /** False for a run of checks that leaves no picture. */
+  picture?: boolean;
 }
 
 interface Report {
@@ -197,9 +203,9 @@ async function selectInAsk(page: Page): Promise<void> {
   );
 }
 
-/** Those two paragraphs quoted as the page shows them: the bold of the recommendation is no `**`. */
+/** Those two paragraphs quoted in the Markdown that draws them: the recommendation keeps its bold. */
 const ASK_QUOTE =
-  "> The R3 audit decides whether the mirror retries a refused lease or hands it back at once, so until it closes the flag prints today's retries.\n>\n> Recommended: ship it as is. It writes nothing, so the audit cannot make it wrong, only out of date for a week.\n\n";
+  "> The R3 audit decides whether the mirror retries a refused lease or hands it back at once, so until it closes the flag prints today's retries.\n>\n> **Recommended: ship it as is.** It writes nothing, so the audit cannot make it wrong, only out of date for a week.\n\n";
 
 /** Presses Rewrite on the card in the reading pane and waits for the badge to say `state`. */
 async function rewrite(page: Page, id: string, state: "done" | "failed"): Promise<void> {
@@ -588,7 +594,9 @@ const shots: Shot[] = [
       // The answer box holds a line the reader typed; the quote of the question's words follows.
       await inbox(page, FLIP);
       const answer = `${card(FLIP)} [data-ask-answer]`;
+      const action = page.locator(`${card(FLIP)} [data-ask-action]`);
       await page.locator(answer).fill("Flip. One thing I can't read here:");
+      const refusedBefore = await action.getAttribute("aria-disabled");
       await drag(page, `${card(FLIP)} [data-ask-question]`, "go with B per the train?");
       await page.keyboard.press("q");
       await page.waitForTimeout(400);
@@ -597,6 +605,13 @@ const shots: Shot[] = [
         answer,
         "Flip. One thing I can't read here:\n\n> go with B per the train?\n\n",
         "a quote goes at the end of what the box already held, after a blank line"
+      );
+      // The quote ends in a question mark and the reader's own line does not: Answer stands as
+      // their line alone leaves it, refused until an option is picked.
+      const refusedAfter = await action.getAttribute("aria-disabled");
+      check(
+        refusedBefore === "true" && refusedAfter === "true",
+        `Answer reads the reader's own line, not the quote's (refused before the quote: ${refusedBefore}, after: ${refusedAfter})`
       );
       await rest(page);
     },
@@ -626,6 +641,85 @@ const shots: Shot[] = [
         "the composer replies to the message the words were quoted from"
       );
       await rest(page);
+    },
+  },
+  {
+    name: "ask-card-29-quote-answered-thread",
+    viewport: DESKTOP,
+    caret: true,
+    take: async (page) => {
+      const record = `main [data-testid="ask-${ANSWERED}"]`;
+      const thread = `main [data-testid="thread-${ANSWERED}"]`;
+      await open(page, "/issues/PANE-2/conversation", `${thread} .dispatch-markdown`);
+      // The answered question at the top of the window, the agent's reply under its answer.
+      await page.locator(record).evaluate((element) => element.scrollIntoView({ block: "start" }));
+      await page.evaluate(() => window.scrollBy(0, -16));
+      await page.waitForTimeout(400);
+      await drag(page, thread, "skip", "the skipped leases too.");
+      const actions = await page
+        .locator(`${BAR} [data-selection-action]`)
+        .evaluateAll((all) => all.map((action) => action.textContent));
+      check(
+        actions.join(",") === "Quote replyq",
+        `the bar over an answered ask's thread offers Quote reply alone (${actions.join(",")})`
+      );
+      await page.keyboard.press("q");
+      await page.waitForTimeout(500);
+      await checkQuoted(
+        page,
+        `main [data-turn="ask:${ANSWERED}"] textarea`,
+        "> - `skip` and the lease's id, for a lease another holder has\n>\n> - `stale` and the id, for a lease past its renewal\n>\n> **One thing changed:** the summary line counts the skipped leases too.\n\n",
+        "q on a reply under an answered ask opens its thread's reply box and quotes the words there, their list items, code and bold kept"
+      );
+      await rest(page);
+    },
+  },
+  {
+    name: "quote-check-agents-page",
+    viewport: DESKTOP,
+    picture: false,
+    take: async (page) => {
+      await open(page, "/agents", `${REVIEWER_ROW} [data-agent-toggle]`);
+      await page.locator(`${REVIEWER_ROW} [data-agent-toggle]`).click();
+      await page.locator(`${REVIEWER_ROW} .dispatch-markdown`).first().waitFor();
+      await page.waitForTimeout(600);
+      await drag(page, REVIEWER_ROW, "Both hold", "every 20 seconds.");
+      await page.keyboard.press("q");
+      await page.waitForTimeout(500);
+      await checkQuoted(
+        page,
+        `${REVIEWER_ROW} [data-agent-composer] textarea`,
+        "> Both hold: the mirror keeps **one lease per shard**, and `renew` runs every 20 seconds.\n\n",
+        "q on a message of the Agents page quotes it in the row's composer"
+      );
+      const composer = await page.locator(`${REVIEWER_ROW} [data-agent-composer]`).innerText();
+      check(
+        composer.includes("Replying to"),
+        "the row's composer replies to the message the words were quoted from"
+      );
+    },
+  },
+  {
+    name: "quote-check-document-stays-out",
+    viewport: DESKTOP,
+    picture: false,
+    take: async (page) => {
+      // A document's read view, where no field holds the focus: the bar of Quote reply stays
+      // away from words selected in it (`select` waits for a bar to have had its time).
+      await open(page, `/?item=${APPROVAL}`, '[data-testid="inbox-pane"] .ProseMirror');
+      await page.waitForTimeout(1_500);
+      await select(page, '[data-testid="inbox-pane"] .ProseMirror', "refused lease");
+      check(
+        (await page.locator(BAR).count()) === 0,
+        "text inside a document offers no Quote reply"
+      );
+      // A decision block in an issue's spec, the same.
+      await openBlock(page);
+      await select(page, `${BLOCK} [data-proof-block-content]`, "cold start");
+      check(
+        (await page.locator(BAR).count()) === 0,
+        "a decision block's words offer no Quote reply"
+      );
     },
   },
 ];
@@ -708,15 +802,17 @@ async function takeAll(browser: Browser, list: Shot[]): Promise<void> {
     });
     try {
       await shot.take(page);
-      const file = join(out, `${shot.name}.png`);
-      // A still picture of where the cursor waits draws it steadily rather than mid-blink.
-      if (shot.caret === true) {
-        await page.addStyleTag({ content: "textarea { caret-animation: manual; }" });
-        await page.waitForTimeout(100);
+      if (shot.picture !== false) {
+        const file = join(out, `${shot.name}.png`);
+        // A still picture of where the cursor waits draws it steadily rather than mid-blink.
+        if (shot.caret === true) {
+          await page.addStyleTag({ content: "textarea { caret-animation: manual; }" });
+          await page.waitForTimeout(100);
+        }
+        await page.screenshot({ path: file, caret: shot.caret === true ? "initial" : "hide" });
+        report.shots.push(file);
+        console.log(`wrote ${file}`);
       }
-      await page.screenshot({ path: file, caret: shot.caret === true ? "initial" : "hide" });
-      report.shots.push(file);
-      console.log(`wrote ${file}`);
     } catch (error) {
       report.errors.push(`${shot.name}: ${error instanceof Error ? error.message : String(error)}`);
       await page.screenshot({ path: join(out, `${shot.name}.failed.png`) }).catch(() => undefined);

@@ -75,7 +75,14 @@ import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
 import { ReferencePicker } from "../refs/ReferencePicker";
 import { composerReferences } from "../refs/routes";
-import { onQuote, placeCaret, quoteWaiting, takeQuote, withQuote } from "../threads/quote-reply";
+import {
+  onQuote,
+  ownWords,
+  placeCaret,
+  quoteWaiting,
+  takeQuote,
+  withQuote,
+} from "../threads/quote-reply";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import {
@@ -439,7 +446,8 @@ function draftRefusal(
   if (kind === "suggestion") {
     return replacement.trim() === "" ? "Type the replacement text first." : undefined;
   }
-  if (body.trim() === "")
+  // A quote (`> ` lines, Quote reply's) is the words the reply answers, not the reader's own.
+  if (ownWords(body).trim() === "")
     return kind === "ask" ? "Type the question first." : "Type a message first.";
   if (
     kind === "comment" &&
@@ -622,10 +630,11 @@ export function MentionComposer({
   /** A Quote reply's words (`threads/quote-reply.ts`), at the end of the draft, with the cursor on
    *  the empty line under them once the field holds them (`quoteCaret`). */
   const quoteCaret = useRef<number | null>(null);
-  const insertQuote = useCallback((selected: string) => {
-    const quoted = withQuote(previousBody.current, selected);
+  const insertQuote = useCallback((blocks: readonly string[]) => {
+    const quoted = withQuote(previousBody.current, blocks);
     if (quoted === null) return;
     previousBody.current = quoted.text;
+    followedBlocks.current = followEdit(followedBlocks.current, quoted.text, undefined, undefined);
     setBody(quoted.text);
     quoteCaret.current = quoted.caret;
   }, []);

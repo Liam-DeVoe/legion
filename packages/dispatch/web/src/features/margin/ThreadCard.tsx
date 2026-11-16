@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import type { Suggestion } from "../../api/types";
 import { Pill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
+import { useSending } from "../../hooks/useSending";
 import {
   borderDefault,
   calloutDangerBorder,
@@ -102,6 +103,9 @@ function SuggestionDiff({
   );
 }
 
+/** The send name of a card that has no reply composer of its own: no send is ever out under it. */
+const NO_REPLY_SEND: MutationKey = ["thread-card", "no-reply-composer"];
+
 export interface ThreadCardProps {
   actionFailure: CommentActionFailure | undefined;
   artifactSlug: string | undefined;
@@ -123,9 +127,10 @@ export interface ThreadCardProps {
   onSelect?(): void;
   onToggle(): void;
   /** Quote reply on words selected in the thread (`threads/quote-reply.ts`), where another
-   *  composer than the card's own answers it (the Conversation's). By default the card opens its
-   *  reply composer, where it has one, and quotes the words there. */
-  onQuoteReply?(selected: string): void;
+   *  composer than the card's own answers it (the Conversation's), and `null` while that host
+   *  takes no reply (a send of its own is out). By default the card opens its reply composer,
+   *  where it has one, and quotes the words there. */
+  onQuoteReply?: ((blocks: readonly string[]) => void) | null;
   owner: MarginOwner;
   /** This thread's action is saving, or waiting its turn behind another thread's save. The
    *  buttons stay enabled meanwhile - a disabled button drops the focus it holds and turns a
@@ -378,20 +383,24 @@ export function ThreadCard({
     </div>
   ) : null;
   // Quote reply on the thread's words: the host's, else the card's own reply composer, which the
-  // press opens on a folded card. A decided suggestion's thread takes no reply.
+  // press opens on a folded card. None while the thread takes no reply: a decided suggestion's,
+  // and one whose reply is on its way.
   const articleRef = useRef<HTMLElement>(null);
+  const { sending: replySending } = useSending(replyMutationKey ?? NO_REPLY_SEND);
   useQuoteTarget(
     articleRef,
-    onQuoteReply !== undefined
-      ? { quote: onQuoteReply }
-      : replyMutationKey === undefined || terminalSuggestion
-        ? undefined
-        : {
-            quote: (selected) => {
-              if (!expanded) onToggle();
-              quoteInto(replyMutationKey, selected);
-            },
-          }
+    terminalSuggestion || replySending || onQuoteReply === null
+      ? null
+      : onQuoteReply !== undefined
+        ? { quote: onQuoteReply }
+        : replyMutationKey === undefined
+          ? null
+          : {
+              quote: (blocks) => {
+                if (!expanded) onToggle();
+                quoteInto(replyMutationKey, blocks);
+              },
+            }
   );
 
   return (

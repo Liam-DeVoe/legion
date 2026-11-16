@@ -192,8 +192,8 @@ function replyTargetFor(
 }
 
 /** Quote reply on a message's words (`threads/quote-reply.ts`): the docked composer answers
- *  `target`, and the words go at the end of what it holds. */
-type QuoteReply = (target: ReplyTarget, selected: string) => void;
+ *  `target`, and the words' Markdown blocks go at the end of what it holds. */
+type QuoteReply = (target: ReplyTarget, blocks: readonly string[]) => void;
 
 /** A reply in a thread as the Conversation renders it: the quoted parent links to that turn,
  *  a delivered reply (a human's follow-up on a targeted thread) shows its attempt and keeps the
@@ -246,7 +246,7 @@ function ConversationReply({
           onQuote={
             onQuoteReply === undefined
               ? undefined
-              : (selected) => onQuoteReply(replyTargetFor(reply, root, issueKey), selected)
+              : (blocks) => onQuoteReply(replyTargetFor(reply, root, issueKey), blocks)
           }
         >
           <MarkdownBody
@@ -395,7 +395,7 @@ function MessageTurn({
             onQuote={
               onQuoteReply === undefined
                 ? undefined
-                : (selected) => onQuoteReply(replyTargetFor(item.root, item, issueKey), selected)
+                : (blocks) => onQuoteReply(replyTargetFor(item.root, item, issueKey), blocks)
             }
           >
             <MarkdownBody
@@ -778,21 +778,22 @@ function CommentTurn({
     setExpanded(!expanded);
   };
   // Quote reply on the thread's words goes where a reply to it goes: the composer already
-  // answering it (the docked one, which holds while a send of the tab's is out), on a phone the
-  // thread's own composer, which its Reply opens, and otherwise the card's reply box, opened.
-  const quoteReply = (selected: string) => {
+  // answering it (the docked one), on a phone the thread's own composer, which its Reply opens,
+  // and otherwise the card's reply box, opened. None while a send of the tab's is out, the
+  // card's own reply among them (`replyDisabled`).
+  const quoteReply = (blocks: readonly string[]) => {
     if (isPhone) {
       if (onReply(commentReplyTarget(item.root, agentText, issueKey))) {
-        quoteInto(phoneThreadComposerKey(sendKey), selected);
+        quoteInto(phoneThreadComposerKey(sendKey), blocks);
       }
       return;
     }
     if (hideReplyComposer) {
-      if (!replyDisabled) quoteInto(sendKey, selected);
+      quoteInto(sendKey, blocks);
       return;
     }
     if (!currentExpanded) setExpanded(true);
-    quoteInto(replySendKey, selected);
+    quoteInto(replySendKey, blocks);
   };
   return (
     <li
@@ -821,7 +822,7 @@ function CommentTurn({
         onEdit={editComment}
         onEditingChange={setEditingCommentId}
         onRetryAction={onRetryAction}
-        onQuoteReply={quoteReply}
+        onQuoteReply={replyDisabled ? null : quoteReply}
         onToggle={toggleThread}
         owner={{ key: issueKey, kind: "issue" }}
         pendingAction={pendingAction}
@@ -923,7 +924,7 @@ function TargetedMessageTurn({
             onQuote={
               onQuoteReply === undefined
                 ? undefined
-                : (selected) => onQuoteReply(replyTargetFor(item.root, item, issueKey), selected)
+                : (blocks) => onQuoteReply(replyTargetFor(item.root, item, issueKey), blocks)
             }
           >
             <MarkdownBody
@@ -1135,8 +1136,8 @@ export function ConversationTab({
   // at the end of what it holds (`threads/quote-reply.ts`). None while a send of the tab's is out.
   const quoteMessage: QuoteReply | undefined = composerSending
     ? undefined
-    : (target, selected) => {
-        if (beginReply(target)) quoteInto(sendKey, selected);
+    : (target, blocks) => {
+        if (beginReply(target)) quoteInto(sendKey, blocks);
       };
   const phoneReplyTargetsThread =
     phoneThread !== undefined && phone.replyTo?.id === phoneThread.root.id;

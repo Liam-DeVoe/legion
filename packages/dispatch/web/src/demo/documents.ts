@@ -14,6 +14,7 @@ import type {
 } from "../api/types";
 import { type DemoDocument, DOCUMENTS, documentById, specId } from "./document-fixtures";
 import {
+  ASK_REPLIES,
   ASKS,
   COMMENTS,
   DEMO_CLOCK,
@@ -44,7 +45,8 @@ function asksNow(): { rows: InboxRow[]; replies: Record<string, unknown[]> } {
   }
   return {
     rows: ASKS.map(({ row }) => kept.asks?.[row.id] ?? row),
-    replies: kept.replies ?? {},
+    // The tab keeps every ask's replies once it has written one, the fixtures' own among them.
+    replies: { ...ASK_REPLIES, ...kept.replies },
   };
 }
 

@@ -29,16 +29,17 @@ const GAP = 4;
 const TOUCH_SETTLE_MS = 400;
 
 /** Text a reader may quote in a reply, with what the quote does (`useQuoteTarget`): drawn as its
- *  children are, the wrapper taking no box of its own. `onQuote` absent offers no Quote reply. */
+ *  children are, the wrapper taking no box of its own. `onQuote` absent offers no Quote reply
+ *  over these words while their thread takes none. */
 export function QuotableText({
   children,
   onQuote,
 }: {
   children: ReactNode;
-  onQuote: ((selected: string) => void) | undefined;
+  onQuote: ((blocks: readonly string[]) => void) | undefined;
 }): ReactNode {
   const ref = useRef<HTMLDivElement>(null);
-  useQuoteTarget(ref, onQuote === undefined ? undefined : { quote: onQuote });
+  useQuoteTarget(ref, onQuote === undefined ? null : { quote: onQuote });
   return (
     <div className="contents" ref={ref}>
       {children}

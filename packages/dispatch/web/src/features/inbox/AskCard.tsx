@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type MutationKey, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -6,6 +6,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -27,6 +28,7 @@ import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
+import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askQuestionProse,
@@ -56,7 +58,13 @@ import { buildDispatchReference, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useKeymapScope } from "../shell/keymap";
-import { placeCaret, useQuoteTarget, withQuote } from "../threads/quote-reply";
+import {
+  placeCaret,
+  quoteInto,
+  useQuoteTarget,
+  useQuoteTargetRef,
+  withQuote,
+} from "../threads/quote-reply";
 import { stepAsideFromSelection } from "../threads/SelectionBar";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
@@ -472,8 +480,8 @@ export function AskCard({
   // it is empty again.
   const quoteCaret = useRef<number | null>(null);
   const quoteGrew = useRef(false);
-  const quoteIntoAnswer = (selected: string) => {
-    const quoted = withQuote(answerText, selected);
+  const quoteIntoAnswer = (blocks: readonly string[]) => {
+    const quoted = withQuote(answerText, blocks);
     if (quoted === null) return;
     if (isCompact) setOwnWordsOpen(true);
     setQuestionChoice(false);
@@ -494,11 +502,15 @@ export function AskCard({
     quoteCaret.current = null;
     quoteGrew.current = true;
   });
+  // The card that holds an answer box - an open question's, and an answered one's while the
+  // reader changes the answer - quotes into that box, from the question, the options and the
+  // replies in its thread, but not while its answer or question back is out; a decision block's
+  // card, like every other text inside a document, offers no Quote reply.
   useQuoteTarget(
     articleRef,
-    displayedAsk.state === "open" && completed === null
+    completed === null && displayedAsk.state !== "resolved" && !inBlock && !isSubmitting
       ? { define: () => openDefine(selectionInCard()), quote: quoteIntoAnswer }
-      : undefined
+      : null
   );
   const changeMenuOpen = (open: boolean) => {
     if (open) setMenuSelection(selectionInCard());
@@ -618,6 +630,23 @@ export function AskCard({
         ) : null}
       </div>
     );
+  // An answered ask quotes into the reply box of its thread (`AskReplyComposer`), from its record
+  // and its replies, while a reply is not out; this card's own box, named for this card alone
+  // (`replyQuoteKey`), since the margin can draw another card of the same ask beside it. A
+  // resolved ask takes no reply, and a decision block's card none of Quote reply.
+  const cardInstance = useId();
+  const replyQuoteKey = useMemo<MutationKey>(
+    () => ["ask-reply-quote", displayedAsk.id, cardInstance],
+    [cardInstance, displayedAsk.id]
+  );
+  const { sending: replySending } = useSending(["ask-reply", displayedAsk.id]);
+  const answeredQuoteRef = useQuoteTargetRef(
+    completed?.state === "answered" && !resolved && !inBlock && !replySending
+      ? { quote: (blocks) => quoteInto(replyQuoteKey, blocks) }
+      : null
+  );
+  const threadQuote =
+    completed === null ? undefined : { key: replyQuoteKey, ref: answeredQuoteRef };
   const threadNode =
     thread === "collapsed" ? (
       <AskThreadDisclosure
@@ -627,6 +656,7 @@ export function AskCard({
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
         order={threadOrder}
+        quote={threadQuote}
         thread={threadQuery}
         unread={unreadReplies}
         uploadOwner={uploadOwner}
@@ -639,6 +669,7 @@ export function AskCard({
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
         order={threadOrder}
+        quote={threadQuote}
         thread={threadQuery}
         unread={unreadReplies}
         uploadOwner={uploadOwner}
@@ -827,6 +858,7 @@ export function AskCard({
           frame={frame}
           markRef={answerIsNewest ? markNewest : undefined}
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
+          quoteRef={answeredQuoteRef}
         />
         {unsentAnswer === "" ? null : (
           <div
@@ -1133,8 +1165,9 @@ export function AskCard({
                   name={`ask-${displayedAsk.id}`}
                   onChange={() => {
                     selectRealOption(option.label);
+                    // The box stays open while it holds anything, a quote included.
                     if (isCompact)
-                      setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
+                      setOwnWordsOpen(requiresReason(option.label) || answerText.trim() !== "");
                   }}
                   option={shown}
                 />
