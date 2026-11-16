@@ -26,8 +26,9 @@ import (
 // failure, and check that nothing outside the transaction ever sees the write: not the room,
 // not a browser, not a version, not the durable document. While the handler is held the test
 // reads only the resident room and a database connection of its own, because the handler's
-// pool is full of work queued behind the transaction's locks (store.Open sizes it to the CPU
-// count, 4 on CI's runner).
+// pool is full of work queued behind the transaction's locks (storetest gives each test's store
+// sixteen connections, storetest.testPoolSize, where store.Open's own shared pool is
+// store.sharedPoolSize, 64).
 
 func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
 	t.Parallel()

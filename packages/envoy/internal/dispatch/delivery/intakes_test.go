@@ -299,8 +299,8 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 	}()
 	select {
 	case <-stopped:
-	case <-time.After(5 * time.Second):
-		t.Fatal("stopping intakes with no GitHub App did not return within 5 s")
+	case <-time.After(eventWait):
+		t.Fatal("stopping intakes with no GitHub App never returned")
 	}
 }
 

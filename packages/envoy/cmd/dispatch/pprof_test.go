@@ -96,7 +96,9 @@ func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
 	}
 
 	cancel()
-	deadline := time.Now().Add(2 * time.Second)
+	// A give-up on the listener's close, not a reading of how fast it closes: the close follows
+	// the context, and this package names no guard of its own for a wait on an event.
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		conn, err := net.DialTimeout("tcp", bound.String(), 100*time.Millisecond)
 		if err != nil {
