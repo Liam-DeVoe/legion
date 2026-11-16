@@ -5,7 +5,7 @@ import { DOMSerializer, Schema } from "prosemirror-model";
 
 import type { BlockTypeSchema } from "../../api/types";
 import { askBlockEditingPlugin, editingAskBlockPos } from "./ask-block";
-import { renderTypedBlock } from "./typed-block-drawing";
+import { askBlockFacts, renderTypedBlock } from "./typed-block-drawing";
 
 const schema = new Schema({
   nodes: {
@@ -245,4 +245,107 @@ test("a block[] attribute pointing at no block is not drawn at all", () => {
   expect(drawn.querySelector('dd[data-proof-block-attribute="run"]')?.textContent).toBe(
     "bun test web/src"
   );
+});
+
+// The version-5 typed blocks: a decision, which a reading closes, as an ask is closed by one.
+// Both are drawn as host blocks by their attributes, as a requirement and a check are.
+const decisionSchema = new Schema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: { content: "inline*", group: "block" },
+    text: { group: "inline" },
+    bullet_list: { content: "list_item+", group: "block" },
+    list_item: { content: "paragraph+" },
+    reading: {
+      attrs: { blockId: { default: null } },
+      content: "paragraph+",
+      parents: ["decision", "ask"],
+    },
+    decision: {
+      attrs: {
+        blockId: { default: null },
+        decided_by: { default: null },
+        uncertainty: { default: null },
+        uncertainty_reason: { default: null },
+      },
+      content: "block+ reading*",
+      group: "block",
+    },
+    ask: {
+      attrs: { blockId: { default: null } },
+      content: "paragraph+ bullet_list? reading*",
+      group: "block",
+    },
+  },
+});
+
+const decisionType: BlockTypeSchema = {
+  attributes: {
+    decided_by: { kind: "actor", markdown: false, server: true },
+    uncertainty: { choices: ["low", "medium", "high"], kind: "enum" },
+    uncertainty_reason: { kind: "string" },
+  },
+  content: "block+",
+  name: "decision",
+  render: "host",
+};
+
+const readingType: BlockTypeSchema = {
+  attributes: {},
+  content: "paragraph+",
+  name: "reading",
+  parents: ["decision", "ask"],
+  render: "host",
+};
+
+function decisionParagraph(text: string) {
+  return decisionSchema.node("paragraph", undefined, [decisionSchema.text(text)]);
+}
+
+test("a decision and its reading are drawn as host blocks, the decision's own attributes as text", () => {
+  const reading = decisionSchema.node("reading", { blockId: "r1" }, [
+    decisionParagraph("The agent reads it as Friday."),
+  ]);
+  const node = decisionSchema.node(
+    "decision",
+    {
+      blockId: "d1",
+      decided_by: "user:alice",
+      uncertainty: "low",
+      uncertainty_reason: "A holiday moves it.",
+    },
+    [decisionParagraph("We ship on Friday."), reading]
+  );
+
+  const text = renderedText(renderTypedBlock(node, decisionType));
+  expect(text).toContain("decision");
+  expect(text).toContain("low");
+  expect(text).toContain("A holiday moves it.");
+  expect(text).not.toContain("user:alice");
+  expect(text).not.toContain("decided_by");
+  expect(renderedText(renderTypedBlock(reading, readingType))).toContain("reading");
+});
+
+test("an ask card reads its question and options past the reading it closes with", () => {
+  const node = decisionSchema.node("ask", { blockId: "a1" }, [
+    decisionParagraph("Which day?"),
+    decisionSchema.node(
+      "bullet_list",
+      undefined,
+      ["Friday: Before the holiday", "Monday"].map((option) =>
+        decisionSchema.node("list_item", undefined, [decisionParagraph(option)])
+      )
+    ),
+    decisionSchema.node("reading", { blockId: "r1" }, [
+      decisionParagraph("The agent reads it so."),
+    ]),
+  ]);
+
+  const facts = askBlockFacts(node);
+  expect(facts.question).toBe("Which day?");
+  expect(facts.options).toEqual([
+    { description: "Before the holiday", label: "Friday" },
+    { label: "Monday" },
+  ]);
+  expect(facts.malformedReason).toBeUndefined();
 });

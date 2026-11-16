@@ -381,13 +381,17 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 		return err
 	}
 	// An agent's or API write is refused when a block pointer it introduces names a block of a
-	// type its attribute does not allow, or a check block it introduces breaks a rule of a check
-	// CI proves, each compared with the tree before the write (nil when that tree was outside the
-	// schema: every pointer and every check block of a repair is introduced).
+	// type its attribute does not allow, a check block it introduces breaks a rule of a check
+	// CI proves, or a reading it introduces stands in an ask that holds no answer, each compared
+	// with the tree before the write (nil when that tree was outside the schema: every pointer,
+	// check block and reading of a repair is introduced).
 	if err := refuseBlockPointers(ctx, op.tx, artifactID, tree.Node(), weighedFrom, offsets); err != nil {
 		return err
 	}
 	if err := refuseCICheckBlocks(ctx, op.tx, artifactID, tree.Node(), weighedFrom); err != nil {
+		return err
+	}
+	if err := refuseReadingsWithoutAnswers(ctx, op.tx, artifactID, tree.Node(), weighedFrom); err != nil {
 		return err
 	}
 	// The tree before the write has served every use it has, so it is let go before the record's
@@ -611,12 +615,15 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	if err := weighRendering("", canonical); err != nil {
 		return "", err
 	}
-	// A new document holds no pointer and no check block before this write, so every one it
-	// seeds is checked.
+	// A new document holds no pointer, no check block and no reading before this write, so every
+	// one it seeds is checked.
 	if err := refuseBlockPointers(ctx, tx, artifactID, tree, nil, offsets); err != nil {
 		return "", err
 	}
 	if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, nil); err != nil {
+		return "", err
+	}
+	if err := refuseReadingsWithoutAnswers(ctx, tx, artifactID, tree, nil); err != nil {
 		return "", err
 	}
 	update, err := encodeDocumentTree(tree)

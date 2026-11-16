@@ -271,7 +271,7 @@ test("a list a collaborator leaves holding a bare paragraph is still deleted", a
   );
 });
 
-test("the server's block node types and the schema's typed blocks are the live schema's block group", async () => {
+test("the server's block node types and the schema's typed blocks naming no parents are the live schema's block group", async () => {
   // The list pmdoc's isBlockNodeType embeds (packages/envoy/internal/dispatch/pmdoc/node.go).
   const serverBlockNodeTypes: string[] = JSON.parse(
     readFileSync(
@@ -285,7 +285,13 @@ test("the server's block node types and the schema's typed blocks are the live s
       const blockGroup = Object.values(view.state.schema.nodes)
         .filter((type) => type.isInGroup("block"))
         .map((type) => type.name);
-      const accepted = [...serverBlockNodeTypes, ...blockSchema.types.map((type) => type.name)];
+      // A typed block naming parents (a reading) is in no node group, on either side.
+      const accepted = [
+        ...serverBlockNodeTypes,
+        ...blockSchema.types
+          .filter((type) => (type.parents?.length ?? 0) === 0)
+          .map((type) => type.name),
+      ];
       expect(accepted.sort()).toEqual(blockGroup.sort());
     },
     { blockSchema }
@@ -715,6 +721,53 @@ test("undo and redo of a letter typed in the second option list apply with the s
       press("Mod-Shift-z");
       expect(blocks(requireAsk(view.state.doc))[2]).toEqual(["bullet_list", "Option xB"]);
       expect(ydoc.getXmlFragment("prosemirror").toString()).toContain("Option xB");
+    },
+    { blockSchema }
+  );
+});
+
+/** A reading reading `text`, as y-prosemirror stores one: its element holding one paragraph. */
+function yReading(text: string): Y.XmlElement {
+  const reading = new Y.XmlElement("reading");
+  reading.setAttribute(BLOCK_ID_ATTR, crypto.randomUUID());
+  const paragraph = new Y.XmlElement("paragraph");
+  paragraph.setAttribute(BLOCK_ID_ATTR, crypto.randomUUID());
+  paragraph.insert(0, [new Y.XmlText(text)]);
+  reading.insert(0, [paragraph]);
+  return reading;
+}
+
+test("an ask a collaborator closes with a reading keeps it, and keeps it when a paragraph lands after it", async () => {
+  await withMarksEditor(
+    ASK_DOC,
+    ({ view, ydoc }) => {
+      const peer = peerOf(ydoc);
+      const ask = requireYAsk(peer);
+      ask.insert(ask.length, [yReading("The agent reads it as A.")]);
+      deliver(peer, ydoc);
+      expect(blocks(requireAsk(view.state.doc))).toEqual([
+        ["paragraph", "Which one?"],
+        ["bullet_list", "Option AAfter"],
+        ["reading", "The agent reads it as A."],
+      ]);
+      expect(yAskChildren(ydoc)).toEqual(["paragraph", "bullet_list", "reading"]);
+
+      // A second collaborator's edit leaves a paragraph after the reading, which the ask's rule
+      // refuses: the ask is built all the same, its reading in it, as the server keeps it.
+      const second = peerOf(ydoc);
+      const held = requireYAsk(second);
+      const stray = new Y.XmlElement("paragraph");
+      stray.insert(0, [new Y.XmlText("An afterthought.")]);
+      held.insert(held.length, [stray]);
+      deliver(second, ydoc);
+      expect(blocks(requireAsk(view.state.doc)).map(([type]) => type)).toEqual([
+        "paragraph",
+        "bullet_list",
+        "reading",
+        "paragraph",
+      ]);
+      expect(yAskChildren(ydoc)).toEqual(["paragraph", "bullet_list", "reading", "paragraph"]);
+      expect(view.state.doc.textContent).toContain("The agent reads it as A.");
     },
     { blockSchema }
   );
