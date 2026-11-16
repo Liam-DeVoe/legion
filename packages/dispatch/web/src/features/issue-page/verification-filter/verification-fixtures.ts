@@ -3,7 +3,7 @@ import { checkFacts, resultFacts } from "../check-facts";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
 import { type PresetView, presetView } from "../presets";
-import { blockNodeId, checkState } from "../tree-drafts";
+import { blockNodeId, checkStanding, namedCommit } from "../tree-drafts";
 
 /**
  * The reads the Verification filter's body is drawn from, as the page holds them: checks of the
@@ -93,8 +93,9 @@ export function result(partial: Partial<CheckResult> & { id: string }): CheckRes
   };
 }
 
-/** A check's node, as `tree-drafts.ts` builds one: the block's address as its reference, the
- *  state `checkState` reads, the four attributes its body draws, and one node per result. */
+/** A check's node, as `tree-drafts.ts` builds one for an issue with this check alone: the
+ *  block's address as its reference, the state `checkStanding` reads at the commit its own
+ *  results name (`namedCommit`), the four attributes its body draws, and one node per result. */
 export function checkNode(block: CheckBlock): TreeNode {
   return node({
     children: (block.results ?? []).map((recorded) =>
@@ -110,7 +111,7 @@ export function checkNode(block: CheckBlock): TreeNode {
     facts: checkFacts(block),
     id: blockNodeId(VERIFICATION_SLUG, block.block_id),
     reference: block.ref,
-    state: checkState(block),
+    state: checkStanding(block, namedCommit([block])).state,
     text: block.text,
     type: "check",
   });

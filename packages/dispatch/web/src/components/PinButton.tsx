@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
 
 import {
+  pageInkFill,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
   primaryButtonBg,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
@@ -53,13 +57,26 @@ export function PinButton({
   const resting = quiet
     ? textMutedHoverToSecondary
     : `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
+  // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
+  // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): pinned is filled with the
+  // page's ink, as its one filled control is; unpinned is its header control's rule and muted
+  // words, or quiet words that turn muted under the pointer for a quiet pin.
+  const look = tooltips
+    ? pinned
+      ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg}`
+      : resting
+    : pinned
+      ? pageInkFill
+      : quiet
+        ? `${pageQuietText} hover:text-page-muted`
+        : `${pageLineBorder} ${pageMutedText}`;
   return (
     <button
       aria-label={label}
       aria-pressed={pinned}
       className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 ${
         quiet ? "" : "md:min-h-8 md:min-w-8"
-      } ${pinned ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg}` : resting} ${className ?? ""}`}
+      } ${look} ${className ?? ""}`}
       disabled={disabled}
       onClick={onClick}
       title={tooltips ? (title ?? label) : undefined}

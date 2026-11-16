@@ -3,7 +3,14 @@ import type { ReactNode } from "react";
 import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
-import { badgeLow, pageInkText, pageQuietText, priorityBadge } from "../../theme/classes";
+import {
+  badgeLow,
+  pageInkText,
+  pageLabelChip,
+  pagePaneBg,
+  pageQuietText,
+  priorityBadge,
+} from "../../theme/classes";
 import {
   badgeSelectBadge,
   badgeSelectHeaderWrapper,
@@ -76,6 +83,17 @@ export function PriorityEditor({
 }): ReactNode {
   const page = usePageWords();
   const tone = priority === null ? badgeLow : priorityBadge[priority];
+  // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
+  // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
+  // there is one of that page's (dispatch://INFRA-3935 R6, decision 56 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). The prototype's `.prio` draws how urgent
+  // a priority is by its bars and its word, never by a colour, so P0 and P3 wear the same chip.
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : priority === null
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
   const shown = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
   return (
@@ -95,11 +113,7 @@ export function PriorityEditor({
             {shown}
           </span>
         ) : (
-          <span
-            aria-hidden="true"
-            className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}
-            {...mark}
-          >
+          <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeTone}`} {...mark}>
             {shown}
           </span>
         )}

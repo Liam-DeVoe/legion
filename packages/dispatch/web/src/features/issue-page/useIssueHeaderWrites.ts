@@ -1,11 +1,4 @@
-import {
-  skipToken,
-  useIsMutating,
-  useMutationState,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useMutationState, useQueryClient } from "@tanstack/react-query";
 
 import { api, apiErrorCodeIn, apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
@@ -26,15 +19,6 @@ const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
  *  says why itself. */
 export function statusPickOnly(input: IssueUpdateInput | undefined): boolean {
   return input !== undefined && Object.keys(input).length === 1 && input.status !== undefined;
-}
-
-/** Where the page holds a status picked while the picking caller's own other write of `key` is in
- *  flight (`IssueHeaderWrites.pickStatus`): the status, or `null` - like no entry at all - for no
- *  pick. Its first element is deliberately not `"issue"`, so no invalidation of the issue's own
- *  read (`["issue", key]`) touches it. It is not module state: the query client is the provider
- *  every caller of this hook on the page shares, and it goes with the page's app. */
-function heldStatusKey(key: string) {
-  return ["issue-held-status", key] as const;
 }
 
 /** What the shell's indicator calls each field the identity block writes: the page's own name
@@ -72,10 +56,9 @@ export function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
  * those fields hold, and the few facts each row reads back from a write in flight - which status
  * a pick is saving, a parent or a title Dispatch refused.
  *
- * The issues this one waits on are the panel's own write (`useIssueBlockedBy.ts`), because the
- * editor that saves them is drawn beside their value rather than in the identity block; it
- * takes the same landing as the fields here (`landIssueWrite`), so what a write leaves in the
- * cache does not depend on which row drew the control.
+ * Any later write of the issue's fields from the page (a later part's editor of the issues this
+ * one waits on, for example) takes the same landing as the fields here (`landIssueWrite`), so
+ * what a write leaves in the cache does not depend on which row drew the control.
  *
  * The rows of the identity block that draw these fields hold no write of their own, so moving
  * one of them from row to row changes where its control is drawn and nothing about how it is
@@ -85,7 +68,8 @@ export function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
 export interface IssueHeaderWrites {
   /** The drafts of the title, the route and the parent, and the submits that save them. */
   readonly drafts: IssueDrafts;
-  /** The issue's own fields: the title, the status, the route, the parent. */
+  /** The title, the route and the parent, which the drafts save, and a status sent through the
+   *  drafts (`requestStatusSubmit`); the Status pill's pick is a write of its own (`pickStatus`). */
   readonly updateIssue: KeyedWriteResult<Issue, IssueUpdateInput, unknown>;
   /** The labels, which the popover saves as one set when it closes. */
   readonly labels: KeyedWriteResult<Issue, string[], unknown>;
@@ -94,20 +78,26 @@ export interface IssueHeaderWrites {
   /** One press at a time on the pin, whose write is optimistic. */
   readonly pinGuard: SubmitGuard;
   readonly releaseClaim: KeyedWriteResult<Issue, void, unknown>;
-  /** The status a pick is saving right now, which the pill and the closed line show: a pick the
-   *  page holds until this issue's writes settle (`pickStatus`) when one stands, else the newest
+  /** The status a pick is saving right now, which the pill and the closed line show: the newest
    *  pending write of this issue's fields that holds a status, whichever caller on the page made
-   *  it, so the header and Details show one status while either holds or saves it. */
+   *  it, so the header and Details show one status. A pick waiting in the issue's line behind an
+   *  earlier write is pending from the moment it is made (`pickStatus`), so it shows at once. */
   readonly pendingStatus: string | undefined;
-  /** Whether a pick is held or being saved: `pendingStatus` stands. */
+  /** Whether a pick is waiting its turn or being saved: `pendingStatus` stands. */
   readonly statusSaving: boolean;
   /**
-   * The Status pill's pick. A status picked while this caller's own other write of the issue (a
-   * title, a route, a parent) is in flight cannot go yet, and is held for the whole page rather
-   * than in one caller's state, so the header and Details show the same status; it is sent once,
-   * by whichever caller is drawn, when the issue's writes settle. The source page held it in one
-   * component's state (IssueMargin.tsx:216), where Details went on showing the old status: the
-   * held-status defect the reviewer found at the checkpoint.
+   * The Status pill's pick: a write of its own, made at once in the issue's line (`issue:<key>`).
+   * The line holds it behind a title, route or parent write of the issue still being tried and
+   * sends it once that one is answered or refused, so the pick never lands first. It is not one
+   * more write through `updateIssue`, for two reasons. The reader may leave the page while the
+   * earlier write is out: the write store lives on the query client, not on the page, so it
+   * keeps the pick, shows it in the shell's indicator and sends it in its turn with no caller
+   * drawn, and a reload keeps it, as it keeps every write. And a title Dispatch refused must stay
+   * shown and retryable: `titleRefusal`, `parentError` and `drafts.retry()` read `updateIssue`'s
+   * last write, which a status sent through it would replace. The source page held a status
+   * picked behind another write in `IssuePropertiesRow.tsx`'s own state (lines 80 to 90 there),
+   * while Details read only `pendingStatus` (`IssueMargin.tsx:216`), so Details went on showing
+   * the old status: the held-status defect the reviewer found at the checkpoint.
    */
   readonly pickStatus: (next: string) => void;
   /** A parent Dispatch refused, with the reason it gave, drawn where the parent is edited. */
@@ -139,11 +129,12 @@ export function useIssueHeaderWrites(
     },
   });
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
-  // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
-  // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
-  // being tried never lands after a newer one, whatever left the page meanwhile. A landing with no
-  // answer to give is merged by reading the issue again. Each carries the issue's mutation key,
-  // which every caller of this hook on the page reads its pending status by.
+  // alone is a control's, so its refusal is the shell's (`PendingWritesIndicator`), and it rolls
+  // back. The Status pill's pick is a write of its own (`statusWrite`, below). Every field write
+  // goes in the issue's line (`issue:<key>`), so an older one still being tried never lands after
+  // a newer one, whatever left the page meanwhile. A landing with no answer to give is merged by
+  // reading the issue again. Each carries the issue's mutation key, which every caller of this
+  // hook on the page reads its pending status by.
   const updateIssue = useKeyedWrite({
     mutationKey: ["issue-update", issue.key],
     inline: (input) => !statusPickOnly(input),
@@ -158,13 +149,32 @@ export function useIssueHeaderWrites(
       drafts.onIssueSuccess(next ?? issue, input);
     },
   });
+  // The Status pill's pick (`IssueHeaderWrites.pickStatus` says why it is not `updateIssue`'s).
+  // It is a control, so its refusal is the shell's and the pick rolls back (`statusPickOnly`). It
+  // takes `updateIssue`'s line and mutation key, so it waits behind a title, route or parent write
+  // still being tried, and `pendingStatus` reads it. It lets go of no guard and drains no draft
+  // (`drafts.onIssueSettled`): the guard and the drafts are `updateIssue`'s, and a drain here,
+  // after a title Dispatch refused, would send that title again.
+  const statusWrite = useKeyedWrite({
+    mutationKey: ["issue-update", issue.key],
+    inline: false,
+    label: (input) => issueUpdateLabel(issue.key, input),
+    target: () => `issue:${issue.key}`,
+    request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
+    onSuccess: (next, input) => {
+      landIssueWrite(queryClient, issue.key, next);
+      drafts.onIssueSuccess(next ?? issue, input);
+    },
+  });
+  // The labels are a field of the issue too, so they land as every field write does: a landing
+  // with no answer reads the issue again rather than leave the old labels showing
+  // (`landIssueWrite`, dispatch://INFRA-3935 R8).
   const labels = useKeyedWrite({
     label: () => `Labels of ${issue.key}`,
     target: () => `issue:${issue.key}`,
     request: (next: string[]) => issuePatchRequest(issue.key, { labels: next }),
     onSuccess: (next) => {
-      if (next !== null) mergeIssue(queryClient, next);
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      landIssueWrite(queryClient, issue.key, next);
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
@@ -203,47 +213,18 @@ export function useIssueHeaderWrites(
     },
   });
 
-  // Every pending write of this issue's fields on the page, in the order they were made, so the
-  // last that holds a status is the newest pick, whichever caller of this hook made it.
+  // Every pending write of this issue's fields on the page - `updateIssue`'s and `statusWrite`'s,
+  // which carry one mutation key, of every caller of this hook - in the order they were made, so
+  // the last that holds a status is the newest pick. A pick waiting its turn in the issue's line
+  // is pending from its press, so it shows at once.
   const pendingStatuses = useMutationState({
     filters: { exact: true, mutationKey: ["issue-update", issue.key], status: "pending" },
     select: (mutation) => (mutation.state.variables as IssueUpdateInput | undefined)?.status,
   });
-  // The pick the page holds, read by every caller as it changes. Nothing ever fetches it: the
-  // entry is only what `pickStatus` and the effect below put there, and `skipToken` tells TanStack
-  // so, which otherwise logs a missing queryFn on every render. This observer keeps the entry
-  // alive while a caller is drawn, so a pick held longer than the cache's gcTime is not dropped.
-  const { data: heldStatus } = useQuery<string | null>({
-    enabled: false,
-    queryFn: skipToken,
-    queryKey: heldStatusKey(issue.key),
-    staleTime: Infinity,
-  });
-  const writing = useIsMutating({ exact: true, mutationKey: ["issue-update", issue.key] });
-  // Once no write of the issue's fields is out, a held pick goes. It is read from the cache as
-  // this runs, not as the render read it, since every caller on the page runs this: the first
-  // takes the pick before it sends, and every later one finds `null`, so it is sent once. It is
-  // taken with `null`, never `undefined` (TanStack's `setQueryData` ignores an `undefined` result,
-  // so the pick would stay and every caller would send it) and never by `removeQueries` (which
-  // drops the entry under the observers reading it). A pick its caller cannot send yet is put
-  // back for the next render.
-  useEffect(() => {
-    if (writing > 0) return;
-    const key = heldStatusKey(issue.key);
-    const pick = queryClient.getQueryData<string | null>(key);
-    if (pick === undefined || pick === null) return;
-    queryClient.setQueryData<string | null>(key, null);
-    if (!drafts.requestStatusSubmit(pick)) queryClient.setQueryData<string | null>(key, pick);
-  }, [drafts, issue.key, queryClient, writing]);
   const pickStatus = (next: string) => {
-    // A pick that went out supersedes an older one still held; one that cannot go is held.
-    queryClient.setQueryData<string | null>(
-      heldStatusKey(issue.key),
-      drafts.requestStatusSubmit(next) ? null : next
-    );
+    statusWrite.mutate({ status: next });
   };
-  const pendingStatus =
-    heldStatus ?? pendingStatuses.filter((status) => status !== undefined).at(-1);
+  const pendingStatus = pendingStatuses.filter((status) => status !== undefined).at(-1);
   const statusSaving = pendingStatus !== undefined;
   return {
     drafts,

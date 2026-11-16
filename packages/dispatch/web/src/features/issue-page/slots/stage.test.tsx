@@ -46,7 +46,6 @@ test("a view's address puts the focus on its tree's tab-stop row", async () => {
       return found;
     });
     await waitFor(() => expect(document.activeElement).toBe(row));
-    expect(document.activeElement).not.toBe(document.body);
   } finally {
     view.unmount();
   }
