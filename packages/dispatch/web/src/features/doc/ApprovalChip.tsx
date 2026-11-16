@@ -5,13 +5,18 @@ import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/cl
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   backdrop40,
   card,
   dangerText,
+  focusVisibleRing,
   inputClasses,
+  pageHeaderControl,
+  pageInkBorder,
+  pageInkFill,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -35,7 +40,10 @@ export function approvalVersion(approval: ArtifactApproval): number {
   return approval.version ?? approval.latest_version;
 }
 
-function approvalLabel(approval: ArtifactApproval): string {
+/** The chip's words. `latest` is the issue page's word for the latest version, given inside
+ *  `NoTooltips` alone: there a stale chip draws the latest version, which its `title` says
+ *  everywhere else (dispatch://INFRA-1196 R19, R22). */
+function approvalLabel(approval: ArtifactApproval, latest?: string): string {
   // A plan is approved by its plan review, never by a person, and its chip says so.
   const approved = approval.kind === "plan_review" ? "Approved by plan review" : "Approved";
   const version = approvalVersion(approval);
@@ -47,7 +55,9 @@ function approvalLabel(approval: ArtifactApproval): string {
     case "approved":
       return `${approved} v${version}`;
     case "stale":
-      return `${approved} v${version} · changed since`;
+      return latest === undefined
+        ? `${approved} v${version} · changed since`
+        : `${approved} v${version} · ${latest} v${approval.latest_version}`;
     case "changes_requested":
       return "Changes requested";
     default:
@@ -229,6 +239,11 @@ export interface ApprovalChipProps {
   showActions?: boolean;
   /** `contents` lets a parent flex group place the state chip and actions independently. */
   layout?: "contents" | "inline";
+  /** `compact` draws the chip and its two actions at the size of the new issue page header's
+   *  other pills and controls (the prototype's `.pill` and `.hbtn`, dispatch://INFRA-1196 R13):
+   *  12 px type, 20 px tall for the chip and 24 px for each action. `default` is every other
+   *  host's. */
+  size?: "compact" | "default";
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */
   onReviewed?(): void;
@@ -243,6 +258,7 @@ export function ApprovalChip({
   artifact,
   layout = "inline",
   onReviewed,
+  size = "default",
   variant = "list",
   showActions = variant === "header",
 }: ApprovalChipProps): ReactNode {
@@ -251,6 +267,8 @@ export function ApprovalChip({
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
+  const tooltips = useTooltips();
+  const page = usePageWords();
 
   const review = useKeyedWrite({
     label: (input: CreateArtifactReviewInput) =>
@@ -291,24 +309,32 @@ export function ApprovalChip({
     >
       <button
         aria-haspopup="dialog"
-        className={approvalPillClassName(approval.state)}
+        className={approvalPillClassName(approval.state, size)}
+        // Inside `NoTooltips`, the document whose approval this is, which an approval request's
+        // own address puts the focus on (dispatch://INFRA-1196 R20).
+        data-approval-artifact={page === null ? undefined : artifact.id}
         onClick={() => setReviewsOpen(true)}
         title={
-          approval.state === "stale"
+          tooltips && approval.state === "stale"
             ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
             : undefined
         }
         type="button"
       >
-        {approvalLabel(approval)}
+        {approvalLabel(approval, page?.CONTROL_LABELS.approval_latest)}
       </button>
       {variant === "header" && showActions ? (
         <>
           {approval.state === "approved" ? null : (
             // One filled button per surface: approving is the action the header wants, and
-            // two outline buttons made a reader choose before reading either.
+            // two outline buttons made a reader choose before reading either. At the new issue
+            // page header's size it is filled with that page's ink, not the application's blue.
             <button
-              className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+              className={
+                size === "compact"
+                  ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
+                  : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
+              }
               disabled={review.isPending}
               onClick={() => submitGuard.guard(() => review.mutate({ state: "approved" }))}
               type="button"
@@ -317,7 +343,11 @@ export function ApprovalChip({
             </button>
           )}
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+            className={
+              size === "compact"
+                ? pageHeaderControl
+                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`
+            }
             disabled={review.isPending}
             onClick={() => setRequestChangesOpen(true)}
             type="button"

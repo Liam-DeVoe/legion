@@ -828,6 +828,43 @@ function priorityWriteTargets(
  *  key. */
 const EVERY_QUESTION_MAP: RefreshTarget = { queryKey: ["references", "questions"] };
 
+/**
+ * The batched read the new issue page's names come from (`referenceTargetsQuery`): the words
+ * shown for every `dispatch://` address one page holds - an issue's title, a document's name, a
+ * block's excerpt, an ask's question, a comment's or a message's first words - in one answer
+ * (dispatch://INFRA-1196 part G, R12). Its key is the set of addresses it asked for and names no
+ * issue, so there is no narrower target than the prefix: a retitled issue, an edited block or a
+ * reworded ask moves the words of a page whose addresses reach it, whichever issue the event is
+ * on. Only the new page reads it, and the server resolves every address of the set before it can
+ * answer an unchanged one `304` (`reference_targets.go`), so only an event that can change a
+ * name marks it stale (`changesReferenceName`).
+ */
+const EVERY_REFERENCE_NAME: RefreshTarget = { queryKey: ["reference-targets"] };
+
+/**
+ * Whether the event can change the words the batched name read gives an address, or give words
+ * to an address that found nothing: an issue's new title (or a write that does not say what it
+ * moved), a document's upload, correction or new version - a block's words are a version's - and
+ * an edit of an ask or a comment. A new comment, message or ask adds an address to the page that
+ * names it, which is a new key and a read of its own, so it renames nothing a held read names.
+ */
+function changesReferenceName(event: DispatchEvent): boolean {
+  switch (event.type) {
+    case "artifact.created":
+    case "artifact.renamed":
+    case "artifact.version":
+    case "ask.edited":
+    case "comment.edited":
+      return true;
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("title");
+    }
+    default:
+      return false;
+  }
+}
+
 /** Whether the event can change what a `#id` names: a new version of a document, which decides
  *  which `:::ask{#id}` blocks the latest version declares, or an ask settling into a block,
  *  leaving one or moving - every ask event but a follower's arrival or departure, which moves
@@ -893,6 +930,11 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   ];
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
+  }
+  // A new name or version of a document outside any issue, or an edit of an ask or a comment on
+  // it, can move the words a page's chip draws, which come from the batched name read.
+  if (changesReferenceName(event)) {
+    targets.push(EVERY_REFERENCE_NAME);
   }
   // A reference to the document shows its name, kind and latest version. A correction moves the
   // name it shows. A new document can be the one a reference that found nothing named (no data
@@ -1084,6 +1126,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   if (changesReferenceGraph(event)) {
     targets.push({ exact: true, queryKey: ["issue", key, "references"] });
+  }
+  if (changesReferenceName(event)) {
+    targets.push(EVERY_REFERENCE_NAME);
   }
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
