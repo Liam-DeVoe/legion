@@ -4492,12 +4492,13 @@ Each item below names an endpoint and its method, then its contract, and an item
   and a claim record no read can decode is, as on the publish route, `500 {"error":"envoy: the claim record of role <role> is unreadable: <reason>"}` with no `Retry-After`.
   Every holder answer, the 200 and the 404 alike, carries `claim_revision`: the `envoy_roles` revision of the role's claim record as this lookup leaves it, which `/v1/roles/set` takes back as `if_claim_revision` (the 503s and the unreadable-record 500 above carry an error alone, as they always did).
   It is the revision the live holder's claim was read at, the revision of a lapsed claim this lookup kept (a restored claim still inside its restart grace), and `0` for a role no record claims — an unclaimed one, and a lapsed holder whose claim this lookup released.
+  The role is named in either form, `INFRA.<role>` or `<role>` alone, and a claim is keyed by the bare name whichever form claimed it, so this route, a publish to a role's lane and the lane's own delivery each read the name through `contracts.CanonicalRole` before they resolve the holder:
+  a send to `notifications.role.<P>.<role>` reaches the holder that claimed `<role>`.
 
 - `/v1/roles/set` (POST)
 
   Claims a role for a live session; the claim alone makes it the holder, and the route also adds the role's topic to its interest record.
   The role is read in either form, `INFRA.<role>` or the old `<role>` alone, which claims the same role and is answered with a `warnings` entry naming the new form and counted (`store.Registry.ClaimedRole`).
-  A claim is keyed by the bare role name whichever form named it, so every other reader of a role resolves it the same way before it reads the claim: a publish to a role's lane, the lane's own delivery and `GET /v1/roles/<role>` each take the name through `contracts.CanonicalRole`, and a send to `notifications.role.<P>.<role>` reaches the holder that claimed `<role>`.
   Last-claim-wins by default.
   A claim states the process making it, `client_instance_id`, the same id that process's registrations carry, and the claim record names it as the process holding the role.
   With `"soft": true` the claim lands only if the role is unheld, held by a session that is no longer live, held under the claimant's own session id on the terms below, or held by the declared `previous_session_id` (the id a fork/branch continues) in one of three cases:
