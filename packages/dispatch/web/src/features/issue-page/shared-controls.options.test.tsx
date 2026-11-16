@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { act, type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -21,8 +21,10 @@ import type {
   ClaimHolderLiveness,
   IssueClaim,
   IssueComponents,
+  IssueDetails,
   Priorities,
   PriorityRow,
+  UserIssueState,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -52,12 +54,16 @@ import {
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { MarginProvider } from "../margin/margin-context";
-import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { useDialog } from "../shell/useDialog";
+import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { NoTooltips } from "./NoTooltips";
 import { PROPERTY_LABELS } from "./page-structure";
 import { AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
+import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /**
  * The options the shared controls take (dispatch://INFRA-3935 R1, R3, R4, R5 and R10): each
@@ -2069,4 +2075,263 @@ test("the default shapes keep main's class strings", async () => {
   }
 
   expect(read).toEqual(want);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The focus and Escape in the controls' own forms
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Stands for Details on a phone around the controls it draws: a sheet of `useDialog` under the
+ * application's key registry (`KeymapProvider`), whose Escape is the registry's dialog binding.
+ * That binding takes a press inside a field (`inEditable`) and passes over one a handler already
+ * marked `defaultPrevented` (`keymap.ts`), which is how a control's own Escape keeps the sheet
+ * open. The sheet stays drawn: `onClose` is told of each press that would have closed it.
+ */
+function EscapeSheet({
+  children,
+  onClose,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+}): ReactNode {
+  const { containerRef } = useDialog<HTMLDivElement>({ onClose, open: true });
+  return <div ref={containerRef}>{children}</div>;
+}
+
+/** Records each Escape pressed while it listens, from `document`'s capture phase, so a case can
+ *  read once the press is over whether a handler marked it `defaultPrevented`. */
+function recordEscapes(): { readonly presses: KeyboardEvent[]; readonly stop: () => void } {
+  const presses: KeyboardEvent[] = [];
+  const record = (event: KeyboardEvent) => {
+    if (event.key === "Escape") presses.push(event);
+  };
+  document.addEventListener("keydown", record, true);
+  return { presses, stop: () => document.removeEventListener("keydown", record, true) };
+}
+
+/** The priority line of an issue that advances none on `surface`: `main`'s line outside
+ *  `NoTooltips`, and the value of a row of Details inside it. */
+function addablePriorityLine(surface: Surface): ReactNode {
+  return (
+    <IssuePriorityLine
+      disabled={false}
+      inRow={surface === "inside"}
+      issue={{ advances: [], advances_revision: 1, key: "CORE-1" }}
+    />
+  );
+}
+
+/** The line's add control, checked to be the one `surface` draws: `main`'s "+" outside
+ *  `NoTooltips`, and the words of Details inside it. */
+function addControlOf(view: RenderResult, surface: Surface): HTMLElement {
+  const add = within(view.container).getByRole("button", {
+    name: addPriorityControlName("CORE-1"),
+  });
+  expect(add.textContent).toBe(surface === "inside" ? CONTROL_LABELS.add_priority : "+");
+  return add;
+}
+
+/** The add form's first field, the priority picker, once the form is open. */
+function pickerOf(view: RenderResult): Promise<HTMLElement> {
+  return within(view.container).findByRole("combobox", {
+    name: CONTROL_LABELS.priority_to_advance,
+  });
+}
+
+function pickerShown(view: RenderResult): boolean {
+  return (
+    within(view.container).queryByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }) !==
+    null
+  );
+}
+
+// R1, and dispatch://INFRA-1196's ruling for this fix that focus handling may only improve: the
+// add control the form replaces leaves the page, so opening the form puts the focus in its first
+// field rather than leaving it on the body. On both sides of `NoTooltips`.
+test("the priority's add control puts the focus in its form", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["outside", "inside"] as const) {
+    const view = draw(addablePriorityLine(surface), surface);
+    try {
+      // A keyboard reaches the control and presses Enter on it.
+      addControlOf(view, surface).focus();
+      await user.keyboard("{Enter}");
+      expect(document.activeElement).toBe(await pickerOf(view));
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
+// The same ruling: Cancel leaves the page with the form, so the focus returns to the add control
+// drawn again in its place rather than dropping to the body.
+test("Cancel in the priority's form returns the focus to its add control", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["outside", "inside"] as const) {
+    const view = draw(addablePriorityLine(surface), surface);
+    try {
+      await user.click(addControlOf(view, surface));
+      expect(document.activeElement).toBe(await pickerOf(view));
+      await user.click(within(view.container).getByRole("button", { name: CONTROL_LABELS.cancel }));
+      expect(pickerShown(view)).toBe(false);
+      expect(document.activeElement).toBe(addControlOf(view, surface));
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
+// Escape in the form is the form's: it closes the form, returns the focus to the add control and
+// reaches nothing around the line - neither a listener on `document`, where a panel listens, nor
+// the dialog binding that closes Details on a phone. Only a second Escape, pressed on the add
+// control, reaches them.
+test("Escape in the priority's form closes the form alone and returns the focus to its add control", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["outside", "inside"] as const) {
+    // What each Escape reached past the line, in order.
+    const reached: string[] = [];
+    const onDocument = (event: KeyboardEvent) => {
+      if (event.key === "Escape") reached.push("document");
+    };
+    document.addEventListener("keydown", onDocument);
+    const escapes = recordEscapes();
+    const view = draw(
+      <KeymapProvider>
+        <EscapeSheet onClose={() => reached.push("sheet")}>
+          {addablePriorityLine(surface)}
+        </EscapeSheet>
+      </KeymapProvider>,
+      surface
+    );
+    try {
+      // The sheet's first focus lands on its one control before the case presses anything.
+      await waitFor(() => expect(document.activeElement).toBe(addControlOf(view, surface)));
+      await user.click(addControlOf(view, surface));
+      expect(document.activeElement).toBe(await pickerOf(view));
+
+      await user.keyboard("{Escape}");
+      expect(pickerShown(view)).toBe(false);
+      const add = addControlOf(view, surface);
+      expect(document.activeElement).toBe(add);
+      expect(reached).toEqual([]);
+      expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
+
+      await user.keyboard("{Escape}");
+      expect(reached).toEqual(["document", "sheet"]);
+    } finally {
+      escapes.stop();
+      document.removeEventListener("keydown", onDocument);
+      undraw(view);
+    }
+  }
+});
+
+/** An issue the identity block's typed editors edit (`shared-writes.test.ts`'s `issue`). */
+const fieldIssue: IssueDetails = {
+  route_status: null,
+  route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
+  advances: [],
+  advances_revision: 0,
+  artifacts: [],
+  children: [],
+  closed_at: null,
+  created_at: "2026-09-09T00:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  design_gates: [],
+  external_links: [],
+  key: "CORE-1",
+  labels: [],
+  last_seq: 250,
+  number: 1,
+  open_asks: [],
+  progress: { tasks: null, children: null },
+  parent: null,
+  blocked_by: [],
+  assignee: null,
+  claim: null,
+  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
+  primary_artifact_id: "",
+  verification_artifact_id: "",
+  project: "CORE",
+  referenced_by_count: 0,
+  route: null,
+  repo: null,
+  resolved_repo: null,
+  status: "todo",
+  priority: null,
+  rank: "U",
+  title: "Review the spec",
+  updated_at: "2026-09-09T00:00:00Z",
+};
+
+const fieldState: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
+
+/** The identity block's editor of `field`, open as the page opens it: on the drafts of the
+ *  page's `useIssueHeaderWrites`, and closed by its `onClose`, which `onClose` here is told of. */
+function OpenFieldForm({ field, onClose }: { field: IssueField; onClose: () => void }): ReactNode {
+  const writes = useIssueHeaderWrites(fieldIssue, fieldState);
+  const [open, setOpen] = useState<IssueField | null>(field);
+  return (
+    <IssueFieldForms
+      field={open}
+      isClosed={false}
+      issue={fieldIssue}
+      onClose={() => {
+        onClose();
+        setOpen(null);
+      }}
+      writes={writes}
+    />
+  );
+}
+
+/** Presses Escape in the `field` box, open in Details on a phone, and checks that the press
+ *  closed the box alone: the box is gone, its `onClose` ran, and the press, marked
+ *  `defaultPrevented`, passed the sheet's dialog binding by. A second Escape, with the box gone,
+ *  closes the sheet, so the binding the first press passed is one that would have closed it. */
+async function escapeInFieldBox(field: IssueField, label: string): Promise<void> {
+  const user = userEvent.setup();
+  // What each Escape closed, in order.
+  const closed: string[] = [];
+  const escapes = recordEscapes();
+  const view = draw(
+    <KeymapProvider>
+      <EscapeSheet onClose={() => closed.push("sheet")}>
+        <OpenFieldForm field={field} onClose={() => closed.push("box")} />
+      </EscapeSheet>
+    </KeymapProvider>,
+    "inside"
+  );
+  try {
+    const box = within(view.container).getByRole("textbox", { name: label });
+    await waitFor(() => expect(document.activeElement).toBe(box));
+
+    await user.keyboard("{Escape}");
+    expect(within(view.container).queryByRole("textbox", { name: label })).toBeNull();
+    expect(closed).toEqual(["box"]);
+    expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
+
+    await user.keyboard("{Escape}");
+    expect(closed).toEqual(["box", "sheet"]);
+  } finally {
+    escapes.stop();
+    undraw(view);
+  }
+}
+
+// An editor's Escape is the editor's: it closes the box, and Details, a sheet on a phone that
+// closes on Escape too, stays open around it.
+test("Escape in the route box closes the box and leaves Details open", async () => {
+  await escapeInFieldBox("route", PROPERTY_LABELS.route);
+});
+
+test("Escape in the parent box closes the box and leaves Details open", async () => {
+  await escapeInFieldBox("parent", PROPERTY_LABELS.parent);
 });

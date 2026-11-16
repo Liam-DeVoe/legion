@@ -1,6 +1,6 @@
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
@@ -31,6 +31,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { focusOnDocument } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
@@ -124,6 +125,30 @@ export function IssuePriorityLine({
   const writeOwn = (ids: string[]) =>
     write.mutate({ advances: ids, advances_revision: issue.advances_revision });
   const busy = disabled || write.isPending;
+  const addControl = useRef<HTMLButtonElement>(null);
+  const picker = useRef<HTMLSelectElement>(null);
+  // Opening the form puts the focus in its first field: the add control the form replaces leaves
+  // the page, and without this the focus would drop to the body with it and a keyboard user
+  // would have to find the form again.
+  useEffect(() => {
+    if (adding) picker.current?.focus();
+  }, [adding]);
+  // Closing it - Add, Cancel or Escape - owes the add control, drawn again in its place, the
+  // focus the form held, for the same reason. The control takes it once it can hold it: Add's
+  // write disables the control until the write settles, and a disabled control holds no focus,
+  // so after an add the focus waits on the body until then. Only a focus still on the document
+  // is taken back (`focusOnDocument`): anywhere else, the reader put it there in between.
+  const focusAddControl = useRef(false);
+  useEffect(() => {
+    if (adding || write.isPending || !focusAddControl.current) return;
+    focusAddControl.current = false;
+    if (focusOnDocument()) addControl.current?.focus();
+  }, [adding, write.isPending]);
+  const closeForm = () => {
+    setPicked("");
+    setAdding(false);
+    focusAddControl.current = true;
+  };
   // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
   // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the line is the ink in a row
   // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
@@ -143,8 +168,7 @@ export function IssuePriorityLine({
     event.preventDefault();
     if (picked === "") return;
     writeOwn([...own, picked]);
-    setPicked("");
-    setAdding(false);
+    closeForm();
   };
 
   return (
@@ -204,6 +228,19 @@ export function IssuePriorityLine({
       ) : adding ? (
         <form
           className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2`}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            // Escape closes this form and goes no further. The panel the line sits in closes on
+            // Escape too - Details on the new issue page, which on a phone is a sheet whose
+            // Escape is the key registry's dialog binding (`useDialog`) - and one press reaching
+            // it would close the form and the panel together and leave the focus on nothing. The
+            // registry passes over a press already `defaultPrevented` (`keymap.ts`), and a press
+            // stopped here reaches no listener above the form either. A second Escape, pressed on
+            // the add control the focus returns to, is the panel's.
+            event.preventDefault();
+            event.stopPropagation();
+            closeForm();
+          }}
           onSubmit={add}
         >
           <label className="sr-only" htmlFor={selectId} {...page?.pageChrome}>
@@ -213,6 +250,7 @@ export function IssuePriorityLine({
             className={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-sm md:min-h-8 ${page === null ? inputClasses(true) : `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`}`}
             id={selectId}
             onChange={(event) => setPicked(event.target.value)}
+            ref={picker}
             value={picked}
           >
             <option value="">
@@ -236,10 +274,7 @@ export function IssuePriorityLine({
           </button>
           <button
             className={`min-h-11 rounded px-2 py-1 text-sm font-medium md:min-h-8 ${page === null ? textMutedHoverToSecondary : `${pageQuietText} hover:text-page-muted`}`}
-            onClick={() => {
-              setPicked("");
-              setAdding(false);
-            }}
+            onClick={closeForm}
             type="button"
             {...page?.pageChrome}
           >
@@ -263,6 +298,7 @@ export function IssuePriorityLine({
           className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink`}`}
           disabled={busy}
           onClick={() => setAdding(true)}
+          ref={addControl}
           title={tooltips ? addPriorityControlName(issue.key) : undefined}
           type="button"
           {...page?.pageChrome}
