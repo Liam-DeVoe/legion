@@ -44,7 +44,10 @@
 // "spec-check: statement <id>: the files hold approved version 1, and version 2 is current". It
 // exits 2, and makes no comparison, for files that do not parse or a directory that holds no spec
 // file. The comparison does not judge the tree, which is tree's work. No CI job runs compare (R2):
-// Dispatch makes the comparison at each push.
+// Dispatch makes the comparison at each push. So compare exits 2, before it reads an argument,
+// when GITHUB_ACTIONS or CI is "true", with the one line "spec-check: compare does not run in a CI
+// job (<variable>=true): Dispatch compares the files with the approved spec at each push (R2)",
+// whatever route the job took to the command.
 //
 // print writes the current approved block of each node it is named, in the order named, and after
 // a statement the block of each current check that serves it, each block once and the blocks
@@ -53,12 +56,14 @@
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
 // <dir>/.github/scripts and <dir>/scripts, and names each line that runs the comparison
-// (specgraph.CIFilesThatCompare) on standard error, "spec-check: <dir>/<path>:<line>: this line
-// runs the comparison of the files with the approved spec, which no CI job does (R2)", with
-// "spec-check: <dir>: <n> lines of CI files run the comparison" on standard output, exit 1. It
-// exits 1 with "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file,
-// since an instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>:
-// no line of <k> CI files runs the comparison".
+// (specgraph.CIFilesThatCompare: each line as the shell reads it, and each run: value of a YAML
+// file as YAML reads it) on standard error, "spec-check: <dir>/<path>:<line>: this line runs the
+// comparison of the files with the approved spec, which no CI job does (R2)", with "spec-check:
+// <dir>: <n> lines of CI files run the comparison" on standard output, exit 1. It exits 1 with
+// "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file, since an
+// instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>: no line
+// of <k> CI files runs the comparison". A step can run the comparison from a file it does not
+// read, such as a package script or a make target: compare's refusal covers that route.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage. Each entry of a directory that is
