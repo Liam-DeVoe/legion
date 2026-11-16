@@ -1750,6 +1750,7 @@ The listener's outputs are `containerName` and `port`.
 | `port` | `9020` | The port the listener serves and the health check calls. |
 | `seed` | unset | A secret: the nkey seed of the NATS user the listener connects as. May come from another resource or stack. |
 | `waitForHealthy` | `true` | Whether `pulumi up` waits on the container's health check. See [Readiness](#readiness). |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private ([dispatch://INFRA-3862](dispatch://INFRA-3862)): `ENVOY_PRIVATE_PROJECTS=1`, last, in the container's environment and the watchdog's env file, so the listener decides a project frame that carries no stamp as private. False or unset renders what the listener rendered before the input existed. A program that declares a `host:Listener` sets it from the same value as its hub's `privateProjects`. |
 | `watchdog` | unset | `{host}`: deploys the watchdog on that SSH address. See [The watchdog](#the-watchdog). |
 | `adopt` | unset | `{container, image, watchdog}`: root-level resources this listener takes over. See [Moving an existing deployment onto it](#moving-an-existing-deployment-onto-it). |
 

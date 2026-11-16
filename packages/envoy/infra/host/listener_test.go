@@ -452,3 +452,42 @@ func TestListenerWatchdogOnAnotherPortMovesOnlyItsTwoPortLines(t *testing.T) {
 	}, changed)
 	require.Equal(t, readGolden(t, "watchdog-delete.golden"), cmd.Inputs["delete"].StringValue())
 }
+
+// A host's listener carries ENVOY_PRIVATE_PROJECTS=1 exactly when its privateProjects input is
+// true: the deployment may make a Dispatch project private, so the listener decides a project frame
+// that carries no stamp as private (dispatch://INFRA-3862). The container's envs and the watchdog's
+// env file, which recreates a removed container, both carry it, last. With privateProjects false or
+// unset, each is what it was before the input existed: exampleEnvs, and the watchdog's golden byte
+// for byte (R9). Negative control, run by hand: copy true into the plan whatever the input says;
+// the unset and false rows then fail, naming the line.
+func TestAHostListenerFollowsPrivateProjects(t *testing.T) {
+	const line = "ENVOY_PRIVATE_PROJECTS=1"
+	for _, row := range []struct {
+		name    string
+		private *bool
+	}{
+		{"unset", nil},
+		{"false", pulumi.BoolRef(false)},
+		{"true", pulumi.BoolRef(true)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := exampleArgs()
+			args.PrivateProjects = row.private
+			m, err := run(t, args, nil, "docker")
+			require.NoError(t, err)
+			envs, _ := envsOf(t, m.One(t, containerType))
+
+			args = exampleArgs()
+			args.PrivateProjects = row.private
+			cmd, _ := watchdogOf(t, args)
+			create := cmd.Inputs["create"].StringValue()
+			if row.private == nil || !*row.private {
+				require.Equal(t, exampleEnvs, envs, "the container's envs are the merge base's: no %s", line)
+				require.Equal(t, readGolden(t, "watchdog-create.golden"), create, "the watchdog's create text is the merge base's: no %s", line)
+				return
+			}
+			require.Equal(t, append(slices.Clone(exampleEnvs), line), envs)
+			require.Contains(t, create, "\nENVOY_ALLOW_REMOTE_NATS=1\n"+line+"\n", "the watchdog's env file carries it, last")
+		})
+	}
+}
