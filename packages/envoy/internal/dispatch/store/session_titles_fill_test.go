@@ -40,7 +40,7 @@ func migratedTitlesStore(t *testing.T) *Store {
 	t.Helper()
 	store := migratedEmptyStore(t)
 	ctx := context.Background()
-	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name) values ('TITLES', 'Titles')`); err != nil {
+	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TITLES', 'Titles', 'alice')`); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
 	if _, err := store.Pool.Exec(ctx, `

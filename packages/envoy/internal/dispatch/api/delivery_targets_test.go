@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -31,19 +32,21 @@ func showVerdict(met *bool) string {
 // TestTheDeliveryVerdictsAreTheirEvalsVerdicts (R5): the measures answer and the Pipeline judge
 // their figures by the targets of the delivery evals of the project the deploy repository is
 // mapped to, which a person sets, so after register writes that move three targets onto figures of
-// a day-aligned window, inclusive or not, and turn deploy-frequency's off, each verdict of the
-// measures answer and of the Pipeline's lead-time cards is the verdict the eval route states for the
-// same window, and each target the answer states is the eval's, value and inclusiveness; the target
-// turned off is null and judges nothing. unowned-p0 is left out of the comparison: its eval reads
-// the project's stored count of each day, where the measures answer counts every project's open P0
-// issues now. With the deploy repository mapped to no project, both answers are judged by the
-// catalogue's targets, main's (measures.DefaultTargets).
+// a day-aligned window of seven days, inclusive or not, and turn deploy-frequency's off, each
+// verdict of the measures answer and of the Pipeline's lead-time cards is the verdict the eval route
+// states for the same window, and each target the answer states is the eval's, value and
+// inclusiveness; the target turned off is null and judges nothing. The Pipeline reads at alone, so
+// it is read at the window's last second, whose seven days are the window's. unowned-p0 is left
+// out of the comparison: its eval reads the project's stored count of each day, where the measures
+// answer counts every project's open P0 issues now. With the deploy repository mapped to no
+// project, both answers are judged by the catalogue's targets, main's (measures.DefaultTargets).
 func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture, _ := seedEvalHistories(t, database, deps, 14)
 	project := fixture.Project
 	from, to := fixture.From.AddDate(0, 0, 4), fixture.From.AddDate(0, 0, 11)
 	window := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}.Encode()
+	pipelineAt := url.Values{"at": {to.Add(-time.Second).Format(time.RFC3339)}}.Encode()
 	list := "/api/v1/projects/" + project + "/evals?limit=200&" + window
 	before := evalGet[evalListResponse](t, handler, list)
 	figure := func(slug, series, name string) float64 {
@@ -70,7 +73,10 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 
 	after := evalGet[evalListResponse](t, handler, list)
 	answer := getDeliveryMeasures(t, handler, window)
-	pipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+window)
+	pipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+pipelineAt)
+	if want := measures.ShownDays(to.Add(-time.Second)); !slices.Equal(pipeline.Days, want) || want[0] != from.Format(time.DateOnly) {
+		t.Fatalf("the Pipeline at %s shows the days %v, want the window's seven, %v from %s", pipelineAt, pipeline.Days, want, from.Format(time.DateOnly))
+	}
 	eval := func(slug string) (*bool, *measures.Target) {
 		item := findEval(t, after.Items, project, slug)
 		var met *bool
@@ -120,7 +126,7 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 		t.Fatalf("unmap %s's repositories: %v", project, err)
 	}
 	unmapped := getDeliveryMeasures(t, handler, window)
-	unmappedPipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+window)
+	unmappedPipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+pipelineAt)
 	if !reflect.DeepEqual(unmapped.Targets, measures.DefaultTargets) || !reflect.DeepEqual(unmappedPipeline.Targets, measures.DefaultTargets) {
 		t.Errorf("with the deploy repository mapped to no project the targets are %+v and %+v, want the catalogue's %+v",
 			unmapped.Targets, unmappedPipeline.Targets, measures.DefaultTargets)

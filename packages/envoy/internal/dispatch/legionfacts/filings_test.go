@@ -35,7 +35,7 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 	root, implemented, reviewed := run.fixture.Keys[0], run.fixture.Keys[1], run.fixture.Keys[2]
 	otherRoot, otherImplemented := run.fixture.Keys[6], run.fixture.Keys[7]
 	run.exec(t, "add a project of its own for a filing across projects",
-		`insert into projects (key, name, next_number) values ('OTHER', 'OTHER', 2)`)
+		`insert into projects (key, name, default_assignee, next_number) values ('OTHER', 'OTHER', 'alice', 2)`)
 	controller := `{"kind":"session","id":"s-controller","origin":{"session_title":"Legion controller · ` + project + `"}}`
 	byController := run.fileIssue(t, project, 901, "", controller, at(9))
 	later := run.fileIssue(t, project, 902, root, roleSession("implementer", implemented), at(10))

@@ -59,7 +59,7 @@ func TestTheStoredFilingsReadKeepsItsIndexesUnderAGenericPlan(t *testing.T) {
 	ctx := t.Context()
 	pool := factsDatabase(t)
 	if _, err := pool.Exec(ctx, `
-		insert into projects (key, name) values ('FILE', 'Filings'), ('FOTH', 'Other');
+		insert into projects (key, name, default_assignee) values ('FILE', 'Filings', 'alice'), ('FOTH', 'Other', 'alice');
 		insert into issue_filings (issue_key, project_key, filed_at, filer_role, filer_issue, class)
 		select project || '-' || n, project, now() - make_interval(hours => n),
 		       case when n % 3 = 0 then 'controller' else 'architect' end,

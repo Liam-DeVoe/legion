@@ -52,7 +52,7 @@ func seedAttribution(t *testing.T, r rig) delivery.DeliverySettings {
 		}
 	}
 	actor := `{"kind":"system","id":"attribution-test"}`
-	exec("the projects", `insert into projects (key, name, next_number) values ('ALPHA', 'Alpha', 2), ('BETA', 'Beta', 2), ('GAMMA', 'Gamma', 1)`)
+	exec("the projects", `insert into projects (key, name, default_assignee, next_number) values ('ALPHA', 'Alpha', 'alice', 2), ('BETA', 'Beta', 'alice', 2), ('GAMMA', 'Gamma', 'alice', 1)`)
 	exec("the repositories", `insert into repo_projects (repo, project, created_by, is_default) values ($1, 'ALPHA', $3, true), ($2, 'BETA', $3, true)`,
 		alphaRepo, betaRepo, actor)
 	exec("the issues", `

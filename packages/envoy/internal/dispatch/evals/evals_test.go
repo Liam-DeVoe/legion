@@ -50,7 +50,7 @@ func newRig(t *testing.T) rig {
 			t.Errorf("shut down the document service: %v", err)
 		}
 	})
-	if _, err := database.Pool.Exec(t.Context(), `insert into projects (key, name) values ('EVAL', 'Evaluation')`); err != nil {
+	if _, err := database.Pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ('EVAL', 'Evaluation', 'alice')`); err != nil {
 		t.Fatalf("make project EVAL: %v", err)
 	}
 	return rig{database: database, documents: documents, registry: New(database, documents, broker), project: "EVAL"}

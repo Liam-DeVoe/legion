@@ -742,7 +742,8 @@ func (s *seeding) judge() {
 // costs a handful of round trips. The tables go in the order their foreign keys need: projects,
 // repositories and issues before the pull requests that name them, and the runs before their
 // jobs. A project that has a row already keeps it, so the history can join a project another
-// history made first.
+// history made first. A project it makes names alice as its default assignee, the column every
+// project fills (store migration 20261111210103); no delivery measure reads it.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
@@ -757,8 +758,8 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	projects := []string{s.fixture.Project, s.fixture.SecondProject}
 	nextNumbers := []int32{s.nextNumber(s.fixture.Project), s.nextNumber(s.fixture.SecondProject)}
 	if err := exec("projects", `
-		insert into projects (key, name, next_number)
-		select key, key, next from unnest($1::text[], $2::int[]) as seeded(key, next)
+		insert into projects (key, name, default_assignee, next_number)
+		select key, key, 'alice', next from unnest($1::text[], $2::int[]) as seeded(key, next)
 		on conflict (key) do nothing`,
 		projects, nextNumbers); err != nil {
 		return err

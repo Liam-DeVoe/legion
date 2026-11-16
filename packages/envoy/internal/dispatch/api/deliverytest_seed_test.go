@@ -11,9 +11,10 @@ import (
 )
 
 // TestTheDeliveryHistoryAnswersTheDeliveryRoutes: a deliverytest history, read back through
-// GET /api/v1/delivery/measures and GET /api/v1/delivery/pipeline over the last 28 days of it,
-// answers the deploys, the pull requests and the lead times the fixture says it wrote, counted by
-// the base's own containment over the fixture's own rows, with some deploys shipping pull requests
+// GET /api/v1/delivery/measures over the last 28 days of it and GET /api/v1/delivery/pipeline at
+// its last second, which reads at alone and shows the seven days ending on it, answers the
+// deploys, the pull requests and the lead times the fixture says it wrote in each, counted by the
+// base's own containment over the fixture's own rows, with some deploys shipping pull requests
 // and some none; PR-check cells of every outcome and ranked slowest jobs with their timed results;
 // the production card's three kinds of result and every other card's timed results; and each
 // repository's own pull requests under its facet. The fixture is held to holding pull requests
@@ -25,6 +26,9 @@ func TestTheDeliveryHistoryAnswersTheDeliveryRoutes(t *testing.T) {
 	to := fixture.To
 	from := to.AddDate(0, 0, -28)
 	window := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}
+	// The Pipeline's seven days end on at's: the window's last seven.
+	at := to.Add(-time.Second)
+	shownFrom := measures.WindowStart(at)
 
 	// What the fixture wrote in the window, judged by the rules the routes judge stored rows by.
 	var windowDeployRuns []delivery.DeliveryRun
@@ -34,15 +38,28 @@ func TestTheDeliveryHistoryAnswersTheDeliveryRoutes(t *testing.T) {
 		}
 	}
 	deploys := len(delivery.ProductionApplies(windowDeployRuns, fixture.Jobs, fixture.Settings.Production()).Applies)
-	merged, shipped := 0, 0
+	// merged and shipped are the window's pull requests, shownMerged and shownShipped those of the
+	// Pipeline's seven days.
+	merged, shipped, shownMerged, shownShipped := 0, 0, 0, 0
 	for _, pr := range fixture.PullRequests {
 		if pr.MergedAt.Before(from) || !pr.MergedAt.Before(to) {
 			continue
 		}
+		shown := !pr.MergedAt.Before(shownFrom)
 		merged++
+		if shown {
+			shownMerged++
+		}
 		if delivery.ContainingRun(pr, fixture.DeployRepo, fixture.Applies) != nil {
 			shipped++
+			if shown {
+				shownShipped++
+			}
 		}
+	}
+	if shownMerged == 0 || shownShipped == 0 {
+		t.Fatalf("the fixture merged %d and shipped %d pull requests in the Pipeline's %s..%s, which proves nothing",
+			shownMerged, shownShipped, shownFrom.Format(time.RFC3339), to.Format(time.RFC3339))
 	}
 	if deploys == 0 || merged == 0 || shipped == 0 {
 		t.Fatalf("the fixture wrote %d deploys, %d merged and %d shipped pull requests in %s..%s, which proves nothing",
@@ -64,12 +81,15 @@ func TestTheDeliveryHistoryAnswersTheDeliveryRoutes(t *testing.T) {
 		t.Errorf("lead_time = %+v, want a merge-to-production and an open-to-merge spread", got.LeadTime)
 	}
 
-	_, pipeline := getDeliveryPipeline(t, handler, window.Encode())
-	if n := pipeline.OpenedToMerge.Total.N; n != merged {
-		t.Errorf("opened_to_merge.total.n = %d, want the %d pull requests the fixture merged in the window", n, merged)
+	_, pipeline := getDeliveryPipeline(t, handler, url.Values{"at": {at.Format(time.RFC3339)}}.Encode())
+	if len(pipeline.Days) != measures.ShownDayCount || pipeline.Days[0] != shownFrom.Format(time.DateOnly) {
+		t.Fatalf("the Pipeline at %s shows the days %v, want the %d from %s", at.Format(time.RFC3339), pipeline.Days, measures.ShownDayCount, shownFrom.Format(time.DateOnly))
 	}
-	if n := pipeline.MergeToProduction.Total.N; n != shipped {
-		t.Errorf("merge_to_production.total.n = %d, want the %d pull requests a deploy shipped", n, shipped)
+	if n := pipeline.OpenedToMerge.Total.N; n != shownMerged {
+		t.Errorf("opened_to_merge.total.n = %d, want the %d pull requests the fixture merged in the Pipeline's seven days", n, shownMerged)
+	}
+	if n := pipeline.MergeToProduction.Total.N; n != shownShipped {
+		t.Errorf("merge_to_production.total.n = %d, want the %d of them a deploy shipped", n, shownShipped)
 	}
 	checks := pipeline.PRChecks
 	if checks.Run.Total.N == 0 || checks.Run.Total.Failure == 0 || checks.Run.Total.Cancelled == 0 {
@@ -106,7 +126,8 @@ func TestTheDeliveryHistoryAnswersTheDeliveryRoutes(t *testing.T) {
 		}
 	}
 
-	t.Logf("over %s..%s: %d deploys (%d with pull requests), %d pull requests merged and %d shipped, %d PR-check runs timed, %d slowest jobs, %d failing jobs",
+	t.Logf("over %s..%s: %d deploys (%d with pull requests), %d pull requests merged and %d shipped; the Pipeline's %s..%s: %d merged and %d shipped, %d PR-check runs timed, %d slowest jobs, %d failing jobs",
 		from.Format(time.DateOnly), to.Format(time.DateOnly), got.DeployFrequency.SuccessfulDeploys, got.DeployFrequency.DeploysWithPRs,
-		merged, shipped, checks.Run.Total.N, len(checks.SlowestJobs), len(checks.FailingJobs))
+		merged, shipped, shownFrom.Format(time.DateOnly), to.Format(time.DateOnly), shownMerged, shownShipped,
+		checks.Run.Total.N, len(checks.SlowestJobs), len(checks.FailingJobs))
 }

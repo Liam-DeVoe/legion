@@ -660,14 +660,15 @@ func nearly(got *float64, want, tolerance float64) bool {
 
 // TestTheEvalReadsFoldTheStoredDayRows (R12, R16): over a project with
 // written day rows, the list read answers for one window the numbers the delivery routes answer
-// (GET /api/v1/delivery/measures and /pipeline, which build the same parts from the population and
-// fold them through the same folds), and the Legion evals answer the numbers the base head's
-// Legion section answered (legion/metrics' golden files); a series with no day row reads null and
-// names no first day, and a window that starts before a series' first day reads null and names it
-// while its per-day array answers the days that exist; GET /api/v1/evals answers two projects, one,
-// and with none named every project the store holds, each item equal to the project read's; and the
-// items route answers one field set for every row kind, each row measured when its value was
-// (itemMeasuredAt).
+// (GET /api/v1/delivery/measures for that window, and /pipeline at its last second, whose seven
+// days are the window's, since the Pipeline reads at alone; both build the same parts from the
+// population and fold them through the same folds), and the Legion evals answer the numbers the
+// base head's Legion section answered (legion/metrics' golden files); a series with no day row
+// reads null and names no first day, and a window that starts before a series' first day reads
+// null and names it while its per-day array answers the days that exist; GET /api/v1/evals
+// answers two projects, one, and with none named every project the store holds, each item equal
+// to the project read's; and the items route answers one field set for every row kind, each row
+// measured when its value was (itemMeasuredAt).
 func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture, windows := seedEvalHistories(t, database, deps, 14)
@@ -680,7 +681,12 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 		t.Fatalf("the list states the window %+v, want %s..%s, 7 days", list.Window, from, to)
 	}
 	route := getDeliveryMeasures(t, handler, window).Measures
-	pipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+window)
+	// The seven days ending on to's last second, which are the window's: the Pipeline reads at alone.
+	at := url.Values{"at": {to.Add(-time.Second).Format(time.RFC3339)}}.Encode()
+	pipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+at)
+	if want := measures.ShownDays(to.Add(-time.Second)); !slices.Equal(pipeline.Days, want) || want[0] != from.Format(time.DateOnly) {
+		t.Fatalf("the Pipeline at %s shows the days %v, want the window's seven, %v from %s", at, pipeline.Days, want, from.Format(time.DateOnly))
+	}
 	stat := func(slug, series, name string) *float64 {
 		return seriesValues(t, findEval(t, list.Items, fixture.Project, slug), series).Window[name]
 	}
@@ -938,7 +944,7 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 	ctx := t.Context()
 	today := measures.Midnight(time.Now().UTC())
 	window := url.Values{"from": {today.Format(time.RFC3339)}, "to": {today.AddDate(0, 0, 1).Format(time.RFC3339)}}.Encode()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('SQL', 'Made by SQL')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('SQL', 'Made by SQL', 'alice')`); err != nil {
 		t.Fatalf("make a project by SQL: %v", err)
 	}
 	logged := func(slug, key string) {
@@ -1014,7 +1020,7 @@ func TestARegisterWriteOfNoTargetHoldsThroughTheSeed(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	today := measures.Midnight(time.Now().UTC())
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('SQL', 'Made by SQL')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('SQL', 'Made by SQL', 'alice')`); err != nil {
 		t.Fatalf("make a project by SQL: %v", err)
 	}
 	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals/"+evals.SlugDeployFrequency+"/readings",

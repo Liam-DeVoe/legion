@@ -222,25 +222,29 @@ func TestAWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
 // value of when a query names it twice (C9 of the review of 2fdcf77f). A delivery read answered
 // ?from=A&from=B as the window from A, so the window a reader sent and the one its answer folds
 // differ with nothing to say so; it refuses that query 400 INVALID_QUERY, as the eval reads do.
+// The Pipeline's window is at alone, so its repeated key is at.
 func TestADeliveryReadRefusesARepeatedWindowKey(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	seedMeasuresSettings(t, database)
+	var targets []string
 	for _, window := range []url.Values{
 		{"from": {"2026-11-01T00:00:00Z", "2026-10-01T00:00:00Z"}, "to": {"2026-11-14T00:00:00Z"}},
 		{"from": {"2026-11-01T00:00:00Z"}, "to": {"2026-11-14T00:00:00Z", "2026-11-10T00:00:00Z"}},
 	} {
 		for _, path := range []string{
 			"/api/v1/delivery/measures?",
-			"/api/v1/delivery/pipeline?",
 			"/api/v1/delivery/timeline?",
 		} {
-			target := path + window.Encode()
-			response := evalRequest(t, handler, http.MethodGet, target, nil, "")
-			var refusal evalRefusal
-			if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" {
-				t.Errorf("GET %s: status %d, body %.120s; want 400 INVALID_QUERY", target, response.Code, response.Body.String())
-			}
+			targets = append(targets, path+window.Encode())
+		}
+	}
+	targets = append(targets, "/api/v1/delivery/pipeline?"+url.Values{"at": {"2026-11-14T00:00:00Z", "2026-11-10T00:00:00Z"}}.Encode())
+	for _, target := range targets {
+		response := evalRequest(t, handler, http.MethodGet, target, nil, "")
+		var refusal evalRefusal
+		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" {
+			t.Errorf("GET %s: status %d, body %.120s; want 400 INVALID_QUERY", target, response.Code, response.Body.String())
 		}
 	}
 }

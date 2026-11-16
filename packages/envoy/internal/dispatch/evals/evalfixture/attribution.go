@@ -72,9 +72,11 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 	if _, err := delivery.PutSettings(ctx, pool, deliverySettingsOf(deployRepo), actor); err != nil {
 		return AttributionResult{}, fmt.Errorf("write the delivery settings of k15's case: %w", err)
 	}
+	// Each project names alice as its default assignee, the column every project fills (store
+	// migration 20261111210103), as the Legion mode's history does; no attribution reads it.
 	if err := exec("projects", `
-		insert into projects (key, name, next_number)
-		select key, key, 1 from unnest($1::text[]) as seeded(key)
+		insert into projects (key, name, default_assignee, next_number)
+		select key, key, 'alice', 1 from unnest($1::text[]) as seeded(key)
 		on conflict (key) do nothing`, result.Projects); err != nil {
 		return AttributionResult{}, err
 	}

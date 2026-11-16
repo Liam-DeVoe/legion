@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -54,6 +55,17 @@ type deliveryOracleFixture struct {
 // recorded, the recorder's stripped fields left out. Integers and strings must be equal; floats
 // within deliveryOracleTolerance of each other, relative to the larger.
 //
+// The Pipeline is compared on the days the two answers share alone. The base head answered
+// ?from=&to= with the window's own days; INFRA-1077's cut (0a919c56) made the route read `at`
+// alone, the seven UTC days ending on at's, and none of the recorded windows is seven days long.
+// The recorder is gone (below), so no answer of seven days can be recorded at the base head
+// either. So each recorded Pipeline request is sent as ?at= the window's last instant, whose last
+// shown day is the window's, and the two answers are compared on what both state of the days both
+// show (sharedPipelineDays): each per-day cell of the PR-checks runs, the three deploy cards and
+// the two lead times, each card's job, and the failing jobs, which both read over the 24 hours
+// before the window's end. The totals, the slowest jobs and the status span every shown day, which
+// differ, and are left out. The test fails where it compared no Pipeline cell.
+//
 // The files were recorded once, on a checkout of the base head 02a7b3c6 that a recorder test and
 // the delivery/deliverytest package it seeds through were copied into (that head holds neither),
 // with `go test -count=1 -tags goldenrecord -run TestRecordDeliveryGolden ./internal/dispatch/api/`
@@ -77,9 +89,8 @@ type deliveryOracleFixture struct {
 // and stated nothing, this head ranks by the min_n of pr-ci's job series in the project the
 // deploy repository is mapped to, 50 where none holds one, and states it in
 // pr_checks.slowest_min_results, which must be 50 here, where no pr-ci eval is seeded, and which
-// the base head's answer must not hold (takeSlowestMinResults); its slowest_jobs are then the base
-// head's value for value. Those fields are then left out of the value-for-value comparison, and
-// every other field must be the base head's.
+// the base head's answer must not hold (takeSlowestMinResults). Those fields are then left out of
+// the value-for-value comparison, and every other field it reads must be the base head's.
 func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 	dir := filepath.Join("testdata", "golden_delivery")
 	var recorded deliveryOracleFixture
@@ -96,7 +107,7 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			fixture.Summary(), fixture.Repos, recorded.Fixture.Summary, recorded.Fixture.Repos)
 	}
 
-	requests, values, differing, moved, movedWindows, failuresNulled, thresholds := 0, 0, 0, 0, 0, 0, 0
+	requests, values, differing, moved, movedWindows, failuresNulled, thresholds, pipelineCells := 0, 0, 0, 0, 0, 0, 0, 0
 	for _, window := range recorded.Windows {
 		var file struct {
 			Head    string                     `json:"head"`
@@ -109,14 +120,19 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 		earlier := deploysShippingOnlyEarlier(fixture, window.From, window.To)
 		var withPRsMoved []string
 		for _, target := range slices.Sorted(maps.Keys(file.Answers)) {
-			response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+			pipeline := strings.HasPrefix(target, "/api/v1/delivery/pipeline?")
+			request := target
+			if pipeline {
+				request = "/api/v1/delivery/pipeline?" + url.Values{"at": {window.To.Add(-time.Nanosecond).Format(time.RFC3339Nano)}}.Encode()
+			}
+			response := dispatchRequest(t, handler, http.MethodGet, request, nil, "alice")
 			if response.Code != http.StatusOK {
-				t.Fatalf("GET %s: status = %d, body = %s", target, response.Code, response.Body.String())
+				t.Fatalf("GET %s: status = %d, body = %s", request, response.Code, response.Body.String())
 			}
 			got := decodeDeliveryOracleTree(t, response.Body.Bytes())
 			for _, field := range recorded.Stripped {
 				if _, held := got.(map[string]any)[field]; !held {
-					t.Fatalf("GET %s answers no %s to strip", target, field)
+					t.Fatalf("GET %s answers no %s to strip", request, field)
 				}
 				delete(got.(map[string]any), field)
 			}
@@ -137,24 +153,34 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 					t.Errorf("%s: GET %s: %s", window.File, target, difference)
 				}
 			}
-			if strings.HasPrefix(target, "/api/v1/delivery/pipeline?") {
+			if pipeline {
 				if difference := takeSlowestMinResults(got, want); difference != "" {
 					differing++
-					t.Errorf("%s: GET %s: %s", window.File, target, difference)
+					t.Errorf("%s: GET %s: %s", window.File, request, difference)
 				}
 				values, thresholds = values+1, thresholds+1
 			}
-			named, difference := takeTargets(got, want, strings.HasPrefix(target, "/api/v1/delivery/pipeline?"))
+			named, difference := takeTargets(got, want)
 			values += named
 			if difference != "" {
 				differing++
-				t.Errorf("%s: GET %s: %s", window.File, target, difference)
+				t.Errorf("%s: GET %s: %s", window.File, request, difference)
+			}
+			if pipeline {
+				var cells int
+				got, want, cells, difference = sharedPipelineDays(got, want)
+				pipelineCells += cells
+				if difference != "" {
+					differing++
+					t.Errorf("%s: GET %s for %s: %s", window.File, request, target, difference)
+					continue
+				}
 			}
 			compared, difference := compareDeliveryOracleTrees("", got, want)
 			requests, values = requests+1, values+compared
 			if difference != "" {
 				differing++
-				t.Errorf("%s: GET %s differs from the base head's answer first at %s", window.File, target, difference)
+				t.Errorf("%s: GET %s differs from the base head's answer to %s first at %s", window.File, request, target, difference)
 			}
 		}
 		if earlier > 0 {
@@ -165,15 +191,18 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 	}
 	t.Logf("history %s (seed %d, %d days to %s), recorded at %s: %d windows, %d requests, %d values compared, %d requests differing; "+
 		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all; %d failure-measure values the base head answered are null; "+
-		"%d Pipeline answers state the slowest-jobs threshold %d the base head ranked by",
+		"%d Pipeline answers state the slowest-jobs threshold %d the base head ranked by; %d Pipeline day cells compared on the days both answers show",
 		recorded.Fixture.Spec.Project, recorded.Fixture.Spec.Seed, recorded.Fixture.Spec.Days, recorded.Fixture.Spec.Now.Format(time.DateOnly),
 		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved, failuresNulled,
-		thresholds, measures.SlowestMinResults)
+		thresholds, measures.SlowestMinResults, pipelineCells)
 	if failuresNulled == 0 {
 		t.Error("no measures answer held a failure measure to compare, so the named difference was never read")
 	}
 	if thresholds == 0 {
 		t.Error("no Pipeline answer was read, so its named difference was never read")
+	}
+	if pipelineCells == 0 {
+		t.Error("no Pipeline day cell was compared, so the Pipeline's oracle compared nothing")
 	}
 }
 
@@ -327,15 +356,80 @@ func takeSlowestMinResults(got, want any) string {
 	return ""
 }
 
+// pipelineDaySeries are the per-day series of a Pipeline answer, each by its path: the PR-checks
+// runs, the staging end-to-end, staging deploy and production deploy cards, and the two lead
+// times. Each holds days, cells naming their day; a card also holds its job, and a staging card is
+// null where the settings name none.
+var pipelineDaySeries = [][]string{
+	{"pr_checks", "run"}, {"staging_e2e"}, {"staging_apply"}, {"production_apply"},
+	{"merge_to_production"}, {"opened_to_merge"},
+}
+
+// sharedPipelineDays is what got, a Pipeline answer read at the window's last instant, and want,
+// the base head's answer of the window, both state of the days both show: of each series of
+// pipelineDaySeries its cells of those days and a card's job, and the failing jobs. Both answers'
+// last shown day must be the window's, so the shared days are want's last days, as many as both
+// show. It answers the two parts, how many day cells want's part holds, and, where the shown days
+// do not end together, what is off.
+func sharedPipelineDays(got, want any) (any, any, int, string) {
+	daysOf := func(tree any) []string {
+		var days []string
+		for _, day := range tree.(map[string]any)["days"].([]any) {
+			days = append(days, day.(string))
+		}
+		return days
+	}
+	gotDays, wantDays := daysOf(got), daysOf(want)
+	if len(gotDays) == 0 || len(wantDays) == 0 || gotDays[len(gotDays)-1] != wantDays[len(wantDays)-1] {
+		return nil, nil, 0, fmt.Sprintf("the answer shows the days %v and the base head's %v, want both to end on the window's last day", gotDays, wantDays)
+	}
+	shared := map[string]bool{}
+	for _, day := range wantDays {
+		if slices.Contains(gotDays, day) {
+			shared[day] = true
+		}
+	}
+	part := func(tree any) (map[string]any, int) {
+		answer := tree.(map[string]any)
+		kept := map[string]any{"pr_checks.failing_jobs": answer["pr_checks"].(map[string]any)["failing_jobs"]}
+		cells := 0
+		for _, path := range pipelineDaySeries {
+			series, _ := answer[path[0]].(map[string]any)
+			for _, key := range path[1:] {
+				series, _ = series[key].(map[string]any)
+			}
+			name := strings.Join(path, ".")
+			if series == nil {
+				kept[name] = nil
+				continue
+			}
+			var days []any
+			for _, cell := range series["days"].([]any) {
+				if shared[cell.(map[string]any)["day"].(string)] {
+					days = append(days, cell)
+				}
+			}
+			entry := map[string]any{"days": days}
+			if job, held := series["job"]; held {
+				entry["job"] = job
+			}
+			kept[name] = entry
+			cells += len(days)
+		}
+		return kept, cells
+	}
+	gotPart, _ := part(got)
+	wantPart, cells := part(want)
+	return gotPart, wantPart, cells, ""
+}
+
 // takeTargets checks got's targets, a measures or Pipeline answer's, against want's, the base
 // head's, and takes them out of both: the base head stated each target as its value alone, and
 // this answer states it as its eval holds it, so each must be want's value with the catalogue's
 // inclusiveness (measures.DefaultTargets), the targets of the history's evals, which no person
-// set. A Pipeline answer's status, which the base head left to the page, must be the page's own
-// judgement of the base head's figures, the longest change strictly under the merge target and
-// the median from open to merge under its own, null where the figure is; it is taken out of got.
-// It answers how many of the base head's values the check named and, where any is off, what is.
-func takeTargets(got, want any, pipeline bool) (int, string) {
+// set. It answers how many of the base head's values the check named and, where any is off, what
+// is.
+func takeTargets(got, want any) (int, string) {
 	gotTargets, _ := got.(map[string]any)["targets"].(map[string]any)
 	wantTargets, _ := want.(map[string]any)["targets"].(map[string]any)
 	catalogue := map[string]*measures.Target{
@@ -357,28 +451,6 @@ func takeTargets(got, want any, pipeline bool) (int, string) {
 	}
 	delete(got.(map[string]any), "targets")
 	delete(want.(map[string]any), "targets")
-	if !pipeline {
-		return named, ""
-	}
-	status, _ := got.(map[string]any)["status"].(map[string]any)
-	for _, card := range []struct{ key, figure, target string }{
-		{"merge_to_production", "max_minutes", "merge_to_production_minutes"},
-		{"opened_to_merge", "median_minutes", "opened_to_merge_median_minutes"},
-	} {
-		var judged any
-		if figure, held := want.(map[string]any)[card.key].(map[string]any)["total"].(map[string]any)[card.figure].(json.Number); held {
-			value, err := figure.Float64()
-			if err != nil {
-				return named, fmt.Sprintf("the base head's %s.total.%s is %v, want a number", card.key, card.figure, figure)
-			}
-			judged = value < catalogue[card.target].Value
-		}
-		if verdict, held := status[card.key]; !held || verdict != judged {
-			return named, fmt.Sprintf("status.%s is %v, and the page judged the base head's %s %v", card.key, verdict, card.figure, judged)
-		}
-		named++
-	}
-	delete(got.(map[string]any), "status")
 	return named, ""
 }
 

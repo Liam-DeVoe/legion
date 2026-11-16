@@ -43,7 +43,7 @@ func computedWholeAt(t *testing.T, run *consumer) map[string]time.Time {
 func TestAProjectWhoseIssuesCarryNoWorkIsComputedWholeOnceAndNotAgain(t *testing.T) {
 	run := newConsumer(t, 2)
 	const quiet = "QUIET"
-	run.exec(t, "seed a second project", `insert into projects (key, name) values ($1, 'The quiet project')`, quiet)
+	run.exec(t, "seed a second project", `insert into projects (key, name, default_assignee) values ($1, 'The quiet project', 'alice')`, quiet)
 	run.exec(t, "seed the daemon's observation of "+quiet, `
 		insert into legion_observations (project, issue_key, field, value, observed_at)
 		values ($1, $2, 'phase', '"implementing"'::jsonb, $3)

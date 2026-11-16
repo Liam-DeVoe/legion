@@ -25,7 +25,7 @@ func migratedEvalStore(t *testing.T) *Store {
 	t.Helper()
 	store := migratedEmptyStore(t)
 	if _, err := store.Pool.Exec(context.Background(),
-		`insert into projects (key, name) values ($1, 'Evals')`, evalProject); err != nil {
+		`insert into projects (key, name, default_assignee) values ($1, 'Evals', 'alice')`, evalProject); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
 	return store

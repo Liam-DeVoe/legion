@@ -348,10 +348,12 @@ func planEvents(spec Spec, history infraHistory) []plannedEvent {
 }
 
 // writeInfra writes INFRA's project, its repositories' mapping, its issues, events, handoffs and
-// observations, and its legion_settings row, and answers the history.
+// observations, and its legion_settings row, and answers the history. The project names alice as
+// its default assignee, the column every project fills (store migration 20261111210103), as the
+// smaller projects' Legion history does; no eval and no count the load prints reads it.
 func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory, error) {
 	history := planInfra(spec)
-	if _, err := pool.Exec(ctx, `insert into projects (key, name, next_number) values ($1, 'Infrastructure', 1)`, Project); err != nil {
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee, next_number) values ($1, 'Infrastructure', 'alice', 1)`, Project); err != nil {
 		return infraHistory{}, fmt.Errorf("write the project %s: %w", Project, err)
 	}
 	mappings := make([]model.RepoProject, len(Repos))

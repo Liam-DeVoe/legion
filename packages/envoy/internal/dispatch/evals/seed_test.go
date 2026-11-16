@@ -641,7 +641,7 @@ func TestTheRefreshersFirstPassSeedsEveryProjectAndLaterPassesTheOwed(t *testing
 	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
 		t.Fatalf("seed %s: %v", r.project, err)
 	}
-	exec("make project BYSQL", `insert into projects (key, name) values ('BYSQL', 'Made by SQL')`)
+	exec("make project BYSQL", `insert into projects (key, name, default_assignee) values ('BYSQL', 'Made by SQL', 'alice')`)
 	withCatalogue(t, func(entries []catalogueEntry) {
 		for i := range entries {
 			if entries[i].definition.Slug == SlugDeployFrequency {
@@ -678,7 +678,7 @@ func TestTheRefreshersFirstPassSeedsEveryProjectAndLaterPassesTheOwed(t *testing
 	if seeded := r.seedPass(t, seeds); len(seeded) != 0 {
 		t.Errorf("a pass with every project seeded seeded %v, want none", seeded)
 	}
-	exec("make project LATER", `insert into projects (key, name) values ('LATER', 'Made by SQL later')`)
+	exec("make project LATER", `insert into projects (key, name, default_assignee) values ('LATER', 'Made by SQL later', 'alice')`)
 	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{"LATER"}) {
 		t.Errorf("the pass after LATER was made seeded %v, want LATER alone", seeded)
 	}
@@ -702,7 +702,7 @@ func TestASeedRefusedForItsDocumentIsTriedAgainOnceItIsOne(t *testing.T) {
 	makeFiled := func(project string) {
 		t.Helper()
 		for _, statement := range []string{
-			`insert into projects (key, name) values ($1, $1)`,
+			`insert into projects (key, name, default_assignee) values ($1, $1, 'alice')`,
 			`insert into artifacts (project_key, slug, name, kind, created_by) values ($1, 'evals-md', 'evals.md', 'file', '{"kind":"user","id":"alice"}')`,
 		} {
 			if _, err := r.database.Pool.Exec(ctx, statement, project); err != nil {

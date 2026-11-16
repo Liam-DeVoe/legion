@@ -657,10 +657,11 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 // write stores everything the trees built, one statement per table. Each statement takes its
 // table's columns as arrays and unnests them, so a history of thousands of rows costs six round
 // trips (the project's row and the five tables) rather than thousands. The project's row is kept
-// where it exists already. Each issue's last_seq is the seq of the last event written of it, 0
-// for one with none: an event the server writes takes the issue's last_seq + 1, and
-// events_issue_key_seq_key holds one event to each, so an issue left at 0 beside events 1..n
-// would refuse the next write the API makes to it.
+// where it exists already; one it makes names alice, the history's person, as its default
+// assignee, the column every project fills (store migration 20261111210103). Each issue's
+// last_seq is the seq of the last event written of it, 0 for one with none: an event the server
+// writes takes the issue's last_seq + 1, and events_issue_key_seq_key holds one event to each, so
+// an issue left at 0 beside events 1..n would refuse the next write the API makes to it.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
@@ -668,7 +669,7 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		}
 		return nil
 	}
-	if err := exec("project", `insert into projects (key, name, next_number) values ($1, $1, $2) on conflict (key) do nothing`,
+	if err := exec("project", `insert into projects (key, name, default_assignee, next_number) values ($1, $1, 'alice', $2) on conflict (key) do nothing`,
 		s.spec.Project, s.spec.IssueOffset+len(s.rows.issueKeys)+1); err != nil {
 		return err
 	}
