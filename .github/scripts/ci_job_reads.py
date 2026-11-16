@@ -325,6 +325,9 @@ RULES = {
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "darwin"}),
         run(ENVOY, ["./cmd/broker"], "cmd/agent-secrets/modules_test.go:188 cmdtest.BuildCommand . in ../broker CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"})],
+    f"{ENVOY}/cmd/architecture-check/main_test.go": reads(
+        (f"{ENVOY}/internal/dispatch/architecture/notes/testdata/**",
+         "cmd/architecture-check/main_test.go:260 testdataDir joins ../../internal/dispatch/architecture/notes/testdata, which TestTheBuiltBinary's built binary reads")),
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
     f"{ENVOY}/cmd/broker-refgen/recorder_test.go": [
@@ -1332,8 +1335,8 @@ GATES = [
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
         step_run("envoy-go-checks", "Test the architecture-note rules and their command",
-                 "go test -count=1 ./internal/dispatch/architecture/notes/ ./cmd/architecture-check/", ENVOY,
-                 ["./internal/dispatch/architecture/notes/", "./cmd/architecture-check/"]),
+                 "go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./cmd/architecture-check/", ENVOY,
+                 ["./internal/dispatch/architecture/notes/", "./internal/runnerlog/", "./cmd/architecture-check/"]),
     ], exact=[
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.

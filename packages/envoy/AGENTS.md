@@ -3019,6 +3019,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
   `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
   and `Parse` validates the set.
+  `ReadSet` reads one directory of a checkout by that rule and bound, for `cmd/architecture-check`.
   `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bound through those two, and it calls `notes.Parse` itself.
   For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
   GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
@@ -3038,7 +3039,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `cmd/architecture-check` reads one directory of architecture notes from disk, a checkout's `.dispatch/architecture`, and judges it by the rules the importer applies to that directory on GitHub (`cmd/architecture-check/main.go`).
   `architecture-check [--allow-empty] <directory>` makes the directory absolute before it reads anything, and every line it prints about the directory or an entry of it names that absolute path.
   Every rule it applies is the notes package's, as `githubapp`'s are:
-  `notes.FileKind` and `notes.IsNote` decide which entries are notes, `notes.CheckSize` bounds every note before any is read and each note again once read, and `notes.Parse` judges the set, so no second reader of the rules exists.
+  `notes.ReadSet` reads the directory by them, `notes.FileKind` and `notes.IsNote` deciding which entries are notes and `notes.CheckSize` bounding every note before any is read and each note again once read, and `notes.Parse` judges the set, so no second reader of the rules exists.
   A valid set is exit 0 and one line on stdout, `architecture-check: <directory>: <n> notes, the set is valid` (`note` for one).
   A refused set is exit 1:
   one line on stderr for each problem, `architecture-check: <directory>: <problem>`, then `architecture-check: <directory>: <n> notes, the set is refused` on stdout.
@@ -3048,7 +3049,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   neither prints a count line.
   Each entry `notes.IsNote` rejects is a warning on stderr, `architecture-check: warning: <path>: not a note (<kind>); the importer passes over it`, and changes no exit status:
   the importer passes over such an entry in silence, and its author expects it to count.
-  `say` writes every line but the usage, starting it with the fixed text `architecture-check: ` whatever the format, and `printable` escapes the rest of the line:
+  `runnerlog.Say` (`internal/runnerlog`, which imports only the standard library) writes every line but the usage, starting it with the fixed text `architecture-check: ` whatever the format, and `runnerlog.Printable` escapes the whole line, so a `##[` that the fixed text and the rest make together is escaped too:
   each control character (Cc), since a GitHub runner ends a line at `\n` and `\r` and reads a command from a line starting `::` after its leading white space and from a `##[` anywhere;
   the `[` of every `##[` as `\x5b`, since only a literal `##[` names a command: the runner's search can pass over an ignorable character, but it reads the name three characters after the match's start and accepts only a name of its registered commands, compared without regard to case, so a name read through an ignorable character starts at `#`, `[` or that character, and no command the runner defines has that name (actions/runner at `8cfa1049f86781d141056082d73802d56cd2b433`: `ActionCommand.TryParse` reads it at `cmdIndex = prefixIndex + Prefix.Length`, and `ActionCommandManager`'s `_registeredCommands` is a `StringComparer.OrdinalIgnoreCase` set);
   and each format character (Cf, invisible or reordering text), the line separator U+2028 (Zl) and the paragraph separator U+2029 (Zp), which the runner does not end a line at (it reads lines with `StreamReader.ReadLine`) but a log viewer can show as a line break, and each byte not UTF-8, for a log reader.
@@ -3061,7 +3062,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Right after its setup-go it removes the `go` problem matcher that setup-go adds (`::remove-matcher owner=go::`), since that matcher reads every later line of the job and would make an error annotation, with the author's text, of a check line holding `.go: `, such as one naming a file `cmd.go: forged annotation`;
   the runner keeps one matcher per owner, so in a caller's job that set up Go earlier the action's setup-go replaces that job's `go` matcher and the removal deletes it for every later step, and the README sends a caller to a job of its own or to a place before the job's own setup-go, which adds the matcher again.
   Any other matcher an earlier step of the job added reads the check's lines too, one more reason for a job of its own.
-  `ci.yaml`'s `envoy-go-checks` runs the notes package's and the command's tests, runs the action over this repository's own notes first, right after its checkout and before the job's own setup-go, which adds the Go matcher again for every later step, and fails unless `count` is a positive whole number;
+  `ci.yaml`'s `envoy-go-checks` runs the tests of the notes package, of `internal/runnerlog` and of the command, runs the action over this repository's own notes first, right after its checkout and before the job's own setup-go, which adds the Go matcher again for every later step, and fails unless `count` is a positive whole number;
   `ci-caches.yaml`'s `architecture-check` job, a job of its own, runs the action on every push to main, which fills its `architecture-check-<os>-<arch>-go<version>-<hash>` cache entry in main's scope (`<hash>` is the SHA-256 of `packages/envoy/go.sum`, and on a miss the action restores the newest entry of the same Go version and still saves the new key), since the action saves only on a miss in a `push`, `schedule` or `workflow_dispatch` run;
   a run of any other event (`pull_request`, `pull_request_target`, `merge_group`, `issue_comment`, `workflow_run` and the rest) may hold another person's code, so it restores and never saves.
 
