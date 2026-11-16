@@ -96,15 +96,17 @@ func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgra
 			say(stdout, "subject %s, the commit that production runs at deploy %s", subject.Commit, subject.Deploy)
 		}
 		checks := make(map[string]specgraph.CheckState, len(state.Checks))
+		checksOf := map[string][]specgraph.CheckState{} // by the statement each serves, in the order of state.Checks
 		for _, c := range state.Checks {
 			checks[c.ID] = c
+			checksOf[serves[c.ID]] = append(checksOf[serves[c.ID]], c)
 		}
+		own := make(map[string]string, len(state.Statements))
 		for _, s := range state.Statements {
+			own[s.ID] = s.Own
 			printLine(stdout, "statement %s: %s", s.ID, statementText(s, checks, scenario.Approved))
-			for _, c := range state.Checks {
-				if serves[c.ID] == s.ID {
-					printLine(stdout, "  check %s: %s", c.ID, checkText(c))
-				}
+			for _, c := range checksOf[s.ID] {
+				printLine(stdout, "  check %s: %s", c.ID, checkText(c))
 			}
 		}
 		if scenario.Units == nil || subject.Branch != "main" {
@@ -114,10 +116,9 @@ func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgra
 			for _, statement := range slices.Sorted(slices.Values(u.WaitsOn)) {
 				if state.WaitEnds(statement) {
 					printLine(stdout, "wait of %s on %s: ends", u.ID, statement)
-					continue
+				} else {
+					printLine(stdout, "wait of %s on %s: holds (%s)", u.ID, statement, stateWords(own[statement]))
 				}
-				i := slices.IndexFunc(state.Statements, func(s specgraph.StatementState) bool { return s.ID == statement })
-				printLine(stdout, "wait of %s on %s: holds (%s)", u.ID, statement, stateWords(state.Statements[i].Own))
 			}
 		}
 	}
