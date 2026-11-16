@@ -3226,7 +3226,8 @@ Every route needs the `person` scope.
 - `POST /api/v1/asks/{id}/rewrite` answers `202 {ask_id, started, rewrite}` at once and rewrites in the background.
   One rewrite of an ask runs at a time (`ask_rewrites`): a request while one runs starts none (`started: false`) and gets that run's result.
   When a session opened the ask, and Envoy reads it running or unresponsive with a host that advertises `btw`, Dispatch first sends it one side question as its own system actor (`dispatch-reviewer`): a message to that session, on its own conversation and not on the issue, whose text names the ask by its address; the run waits at most 60 seconds for the reply, which stays in that message's thread.
-  A rewrite that breaks what a rewrite keeps (`reviewer.Preserve`: the options' labels, number and order, the choice, a short first line, a `Ref: ` line, a picture line, a link, a decision block's option line) is not applied, and neither is one of a question its agent changed, answered or closed meanwhile.
+  A rewrite that breaks what a rewrite keeps (`reviewer.Preserve`: most of the text's words, the options' labels, number and order, the choice, a short first line, a `Ref: ` line, a picture line, a link, a decision block's option line) is not applied, and neither is one of a question its agent changed, answered or closed meanwhile.
+  The first of those rules is `reviewer.KeepMostWords`: a rewrite with fewer than a third of the text's words, counted over its title, body and options, is not applied, since it is a stub or a summary in place of the text.
   The model reads and writes each option's label and description and no id: an option's id is its part's (`refs.AskPartIDs`), which the part index keeps through an edit that rewords the option in its place, so an applied rewrite keeps each option's id.
   An applied rewrite goes through the edit route's own path (a decision block's through `rewriteDecisionBlock`, which writes a new version of its document) as a quiet `ask.edited` from Dispatch, whose `rewrite` holds who asked, why, whether the agent's answer was read (`agent_answer`) and the side question's message (`question_message`), and whose `previous` holds the original wording.
   The run emits `ask.rewriting` when it starts, then `ask.edited` or `ask.rewrite_failed` with its reason; all three are quiet, so no session gets them as a card, and the live socket carries them to an open page.
@@ -3314,6 +3315,7 @@ Three groups, one each for the reviewer (`DISPATCH_REVIEWER_MODEL_*`), Rewrite a
 - `_KEY_FILE`: `anthropic` only, and required there: the file holding the key each call presents, read on each call.
 
 - `_TOKENS_PER_MINUTE`: required, the group's ceiling on its share of its deployment's quota (One pacer per deployment, below).
+  A ceiling under the reply bound of the group's calls refuses the boot.
 
 A group is set whole or not at all: a group set in part refuses the boot, naming each setting it is missing, and so does a setting its kind does not read.
 An `azure` group reads the shared Azure sign-in, so a deployment with neither an `azure` embedder nor an `azure` answerer may set the sign-in for its `azure` groups alone.
@@ -3325,6 +3327,16 @@ Every caller of a model deployment in one process charges one token limiter (`in
 The limiter's rate is the deployment's quota in `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` (`name=tokens_per_minute,…`), else the answerer's `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE` for the answerer's deployment, else the largest ceiling any caller sets for it.
 Each caller's own tokens-per-minute setting is a ceiling on its share inside that limiter, and each limiter holds a minute's tokens as its burst.
 The answerer joins the process's pacer at boot (`newAnswerer`); a call the limiters cannot serve inside the run's time left ends the run as its deadline does.
+
+Each call is charged its prompt's estimated tokens and its whole reply bound before it is sent, and the pacer refuses for good a call that costs more than a minute's whole quota.
+So a minute's quota under the reply bound could serve no call: each call would fail, and each reviewed text would post as written.
+The reply bound is `reviewer.DefaultOutputTokens`, 32768 tokens, for the reviewer's group and for Rewrite and Define's, and `wordrecords.CallOutputTokens`, 1024 tokens, for the records job's.
+The boot is refused, naming the setting, its value and the bound (`refuseQuotaUnderReplyBound`), when a set group's `_TOKENS_PER_MINUTE` is under its reply bound, and when the quota that paces the group's deployment is under it.
+That quota is the one `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` names for the group's deployment.
+Where it names none, it is the answerer's `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE` if the group's deployment is the answerer's under the limiter's key: an `azure` group whose endpoint has the host of `DISPATCH_AZURE_CHAT_ENDPOINT` and whose deployment is `DISPATCH_AZURE_CHAT_DEPLOYMENT`.
+An answerer on another endpoint host, of another deployment or beside a group of another kind is another limiter, and its quota is not held to the group's bound.
+A quota for a deployment that no set group and no test model names is not held to a bound.
+Set more than the bound, since each call also carries its prompt: a group serves at most about ceiling / (bound + prompt) calls a minute, and a deployment's callers together about quota / (bound + prompt).
 
 ### The stand-in model
 
@@ -3339,6 +3351,7 @@ The browser suite starts `packages/dispatch/e2e/fake-model.ts` and hands its URL
 A draft review (`POST /api/v1/reviewer/draft`), a person's Rewrite of an ask and a person's Define that name one call it, the detector's reader included, in place of the reviewer's or Rewrite and Define's group, with that group's bounds.
 This is how `writing-check harness` measures each change with each candidate model against one server.
 The models of a kind are read as one model group of that kind, `DISPATCH_TEST_MODELS_AZURE_*` (`_ENDPOINT`, `_API_VERSION`, `_SCOPE`, `_TOKENS_PER_MINUTE`, with the shared Azure sign-in) or `DISPATCH_TEST_MODELS_ANTHROPIC_*` (`_ENDPOINT`, `_KEY_FILE`, `_TOKENS_PER_MINUTE`), each model's name being the deployment its requests name; beside `DISPATCH_TEST_MODEL_URL` they call the stand-in and take only `_TOKENS_PER_MINUTE`.
+The test models serve the reviewer's calls and Rewrite and Define's, so each kind's `_TOKENS_PER_MINUTE`, and the quota that paces a test model's deployment, is held to the reply bound of those calls as a group's is.
 A request that names a model the list does not hold is refused 400 `TEST_MODEL_REFUSED`, and so is any request with the header on a server without the test hooks, so a deployment's own model never answers a request that asked for another.
 
 ## Writing check

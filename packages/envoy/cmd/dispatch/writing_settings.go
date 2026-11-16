@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
+	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
 )
 
 // writing_settings.go reads the settings of the work on agents' texts (INFRA-3231): the reviewer,
@@ -31,13 +32,24 @@ const (
 	modelKindAnthropic = "anthropic"
 )
 
-// modelGroups are the three model groups, each by the prefix of its settings and whose group it
-// is, as a refusal names it.
-var modelGroups = []struct{ prefix, whose string }{
-	{"DISPATCH_REVIEWER_MODEL_", "the reviewer's"},
-	{"DISPATCH_REWRITE_DEFINE_MODEL_", "Rewrite and Define's"},
-	{"DISPATCH_WORD_RECORDS_MODEL_", "the records job's"},
+// modelGroups are the three model groups, each by the prefix of its settings, whose group it is,
+// as a refusal names it, and the reply bound of its calls: the most tokens one reply may hold,
+// which a minute's quota must cover (refuseQuotaUnderReplyBound).
+var modelGroups = []struct {
+	prefix, whose string
+	replyBound    int
+}{
+	{"DISPATCH_REVIEWER_MODEL_", "the reviewer's", reviewer.DefaultOutputTokens},
+	{"DISPATCH_REWRITE_DEFINE_MODEL_", "Rewrite and Define's", reviewer.DefaultOutputTokens},
+	{"DISPATCH_WORD_RECORDS_MODEL_", "the records job's", wordrecords.CallOutputTokens},
 }
+
+// reviewerReplyBound and recordsReplyBound are the two reply bounds of modelGroups, as the
+// settings table's descriptions state them.
+var (
+	reviewerReplyBound = strconv.Itoa(reviewer.DefaultOutputTokens)
+	recordsReplyBound  = strconv.Itoa(wordrecords.CallOutputTokens)
+)
 
 // What the reviewer does with one kind of text (DISPATCH_REVIEWER_<KIND>).
 const (
@@ -158,9 +170,11 @@ type modelGroup struct {
 // resolveWritingSettings reads the settings of the work on agents' texts and refuses, naming the
 // setting, every value the work could not run on: a choice outside its values, a rule set no
 // reviewer applies, a duration or a time that does not parse, a malformed quota, a reviewer that
-// reviews with no model group, a model group set in part (resolveModelGroup), and
-// DISPATCH_TEST_MODEL_URL and DISPATCH_TEST_MODELS without the test hooks.
-func resolveWritingSettings(env settingValues, testHooksEnabled bool) (writingSettings, error) {
+// reviews with no model group, a model group set in part (resolveModelGroup), a minute's quota
+// under the reply bound of the calls it paces (refuseQuotaUnderReplyBound), and
+// DISPATCH_TEST_MODEL_URL and DISPATCH_TEST_MODELS without the test hooks. answerer is the
+// answerer the boot resolved (resolveAnswerer), whose quota paces a group on its deployment.
+func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer answererConfig) (writingSettings, error) {
 	var cfg writingSettings
 	if err := testHookURL(env, "DISPATCH_TEST_MODEL_URL", testHooksEnabled, &cfg.TestModelURL); err != nil {
 		return writingSettings{}, err
@@ -226,8 +240,81 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool) (writingSe
 	if cfg.DeploymentQuotas, err = deploymentQuotas(env); err != nil {
 		return writingSettings{}, err
 	}
+	if err := refuseQuotaUnderReplyBound(cfg, answerer); err != nil {
+		return writingSettings{}, err
+	}
 	return cfg, nil
 }
+
+// refuseQuotaUnderReplyBound refuses a minute's quota that could serve no call of a set model
+// group or of a test model, because it is under the reply bound of the group's calls. The pacer
+// (modelpace) charges a call its prompt's estimated tokens and its whole reply bound before the
+// call is sent, and refuses for good a call that costs more than a minute's whole quota. Under
+// such a quota every call would fail with nothing at boot saying why, and each reviewed text
+// would post as written. Three settings can be that quota, and each is weighed as the pacer
+// reads it, from the shares main joins the pacer with (modelGroup.share, answererConfig.share):
+//
+//   - the group's own _TOKENS_PER_MINUTE ceiling;
+//   - the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the group's deployment, which is then
+//     the deployment's rate;
+//   - where it names none, the quota answerer states, if the group's deployment is the
+//     answerer's as the pacer keys it (pacedDeployment). An answerer of another kind, on another
+//     endpoint host or of another deployment is another limiter, and is not weighed.
+//
+// A test model serves the reviewer's calls and Rewrite and Define's, which have one reply bound,
+// so it is held to that bound. A quota for a deployment that no group and no test model names is
+// not weighed.
+func refuseQuotaUnderReplyBound(cfg writingSettings, answerer answererConfig) error {
+	const why = "each call is charged its whole reply bound before it is sent, so a smaller minute's quota could serve no call"
+	// stated is what the answerer asks of its deployment. A share of no tokens states no quota,
+	// as the pacer reads it: the endpoint form's, and that of no answerer.
+	stated, err := answerer.share()
+	if err != nil {
+		return err
+	}
+	// refuse weighs a set group's ceiling, then the quota that paces its deployment, against
+	// bound. ceiling and deployment are the settings that name the group's two.
+	refuse := func(group modelGroup, ceiling, deployment, whose string, bound int) error {
+		if group.Kind == "" {
+			return nil
+		}
+		asked, err := group.share()
+		if err != nil {
+			return err
+		}
+		if asked.TokensPerMinute < bound {
+			return fmt.Errorf("%s=%d is under %d, the reply bound of %s calls: %s", ceiling, asked.TokensPerMinute, bound, whose, why)
+		}
+		if quota, named := cfg.DeploymentQuotas[asked.Deployment.Name]; named {
+			if quota < bound {
+				return fmt.Errorf("%s names %s=%d, under %d, the reply bound of %s calls, which go to that deployment (%s): %s",
+					deploymentQuotasSetting, asked.Deployment.Name, quota, bound, whose, deployment, why)
+			}
+			return nil
+		}
+		if stated.StatesQuota && stated.Deployment == asked.Deployment && 0 < stated.TokensPerMinute && stated.TokensPerMinute < bound {
+			return fmt.Errorf("%s=%d is under %d, the reply bound of %s calls, which go to the answerer's deployment (%s) and are paced at its quota, since %s names none for it: %s",
+				answererQuotaSetting, stated.TokensPerMinute, bound, whose, deployment, deploymentQuotasSetting, why)
+		}
+		return nil
+	}
+	for i, group := range []modelGroup{cfg.ReviewerModel, cfg.RewriteDefineModel, cfg.WordRecordsModel} {
+		row := modelGroups[i]
+		if err := refuse(group, row.prefix+"TOKENS_PER_MINUTE", row.prefix+"DEPLOYMENT", row.whose, row.replyBound); err != nil {
+			return err
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.TestModels)) {
+		group := cfg.TestModels[name]
+		if err := refuse(group, testModelPrefixes[group.Kind]+"TOKENS_PER_MINUTE", testModelsSetting, testModelsWhose(group.Kind), reviewer.DefaultOutputTokens); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// answererQuotaSetting states the quota of the answerer's deployment under DISPATCH_ANSWERER=azure.
+const answererQuotaSetting = azureChatSettingPrefix + "TOKENS_PER_MINUTE"
 
 // modelGroupsReadSignIn reports whether a model group reads the shared Azure sign-in beside an
 // azure embedder and an azure answerer: a set group whose kind is not anthropic, or a test model
@@ -352,6 +439,11 @@ var testModelPrefixes = map[string]string{
 	modelKindAnthropic: "DISPATCH_TEST_MODELS_ANTHROPIC_",
 }
 
+// testModelsWhose is whose group the test models of kind are, as a refusal names it.
+func testModelsWhose(kind string) string {
+	return "the " + kind + " test models'"
+}
+
 // resolveTestModels reads DISPATCH_TEST_MODELS: a comma list of name=kind, each name once, kind
 // azure or anthropic, refused without the test hooks. The test models of one kind are that kind's
 // DISPATCH_TEST_MODELS_<KIND>_* settings read as a model group of the kind (resolveTestModelKind),
@@ -408,7 +500,7 @@ func resolveTestModels(env settingValues, testHooksEnabled bool, testModelURL st
 // has no row for a field its group would not read (an azure key file, an anthropic api-version or
 // scope), so each such field reads as unset.
 func resolveTestModelKind(env settingValues, prefix, kind, testModelURL string) (modelGroup, error) {
-	whose := "the " + kind + " test models'"
+	whose := testModelsWhose(kind)
 	if len(settingsSet(env, prefix)) == 0 {
 		return modelGroup{}, fmt.Errorf("%s names an %s model, but no %s* setting is set: %s group is set whole or not at all", testModelsSetting, kind, prefix, whose)
 	}
@@ -423,11 +515,14 @@ func resolveTestModelKind(env settingValues, prefix, kind, testModelURL string) 
 	return resolveModelGroup(asGroup, prefix, whose, testModelURL)
 }
 
+// deploymentQuotasSetting gives each deployment's tokens-per-minute quota, by the deployment's
+// name.
+const deploymentQuotasSetting = "DISPATCH_MODEL_DEPLOYMENT_QUOTAS"
+
 // deploymentQuotas reads DISPATCH_MODEL_DEPLOYMENT_QUOTAS: a comma list of name=tokens_per_minute,
 // each name once, each quota a positive integer. Unset, it is nil.
 func deploymentQuotas(env settingValues) (map[string]int, error) {
-	const name = "DISPATCH_MODEL_DEPLOYMENT_QUOTAS"
-	raw := strings.TrimSpace(env.get(name))
+	raw := strings.TrimSpace(env.get(deploymentQuotasSetting))
 	if raw == "" {
 		return nil, nil
 	}
@@ -441,10 +536,10 @@ func deploymentQuotas(env settingValues) (map[string]int, error) {
 		deployment, tokens = strings.TrimSpace(deployment), strings.TrimSpace(tokens)
 		quota, err := strconv.Atoi(tokens)
 		if !found || deployment == "" || err != nil || strings.TrimLeft(tokens, "0123456789") != "" || quota < 1 {
-			return nil, fmt.Errorf("%s names %q (expected a comma list of name=tokens_per_minute, each a deployment's name and its quota, a positive integer)", name, entry)
+			return nil, fmt.Errorf("%s names %q (expected a comma list of name=tokens_per_minute, each a deployment's name and its quota, a positive integer)", deploymentQuotasSetting, entry)
 		}
 		if _, twice := quotas[deployment]; twice {
-			return nil, fmt.Errorf("%s names %s twice", name, deployment)
+			return nil, fmt.Errorf("%s names %s twice", deploymentQuotasSetting, deployment)
 		}
 		quotas[deployment] = quota
 	}

@@ -225,10 +225,10 @@ type issueResolveQuery struct {
 // eventListQuery is the query GET /api/v1/issues/{key}/events and GET /api/v1/artifacts/{id}/events
 // share: one page of an event log.
 type eventListQuery struct {
-	// After reads the events above this event id, oldest first; it combines with neither
-	// Before nor order=desc.
+	// After reads the events whose sequence on their owner (the event's seq, not its id) is above
+	// this one, oldest first; it combines with neither Before nor order=desc.
 	After int `query:"after"`
-	// Before reads the events below this event id.
+	// Before reads the events whose sequence on their owner is below this one.
 	Before int `query:"before"`
 	// IDs reads exactly these event ids, comma-separated.
 	IDs string `query:"ids"`

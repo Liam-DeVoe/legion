@@ -204,16 +204,11 @@ func newAnswerer(cfg answererConfig, pacer *modelpace.Pacer) (*going.Answerer, e
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err := url.Parse(cfg.Endpoint)
+	share, err := cfg.share()
 	if err != nil {
-		return nil, fmt.Errorf("the answerer's endpoint %q is not a URL", cfg.Endpoint)
+		return nil, err
 	}
-	pace := pacer.Join(modelpace.Share{
-		Deployment:      modelpace.Deployment{Kind: cfg.Place, Host: endpoint.Host, Name: cfg.Model},
-		TokensPerMinute: cfg.TokensPerMinute,
-		StatesQuota:     true,
-	})
-	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: client, Pace: pace})
+	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: client, Pace: pacer.Join(share)})
 	if err != nil {
 		return nil, err
 	}
@@ -221,4 +216,30 @@ func newAnswerer(cfg answererConfig, pacer *modelpace.Pacer) (*going.Answerer, e
 	// pacing an answerer wraps a client in says nothing about which model answers.
 	slog.Info("dispatch: answers questions with a configured text model", "place", cfg.Place, "identity", client.Identity())
 	return answerer, nil
+}
+
+// share is what the answerer asks of its deployment on the pacer, which newAnswerer joins the
+// pacer with: the deployment as the pacer keys it (pacedDeployment), and
+// DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE as the ceiling on its share and as the quota it states
+// for that deployment. The endpoint form names no quota, so its share states none. The boot
+// weighs this same share against the reply bound of a model group on the answerer's deployment
+// (refuseQuotaUnderReplyBound).
+func (cfg answererConfig) share() (modelpace.Share, error) {
+	deployment, err := pacedDeployment(cfg.Place, cfg.Endpoint, cfg.Model)
+	if err != nil {
+		return modelpace.Share{}, fmt.Errorf("the answerer's endpoint %q is not a URL", cfg.Endpoint)
+	}
+	return modelpace.Share{Deployment: deployment, TokensPerMinute: cfg.TokensPerMinute, StatesQuota: true}, nil
+}
+
+// pacedDeployment is a caller's deployment as the pacer keys it: the caller's kind, the host of
+// its endpoint and the deployment's name or the model's id. The answerer and every model group
+// build their key here (answererConfig.share, modelGroup.share), so two callers share one
+// limiter, and the quota one of them states, exactly where their keys are equal.
+func pacedDeployment(kind, endpoint, name string) (modelpace.Deployment, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return modelpace.Deployment{}, err
+	}
+	return modelpace.Deployment{Kind: kind, Host: parsed.Host, Name: name}, nil
 }

@@ -72,17 +72,26 @@ func (g modelGroup) agentloopModel() (agentloop.Model, error) {
 	return agentloop.Model{Endpoint: endpoint, ID: g.Deployment, Effort: effort}, nil
 }
 
+// share is what the group asks of its deployment on the pacer: the deployment as the pacer keys
+// it (pacedDeployment), with the group's tokens-per-minute setting the ceiling on its share. The
+// boot weighs this same share against the reply bound of the group's calls
+// (refuseQuotaUnderReplyBound).
+func (g modelGroup) share() (modelpace.Share, error) {
+	deployment, err := pacedDeployment(g.Kind, g.Endpoint, g.Deployment)
+	if err != nil {
+		return modelpace.Share{}, fmt.Errorf("the model group's endpoint %q is not a URL", g.Endpoint)
+	}
+	return modelpace.Share{Deployment: deployment, TokensPerMinute: g.TokensPerMinute}, nil
+}
+
 // pace is the group's share of its deployment on pacer, the process's one pacer (modelpace): its
 // tokens-per-minute setting is the ceiling on that share.
 func (g modelGroup) pace(pacer *modelpace.Pacer) (*modelpace.Caller, error) {
-	endpoint, err := url.Parse(g.Endpoint)
+	share, err := g.share()
 	if err != nil {
-		return nil, fmt.Errorf("the model group's endpoint %q is not a URL", g.Endpoint)
+		return nil, err
 	}
-	return pacer.Join(modelpace.Share{
-		Deployment:      modelpace.Deployment{Kind: g.Kind, Host: endpoint.Host, Name: g.Deployment},
-		TokensPerMinute: g.TokensPerMinute,
-	}), nil
+	return pacer.Join(share), nil
 }
 
 // newWordRecords builds the records job of INFRA-3231's R8 (wordrecords.Job), or nil where it is

@@ -1426,7 +1426,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err != nil {
 		return bootConfig{}, err
 	}
-	boot.Writing, err = resolveWritingSettings(env, boot.TestHooksEnabled)
+	boot.Writing, err = resolveWritingSettings(env, boot.TestHooksEnabled, boot.Answerer)
 	if err != nil {
 		return bootConfig{}, err
 	}

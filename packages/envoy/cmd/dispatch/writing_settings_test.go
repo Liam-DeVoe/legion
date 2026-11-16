@@ -1,13 +1,18 @@
 package main
 
 import (
+	"errors"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
+	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
 )
 
 const (
@@ -199,9 +204,9 @@ func TestTheTestModels(t *testing.T) {
 
 	standIn := resolveWith(t, map[string]string{
 		"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_MODEL_URL": "http://127.0.0.1:9040",
-		"DISPATCH_TEST_MODELS": "grok-4.7=azure", "DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE": "1000",
+		"DISPATCH_TEST_MODELS": "grok-4.7=azure", "DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE": "40000",
 	}).Writing.TestModels
-	if got, want := standIn["grok-4.7"], (modelGroup{Kind: "azure", Endpoint: "http://127.0.0.1:9040", Deployment: "grok-4.7", TokensPerMinute: 1000, StandIn: true}); got != want {
+	if got, want := standIn["grok-4.7"], (modelGroup{Kind: "azure", Endpoint: "http://127.0.0.1:9040", Deployment: "grok-4.7", TokensPerMinute: 40000, StandIn: true}); got != want {
 		t.Errorf("a test model beside the stand-in = %+v, want %+v", got, want)
 	}
 	refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODEL_URL": "http://127.0.0.1:9040"}),
@@ -211,6 +216,155 @@ func TestTheTestModels(t *testing.T) {
 		"DISPATCH_TEST_MODELS_AZURE_ENDPOINT, DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE set, but DISPATCH_TEST_MODELS names no azure model")
 	refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_MODELS": "grok-4.7=azure"},
 		"DISPATCH_TEST_MODELS names an azure model, but no DISPATCH_TEST_MODELS_AZURE_* setting is set")
+}
+
+// Each call is charged its whole reply bound before it is sent, so a minute's quota under that
+// bound could serve no call. A set group's ceiling one token under the bound of its calls refuses
+// the boot, naming the setting, its value and the bound, and a ceiling at the bound starts. So it
+// is with the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the group's deployment, and a quota
+// for a deployment no group names is not judged by this rule. A group beside the stand-in model
+// is paced as any other, so it is held to the same bound. A group on the answerer's deployment
+// (the same kind, endpoint host and deployment) is paced at the answerer's quota where no quota
+// names that deployment, so that quota is held to the bound too; an answerer on another endpoint
+// host, of another deployment or beside a group of another kind is another limiter and is not
+// judged. The test models serve the reviewer's calls and Rewrite and Define's, so each kind's
+// ceiling and each test model's quota are held to the reply bound of those calls.
+func TestAMinutesQuotaUnderAReplyBoundRefusesBoot(t *testing.T) {
+	const (
+		quotas        = "DISPATCH_MODEL_DEPLOYMENT_QUOTAS"
+		answererQuota = "DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE"
+		why           = ": each call is charged its whole reply bound before it is sent, so a smaller minute's quota could serve no call"
+	)
+	// starts fails the test where the boot refuses env.
+	starts := func(t *testing.T, what string, env map[string]string) {
+		t.Helper()
+		if _, err := resolveBootConfig(bootEnvironment(env)); err != nil {
+			t.Errorf("%s: the boot is refused: %v", what, err)
+		}
+	}
+	for _, row := range []struct {
+		prefix, whose string
+		bound         int
+	}{
+		{reviewerModel, "the reviewer's", reviewer.DefaultOutputTokens},
+		{rewriteDefineModel, "Rewrite and Define's", reviewer.DefaultOutputTokens},
+		{wordRecordsModel, "the records job's", wordrecords.CallOutputTokens},
+	} {
+		t.Run(row.prefix, func(t *testing.T) {
+			ceiling, under, at := row.prefix+"TOKENS_PER_MINUTE", strconv.Itoa(row.bound-1), strconv.Itoa(row.bound)
+			calls := ", the reply bound of " + row.whose + " calls"
+			refusedWith(t, anthropicGroup(row.prefix, map[string]string{ceiling: under}), ceiling+"="+under+" is under "+at+calls+why)
+			refusedWith(t, standInGroup(row.prefix, "azure", map[string]string{ceiling: under}), ceiling+"="+under+" is under "+at+calls+why)
+			if got := groupOf[row.prefix](resolveWith(t, anthropicGroup(row.prefix, map[string]string{ceiling: at})).Writing).TokensPerMinute; got != row.bound {
+				t.Errorf("a ceiling at the bound: TokensPerMinute = %d, want %d", got, row.bound)
+			}
+
+			// anthropicGroup's deployment is claude-haiku-4-5-20251001, and grok-4.7 is no group's.
+			const deployment = "claude-haiku-4-5-20251001"
+			refusedWith(t, anthropicGroup(row.prefix, map[string]string{quotas: deployment + "=" + under}),
+				quotas+" names "+deployment+"="+under+", under "+at+calls+", which go to that deployment ("+row.prefix+"DEPLOYMENT)"+why)
+			got := resolveWith(t, anthropicGroup(row.prefix, map[string]string{quotas: deployment + "=" + at + ",grok-4.7=1"})).Writing.DeploymentQuotas
+			if want := map[string]int{deployment: row.bound, "grok-4.7": 1}; !maps.Equal(got, want) {
+				t.Errorf("a quota at the bound, and one for a deployment no group names: DeploymentQuotas = %v, want %v", got, want)
+			}
+
+			// The answerer's deployment is chat-deployment at chat.example (azureChatEnvironment).
+			// An azure group that names it at that host shares the answerer's limiter, whatever
+			// the path of its endpoint.
+			onAnswerer := func(quota string, overrides map[string]string) map[string]string {
+				return azureChatEnvironment(withOverrides(azureGroup(row.prefix, map[string]string{
+					answererQuota: quota, row.prefix + "ENDPOINT": "https://chat.example/openai/v1", row.prefix + "DEPLOYMENT": "chat-deployment",
+				}), overrides))
+			}
+			refusedWith(t, onAnswerer(under, nil), answererQuota+"="+under+" is under "+at+calls+
+				", which go to the answerer's deployment ("+row.prefix+"DEPLOYMENT) and are paced at its quota, since "+quotas+" names none for it"+why)
+			starts(t, "the answerer's quota at the bound", onAnswerer(at, nil))
+			starts(t, "a group on another endpoint host", onAnswerer(under, map[string]string{row.prefix + "ENDPOINT": "https://models.example/models"}))
+			starts(t, "a group of another deployment", onAnswerer(under, map[string]string{row.prefix + "DEPLOYMENT": "grok-4.7"}))
+			starts(t, "a quota that names the answerer's deployment", onAnswerer(under, map[string]string{quotas: "chat-deployment=" + at}))
+			starts(t, "a group of another kind", azureChatEnvironment(anthropicGroup(row.prefix, map[string]string{
+				answererQuota: under, row.prefix + "ENDPOINT": "https://chat.example", row.prefix + "DEPLOYMENT": "chat-deployment",
+			})))
+		})
+	}
+	t.Run("the test models", func(t *testing.T) {
+		bound := reviewer.DefaultOutputTokens
+		under, at := strconv.Itoa(bound-1), strconv.Itoa(bound)
+		for kind, model := range map[string]string{"azure": "grok-4.7", "anthropic": "claude-haiku-5-5"} {
+			ceiling := "DISPATCH_TEST_MODELS_" + strings.ToUpper(kind) + "_TOKENS_PER_MINUTE"
+			calls := ", the reply bound of the " + kind + " test models' calls"
+			refusedWith(t, testModelsEnv(map[string]string{ceiling: under}), ceiling+"="+under+" is under "+at+calls+why)
+			if got := resolveWith(t, testModelsEnv(map[string]string{ceiling: at})).Writing.TestModels[model].TokensPerMinute; got != bound {
+				t.Errorf("%s at the bound: TokensPerMinute = %d, want %d", ceiling, got, bound)
+			}
+			refusedWith(t, testModelsEnv(map[string]string{quotas: model + "=" + under}),
+				quotas+" names "+model+"="+under+", under "+at+calls+", which go to that deployment (DISPATCH_TEST_MODELS)"+why)
+			if got := resolveWith(t, testModelsEnv(map[string]string{quotas: model + "=" + at})).Writing.DeploymentQuotas[model]; got != bound {
+				t.Errorf("%s's quota at the bound: %d, want %d", model, got, bound)
+			}
+		}
+		// An azure test model the answerer's deployment names, at the answerer's endpoint host.
+		onAnswerer := func(quota string) map[string]string {
+			return azureChatEnvironment(testModelsEnv(map[string]string{
+				answererQuota: quota, "DISPATCH_TEST_MODELS": "chat-deployment=azure,claude-haiku-5-5=anthropic",
+				"DISPATCH_TEST_MODELS_AZURE_ENDPOINT": "https://chat.example/models",
+			}))
+		}
+		refusedWith(t, onAnswerer(under), answererQuota+"="+under+" is under "+at+", the reply bound of the azure test models' calls"+
+			", which go to the answerer's deployment (DISPATCH_TEST_MODELS) and are paced at its quota, since "+quotas+" names none for it"+why)
+		starts(t, "the answerer's quota at the bound", onAnswerer(at))
+	})
+}
+
+// The boot refuses the answerer's quota exactly where the pacer would refuse a group's call for
+// good. Each row is the reviewer's group beside an answerer whose quota is one token under the
+// group's reply bound. The boot is asked first. Then the answerer and the group join a pacer as
+// main joins them (newAnswerer, modelGroup.pace), and the group is charged one reply bound: the
+// pacer refuses it for good in the rows the boot refuses, and serves it in the others. The boot
+// models how the pacer picks a deployment's rate, and this holds the two together.
+func TestTheBootRefusesTheAnswerersQuotaWhereThePacerRefusesTheCall(t *testing.T) {
+	bound := reviewer.DefaultOutputTokens
+	under, at := strconv.Itoa(bound-1), strconv.Itoa(bound)
+	for name, row := range map[string]struct {
+		overrides map[string]string
+		refused   bool
+	}{
+		"a group on the answerer's deployment":         {nil, true},
+		"a group on another endpoint host":             {map[string]string{reviewerModel + "ENDPOINT": "https://models.example/models"}, false},
+		"a group of another deployment":                {map[string]string{reviewerModel + "DEPLOYMENT": "grok-4.7"}, false},
+		"a quota that names the answerer's deployment": {map[string]string{"DISPATCH_MODEL_DEPLOYMENT_QUOTAS": "chat-deployment=" + at}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := func(answererQuota string) map[string]string {
+				return azureChatEnvironment(withOverrides(azureGroup(reviewerModel, map[string]string{
+					"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE": answererQuota,
+					reviewerModel + "ENDPOINT":              "https://chat.example/openai/v1",
+					reviewerModel + "DEPLOYMENT":            "chat-deployment",
+				}), row.overrides))
+			}
+			if _, err := resolveBootConfig(bootEnvironment(env(under))); (err != nil) != row.refused {
+				t.Errorf("the boot: %v, want refused %t", err, row.refused)
+			}
+			// The settings resolve with the answerer's quota at the bound, and it is lowered after.
+			boot := resolveWith(t, env(at))
+			boot.Answerer.TokensPerMinute = bound - 1
+			pacer := modelpace.New(modelpace.Config{Quotas: boot.Writing.DeploymentQuotas})
+			if _, err := newAnswerer(boot.Answerer, pacer); err != nil {
+				t.Fatalf("newAnswerer: %v", err)
+			}
+			pace, err := boot.Writing.ReviewerModel.pace(pacer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want error
+			if row.refused {
+				want = modelpace.ErrPastDeadline
+			}
+			if err := pace.Wait(t.Context(), bound); !errors.Is(err, want) {
+				t.Errorf("the pacer, charged one reply bound: %v, want %v", err, want)
+			}
+		})
+	}
 }
 
 // writingSettingCases are the cases TestEverySettingReachesItsReader runs for the rows of the work

@@ -15,8 +15,10 @@ import (
 const (
 	// DefaultCallTime bounds one call, its retry inside agentloop included.
 	DefaultCallTime = 120 * time.Second
-	// callOutput is the most tokens one reply may hold: one verdict and a few words.
-	callOutput = 1024
+	// CallOutputTokens is the most tokens one reply may hold: one verdict and a few words. Each
+	// call is charged it whole to the pacer before it is made, so the job's model group needs a
+	// minute's quota of at least this (cmd/dispatch: DISPATCH_WORD_RECORDS_MODEL_TOKENS_PER_MINUTE).
+	CallOutputTokens = 1024
 	// charsPerToken is how many characters a token is taken to hold when a call is charged to
 	// the pacer before it is made.
 	charsPerToken = 4
@@ -50,7 +52,7 @@ func (c Classifier) Classify(ctx context.Context, input string) (Verdict, error)
 	ctx, cancel := context.WithTimeout(ctx, callTime)
 	defer cancel()
 	if c.Pace != nil {
-		tokens := (utf8.RuneCountInString(SelectPrompt)+utf8.RuneCountInString(input))/charsPerToken + callOutput
+		tokens := (utf8.RuneCountInString(SelectPrompt)+utf8.RuneCountInString(input))/charsPerToken + CallOutputTokens
 		if err := c.Pace.Wait(ctx, tokens); err != nil {
 			return Verdict{}, fmt.Errorf("pace the call: %w", err)
 		}
@@ -61,7 +63,7 @@ func (c Classifier) Classify(ctx context.Context, input string) (Verdict, error)
 		System:      SelectPrompt,
 		Input:       []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: input}}}},
 		NoCache:     true,
-		Bounds:      agentloop.Bounds{Time: callTime, Calls: 1, OutputTokens: callOutput},
+		Bounds:      agentloop.Bounds{Time: callTime, Calls: 1, OutputTokens: CallOutputTokens},
 		Final:       VerdictSchema,
 		Temperature: &zero,
 	})
