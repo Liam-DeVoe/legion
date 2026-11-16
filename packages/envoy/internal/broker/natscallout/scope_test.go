@@ -662,8 +662,9 @@ func TestADropThatLeavesNoGrantIsRefusedAsASharedLane(t *testing.T) {
 	requireRefused(t, err, labelSharedLane, "grant cannot be held to its projects once the repositories whose lane a project outside the entry maps are withheld: service daemon/"+pubDaemonAccount)
 }
 
-// A held daemon is refused under shared_lane, inside the budget, until Dispatch's repository
-// mapping has been read once: until then no repository is known to be no other project's. Here
+// A held daemon is refused under no_complete_pass, inside the budget, until Dispatch's repository
+// mapping has been read once: until then no repository is known to be no other project's, and the
+// label says that, not a shared lane, so no operator goes looking for a second mapping. Here
 // Dispatch answers about PUB at once and never answers the mapping: PUB's held daemon is refused
 // in under 100 ms, and Dispatch's own connection, an all-projects entry, is admitted with its
 // grant as before. The control takes an unread mapping as one with no row: the daemon is
@@ -695,7 +696,7 @@ func TestAHeldDaemonIsRefusedUntilTheLanesAreKnown(t *testing.T) {
 	began := time.Now()
 	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
 	took := time.Since(began)
-	requireRefused(t, err, labelSharedLane, "no complete read of Dispatch's project answers and repository mapping is held yet")
+	requireRefused(t, err, "no_complete_pass", "no complete read of Dispatch's project answers and repository mapping is held yet")
 	require.Less(t, took, 100*time.Millisecond, "the refusal took %s: it waited on Dispatch", took)
 
 	decision, err := Decide(t.Context(), deps, services, serviceRequest("dispatch-token"))

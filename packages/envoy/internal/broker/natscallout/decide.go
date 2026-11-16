@@ -152,6 +152,7 @@ const (
 	labelNoProjects        = "no_exchange_projects"
 	labelGrantNotHoldable  = "grant_not_holdable"
 	labelSharedLane        = "shared_lane"
+	labelNoCompletePass    = "no_complete_pass"
 	labelSystemSubject     = "system_subject"
 	labelOpenDirection     = "open_direction"
 	labelBudget            = "budget"

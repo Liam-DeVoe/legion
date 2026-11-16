@@ -80,7 +80,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	}
 	pass := deps.held.latest()
 	if pass == nil {
-		return natsgrant.Permissions{}, refuse(labelSharedLane, "no complete read of Dispatch's project answers and repository mapping is held yet: service "+entry.name())
+		return natsgrant.Permissions{}, refuse(labelNoCompletePass, "no complete read of Dispatch's project answers and repository mapping is held yet: service "+entry.name())
 	}
 	if pass.refused {
 		// The token exchange refuses every trade that asks Dispatch while it refuses the broker's
@@ -96,7 +96,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 		case !known:
 			// A pass asks about every project an entry names (newHeldAccess), so a complete one
 			// answers each; one that does not is no answer to admit on.
-			return natsgrant.Permissions{}, refuse(labelSharedLane, "the complete read of Dispatch's answers holds none about project "+project)
+			return natsgrant.Permissions{}, refuse(labelNoCompletePass, "the complete read of Dispatch's answers holds none about project "+project)
 		case held.notFound:
 			return natsgrant.Permissions{}, refuse(labelProjectNotFound, "project not found: "+project)
 		case !held.answer.Visible:
