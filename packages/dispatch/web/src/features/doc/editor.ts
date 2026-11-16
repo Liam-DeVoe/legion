@@ -3,8 +3,7 @@ import type { Doc } from "yjs";
 
 import type { BlockSchema } from "../../api/types";
 import { requestMermaidDrawing } from "../refs/mermaid-diagrams";
-import { renderChunk } from "../shell/chunk-loads";
-import { importWhenOnline } from "../shell/DeploymentResilience";
+import { importWhenOnline, renderChunk } from "../shell/chunk-loads";
 import type { AnchoredBlock } from "./ask-block";
 import type { WatchPicture } from "./picture-view";
 import { MARKS_MAP_NAME } from "./roots";

@@ -241,7 +241,9 @@ function reloadForChunkFailure(): void {
     return;
   }
   // A chunk a prefetch started and no render has asked for yet: the render asks again, and
-  // that failure is the one a reader meets (above).
+  // that failure is the one a reader meets (above). That holds for the Markdown engine the shell
+  // warms too, since the engine keeps no failed load (`features/refs/markdown-engine.ts`,
+  // `loadEngine`): the first body drawn after a failed warm asks for it again.
   if (onlyPrefetchesOut()) {
     return;
   }
@@ -300,27 +302,6 @@ export function installChunkFailureRecovery(): () => void {
   };
 }
 
-// The other half of the offline-chunk policy above: the editor, Yjs, and Hocuspocus are
-// code-split so the issue route does not pay for them until a document mounts. A chunk that
-// fails to download while the browser is offline is retried once the network returns; Chromium
-// caches a failed module fetch in its module map, so that retry can reject again, in which case
-// the failure propagates like an online one and reaches `reloadForChunkFailure`, which reloads
-// while the tab's budget lasts.
-export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
-  for (;;) {
-    try {
-      return await load();
-    } catch (error) {
-      if (navigator.onLine) {
-        throw error;
-      }
-      await new Promise<void>((resolve) => {
-        window.addEventListener("online", () => resolve(), { once: true });
-      });
-    }
-  }
-}
-
 /**
  * Keeps long-lived Dispatch tabs able to render Markdown after a SPA deployment, and offers a
  * deliberate reload once every live server process serves one build other than the page's.
@@ -353,6 +334,12 @@ export function DeploymentResilience(): ReactNode {
   // the one that reloads. The warm ran outside the prefetch until dispatch://INFRA-1109, as it
   // had when this module imported the engine statically, which left those downloads under
   // neither function (`chunk-loads.ts`).
+  //
+  // A warm that fails reloads nothing and keeps nothing: the engine drops a failed load
+  // (`features/refs/markdown-engine.ts`, `loadEngine`), so the first body drawn after it asks for
+  // the engine again, and a failure of that ask is the one that reloads. A failed load the engine
+  // kept would answer every later body on a page that drew none while the warm failed - the
+  // board - and each would draw as literal Markdown for the life of the tab (`e2e/shell.e2e.ts`).
   useEffect(() => {
     const timer = window.setTimeout(() => {
       prefetchChunk(() =>

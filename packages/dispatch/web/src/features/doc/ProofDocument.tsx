@@ -57,9 +57,8 @@ import {
 } from "../refs/routes";
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { chunk, chunkComponent } from "../shell/chunk-component";
-import { renderChunk } from "../shell/chunk-loads";
+import { importWhenOnline, renderChunk } from "../shell/chunk-loads";
 import { contentDrawn } from "../shell/content-drawn";
-import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";

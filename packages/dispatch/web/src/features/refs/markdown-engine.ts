@@ -101,21 +101,49 @@ export interface MarkdownEngine {
 
 type HeadlessModule = typeof import("@legion/proof-editor/headless");
 
+/** The headless editor's chunk, kept apart from the engine built from it, so a load that failed
+ *  after this chunk arrived - the serializer's chunk failed, or the build threw - does not
+ *  download it again. */
 let headlessModule: Promise<HeadlessModule> | undefined;
 /** The one engine this page builds, since the manifest it builds from is this build's own
  *  (`compiledBlockSchema`) and cannot change under a page: main kept these by schema version,
- *  when the page fetched a schema from whichever server answered and two versions could meet. */
+ *  when the page fetched a schema from whichever server answered and two versions could meet.
+ *  Only a load that resolved, or is still out, is kept here (`loadEngine`). */
 let loadingEngine: Promise<MarkdownEngine> | undefined;
 /** The engine the newest resolved load produced: what a body renders with synchronously. The
  *  engine serves every soft-break policy (the policy is a parse argument), and a parse that
  *  throws no longer evicts it - the headless editor drops only its own refused parser. */
 let readyEngine: MarkdownEngine | undefined;
 
+/**
+ * The shared engine's load: the one already out or resolved, else a new one.
+ *
+ * A load that rejects is not kept, nor is the headless chunk when its download is what failed:
+ * the next caller imports again. A kept rejection answered every later caller with the same
+ * failure, and since no import then ran again, Vite fired no `vite:preloadError` and nothing
+ * reloaded. The shell warms the engine at boot under `prefetchChunk`
+ * (`features/shell/DeploymentResilience.tsx`), whose failure reloads nothing, so on a page that
+ * draws no body - the board - a failed warm left every body drawn after it as literal Markdown
+ * for the life of the tab (dispatch://INFRA-1109). Now the first body drawn after a failed warm
+ * asks for the chunks again under its own `renderChunk` (`withEngine`): it renders if they
+ * arrive; a failure while online reloads the tab from its budget, and one while offline leaves
+ * that body its literal text and the next body asks again.
+ */
 function loadEngine(): Promise<MarkdownEngine> {
   if (loadingEngine !== undefined) {
     return loadingEngine;
   }
-  headlessModule ??= import("@legion/proof-editor/headless");
+  if (headlessModule === undefined) {
+    const importing = import("@legion/proof-editor/headless");
+    headlessModule = importing;
+    // Registered before the load below chains on it, so a caller the load's failure reaches
+    // already finds no headless chunk kept.
+    void importing.catch(() => {
+      if (headlessModule === importing) {
+        headlessModule = undefined;
+      }
+    });
+  }
   // The serializer travels with the headless editor rather than with this module: it is written
   // against prosemirror-model's own classes, and nothing can build one before that editor's
   // schema exists (`markdown-serializer.ts`).
@@ -130,17 +158,26 @@ function loadEngine(): Promise<MarkdownEngine> {
         })
       )
     )
-    .then((engine) => {
-      readyEngine = engine;
-      return engine;
-    });
+    .then(
+      (engine) => {
+        readyEngine = engine;
+        return engine;
+      },
+      (error: unknown) => {
+        if (loadingEngine === created) {
+          loadingEngine = undefined;
+        }
+        throw error;
+      }
+    );
   loadingEngine = created;
   return created;
 }
 
 /** Loads the headless Proof chunk before Markdown-bearing UI needs to render; it reads no schema
  *  from a server, since the manifest is this build's own. The parse worker is not loaded here: a
- *  page that draws no long body downloads none of it.
+ *  page that draws no long body downloads none of it. A warm that fails keeps nothing: the next
+ *  warm, or the first body drawn after it, asks for the chunks again (`loadEngine`).
  *
  *  It starts the download under neither chunk-failure function: the caller says whether a reader
  *  waits on it - the change marks of a past version do (`features/doc/VersionView.tsx`,
@@ -413,10 +450,10 @@ export function loadedEngine(): MarkdownEngine | undefined {
 }
 
 /**
- * Hands `use` the shared engine: in this task where a load has already resolved, and once the
- * schema and Proof's headless chunk arrive otherwise. `undefined` where neither could load,
- * which the cause of is reported and the schema cache does not retain, so the next caller tries
- * the fetch again. Returns the cancel, after which `use` never runs.
+ * Hands `use` the shared engine: in this task where a load has already resolved, and once Proof's
+ * headless chunk and the serializer arrive otherwise. `undefined` where they could not load,
+ * whose cause is reported; the failed load is not kept (`loadEngine`), so the next caller asks
+ * for the chunks again. Returns the cancel, after which `use` never runs.
  *
  * The wait is under `renderChunk`: a body that draws, or the words a headline reads, wait on the
  * headless editor and the serializer coming down, so a download that fails must spend one of the
@@ -476,10 +513,10 @@ export function drawWithEngine(
  * is parsed on the page's own thread and rendered synchronously, where a load has already
  * resolved, so it renders in the layout phase of the commit that mounts it (a list that inserts
  * a turn sees the turn's full height in that same commit, and `ViewportAnchor` compensates in
- * one measurement); otherwise once the schema and the engine chunk arrive. Only the very first
- * render on a page, or a schema that failed to load, takes that asynchronous path. Without the
- * server schema (or Proof's headless engine) `render` gets no engine and no document, and the
- * surface shows the literal text instead: readable, never lost.
+ * one measurement); otherwise once the engine's chunks arrive. Only a render before a load has
+ * resolved takes that asynchronous path: the very first on a page, and each one after a load
+ * that failed, which asks for the chunks again. Without Proof's headless engine `render` gets no
+ * engine and no document, and the surface shows the literal text instead: readable, never lost.
  *
  * A longer one is parsed in the parse worker (`markdown-parse.worker.ts`), created on the first
  * one a page draws. `render` is called at once with a pending rendering, so the reader has the

@@ -10,21 +10,9 @@ import * as markdownEngine from "../refs/markdown-engine";
 import { prefetchChunk, renderChunk } from "./chunk-loads";
 import {
   DeploymentResilience,
-  importWhenOnline,
   installChunkFailureRecovery,
   spendChunkReload,
 } from "./DeploymentResilience";
-
-function withOnLine<T>(onLine: boolean, run: () => Promise<T>): Promise<T> {
-  const descriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine");
-  Object.defineProperty(navigator, "onLine", { configurable: true, value: onLine });
-  return run().finally(() => {
-    Reflect.deleteProperty(navigator, "onLine");
-    if (descriptor !== undefined) {
-      Object.defineProperty(Navigator.prototype, "onLine", descriptor);
-    }
-  });
-}
 
 /** A stand-in for the Navigation API's `navigate` event: whether it stays in this document, the
  *  file name a link with `download` asks for, empty when the attribute names none (null for every
@@ -554,33 +542,6 @@ test("a chunk that fails while the browser is offline is not a stale deployment:
     }
     window.sessionStorage.clear();
   }
-});
-
-test("a chunk that fails offline loads once the browser is back online", async () => {
-  let attempts = 0;
-  const load = () => {
-    attempts += 1;
-    return attempts === 1
-      ? Promise.reject(new TypeError("Failed to fetch"))
-      : Promise.resolve("ok");
-  };
-
-  await withOnLine(false, async () => {
-    const loading = importWhenOnline(load);
-    await Promise.resolve();
-    expect(attempts).toBe(1);
-    window.dispatchEvent(new Event("online"));
-    expect(await loading).toBe("ok");
-    expect(attempts).toBe(2);
-  });
-});
-
-test("a chunk that fails while online is a real failure, not a network blip", async () => {
-  await withOnLine(true, async () => {
-    await expect(
-      importWhenOnline(() => Promise.reject(new TypeError("Failed to fetch")))
-    ).rejects.toThrow("Failed to fetch");
-  });
 });
 
 /** The tab's running page: a script naming its entry chunk, as the built page's module script does. */

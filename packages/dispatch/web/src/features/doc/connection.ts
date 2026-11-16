@@ -4,7 +4,7 @@ import type { Awareness } from "y-protocols/awareness";
 import type { Doc } from "yjs";
 
 import { reconnectDelayMs } from "../../api/live-socket";
-import { importWhenOnline } from "../shell/DeploymentResilience";
+import { importWhenOnline } from "../shell/chunk-loads";
 import type { PendingState, PendingSync } from "./pending-sync";
 
 const presenceColors = ["#0284c7", "#7c3aed", "#c2410c", "#047857", "#be123c", "#4338ca"] as const;

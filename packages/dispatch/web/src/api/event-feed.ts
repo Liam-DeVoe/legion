@@ -261,7 +261,7 @@ export function useEventFeed({
     // as the tab stayed open. The events waiting on the failed download refresh everything
     // instead, below, as an event this page cannot map does; a later event asks for the chunk
     // again, which Chromium can answer with the same failure from its module map
-    // (`features/shell/DeploymentResilience.tsx`, `importWhenOnline`), and that event too then
+    // (`features/shell/chunk-loads.ts`, `importWhenOnline`), and that event too then
     // refreshes everything, under that refresh's own throttle, rather than nothing.
     let refreshMap: Promise<EventRefreshMap> | undefined;
     const awaitRefreshMap = (): Promise<EventRefreshMap> => {

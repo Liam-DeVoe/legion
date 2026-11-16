@@ -20,16 +20,18 @@ import { type ComponentType, type LazyExoticComponent, lazy } from "react";
 //
 // So: a chunk a render waits on goes through `renderChunk`, a chunk nothing waits on through
 // `prefetchChunk`, and nothing imports a chunk through neither. A component a `Suspense` waits
-// on goes through `lazyChunk`, which is `renderChunk` under React's `lazy`, and that one is held
-// by construction: `lazy` itself is refused everywhere in `web/src` but this module, by the
-// `noRestrictedImports` rule of the repository's `biome.json`. Where one import is both - the
-// entry prefetches a route's chunk that the router then renders, the shell warms the Markdown
-// engine that a body then awaits - the two are told apart at each call, not in the import,
-// because the download is shared.
+// on goes through `lazyChunk`, which is `renderChunk` and `importWhenOnline` under React's
+// `lazy`, and that one is held by construction: `lazy` itself is refused everywhere in `web/src`
+// but this module, by the `noRestrictedImports` rule of the repository's `biome.json`. Where one
+// import is both - the entry prefetches a route's chunk that the router then renders, the shell
+// warms the Markdown engine that a body then awaits - the two are told apart at each call, not
+// in the import, because the download is shared.
 //
 // The functions live here, apart from the recovery, so a module the recovery's own component
 // imports - the Markdown engine, which it warms - can take `renderChunk` without importing that
-// component back, which would be an import cycle.
+// component back, which would be an import cycle. `importWhenOnline` is here for the same
+// reason, although it is the other half of the recovery's offline rule: `lazyChunk` loads
+// through it, and the recovery's component imports this module.
 //
 // `vite:preloadError` is dispatched from the rejection itself, before any `then` of the promise
 // these hold runs, so a render's failure always finds its own count still up.
@@ -37,8 +39,10 @@ let prefetchedChunksOut = 0;
 let renderedChunksOut = 0;
 
 /** Starts a chunk nothing is waiting for yet, and swallows its failure: the same import runs
- *  again under `renderChunk` when the router renders the route, and that is where a reader meets
- *  a chunk that will not download. */
+ *  again under `renderChunk` when a reader comes to wait on it - the router rendering the route,
+ *  or a body drawn after the shell's warm of the Markdown engine failed, since the engine keeps
+ *  no failed load (`features/refs/markdown-engine.ts`, `loadEngine`) - and that is where a reader
+ *  meets a chunk that will not download. */
 export function prefetchChunk(load: () => Promise<unknown>): void {
   prefetchedChunksOut += 1;
   void load()
@@ -63,11 +67,54 @@ export function renderChunk<T>(load: () => Promise<T>): Promise<T> {
 }
 
 /**
- * React's `lazy`, with the download under `renderChunk`: how every component of this app whose
- * chunk a `Suspense` waits on is written - a route, a host's dialog or sheet, a page behind a
- * gate. React asks for the chunk the first time it renders the component, so a reader is in
- * front of the boundary that waits on it, and a download that fails must spend one of the tab's
- * recovery reloads however many prefetches are in flight beside it.
+ * Runs `load`, and runs it again once the window fires `online` each time it rejects while the
+ * browser is offline; a rejection while online reaches the caller. It is the other half of the
+ * recovery's offline rule (`DeploymentResilience.tsx`, `reloadForChunkFailure`): a chunk that
+ * fails while the browser is offline reloads nothing, since a reload then would swap the app for
+ * the browser's offline page, so the chunk is asked for again when the network returns instead.
+ * Chromium caches a failed module fetch in its module map, so that retry can reject again; it
+ * then rejects online, propagates like any online failure and reaches `reloadForChunkFailure`,
+ * which reloads while the tab's budget lasts.
+ *
+ * What loads through it: the chunks of a document - the editor, Yjs, Hocuspocus and the
+ * pending-edit store, code-split so the issue route does not pay for them until a document
+ * mounts (`features/doc/editor.ts`, `features/doc/connection.ts`,
+ * `features/doc/ProofDocument.tsx`) - and every `lazyChunk`.
+ */
+export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
+  for (;;) {
+    try {
+      return await load();
+    } catch (error) {
+      if (navigator.onLine) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => {
+        window.addEventListener("online", () => resolve(), { once: true });
+      });
+    }
+  }
+}
+
+/**
+ * React's `lazy`, with the download under `renderChunk` and `importWhenOnline`: how every
+ * component of this app whose chunk a `Suspense` waits on is written - a route, a host's dialog
+ * or sheet, a page behind a gate. React asks for the chunk the first time it renders the
+ * component, so a reader is in front of the boundary that waits on it, and a download that fails
+ * must spend one of the tab's recovery reloads however many prefetches are in flight beside it.
+ *
+ * WHY `importWhenOnline`. React's `lazy` keeps the promise its loader returned for the life of
+ * the page and never calls the loader again, so a rejection it holds answers every later render
+ * of the component with the same failure. Online the rejection does not outlive the page: the
+ * failure is Vite's `vite:preloadError` while `renderChunk` counts the render as waiting, so the
+ * recovery reloads the tab while its budget lasts, and the page that kept the rejection is gone
+ * with it. Offline the recovery reloads nothing (`DeploymentResilience.tsx`,
+ * `reloadForChunkFailure`), so a component whose download failed there stayed broken after the
+ * browser was back online, for the life of the tab. That was new for the margin, the reference
+ * preview layer, the shell's dialogs and the Inbox, which dispatch://INFRA-1109 took out of the
+ * entry. Under `importWhenOnline` the promise `lazy` keeps rejects only while the browser is
+ * online, where a failure reloads; offline, the boundary's `Suspense` keeps its fallback until
+ * the window fires `online` and the import runs again.
  *
  * Typed on the component, as `lazy` is, so the component keeps its own props.
  */
@@ -75,7 +122,7 @@ export function renderChunk<T>(load: () => Promise<T>): Promise<T> {
 export function lazyChunk<T extends ComponentType<any>>(
   load: () => Promise<{ default: T }>
 ): LazyExoticComponent<T> {
-  return lazy(() => renderChunk(load));
+  return lazy(() => renderChunk(() => importWhenOnline(load)));
 }
 
 /** Whether the chunks out are prefetches alone: at least one is, and no render waits on any. A
