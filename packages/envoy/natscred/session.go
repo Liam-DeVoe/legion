@@ -1,0 +1,139 @@
+// Package natscred is the credential a Go NATS client presents to a hub whose connections the
+// auth service admits (internal/broker/natscallout): a session's broker access token beside a
+// proof of its key over the server's nonce (Session), or a service's platform identity token
+// (Service). Each comes as the nats.Option a connection is dialled with and a Keeper that holds the
+// open connection to a credential the server still admits, reconnecting it before the user the
+// service answered with expires.
+package natscred
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/brokerclient"
+)
+
+// Keeper holds an open connection to a live credential: it reconnects nc with a fresh one before
+// the user its current one was admitted as expires. Keep returns when ctx ends, and at the first
+// reconnect it would make once nc is closed.
+type Keeper interface {
+	Keep(ctx context.Context, nc *nats.Conn)
+}
+
+// placeholderJWT is the user JWT a session's CONNECT names. nats.go signs the server's nonce only
+// for a connection that presents a user JWT or an nkey (connectProto), and a session signs it
+// with its proof, so the CONNECT carries this placeholder; a server with no operator discards a
+// CONNECT's JWT before it reads it (nats-server server/client.go, processConnect), so the auth
+// service is never sent it.
+const placeholderJWT = "-"
+
+// signTimeout bounds the trade a CONNECT's signature waits for when the client holds no token
+// live enough to present: nats.go signs inside its connect, so a broker that does not answer fails
+// that connect, and nats.go dials again, rather than stalling it.
+const signTimeout = 10 * time.Second
+
+// Session is the credential of the session client trades for: its broker access token in the
+// CONNECT's token field, and in the signature field the proof brokerclient.ConnectionProof signs
+// with the client's key over the nonce the server sent this connection. The token is taken once
+// per CONNECT: nats.go asks for the signature (SignatureCB) before the token (TokenHandler), so
+// the signature stores the token it signed for and the token handler answers that one, and a
+// renewal between the two can never send a token the proof does not name. The option sets
+// IgnoreAuthErrorAbort: a refused credential is retried, not given up on, so a client whose token
+// lapsed while the broker was down connects again once a live one is traded.
+//
+// The Keeper runs the client's renewal loop (brokerclient.Client.Run) and reconnects the
+// connection with each token it lands that is not the one the connection presented, which it
+// trades RenewBefore ahead of the token in hand: the service answers a session's user with its
+// token's expiry, so the connection moves to the next token before the server drops it.
+func Session(client *brokerclient.Client) (nats.Option, Keeper) {
+	credential := &sessionCredential{
+		key: client.Key(),
+		current: func(ctx context.Context) (string, error) {
+			token, err := client.Token(ctx)
+			if err != nil {
+				return "", err
+			}
+			return token.AccessToken, nil
+		},
+		run: client.Run,
+	}
+	return credential.option(), credential
+}
+
+// sessionCredential is Session's state: where the session's token comes from, the key it is bound
+// to, and the token the CONNECT in progress presents.
+type sessionCredential struct {
+	key     *ecdsa.PrivateKey
+	current func(context.Context) (string, error)
+	run     func(context.Context, func(context.Context, *brokerclient.Token) error) error
+
+	mu        sync.Mutex
+	presented string
+}
+
+func (c *sessionCredential) option() nats.Option {
+	return allOf(
+		nats.UserJWT(func() (string, error) { return placeholderJWT, nil }, c.sign),
+		nats.TokenHandler(c.token),
+		nats.IgnoreAuthErrorAbort(),
+	)
+}
+
+// sign is the CONNECT's signature over nonce: the proof of the session's key for the token it
+// presents, which it takes here, once, and stores for token to answer.
+func (c *sessionCredential) sign(nonce []byte) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), signTimeout)
+	defer cancel()
+	token, err := c.current(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("natscred: no broker access token for this session: %w", err)
+	}
+	proof, err := brokerclient.ConnectionProof(c.key, token, string(nonce))
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.presented = token
+	c.mu.Unlock()
+	return []byte(proof), nil
+}
+
+// token is the CONNECT's token: the one sign signed for.
+func (c *sessionCredential) token() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.presented
+}
+
+// Keep runs the renewal loop until ctx ends or nc closes, reconnecting nc with each token it
+// lands that nc did not present. It returns too when the broker refuses the session's identity in
+// a way no retry cures (brokerclient.RefusedError.Permanent): the connection then keeps the user it
+// has until that expires, and each reconnect after asks the broker again.
+func (c *sessionCredential) Keep(ctx context.Context, nc *nats.Conn) {
+	_ = c.run(ctx, func(_ context.Context, token *brokerclient.Token) error {
+		if token.AccessToken == c.token() {
+			return nil
+		}
+		if err := nc.ForceReconnect(); err != nil {
+			return fmt.Errorf("natscred: reconnect with the renewed token: %w", err)
+		}
+		return nil
+	})
+}
+
+// allOf is every option in order, as one.
+func allOf(options ...nats.Option) nats.Option {
+	return func(o *nats.Options) error {
+		for _, option := range options {
+			if err := option(o); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}

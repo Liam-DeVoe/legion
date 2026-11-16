@@ -75,7 +75,9 @@ type StaticUser struct {
 // answers to the server's reply inboxes; each static user with its grant; and an auth_callout
 // block naming the issuer, the global account ($G) every admitted user is placed in, every static
 // user (the service's among them) as an auth user, and the curve key the requests are sealed to.
-// A client the configuration does not list is sent to the service.
+// A client the configuration does not list is sent to the service. Keys with no XKeyPublic name
+// no curve key, so the server sends its requests in the clear: the control a test of the sealing
+// starts.
 func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 	users := []string{
 		userEntry(keys.ServicePublic, []string{"$SYS._INBOX.>"}, []string{"$SYS.REQ.USER.AUTH"}),
@@ -84,6 +86,10 @@ func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 	for _, user := range static {
 		users = append(users, userEntry(user.NKey, user.Publish, user.Subscribe))
 		authUsers = append(authUsers, fmt.Sprintf("%q", user.NKey))
+	}
+	xkey := ""
+	if keys.XKeyPublic != "" {
+		xkey = fmt.Sprintf("\n    xkey: %q", keys.XKeyPublic)
 	}
 	return fmt.Sprintf(`jetstream {}
 authorization {
@@ -94,11 +100,10 @@ authorization {
   auth_callout {
     issuer: %q
     account: "$G"
-    auth_users: [ %s ]
-    xkey: %q
+    auth_users: [ %s ]%s
   }
 }
-`, CalloutAuthTimeout, strings.Join(users, "\n    "), keys.IssuerPublic, strings.Join(authUsers, ", "), keys.XKeyPublic)
+`, CalloutAuthTimeout, strings.Join(users, "\n    "), keys.IssuerPublic, strings.Join(authUsers, ", "), xkey)
 }
 
 // userEntry is one nkey user of a configuration, with its grant.

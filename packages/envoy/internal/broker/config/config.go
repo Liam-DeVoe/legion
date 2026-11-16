@@ -862,18 +862,14 @@ func parseAPIAccounts(setting, value string) ([]apiAccountEntry, error) {
 		if !ok || !record.ValidService(caller) {
 			return nil, apiAccountForm(setting, text)
 		}
-		entry := apiAccountEntry{caller: caller, account: account, text: text}
-		switch address, tagged := strings.CutPrefix(account, googleAPIAccountTag); {
-		case tagged:
-			if err := vmAccountRefusal(setting, text, address); err != nil {
-				return nil, err
-			}
-			entry.account, entry.google = address, true
-		case !serviceAccountPattern.MatchString(account):
+		parsed, err := ParseAccount(setting, text, account)
+		if errors.Is(err, ErrAccountForm) {
 			return nil, apiAccountForm(setting, text)
-		case isDefaultServiceAccount(account):
-			return nil, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
 		}
+		if err != nil {
+			return nil, err
+		}
+		entry := apiAccountEntry{caller: caller, account: parsed.Address, google: parsed.Google, text: text}
 		if other, twice := seen[entry.account]; twice {
 			if other == caller {
 				return nil, fmt.Errorf("%s names the account %s twice for %q; each account calls as one caller, so name it once", setting, entry.account, caller)
@@ -884,6 +880,45 @@ func parseAPIAccounts(setting, value string) ([]apiAccountEntry, error) {
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// Account is a platform account as BROKER_API_ACCOUNTS writes one: a Kubernetes service account's
+// subject, or a Google service account's address.
+type Account struct {
+	// Address is the account as the broker looks it up: the subject a projected token carries,
+	// system:serviceaccount:<namespace>:<name>, or the email a Google identity token carries,
+	// without its google: tag.
+	Address string
+	// Google is whether the account is a Google service account.
+	Google bool
+}
+
+// ErrAccountForm is ParseAccount's answer for an account written in neither form, which each
+// setting refuses naming its own entry form.
+var ErrAccountForm = errors.New("config: an account is system:serviceaccount:<namespace>:<name> or google:<service account email>")
+
+// ParseAccount reads account, written as a BROKER_API_ACCOUNTS entry writes one: google:<address>
+// for a Google service account, looked up by the email its identity token carries, and any other
+// a Kubernetes service account, looked up by the subject its projected token carries. It refuses,
+// naming setting and text, the entry it came from: a namespace's default account, as
+// parseServiceAccounts does, and a Google account vmAccountRefusal refuses, which is the rule
+// BROKER_VM_SERVICES holds every Google account to. An account of neither form is ErrAccountForm.
+// Every setting that names a caller's account reads it here (BROKER_API_ACCOUNTS, and
+// BROKER_NATS_SERVICES through internal/broker/natscallout), so no setting admits an account
+// another refuses.
+func ParseAccount(setting, text, account string) (Account, error) {
+	switch address, tagged := strings.CutPrefix(account, googleAPIAccountTag); {
+	case tagged:
+		if err := vmAccountRefusal(setting, text, address); err != nil {
+			return Account{}, err
+		}
+		return Account{Address: address, Google: true}, nil
+	case !serviceAccountPattern.MatchString(account):
+		return Account{}, ErrAccountForm
+	case isDefaultServiceAccount(account):
+		return Account{}, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
+	}
+	return Account{Address: account}, nil
 }
 
 // apiAccountForm is the refusal of a BROKER_API_ACCOUNTS entry of neither form, which names both.

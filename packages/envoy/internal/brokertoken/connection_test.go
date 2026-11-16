@@ -10,6 +10,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +25,33 @@ const (
 	connectionToken = "access-token-of-ses_a1b2c3"
 	connectionNonce = "server-nonce-of-this-connection"
 )
+
+// connectionVector is a proof committed with the token, the nonce and the thumbprint it verifies
+// with, and the instant it was signed: testdata/connection-proof-go.json is the Go signer's
+// (brokerclient.ConnectionProof), which the TypeScript client's checker reads too. The proof is
+// kept as its three segments, joined by dots to read it: a proof of a throwaway key over an
+// example token is no credential, and a joined one reads as a JWT to the push leak check.
+type connectionVector struct {
+	ProofSegments []string `json:"proof_segments"`
+	Token         string   `json:"token"`
+	Nonce         string   `json:"nonce"`
+	Thumbprint    string   `json:"thumbprint"`
+	Now           int64    `json:"now"`
+}
+
+// The Go signer's committed proof verifies at the instant it was signed, and with no other nonce:
+// the vector a client of another language is held to is one this checker accepts.
+func TestTheGoConnectionProofVectorVerifies(t *testing.T) {
+	raw, err := os.ReadFile("testdata/connection-proof-go.json")
+	require.NoError(t, err)
+	var vector connectionVector
+	require.NoError(t, json.Unmarshal(raw, &vector))
+	require.Len(t, vector.ProofSegments, 3)
+	proof := strings.Join(vector.ProofSegments, ".")
+	now := time.Unix(vector.Now, 0)
+	require.NoError(t, brokertoken.VerifyConnectionProof(proof, vector.Token, vector.Nonce, vector.Thumbprint, now))
+	require.ErrorIs(t, brokertoken.VerifyConnectionProof(proof, vector.Token, "another-nonce", vector.Thumbprint, now), brokertoken.ErrProofInvalid)
+}
 
 // connectionSigner signs connection proofs with a key of its own, and lets a test change any part
 // of one: the claims, the 'typ' header, the algorithm and the key.
