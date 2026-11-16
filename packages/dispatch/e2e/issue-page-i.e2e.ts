@@ -1085,7 +1085,14 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
-    await unfoldEveryBranch(page);
+    // The thread's folds are opened by their fold controls alone: G's `unfoldEveryBranch` also
+    // presses the line that counts a deeper branch, which is what this reading reads shut.
+    const folds = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
+    for (let pressed = 0; pressed < 20 && (await folds.count()) > 0; pressed += 1) {
+      await folds.first().click();
+    }
+    await expect(folds, "a fold control of the thread is still shut").toHaveCount(0);
+    await focusThePage(page);
     const rows = await drawnRows(page);
     for (const id of [seeded.head, seeded.first, seeded.second]) {
       expect(
