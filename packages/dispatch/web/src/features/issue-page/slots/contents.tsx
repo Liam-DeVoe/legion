@@ -7,10 +7,12 @@ import { ContentsList } from "../IssueContents";
 import { IssueThreeThings } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
+import { useReferenceNames } from "../one-line";
 import { useAskOutline, useFocusBranch } from "../outline-request";
 import { isFilter, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
+import { treeContext } from "../tree-drafts";
 import { useIssueTree } from "../useIssueTree";
 
 /**
@@ -36,13 +38,16 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),
     [address.filter, memo, root]
   );
+  // How a reference the sentences cite is named, read once over the whole tree (`namedLine`).
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  const nameOf = useReferenceNames(root, nodeIdOf);
   const ask = useAskOutline();
   const [focusBranch, setFocusBranch] = useFocusBranch();
   const chosen = useContentsChosen();
   if (isFilter(address.preset)) return null;
   return (
     <NoTooltips>
-      <IssueThreeThings look="contents" reading={!blocksRead} summary={memo} />
+      <IssueThreeThings look="contents" nameOf={nameOf} reading={!blocksRead} summary={memo} />
       <ContentsList
         focusBranch={focusBranch}
         onFocusBranch={(current) => {

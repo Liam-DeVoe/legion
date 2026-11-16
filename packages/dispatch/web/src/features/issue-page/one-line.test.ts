@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
-import { oneLineCut } from "./one-line";
+import { namedLine, oneLineCut } from "./one-line";
+import { NODE_TYPE_NAMES } from "./page-words";
 
 /** A face that draws every character 7 px wide, so each budget below is a sum a reader can
  *  check by hand. */
@@ -109,4 +110,25 @@ test("a first word no line of the row holds is drawn whole, wrapping inside itse
     under: true,
     wraps: true,
   });
+});
+
+/**
+ * Reading (b) of dispatch://INFRA-3939's plan, the tester's F20: a plain line the page draws is
+ * no link, so it names each reference in plain words - a block by the page's name for it, an
+ * issue by its key, a whole document by the page's word for one - and drops a typed block's
+ * source line, which is markup and no word of the text. No address, block id or fence is left.
+ */
+test("namedLine names each reference and drops a typed block's source line", () => {
+  const block = "dispatch://KEY-1/spec#b-r1";
+  const text = [
+    ":::requirement{#r1}",
+    `The page cites ${block}, dispatch://KEY-1 and dispatch://KEY-1/artifact/notes.`,
+  ].join("\n");
+  const line = namedLine(text, (reference) =>
+    reference === block ? "the whole issue" : undefined
+  );
+  expect(line).toBe(`The page cites the whole issue, KEY-1 and ${NODE_TYPE_NAMES.document}.`);
+  for (const mark of [":::", "#b-", "dispatch://"]) {
+    expect(line).not.toContain(mark);
+  }
 });

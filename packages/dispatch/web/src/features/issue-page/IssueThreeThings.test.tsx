@@ -1,35 +1,44 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import type { Artifact, ArtifactBlock, Decision, IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { IssueThreeThings } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
-import { EMPTY_STATE_LINES } from "./page-words";
+import { useReferenceNames } from "./one-line";
+import { EMPTY_STATE_LINES, type NodeType } from "./page-words";
 import { specSummary } from "./spec-summary";
-import { blockNodeId } from "./tree-drafts";
+import { blockNodeId, blockWords, treeContext } from "./tree-drafts";
 
 /**
  * The head of the page draws the issue in plain language: at most three bullets, each one spoken
- * sentence of the spec's summary (dispatch://INFRA-1196 R5), out of the summary node's own text,
- * which the tree the page already holds carries - the head reads no document of its own (R20).
+ * sentence of the spec's summary (dispatch://INFRA-1196 R5), out of the server's reading of the
+ * summary node's text (its `tree`), which the tree the page already holds carries - the head
+ * reads no document of its own (R20).
  *
  * Every row below renders the head with no `QueryClientProvider` around it, which is the whole
  * proof of R20 here: a component that read anything would throw for want of a client, so these
  * rows pass only while the head makes no read at all.
  */
 
-/** The spec's summary node, as the tree holds it: a `callout` whose text is the block's source,
- *  fence and all. `cut` leaves the closing fence off, which is how a summary longer than the
- *  server's excerpt arrives: cut at `BlockExcerptRunes` wherever that falls. */
-function summaryNode(text: string, cut = false): TreeNode {
+// A summary's reading is made with the page's own engine (`displayTree`), which loads once.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+const KEY = "CORE-1";
+
+/** A node of the tree with nothing on it but its kind, and `fields`. */
+function treeNode(id: string, type: NodeType, fields: Partial<TreeNode> = {}): TreeNode {
   return {
     alsoUnder: [],
     children: [],
@@ -37,26 +46,57 @@ function summaryNode(text: string, cut = false): TreeNode {
     facts: [],
     gaps: [],
     held: 0,
-    id: "spec#b-summary",
+    id,
     question: false,
     replaced: false,
-    text: `:::callout{#summary title="What this issue is"}\n${text}${cut ? "" : "\n:::"}`,
+    text: "",
     transcluded: false,
-    type: "callout",
+    type,
     waiting: false,
+    ...fields,
   };
 }
 
+/** The spec's summary node, as the tree holds it: a `callout` whose text is the block's stored
+ *  excerpt with its fence left out (`blockWords`), and whose `tree` is the server's reading of
+ *  the block's whole text (`displayTree`), which is what the head reads. */
+function summaryNode(text: string): TreeNode {
+  return treeNode("spec#b-summary", "callout", {
+    text: blockWords(`:::callout{#summary title="What this issue is"}\n${text}\n:::`),
+    tree: displayTree(text),
+  });
+}
+
+/** The head as a slot draws it: what the summary cites named once over `root`, the whole tree
+ *  the summary is a node of (`slots/contents.tsx`). */
+function Head({
+  look,
+  reading,
+  root,
+  summary,
+}: {
+  look: "contents" | "spec";
+  reading: boolean;
+  root: TreeNode;
+  summary: TreeNode | undefined;
+}): ReactNode {
+  const nodeIdOf = useMemo(() => treeContext({ issue: issueDetails() }).nodeIdOf, []);
+  const nameOf = useReferenceNames(root, nodeIdOf);
+  return <IssueThreeThings look={look} nameOf={nameOf} reading={reading} summary={summary} />;
+}
+
 /** The sentences the head draws, in order, and the label before each. `reading` is whether the
- *  reads that carry the summary are still out. */
+ *  reads that carry the summary are still out; `root` is the tree the summary is a node of,
+ *  which is the issue holding it alone unless a case says more. */
 function bullets(
   summary: TreeNode | undefined,
   reading = false,
-  look: "contents" | "spec" = "contents"
+  look: "contents" | "spec" = "contents",
+  root: TreeNode = treeNode(KEY, "issue", { children: summary === undefined ? [] : [summary] })
 ): { labels: string[]; lines: string[]; unmount: () => void } {
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <IssueThreeThings look={look} reading={reading} summary={summary} />
+      <Head look={look} reading={reading} root={root} summary={summary} />
     </MemoryRouter>
   );
   const items = within(screen.getByTestId("issue-three-things")).queryAllByRole("listitem");
@@ -130,41 +170,54 @@ test("a summary of two sentences draws two bullets and says nothing about the th
   }
 });
 
-// The node's text is the server's excerpt, cut at 480 runes, so a longer summary arrives ending
-// mid-sentence. That tail is words nobody spoke as a sentence, so it is not drawn.
-test("a summary cut mid-sentence draws its whole sentences and not the fragment", () => {
-  const { lines, unmount } = bullets(
-    summaryNode("The page is one outline. The reasoning behind each requirement is reach")
-  );
+// The head reads the summary's reading and never the node's text, which is the stored excerpt,
+// so a summary node whose reading the batched reference read has not sent yet draws nothing of
+// that text - and, being a summary all the same, never says that the spec has none.
+test("a summary node whose reading has not come says nothing", () => {
+  const { lines, unmount } = bullets({
+    ...summaryNode("The page is one outline. It fits a phone."),
+    tree: undefined,
+  });
   try {
-    expect(lines).toEqual(["The page is one outline."]);
+    expect(lines).toEqual([]);
+    const head = screen.getByTestId("issue-three-things").textContent;
+    expect(head).not.toContain("The page is one outline.");
+    for (const line of [
+      EMPTY_STATE_LINES.spec_summary,
+      EMPTY_STATE_LINES.spec_summary_cut,
+      EMPTY_STATE_LINES.spec_summary_unended,
+    ]) {
+      expect(head).not.toContain(line);
+    }
   } finally {
     unmount();
   }
 });
 
-// A summary cut inside its first sentence holds words and no whole sentence of them. That is a
-// spec with a summary, so the head says why it draws none rather than that there is none; and a
-// whole summary whose words end in no sentence end says that instead, since it is not too long.
-test("a summary with no whole sentence says why it draws none, not that there is none", () => {
-  for (const [summary, line] of [
+// R1: a summary whose words hold no sentence end still says something, and never that it is too
+// long: its first line, by the one-line rule every place that draws one line for a node keeps,
+// is its one sentence - whole where it is short, and cut at a word with its ellipsis past
+// `FIRST_LINE_LIMIT`'s 100 characters.
+test("a summary with no sentence end draws its first line as one sentence", () => {
+  for (const [text, line] of [
+    ["The page is one outline", "The page is one outline"],
     [
-      summaryNode("The reasoning behind each requirement is reached from the node it", true),
-      EMPTY_STATE_LINES.spec_summary_cut,
+      "The page is one outline that a reader opens folded to the work in front of them, and " +
+        "reads at every width with nothing lost along the way",
+      "The page is one outline that a reader opens folded to the work in front of them, and " +
+        "reads at every…",
     ],
-    [summaryNode("The page is one outline"), EMPTY_STATE_LINES.spec_summary_unended],
   ] as const) {
-    const { lines, unmount } = bullets(summary);
+    const { lines, unmount } = bullets(summaryNode(text));
     try {
-      expect(lines).toEqual([]);
+      expect(lines).toEqual([line]);
       const head = screen.getByTestId("issue-three-things").textContent;
-      expect(head).not.toContain("This spec has no summary.");
-      expect(head).toContain(line);
+      expect(head).not.toContain(EMPTY_STATE_LINES.spec_summary_cut);
+      expect(head).not.toContain(EMPTY_STATE_LINES.spec_summary_unended);
     } finally {
       unmount();
     }
   }
-  expect(EMPTY_STATE_LINES.spec_summary_cut).toBe("The summary is too long to show here.");
 });
 
 // A summary may say one sentence twice. Each is a bullet of its own, and React is told the two
@@ -204,10 +257,13 @@ test("a spec with no summary draws the page's own line and no bullet", () => {
 });
 
 // The page's first load draws the tree before the spec's blocks and their words arrive, so the
-// summary node is missing, or there with no words yet. That is no spec without a summary, and
+// summary node is missing, or there with no reading yet. That is no spec without a summary, and
 // the head says nothing about one until the reads that carry it have answered.
 test("while the reads that carry the summary are out, the head says nothing about it", () => {
-  for (const summary of [undefined, { ...summaryNode(""), text: "" }]) {
+  for (const summary of [
+    undefined,
+    { ...summaryNode("The page is one outline."), tree: undefined },
+  ]) {
     const { lines, unmount } = bullets(summary, true);
     try {
       expect(lines).toEqual([]);
@@ -263,23 +319,56 @@ test("a summary in bold, or ending in a bold sentence, draws that sentence", () 
   }
 });
 
-// The excerpt is cut wherever `BlockExcerptRunes` falls, which can be inside the last item of
-// a list as well as inside a sentence; the words after the cut are no item anybody wrote.
-test("a bulleted summary cut inside its last item draws the whole items and not the fragment", () => {
+// R1: each item of a list ends a sentence whether or not its author ended it with a mark, so a
+// list's last item is drawn too. A cut excerpt with its fence left out ends in that item as it
+// would in a fragment of one, so only the reading tells the two apart.
+test("a bulleted summary draws its last item though it has no end mark", () => {
   const { lines, unmount } = bullets(
     summaryNode(
-      "- What: the page is one outline\n- Why: a reader finds the work\n- Done: it fi",
-      true
+      "1. The page is one outline.\n2. A reader finds the work in it.\n3. It fits a phone"
     )
   );
   try {
-    expect(lines).toEqual(["What: the page is one outline", "Why: a reader finds the work"]);
+    expect(lines).toEqual([
+      "The page is one outline.",
+      "A reader finds the work in it.",
+      "It fits a phone",
+    ]);
   } finally {
     unmount();
   }
 });
 
-const KEY = "CORE-1";
+// R1 and the tester's F20 (reading (b) of the plan): a sentence is a plain line and no link, so a
+// block it cites is drawn by the one name the page gives that block - the words of a chip of the
+// tree that names it - and never by its address or its block id.
+test("a summary sentence that cites a block draws the block's name, not its address", () => {
+  const cited = `dispatch://${KEY}/spec#b-r1`;
+  const summary = summaryNode(`The page is one outline. It draws ${cited} first.`);
+  const root = treeNode(KEY, "issue", {
+    children: [
+      summary,
+      treeNode(blockNodeId("spec", "r1"), "requirement"),
+      treeNode(blockNodeId("decisions", "d1"), "decision", {
+        chips: [
+          { answered: true, gone: false, name: "the whole issue in one reading", ref: cited },
+        ],
+      }),
+    ],
+  });
+  const { lines, unmount } = bullets(summary, false, "contents", root);
+  try {
+    expect(lines).toEqual([
+      "The page is one outline.",
+      "It draws the whole issue in one reading first.",
+    ]);
+    const head = screen.getByTestId("issue-three-things").textContent;
+    expect(head).not.toContain("dispatch://");
+    expect(head).not.toContain("#b-");
+  } finally {
+    unmount();
+  }
+});
 
 const decisionsDocument: Artifact = {
   created_at: "2026-11-05T00:00:00Z",
@@ -295,6 +384,62 @@ const decisionsDocument: Artifact = {
   slug: "decisions",
   versions: [],
 };
+
+/** The issue's spec, as the issue read lists it. */
+const specDocument: Artifact = {
+  ...decisionsDocument,
+  id: "artifact-spec",
+  name: "spec.md",
+  primary: true,
+  slug: "spec",
+};
+
+/** The issue as the issue read answers it, with a spec and a decisions document: what tells
+ *  the page how this issue addresses a node (`treeContext`). */
+function issueDetails(): IssueDetails {
+  return {
+    advances: [],
+    advances_revision: 0,
+    artifacts: [specDocument, decisionsDocument],
+    assignee: null,
+    blocked_by: [],
+    children: [],
+    claim: null,
+    closed_at: null,
+    components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
+    created_at: "2026-11-05T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    decisions_artifact_id: decisionsDocument.id,
+    design_gates: [],
+    external_links: [],
+    holder_state: null,
+    key: KEY,
+    labels: [],
+    last_seen: null,
+    last_seq: 1,
+    number: 1,
+    open_asks: [],
+    parent: null,
+    plan_artifact_id: "",
+    primary_artifact_id: specDocument.id,
+    priority: null,
+    progress: { children: null, tasks: null },
+    project: "CORE",
+    rank: "U",
+    referenced_by_count: 0,
+    repo: null,
+    resolved_repo: null,
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+    status: "todo",
+    takeable_at: null,
+    title: "The issue page draws one ordered body",
+    updated_at: "2026-11-05T00:00:00Z",
+    verification_artifact_id: "",
+  } satisfies IssueDetails;
+}
 
 const decision: Decision = {
   asks: [],
@@ -316,55 +461,6 @@ const decision: Decision = {
 /** The issue the drawn-gap case reads: a spec with a summary and one requirement no check
  *  serves, and a decisions document with one decision, as the page's reads answer them. */
 function fullyReadIssue(): TreeNode {
-  const spec: Artifact = {
-    ...decisionsDocument,
-    id: "artifact-spec",
-    name: "spec.md",
-    primary: true,
-    slug: "spec",
-  };
-  const details = {
-    advances: [],
-    advances_revision: 0,
-    artifacts: [spec, decisionsDocument],
-    assignee: null,
-    blocked_by: [],
-    children: [],
-    claim: null,
-    closed_at: null,
-    components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
-    created_at: "2026-11-05T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    decisions_artifact_id: decisionsDocument.id,
-    design_gates: [],
-    external_links: [],
-    holder_state: null,
-    key: KEY,
-    labels: [],
-    last_seen: null,
-    last_seq: 1,
-    number: 1,
-    open_asks: [],
-    parent: null,
-    plan_artifact_id: "",
-    primary_artifact_id: spec.id,
-    priority: null,
-    progress: { children: null, tasks: null },
-    project: "CORE",
-    rank: "U",
-    referenced_by_count: 0,
-    repo: null,
-    resolved_repo: null,
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-    status: "todo",
-    takeable_at: null,
-    title: "The issue page draws one ordered body",
-    updated_at: "2026-11-05T00:00:00Z",
-    verification_artifact_id: "",
-  } satisfies IssueDetails;
   const block = (id: string, type: string): ArtifactBlock => ({
     attributes: [],
     from: 0,
@@ -389,7 +485,7 @@ function fullyReadIssue(): TreeNode {
           text: "The page draws the whole issue in one reading.",
         },
       ],
-      spec_artifact_id: spec.id,
+      spec_artifact_id: specDocument.id,
     },
     decisions: {
       decisions: [decision],
@@ -397,9 +493,12 @@ function fullyReadIssue(): TreeNode {
       open_questions: [],
     },
     documents: [
-      { artifactId: spec.id, blocks: [block("summary", "callout"), block("r1", "requirement")] },
+      {
+        artifactId: specDocument.id,
+        blocks: [block("summary", "callout"), block("r1", "requirement")],
+      },
     ],
-    issue: details,
+    issue: issueDetails(),
     targets: [
       {
         gone: false,
@@ -411,6 +510,7 @@ function fullyReadIssue(): TreeNode {
           kind: "artifact",
           slug: "spec",
         }),
+        text_tree: displayTree("What this is. Why it matters. What is different when done."),
       },
     ],
   });
@@ -491,7 +591,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
   );
   const head = render(
     <MemoryRouter>
-      <IssueThreeThings look="contents" reading={false} summary={specSummary(root, "spec")} />
+      <Head look="contents" reading={false} root={root} summary={specSummary(root, "spec")} />
     </MemoryRouter>
   );
   try {

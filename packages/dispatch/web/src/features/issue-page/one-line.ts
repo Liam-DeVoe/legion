@@ -1,6 +1,10 @@
-import { type RefObject, useLayoutEffect, useState } from "react";
+import { type RefObject, useLayoutEffect, useMemo, useState } from "react";
 
-import { drawnLine, firstLineOf } from "./issue-tree";
+import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
+import { chipWords } from "./node-row-chip";
+import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
+import { documentWord } from "./RowText";
+import { rowReferences } from "./row-references";
 
 /**
  * What the Contents pane reads once for every entry it draws on one line (dispatch://INFRA-1196
@@ -183,4 +187,69 @@ export function oneLineCut({
   return word === undefined
     ? { ...first, under: true, wraps: true }
     : { cut: true, line: first.line.slice(0, word), under: true, wraps: true };
+}
+
+/** A typed block's source line in a text: its opening `:::requirement{#r1}`, or its closing
+ *  `:::`. The pattern of `RowText.tsx`'s `DIRECTIVE_LINE`, which that module keeps to itself. */
+const SOURCE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
+
+/**
+ * `text` as a plain line of the page draws it, with every reference in it named in plain words
+ * (reading (b) of dispatch://INFRA-3939's plan, the tester's F20). A plain line is no link, so
+ * an address, a block id or a fence drawn in it is one a reader can neither follow nor read: a
+ * typed block's source lines are markup and no word of the text, so they are left out, and each
+ * `dispatch://` reference the row's reader finds (`rowReferences`) is replaced by the words for
+ * what it names - an issue's key; else the page's name for it (`nameOf`, `useReferenceNames`);
+ * else, for a whole document, the page's word for it (`documentWord`); else the word for a
+ * document.
+ */
+export function namedLine(text: string, nameOf: (reference: string) => string | undefined): string {
+  const words = text.includes(":::") ? text.replace(SOURCE_LINE, "") : text;
+  let line = "";
+  let at = 0;
+  for (const one of rowReferences(words, [])) {
+    const name =
+      one.route.kind === "issue"
+        ? one.route.key
+        : (nameOf(one.reference) ?? documentWord(one.route) ?? NODE_TYPE_NAMES.document);
+    line += `${words.slice(at, one.start)}${name}`;
+    at = one.end;
+  }
+  return `${line}${words.slice(at)}`;
+}
+
+/**
+ * How the page names a reference that a plain line cites (`namedLine`), read once over the
+ * whole tree: by the words of the first chip of the tree that names the same node, as a chip
+ * draws them (`chipWords`); else, for a node the tree holds, by its kind's word; else not at
+ * all. These are F's `chipOf` names, the page's one naming rule (decisions 49 and 66 of
+ * dispatch://INFRA-1196), so no markdown is read here. `nodeIdOf` is how the issue addresses a
+ * node (`treeContext`), so two addresses of one block are named alike.
+ */
+export function useReferenceNames(
+  root: TreeNode,
+  nodeIdOf: (reference: string) => string | undefined
+): (reference: string) => string | undefined {
+  return useMemo(() => {
+    const types = new Map<string, NodeType>();
+    const names = new Map<string, string>();
+    const walk = (node: TreeNode): void => {
+      types.set(node.id, node.type);
+      for (const chip of node.chips) {
+        if (chip.gone || chip.name === "") continue;
+        const id = nodeIdOf(chip.ref);
+        if (id === undefined || names.has(id)) continue;
+        const words = chipWords(chip.name);
+        if (words !== "") names.set(id, words);
+      }
+      for (const child of node.children) walk(child);
+    };
+    walk(root);
+    return (reference: string) => {
+      const id = nodeIdOf(reference);
+      if (id === undefined) return undefined;
+      const type = types.get(id);
+      return names.get(id) ?? (type === undefined ? undefined : NODE_TYPE_NAMES[type]);
+    };
+  }, [nodeIdOf, root]);
 }

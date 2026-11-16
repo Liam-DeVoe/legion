@@ -32,6 +32,7 @@ import { DETAILS_ATTRIBUTE } from "../margin-slot";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
 import { shortDay } from "../node-time";
+import { useReferenceNames } from "../one-line";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
 import {
@@ -146,6 +147,9 @@ export function SpecFilterBody({
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  // How a reference the three sentences cite is named, read once over the whole tree
+  // (`namedLine`).
+  const nameOf = useReferenceNames(root, nodeIdOf);
   const { groups, others } = useMemo(
     () => specDecidedBy({ checks: results?.checks ?? [], decisions, nodeIdOf, reader, root, view }),
     [decisions, nodeIdOf, reader, results, root, view]
@@ -288,7 +292,7 @@ export function SpecFilterBody({
       {/* The issue's three sentences, the first group, in the statements' column, as the
           prototype's `renderSpec` puts them after the column heads (ruling 5). */}
       <div className="mt-[18px] ml-[300px] min-w-0 max-[900px]:ml-0">
-        <IssueThreeThings look="spec" reading={reading} summary={summary} />
+        <IssueThreeThings look="spec" nameOf={nameOf} reading={reading} summary={summary} />
       </div>
       {/* The outline the page draws under the Spec filter, which is this body's two columns:
           one tree, named as the tree every other filter draws, so a reader meets one outline
