@@ -99,6 +99,10 @@ import { documentWord, RowText } from "./RowText";
  * Tab from the row leaves it again (R9). What a reader does inside a row they do with a key: the
  * fold and the pin have the arrow keys and `o`, and Keep, Change and a chip's link have keys of
  * their own (`useTreeKeymap.ts`).
+ *
+ * A view that no tree's keys reach - the conversation's rows, before part I's outline replaces
+ * them (`ConversationRows.tsx`) - passes `tabStops`, and every control the row draws keeps its
+ * place in the tab order instead, so a reader on the keyboard alone Tabs to each (R9).
  */
 export function NodeRow({
   answerer,
@@ -121,6 +125,7 @@ export function NodeRow({
   report,
   rowKey,
   tabStop,
+  tabStops = false,
   threadRead,
 }: {
   /** The name of the person whose answer this ask carries (`AgentText.author`), where it
@@ -169,6 +174,9 @@ export function NodeRow({
   /** Whether this row is the tree's one tab stop: the focused row, or the tree's first row
    *  before the reader has touched it. */
   tabStop: boolean;
+  /** Whether every control the row draws keeps its place in the tab order: false in a tree whose
+   *  keys reach them (`useTreeKeymap.ts`), true in a view that no tree's keys reach (R9). */
+  tabStops?: boolean;
   /** The thread whose newest write this row draws, which a dwell on the row marks read in the
    *  reader's Inbox (`outline-thread-read.tsx`). */
   threadRead?: ThreadMark;
@@ -226,7 +234,7 @@ export function NodeRow({
         data-node-trail=""
       >
         {count}
-        {edges ? <NodeEdges node={node} /> : null}
+        {edges ? <NodeEdges node={node} tabStops={tabStops} /> : null}
       </span>
     );
   const trailInWords = !clamped && editing === undefined;
@@ -237,7 +245,7 @@ export function NodeRow({
     <div
       aria-expanded={expanded}
       aria-level={level}
-      className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[760px]:pl-[calc(var(--row-depth)*17px)]"
+      className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
@@ -259,14 +267,20 @@ export function NodeRow({
       {Array.from({ length: depth }, (_unused, guide) => (
         <span
           aria-hidden="true"
-          className={`absolute inset-y-0 w-px left-[calc(var(--guide)*23px+9px)] max-[760px]:left-[calc(var(--guide)*17px+8px)] ${pageGuideLineBg}`}
+          className={`absolute inset-y-0 w-px left-[calc(var(--guide)*23px+9px)] max-[761px]:left-[calc(var(--guide)*17px+8px)] ${pageGuideLineBg}`}
           // biome-ignore lint/suspicious/noArrayIndexKey: a guide is its level and nothing else.
           key={guide}
           style={{ "--guide": guide } as CSSProperties}
         />
       ))}
       <div className={`${NODE_ROW_LAYOUT.box} ${focused ? pageFocusedRow : ""}`} data-node-card="">
-        <Bullet collapsed={collapsed} expanded={expanded} onToggle={onToggle} tone={tone} />
+        <Bullet
+          collapsed={collapsed}
+          expanded={expanded}
+          onToggle={onToggle}
+          tabStops={tabStops}
+          tone={tone}
+        />
         <div
           className={`${NODE_ROW_LAYOUT.content} ${own ? pageOwnWordsRule : ""}`}
           data-node-content=""
@@ -295,13 +309,18 @@ export function NodeRow({
               {editing !== undefined ? (
                 <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : node.child === undefined ? (
-                <RowText markdown={node.text} source={node.source} tree={node.tree} />
+                <RowText
+                  markdown={node.text}
+                  source={node.source}
+                  tabStops={tabStops}
+                  tree={node.tree}
+                />
               ) : (
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
                 <p className="break-words">
                   <span {...authorText}>{node.text}</span>
-                  <ChildIssueFacts child={node.child} />
+                  <ChildIssueFacts child={node.child} tabStops={tabStops} />
                 </p>
               )}
               {trailInWords ? trail : null}
@@ -324,7 +343,7 @@ export function NodeRow({
                   data-node-more=""
                   onClick={() => setOpened((held) => !held)}
                   onMouseDown={(event) => event.preventDefault()}
-                  tabIndex={-1}
+                  tabIndex={tabStops ? undefined : -1}
                   type="button"
                   {...pageChrome}
                 >
@@ -343,7 +362,7 @@ export function NodeRow({
             </p>
           ) : null}
           {node.options === undefined || oneLine ? null : (
-            <NodeOptions body={body} node={node} writer={writer} />
+            <NodeOptions body={body} node={node} tabStops={tabStops} writer={writer} />
           )}
           {node.answer === undefined || oneLine ? null : (
             <AskAnswer answerer={answerer ?? ""} node={node} own={ownAnswer} />
@@ -360,7 +379,7 @@ export function NodeRow({
               <span className="shrink-0" {...pageChrome}>
                 {NODE_TYPE_NAMES[node.parentLine.type]}
               </span>
-              <ParentLink line={node.parentLine} />
+              <ParentLink line={node.parentLine} tabStops={tabStops} />
             </p>
           )}
           {body ? (
@@ -371,9 +390,12 @@ export function NodeRow({
               node={node}
               onPin={onPin}
               pinned={pinned}
+              tabStops={tabStops}
             />
           ) : null}
-          {focused ? <RowActs node={node} ownAnswer={ownAnswer} writer={writer} /> : null}
+          {focused ? (
+            <RowActs node={node} ownAnswer={ownAnswer} tabStops={tabStops} writer={writer} />
+          ) : null}
           {report === undefined ? null : (
             <p
               className={`text-xs leading-5 ${pageMutedText}`}
@@ -385,7 +407,7 @@ export function NodeRow({
             </p>
           )}
         </div>
-        <RowMargin author={author} context={context} node={node} tone={tone} />
+        <RowMargin author={author} context={context} node={node} tabStops={tabStops} tone={tone} />
         {threadRead === undefined || oneLine ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
@@ -406,30 +428,35 @@ const BULLET_BOX =
  * than two fifths of the row; a state takes a second, smaller line under it (ruling 5). At 760 px
  * and below the bullet's column is 16 px and the tag, the author, the time and the state stand on
  * one small line under the words, the tag first (ruling 4, the 390 px pictures).
+ *
+ * A phone class is `max-[761px]:`, not `max-[760px]:`: Tailwind writes an arbitrary `max-[N]`
+ * as `(width < N)`, so only 761 draws 760 px itself as a phone, as the prototype's query and the
+ * header's (`HEADER_SCROLLS_QUERY`, `(max-width: 760px)`) do. The row's indent and its guides
+ * follow the same rule.
  */
 export const NODE_ROW_LAYOUT = {
   /** The bullet's column: 18 px, and 16 px on a phone, its dot at the column's middle. */
-  bullet: `${BULLET_BOX} max-[760px]:w-4`,
+  bullet: `${BULLET_BOX} max-[761px]:w-4`,
   /** The bullet of a node that holds others, which is its fold control: on a phone 24 px
    *  square, the least target WCAG 2.5.8 allows, reaching into the 8 px before the words with
    *  its dot kept at the column's middle, where the guide of the level under it hangs. */
-  foldControl: `${BULLET_BOX} cursor-pointer max-[760px]:w-6 max-[760px]:justify-start max-[760px]:pl-[4.5px]`,
+  foldControl: `${BULLET_BOX} cursor-pointer max-[761px]:w-6 max-[761px]:justify-start max-[761px]:pl-[4.5px]`,
   /** The box the row's parts stand in (the prototype's `.card`). On a phone the words stand 8 px
    *  past the bullet's column, where the prototype has 6, so the fold control's box is 24 px
    *  square inside the row (`foldControl`). Not named `card`: `text-on-background.test.ts` reads
    *  that name as `classes.ts`'s `card` ground, which a row is not drawn on. */
-  box: "relative grid min-w-0 grid-cols-[18px_minmax(0,1fr)_fit-content(40%)] gap-x-2 rounded-md py-0.5 pr-1.5 max-[760px]:grid-cols-[16px_minmax(0,1fr)] max-[760px]:pr-1",
+  box: "relative grid min-w-0 grid-cols-[18px_minmax(0,1fr)_fit-content(40%)] gap-x-2 rounded-md py-0.5 pr-1.5 max-[761px]:grid-cols-[16px_minmax(0,1fr)] max-[761px]:pr-1",
   /** The words' column, and everything the row draws under them. */
   content: "col-start-2 row-start-1 min-w-0",
   /** The column of the tag, the author, the time and the state, and on a phone their line. */
   margin:
-    "col-start-3 row-start-1 min-w-0 self-start text-right text-xs leading-6 max-[760px]:col-start-2 max-[760px]:row-start-2 max-[760px]:text-left max-[760px]:leading-4",
+    "col-start-3 row-start-1 min-w-0 self-start text-right text-xs leading-6 max-[761px]:col-start-2 max-[761px]:row-start-2 max-[761px]:text-left max-[761px]:leading-4",
   /** Its first line: the tag, then the author and the time. */
   marginLine:
-    "flex flex-wrap items-baseline justify-end gap-x-[7px] max-[760px]:mr-1.5 max-[760px]:inline-flex max-[760px]:justify-start max-[760px]:gap-x-1.5",
+    "flex flex-wrap items-baseline justify-end gap-x-[7px] max-[761px]:mr-1.5 max-[761px]:inline-flex max-[761px]:justify-start max-[761px]:gap-x-1.5",
   /** Its second, smaller line: the state; on a phone, after the first on the same line. */
   marginState:
-    "flex flex-wrap items-center justify-end gap-x-1.5 leading-4 font-semibold max-[760px]:inline-flex max-[760px]:justify-start",
+    "flex flex-wrap items-center justify-end gap-x-1.5 leading-4 font-semibold max-[761px]:inline-flex max-[761px]:justify-start",
 } as const;
 
 /**
@@ -528,19 +555,23 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
  * The bullet: a 7 px dot in the node's colour in an 18 px column (the prototype's `.bul`), and
  * the node's fold control where it holds nodes, named by what pressing it does. A folded
  * branch's dot keeps a halo, as the prototype's `.card.collapsed` does, beside the count of what
- * it holds. Out of the tab order, as every control inside a row is (R9). On a phone the fold
- * control's box is 24 px square, the least target WCAG 2.5.8 allows
- * (`NODE_ROW_LAYOUT.foldControl`).
+ * it holds. Out of the tab order, as every control inside a row is (R9), unless `tabStops` holds.
+ * A press leaves the focus where it is, as 'more', an option and the acts do: focusing the row
+ * would open its body, and a folded row with its body open draws its words whole, not the one
+ * line the fold is for (R1). On a phone the fold control's box is 24 px square, the least target
+ * WCAG 2.5.8 allows (`NODE_ROW_LAYOUT.foldControl`).
  */
 function Bullet({
   collapsed,
   expanded,
   onToggle,
+  tabStops,
   tone,
 }: {
   collapsed: boolean;
   expanded?: boolean;
   onToggle: () => void;
+  tabStops: boolean;
   tone: Tone;
 }): ReactNode {
   const dot = (
@@ -563,7 +594,8 @@ function Bullet({
       className={NODE_ROW_LAYOUT.foldControl}
       data-node-bullet=""
       onClick={onToggle}
-      tabIndex={-1}
+      onMouseDown={(event) => event.preventDefault()}
+      tabIndex={tabStops ? undefined : -1}
       type="button"
     >
       {dot}
@@ -585,11 +617,13 @@ function RowMargin({
   author,
   context,
   node,
+  tabStops,
   tone,
 }: {
   author: { readonly kind: AuthorKind; readonly name: string; readonly reader: boolean };
   context: boolean;
   node: TreeNode;
+  tabStops: boolean;
   tone: Tone;
 }): ReactNode {
   const stateGlyphs: Readonly<Record<string, Readonly<Record<string, string>>>> =
@@ -607,7 +641,7 @@ function RowMargin({
           {/* A plain span: its link stays inline, so the 6 px a link's touch target takes above
               and below it on a phone adds nothing to the line's height. */}
           <span data-node-tag="">
-            <ChildIssueTag child={node.child} />
+            <ChildIssueTag child={node.child} tabStops={tabStops} />
           </span>
         </div>
       </div>
@@ -705,10 +739,13 @@ function RowMargin({
 export function NodeOptions({
   body,
   node,
+  tabStops = false,
   writer,
 }: {
   body: boolean;
   node: TreeNode;
+  /** Whether the options keep their place in the tab order (`NodeRow`'s `tabStops`). */
+  tabStops?: boolean;
   writer: OutlineWriter | undefined;
 }): ReactNode {
   const chosen = new Set(node.answer?.selected ?? []);
@@ -765,7 +802,7 @@ export function NodeOptions({
                 data-pick-option={option.label}
                 onClick={() => writer.pick(node, option.label)}
                 onMouseDown={(event) => event.preventDefault()}
-                tabIndex={-1}
+                tabIndex={tabStops ? undefined : -1}
                 type="button"
               >
                 {words}
@@ -797,15 +834,18 @@ export function NodeOptions({
  * the writer's acts alone. Its answer, copied or failed, is said after it in the page's words.
  *
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
- * controls do, so the press never lands on a row that moved under it.
+ * controls do, so the press never lands on a row that moved under it. Each is out of the tab
+ * order unless `tabStops` holds (`NodeRow`'s).
  */
 export function RowActs({
   node,
   ownAnswer,
+  tabStops = false,
   writer,
 }: {
   node: TreeNode;
   ownAnswer: boolean;
+  tabStops?: boolean;
   writer: OutlineWriter | undefined;
 }): ReactNode {
   const { copy, status } = useCopyFeedback();
@@ -839,7 +879,7 @@ export function RowActs({
           key={act}
           onClick={run}
           onMouseDown={(event) => event.preventDefault()}
-          tabIndex={-1}
+          tabIndex={tabStops ? undefined : -1}
           type="button"
           {...pageChrome}
         >
@@ -852,7 +892,7 @@ export function RowActs({
           data-row-copy=""
           onClick={() => copy(reference)}
           onMouseDown={(event) => event.preventDefault()}
-          tabIndex={-1}
+          tabIndex={tabStops ? undefined : -1}
           type="button"
           {...pageChrome}
         >
@@ -939,14 +979,26 @@ export function AskAnswer({
  *  (the prototype's `.trail`): the chips naming what it also sits under and what it points at,
  *  each with the page's word for its tie where the model gives one, and the one word each gap is
  *  known by, which its body says in full (R4, R10, ruling 5). */
-export function NodeEdges({ node }: { node: TreeNode }): ReactNode {
+export function NodeEdges({
+  node,
+  tabStops = false,
+}: {
+  node: TreeNode;
+  /** Whether a chip's link keeps its place in the tab order (`NodeRow`'s `tabStops`). */
+  tabStops?: boolean;
+}): ReactNode {
   return (
     <>
       {node.alsoUnder.map((chip) => (
-        <Chip chip={chip} key={`also:${chip.ref}`} label={CONTROL_LABELS.also_under} />
+        <Chip
+          chip={chip}
+          key={`also:${chip.ref}`}
+          label={CONTROL_LABELS.also_under}
+          tabStops={tabStops}
+        />
       ))}
       {node.chips.map((chip) => (
-        <Chip chip={chip} key={chip.ref} label={chip.label} />
+        <Chip chip={chip} key={chip.ref} label={chip.label} tabStops={tabStops} />
       ))}
       {node.gaps.map((gap) => (
         <span data-gap="" data-gap-kind={gap} key={gap} {...pageChrome}>
@@ -971,7 +1023,15 @@ export function NodeEdges({ node }: { node: TreeNode }): ReactNode {
  * (`useMarkdownHeadline`): no mark the author typed is drawn (the tester's finding F18), and the
  * chip draws nothing until that reading answers.
  */
-function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
+function Chip({
+  chip,
+  label,
+  tabStops,
+}: {
+  chip: NodeChip;
+  label?: string;
+  tabStops: boolean;
+}): ReactNode {
   // A chip names a node the page may not be drawing, and the old page's decision cards reached
   // each one by its words (R18, c-nothing-lost). A target nothing answers to now, or a reference
   // the grammar cannot read, is text: there is nowhere to go.
@@ -999,13 +1059,13 @@ function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
           {words}
         </span>
       ) : (
-        // Out of the tab order, as every other control inside a row is: the tree is one tab
-        // stop and the row's own keys reach what it holds: `f` steps to a chip, and Enter on it
-        // follows the link (R9, WCAG 2.1.1, `useTreeKeymap.ts`).
+        // Out of the tab order, as every other control inside a row is, unless `tabStops` holds:
+        // the tree is one tab stop and the row's own keys reach what it holds: `f` steps to a
+        // chip, and Enter on it follows the link (R9, WCAG 2.1.1, `useTreeKeymap.ts`).
         <Link
           className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
           data-chip-name=""
-          tabIndex={-1}
+          tabIndex={tabStops ? undefined : -1}
           to={buildReferencePath(route)}
           {...marks}
         >
@@ -1018,8 +1078,9 @@ function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
 
 /** The parent's own first line, as the link a reader follows to that node where the model gives
  *  it an address (R18, and R26: a step's row reaches the statement it serves). Out of the tab
- *  order, as every other control inside a row is: `f` steps to it and Enter follows it. */
-function ParentLink({ line }: { line: ParentLine }): ReactNode {
+ *  order, as every other control inside a row is, unless `tabStops` holds: `f` steps to it and
+ *  Enter follows it. */
+function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
   const route = line.reference === undefined ? undefined : parseNodeReference(line.reference);
   return route === undefined ? (
     <span className="min-w-0 break-words" {...authorText}>
@@ -1028,7 +1089,7 @@ function ParentLink({ line }: { line: ParentLine }): ReactNode {
   ) : (
     <Link
       className={`dispatch-inline-link min-w-0 break-words underline decoration-page-bullet underline-offset-[3px] ${pageQuietText}`}
-      tabIndex={-1}
+      tabIndex={tabStops ? undefined : -1}
       to={buildReferencePath(route)}
       {...authorText}
     >
@@ -1053,6 +1114,7 @@ function NodeBody({
   node,
   onPin,
   pinned,
+  tabStops,
 }: {
   author: { readonly kind: AuthorKind; readonly name: string };
   document?: Artifact;
@@ -1060,6 +1122,7 @@ function NodeBody({
   node: TreeNode;
   onPin: () => void;
   pinned: boolean;
+  tabStops: boolean;
 }): ReactNode {
   return (
     <div
@@ -1087,7 +1150,7 @@ function NodeBody({
           </span>
         </p>
       ) : null}
-      <NodeFacts facts={node.facts} />
+      <NodeFacts facts={node.facts} tabStops={tabStops} />
       {node.gaps.map((gap) => (
         <p className={`text-xs ${pageQuietText}`} key={gap} {...pageChrome}>
           {GAP_LINES[gap]}
@@ -1102,13 +1165,18 @@ function NodeBody({
         </p>
       )}
       {node.type === "decision" && node.waiting ? (
-        <DecisionActions document={document} isClosed={isClosed} nodeReference={node.reference} />
+        <DecisionActions
+          document={document}
+          isClosed={isClosed}
+          nodeReference={node.reference}
+          tabStops={tabStops}
+        />
       ) : null}
       <p>
         <button
           className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
           onClick={onPin}
-          tabIndex={-1}
+          tabIndex={tabStops ? undefined : -1}
           type="button"
           {...pageChrome}
         >

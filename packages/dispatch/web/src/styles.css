@@ -388,9 +388,13 @@ a {
    18 by 24 px `.bul`, and 24 by 24 px at 760 px and below (`NODE_ROW_LAYOUT.foldControl`):
    nothing else in its row is a target beside it, so a 24 px circle on it meets no other target
    (WCAG 2.2's 2.5.8), and a 44 px box would push every row's words off their one left edge. A
-   row's `dispatch-inline-link` controls ("more", Reply, an option) and the links in its words
-   stand in a line of text, keep its line box and take the 6 px of padding above, which reaches
-   24 px at 12 px. */
+   row's `dispatch-inline-link` controls ("more", Reply, Copy reference, Keep open) and the
+   links in its words stand in a line of text, keep its line box and take the 6 px of padding
+   above, which reaches 24 px at 12 px. An open question's option is such a control too and
+   takes none of the floor, but it is no part of a line of text: it lays out its dot and its
+   words side by side on their first baseline (`pageRowOption`'s `flex items-baseline`), which
+   the floor's `inline-flex` and `center` above, in no layer, would outrank, so it is given them
+   back here. */
 @media (max-width: 1279px) {
   html:has([data-issue-page]) [data-node-row] button:is([data-node-bullet], .dispatch-inline-link),
   html:has([data-issue-page]) [data-node-words] a[data-row-reference] {
@@ -398,8 +402,13 @@ a {
     min-height: 0;
   }
 
-  html:has([data-issue-page]) [data-node-row] button.dispatch-inline-link {
+  html:has([data-issue-page]) [data-node-row] button.dispatch-inline-link:not([data-pick-option]) {
     display: inline-block;
+  }
+
+  html:has([data-issue-page]) [data-node-row] button[data-pick-option] {
+    display: flex;
+    align-items: baseline;
   }
 
   html:has([data-issue-page]) [data-node-words] a[data-row-reference] {

@@ -4,6 +4,7 @@ import { type FocusEvent, type ReactNode, useMemo, useState } from "react";
 import { whoAmIQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { useAgentText } from "../refs/AgentName";
+import { ChangeDraftsProvider } from "./DecisionActions";
 import { artifactsBySlug, documentOfNode } from "./issue-artifacts";
 import { NodeRow } from "./NodeRow";
 import { threadMarks } from "./outline-thread-read";
@@ -22,7 +23,10 @@ import { useIssueTree } from "./useIssueTree";
  * and no one tab stop, which are part I's `IssueTree.tsx`, which replaces this file. So each row
  * here is a tab stop of its own; a press on a fold control folds its branch to one line with its
  * count and a second unfolds it; the focused row opens its body, and Keep open holds a body open
- * after the focus leaves. No row takes the focus at load, so the load scrolls nothing. Each
+ * after the focus leaves. Every control a row draws is a tab stop too (`NodeRow`'s `tabStops`),
+ * since no tree's keys reach it here (R9). A decision's Change keeps its form and the words typed
+ * in it while its row's body is closed, and gives them back when the body opens again
+ * (`ChangeDraftsProvider`). No row takes the focus at load, so the load scrolls nothing. Each
  * thread's newest write carries its read mark (`outline-thread-read.tsx`). Each row is handed what
  * `TreeRows.tsx` hands it.
  */
@@ -77,41 +81,44 @@ export function ConversationRows({ issue }: { issue: IssueDetails }): ReactNode 
       onBlur={left}
       role="tree"
     >
-      {rows.map((row) => {
-        const key = rowKeyOf(row);
-        const place = documentOfNode(row.node.id, artifacts);
-        const mark = threads.get(row.node.id);
-        return (
-          <NodeRow
-            {...(row.node.answer === undefined
-              ? {}
-              : { answerer: agentText.author(row.node.answer.by) })}
-            author={{
-              kind: authorKind(row.node.author),
-              name: agentText.author(row.node.author),
-              reader: isReader(row.node.author, reader),
-            }}
-            body={focused === key || pinned.has(key)}
-            context={false}
-            {...(place === undefined ? {} : { document: place.artifact })}
-            expanded={row.expanded}
-            focused={focused === key}
-            folded={row.folded}
-            isClosed={isClosed}
-            key={key}
-            level={row.level}
-            node={row.node}
-            onFocus={() => setFocused(key)}
-            onPin={() => pin(key)}
-            onToggle={() => toggle(row.node.id, row.expanded)}
-            ownAnswer={isReader(row.node.answer?.by, reader)}
-            pinned={pinned.has(key)}
-            rowKey={key}
-            tabStop
-            {...(mark === undefined ? {} : { threadRead: mark })}
-          />
-        );
-      })}
+      <ChangeDraftsProvider>
+        {rows.map((row) => {
+          const key = rowKeyOf(row);
+          const place = documentOfNode(row.node.id, artifacts);
+          const mark = threads.get(row.node.id);
+          return (
+            <NodeRow
+              {...(row.node.answer === undefined
+                ? {}
+                : { answerer: agentText.author(row.node.answer.by) })}
+              author={{
+                kind: authorKind(row.node.author),
+                name: agentText.author(row.node.author),
+                reader: isReader(row.node.author, reader),
+              }}
+              body={focused === key || pinned.has(key)}
+              context={false}
+              {...(place === undefined ? {} : { document: place.artifact })}
+              expanded={row.expanded}
+              focused={focused === key}
+              folded={row.folded}
+              isClosed={isClosed}
+              key={key}
+              level={row.level}
+              node={row.node}
+              onFocus={() => setFocused(key)}
+              onPin={() => pin(key)}
+              onToggle={() => toggle(row.node.id, row.expanded)}
+              ownAnswer={isReader(row.node.answer?.by, reader)}
+              pinned={pinned.has(key)}
+              rowKey={key}
+              tabStop
+              tabStops
+              {...(mark === undefined ? {} : { threadRead: mark })}
+            />
+          );
+        })}
+      </ChangeDraftsProvider>
     </div>
   );
 }

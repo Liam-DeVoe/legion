@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
 import type { Artifact, Decision, IssueDecisions } from "../../api/types";
@@ -57,6 +57,23 @@ function keepFocusOnRow(control: HTMLElement): void {
 }
 
 /**
+ * Each decision's Change the reader has open, by the decision's own address (`Decision.ref`),
+ * with the words typed in it so far: `""` for a form opened with nothing typed yet, and no entry
+ * for a Change that is closed. A row's body closes once the focus leaves the rows, and Keep and
+ * Change go with it; held here, above the rows, the open form and its words come back as the
+ * reader left them when the body opens again, rather than being dropped with no word said.
+ * Outside a view that holds one, a Change holds its form only while it is drawn.
+ */
+const ChangeDrafts = createContext<Map<string, string> | undefined>(undefined);
+
+/** Holds every open Change of the rows under it for as long as the view is drawn: the view that
+ *  draws the rows wraps them in it. */
+export function ChangeDraftsProvider({ children }: { children: ReactNode }): ReactNode {
+  const [drafts] = useState(() => new Map<string, string>());
+  return <ChangeDrafts.Provider value={drafts}>{children}</ChangeDrafts.Provider>;
+}
+
+/**
  * What a reader does with a decision, on the decision's own node (dispatch://INFRA-1196 R7, the
  * spec's "Decisions tab ... Keep and Change" row, `plan-md#b-t18a`).
  *
@@ -77,6 +94,7 @@ export function DecisionActions({
   document,
   isClosed,
   nodeReference,
+  tabStops = false,
 }: {
   /** The decisions document this node is a block of, which the Keep writes against;
    *  `undefined` for a decision whose document the issue read does not carry. */
@@ -84,25 +102,48 @@ export function DecisionActions({
   isClosed: boolean;
   /** The node's own `dispatch://` address, which is the decision's own (`Decision.ref`). */
   nodeReference: string | undefined;
+  /** Whether Keep and Change keep their place in the tab order: false in a tree whose keys press
+   *  them (`useTreeKeymap.ts`), true in a view that no tree's keys reach (R9). */
+  tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
   const decisions = useQuery(issueDecisionsQuery(issueKey, issueKey !== ""));
   const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
   if (decision === undefined || document === undefined || isClosed) return null;
-  return <DecisionControls decision={decision} documentId={document.id} issueKey={issueKey} />;
+  return (
+    <DecisionControls
+      decision={decision}
+      documentId={document.id}
+      issueKey={issueKey}
+      tabStops={tabStops}
+    />
+  );
 }
 
 function DecisionControls({
   decision,
   documentId,
   issueKey,
+  tabStops,
 }: {
   decision: Decision;
   documentId: string;
   issueKey: string;
+  tabStops: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const [changing, setChanging] = useState(false);
+  const drafts = useContext(ChangeDrafts);
+  // A Change the reader left open on this decision opens again with the body.
+  const [changing, setChanging] = useState(() => drafts?.has(decision.ref) === true);
+  // A form that comes back with the body takes no caret: the reader came back to the row, and a
+  // press on Change is what puts the caret in the field.
+  const [restored, setRestored] = useState(changing);
+  const change = (open: boolean) => {
+    setChanging(open);
+    setRestored(false);
+    if (open) drafts?.set(decision.ref, "");
+    else drafts?.delete(decision.ref);
+  };
   // Read once per answer of the decisions read, which is when the decision is a new object.
   const quote = useMemo(() => anchorQuote(decision), [decision]);
   const keep = useKeyedWrite({
@@ -137,9 +178,9 @@ function DecisionControls({
     <>
       <p className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-2">
         {decision.waiting_review ? (
-          // Out of the tab order, as every control inside a row is, and found by its mark: the
-          // tree is one tab stop and the row's own key presses this (R9, WCAG 2.1.1,
-          // `useTreeKeymap.ts`'s `tree-keep`).
+          // Out of the tab order, as every control inside a row is, unless `tabStops` holds,
+          // and found by its mark: the tree is one tab stop and the row's own key presses this
+          // (R9, WCAG 2.1.1, `useTreeKeymap.ts`'s `tree-keep`).
           <button
             className={`${DECISION_BUTTON} bg-page-decision text-page-paper`}
             disabled={keep.isPending}
@@ -147,7 +188,7 @@ function DecisionControls({
               keepFocusOnRow(event.currentTarget);
               keep.mutate(documentId);
             }}
-            tabIndex={-1}
+            tabIndex={tabStops ? undefined : -1}
             type="button"
             {...ROW_ACTION_MARKS.keep}
             {...pageChrome}
@@ -159,8 +200,8 @@ function DecisionControls({
           <button
             aria-expanded={changing}
             className={`${DECISION_BUTTON} bg-page-paper text-page-decision`}
-            onClick={() => setChanging(!changing)}
-            tabIndex={-1}
+            onClick={() => change(!changing)}
+            tabIndex={tabStops ? undefined : -1}
             type="button"
             {...ROW_ACTION_MARKS.change}
             {...pageChrome}
@@ -179,7 +220,8 @@ function DecisionControls({
           decision={decision}
           documentId={documentId}
           issueKey={issueKey}
-          onDone={() => setChanging(false)}
+          focusField={!restored}
+          onDone={() => change(false)}
           quote={quote}
         />
       ) : null}
@@ -192,17 +234,23 @@ function DecisionControls({
 function ChangeComposer({
   decision,
   documentId,
+  focusField,
   issueKey,
   onDone,
   quote,
 }: {
   decision: Decision;
   documentId: string;
+  /** Whether the field takes the caret as it mounts: it does when a press on Change opened the
+   *  form, and not when the form comes back with its row's body. */
+  focusField: boolean;
   issueKey: string;
   onDone: () => void;
   quote: string;
 }): ReactNode {
-  const [body, setBody] = useState("");
+  const drafts = useContext(ChangeDrafts);
+  // The words the reader typed before the body last closed, if it did.
+  const [body, setBody] = useState(() => drafts?.get(decision.ref) ?? "");
   const queryClient = useQueryClient();
   const fieldId = useId();
   const send = useKeyedWrite({
@@ -232,7 +280,8 @@ function ChangeComposer({
   // The field takes the caret as it mounts, which is what opens the form, so a reader who asked
   // to change a decision is left where they are there to type however many frames React takes
   // over the commit, and whether they asked with the pointer or with the row's own key
-  // (`useTreeKeymap.ts`'s `tree-change`).
+  // (`useTreeKeymap.ts`'s `tree-change`). A form that comes back with its row's body takes none
+  // (`focusField`): the reader moved to the row, not into the field.
   return (
     <form
       aria-label={`${CONTROL_LABELS.change_decision} ${decision.heading}`}
@@ -257,10 +306,13 @@ function ChangeComposer({
       </label>
       <textarea
         // biome-ignore lint/a11y/noAutofocus: the form mounts because a reader asked to type in it
-        autoFocus
+        autoFocus={focusField}
         className={`block w-full min-w-0 rounded-lg border px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
         id={fieldId}
-        onChange={(event) => setBody(event.target.value)}
+        onChange={(event) => {
+          setBody(event.target.value);
+          drafts?.set(decision.ref, event.target.value);
+        }}
         rows={3}
         value={body}
       />

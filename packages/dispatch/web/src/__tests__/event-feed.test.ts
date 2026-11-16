@@ -1572,6 +1572,19 @@ test("an issue's new title marks the batched names stale, and a write that renam
   };
   expect(namesStale(event("issue.updated", issue({ changed: ["title"] })))).toBe(true);
   expect(namesStale(event("issue.updated", issue({ changed: ["priority"] })))).toBe(false);
+  // The feed is the whole app's: a new comment on another issue, or a follower joining an ask,
+  // renames nothing this page names, and a new comment on the page's own issue adds an address,
+  // which is a new key and a read of its own.
+  const otherComment = event(
+    "comment.created",
+    { anchor: null, id: "comment-9" },
+    { issue_key: "CORE-7" }
+  );
+  expect(namesStale(otherComment)).toBe(false);
+  expect(namesStale(event("comment.created", { anchor: null, id: "comment-1" }))).toBe(false);
+  expect(namesStale(event("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }))).toBe(
+    false
+  );
 });
 
 /** One write of priority linkage-closure by bob, as the server appends it: ownerless and quiet. */

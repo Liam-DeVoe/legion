@@ -19,17 +19,25 @@ import { issueStatusWord } from "./page-words";
  *
  * Every colour is the page's own palette: the key in the child kind's colour, the keys that
  * block it in the ink with the bullets' grey under them, as a link in a node's words is drawn,
- * and its holder in the row's grey, as words with no link (R5).
+ * and its holder in the row's grey, as words with no link (R5). Each link is out of the tab
+ * order, as every control inside a row of the outline is, unless `tabStops` holds: a view that
+ * no tree's keys reach keeps them in it (R9).
  */
 
 /** The key of a child issue as its row's tag: the child's own page, in the child kind's colour
  *  (the prototype's `tagH`). */
-export function ChildIssueTag({ child }: { child: IssueChild }): ReactNode {
+export function ChildIssueTag({
+  child,
+  tabStops = false,
+}: {
+  child: IssueChild;
+  tabStops?: boolean;
+}): ReactNode {
   return (
     <Link
       className={`dispatch-inline-link font-semibold whitespace-nowrap ${pageKindTag.child}`}
       data-child-key=""
-      tabIndex={-1}
+      tabIndex={tabStops ? undefined : -1}
       to={buildIssuePath({ key: child.key, kind: "issue" })}
       {...authorText}
     >
@@ -48,7 +56,13 @@ export function ChildIssueTag({ child }: { child: IssueChild }): ReactNode {
  * part breaks inside a word only where no space will do (`overflow-wrap: anywhere`), and the page
  * never scrolls sideways (R17).
  */
-export function ChildIssueFacts({ child }: { child: IssueChild }): ReactNode {
+export function ChildIssueFacts({
+  child,
+  tabStops = false,
+}: {
+  child: IssueChild;
+  tabStops?: boolean;
+}): ReactNode {
   const blockers = child.needs ?? [];
   return (
     <span
@@ -68,7 +82,7 @@ export function ChildIssueFacts({ child }: { child: IssueChild }): ReactNode {
               {index === 0 ? null : ", "}
               <Link
                 className={`dispatch-inline-link underline decoration-page-bullet underline-offset-[3px] ${pageInkText}`}
-                tabIndex={-1}
+                tabIndex={tabStops ? undefined : -1}
                 to={buildIssuePath({ key, kind: "issue" })}
                 {...authorText}
               >
