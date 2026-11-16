@@ -77,7 +77,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, repositories} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible false): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and the repositories mapped to the project by their mapped and renamed names. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    /** @description The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, repositories, slack_channels} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible false): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, the repositories mapped to the project by their mapped and renamed names, and slack_channels, the owner's list, [] for none. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
     get: operations["getApiV1AccessProjectsByKey"];
     put?: never;
     post?: never;
@@ -2366,14 +2366,14 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups}, the owner's email, public or private, and the emails and group names its access list names, each list sorted and never null. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
+    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels}, the owner's email, public or private, the emails and group names its access list names, and the Slack channel ids its credentials may post to, each list sorted and never null. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
     get: operations["getApiV1ProjectsByKeyAccess"];
     put?: never;
     post?: never;
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Give a project to another owner or set its visibility {owner?, visibility?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming neither, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT; private is 409 PRIVATE_PROJECTS_OFF while this deployment cannot make a project private. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope. */
+    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT; private is 409 PRIVATE_PROJECTS_OFF while this deployment cannot make a project private. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope. */
     patch: operations["patchApiV1ProjectsByKeyAccess"];
     trace?: never;
   };
@@ -3123,6 +3123,7 @@ export interface components {
       person: string;
       project: string;
       repositories: string[] | null;
+      slack_channels: string[] | null;
       visibility: string;
       visible: boolean;
     };
@@ -5823,10 +5824,12 @@ export interface components {
       owner: string;
       people: string[] | null;
       project: string;
+      slack_channels: string[] | null;
       visibility: string;
     };
     ProjectAccessInput: {
       owner?: string;
+      slack_channels?: string[];
       visibility?: string;
     };
     ProjectDefaultAssignee: {

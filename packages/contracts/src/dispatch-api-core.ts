@@ -367,10 +367,11 @@ export const PriorityUpdatedEventPayloadSchema = z
 
 export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;
 
-/** `project.access_changed`: one write of a project's owner, visibility or access list
- *  committed. It carries the project's access as that write left it, which change it was, and the
- *  person (by lowercase email) or group it added or removed. It is owned by the project and wakes
- *  nobody; every reader that resolved what its caller may see resolves it again. */
+/** `project.access_changed`: one write of a project's owner, visibility, access list or Slack
+ *  channels committed. It carries the project's access as that write left it, which change it
+ *  was, and the person (by lowercase email) or group it added or removed. It is owned by the
+ *  project and wakes nobody; every reader that resolved what its caller may see resolves it
+ *  again. */
 export const ProjectAccessChangedEventPayloadSchema = z
   .strictObject({
     project: z.string(),
@@ -378,6 +379,9 @@ export const ProjectAccessChangedEventPayloadSchema = z
     visibility: z.enum(["public", "private"]),
     people: z.array(z.string()),
     groups: z.array(z.string()),
+    /** The Slack channel ids the project's credentials may post to, at most 16, sorted, and []
+     *  for none. */
+    slack_channels: z.array(z.string()),
     change: z.enum([
       "owner",
       "visibility",
@@ -385,6 +389,7 @@ export const ProjectAccessChangedEventPayloadSchema = z
       "person_removed",
       "group_added",
       "group_removed",
+      "slack_channels",
     ]),
     principal: z.string().optional(),
   })

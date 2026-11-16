@@ -322,6 +322,11 @@ type ProjectAccess struct {
 	Visibility string   `json:"visibility"`
 	People     []string `json:"people"`
 	Groups     []string `json:"groups"`
+	// SlackChannels are the Slack channel ids the project's credentials may post to, at most 16,
+	// sorted, always present and [] for none. Its owner names them, and the secrets broker
+	// releases the Legion Slack bot token to a private project's credentials for these channels
+	// alone.
+	SlackChannels []string `json:"slack_channels"`
 }
 
 // AccessGroup is a named list of full members that an access list can name: its one owner, the
@@ -345,6 +350,8 @@ type AccessAnswer struct {
 	MemberKind   string   `json:"member_kind"`
 	Visible      bool     `json:"visible"`
 	Repositories []string `json:"repositories"`
+	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
+	SlackChannels []string `json:"slack_channels"`
 }
 
 // PersonAnswer is one person's member kind as the membership answer spells it (GET
@@ -380,6 +387,8 @@ const (
 	AccessPersonRemoved     = "person_removed"
 	AccessGroupAdded        = "group_added"
 	AccessGroupRemoved      = "group_removed"
+	// AccessSlackChannelsChanged is a write of the project's Slack channels.
+	AccessSlackChannelsChanged = "slack_channels"
 )
 
 // AccessGroupEventPayload is `access_group.changed`: one group was made, had its members or owner
