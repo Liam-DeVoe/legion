@@ -23,6 +23,15 @@ func TestATokenWhoseIssuerCannotBeReadIsUnavailableNotRefused(t *testing.T) {
 	// A token login before the outage: the set is read, and the launcher credential below enrols.
 	credentialID, launcherKey := ts.mintServiceLauncherCredential(t)
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
+	// A pod enrolled before the outage, whose renewal carries its current token (renewEnrollment).
+	renewingUID, renewingKey := uuid.NewString(), newSigningKey(t)
+	status, body := ts.launcher(t, launcherKey, credentialID, http.MethodPost, "/v1/enrollments", map[string]any{
+		"kind": "pod", "runtime_id": renewingUID, "thumbprint": thumbprintOf(t, renewingKey), "pod_token": ts.podToken(t, workerAccount, renewingUID),
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("the pod's enrolment before the outage = %d %s, want 201", status, body)
+	}
+	renewing := decode[wireEnrolled](t, body).EnrollmentID
 	rotated := ts.podIssuer.PublishKey(t, "rotated-key")
 	mint := func(account, podUID string) string {
 		t.Helper()
@@ -59,6 +68,11 @@ func TestATokenWhoseIssuerCannotBeReadIsUnavailableNotRefused(t *testing.T) {
 			return ts.launcher(t, launcherKey, credentialID, http.MethodPost, "/v1/enrollments", map[string]any{
 				"kind": "pod", "runtime_id": podUID, "thumbprint": thumbprintOf(t, newSigningKey(t)),
 				"pod_token": mint(workerAccount, podUID),
+			})
+		}},
+		{"a pod's renewal token, POST /v1/enrollments/{id}/renew (renewEnrollment)", func() (int, []byte) {
+			return ts.session(t, renewingKey, renewing, http.MethodPost, "/v1/enrollments/"+renewing+"/renew", map[string]any{
+				"pod_token": mint(workerAccount, renewingUID),
 			})
 		}},
 	} {
