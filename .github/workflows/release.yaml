@@ -161,12 +161,12 @@ env:
   # of them changes the binary. The notices scripts and the target list are runtime inputs of the
   # release archives and worker image, so any change to one needs a new tag rather than a CI-only
   # rebuild. The envoy packages below are every package `go list -deps ./cmd/legion` reaches
-  # through the module's `replace` on ../envoy — its nine public packages, and the internal ones
+  # through the module's `replace` on ../envoy — its ten public packages, and the internal ones
   # they pull in with them: the splitter, parser, contracts, text reader and cache behind
   # `dispatchbody`, the token client, its wire, its lock and the identity reader behind
   # `brokerclient`, the bus and its ids behind `natscred` and `natsgrant` (the daemon's NATS
-  # service-token connection, internal/natsauth), and the contracts behind `sessiontiming` and
-  # `subjectforms` — so a change to any
+  # service-token connection, internal/natsauth), the contracts behind `sessiontiming` and
+  # `subjectforms`, and `natsversion` — so a change to any
   # of them changes the binary and must release one, and the envoy module's
   # own go.mod and go.sum decide which versions of their dependencies it links. That list is
   # written here by hand; this is the command that prints it, to be run from packages/daemon
@@ -181,6 +181,7 @@ env:
     packages/envoy/brokerclient/ packages/envoy/dispatchbody/ packages/envoy/listenfd/
     packages/envoy/migrationid/ packages/envoy/natscred/ packages/envoy/natsgrant/
     packages/envoy/roleholder/ packages/envoy/sessiontiming/ packages/envoy/subjectforms/
+    packages/envoy/natsversion/
     packages/envoy/internal/broker/oauthwire/ packages/envoy/internal/brokerclient/
     packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/

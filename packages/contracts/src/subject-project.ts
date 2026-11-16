@@ -37,11 +37,20 @@ export function issueProject(key: string): string | undefined {
   return project !== undefined && PROJECT_KEY_PATTERN.test(project) ? project : undefined;
 }
 
-const LEGION_ROLE_TOKEN = /^legion-([a-z0-9]+)-./;
+// The tail is `[\s\S]`, any character a line terminator among them, as the Go twin's
+// non-empty rest is (subject_project.go RoleProject): `.` matches no line terminator.
+const LEGION_ROLE_TOKEN = /^legion-([a-z0-9]+)-[\s\S]/;
 
-/** The project of a Legion deployment's token: its upper case when that is a project key. */
+const LEGION_TOKEN = /^[a-z0-9]+$/;
+
+/** The project of a Legion deployment's token: its upper case when the token is one (lower-case
+ * letters and digits, as `claim.ProjectToken` writes it) and that is a project key. The token is
+ * checked before it is upper-cased, so a name whose upper case only a Unicode table makes a key
+ * (`ßk`) reads as it does in the Go twin. */
 function legionTokenProject(token: string | undefined): string {
-  return projectOfToken(token?.toUpperCase());
+  return token !== undefined && LEGION_TOKEN.test(token)
+    ? projectOfToken(token.toUpperCase())
+    : NO_PROJECT;
 }
 
 /**
@@ -232,18 +241,21 @@ function isProjectPosition(token: string | undefined): boolean {
 
 /**
  * The old form of a new-form topic, while readers take the old form too, and undefined for a topic
- * with none: an issue's topic under its key's own project, or under a wildcard, names its key
- * alone; one session's agent subject and one role's lane under any project name the session and
- * the role alone; a failed-delivery report and a kept lane follow the name they carry. A topic
- * over every issue of a project (`notifications.dispatch.issue.INFRA.>`) has no old form, since
- * no subject pattern names the issues of one project in the old form.
+ * with none: an issue's topic under its key's own project names its key alone; one session's agent
+ * subject and one role's lane under any project name the session and the role alone; a
+ * failed-delivery report and a kept lane follow the name they carry. A topic over every issue of a
+ * project (`notifications.dispatch.issue.INFRA.>`) has no old form, since no subject pattern names
+ * the issues of one project in the old form. Nor has an issue's topic under a wildcard project
+ * (`notifications.dispatch.issue.*.INFRA-12.>`): its old form would overlap it, and a session
+ * consumer handed both would be reduced to a filter over every project's issues; the new form alone
+ * already reaches the key's own project.
  */
 export function legacyTwin(canonical: string): string | undefined {
   if (canonical.startsWith(DISPATCH_ISSUE_TOPIC_PREFIX)) {
     const [project, key, ...rest] = canonical.slice(DISPATCH_ISSUE_TOPIC_PREFIX.length).split(".");
     if (key === undefined || project === undefined) return undefined;
     const keyProject = issueProject(key);
-    if (keyProject === undefined || (project !== keyProject && project !== "*")) return undefined;
+    if (keyProject === undefined || project !== keyProject) return undefined;
     return [`${DISPATCH_ISSUE_TOPIC_PREFIX}${key}`, ...rest].join(".");
   }
   for (const prefix of [AGENT_TOPIC_PREFIX, ROLE_TOPIC_PREFIX]) {
@@ -303,18 +315,25 @@ export function canonicalRole(role: string): { project: string; name: string; le
   return { project: roleProject(role), name: role, legacy: true };
 }
 
+/** The shape of an issue key in an issue event's name as the Legion daemon has always read it
+ * (`claim.IsIssueKey`): no length is held to its project part, since a daemon's own project is
+ * held to none. Dispatch's keys are held to `PROJECT_KEY_PATTERN` by its database, so every name
+ * Dispatch writes is read here too. */
+const ISSUE_EVENT_KEY = /^([A-Z][A-Z0-9]*)-[0-9]+$/;
+
 /**
  * The issue key an issue event's name carries, in either form: the new form names the key's own
  * project and then the key (`notifications.dispatch.issue.INFRA.INFRA-12.<type>`), and the old form
  * the key alone (`notifications.dispatch.issue.INFRA-12.<type>`), with `legacy` true. Undefined for
  * a name of the family whose key is in neither form, a project that is not the key's own among
- * them, and for a name of any other family. The old form is read until it is refused only.
+ * them, and for a name of any other family. A key is read by `ISSUE_EVENT_KEY`, the shape every
+ * daemon has accepted. The old form is read until it is refused only.
  */
 export function issueEventKey(subject: string): { key: string; legacy: boolean } | undefined {
   if (!subject.startsWith(DISPATCH_ISSUE_TOPIC_PREFIX)) return undefined;
   const [first = "", second = ""] = subject.slice(DISPATCH_ISSUE_TOPIC_PREFIX.length).split(".");
-  if (issueProject(first) !== undefined) return { key: first, legacy: true };
-  if (issueProject(second) === first) return { key: second, legacy: false };
+  if (ISSUE_EVENT_KEY.test(first)) return { key: first, legacy: true };
+  if (ISSUE_EVENT_KEY.exec(second)?.[1] === first) return { key: second, legacy: false };
   return undefined;
 }
 

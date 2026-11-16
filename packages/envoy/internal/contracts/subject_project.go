@@ -44,8 +44,13 @@ func IssueProject(key string) (string, bool) {
 }
 
 // legionTokenProject is the project of a Legion deployment's project token: its upper case when
-// that is a project key, and NoProject otherwise.
+// the token is one (lower-case letters and digits, as claim.ProjectToken writes it) and that is a
+// project key, and NoProject otherwise. A token is checked before it is upper-cased, so a name
+// whose upper case only a Unicode table makes a key (ßk) reads the same in every language.
 func legionTokenProject(token string) string {
+	if token == "" || strings.Trim(token, "abcdefghijklmnopqrstuvwxyz0123456789") != "" {
+		return NoProject
+	}
 	return projectOfToken(strings.ToUpper(token))
 }
 
@@ -246,18 +251,21 @@ func isProjectPosition(token string) bool {
 }
 
 // LegacyTwin is the old form of a new-form topic, while readers take the old form too, and false
-// for a topic with none: an issue's topic under its key's own project, or under a wildcard, names
-// its key alone; one session's agent subject and one role's lane under any project name the
-// session and the role alone; a failed-delivery report and a kept lane follow the name they carry.
-// A topic over every issue of one project (notifications.dispatch.issue.INFRA.>) has no old form,
-// since no subject pattern names the issues of one project in the old form. Until the old form is
-// refused only.
+// for a topic with none: an issue's topic under its key's own project names its key alone; one
+// session's agent subject and one role's lane under any project name the session and the role
+// alone; a failed-delivery report and a kept lane follow the name they carry. A topic over every
+// issue of one project (notifications.dispatch.issue.INFRA.>) has no old form, since no subject
+// pattern names the issues of one project in the old form. Nor has an issue's topic under a
+// wildcard project (notifications.dispatch.issue.*.INFRA-12.>): its old form would overlap it (the
+// wildcard against the key, the key against what follows), and a session consumer handed both
+// would be reduced to a filter over every project's issues (bus.ReduceFilterSubjects); the new
+// form alone already reaches the key's own project. Until the old form is refused only.
 func LegacyTwin(canonical string) (string, bool) {
 	if rest, found := strings.CutPrefix(canonical, DispatchIssueTopicPrefix); found {
 		project, keyed, found := strings.Cut(rest, ".")
 		key, _, _ := strings.Cut(keyed, ".")
 		keyProject, ok := IssueProject(key)
-		if !found || !ok || (project != keyProject && project != "*") {
+		if !found || !ok || project != keyProject {
 			return "", false
 		}
 		return DispatchIssueTopicPrefix + keyed, true
@@ -315,23 +323,32 @@ func CanonicalRole(role string) (project, name string, legacy bool) {
 	return RoleProject(role), role, true
 }
 
+// issueEventKeyPattern is the shape of an issue key in an issue event's name as the Legion daemon
+// has always read it (packages/daemon/internal/claim.IsIssueKey): a capital letter, any capitals
+// and digits, a hyphen and a number. It holds no length to the project part, unlike a project key
+// (projectKey), because a daemon's own project is held to none: a daemon serves the project its
+// configuration names, and its own tests name sixteen-character projects. Dispatch's keys are held
+// to projectKey by its database, so every name Dispatch writes is read here too.
+var issueEventKeyPattern = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-[0-9]+$`)
+
 // IssueEventKey reads the issue key an issue event's name carries, in either form: the new form
 // names the key's own project and then the key (notifications.dispatch.issue.INFRA.INFRA-12.<type>),
 // and the old form the key alone (notifications.dispatch.issue.INFRA-12.<type>), with legacy
 // true. ok is false for a name of the family whose key is in neither form, a project that is not
-// the key's own among them, and for a name of any other family. The old form is read until it is
-// refused only.
+// the key's own among them, and for a name of any other family. A key is read by
+// issueEventKeyPattern, the shape every daemon has accepted, so a daemon reads every key it read
+// before both forms were. The old form is read until it is refused only.
 func IssueEventKey(subject string) (key string, legacy, ok bool) {
 	rest, found := strings.CutPrefix(subject, DispatchIssueTopicPrefix)
 	if !found {
 		return "", false, false
 	}
 	first, after, _ := strings.Cut(rest, ".")
-	if _, isKey := IssueProject(first); isKey {
+	if issueEventKeyPattern.MatchString(first) {
 		return first, true, true
 	}
 	second, _, _ := strings.Cut(after, ".")
-	if project, isKey := IssueProject(second); isKey && project == first {
+	if match := issueEventKeyPattern.FindStringSubmatch(second); match != nil && match[1] == first {
 		return second, false, true
 	}
 	return "", false, false
