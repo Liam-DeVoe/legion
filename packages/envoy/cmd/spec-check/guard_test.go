@@ -4,30 +4,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
 
 // guardHit is the end of guard's line for each place that it names, after "spec-check:
 // <path>:<line>".
-const guardHit = ": this line holds the command that compares the files with the approved spec, and no CI job runs that command (R2). If no shell runs this line, reword it.\n"
+const guardHit = ": this line names the command that compares the files with the approved spec, and no CI job runs that command (R2). If the line only mentions the command, for example in a comment, a quoted text, a pattern or a name, reword it.\n"
 
 // testGuard runs guard over the CI-file fixtures of testdata/ci-files and over trees it makes: it
-// names each place of a CI file that holds the command that compares the files with the approved
+// names each place of a CI file that names the command that compares the files with the approved
 // spec (R2: "No CI job compares the files"), and an instrument that read no workflow does not
 // pass.
 func testGuard(t *testing.T, binary string) {
-	t.Run("guard passes CI files that do not hold the comparison", func(t *testing.T) {
+	t.Run("guard passes CI files that do not name the comparison", func(t *testing.T) {
 		t.Parallel()
 		root := ciFiles(t, "clean")
-		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{stdout: "spec-check: " + root + ": no line of 4 CI files holds the command that compares the files\n"})
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{stdout: "spec-check: " + root + ": no line of 4 CI files names the command that compares the files\n"})
 	})
-	t.Run("guard names each line that holds the comparison, from a workflow, an action and a script", func(t *testing.T) {
+	t.Run("guard names the planted comparison of a workflow, an action and a script", func(t *testing.T) {
 		t.Parallel()
 		root := ciFiles(t, "planted")
 		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
 			code:   1,
-			stdout: "spec-check: " + root + ": 3 lines of CI files hold the command that compares the files\n",
+			stdout: "spec-check: " + root + ": 3 lines of CI files name the command that compares the files\n",
 			stderr: "spec-check: " + filepath.Join(root, ".github", "actions", "compare", "action.yml") + ":9" + guardHit +
 				"spec-check: " + filepath.Join(root, ".github", "workflows", "compare.yaml") + ":13" + guardHit +
 				"spec-check: " + filepath.Join(root, "scripts", "compare.sh") + ":4" + guardHit,
@@ -119,6 +120,33 @@ func testGuard(t *testing.T, binary string) {
 		root, workflow := workflowTree(t, "      - run: echo 'run spec-check compare by hand'\n")
 		expect(t, runBinary(t, binary, "", "guard", "--root", root), named(root, workflow, 5))
 	})
+	// A line that only mentions the command is named too: a step that greps for the two words or
+	// echoes them, which a shell runs, and a needs list or a key, which holds names. The guard's
+	// lines say that such a line names the command, which is true of each, and not that it holds
+	// the command, and they tell the author to reword a line that only mentions it.
+	t.Run("guard tells the author to reword a line that only mentions the command", func(t *testing.T) {
+		t.Parallel()
+		mention := regexp.MustCompile(`only mentions the command.{0,120}reword`)
+		for _, row := range []struct {
+			name, steps string
+			line        int
+		}{
+			{"a grep step", `      - run: "! grep -rn 'spec-check compare' .github/workflows"` + "\n", 5},
+			{"an echo step", `      - run: echo "spec-check compare runs in Dispatch, not in CI"` + "\n", 5},
+			{"a needs list", "      - run: echo ok\n  ci-ok:\n    needs: [lint, spec-check, compare]\n    steps:\n      - run: echo ok\n", 7},
+			{"a key above compare", "      - run: echo ok\n    env:\n      spec-check:\n        compare: false\n", 7},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				root, workflow := workflowTree(t, row.steps)
+				got := runBinary(t, binary, "", "guard", "--root", root)
+				expect(t, got, named(root, workflow, row.line))
+				if strings.Contains(got.stdout+got.stderr, "holds the command") || !mention.MatchString(got.stderr) {
+					t.Errorf("the guard's lines say that this line holds the command, or give no way past a line that only mentions it:\nstdout %q\nstderr %q", got.stdout, got.stderr)
+				}
+			})
+		}
+	})
 	t.Run("guard does not pass when it reads no workflow", func(t *testing.T) {
 		t.Parallel()
 		root := ciFiles(t, "no-workflow")
@@ -136,7 +164,7 @@ func testGuard(t *testing.T, binary string) {
 	t.Run("guard names a relative root by its absolute path", func(t *testing.T) {
 		t.Parallel()
 		root := ciFiles(t, "clean")
-		expect(t, runBinary(t, binary, filepath.Dir(root), "guard", "--root", "clean"), result{stdout: "spec-check: " + root + ": no line of 4 CI files holds the command that compares the files\n"})
+		expect(t, runBinary(t, binary, filepath.Dir(root), "guard", "--root", "clean"), result{stdout: "spec-check: " + root + ": no line of 4 CI files names the command that compares the files\n"})
 	})
 	t.Run("guard exits 2 on a root it cannot read", func(t *testing.T) {
 		t.Parallel()
@@ -170,7 +198,8 @@ func testGuard(t *testing.T, binary string) {
 }
 
 // The guard item of packages/envoy/AGENTS.md says that the guard names a text that no shell runs,
-// and tells its writer the way past it: reword the line.
+// and tells its writer the way past it: reword the line. It quotes the guard's line for each place
+// as the guard writes it.
 func TestTheGuideTellsTheWriterToRewordALineThatNoShellRuns(t *testing.T) {
 	t.Parallel()
 	guide, err := os.ReadFile(filepath.Join("..", "..", "AGENTS.md"))
@@ -184,6 +213,9 @@ func TestTheGuideTellsTheWriterToRewordALineThatNoShellRuns(t *testing.T) {
 	item, _, _ = strings.Cut(item, "\n- ")
 	if !strings.Contains(item, "no shell runs") || !strings.Contains(item, "reword") {
 		t.Errorf("the guard item of packages/envoy/AGENTS.md does not say that it names a text that no shell runs and that its writer rewords that line:\n%s", item)
+	}
+	if line := strings.TrimSuffix(strings.TrimPrefix(guardHit, ": "), "\n"); !strings.Contains(item, line) {
+		t.Errorf("the guard item of packages/envoy/AGENTS.md does not quote the guard's line %q:\n%s", line, item)
 	}
 }
 
@@ -206,9 +238,9 @@ func named(root, workflow string, lines ...int) result {
 	for _, n := range lines {
 		fmt.Fprintf(&stderr, "spec-check: %s:%d%s", workflow, n, guardHit)
 	}
-	verb := "hold"
+	verb := "name"
 	if len(lines) == 1 {
-		verb = "holds"
+		verb = "names"
 	}
 	return result{
 		code:   1,

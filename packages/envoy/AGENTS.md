@@ -3237,12 +3237,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - `spec-check guard --root <dir>` is the other part of the refusal above: it reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`), every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
   `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) reads each file as text, and knows nothing of shell or of YAML.
-  The guard names each place of a CI file where the command's name and then the word `compare` stand as two words that follow each other, with quote characters, a `$` before a quote, backslashes and line breaks between them ignored, and the indentation after a backslash and a line break ignored too.
-  So it also names a comment or a quoted text that no shell runs, and the author rewords that line.
+  The guard names each place of a CI file where the command's name and then the word `compare` follow each other with only white space, commas or opening brackets between them, and with quote characters (also a `$` before one), backslashes, and line breaks with the indentation after them ignored.
+  A list of arguments in a script, such as `spawnSync('spec-check', ['compare'])` or `subprocess.run(["spec-check","compare"])`, is named too.
+  The guard also names a comment or a quoted text that no shell runs, and the author rewords that line.
   It does not find a command that an expansion or an escape builds, or one with another word between the two, and it is no defence against an author who hides the command: `compare` itself refuses to run in a CI job.
-  A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line holds the command that compares the files with the approved spec, and no CI job runs that command (R2). If no shell runs this line, reword it.` on stderr for each, at the line where the command's name stands, and `spec-check: <dir>: <n> lines of CI files hold the command that compares the files` on stdout.
+  A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line names the command that compares the files with the approved spec, and no CI job runs that command (R2). If the line only mentions the command, for example in a comment, a quoted text, a pattern or a name, reword it.` on stderr for each, at the line where the command's name stands, and `spec-check: <dir>: <n> lines of CI files name the command that compares the files` on stdout.
   No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
-  a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files holds the command that compares the files`.
+  a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files names the command that compares the files`.
   The guard does not read a file outside the four directories, such as the `package.json` script a `bun run` step runs, nor a command held in a variable; the refusal of `compare` covers those when the step passes the runner's environment on.
   A Go program that calls `specgraph.Compare` is outside both the guard and the refusal of `compare`.
   `envoy-go-checks` runs the guard over this repository (`go run ./cmd/spec-check guard --root ../..`, in `.github/workflows/ci-job-envoy-go-checks.yaml`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.
