@@ -2,32 +2,22 @@ import type { ColumnOrderState, ColumnSizingState, VisibilityState } from "@tans
 import { readStore, writeStore } from "./issues-table-action-storage";
 
 /**
- * The one owner of what the table keeps in the browser for a project: the layout the reader
- * dragged and the record of an action a reload interrupted, under one key, read and written
- * one typed field at a time.
+ * The layout half of what the table keeps in the browser for a project: the column widths,
+ * order and visibility the reader chose, read and written one typed field at a time.
  *
- * The action half, and the box both halves read through, is `issues-table-action-storage.ts`,
- * re-exported below so every reader of this module is unchanged: the shell registers the
- * table's write kind at boot and that kind reads an interrupted action, which through this
- * module reached the table model and its match ranking - about 16,000 bytes of the entry chunk
- * every page parses before it draws anything, for a page no first paint draws
- * (dispatch://INFRA-1109, R13). The layout half stays here, and takes the column list it
- * validates against from its caller (`StoredColumns`), so no module the shell loads reaches
- * the table's columns.
+ * The other half - the record of an action a reload interrupted - and the box both halves read
+ * through are `issues-table-action-storage.ts`, and a reader of that half imports it from
+ * there. The two are two modules because the shell registers the table's write kind at boot
+ * and that kind reads an interrupted action, which through this module reached the table model
+ * and its match ranking - about 16,000 bytes of the entry chunk every page parses before it
+ * draws anything, for a page no first paint draws (dispatch://INFRA-1109, R13). The layout
+ * half takes the column list it validates against from its caller (`StoredColumns`), so no
+ * module the shell loads reaches the table's columns.
  *
  * One failure rule, for every field: a browser that refuses storage, a full quota or a corrupt
  * value is a table with no saved preferences, never an exception out of a click. The URL still
- * carries the view, and the action record is only a convenience for finishing what a reload
- * cut short.
+ * carries the view.
  */
-export {
-  ACTION_KINDS,
-  ACTION_LIFETIME_MS,
-  readTableAction,
-  type TableAction,
-  tableStorageKey,
-  writeTableAction,
-} from "./issues-table-action-storage";
 
 export interface TableLayout {
   sizing: ColumnSizingState;

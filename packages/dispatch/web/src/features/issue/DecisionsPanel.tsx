@@ -3,6 +3,7 @@ import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { issueDecisionsQuery } from "../../api/queries";
 import type {
   Artifact,
   Decision,
@@ -395,10 +396,13 @@ function WaitingDecision({
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
     onSuccess: (kept) => {
       if (kept === null) {
-        void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
+        void queryClient.invalidateQueries({
+          exact: true,
+          queryKey: issueDecisionsQuery(issueKey).queryKey,
+        });
         return;
       }
-      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
+      queryClient.setQueryData<IssueDecisions>(issueDecisionsQuery(issueKey).queryKey, (view) =>
         view === undefined
           ? view
           : {
@@ -502,10 +506,7 @@ export function DecisionsPanel({
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
-  const view = useQuery({
-    queryFn: () => api.getIssueDecisions(issueKey),
-    queryKey: ["decisions", issueKey],
-  });
+  const view = useQuery(issueDecisionsQuery(issueKey));
   // Each decision beside the blocks of its text, read once per answer: a card draws them and
   // the Change composer quotes the first of them, so a block is a new object only when the
   // decisions were read again and a repaint of the tab repaints no body it already drew. The

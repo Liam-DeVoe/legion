@@ -17,4 +17,6 @@ body: |-
   `dispatch-tools-constants` now, so such a reader takes no zod schema with it. `dispatch-api`
   and `dispatch-tools` re-export those two
   modules whole, so an import of either, or of the index, answers exactly what it answered
-  before: nothing is renamed and nothing leaves the index.
+  before: nothing is renamed and nothing leaves the index. A reader that names one of the
+  area modules by its file path, such as `dispatch-api-limits.ts`, finds a moved name in the
+  constants module instead.

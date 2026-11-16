@@ -7,16 +7,17 @@ import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import { plainWrite, useWrites } from "../writes/write-store";
+import type { TableAction } from "./issues-table-action-storage";
 import { type IssueListing, listingName } from "./issues-table-data";
+import { WRITES_IN_FLIGHT } from "./issues-table-limits";
 import {
   buildItems,
   type Item,
   mergeMembers,
   queuedInOrder,
   startNextWrites,
-  WRITES_IN_FLIGHT,
 } from "./issues-table-model";
-import { type TableAction, tableEpicWrite, useTableRecovery } from "./issues-table-recovery";
+import { tableEpicWrite, useTableRecovery } from "./issues-table-recovery";
 
 interface Patch {
   key: string;

@@ -8,24 +8,44 @@
  * A read of a key is made here with `fetchQuery`, which decides whether to fetch by the rule a
  * mounting `useQuery` decides by - is this key's data older than `staleTime` - so a key these
  * rows read without a request is a key a component mounts without one.
+ *
+ * Every read below is made through the factory its page's own reader mounts (`api/queries.ts`),
+ * which is the factory the seed takes that key from too. So these rows prove that the landing
+ * writes every part it carries under that factory's key, and that the part is fresh: a seed
+ * that wrote a part under any other key fails the row that reads it. They cannot find a key
+ * that drifted between the seed and a reader, because there is one key and no second copy of
+ * it to drift - a key renamed in its factory moves the reader, the seed and the row here
+ * together. A reader that stopped taking its key from the factory is outside what these rows
+ * read, since they mount no component.
  */
 
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, queryOptions } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 
 import { ApiError, api } from "../api/client";
 import {
   artifactBlocksQuery,
+  artifactQueryOptions,
+  documentReadQuery,
   inboxQuery,
   inboxThreadsQuery,
   issueCoverageQuery,
+  issueDecisionsQuery,
   issueQuery,
+  liveTextQueryOptions,
   myRepliesCountQuery,
+  ownerAsksQuery,
+  ownerCommentsQuery,
+  ownerSubscribersQuery,
+  pinnedIssuesQuery,
   prioritySummaryQuery,
   projectArchitectureSourcesQuery,
+  projectArtifactQuery,
+  projectInboxQuery,
   projectIssuesQuery,
   projectsQuery,
   readLanding,
+  repoProjectsQuery,
   userAgentStateQuery,
   userStateQuery,
   whoAmIQuery,
@@ -43,7 +63,6 @@ import type {
   RepoProject,
 } from "../api/types";
 import { credentialPendingQuery } from "../features/credentials/pending";
-import { issueDecisionsQuery } from "../features/doc/spec-marks";
 import { comment, issue, specArtifact } from "../features/margin/margin-fixture";
 import { agentsQuery } from "../features/refs/agent-registry";
 
@@ -185,14 +204,6 @@ function dashboardClient(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
 }
 
-/** One read a page makes, under the key and through the `api` method the file that makes it
- *  names: a key the landing seeded answers this out of the cache, and one it did not sends the
- *  request. Written the way each of those files writes it, so a key that drifted from the seed
- *  fails these rows. */
-function pageRead<T>(key: readonly unknown[], read: () => Promise<T>) {
-  return queryOptions({ queryKey: key, queryFn: read });
-}
-
 /** Every `api` read the landing stands in for, each spied so that a read that still goes out is
  *  named by these rows rather than by a request nothing answered. Each answers a value no
  *  assertion below expects, so a key filled by one of these reads cannot pass as a seeded one. */
@@ -273,11 +284,7 @@ test("an issue landing seeds every key the issue page reads, so the page reads n
     // The shell, which every page draws.
     expect(await client.fetchQuery(inboxQuery())).toEqual([]);
     expect(await client.fetchQuery(projectsQuery())).toEqual(shell.projects ?? []);
-    expect(
-      await client.fetchQuery(
-        pageRead(["issues", "pinned"], () => api.listIssues({ pinned: true }))
-      )
-    ).toEqual([]);
+    expect(await client.fetchQuery(pinnedIssuesQuery())).toEqual([]);
     expect(await client.fetchQuery(userAgentStateQuery())).toEqual({});
     expect(await client.fetchQuery(myRepliesCountQuery())).toBe(2);
     expect(await client.fetchQuery(credentialPendingQuery())).toEqual({ pending: [] });
@@ -286,51 +293,37 @@ test("an issue landing seeds every key the issue page reads, so the page reads n
     // The issue's own page.
     expect(await client.fetchQuery(issueQuery("CORE-1"))).toEqual(issue);
     expect(await client.fetchQuery(userStateQuery())).toEqual({});
-    expect(
-      await client.fetchQuery(pageRead(["comments", "CORE-1"], () => api.listComments("CORE-1")))
-    ).toEqual([comment]);
-    expect(
-      await client.fetchQuery(pageRead(["asks", "CORE-1"], () => api.listIssueAsks("CORE-1")))
-    ).toEqual([]);
-    expect(
-      await client.fetchQuery(
-        pageRead(["subscribers", "CORE-1"], () => api.getIssueSubscribers("CORE-1"))
-      )
-    ).toEqual([]);
-    expect(await client.fetchQuery(queryOptions(issueDecisionsQuery("CORE-1", true)))).toEqual({
+    expect(await client.fetchQuery(ownerCommentsQuery({ issue: "CORE-1" }))).toEqual([comment]);
+    expect(await client.fetchQuery(ownerAsksQuery({ issue: "CORE-1" }))).toEqual([]);
+    expect(await client.fetchQuery(ownerSubscribersQuery({ issue: "CORE-1" }))).toEqual([]);
+    expect(await client.fetchQuery(issueDecisionsQuery("CORE-1"))).toEqual({
       decisions: [],
       document: null,
       open_questions: [],
     });
     // What the Spec tab draws beside each requirement (`features/issue/SpecRequirements.tsx`).
     expect(await client.fetchQuery(issueCoverageQuery("CORE-1"))).toEqual(coverage);
-    // The repository mappings the header's control picks this project's out of, under the key
-    // that control writes by hand (`features/issue/RepoControl.tsx`).
-    expect(
-      await client.fetchQuery(pageRead(["repo-projects"], () => api.listRepoProjects()))
-    ).toEqual(repoProjects);
+    // The repository mappings the header's control picks this project's out of
+    // (`features/issue/RepoControl.tsx`).
+    expect(await client.fetchQuery(repoProjectsQuery())).toEqual(repoProjects);
     // The sources of the issue's own project, which the components line reads
     // (`features/issue/IssueComponentsLine.tsx`): the issue this landing carries names CORE.
     expect(await client.fetchQuery(projectArchitectureSourcesQuery("CORE"))).toEqual(
       architectureSources
     );
     // The document the page opens on, under the keys its editor, its text and its marks read.
-    expect(
-      await client.fetchQuery(
-        pageRead(["artifact", specArtifact.id], () => api.getArtifact(specArtifact.id))
-      )
-    ).toEqual(specArtifact);
-    expect(
-      await client.fetchQuery(
-        pageRead(["artifact", specArtifact.id, "text"], () => api.getArtifactText(specArtifact.id))
-      )
-    ).toEqual({ markdown: "# Spec\n", token: "t-1", version: 1 });
+    expect(await client.fetchQuery(artifactQueryOptions(specArtifact.id))).toEqual(specArtifact);
+    expect(await client.fetchQuery(liveTextQueryOptions(specArtifact.id))).toEqual({
+      markdown: "# Spec\n",
+      token: "t-1",
+      version: 1,
+    });
     expect(await client.fetchQuery(artifactBlocksQuery(specArtifact.id))).toEqual([]);
-    expect(
-      await client.fetchQuery(
-        pageRead(["document-read", specArtifact.id], () => api.getDocumentRead(specArtifact.id))
-      )
-    ).toEqual({ artifact_id: specArtifact.id, read_at: "2026-09-09T00:00:00Z", version: 1 });
+    expect(await client.fetchQuery(documentReadQuery(specArtifact.id))).toEqual({
+      artifact_id: specArtifact.id,
+      read_at: "2026-09-09T00:00:00Z",
+      version: 1,
+    });
 
     expect(reads.whatWentOut()).toEqual([]);
     expect(whoAmI).not.toHaveBeenCalled();
@@ -371,41 +364,19 @@ test("a document landing seeds the document its page gates on and everything tha
     });
     // The read the page holds everything else behind: `project/slug` names the document's id.
     expect(
-      await client.fetchQuery(
-        pageRead(["artifact-ref", "CORE/rollout-md"], () =>
-          api.getProjectArtifact("CORE", "rollout-md")
-        )
-      )
+      await client.fetchQuery(projectArtifactQuery({ project: "CORE", slug: "rollout-md" }))
     ).toEqual(projectDocument);
-    expect(
-      await client.fetchQuery(
-        pageRead(["artifact", projectDocument.id, "text"], () =>
-          api.getArtifactText(projectDocument.id)
-        )
-      )
-    ).toEqual({ markdown: "# Rollout\n", token: "t-3", version: 1 });
+    expect(await client.fetchQuery(liveTextQueryOptions(projectDocument.id))).toEqual({
+      markdown: "# Rollout\n",
+      token: "t-3",
+      version: 1,
+    });
     expect(await client.fetchQuery(artifactBlocksQuery(projectDocument.id))).toEqual([]);
-    expect(
-      await client.fetchQuery(
-        pageRead(["artifact", projectDocument.id, "asks"], () =>
-          api.listArtifactAsks(projectDocument.id)
-        )
-      )
-    ).toEqual([]);
-    expect(
-      await client.fetchQuery(
-        pageRead(["subscribers", projectDocument.id], () =>
-          api.getArtifactSubscribers(projectDocument.id)
-        )
-      )
-    ).toEqual([]);
-    expect(
-      await client.fetchQuery(
-        pageRead(["artifact", projectDocument.id, "comments"], () =>
-          api.listArtifactComments(projectDocument.id)
-        )
-      )
-    ).toEqual([]);
+    // The document's own asks, subscribers and comments, each under its owner's key.
+    const owner = { artifact: projectDocument.id };
+    expect(await client.fetchQuery(ownerAsksQuery(owner))).toEqual([]);
+    expect(await client.fetchQuery(ownerSubscribersQuery(owner))).toEqual([]);
+    expect(await client.fetchQuery(ownerCommentsQuery(owner))).toEqual([]);
     expect(reads.whatWentOut()).toEqual([]);
   } finally {
     getLanding.mockRestore();
@@ -435,9 +406,7 @@ test("a board landing seeds the project's open issues, its asks, its sources and
 
     expect(getLanding).toHaveBeenCalledWith({ page: "board", project: "CORE" });
     expect(await client.fetchQuery(projectIssuesQuery("CORE", [], true))).toEqual([]);
-    expect(
-      await client.fetchQuery(pageRead(["inbox", "CORE"], () => api.getInbox("CORE")))
-    ).toEqual([]);
+    expect(await client.fetchQuery(projectInboxQuery("CORE"))).toEqual([]);
     expect(await client.fetchQuery(userStateQuery())).toEqual({});
     // The sources the project page reads to decide which tab it opens on
     // (`features/project/ProjectPage.tsx`).

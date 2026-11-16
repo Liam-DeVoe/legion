@@ -1,6 +1,6 @@
 import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
 import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -19,7 +19,12 @@ import {
   isDocumentSchemaError,
   isDocumentUnloadable,
 } from "../../api/client";
-import { artifactBlocksQuery } from "../../api/queries";
+import {
+  artifactBlocksQuery,
+  artifactQueryOptions,
+  liveTextQueryOptions,
+  ownerAsksQuery,
+} from "../../api/queries";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { copyText } from "../../lib/clipboard";
@@ -116,14 +121,6 @@ function wholeBlockId(root: HTMLElement, prefix: string): string | undefined {
 }
 
 const CONTROL_CHARACTERS = /\p{Cc}/gu;
-
-/** The live document's text as the server reads it now. A read of it decides whether the editor
- * may connect: the server answers `409 DOC_SCHEMA` for a stored tree outside the Proof schema. */
-export const liveTextQueryOptions = (artifactId: string) =>
-  queryOptions({
-    queryKey: ["artifact", artifactId, "text"],
-    queryFn: () => api.getArtifactText(artifactId),
-  });
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
  * Proof schema the page offers to repair from markdown, a stored history that cannot load the page
@@ -333,10 +330,7 @@ export function ProofDocument({
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
   const documentRef = buildDispatchReference(documentRoute(artifact));
-  const artifactQuery = useQuery({
-    queryKey: ["artifact", artifact.id],
-    queryFn: () => api.getArtifact(artifact.id),
-  });
+  const artifactQuery = useQuery(artifactQueryOptions(artifact.id));
   const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
@@ -399,11 +393,9 @@ export function ProofDocument({
     queryKey: ["artifact", artifact.id, "version", version],
     queryFn: () => api.getArtifactVersion(artifact.id, version ?? 0),
   });
-  const asksQuery = useQuery({
-    queryKey: owner.kind === "issue" ? ["asks", owner.key] : ["artifact", artifact.id, "asks"],
-    queryFn: () =>
-      owner.kind === "issue" ? api.listIssueAsks(owner.key) : api.listArtifactAsks(artifact.id),
-  });
+  const asksQuery = useQuery(
+    ownerAsksQuery(owner.kind === "issue" ? { issue: owner.key } : { artifact: artifact.id })
+  );
   /** Every ask indexed from a typed block of this document, in every state — the rendered blocks
    * read who asked from these, and an answered block still names its asker. */
   const blockAsks = useMemo(
@@ -428,7 +420,7 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
+      queryClient.setQueryData(artifactQueryOptions(artifact.id).queryKey, (current) => {
         const source = current ?? artifact;
         return {
           ...source,

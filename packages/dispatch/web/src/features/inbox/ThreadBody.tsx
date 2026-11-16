@@ -21,7 +21,13 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
+import {
+  agentMessagesQuery,
+  askThreadQuery,
+  issueQuery,
+  myRepliesKey,
+  ownerCommentsQuery,
+} from "../../api/queries";
 import type {
   Actor,
   CommentWithTrees,
@@ -290,25 +296,17 @@ function CommentThreadBody({
   thread: MyReplyThreadRow;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const markNewest = useThreadRead(
-    thread,
-    owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId }
-  );
+  // The thread's owner as the reads of an owner's lists name it: its unread threads and its
+  // comments.
+  const listOwner =
+    owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId };
+  const markNewest = useThreadRead(thread, listOwner);
   const issueKey = owner.kind === "issue" ? owner.issueKey : undefined;
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
-  // The reads the issue's Conversation and the document's margin already hold, under their own
-  // keys: the same request, shared rather than made a second time.
-  const commentsKey =
-    owner.kind === "issue"
-      ? ["comments", owner.issueKey]
-      : ["artifact", owner.artifactId, "comments"];
-  const comments = useQuery({
-    queryKey: commentsKey,
-    queryFn: () =>
-      owner.kind === "issue"
-        ? api.listComments(owner.issueKey)
-        : api.listArtifactComments(owner.artifactId),
-  });
+  // The read the issue's Conversation and the document's margin already hold, under the key all
+  // of them take from the one factory: the same request, shared rather than made a second time.
+  const commentsQuery = ownerCommentsQuery(listOwner);
+  const comments = useQuery(commentsQuery);
   if (comments.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (comments.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
@@ -337,7 +335,7 @@ function CommentThreadBody({
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: commentsKey });
+              void queryClient.invalidateQueries({ queryKey: commentsQuery.queryKey });
               void queryClient.invalidateQueries({ queryKey: myRepliesKey });
             }}
             owner={owner}

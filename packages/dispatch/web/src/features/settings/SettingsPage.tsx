@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { projectsQuery } from "../../api/queries";
+import { projectsQuery, repoProjectsQuery } from "../../api/queries";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -71,7 +71,10 @@ export function SettingsPage(): ReactNode {
   const [repository, setRepository] = useState("");
   const [project, setProject] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
-  const mappings = useQuery({ queryKey: ["repo-projects"], queryFn: () => api.listRepoProjects() });
+  // The mappings, under the one key the issue header's repository control reads them by too
+  // (`repoProjectsQuery`): every optimistic write below is to that key.
+  const mappingsKey = repoProjectsQuery().queryKey;
+  const mappings = useQuery(repoProjectsQuery());
   const projects = useQuery(projectsQuery());
   // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
   const credentialsAvailable = useQuery(credentialPendingQuery());
@@ -85,7 +88,7 @@ export function SettingsPage(): ReactNode {
     inline: true,
     label: ({ repo, project: mapped }) => `${repo} mapped to ${mapped}`,
     onError: (error, variables, context) => {
-      queryClient.setQueryData(["repo-projects"], context?.previous);
+      queryClient.setQueryData(mappingsKey, context?.previous);
       setFailedAction({
         kind: "put",
         message: apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
@@ -93,10 +96,10 @@ export function SettingsPage(): ReactNode {
       });
     },
     onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
-      const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
+      await queryClient.cancelQueries({ queryKey: mappingsKey });
+      const previous = queryClient.getQueryData(mappingsKey);
       const existing = previous?.find((mapping) => mapping.repo === variables.repo);
-      queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
+      queryClient.setQueryData(mappingsKey, (current = []) =>
         withMapping(current, {
           created_at: new Date().toISOString(),
           created_by: { id: "you", kind: "user" },
@@ -116,9 +119,7 @@ export function SettingsPage(): ReactNode {
     // A landing with no answer keeps the optimistic row; `onSettled` reads them all again.
     onSuccess: (mapping, variables) => {
       if (mapping !== null) {
-        queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
-          withMapping(current, mapping)
-        );
+        queryClient.setQueryData(mappingsKey, (current = []) => withMapping(current, mapping));
       }
       setFailedAction(undefined);
       if (variables.default === undefined) {
@@ -130,14 +131,14 @@ export function SettingsPage(): ReactNode {
     // answer arrives: another write (another browser's default pick, read through a mapping event
     // while this one was on the way) may have changed them since. Reading them again once the
     // write settles leaves the page on the server's state, as useIssueFieldWrite does an issue's.
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: mappingsKey }),
   });
   const deleteMapping = useKeyedWrite<void, string, { previous: RepoProject[] | undefined }>({
     write: (repo: string, bounds) => api.deleteRepoProject(repo, bounds),
     inline: true,
     label: (repo) => `${repo}'s mapping removed`,
     onError: (error, repo, context) => {
-      queryClient.setQueryData(["repo-projects"], context?.previous);
+      queryClient.setQueryData(mappingsKey, context?.previous);
       setFailedAction({
         kind: "delete",
         message: apiErrorMessage(error, `Couldn't delete ${repo}.`),
@@ -145,15 +146,15 @@ export function SettingsPage(): ReactNode {
       });
     },
     onMutate: async (repo) => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
-      const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
-      queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
+      await queryClient.cancelQueries({ queryKey: mappingsKey });
+      const previous = queryClient.getQueryData(mappingsKey);
+      queryClient.setQueryData(mappingsKey, (current = []) =>
         current.filter((mapping) => mapping.repo !== repo)
       );
       return { previous };
     },
     onSuccess: () => setFailedAction(undefined),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: mappingsKey }),
   });
 
   const retry = () => {

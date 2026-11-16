@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { ownerSubscribersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { dangerText } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
@@ -39,15 +40,12 @@ export function DocumentPage(): ReactNode {
     }
   }, []);
   const artifact = useProjectArtifact(documentRoute);
+  // With no document yet the read has no owner, and `enabled` holds it until the page's own read
+  // names the document's id.
+  const subscribersOwner = artifact.data === undefined ? undefined : { artifact: artifact.data.id };
   const subscribers = useQuery({
-    enabled: artifact.data !== undefined,
-    queryKey: ["subscribers", artifact.data?.id],
-    queryFn: () => {
-      if (artifact.data === undefined) {
-        throw new Error("Document subscribers query requires an artifact.");
-      }
-      return api.getArtifactSubscribers(artifact.data.id);
-    },
+    ...ownerSubscribersQuery(subscribersOwner),
+    enabled: subscribersOwner !== undefined,
   });
   const agentText = useAgentText();
   const unsubscribe = useKeyedWrite({
@@ -60,8 +58,10 @@ export function DocumentPage(): ReactNode {
       return api.unsubscribeArtifactSession(artifact.data.id, sessionId, bounds);
     },
     onSuccess: () => {
-      if (artifact.data !== undefined) {
-        void queryClient.invalidateQueries({ queryKey: ["subscribers", artifact.data.id] });
+      if (subscribersOwner !== undefined) {
+        void queryClient.invalidateQueries({
+          queryKey: ownerSubscribersQuery(subscribersOwner).queryKey,
+        });
       }
     },
   });

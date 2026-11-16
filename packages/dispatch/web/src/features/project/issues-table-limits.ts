@@ -8,5 +8,5 @@
  *  reload finds a kept table write's kind (`features/writes/kinds.ts`), and this one number was
  *  pulling the whole table model and its match ranking - about 16,000 bytes - into the entry
  *  chunk every page of the dashboard parses before it draws anything (dispatch://INFRA-1109,
- *  R13). The model re-exports it, so every other reader is unchanged. */
+ *  R13). Every reader imports it from here; the model does not re-export it. */
 export const WRITES_IN_FLIGHT = 8;

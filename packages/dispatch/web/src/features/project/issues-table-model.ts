@@ -32,11 +32,6 @@ export const runningIssueStatuses: readonly IssueStatus[] = [
  *  the server would hand over (`claimIsTakeable`). The `?unclaimed=1` link sets it. */
 export const UNCLAIMED_FACET = "Nobody or lapsed";
 
-/** How many of one action's writes are in flight at once. Declared in a module of its own, so
- *  the write kind the shell registers at boot does not pull this model in with it
- *  (`issues-table-limits.ts`), and re-exported here, where its readers look for it. */
-export { WRITES_IN_FLIGHT } from "./issues-table-limits";
-
 /** How a column filters, and everything a filter of its kind needs: a column that filters by
  *  picking values cannot exist without the values a row files under, nor one that filters by
  *  typed text without the text it reads. Matching, the URL parameter and the options a filter

@@ -1,8 +1,8 @@
 /**
  * What the table keeps in the browser about an action a reload interrupted, and the box both
  * halves of that storage read and write through. The reader's column layout is the other half,
- * and it lives in `issues-table-storage.ts`, which re-exports every name below so no reader of
- * it changed.
+ * and it lives in `issues-table-storage.ts`. Each name is imported from the module that defines
+ * it: neither half re-exports the other's.
  *
  * Why the two halves are two modules. The table's write kind is registered by the shell at boot
  * so that a reload finds a kept table write's kind (`features/writes/kinds.ts`), and that kind
