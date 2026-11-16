@@ -1408,8 +1408,9 @@ write per registration) and writes its project's `answering` heartbeat
 (`PUT /v1/legion/projects/<project>`) every minute; the listener hands a project's messages off
 while that record last said `answering`, whatever its age, so a daemon that stops still gets its
 agents' messages and answers them when it returns, and one that loses `answers` or is taken down
-states `answering: false` at its next boot, which reverts its agents to the `404` at once. A
-listener too old for these routes answers `404`, which the daemon logs once per boot and tries
+states `answering: false` at its next boot, which gives its agents' messages the listener's own
+answers again at once: a send stored for a session Envoy still knows or a `404`, a role message
+kept for the role's next holder. A listener too old for these routes answers `404`, which the daemon logs once per boot and tries
 again every minute.
 
 Each entry carries `finished`, whether its issue has left the workflow — closed or done, parked,
@@ -1419,10 +1420,11 @@ entries again whenever it changes, in either direction, so an issue a person mov
 workflow stops being finished within the minute. It decides what a message to a role **nobody
 holds** gets: a finished role's message is handed to the daemon and its sender answered `200`
 with the stopped agent as `recipient`, while an unfinished role's is kept on that role's kept
-lane for its next worker and answered `202 kept unclaimed`, which is what the gap between two
-phase workers of one issue, and a pod being replaced, both need. A message addressed to a session
-id is handed off whether its issue is finished or not: that session has stopped, and the message
-is for it rather than for a role another session will take.
+lane for its next worker for one hour and answered `202` with `kept: true`, which is what the gap
+between two phase workers of one issue, and a pod being replaced, both need. A message addressed to
+a session id is handed off whether its issue is finished or not, ahead of the copy the listener
+would store for a session it still knows: that session has stopped, and the message is for it
+rather than for a role another session will take.
 
 A hand-off arrives on `notifications.legion.<project>.agents.<session>`
 (`packages/contracts/src/legion-handoff.ts`), read by a durable consumer, so one published while the
@@ -1448,7 +1450,7 @@ refusing it, and the loop writes it into the asking agent's conversation rather 
   `answer` key), so the loop never answers itself.
 - **The loop's own answer to a stopped asker.** The answer it posts for an Envoy message goes to
   the asker through the listener, which hands it to the asker's own daemon when that agent is
-  stopped (the asker's own 404 before). It is never answered — no model call, no spend, nothing
+  stopped, in place of the copy it would store for the asker or its `404`. It is never answered — no model call, no spend, nothing
   posted, and no question of it reaches the controller — and it is written into the asking
   agent's conversation as a message it received, the shape the question side of an exchange is
   written in, so the asker holds the answer when it runs again, as a running asker holds what the
@@ -1480,12 +1482,15 @@ refusing it, and the loop writes it into the asking agent's conversation rather 
   to it is the wake that brings the pod back and resumes that very session. So the mirror writes
   such a session's registry entry `released` as the release suspends the claim, and again without
   it once a wake resumes the claim, and the listener hands no message for a `released` session or
-  role off: a send is answered `404` beside its wake, a delivery nothing can place is given up with
-  its `no_holder` notice and its wake, and Dispatch records the listener's own answer, each as
-  before the hand-off existed. A question that raced the mirror's write is treated as one to a
-  running conversation (above): forwarded to the role topic, where a message nobody holds wakes the
-  released role, and offered again until the resumed worker holds it, never answered in the name
-  of a worker that is coming back.
+  role off. Each gets the listener's own answer instead: a send is stored for the session and
+  answered `state: stopped`, or `404` for a session Envoy knows no record of, beside its wake; a
+  delivery nothing can place is given up with its `no_holder` notice and its wake; and a role
+  message is kept for the role's next holder and wakes the role. Dispatch records a session's
+  answer as the listener gave it, and keeps a person's message to such a role for its next holder
+  (`queued`), whose session may then reply to it. A question that reached the loop before the
+  mirror's write is treated as one to a running conversation (above): forwarded to the role topic,
+  where a message nobody holds wakes the released role, and offered again until the resumed worker
+  holds it, never answered in the name of a worker that is coming back.
 - **The model** is the conversation's own: an `anthropic/…` model run on `anthropic-messages`
   through Anthropic's Messages API, an `openai/…` model run on `openai-responses` through OpenAI's
   Responses API, a Claude Code conversation's model through Anthropic's. Any other is not answered

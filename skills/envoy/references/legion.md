@@ -44,10 +44,11 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
 
 - Never forward these failure payloads to an architect, because the daemon already acts on them.
 
-- A message to a Legion agent that is not running, an `envoy_publish` to its role or an `envoy_send` to its session, answers 404 (no holder, or no live session), unless its daemon answers for stopped agents (its answer loop, which the deployment configures).
-  Then the publish or send succeeds with that agent's session as `recipient`, and the daemon replies with a direct message in the agent's name whose `in_reply_to` is your message: the agent's answer from its own conversation, or its word that it cannot answer now and the question went to the Legion controller.
+- A message to a Legion agent that is stopped, and not one whose idle pod the daemon released (which the message wakes instead), reaches its daemon when the daemon answers for stopped agents (its answer loop, which the deployment configures): an `envoy_send` to its session, and an `envoy_publish` to its role once the role's issue has left the workflow.
+  Then the send or publish succeeds with that agent's session as `recipient`, and the daemon replies with a direct message in the agent's name whose `in_reply_to` is your message: the agent's answer from its own conversation, or its word that it cannot answer now and the question went to the Legion controller.
   The daemon does no work for a stopped agent: work you ask of it waits for its role's next start.
-  A publish to the role of an issue that is still in the workflow is answered neither way: nobody holds the role for a while between two of its workers, so Envoy keeps the message for the next one and answers `202` saying so.
+  Otherwise an `envoy_send` to a session Envoy still knows is stored for it and answered `state: stopped`, and one to a session Envoy does not know answers 404 (`no live session`).
+  A publish to the role of an issue that is still in the workflow, and to a role whose pod the daemon released, is kept for the role's next holder, as above, and never handed to the daemon.
 
 - A role send the listener refuses `404` also raises one exception on `notifications.envoy.exceptions.notifications.role.<role>`, with the reason it refused: `unclaimed` or `holder_lapsed`.
   The listener refuses only a publish it keeps nothing for: one sent with `keep: false`, as the daemon's own notices are, or one whose keep failed.

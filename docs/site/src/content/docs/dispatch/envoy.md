@@ -216,9 +216,12 @@ restarts or loses its connection gets the forward once when it is back. No sessi
 receipt for one.
 A Legion daemon that answers for its stopped agents
 ([Running Legion](/legion/legion/running-legion/#legionyaml), `answers`) reads such a message from
-`notifications.legion.<project>.agents.<session>`: where the registry names the target session and
-its project last said it answers, the listener hands the message off there in place of the `404`,
-the `202` keep or the exception, and the caller reads the same `200` a delivered message gets.
+`notifications.legion.<project>.agents.<session>`: where the registry names the target session,
+not released, and its project last said it answers, the listener hands the message off there in
+place of the `404`, the stored `stopped` answer, the `202` keep or the exception, and the caller
+reads the same `200` a delivered message gets. A role is handed off only once its issue has left
+the workflow; a role whose issue still runs, and a session whose idle pod the daemon released, keep
+the message for the next holder and wake it.
 A role send the API refuses `404` also raises one exception on
 `notifications.envoy.exceptions.notifications.role.<role>`, naming the reason it refused:
 `unclaimed` when nothing claims the role and nothing was kept, or `holder_lapsed` when the claim's

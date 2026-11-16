@@ -154,8 +154,9 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   `read_state` shows `settings.answers` (the daemon answers for stopped agents), `envoy_send` the
   same to its session, `issues.<ROOT>.architect.session`: the send succeeds, and the daemon's answer
   comes back to you as a direct message in the architect's name, which you post in the thread as
-  the architect's. Otherwise, or when the send answers 404, say in the thread that the architect is
-  not running and what `read_state` shows for the tree. Never invent a role token.
+  the architect's. Otherwise, or when the send answers 404 or `state: stopped` (Envoy stored it for
+  the architect's next start and no daemon took it), say in the thread that the architect is not
+  running and what `read_state` shows for the tree. Never invent a role token.
 - **Anything else** (a greeting, a question about Legion itself): answer it briefly in the thread.
 
 A request to approve a design is answered as `skill://legion-controller/references/wakes.md`

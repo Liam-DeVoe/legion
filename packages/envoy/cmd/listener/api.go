@@ -88,7 +88,10 @@ type sendResponse struct {
 	// sessionStateConnected or sessionStateStopped, by the rules sendHandler states. It is a field
 	// of its own rather than a fourth value of RecipientState, because every released plugin
 	// reads that one as a closed list of three and would fail to read an answer carrying a fourth;
-	// a client older than this field drops it. stopped is never a session.State.
+	// a client older than this field drops it. stopped is never a session.State. A send handed to
+	// a stopped Legion agent's daemon (handOffToLegion) was stored for no session and probed
+	// none, so it carries neither word: it is empty, which a client reads as connected, since that
+	// daemon answers it now from the agent's own conversation.
 	State string `json:"state"`
 	// LastSeen is that recipient's last registration (Unix ms), so an unresponsive recipient's
 	// sender can say how long it has been stalled: its entry's where it holds one, else its
@@ -800,6 +803,11 @@ const senderStampReadTimeout = 1 * time.Second
 //     by the entry's age.
 //   - An entry within the gone horizon whose probe met no responders: 200, state stopped,
 //     recipient_state by the entry's age and last_seen the entry's. The probe wins over age.
+//   - No entry, or one past the gone horizon, for a stopped Legion agent whose daemon answers for
+//     it (handOffToLegion: the agent registry names the session, not released, and its project
+//     last said it answers), whether or not a known-session record stands: 200, recipient the
+//     session and state empty, the message handed to that daemon and stored for no session. A
+//     connected_only send and one carrying "handoff": false are never handed off.
 //   - No entry, or one past the gone horizon, and a known-session record: 200, state stopped,
 //     recipient_state gone and last_seen the record's. The message is stored either way, and
 //     Envoy keeps it for 72 hours, so a session that runs again under the same id gets it from
