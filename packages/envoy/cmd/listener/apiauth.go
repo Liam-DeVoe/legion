@@ -30,13 +30,9 @@ const bearerPrefix = "Bearer "
 // or one of allowedHosts), so a page that rebinds its own name to an address reaching the
 // listener cannot use it; a listener that requires a bearer checks no Host, since such a page
 // holds no bearer. A bearer the verifier rejects is answered 401 and never falls back to another
-// authentication path; the failure class goes to the log and never to the caller, since naming
-// it would tell an unauthenticated client which credential the listener is configured for. The
-// one verifier outcome that is not a rejection is oidc.ErrIssuerUnavailable: the issuer's keys
-// could not be read, so no verdict on the token was reached, and it is answered 503 with a
-// Retry-After, as refuseBrokerToken answers a broker that gave no answer. A client does not
-// retry a 401, so Dispatch would otherwise settle every delivery sent while the issuer cannot be
-// reached as failed, on a token that may be perfectly live, where a 503 asks it to come back.
+// authentication path (refuseServiceAccountToken); the failure class goes to the log and never to
+// the caller, since naming it would tell an unauthenticated client which credential the listener
+// is configured for.
 //
 // The broker-token branch is taken only on a listener that takes this credential (brokers is
 // nil on one that does not), and there the scheme alone decides it, before both bearer ones:
@@ -108,24 +104,38 @@ func apiAuth(token string, verifier *oidc.Verifier, brokers *brokerTokens, allow
 
 		if verifier != nil {
 			if raw, ok := strings.CutPrefix(authorization, bearerPrefix); ok && oidc.LooksLikeJWT(raw) {
-				_, err := verifier.Verify(r.Context(), raw)
-				if err == nil {
-					next.ServeHTTP(w, r)
+				if _, err := verifier.Verify(r.Context(), raw); err != nil {
+					refuseServiceAccountToken(w, logger, r, err)
 					return
 				}
-				logger.Warn("listener: service-account token rejected",
-					slog.String("reason", oidc.Reason(err)),
-					slog.String("path", r.URL.Path))
-				if errors.Is(err, oidc.ErrIssuerUnavailable) {
-					w.Header().Set("Retry-After", "1")
-					writeJSONError(w, http.StatusServiceUnavailable, "the service-account token issuer cannot be reached; try again in a minute")
-					return
-				}
+				next.ServeHTTP(w, r)
+				return
 			}
 		}
 
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	})
+}
+
+// refuseServiceAccountToken answers a projected service-account token the verifier did not admit,
+// and logs the one line that says why: the class (oidc.Reason), the path, and never the token.
+//
+// One outcome is not a refusal of the caller and is not answered as one: the issuer's key set
+// could not be read, or did not answer in time (oidc.ErrIssuerUnavailable), so no verdict on the
+// token was reached. It is a 503 with a Retry-After, as refuseBrokerToken answers a broker that
+// gave no answer: a client does not retry a 401, so Dispatch would otherwise settle a delivery as
+// failed on a token that may be perfectly live, where a 503 asks it to come back. Every other
+// outcome is the same 401 and the same body every other refused credential gets here.
+func refuseServiceAccountToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, err error) {
+	logger.Warn("listener: service-account token rejected",
+		slog.String("reason", oidc.Reason(err)),
+		slog.String("path", r.URL.Path))
+	if errors.Is(err, oidc.ErrIssuerUnavailable) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusServiceUnavailable, "the service-account token issuer cannot be reached; try again shortly")
+		return
+	}
+	writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 }
 
 // refuseBrokerToken answers a DPoP presentation this listener did not admit, and logs the one
@@ -153,13 +163,13 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
 	case errors.Is(err, brokertoken.ErrBrokerUnreachable):
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again in a minute")
+		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again shortly")
 	case errors.Is(err, brokertoken.ErrRateLimited):
 		w.Header().Set("Retry-After", strconv.Itoa(brokers.retryAfter()))
 		writeJSONError(w, http.StatusTooManyRequests, "too many access tokens checked from this address")
 	case reason == brokerTokenCheckFailed:
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "this access token could not be checked; try again in a minute")
+		writeJSONError(w, http.StatusServiceUnavailable, "this access token could not be checked; try again shortly")
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}

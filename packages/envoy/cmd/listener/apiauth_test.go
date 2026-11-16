@@ -258,7 +258,7 @@ func TestAPIAuthAnswersAnIssuerOutage503(t *testing.T) {
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Errorf("Retry-After = %q, want 1", got)
 	}
-	if body, want := recorder.Body.String(), "{\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"; body != want {
+	if body, want := recorder.Body.String(), "{\"error\":\"the service-account token issuer cannot be reached; try again shortly\"}\n"; body != want {
 		t.Errorf("body = %q, want %q", body, want)
 	}
 	assertRejectionLog(t, logged, "unavailable", "Bearer "+token)

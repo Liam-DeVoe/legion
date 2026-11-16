@@ -5375,7 +5375,7 @@ Targeted issue `message.created` skips bound-route and author fan-out because th
 `/v1` accepts two bearer kinds: the `ENVOY_API_TOKEN` shared token, and
 — when `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` are both set, one without the other being a startup refusal naming the missing variable
 — a projected service-account token that issuer signed for that audience.
-A service-account token the verifier refuses is answered 401; one it could not judge because the issuer's key set could not be read (`oidc.ErrIssuerUnavailable`) is answered 503 with `Retry-After: 1`, since a client does not retry a 401 and Dispatch would otherwise settle every delivery sent during the outage as failed.
+A service-account token the verifier refuses is answered 401 (`refuseServiceAccountToken`, `cmd/listener/apiauth.go`); one it could not judge because the issuer's key set could not be read or did not answer within `oidc.DefaultKeysFetchWait` (`oidc.ErrIssuerUnavailable`) is answered 503 with `Retry-After: 1`, since a client does not retry a 401. Dispatch retries such a 503 for up to 12 seconds (`listenerTakeoverWindow`, `internal/dispatch/api/envoy_resolve.go`); an outage longer than that settles the delivery as failed.
 The listener reads the issuer's discovery document at boot and refuses to start when it cannot within `oidc.DiscoveryTimeout` (30 seconds).
 The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
 `/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
