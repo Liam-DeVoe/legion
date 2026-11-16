@@ -74,7 +74,7 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 }
 
 // After the server restarts with the service held off the bus for three seconds, every one of
-// two hundred open session connections is admitted again, each presenting a proof over its new
+// five hundred open session connections is admitted again, each presenting a proof over its new
 // connection's nonce, every decision the service makes is inside its budget, and the server gives
 // up on none of the requests it sends the service.
 //
@@ -84,14 +84,18 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // without that option a hub restart would leave the fleet with dead clients and no bus. The
 // control below is exactly that client, and it closes.
 //
-// Two hundred is more than the service's decision slots, so the reconnects that reach it together
-// queue for a slot, and few enough that the clients and the hub, which run in the test's own
-// process, keep up with them under -race on a loaded machine; at five hundred they did not, and
-// first connects failed before anything under test had started. The first connects are made
-// twenty at a time for the same reason: they set the storm up and are not the storm.
+// Five hundred is the size dispatch://INFRA-840's check c-callout-available names, and more than
+// the service's decision slots, so the reconnects that reach it together queue for a slot. Under
+// the race detector it is two hundred (raceEnabled): the clients and the hub run in the test's own
+// process, and at five hundred under -race on a loaded machine the first connects failed before
+// anything under test had started. envoy-go's plain step runs the five hundred. The first connects
+// are made twenty at a time for the same reason: they set the storm up and are not the storm.
 func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
-	const (
+	connections := 500
+	if raceEnabled {
 		connections = 200
+	}
+	const (
 		// How long the service is held off the bus. Each refused attempt costs the client the
 		// server's whole authorization timeout, two seconds, because nobody answers
 		// (nats-server server/auth_callout.go waits it out when no service is subscribed), so a
