@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import {
   keepTheReadersPlace,
   keepWhatStandsUnder,
+  movesTheReader,
   placeInView,
   putTheBoxAt,
   readersBlock,
@@ -481,6 +482,224 @@ test("a box kept above a reader who pressed a key that scrolled nothing is answe
     release();
     held.remove();
   }
+});
+
+/** A key going down as a browser reports it: the key named, the modifiers held with it, and the
+ *  box it was pressed into - the page itself where nothing has the focus. This harness holds the
+ *  module's listeners and calls them itself, so the target a browser gives the event is stated. */
+function keydown(key: string, held: KeyboardEventInit = {}, into: Element = document.body): Event {
+  const event = new KeyboardEvent("keydown", { ...held, key });
+  Object.defineProperty(event, "target", { value: into });
+  return event;
+}
+
+/** The reader presses that key, which every listener the module holds for a key hears. */
+function press(key: string, held?: KeyboardEventInit, into?: Element): void {
+  const event = keydown(key, held, into);
+  for (const listener of windowListeners.get("keydown") ?? []) listener(event);
+}
+
+/** A box that takes what is typed into it, as the editor does. */
+function anEditor(): HTMLElement {
+  const editor = document.createElement("div");
+  editor.contentEditable = "true";
+  return editor;
+}
+
+/** One press of each class of key a reader makes, and whether it moves them (`movesTheReader`).
+ *  The first three move nothing, and are held against a module that takes every key for the
+ *  reader's scroll; the last two do, and are held against one that takes none. */
+const KEYS: readonly { moves: boolean; name: string; press(): void }[] = [
+  { moves: false, name: "a modifier", press: () => press("Shift", { shiftKey: true }) },
+  {
+    moves: false,
+    name: "a letter typed into the editor",
+    press: () => press("e", {}, anEditor()),
+  },
+  {
+    moves: false,
+    name: "a copy",
+    press: () => {
+      press("Control", { ctrlKey: true });
+      press("c", { ctrlKey: true });
+    },
+  },
+  { moves: true, name: "a scroll key", press: () => press("PageDown") },
+  { moves: true, name: "Tab", press: () => press("Tab") },
+];
+
+for (const key of KEYS) {
+  const outcome = key.moves ? "waits for the movement that key begins" : "is answered";
+
+  // A panel's arrival: the document's own keeper, and a panel landing above the reader.
+  test(`a panel landing above a reader who pressed ${key.name} ${outcome}`, () => {
+    const page = pageOf(40, 0);
+    page.scrollTo(1_250);
+    const release = keepTheReadersPlace(page.drawn);
+    try {
+      key.press();
+      page.grow(3, 332);
+      page.resized();
+
+      expect(page.scrollY()).toBe(key.moves ? 1_250 : 1_582);
+    } finally {
+      release();
+    }
+  });
+
+  // The editor's build: the keeper of the box the page holds for its chrome until the editor's
+  // first batch (`AfterTheFirstBatch.tsx`), and the chrome landing in it taller than the box.
+  test(`the chrome landing in the editor's build above a reader who pressed ${key.name} ${outcome}`, () => {
+    const page = pageOf(40, 0);
+    page.scrollTo(1_250);
+    let height = 120;
+    const held = document.createElement("div");
+    held.getBoundingClientRect = () => ({ bottom: -100 + height, height, top: -100 }) as DOMRect;
+    document.body.append(held);
+    const release = keepWhatStandsUnder(held);
+    try {
+      key.press();
+      height = 180;
+      page.resized();
+
+      expect(page.scrollY()).toBe(key.moves ? 1_250 : 1_310);
+    } finally {
+      release();
+      held.remove();
+    }
+  });
+}
+
+// A key that scrolls is a wheel to the engine that animates it. In Playwright's WebKit 27.2 a
+// PageDown ran 576 px over 13 frames alone and stopped after 92 to 110 px with one pixel written
+// by a script two frames in, and its first scroll came in the key's own frame or the one after
+// it: so the frame after the key may pass with no scroll in it and the keeper still stands down.
+test("a growth above a reader whose key-driven scroll is still moving leaves that scroll alone", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_250);
+  const release = keepTheReadersPlace(page.drawn);
+  try {
+    press("PageDown");
+    page.frame();
+    // The first frame of the scroll the engine animates for that key, a frame after the key,
+    // and a block above the reader drawn at its own height in it.
+    page.scrollTo(1_342);
+    page.frame();
+    page.grow(3, 2);
+    page.resized();
+    expect(page.scrollY()).toBe(1_342);
+
+    // Two frames with no scroll in them end it, as they end a wheel's.
+    page.frame();
+    page.frame();
+    page.grow(3, 30);
+    page.resized();
+
+    expect(page.scrollY()).toBe(1_372);
+  } finally {
+    release();
+  }
+});
+
+/** What `movesTheReader` reads each of `keys` as, pressed with `held` into `into`. */
+function whichMove(
+  keys: readonly string[],
+  into?: Element,
+  held?: KeyboardEventInit
+): Record<string, boolean> {
+  return Object.fromEntries(keys.map((key) => [key, movesTheReader(keydown(key, held, into))]));
+}
+
+// The one reading of a key that both watches make (`READER_SCROLLS` here, `READER_ACTIONS` in
+// `refocus-when-settled.ts`): a key moves the reader where its own default action scrolls or
+// takes the focus somewhere else. Measured in Playwright's WebKit 27.2 and Chromium 156, three
+// presses each on a probe page: Space, an arrow, Home and End scrolled the page from the page
+// and moved it by 0 px from an editable box, PageDown moved it from both, and Shift and a letter
+// moved it from neither.
+test("a key pressed on the page moves the reader where its own action scrolls or moves the focus", () => {
+  expect(
+    whichMove([
+      " ",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "ArrowUp",
+      "End",
+      "Home",
+      "PageDown",
+      "PageUp",
+      "Tab",
+    ])
+  ).toEqual({
+    " ": true,
+    ArrowDown: true,
+    ArrowLeft: true,
+    ArrowRight: true,
+    ArrowUp: true,
+    End: true,
+    Home: true,
+    PageDown: true,
+    PageUp: true,
+    Tab: true,
+  });
+  expect(whichMove(["Alt", "Control", "Enter", "Escape", "Meta", "Shift", "e"])).toEqual({
+    Alt: false,
+    Control: false,
+    Enter: false,
+    Escape: false,
+    Meta: false,
+    Shift: false,
+    e: false,
+  });
+  // A copy, a paste and a select-all are a letter with a modifier held.
+  expect(whichMove(["a", "c", "v"], document.body, { ctrlKey: true })).toEqual({
+    a: false,
+    c: false,
+    v: false,
+  });
+  expect(whichMove(["a", "c", "v"], document.body, { metaKey: true })).toEqual({
+    a: false,
+    c: false,
+    v: false,
+  });
+});
+
+test("a key typed into a field moves the reader only where it leaves the field or pages it", () => {
+  const fields: Record<string, HTMLElement> = {
+    "a comment box": document.createElement("textarea"),
+    "a select": document.createElement("select"),
+    "an answer box": document.createElement("input"),
+    "the editor": anEditor(),
+  };
+  for (const [name, field] of Object.entries(fields)) {
+    expect({
+      [name]: whichMove(
+        [" ", "ArrowDown", "ArrowUp", "End", "Home", "PageDown", "PageUp", "Tab", "e"],
+        field
+      ),
+    }).toEqual({
+      [name]: {
+        " ": false,
+        ArrowDown: false,
+        ArrowUp: false,
+        End: false,
+        Home: false,
+        PageDown: true,
+        PageUp: true,
+        Tab: true,
+        e: false,
+      },
+    });
+  }
+});
+
+test("a wheel, a touch and a press move the reader, and a keydown that names no key does not", () => {
+  expect(
+    ["pointerdown", "touchmove", "touchstart", "wheel"].map((type) =>
+      movesTheReader(new Event(type))
+    )
+  ).toEqual([true, true, true, true]);
+  expect(movesTheReader(new Event("keydown"))).toBe(false);
 });
 
 test("the page is left alone once the document has gone", () => {

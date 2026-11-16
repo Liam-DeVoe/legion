@@ -458,3 +458,125 @@ test("a reader scrolling the reading column ends the watch", async () => {
     column.remove();
   }
 });
+
+/** The two times the page puts a reader back while it is still moving under them, and a reader
+ *  may be pressing keys through either: the editor being built over the draw, whose blocks
+ *  paint at their own height after the put-back, and a panel landing above a reader deep in the
+ *  document, which the page's own keeper answers. */
+type Situation = "a panel's arrival" | "the editor's build";
+
+/** A key going down as a browser reports it: the key named, the modifiers held with it, and the
+ *  box it was pressed into - the page itself where nothing has the focus. */
+function press(key: string, held: KeyboardEventInit = {}, into: Element = document.body): void {
+  into.dispatchEvent(new KeyboardEvent("keydown", { ...held, bubbles: true, key }));
+}
+
+/**
+ * Whether the watch still puts the reader back after `act` in `situation`: whether a growth of
+ * the drawn document after it is answered by the put-back running again. `act` is given the
+ * editor, which is the drawn root itself and takes what is typed into it.
+ */
+async function stillPutsThemBack(
+  situation: Situation,
+  act: (editor: HTMLElement) => void
+): Promise<boolean> {
+  pageScroll();
+  const drawn = drawnRoot();
+  drawn.element.contentEditable = "true";
+  document.body.append(drawn.element);
+  let focused = 0;
+  const stop = refocusWhenSettled(() => (focused += 1), drawn.element);
+  try {
+    if (situation === "a panel's arrival") {
+      // Long after the put-back's own scroll: a panel lands above the document as the reader
+      // acts, and the page's keeper answers it through the one call that says who scrolled
+      // (`moveTheScroll`), which the browser reports in a later turn.
+      await Bun.sleep(AFTER_THE_CORRECTION);
+      act(drawn.element);
+      drawn.growAbove(88);
+      moveTheScroll(drawn.element, 88);
+      await Bun.sleep(0);
+    } else {
+      act(drawn.element);
+    }
+    drawn.grow(300);
+    const until = Date.now() + AFTER_THE_QUIET;
+    while (focused === 0 && Date.now() < until) await Bun.sleep(10);
+    return focused > 0;
+  } finally {
+    stop();
+    drawn.element.remove();
+    restoreScroll?.();
+    restoreScroll = undefined;
+  }
+}
+
+/** What the watch does in each situation after the two acts every key is read against: nothing
+ *  at all, and a turn of the wheel. Read once for each and kept, since each reading waits the
+ *  watch's own windows out. */
+const references = new Map<string, Promise<boolean>>();
+function reference(situation: Situation, act: "a wheel" | "nothing"): Promise<boolean> {
+  const name = `${act} in ${situation}`;
+  let read = references.get(name);
+  if (read === undefined) {
+    read = stillPutsThemBack(situation, () => {
+      if (act === "a wheel") window.dispatchEvent(new Event("wheel"));
+    });
+    references.set(name, read);
+  }
+  return read;
+}
+
+/** One press of each class of key a reader makes, and whether it moves them (`movesTheReader`,
+ *  `readers-place.ts`, which the page's keepers read too). The first three move nothing, and are
+ *  held against a watch that takes every key for the reader moving on; the last two do, and are
+ *  held against one that takes none. */
+const KEYS: readonly { moves: boolean; name: string; press(editor: HTMLElement): void }[] = [
+  { moves: false, name: "a modifier", press: () => press("Shift", { shiftKey: true }) },
+  {
+    moves: false,
+    name: "a letter typed into the editor",
+    press: (editor) => press("e", {}, editor),
+  },
+  {
+    moves: false,
+    name: "a copy",
+    press: () => {
+      press("Control", { ctrlKey: true });
+      press("c", { ctrlKey: true });
+    },
+  },
+  { moves: true, name: "a scroll key", press: () => press("PageDown") },
+  { moves: true, name: "Tab", press: () => press("Tab") },
+];
+
+// A reader who presses a key that moves nothing is still where the page put them, so the
+// put-back goes on; one who presses a key that scrolls or moves the focus has the page. Pressed
+// through the editor's build with every key ending the watch, Shift left a reader 924.6 px from
+// their place in 5 runs of 8 (`e2e/large-documents-build.e2e.ts`, "the editor opens the document
+// where its reader had got to").
+//
+// Each row reads its key against what this same watch does after nothing and after a wheel,
+// rather than against a count of re-runs: what a landing does once the reader has or has not
+// moved on is the watch's own rule, held by the rows above, and a change to it is not a change
+// to which keys move a reader. The first row of each situation holds those two readings apart,
+// because a watch that did the same after both would leave the rows under it reading nothing:
+// should the landing's own rule ever change that way, that row is red and says so.
+for (const situation of ["the editor's build", "a panel's arrival"] as const) {
+  test(`a wheel and no act at all leave the put-back differently during ${situation}`, async () => {
+    const untouched = await reference(situation, "nothing");
+
+    expect(await reference(situation, "a wheel")).not.toBe(untouched);
+  });
+
+  for (const key of KEYS) {
+    const outcome = key.moves
+      ? "is the reader moving on, as a wheel is"
+      : "leaves the put-back as no key at all leaves it";
+    test(`${key.name} pressed during ${situation} ${outcome}`, async () => {
+      const read = await stillPutsThemBack(situation, key.press);
+
+      expect(read).toBe(await reference(situation, key.moves ? "a wheel" : "nothing"));
+    });
+  }
+}

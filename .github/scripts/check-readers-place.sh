@@ -76,11 +76,12 @@
 # line directly above the site, saying why this site is not the page's place-keeping. Two kinds
 # of site have one today, both in the Proof editor and each a scroll it really makes - a
 # ProseMirror transaction's own `scrollIntoView()` flag, which scrolls the caret's ancestors when
-# the view applies the transaction, on the keystroke the reader has just made, and a keystroke
-# has already ended every landing correction watching that box (`READER_ACTIONS`); and the
-# editor's own focus scroll, which is the Proof editor placing its own selection inside its own
-# DOM, and which the host that asked for it records as the page's own doing (`focusInEditor`,
-# `corrected()` in `features/doc/refocus-when-settled.ts`).
+# the view applies the transaction, on the text the reader has just typed, and that typing ends
+# every landing correction watching that box, by the selection it changes in the document or by
+# the scroll itself, which the correction did not make (`selected()` and `scrolled()` in
+# `features/doc/refocus-when-settled.ts`); and the editor's own focus scroll, which is the Proof
+# editor placing its own selection inside its own DOM, and which the host that asked for it
+# records as the page's own doing (`focusInEditor`, `corrected()` in that same file).
 # The window is one line rather than the five the fireEvent gate allows, because each of these
 # sites is a statement of its own and the reason has to stand against the site it excuses: a
 # reason five lines up is a reason for whatever was there when it was written.

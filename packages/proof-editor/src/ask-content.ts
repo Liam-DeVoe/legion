@@ -177,11 +177,11 @@ export const brokenAskInputGuards: EditorProps = {
       if (inputType === "insertText" && data) {
         guardBrokenAskTextInput(view, from, to, data, () =>
           // ProseMirror's own transaction flag: applying this transaction scrolls the caret's
-          // ancestors to keep it in sight, on the keystroke the reader has just made. A
-          // keystroke is the reader taking the page over and has already ended every landing
-          // correction watching that box (`READER_ACTIONS`,
-          // `features/doc/refocus-when-settled.ts` in Dispatch), so there is no kept place for
-          // this scroll to move out from under.
+          // ancestors to keep it in sight, on the text the reader has just typed over a
+          // selection. That typing ends every landing correction watching that box, by the
+          // selection it changes in the document or by this scroll itself, which the correction
+          // did not make (`selected()` and `scrolled()`, `features/doc/refocus-when-settled.ts`
+          // in Dispatch), so the place it kept is given up to the reader's caret.
           view.state.tr.insertText(data).scrollIntoView()
         );
       } else if (inputType.startsWith("delete")) {

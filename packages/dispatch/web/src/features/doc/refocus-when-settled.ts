@@ -1,7 +1,17 @@
 import { mermaidDrawsSettled, mermaidDrawsWaiting } from "../refs/mermaid-diagrams";
-import { scrollportTop, thePageLeftItThere, whatScrolls, whereTheReaderIs } from "./readers-place";
+import {
+  movesTheReader,
+  scrollportTop,
+  thePageLeftItThere,
+  whatScrolls,
+  whereTheReaderIs,
+} from "./readers-place";
 
-/** What a reader does to move on from where a link put them: press, scroll, touch or type. */
+/** What a reader does to move on from where a link put them: press, scroll, touch, or press a
+ *  key that moves them. Which keys those are is read where the page's keepers read it
+ *  (`movesTheReader`, `readers-place.ts`), so the two watches cannot come to disagree about a
+ *  key: a modifier, a copy and a letter typed into a field move nobody, and a reader who presses
+ *  one is still where the link, or the put-back after the editor's swap, left them. */
 const READER_ACTIONS = ["pointerdown", "wheel", "touchstart", "keydown"] as const;
 
 /** How long a correction is made at all. A drawing that never settles - a card that re-measures
@@ -34,7 +44,7 @@ export const QUIET_MS = 200;
  *  drew for 40 s, and once for 136 s, on the same pod: no placement's bound covers that, since
  *  a column still being written ten seconds after the reader opened it is one they have long
  *  since taken over - which ends the placement itself, as their first press, scroll, touch or
- *  key always does. */
+ *  key in the column always does, a modifier pressed alone aside (`pane-placement.ts`). */
 export const COLUMN_LIMIT_MS = 10_000;
 
 /** How long the movement a correction started is still that correction's own. A scroll this
@@ -93,21 +103,26 @@ const STILL_PX = 1;
  *
  * It runs only while nobody but the page itself has moved the page since this was called, so a
  * reader who moved on is never pulled back. Four things end it, and the first three are all
- * "the reader has the page now": a press, a wheel, a touch or a key; a scroll of the box
- * carrying the document that neither this watch's own corrections nor the page's own
- * place-keeping left there, which is how a scrollbar drag, a find-in-page jump, an assistive
- * tool and a scroll made over the automation protocol end it though they fire none of those
- * four events; and a selection change inside the document, a reader working in the page rather
- * than waiting for a link to land. The fourth is the limit. What is not the reader is the page
- * holding the reader still while it draws, in either of the two ways it does that. The page's
- * own place-keeping - `keepTheReadersPlace` and `keepWhatStandsUnder`, which scroll through
- * `moveTheScroll` and are known by what it records there (`thePageLeftItThere`,
- * `readers-place.ts`) - and the browser's own scroll anchoring, which answers a growth above
- * the document by scrolling the box by exactly what grew and so leaves the document standing
- * on the line of the box it was already on, moving nothing on the reader's screen. A growth
- * either of them answers moves this watch's target too, so it goes on watching from where
- * they left the page; a reader who moves the page moves what it draws with them, so neither
- * reading ever excuses one of their moves.
+ * "the reader has the page now": a press, a wheel, a touch or a key that moves them
+ * (`READER_ACTIONS`); a scroll of the box carrying the document that neither this watch's own
+ * corrections nor the page's own place-keeping left there, which is how a scrollbar drag, a
+ * find-in-page jump, an assistive tool and a scroll made over the automation protocol end it
+ * though they fire none of those four events; and a selection change inside the document, a
+ * reader working in the page rather than waiting for a link to land. The fourth is the limit.
+ * A key that moves nothing is not among them: this watch is also what puts a reader back on
+ * their own place once the editor is swapped in over the draw (`ProofDocument`), and one that
+ * ended on any key left a reader who had pressed Shift during the build 924.6 px from where
+ * they were, in 5 runs of 8 (`e2e/large-documents-build.e2e.ts`).
+ *
+ * What is not the reader is the page holding the reader still while it draws, in either of the
+ * two ways it does that. The page's own place-keeping - `keepTheReadersPlace` and
+ * `keepWhatStandsUnder`, which scroll through `moveTheScroll` and are known by what it records
+ * there (`thePageLeftItThere`, `readers-place.ts`) - and the browser's own scroll anchoring,
+ * which answers a growth above the document by scrolling the box by exactly what grew and so
+ * leaves the document standing on the line of the box it was already on, moving nothing on the
+ * reader's screen. A growth either of them answers moves this watch's target too, so it goes on
+ * watching from where they left the page; a reader who moves the page moves what it draws with
+ * them, so neither reading ever excuses one of their moves.
  *
  * Returns the dispose, which removes the listeners and drops any correction still to come;
  * they also go once the limit has passed.
@@ -160,9 +175,14 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
     window.clearTimeout(limit);
     window.clearTimeout(correcting);
     sizes?.disconnect();
-    for (const type of READER_ACTIONS) window.removeEventListener(type, stop, true);
+    for (const type of READER_ACTIONS) window.removeEventListener(type, acted, true);
     window.removeEventListener("scroll", scrolled, true);
     document.removeEventListener("selectionchange", selected);
+  };
+  /** The reader did one of `READER_ACTIONS`, which ends this unless it was a key that moves
+   *  nothing. */
+  const acted = (event: Event) => {
+    if (movesTheReader(event)) stop();
   };
   /** A scroll this watch owns has just been made - its own correction, or the page's own
    *  place-keeping - and `at` is where that left the box, where it is already read. Where it
@@ -242,7 +262,7 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
     });
   };
   for (const type of READER_ACTIONS) {
-    window.addEventListener(type, stop, { capture: true, passive: true });
+    window.addEventListener(type, acted, { capture: true, passive: true });
   }
   if (root !== undefined) {
     // `capture`, because a column's scroll does not bubble; `passive`, because this reads the
