@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -52,9 +53,11 @@ const referencesSinceWait = time.Second
 // structural edges. Cross-project by design: no project filter. A block reference names a
 // block node carrying its whole current text; one pinned to a version of its document, or a
 // revision of its ask's parts or of its comment, also reads the block as that version or revision
-// recorded it (blockReferenceNode, itemBlockReferenceNode). A ?kind= this build does not emit - a
-// newer build's, during a release - has no edges here, and the answer lists it in unknown_kinds
-// rather than refusing the read.
+// recorded it (blockReferenceNode, itemBlockReferenceNode). A finding of a lens
+// (`dispatch://lens/<uuid>#b-<id>`) is the registry's lens_block node, read as a lens, a risk or a
+// constraint is (refs.Node). A ?kind= this build does not emit - a newer build's, during a
+// release - has no edges here, and the answer lists it in unknown_kinds rather than refusing the
+// read.
 //
 // A since read keeps only mentions whose event is at or below the safe horizon
 // (events.Horizon), at or below which every event is final. A poller passes the highest
@@ -96,7 +99,10 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		query.Kind, query.ID = target.Kind, target.ID
 	}
 	var node model.GraphNode
-	if ref.Kind == "block" {
+	// A finding of a lens is a block of no document and of no item: no version or revision of one
+	// is on record and no reference pins one (text.ParseRef reads none), so it is read at its
+	// address as any node of the registry is, through its own kind's predicate.
+	if ref.Kind == "block" && query.Kind != graphstore.KindLensBlock {
 		if ref.Item != "" {
 			node, err = s.itemBlockReferenceNode(r.Context(), who, query, ref)
 		} else {
