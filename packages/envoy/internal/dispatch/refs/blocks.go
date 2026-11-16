@@ -63,7 +63,8 @@ type Pointer struct {
 // also returns what else a Referenced by panel or a link shows that the version moved: the target
 // of each pair it kept in a block whose text it changed (the block's text is that link's excerpt),
 // and each block it changed or deleted that some source cites (citedBlocks), whose text every
-// link to it and its own panel show.
+// link to it and its own panel show. serverURL is the deployment whose dashboard URLs each
+// block's stored excerpt is cut around (BlockExcerpt).
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -74,6 +75,7 @@ func IndexBlocks(
 	blocks []model.ArtifactBlock,
 	located []text.Located,
 	pointers []Pointer,
+	serverURL string,
 ) ([]Target, error) {
 	stored, err := storedBlockSums(ctx, tx, artifactID)
 	if err != nil {
@@ -99,7 +101,7 @@ func IndexBlocks(
 			continue
 		}
 		ids, types, sums = append(ids, block.ID), append(types, block.Type), append(sums, hexSum)
-		excerpts = append(excerpts, BlockExcerpt(body))
+		excerpts = append(excerpts, BlockExcerpt(body, serverURL))
 		textIDs, texts = append(textIDs, block.ID), append(texts, &body)
 	}
 	deleted := make([]string, 0, len(stored))

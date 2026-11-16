@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"runtime"
+	"strconv"
 	"sync"
 
 	"golang.org/x/sync/singleflight"
@@ -491,11 +492,48 @@ func (n *graphNodeRead) shape(reader *displayTreeReader) {
 	reader.text(&n.TextTree, n.GraphNode.Text)
 }
 
-// graphReferencesRead is what GET /api/v1/references answers: the queried node shaped to carry
-// its trees, and the edges, which carry no stored text of their own.
+// graphExcerptRead is the excerpt an edge shows, with the tree of its text. Every excerpt that
+// has a text carries one, a name's as well as a body's head: the head of a block, of an ask, a
+// comment or a message, or a document's mention at the block holding it, is drawn through the
+// renderer from this tree, and an issue's title, a document's name and a component's title
+// (refs.Edges) are drawn as the characters they are, so their tree is sent and never read. One
+// rule for every excerpt keeps the answer's own promise that a text with a `_tree` beside it
+// always has it, which the dashboard's recordings hold every answer to.
+type graphExcerptRead struct {
+	model.GraphExcerpt
+	TextTree model.DisplayTree `json:"text_tree,omitempty"`
+}
+
+// graphEdgeRead is one edge of a reference-graph read as the dashboard reads it: the edge, with
+// its excerpt carrying the tree of the excerpt's text.
+type graphEdgeRead struct {
+	model.GraphEdge
+	Excerpt *graphExcerptRead `json:"excerpt,omitempty"`
+}
+
+// graphEdgeReads is a read's edges shaped for the dashboard, each excerpt's text registered with
+// the request's reader, an absent list staying absent.
+func graphEdgeReads(edges []model.GraphEdge, reader *displayTreeReader) []graphEdgeRead {
+	if edges == nil {
+		return nil
+	}
+	reads := make([]graphEdgeRead, len(edges))
+	for index := range edges {
+		read := &reads[index]
+		read.GraphEdge = edges[index]
+		if excerpt := edges[index].Excerpt; excerpt != nil {
+			read.Excerpt = &graphExcerptRead{GraphExcerpt: *excerpt}
+			reader.text(&read.Excerpt.TextTree, excerpt.Text)
+		}
+	}
+	return reads
+}
+
+// graphReferencesRead is what GET /api/v1/references answers: the queried node and every edge
+// shaped to carry their trees.
 type graphReferencesRead struct {
-	Node  graphNodeRead     `json:"node"`
-	Edges []model.GraphEdge `json:"edges"`
+	Node  graphNodeRead   `json:"node"`
+	Edges []graphEdgeRead `json:"edges"`
 	// UnknownKinds is model.GraphReferences' own member, kept here because this shape answers
 	// that route now: the edge kinds this build does not know, which a newer build wrote while
 	// two builds serve one database.
@@ -514,6 +552,74 @@ type architectureComponentRead struct {
 type architectureTreeRead struct {
 	model.ArchitectureTree
 	Components []architectureComponentRead `json:"components"`
+}
+
+// handoffRead is a handoff as the dashboard reads it: the handoff, with the tree of every text
+// its card draws from the body.
+type handoffRead struct {
+	model.Handoff
+	// FieldTrees is the tree of each string the card draws from the body, keyed by that string's
+	// JSON path: a top-level field's own name, and `proof.<n>` for the nth entry of a `proof`
+	// list, counted from 0 - the rows handoffFields splits the body into
+	// (web/src/features/conversation/conversation-model.ts). A value that is no string - a
+	// number, a boolean, null, an object, a list other than proof, or an entry of proof that is
+	// no string - is drawn as the JSON it is and has none, as an empty string has none. The root
+	// path "" is the whole body, sent only when the body is not a JSON object, which the card
+	// then draws whole; the API refuses such a body (createHandoff), so one is a body written
+	// before that rule.
+	FieldTrees map[string]model.DisplayTree `json:"field_trees,omitempty"`
+}
+
+// handoffProofField is the body field whose list the card splits into one row per entry.
+const handoffProofField = "proof"
+
+// shape registers each string of the body with reader, each filling its own key of FieldTrees.
+// With no reader the body is not decoded at all: only a caller that asked for the trees pays for
+// reading it.
+func (h *handoffRead) shape(reader *displayTreeReader) {
+	h.FieldTrees = nil
+	if reader == nil {
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(h.Body), &fields); err != nil || fields == nil {
+		h.registerText(reader, "", h.Body)
+		return
+	}
+	for name, value := range fields {
+		if name == handoffProofField && len(value) > 0 && value[0] == '[' {
+			var entries []json.RawMessage
+			if json.Unmarshal(value, &entries) == nil {
+				for index, entry := range entries {
+					h.registerString(reader, name+"."+strconv.Itoa(index), entry)
+				}
+			}
+			continue
+		}
+		h.registerString(reader, name, value)
+	}
+}
+
+// registerString registers the text value holds at path, when value is a JSON string.
+func (h *handoffRead) registerString(reader *displayTreeReader, path string, value json.RawMessage) {
+	if len(value) == 0 || value[0] != '"' {
+		return
+	}
+	var text string
+	if json.Unmarshal(value, &text) == nil {
+		h.registerText(reader, path, text)
+	}
+}
+
+// registerText registers text to fill FieldTrees at path. A map's values have no address, so the
+// tree is handed over rather than pointed at (displayTreeReader.textInto).
+func (h *handoffRead) registerText(reader *displayTreeReader, path, text string) {
+	reader.textInto(func(tree json.RawMessage) {
+		if h.FieldTrees == nil {
+			h.FieldTrees = make(map[string]model.DisplayTree)
+		}
+		h.FieldTrees[path] = model.DisplayTree(tree)
+	}, text)
 }
 
 // newAskAnswerWithTree is an answer a read gives with the tree of its text, nil where nobody

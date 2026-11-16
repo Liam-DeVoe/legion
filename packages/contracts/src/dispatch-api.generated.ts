@@ -4707,12 +4707,12 @@ export interface components {
       method: string;
       pattern: string;
     };
-    GraphEdge: {
+    GraphEdgeWithTrees: {
       block?: components["schemas"]["GraphNode"];
       /** Format: date-time */
       created_at: string;
       direction: string;
-      excerpt?: components["schemas"]["GraphExcerpt"];
+      excerpt?: components["schemas"]["GraphExcerptWithTrees"];
       kind: string;
       node: components["schemas"]["GraphNode"];
       source_seq: null | number;
@@ -4720,6 +4720,16 @@ export interface components {
     GraphExcerpt: {
       block_id?: string;
       text: string;
+    };
+    GraphExcerptWithTrees: {
+      block_id?: string;
+      text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     GraphNode: {
       block_id?: string;
@@ -4773,7 +4783,7 @@ export interface components {
       };
     };
     GraphReferences: {
-      edges: components["schemas"]["GraphEdge"][] | null;
+      edges: components["schemas"]["GraphEdgeWithTrees"][] | null;
       node: components["schemas"]["GraphNodeRead"];
       unknown_kinds?: string[];
     };
@@ -4782,6 +4792,13 @@ export interface components {
       body: string;
       /** Format: date-time */
       created_at: string;
+      field_trees?: {
+        [key: string]: {
+          type: string;
+        } & {
+          [key: string]: unknown;
+        };
+      };
       id: string;
       issue_key: string;
       phase: string;
@@ -13854,8 +13871,9 @@ export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
-export type GraphEdge = components["schemas"]["GraphEdge"];
+export type GraphEdgeWithTrees = components["schemas"]["GraphEdgeWithTrees"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
+export type GraphExcerptWithTrees = components["schemas"]["GraphExcerptWithTrees"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
 export type GraphNodeRead = components["schemas"]["GraphNodeRead"];

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -452,17 +454,18 @@ func TestReferencesExcerptsCutNoReferenceInHalf(t *testing.T) {
 	}
 }
 
-// A text that opens with a reference longer than the 240-rune bound is cut to nothing, since the
-// reference is left out whole, and an edge to it carries no excerpt rather than an empty one a
-// reader would draw as an empty paragraph.
-func TestReferencesLeaveOutAnExcerptTheCutLeavesEmpty(t *testing.T) {
+// A text that opens with a URL longer than the 240-rune bound keeps its rune cut beside an edge:
+// a URL of anywhere else names nothing Dispatch holds, so the cut does not move back over it, and
+// a cut never empties the head, so the backlink is never drawn with an empty paragraph.
+func TestReferencesKeepTheExcerptOfATextOpeningWithALongURL(t *testing.T) {
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
 	legion := createReferenceAPIIssue(t, handler, "LEGION")
 	acme := createReferenceAPIIssue(t, handler, "ACME")
+	question := "https://example.com/" + strings.Repeat("x", 300) + " - yes or no?"
 	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
-		"question": "https://example.com/" + strings.Repeat("x", 300) + " - yes or no?",
+		"question": question,
 		"options":  []map[string]string{{"label": "Yes"}, {"label": "No"}},
 	}, "alice")
 	if askResponse.Code != http.StatusCreated {
@@ -481,8 +484,8 @@ func TestReferencesLeaveOutAnExcerptTheCutLeavesEmpty(t *testing.T) {
 	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.Ref != askRef {
 		t.Fatalf("outgoing edges = %#v; want one mention of the ask", outgoing.Edges)
 	}
-	if excerpt := outgoing.Edges[0].Excerpt; excerpt != nil {
-		t.Fatalf("the ask's excerpt = %#v; want none, the cut left nothing to show", excerpt)
+	if excerpt := outgoing.Edges[0].Excerpt; excerpt == nil || excerpt.Text != question[:240] {
+		t.Fatalf("the ask's excerpt = %#v; want its first 240 runes, %q", excerpt, question[:240])
 	}
 }
 
@@ -706,6 +709,77 @@ func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) 
 	specBacklinks := graphEdges(t, handler, url.Values{"to": {"dispatch://" + parent.Key + "/spec"}})
 	if specBacklinks.Node.ID != parent.PrimaryArtifactID || len(specBacklinks.Edges) != 0 {
 		t.Fatalf("spec backlinks = %#v; want the spec node with no edges", specBacklinks)
+	}
+}
+
+// Under `Dispatch-Trees: 1` every excerpt an edge shows carries the display tree of its text, the
+// tree pmdoc.DisplayJSON makes of exactly that text, and without the header none does. That
+// holds for the block holding a document's mention, which the dashboard draws through the
+// renderer, and for the child's title (child_of) and the document's name (attached_to) too,
+// which it draws as the characters they are and whose tree it never reads: one rule for every
+// excerpt keeps the answer's promise that a text with a `_tree` beside it has one.
+func TestReferencesExcerptsCarryTheirTreesOnlyUnderTheHeader(t *testing.T) {
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	createReferenceAPIProject(t, handler, "OPS")
+	parent := createReferenceAPIIssue(t, handler, "CORE")
+	child := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"project": "CORE", "title": "Child **work**", "parent": parent.Key,
+	}, "alice")
+	if child.Code != http.StatusCreated {
+		t.Fatalf("create child issue: status=%d body=%s", child.Code, child.Body.String())
+	}
+	createProjectDocument(t, handler, "OPS", "Design notes", "# Design\n\nThe *plan* lives in dispatch://"+parent.Key+" and nowhere else.\n")
+
+	target := "/api/v1/references?" + url.Values{"to": {"dispatch://" + parent.Key}}.Encode()
+	excerpts := func(trees bool) map[string]graphExcerptRead {
+		t.Helper()
+		var answer struct {
+			Edges []struct {
+				Kind    string            `json:"kind"`
+				Excerpt *graphExcerptRead `json:"excerpt"`
+			} `json:"edges"`
+		}
+		if err := json.Unmarshal(treesRequest(t, handler, target, trees).Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode GET %s (trees=%v): %v", target, trees, err)
+		}
+		byKind := make(map[string]graphExcerptRead, len(answer.Edges))
+		for _, edge := range answer.Edges {
+			if edge.Excerpt == nil {
+				t.Fatalf("GET %s (trees=%v): the %s edge carries no excerpt", target, trees, edge.Kind)
+			}
+			byKind[edge.Kind] = *edge.Excerpt
+		}
+		if len(byKind) != 3 {
+			t.Fatalf("GET %s (trees=%v) excerpts = %+v, want a mention, a child_of and an attached_to", target, trees, byKind)
+		}
+		return byKind
+	}
+
+	for kind, excerpt := range excerpts(false) {
+		if excerpt.TextTree != nil {
+			t.Errorf("without the header, the %s excerpt %q carries a tree %s", kind, excerpt.Text, excerpt.TextTree)
+		}
+	}
+	with := excerpts(true)
+	for _, row := range []struct{ name, kind, text string }{
+		{"a body's head", "mentions", "The *plan* lives in dispatch://" + parent.Key + " and nowhere else."},
+		{"a title", "child_of", "Child **work**"},
+		{"a name", "attached_to", "spec.md"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			excerpt := with[row.kind]
+			if excerpt.Text != row.text {
+				t.Fatalf("the %s excerpt = %q, want %q", row.kind, excerpt.Text, row.text)
+			}
+			want := sameShape(t, pmdoc.DisplayJSON(excerpt.Text, pmdoc.DisplayLatest))
+			if excerpt.TextTree == nil {
+				t.Fatalf("under the header, the %s excerpt %q carries no tree", row.kind, excerpt.Text)
+			}
+			if got := sameShape(t, json.RawMessage(excerpt.TextTree)); !bytes.Equal(got, want) {
+				t.Errorf("the %s excerpt's tree is\n\t%s\nwant the tree of %q\n\t%s", row.kind, got, excerpt.Text, want)
+			}
+		})
 	}
 }
 

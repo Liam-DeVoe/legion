@@ -77,7 +77,7 @@ func renderedMentionExcerpt(t *testing.T, service *docs.Service, artifactID, ref
 		t.Fatalf("no block of %s holds %s at %d: %#v", artifactID, reference, offset, blocks)
 	}
 	block := blocks[holder]
-	return model.GraphExcerpt{BlockID: block.ID, Text: refs.BlockExcerpt(markdown[block.From:block.To])}
+	return model.GraphExcerpt{BlockID: block.ID, Text: refs.BlockExcerpt(markdown[block.From:block.To], "https://dispatch.example")}
 }
 
 // documentMention is the mention of reference written by the document artifactID, whose ref_key

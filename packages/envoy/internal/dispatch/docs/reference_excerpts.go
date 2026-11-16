@@ -120,11 +120,11 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, err := refs.IndexBlocks(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
+	moved, err := refs.IndexBlocks(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree), s.serverURL)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located))
+	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.serverURL))
 }
 
 // blockPointers is each `block[]` value of the version (pmdoc.BlockPointers) as the block index
@@ -347,7 +347,7 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 			continue
 		default:
 			reader := refs.NewReader(ctx, s.store.Pool, "artifact", document.FromID, s.serverURL)
-			excerpts = refs.MentionExcerpts(markdown, blocks, reader.Mentions(markdown))
+			excerpts = refs.MentionExcerpts(markdown, blocks, reader.Mentions(markdown), s.serverURL)
 		}
 		// The reconciliation appends no event, so what it moved is named nowhere: until it stores
 		// an excerpt, the route answers a mention owed one with the document's name.

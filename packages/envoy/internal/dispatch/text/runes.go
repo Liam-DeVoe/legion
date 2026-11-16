@@ -1,9 +1,16 @@
 package text
 
 import (
+	"bytes"
+	"net/url"
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/parser"
+	markdowntext "github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 // HeadRunes returns value cut to its first limit runes; a value at or under the
@@ -34,6 +41,13 @@ func HeadWords(value string, limit int) (string, bool) {
 	return strings.TrimRight(head, " \t\n"), true
 }
 
+// longestWholeReferenceRunes is the longest reference HeadRefs keeps whole, in runes: the text it
+// reads past the cut. A reference, or a link around one, that runs further than this past the cut
+// is cut by runes, as HeadRunes cuts it. It is far longer than any reference a person writes - an
+// address to a block is a few hundred characters, a mention's link a few dozen - and short enough
+// that a cut reads the same few kilobytes whatever the length of the text it cuts.
+const longestWholeReferenceRunes = 1024
+
 // HeadRefs is value cut to at most limit runes, ellipsis included, at a place no reference
 // crosses: the cut of a text a reader is shown with its references drawn (an Inbox subject, a
 // candidate's first line, an excerpt), where HeadRunes would leave half of one - `CORE-12` of
@@ -42,200 +56,238 @@ func HeadWords(value string, limit int) (string, bool) {
 // less the ellipsis's and the ellipsis is appended: `…` for a line, as contracts.OneLineSummary
 // marks its cut, and "" for an excerpt, which marks none.
 //
-// The references are the grammar's own (referenceExtents): an address or a URL as Extract reads
-// its span, a bare issue key and a `#id` as Mentions reads its candidates, and an inline link
-// around any of them taken whole. Where one starts before the cut and ends after it, the cut
-// moves back to its start - the link's `[` where a link wraps it. The cut moves back the same way
-// where the head, with the ellipsis after it, would read a reference the text does not write:
-// `CORE-12` of `CORE-12x4`, which is no key, or an address the ellipsis joins
-// (`dispatch://agent/s1` and `…` read as the session `s1…`). A cut that moved drops the
-// whitespace before it, line breaks included, so a head never ends in the space or the line break
-// that stood before the reference it left out. A cut that moves nothing is HeadRunes' own, so a
-// text with no reference at the cut is cut as it always was, and a text that opens with a
-// reference longer than the bound is cut to the ellipsis alone: "" for an excerpt, which its
-// caller then leaves out. Only the paragraph holding the cut is read (paragraphAround): an
-// address or a key holds no whitespace at all, and a link's words may run over a line break but
-// never over a blank line. A cut that moves back to the start of its paragraph drops the blank
-// lines before it and is checked again against the paragraph before, so the ellipsis it then
-// stands beside joins no address there either.
-func HeadRefs(value string, limit int, ellipsis string) string {
+// It reads value's first limit and longestWholeReferenceRunes runes, no more, so a cut costs the
+// same on a text of any length - which every read of the replies, the backlinks and the id
+// prefixes pays for each row it cuts. The references in them are the ones Dispatch holds
+// (cutReferences): a `dispatch://` address and a dashboard URL of the deployment at serverURL as
+// Extract reads them, a bare issue key and a `#id` as Mentions reads its candidates, each taken
+// with the inline link around it whole, as goldmark reads links - a title, an address in angle
+// brackets, brackets in the words and words over a line break included. A URL of anywhere else
+// names nothing Dispatch holds, so it is cut as text is.
+//
+// Where a reference starts before the cut and ends after it, the cut moves back to its start - the
+// link's `[` where a link wraps it. It moves back the same way where the head, with the ellipsis
+// after it, does not read the references of the text it holds as the text does: a reference it
+// reads that the text does not write (`CORE-12` of `CORE-12x4`), or one the text writes whole
+// that the ellipsis joins (`dispatch://agent/s1` and `…` read as the session `s1…`). A cut that
+// moved drops the whitespace before it, line breaks included. A cut never empties the head: where
+// moving back would leave nothing before the ellipsis - a text that opens with a reference longer
+// than the bound - the rune cut stands, since a head of nothing tells a reader less than half a
+// reference does. A cut that moves nothing is HeadRunes' own.
+func HeadRefs(value string, limit int, ellipsis, serverURL string) string {
 	keep := max(limit-utf8.RuneCountInString(ellipsis), 0)
-	cut, count := 0, 0
+	cut, window, count := 0, len(value), 0
+	over := false
 	for index := range value {
 		if count == keep {
 			cut = index
 		}
 		if count == limit {
-			head := cut
-			for head > 0 {
-				start, end := paragraphAround(value, head)
-				moved := start + headCut(value[start:end], head-start, ellipsis)
-				if moved == head {
-					break
-				}
-				head = len(strings.TrimRight(value[:moved], " \t\r\n"))
-				if moved > start {
-					break
-				}
-			}
-			return value[:head] + ellipsis
+			over = true
+		}
+		if count == limit+longestWholeReferenceRunes {
+			window = index
+			break
 		}
 		count++
 	}
-	return value
+	if !over {
+		return value
+	}
+	return value[:headEnd(value[:window], window < len(value), cut, ellipsis, serverURL)] + ellipsis
 }
 
-// paragraphAround is the bytes [start, end) of the paragraph of value that holds the byte at:
-// from the start of the line after the blank line before it, or the start of value, to the line
-// break before the blank line after it, or the end of value. A blank line holds nothing but
-// spaces and tabs, as the dashboard reads one (web/src/features/refs/party-references.ts), and it
-// ends every bracket open before it, so no reference runs across one.
-func paragraphAround(value string, at int) (start, end int) {
-	start = strings.LastIndexByte(value[:at], '\n') + 1
-	for start > 0 {
-		previous := strings.LastIndexByte(value[:start-1], '\n') + 1
-		if isBlankLine(value[previous : start-1]) {
+// headEnd is where the head of window, value's first runes, cut at cut ends (HeadRefs). A
+// reference that runs to the window's edge where the window stops short of value may run further,
+// so it is no reference the cut keeps whole.
+func headEnd(window string, truncated bool, cut int, ellipsis, serverURL string) int {
+	written := cutReferences(window, serverURL)
+	if truncated {
+		written = slices.DeleteFunc(written, func(reference cutReference) bool {
+			return reference.end >= len(window)
+		})
+	}
+	head := cut
+	for head > 0 {
+		back := head
+		for _, reference := range written {
+			if reference.start < head && head < reference.end {
+				back = min(back, reference.start)
+			}
+		}
+		read := cutReferences(window[:head]+ellipsis, serverURL)
+		for _, reference := range read {
+			if reference.start < head && !slices.Contains(written, reference) {
+				back = min(back, reference.start)
+			}
+		}
+		for _, reference := range written {
+			if reference.end <= head && !slices.Contains(read, reference) {
+				back = min(back, reference.start)
+			}
+		}
+		if back == head {
 			break
 		}
-		start = previous
+		head = len(strings.TrimRight(window[:back], " \t\r\n"))
 	}
-	end = len(value)
-	for from := at; ; {
-		newline := strings.IndexByte(value[from:], '\n')
-		if newline < 0 {
-			return start, end
-		}
-		next := from + newline + 1
-		lineEnd := len(value)
-		if after := strings.IndexByte(value[next:], '\n'); after >= 0 {
-			lineEnd = next + after
-		}
-		if isBlankLine(value[next:lineEnd]) {
-			return start, from + newline
-		}
-		from = next
+	if head == 0 {
+		return cut
 	}
+	return head
 }
 
-// isBlankLine reports whether line, a line without its line break, holds nothing but spaces,
-// tabs and the carriage return of a CR LF.
-func isBlankLine(line string) bool {
-	return strings.TrimLeft(line, " \t\r") == ""
+// cutReference is one reference a text writes, as a cut reads it: the bytes [start, end) a reader
+// sees it in - the whole inline link around it, where one is - and what it names.
+type cutReference struct {
+	start, end int
+	ref        Ref
 }
 
-// headCut is where the head of paragraph cut at at ends: at itself while no reference the
-// paragraph writes crosses it and the head, with ellipsis after it, reads no reference the
-// paragraph does not write; else the start of the first such reference, less the whitespace
-// before it, checked again from there. Every move is back, so it ends.
-func headCut(paragraph string, at int, ellipsis string) int {
-	written := referenceExtents(paragraph)
-	for {
-		back := at
-		for _, reference := range written {
-			if reference.start < at && at < reference.end {
-				back = min(back, reference.start)
+// cutReferences is every reference body writes that Dispatch holds, in the reader's own terms:
+// each reference span Extract reads as a `dispatch://` address or a page of the dashboard at
+// serverURL (locateSpan), a URL of anywhere else left out, and each bare key and `#id` Mentions
+// would ask about (bareCandidates), whether or not it names anything, since a cut that splits one
+// changes what the text says. Each is widened over the inline link that holds it (linkRanges),
+// and a span that is a link's address is that address, as the link reads it, rather than the
+// span, which would run on over the `)` into whatever follows it.
+func cutReferences(body, serverURL string) []cutReference {
+	spans := referencePattern.FindAllStringIndex(body, -1)
+	links := linkRanges(body)
+	var base *url.URL
+	baseParsed := false
+	baseOf := func() *url.URL {
+		if !baseParsed {
+			base, _ = url.Parse(serverURL)
+			baseParsed = true
+		}
+		return base
+	}
+	var found []cutReference
+	add := func(start, end int, ref Ref) {
+		for _, link := range links {
+			if link.open <= start && start < link.close {
+				start, end = link.open, link.close
+				break
 			}
 		}
-		for _, reference := range referenceExtents(paragraph[:at] + ellipsis) {
-			if reference.start < at && !slices.Contains(written, reference) {
-				back = min(back, reference.start)
-			}
-		}
-		if back == at {
-			return at
-		}
-		at = len(strings.TrimRight(paragraph[:back], " \t\r\n"))
+		found = append(found, cutReference{start: start, end: end, ref: ref})
 	}
-}
-
-// extent is the bytes [start, end) of one reference in a paragraph.
-type extent struct{ start, end int }
-
-// referenceExtents is every reference paragraph writes as a reader sees it: each address and URL
-// span (referencePattern, less what trimReference drops, and ending where a link around it
-// closes, linkAddress), and each bare key and `#id` candidate (bareCandidates), whether or not it
-// names anything, each widened over the inline link whose address it is (linkAround). None is
-// parsed: a cut that splits a reference changes what the text says, whatever the reference names.
-func referenceExtents(paragraph string) []extent {
-	spans := referencePattern.FindAllStringIndex(paragraph, -1)
-	found := make([]extent, 0, len(spans))
 	for _, span := range spans {
-		address := linkAddress(paragraph, span[0], trimReference(paragraph[span[0]:span[1]]))
-		found = append(found, linkAround(paragraph, span[0], span[0]+len(address)))
-	}
-	candidates, _, _ := bareCandidates(paragraph, spans)
-	for _, candidate := range candidates {
-		end := candidate.offset + len(candidate.key)
-		if candidate.key == "" {
-			end = candidate.offset + 1 + len(candidate.id)
+		start, raw := span[0], trimReference(body[span[0]:span[1]])
+		for _, link := range links {
+			if link.open < start && start < link.close && link.destination != "" &&
+				strings.HasPrefix(body[start:], link.destination) {
+				raw = link.destination
+				break
+			}
 		}
-		found = append(found, linkAround(paragraph, candidate.offset, end))
+		if raw == "" {
+			continue
+		}
+		if ref, ok := locateSpan(raw, baseOf, true); ok && ref.Kind != "url" {
+			add(start, start+len(raw), ref)
+		}
+	}
+	candidates, _, _ := bareCandidates(body, spans)
+	for _, candidate := range candidates {
+		if candidate.key != "" {
+			add(candidate.offset, candidate.offset+len(candidate.key),
+				Ref{Kind: "issue", IssueKey: candidate.key, ID: candidate.key})
+			continue
+		}
+		add(candidate.offset, candidate.offset+1+len(candidate.id), Ref{Kind: "ask", ID: candidate.id})
 	}
 	return found
 }
 
-// linkAddress is raw, the reference span at start, ended where a markdown link's address ends
-// when a link's `](` opens right before it: at the first `)` no `(` in it opens, which closes the
-// link whatever follows it, so `[w](dispatch://x)…` is the link and the ellipsis after it. Any
-// other span is raw as trimReference left it.
-func linkAddress(paragraph string, start int, raw string) string {
-	if start < 2 || paragraph[start-2:start] != "](" {
-		return raw
-	}
-	depth := 0
-	for index := range len(raw) {
-		switch raw[index] {
-		case '(':
-			depth++
-		case ')':
-			if depth == 0 {
-				return raw[:index]
-			}
-			depth--
-		}
-	}
-	return raw
+// linkRange is one inline link or picture a text writes: its `[`, or the `!` before it, one past
+// its `)`, and its address as the link reads it.
+type linkRange struct {
+	open, close int
+	destination string
 }
 
-// linkAround is the reference at [start, end) widened over the inline link whose address it is,
-// where one wraps it: from the `[` that opens the link's words, or the `!` before it for a
-// picture, through the `)` that closes the link. It reads the words back as CommonMark reads
-// them, as the dashboard's inlineLinks does (web/src/features/refs/party-references.ts): a
-// backslash takes the character after it as a literal one, brackets that balance stand inside
-// the words, so `[@Alice [x]](dispatch://agent/s1)` opens at the first `[` rather than at the
-// `[x]` inside it, and the words may run over a line break. A blank line ends every bracket open
-// before it, and paragraph holds none, so the search ends at its start.
-func linkAround(paragraph string, start, end int) extent {
-	if end >= len(paragraph) || paragraph[end] != ')' || start < 2 || paragraph[start-2:start] != "](" {
-		return extent{start, end}
+// linkRanges is every inline link and picture body writes, in the order they open, as goldmark
+// reads CommonMark's links: a title, an address in angle brackets, balanced brackets in the words,
+// words over a line break, a backslash escape and no link inside another, all of it the parser's.
+// goldmark records where a link opens (ast.Node.Pos) but not where it closes, so its link parser
+// is wrapped to note where the reader stands once it has read one (rangedLinkParser).
+func linkRanges(body string) []linkRange {
+	if !strings.Contains(body, "[") {
+		return nil
 	}
-	depth := 0
-	for at := start - 3; at >= 0; at-- {
-		if paragraph[at] != '[' && paragraph[at] != ']' || escapedAt(paragraph, at) {
-			continue
-		}
-		if paragraph[at] == ']' {
-			depth++
-			continue
-		}
-		if depth > 0 {
-			depth--
-			continue
-		}
-		if at > 0 && paragraph[at-1] == '!' && !escapedAt(paragraph, at-1) {
-			at--
-		}
-		return extent{at, end + 1}
-	}
-	return extent{start, end}
+	var ranges []linkRange
+	context := parser.NewContext()
+	context.Set(linkRangesKey, &ranges)
+	linkReader.Parse(markdowntext.NewReader([]byte(body)), parser.WithContext(context))
+	slices.SortFunc(ranges, func(left, right linkRange) int { return left.open - right.open })
+	return ranges
 }
 
-// escapedAt reports whether the character at at is the literal one a backslash takes it for: an
-// odd number of backslashes stands before it.
-func escapedAt(text string, at int) bool {
-	slashes := 0
-	for at--; at >= 0 && text[at] == '\\'; at-- {
-		slashes++
+// linkRangesKey holds, in one parse's context, the links its link parser has read.
+var linkRangesKey = parser.NewContextKey()
+
+// linkReader is goldmark's CommonMark parser with its link parser wrapped (rangedLinkParser). It
+// holds no state of its own between parses, so one serves every cut.
+var linkReader = parser.NewParser(
+	parser.WithBlockParsers(parser.DefaultBlockParsers()...),
+	parser.WithInlineParsers(rangedInlineParsers()...),
+	parser.WithParagraphTransformers(parser.DefaultParagraphTransformers()...),
+)
+
+// rangedInlineParsers is goldmark's inline parsers with its link parser wrapped.
+func rangedInlineParsers() []util.PrioritizedValue {
+	parsers := parser.DefaultInlineParsers()
+	link := parser.NewLinkParser()
+	for index, prioritized := range parsers {
+		if inline, held := prioritized.Value.(parser.InlineParser); held && inline == link {
+			parsers[index].Value = rangedLinkParser{InlineParser: inline}
+		}
 	}
-	return slashes%2 == 1
+	return parsers
+}
+
+// rangedLinkParser is goldmark's link parser, noting the range of each link or picture it reads
+// in the parse's context (linkRangesKey): it opens where the node says, and closes at the `)` the
+// parser has just read past - or the `]`, for a link to a reference definition, which has no
+// address of its own written there.
+type rangedLinkParser struct {
+	parser.InlineParser
+}
+
+func (p rangedLinkParser) Parse(parent ast.Node, block markdowntext.Reader, pc parser.Context) ast.Node {
+	node := p.InlineParser.Parse(parent, block, pc)
+	var destination []byte
+	closer := byte(')')
+	switch link := node.(type) {
+	case *ast.Link:
+		destination = link.Destination
+		if link.Reference != nil {
+			closer, destination = ']', nil
+		}
+	case *ast.Image:
+		destination = link.Destination
+		if link.Reference != nil {
+			closer, destination = ']', nil
+		}
+	default:
+		return node
+	}
+	ranges, held := pc.Get(linkRangesKey).(*[]linkRange)
+	if !held {
+		return node
+	}
+	_, after := block.Position()
+	closed := bytes.LastIndexByte(block.Source()[:after.Start], closer) + 1
+	*ranges = append(*ranges, linkRange{open: node.Pos(), close: closed, destination: string(destination)})
+	return node
+}
+
+// CloseBlock is the link parser's own: it drops the brackets a block left open, so a `[` of one
+// paragraph opens no link in the next. A wrapper that did not pass it on would let it.
+func (p rangedLinkParser) CloseBlock(parent ast.Node, block markdowntext.Reader, pc parser.Context) {
+	if closer, held := p.InlineParser.(parser.CloseBlocker); held {
+		closer.CloseBlock(parent, block, pc)
+	}
 }

@@ -169,37 +169,45 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) ([]Locate
 	code := codeRanges(body)
 	var base *url.URL
 	baseParsed := false
+	baseOf := func() *url.URL {
+		if !baseParsed {
+			base, _ = url.Parse(serverURL)
+			baseParsed = true
+		}
+		return base
+	}
 	for _, span := range spans {
 		raw := trimReference(body[span[0]:span[1]])
 		if raw == "" {
 			continue
 		}
-		located := Located{Offset: span[0], InCode: inCode(code, span[0])}
-		if strings.HasPrefix(raw, "dispatch://") {
-			if ref, ok := parseDispatch(strings.TrimPrefix(raw, "dispatch://")); ok && (!bounded || inBound(ref)) {
-				located.Ref = ref
-				refs = append(refs, located)
-			}
-			continue
+		if ref, ok := locateSpan(raw, baseOf, bounded); ok {
+			refs = append(refs, Located{Ref: ref, Offset: span[0], InCode: inCode(code, span[0])})
 		}
-		if !baseParsed {
-			base, _ = url.Parse(serverURL)
-			baseParsed = true
-		}
-		if ref, ok := parseServer(raw, base); ok {
-			if bounded {
-				ref, ok = pageInBound(ref)
-			}
-			if ok {
-				located.Ref = ref
-				refs = append(refs, located)
-				continue
-			}
-		}
-		located.Ref = Ref{Kind: "url", ID: raw}
-		refs = append(refs, located)
 	}
 	return refs, code
+}
+
+// locateSpan is what raw, one reference span as trimReference leaves it, names as Extract reads
+// it: a `dispatch://` address that parses, held to the bounds the index keys when bounded
+// (inBound), else nothing; a page of the dashboard at base (parseServer), held to the bounds
+// when bounded (pageInBound); and any other URL as itself, Kind "url", so a post never loses an
+// ordinary link. base is called only for a span that needs it, so a text of addresses alone parses
+// no server URL.
+func locateSpan(raw string, base func() *url.URL, bounded bool) (Ref, bool) {
+	if rest, dispatch := strings.CutPrefix(raw, "dispatch://"); dispatch {
+		ref, ok := parseDispatch(rest)
+		return ref, ok && (!bounded || inBound(ref))
+	}
+	if ref, ok := parseServer(raw, base()); ok {
+		if bounded {
+			ref, ok = pageInBound(ref)
+		}
+		if ok {
+			return ref, true
+		}
+	}
+	return Ref{Kind: "url", ID: raw}, true
 }
 
 // pageInBound is what a dashboard page cites in text: what the page names while it is in bound

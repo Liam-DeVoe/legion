@@ -34,6 +34,9 @@ import (
 // A reply whose answers names the comment its replies_to names is listed once, by replies_to,
 // wherever replies_to is listed.
 type Query struct {
+	// ServerURL is the deployment the caller reads, whose dashboard URLs an edge's excerpt is cut
+	// around as references (itemExcerpt).
+	ServerURL string
 	Direction string
 	Kind      string
 	ID        string
@@ -251,12 +254,7 @@ func resolveEdges(ctx context.Context, q Queryer, query Query) ([]resolvedEdge, 
 			// mention shows.
 			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.text}
 		case node.text != "":
-			// A text that opens with a reference longer than the bound is cut to nothing
-			// (itemExcerpt), and an excerpt of nothing is no excerpt: the edge then carries none,
-			// as one whose node has no text does.
-			if excerpt := itemExcerpt(node.text); excerpt != "" {
-				edge.Excerpt = &model.GraphExcerpt{Text: excerpt}
-			}
+			edge.Excerpt = &model.GraphExcerpt{Text: itemExcerpt(node.text, query.ServerURL)}
 		}
 		edges = append(edges, edge)
 	}

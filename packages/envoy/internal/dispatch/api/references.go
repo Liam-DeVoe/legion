@@ -86,7 +86,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if query.Direction == "in" {
-		resolved, ok := s.wholeReference(w, r, ref, refs.Viewer{Human: human})
+		resolved, ok := s.wholeReference(w, r, ref, refs.Viewer{Human: human, ServerURL: s.deps.ServerURL})
 		if !ok {
 			return
 		}
@@ -110,7 +110,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		if node.Pin != nil && node.Pin.State == "removed" {
 			// The graph lists no link to a block no current version holds.
 			reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}, UnknownKinds: unknownKinds}
+			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []graphEdgeRead{}, UnknownKinds: unknownKinds}
 			answer.Node.shape(reader)
 			reader.resolve()
 			WriteJSON(w, http.StatusOK, answer)
@@ -163,7 +163,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
+	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: graphEdgeReads(edges, reader), UnknownKinds: unknownKinds}
 	answer.Node.shape(reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
@@ -190,7 +190,7 @@ func (s *server) wholeReference(w http.ResponseWriter, r *http.Request, ref text
 	// A prefix nothing carries is "" and no error, which this route leaves as written.
 	whole, err := s.wholeID(r.Context(), kind, scope, written, viewer)
 	if err != nil {
-		s.writeIDPrefixError(w, err)
+		s.writeIDPrefixError(w, r, err)
 		return ref, false
 	}
 	if whole == "" {
@@ -260,9 +260,9 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 	if text.IsIDPrefix(id) {
 		// A prefix nothing carries is left as written, and the read below answers this route's
 		// own 404 for a source whose text belongs to no document.
-		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, refs.Viewer{Human: human})
+		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, refs.Viewer{Human: human, ServerURL: s.deps.ServerURL})
 		if err != nil {
-			s.writeIDPrefixError(w, err)
+			s.writeIDPrefixError(w, r, err)
 			return
 		}
 		if whole != "" {
@@ -503,7 +503,7 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	if !stored {
 		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q names a %s, which the reference graph holds no node for", raw, ref.Kind)
 	}
-	query := refs.Query{Direction: direction, Kind: target.Kind, ID: target.ID}
+	query := refs.Query{ServerURL: serverURL, Direction: direction, Kind: target.Kind, ID: target.ID}
 	var unknownKinds []string
 	if kinds := strings.TrimSpace(values.Get("kind")); kinds != "" {
 		linkKinds := pmdoc.LinkKinds()

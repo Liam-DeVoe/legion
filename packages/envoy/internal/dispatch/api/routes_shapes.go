@@ -689,12 +689,14 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/handoffs/{phase}": {
 		Status: http.StatusCreated, Response: model.HandoffSummary{}, Request: createHandoffInput{},
 	},
-	"GET /api/v1/issues/{key}/handoffs":                {Status: http.StatusOK, Response: []model.HandoffSummary{}},
-	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/issues/{key}/handoffs": {Status: http.StatusOK, Response: []model.HandoffSummary{}},
+	// The two reads of one handoff with its body answer handoffRead, whose field_trees carries
+	// the tree of each text the body's card draws.
+	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: handoffRead{}},
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
-	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: handoffRead{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {

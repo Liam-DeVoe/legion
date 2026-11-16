@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -329,6 +330,90 @@ func TestAnAmbiguousPrefixCutsNoCandidateReferenceInHalf(t *testing.T) {
 	}
 }
 
+// ambiguousCandidates is the candidates of the 409 ID_AMBIGUOUS a GET of target answers: as a
+// person, or with the agent bearer where bearer, and with `Dispatch-Trees: 1` where trees.
+func ambiguousCandidates(t *testing.T, handler http.Handler, target string, bearer, trees bool) []refs.Candidate {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	if bearer {
+		request.Header.Set("Authorization", "Bearer agent-token")
+	} else {
+		request.Header.Set("X-Dispatch-User", "alice")
+	}
+	if trees {
+		request.Header.Set("Dispatch-Trees", "1")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("GET %s (trees=%v): status=%d body=%s, want 409", target, trees, response.Code, response.Body.String())
+	}
+	answer := decodeBody[ambiguousIDAnswer](t, response)
+	if answer.Code != contracts.IDAmbiguous || len(answer.Candidates) != 2 {
+		t.Fatalf("GET %s (trees=%v) = %+v, want %s with the two items the prefix names", target, trees, answer, contracts.IDAmbiguous)
+	}
+	return answer.Candidates
+}
+
+// requireFirstLineTree fails unless candidate carries the tree pmdoc.DisplayJSON makes of exactly
+// the first line it carries.
+func requireFirstLineTree(t *testing.T, candidate refs.Candidate) {
+	t.Helper()
+	if candidate.FirstLine == "" || candidate.FirstLineTree == nil {
+		t.Fatalf("candidate %+v, want a first line with its tree", candidate)
+	}
+	want := sameShape(t, pmdoc.DisplayJSON(candidate.FirstLine, pmdoc.DisplayLatest))
+	if got := sameShape(t, json.RawMessage(candidate.FirstLineTree)); !bytes.Equal(got, want) {
+		t.Errorf("%s candidate %s: first_line_tree is\n\t%s\nwant the tree of %q\n\t%s", candidate.Kind, candidate.ID, got, candidate.FirstLine, want)
+	}
+}
+
+// TestAnAmbiguousPrefixListsEachFirstLineTreeOnlyUnderTheHeader: the dashboard draws a
+// candidate's first line through the renderer, so a caller that sends `Dispatch-Trees: 1` is
+// given its tree beside it - the tree pmdoc.DisplayJSON makes of exactly that line - for an
+// ask's question, a comment's body, a message's body and a block's text, and a caller that sends
+// none is given no tree. A document's first line is its file's name, drawn as the characters it
+// is, and carries no tree under the header either.
+func TestAnAmbiguousPrefixListsEachFirstLineTreeOnlyUnderTheHeader(t *testing.T) {
+	fixture := newIDPrefixFixture(t)
+	for nth := 1; nth <= 2; nth++ {
+		seedExec(t, fixture.database, "an indexed block", `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			values ($1::uuid, $2, $1::text || '#' || $2, 'paragraph', '', $3, 1, now())
+		`, chosenID("f0000001", 1), fmt.Sprintf("cd34ab12e%d", nth), fmt.Sprintf("Ship the **block** %d.", nth))
+	}
+	for _, route := range []struct {
+		kind, path string
+		tree       bool
+	}{
+		{"ask", "/api/v1/asks/a0000002", true},
+		{"comment", "/api/v1/comments/c0000002", true},
+		{"message", "/api/v1/messages/d0000002", true},
+		{"block", "/api/v1/artifacts/f0000001/blocks/cd34ab12", true},
+		{"artifact", "/api/v1/artifacts/f0000002", false},
+	} {
+		t.Run(route.kind, func(t *testing.T) {
+			for _, candidate := range ambiguousCandidates(t, fixture.handler, route.path, false, false) {
+				if candidate.FirstLine == "" || candidate.FirstLineTree != nil {
+					t.Errorf("without the header, candidate %+v, want its first line and no tree", candidate)
+				}
+			}
+			for _, candidate := range ambiguousCandidates(t, fixture.handler, route.path, false, true) {
+				if candidate.Kind != route.kind {
+					t.Fatalf("candidate %+v, want a %s", candidate, route.kind)
+				}
+				if !route.tree {
+					if candidate.FirstLine == "" || candidate.FirstLineTree != nil {
+						t.Errorf("a document candidate under the header = %+v, want its name and no tree", candidate)
+					}
+					continue
+				}
+				requireFirstLineTree(t, candidate)
+			}
+		})
+	}
+}
+
 // TestAnAskIsAnsweredByAnIDPrefix: a write route resolves its prefix and writes the item it
 // named, so the ask the prefix shortens is the ask that ends up answered.
 func TestAnAskIsAnsweredByAnIDPrefix(t *testing.T) {
@@ -541,6 +626,28 @@ func TestADirectMessagePrefixKeepsTheConversationGuard(t *testing.T) {
 		if candidate.FirstLine == "" {
 			t.Fatalf("candidate %d = %+v, want the line a person reads to tell them apart", nth, candidate)
 		}
+	}
+}
+
+// TestAGuardedDirectMessageCandidateCarriesNeitherItsLineNorItsTree: a direct message's first
+// line is withheld from a session that is not in its conversation, and so is the tree of that
+// line, though the caller asked for the trees; a person, who reads any conversation, is given
+// both.
+func TestAGuardedDirectMessageCandidateCarriesNeitherItsLineNorItsTree(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	for nth := 1; nth <= 2; nth++ {
+		seedExec(t, database, "a direct message", `
+			insert into messages (id, issue_key, author, body, target)
+			values ($1::uuid, null, $2::jsonb, $3, 'session:s1')
+		`, chosenID("e0000002", nth), idPrefixAuthor, fmt.Sprintf("Where is the *dashboard* %d?", nth))
+	}
+	for _, candidate := range ambiguousCandidates(t, handler, "/api/v1/messages/e0000002?session=s2", true, true) {
+		if candidate.FirstLine != "" || candidate.FirstLineTree != nil {
+			t.Errorf("s2's candidate under the header = %+v, want neither the line nor its tree of a conversation s2 is not in", candidate)
+		}
+	}
+	for _, candidate := range ambiguousCandidates(t, handler, "/api/v1/messages/e0000002", false, true) {
+		requireFirstLineTree(t, candidate)
 	}
 }
 

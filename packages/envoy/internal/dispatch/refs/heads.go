@@ -23,20 +23,21 @@ const BlockExcerptRunes = 480
 
 // FirstLine is the line a person reads to tell one text from another: its first line that holds
 // more than whitespace (contracts.FirstNonEmptyLine), cut to firstLineRunes runes with `…` as
-// contracts.OneLineSummary cuts it, but where no reference crosses the cut. It is an Inbox row's
-// subject and its reply's first line, and an id prefix candidate's first line.
-func FirstLine(body string) string {
-	return text.HeadRefs(contracts.FirstNonEmptyLine(body), firstLineRunes, "…")
+// contracts.OneLineSummary cuts it, but where no reference crosses the cut; serverURL is the
+// deployment whose dashboard URLs are references (text.HeadRefs). It is an Inbox row's subject
+// and its reply's first line, and an id prefix candidate's first line.
+func FirstLine(body, serverURL string) string {
+	return text.HeadRefs(contracts.FirstNonEmptyLine(body), firstLineRunes, "…", serverURL)
 }
 
 // itemExcerpt is the head of an item's text shown beside an edge (Edges): its first excerptRunes
 // runes, cut where no reference crosses the cut.
-func itemExcerpt(body string) string {
-	return text.HeadRefs(body, excerptRunes, "")
+func itemExcerpt(body, serverURL string) string {
+	return text.HeadRefs(body, excerptRunes, "", serverURL)
 }
 
 // BlockExcerpt is a block's markdown as a mention it holds shows it and as the block's row stores
 // it: its first BlockExcerptRunes runes, cut where no reference crosses the cut.
-func BlockExcerpt(markdown string) string {
-	return text.HeadRefs(markdown, BlockExcerptRunes, "")
+func BlockExcerpt(markdown, serverURL string) string {
+	return text.HeadRefs(markdown, BlockExcerptRunes, "", serverURL)
 }
