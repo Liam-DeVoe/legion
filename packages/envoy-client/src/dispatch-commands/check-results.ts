@@ -9,6 +9,7 @@ import type {
 } from "@legion/contracts";
 import { checkWithNewerFields } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { printable, printableLine } from "../runner-log";
 
 // check-results.ts is what `dispatch results --issue` prints: each check of an issue's
 // Verification document, what Dispatch compared its results with, whether a pass of it stands,
@@ -139,10 +140,14 @@ function readingLines(result: CheckResult, brief: boolean, indent = "    "): str
   const cut = brief && result.commit_stands?.answer !== "at_basis";
   if (cut && observed.length > BRIEF_READING_CHARACTERS) {
     return [
-      `${indent}Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`,
+      `${indent}Reading: ${printable(observed.slice(0, BRIEF_READING_CHARACTERS))}… (result ${result.id})`,
     ];
   }
-  return [`${indent}Reading: ${observed}`];
+  // A reading is text the command did not write, a CI job's log among them, and it may be read in
+  // a runner's log: each of its lines stays a line of its own, by runnerlog.Printable's rule, so
+  // none starts with `::` or holds a `##[` (runner-log.ts).
+  const [first = "", ...rest] = observed.split("\n").map(printableLine);
+  return [`${indent}Reading: ${first}`, ...rest];
 }
 
 /** One result, in the order the API served it: the verdict, the role, the branch a CI job's

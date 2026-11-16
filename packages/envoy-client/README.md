@@ -892,8 +892,15 @@ character, format character, line or paragraph separator as its escape, `\n` or 
 the `[` of every `##[` as `\x5b`, or as `\u005b` inside JSON, so no such text starts a line of its
 own or names a workflow command. A refusal that starts with `::` has that first `:` written as
 `\x3a`.
+`dispatch result --issue <KEY> --check <id> --verdict pass|fail --commit <sha> [--observed …]`
+under `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` is the same job's result of the check of an
+issue's Verification document that the check's `ci_check` gives to it: the same identity, cut,
+waits, outcome lines and printing rule, and `--issue`, `--check`, `--verdict`, `--commit` and
+`--observed` alone (`dispatch-commands/ci-job-result.ts`).
 `dispatch results --project <KEY> --commit <sha> [--check <id>]` is a session's read of those
 results, one line each, newest first, or the stored results as JSON with `--json`.
+`dispatch results --issue <KEY>` prints each line of a result's reading, a CI job's log among
+them, by the same rule, so no line of a log names a workflow command.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
