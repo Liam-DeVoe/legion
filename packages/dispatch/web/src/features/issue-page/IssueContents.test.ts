@@ -280,3 +280,29 @@ test("an entry whose row leaves its line no word draws the line under the row's 
     wide.unmount();
   }
 });
+
+// R2 and R3: an entry draws its node's first line by R1's one-line rule, which cuts a node's
+// line from the first block of its words (`lineWords`, which the outline's row and the page's
+// other one-line places read). A thread the reader began with a short line of its own, then a
+// paragraph, draws that line; the whole words join the two with one space into a line its
+// author never wrote.
+test("an entry draws its node's first block as its line, never its first two blocks run together", () => {
+  const opened = node("CORE-1", "issue", [
+    node("comment-mine", "comment", [], {
+      author: { id: "alice", kind: "user" },
+      text: "A short note\n\nThe identity block condenses at one width only.",
+    }),
+  ]);
+  const view = drawList(opened, 600);
+  try {
+    const line = view.container.querySelector<HTMLElement>(
+      '[data-contents-entry="comment-mine"] [data-contents-line]'
+    );
+    expect(line?.textContent, "the entry runs its first block into the next").not.toContain(
+      "note The identity"
+    );
+    expect(line?.textContent).toBe("A short note");
+  } finally {
+    view.unmount();
+  }
+});
