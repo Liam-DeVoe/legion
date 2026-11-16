@@ -3647,7 +3647,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   so a record another listener wrote is compared as this listener's watcher last delivered it, the throttle holds across every listener once each one's watcher has delivered the others' writes, and a write made before that compares an older copy and costs at most one write of a record the bucket already holds.
   A clean stop is written whatever the throttle would say (`session.KnownSessions.TouchWithin`):
   a running session rewrites its record at least once per refresh age, so an unchanged-content write at its stop would be skipped and leave `last_seen` up to a refresh age before the stop, which a send to the stopped session answers and both tools print.
-  A failed write is a WARN and nothing else: the route answers whatever the write did.
+  A registration is answered `200` only once its record is written (`answerRegistration`, `cmd/listener/api.go`), the write bounded on its own (`knownRecordWriteTimeout`, one second) so the registration's other store work, which shares `sendRequestBudget`, cannot spend it;
+  a write that does not land is the bus-unavailable `503` with `Retry-After: 1`, which every client retries, since a session registered with no record is one a send cannot be stored for once its entry is gone.
+  A listener whose bucket is not open writes nothing and answers the registration `200`, as below.
+  Any other failed write is a WARN and nothing else: the interest change and the clean stop answer whatever the write did.
   The bucket is in `bus.ListenerBuckets()`, so envoy-infra grants it to the listener, to the host user a host's sessions share and to Dispatch (`packages/envoy/infra/core/permissions.go`, and `packages/envoy/infra/README.md` for what that widens).
 
 - A listener whose NATS user may not open that bucket, a listener on any hub whose grant does not carry it, logs one WARN naming the bucket and runs without it:

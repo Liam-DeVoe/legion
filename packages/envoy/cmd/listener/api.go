@@ -2945,10 +2945,12 @@ func (d *listenerDeps) registerPass(
 // (store.Registry.RenewRoleClaims) and the unwired-repository checks - runs within
 // sendRequestBudget of the request's own context, so a bus that does not answer is the
 // bus-unavailable 503 with Retry-After: 1 inside the caller's attempt (writeStoreError); a
-// refused key is still its 413 or 400.
+// refused key is still its 413 or 400. The session's known-session record is written after all of
+// that, on a bound of its own, and the registration is answered 200 only once it has landed
+// (answerRegistration).
 //
-// The renewal is the one thing here that cannot fail the registration. It runs last, once the
-// records this route owns are written, and whatever it could not do is logged and passed over: a
+// The renewal is the one thing here that cannot fail the registration. It runs once the interest
+// row and the session entry are written, and whatever it could not do is logged and passed over: a
 // bucket call that did not answer, a claim record this build cannot read, a renewal that lost its
 // compare-and-swap. A heartbeat refused for any of those would take down the very sessions whose
 // claims it keeps alive.
@@ -3146,8 +3148,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// is stamped renewed, and a claim that names no process at all is adopted by the
 		// first registration of the session holding it. A registration stating no process
 		// renews the claims of this session that name none and adopts nothing, so a claim
-		// standing at a deploy ages out for nobody. The write is the registration's last, so
-		// a renewal never costs the records above it.
+		// standing at a deploy ages out for nobody. The renewal comes after the records above,
+		// so it never costs them, and the known-session record written after it has a bound of
+		// its own (answerRegistration), so it never costs that one either.
 		//
 		// The roles it weighs are the role topics of the stored row this registration's own
 		// UpsertPlanned returned - the bucket's row, read by that write and merged with the
@@ -3190,20 +3193,6 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				go runKeptRoleDrain(*d.delivery, role)
 			}
 		}
-		// The session is known for the next 30 days, with the topics just stored, which are the
-		// filter of the consumer the registration gave it: a registration reaches here only once
-		// that consumer call landed, since every one that could not get its consumer was refused
-		// above with nothing recorded. A failed write is this WARN and nothing else: the
-		// registration is answered whatever it did (session.KnownSessions).
-		if err := d.known.RecordWithin(ctx, session.KnownSession{
-			SessionID:    body.SessionID,
-			Title:        body.Title,
-			Capabilities: body.Capabilities,
-			Topics:       item.Topics,
-		}); err != nil {
-			logger.Warn("listener known-session record not written",
-				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
-		}
 		warningCtx, cancelWarnings := d.clk().WithTimeout(ctx, unwiredRepositoryWarningTimeout)
 		defer cancelWarnings()
 		warnedRepositories := make(map[string]struct{})
@@ -3228,8 +3217,65 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				warnings = append(warnings, warning)
 			}
 		}
-		writeJSON(w, http.StatusOK, subscribeResponse{Interest: item, Warnings: warnings, Delivery: delivery.answer})
+		// The answer goes through answerRegistration, which writes the session's known-session
+		// record first and answers 200 only once it is written; its comment says why every 200
+		// of this route is answered there and no refusal is.
+		answerRegistration(w, r, d, session.KnownSession{
+			SessionID:    body.SessionID,
+			Title:        body.Title,
+			Capabilities: body.Capabilities,
+			Topics:       item.Topics,
+		}, subscribeResponse{Interest: item, Warnings: warnings, Delivery: delivery.answer}, logger)
 	}
+}
+
+// knownRecordWriteTimeout bounds the one write of a session's known-session record a registration
+// makes before it answers (answerRegistration). The bound is the write's own, armed as the write
+// starts, so the store work before it cannot spend it: that work shares sendRequestBudget, which on
+// a loaded box it can take whole. One second is what the send route gives its one read of a target
+// (sendSessionReadTimeout); after the budget it keeps a registration's answer inside 4.5 s, within
+// the 5 s envoy-client gives each attempt (packages/envoy-client/src/transport.ts) and this
+// listener's 10 s write timeout (main.go).
+const knownRecordWriteTimeout = 1 * time.Second
+
+// answerRegistration is the one place subscribeHandler answers a registration it accepted: it
+// writes record, the session's known-session record with the topics the registration stored, and
+// answers answer with 200 only once that write has landed. The record is what a send to the
+// session is stored on once its entry is gone, which a released Legion pod's session is (the send
+// route's `200 stopped` with `recipient_state: gone`, sendHandler). A registration answered 200 that
+// left no record would make the next such send the 404 of a session no store knows, and a session
+// whose pod is released before its next heartbeat - which would write the record, since this
+// listener's copy holds none - is then not stored for at all: under 32 busy loops the store work
+// before this write spent the whole budget, the write was never sent (bus.Bounded starts no call on
+// a context that has ended), and the registration was answered 200 (dispatch://INFRA-3149).
+//
+// So the write is bounded on its own (knownRecordWriteTimeout), and a write that does not land in
+// that bound is answered as the store error it is (writeStoreError): the bus-unavailable 503 with
+// Retry-After: 1, which every client retries. envoy-client's transport makes a second attempt of
+// any status at or past 500, and each plugin's heartbeat then buys one extra call and asks again at
+// every heartbeat after it (pi-envoy's ensureHeartbeat, claude-envoy's heartbeat). Nothing the
+// registration stored is undone: its interest row, entry and consumer stand, and the retry is a
+// registration like any other, which writes the record because this listener's copy holds none.
+// A store whose bucket is not open, or no store at all, writes nothing and answers nil
+// (session.KnownSessions.RecordWithin), so such a listener answers 200 as it always has: it is the
+// listener the known-session store's comment describes, which knows no session past its entry.
+//
+// Every 200 this route answers is answered here, and nothing else is: a branch added later that
+// accepts a registration - cybermonklabs/legion#4194's registration that asked for no consumer and
+// is given one (sessionDelivery.consumerFor) - must answer through this function, so it writes the
+// record before its 200 as every other does; and a refusal - the delivery refusals, the 503s above,
+// and any refusal added later - must not, so a refused registration writes no record of a session
+// it did not register. Whichever of this change and #4194 lands second keeps both rules.
+func answerRegistration(w http.ResponseWriter, r *http.Request, d *listenerDeps, record session.KnownSession, answer subscribeResponse, logger *logging.Logger) {
+	ctx, cancel := d.clk().WithTimeout(r.Context(), knownRecordWriteTimeout)
+	defer cancel()
+	if err := d.known.RecordWithin(ctx, record); err != nil {
+		logger.Warn("listener known-session record not written; the registration is refused for its client to retry",
+			slog.String("session_id", record.SessionID), slog.String("error", err.Error()))
+		writeStoreError(ctx, w, err, http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // registerV1Routes builds the /v1 routes over the listener's dependencies, which main hands over
