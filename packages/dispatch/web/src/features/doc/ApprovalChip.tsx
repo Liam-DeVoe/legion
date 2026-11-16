@@ -298,6 +298,23 @@ function RequestChangesDialog({
   );
 }
 
+/** The chip's actions: `together`, in one box that does not wrap; otherwise with no box around
+ *  them, each its parent's own item, as on `main` (`keepActionsTogether`, dispatch://INFRA-3935
+ *  R10). */
+function ActionsGroup({
+  children,
+  together,
+}: {
+  children: ReactNode;
+  together: boolean;
+}): ReactNode {
+  return together ? (
+    <span className="inline-flex flex-nowrap items-center gap-2 whitespace-nowrap">{children}</span>
+  ) : (
+    children
+  );
+}
+
 export interface ApprovalChipProps {
   artifact: Artifact;
   /** `header`: shown on the document header, with an approval-state chip.
@@ -307,6 +324,12 @@ export interface ApprovalChipProps {
   showActions?: boolean;
   /** `contents` lets a parent flex group place the state chip and actions independently. */
   layout?: "contents" | "inline";
+  /** Whether Approve and Request changes sit in one box that does not wrap, so in a parent's line
+   *  that wraps the two stay together as one item beside the chip. `ApprovalSteps` passes it at
+   *  `layout="contents"`, which part P's header uses (dispatch://INFRA-3935 R10, decision 86 of
+   *  dispatch://INFRA-1196/artifact/part-decisions-md). Off, the default, each action is its own
+   *  item, as on `main`. */
+  keepActionsTogether?: boolean;
   /** `compact` draws the chip and its two actions at the size of the new issue page header's
    *  other pills and controls (the prototype's `.pill` and `.hbtn`, dispatch://INFRA-1196 R13):
    *  12 px type, and 24 px tall at every width for the chip and for each action, since each is
@@ -325,6 +348,7 @@ export interface ApprovalChipProps {
  */
 export function ApprovalChip({
   artifact,
+  keepActionsTogether = false,
   layout = "inline",
   onReviewed,
   size = "default",
@@ -393,7 +417,7 @@ export function ApprovalChip({
         {approvalLabel(approval, page?.CONTROL_LABELS.approval_latest)}
       </button>
       {variant === "header" && showActions ? (
-        <>
+        <ActionsGroup together={keepActionsTogether}>
           {approval.state === "approved" ? null : (
             // One filled button per surface: approving is the action the header wants, and
             // two outline buttons made a reader choose before reading either. At the new issue
@@ -423,7 +447,7 @@ export function ApprovalChip({
           >
             Request changes
           </button>
-        </>
+        </ActionsGroup>
       ) : null}
       {reviewsOpen ? (
         <ReviewsDialog artifactId={artifact.id} onClose={() => setReviewsOpen(false)} />
