@@ -1,13 +1,16 @@
 // packages/envoy/internal/broker/airlockproxy/bound.go
 // One request on a bound host: the airlock.Request it is read as, the one (name, slot) pair of
 // the grant it is handled for, the real value behind that pair, the decision and the swap
-// (airlock.Decide and airlock.Rewrite, which decide and swap everything here), what goes
-// upstream, and the line the call logs.
+// (airlock.Decide and airlock.Rewrite, which decide and swap everything here, with a private
+// project's Slack check beside them for a Limited name, slack.go), what goes upstream, and the
+// line the call logs.
 package airlockproxy
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -250,10 +253,11 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		Path:       r.URL.Path,
 		Headers:    headersOf(r.Header),
 		Query:      r.URL.RawQuery,
-		// The body is never read and never changed. The airlock swaps headers alone, so
-		// nothing here depends on the body; reading one would mean holding every upload a
-		// command makes in the broker's memory before it could be forwarded, and the proxy
-		// streams instead.
+		// The decision never reads the body. The airlock swaps headers alone, so nothing it
+		// decides depends on the body; reading one would mean holding every upload a command
+		// makes in the broker's memory before it could be forwarded, and the proxy streams
+		// instead. The one body this function reads is a Limited name's, which slackPostAllowed
+		// below reads, bounded, to tell which Slack channel it posts to.
 		Body: "",
 	}
 
@@ -325,6 +329,13 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker released no "+chosen.slot+" value for "+chosen.name)
 		return
 	}
+	if secret.Limited && kind != "" {
+		// A Limited name is spent only on a Slack post, which is a header swap. An entry of
+		// another kind signs or exchanges what it carries, which slackPostAllowed has no
+		// reading of, so it carries nothing rather than go out unchecked.
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelNotAllowed+": the entry of this secret is of kind "+kind+", not a header swap")
+		return
+	}
 
 	grant := airlock.Grant{Secret: chosen.name, Placeholder: placeholder}
 	// refused answers a request the decision will not carry, and reports that it did. The
@@ -386,6 +397,18 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		header = headerOf(rewritten.Headers)
+		if secret.Limited {
+			// A private project's grant of a project-channels secret
+			// (requests.AirlockSecret.Limited): the swap allowed the request, and
+			// slackPostAllowed decides whether it is a post this grant may make. What it read is
+			// what goes upstream, byte for byte, so the post Slack reads is the one checked.
+			body, why := slackPostAllowed(r, secret.Channels)
+			if why != "" {
+				s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelNotAllowed+": "+why)
+				return
+			}
+			r.Body, r.ContentLength = io.NopCloser(bytes.NewReader(body)), int64(len(body))
+		}
 	}
 	// Headers of the proxy itself, which belong to this connection and not to the service. The
 	// swap and the signature have already run, so a header the entry names keeps its value and

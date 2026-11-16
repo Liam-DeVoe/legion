@@ -46,7 +46,7 @@ func taggedSecret(name, owner, tier, project, value string) secrets.LocalSecret 
 // operator's own agent-tier secret of TEAM; GONE_KEY, tagged with a project Dispatch does not
 // hold.
 func projectSecrets() []secrets.LocalSecret {
-	slack := policytest.Secret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, "xoxb-real")
+	slack := policytest.Secret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, "the-real-slack-bot-value")
 	slack.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
 	return []secrets.LocalSecret{
 		taggedSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject, "priv-v1"),
