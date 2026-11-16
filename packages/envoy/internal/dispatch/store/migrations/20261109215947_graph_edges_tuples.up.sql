@@ -69,6 +69,19 @@
 -- backfilled holds no tuple of those kinds for the rows written before the store, so the arm
 -- finds none of them and answers none.
 --
+-- Each of the three `exists` ends in `offset 0`, which keeps each join an index probe per edge.
+-- PostgreSQL plans a correlated `exists` whose test is equalities two ways - the probe, run for
+-- each edge, and a hashed `= any` that reads the whole table once a statement - and runs the one
+-- its cost estimate prefers (make_subplan, fix_alternative_subplan); enable_seqscan takes no part
+-- in that choice. On a small table the whole read is the cheaper estimate: over an empty
+-- block_refs the arm read every row of it for an edge read keyed on one node, and once analyzed
+-- at a test's size document_blocks and comments are hashed from a full scan of their own index.
+-- The planner makes the hashed form only of an `exists` with no OFFSET, and leaves `offset 0`
+-- alone because it is the traditional optimization fence (simplify_EXISTS_query), so each join's
+-- one plan is the probe. An offset of 0 skips no row, so each `exists` answers as it did. The
+-- server reads the view keyed on one end of an edge (refs.Edges, refs.Outgoing), where the probe
+-- reads only the rows of the edges it answers; a read of the whole view probes once an edge.
+--
 -- Two more rules the arm carries.
 --
 -- It answers no row for a node whose current `state` is `gone`. For this release's own writes the
@@ -254,13 +267,16 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
     and case edge.projects
           when 'block' then exists (
             select 1 from document_blocks projected
-            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id)
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+            offset 0)
           when 'block_ref' then exists (
             select 1 from block_refs projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
               and projected.kind = edge.stated and projected.to_kind = edge.to_kind
-              and projected.to_id = edge.to_id)
+              and projected.to_id = edge.to_id
+            offset 0)
           when 'comment' then exists (
             select 1 from comments projected
-            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id)
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+            offset 0)
         end;
