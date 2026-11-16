@@ -4549,8 +4549,12 @@ Each item below names a path with its method and identity, then its purpose.
     When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms}`.
     `texts` counts each kind of text that Dispatch read in the documents it judged.
     A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
-    A carry of an approval to a new version passes the same gate.
-    So Dispatch carries no approval to a version whose text breaks the form, and the person's own Approve then gets the refusal.
+    A carry of an approval to a new version passes the same gate, and it judges the same documents as the person's own Approve.
+    These are the carried version and each other document of the open request, at the version that the request names.
+    So Dispatch carries no approval to a version whose text breaks the form.
+    It answers no request that names a document whose text breaks the form either.
+    The person's own Approve then gets the refusal.
+    A document service that has no gate, such as the one that a backfill command builds, carries no approval.
     An approval given outside a root was never judged, and it stays when its issue moves under the root.
 
 - `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)
