@@ -1,3 +1,4 @@
+import type { DispatchReadingSurface } from "@legion/contracts";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 import type { DisplayTree } from "../../api/types";
@@ -48,6 +49,18 @@ function ReferenceNameRead({
   return null;
 }
 
+/** How a caller of `usePlainHeadline` asks for its line. */
+export interface PlainHeadlineOptions {
+  /** Reads the text's first line alone rather than the whole of it (`useMarkdownHeadline`). */
+  readonly firstLine?: boolean;
+  /** The most characters the line holds; the whole text where it is left out. */
+  readonly max?: number;
+  /** The row of the reading list this line is drawn on (`DISPATCH_READING_SURFACES`). The
+   *  projection reads nothing of it: it names the surface a mount draws, which is how the list's
+   *  unit test ties each mount to its row (`surface-lists.test.ts`). */
+  readonly surface?: DispatchReadingSurface;
+}
+
 /**
  * One line of plain text for a place that can hold no markup - an `<option>`, a `<title>`, an
  * `aria-label` - read by the one reader every rendered body reads (`useMarkdownHeadline`), so
@@ -72,8 +85,7 @@ function ReferenceNameRead({
 export function usePlainHeadline(
   tree: DisplayTree | undefined,
   markdown: string | undefined,
-  max = Number.POSITIVE_INFINITY,
-  firstLine = false
+  { firstLine = false, max = Number.POSITIVE_INFINITY }: PlainHeadlineOptions = {}
 ): { reads: ReactNode; text: MarkdownHeadline | undefined } {
   const [names, setNames] = useState<ReferenceNames>(NO_REFERENCE_NAMES);
   const text = useMarkdownHeadline(tree, max, markdown, names, firstLine);
@@ -130,6 +142,7 @@ export function PlainText({
   firstLine = false,
   markdown,
   max = Number.POSITIVE_INFINITY,
+  surface,
   tree,
 }: {
   /** Draws whatever holds the line: the control the label names, the element the title is on.
@@ -141,11 +154,13 @@ export function PlainText({
   firstLine?: boolean;
   markdown: string | undefined;
   max?: number;
+  /** The row of the reading list this line is drawn on (`PlainHeadlineOptions`). */
+  surface?: DispatchReadingSurface;
   /** The reading Go made of this stored text, whose words the line is; absent for a text
    *  Dispatch does not store, whose `markdown` is parsed instead. */
   tree?: DisplayTree;
 }): ReactNode {
-  const { reads, text } = usePlainHeadline(tree, markdown, max, firstLine);
+  const { reads, text } = usePlainHeadline(tree, markdown, { firstLine, max, surface });
   return (
     <>
       {reads}

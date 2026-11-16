@@ -1,3 +1,4 @@
+import type { DispatchReadingSurface } from "@legion/contracts";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { type ReactNode, useRef } from "react";
 
@@ -270,6 +271,10 @@ interface MarkdownBodyProps {
   /** The record this text is - the ask, comment, message or document version whose text it is
    *  (`TextSource`); none for text of no record, which links no `#id`. */
   source?: TextSource;
+  /** The row of the reading list this body is drawn on (`DISPATCH_READING_SURFACES`). The body
+   *  draws nothing from it: it names the surface a mount draws, which is how the list's unit
+   *  test ties each mount to its row (`surface-lists.test.ts`). */
+  surface?: DispatchReadingSurface;
   /** The reading Go made of this stored text, which the body draws rather than parsing the
    *  markdown again. Absent for the three texts Dispatch does not store - a live agent turn, a
    *  GitHub body in a link preview, and a write the server has not stored yet - and for a stored
@@ -397,6 +402,7 @@ function PaintedBody({
         <UnfurlRead
           body={referenceText}
           reading={references.reading}
+          surface="body-reference-cards"
           written={references.written}
         />
       ) : null}

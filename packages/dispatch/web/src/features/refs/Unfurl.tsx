@@ -1,8 +1,8 @@
+import type { DispatchReadingSurface } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
 import { api } from "../../api/client";
-import type { DisplayTree } from "../../api/types";
 import {
   borderDefault,
   cardHoverBorder,
@@ -29,6 +29,10 @@ interface UnfurlProps {
   /** The record the body's text is, whose document a `#id` in it names a question block of
    *  (`TextSource`); without one a `#id` names nothing, so a body holding one shows no card. */
   source?: TextSource;
+  /** The row of the reading list these cards are drawn on (`DISPATCH_READING_SURFACES`). The
+   *  cards draw nothing from it: it names the surface a mount draws, which is how the list's
+   *  unit test ties each mount to its row (`surface-lists.test.ts`). */
+  surface?: DispatchReadingSurface;
 }
 
 interface GitHubIssue {
@@ -36,27 +40,10 @@ interface GitHubIssue {
   title?: string;
 }
 
-/** The card's body: two rendered lines of what the target says, formatted, then cut. A GitHub
- *  body is a text Dispatch does not store, so it carries no tree and is parsed here. */
-function Body({
-  markdown,
-  source,
-  tree,
-}: {
-  markdown: string;
-  source?: TextSource;
-  tree?: DisplayTree;
-}): ReactNode {
-  return (
-    <MarkdownPreview
-      className={`mt-1 ${textSecondaryOnSurface}`}
-      lines={2}
-      markdown={markdown}
-      source={source}
-      tree={tree}
-    />
-  );
-}
+/** The look of a card's body, two rendered lines of what the target says, formatted, then cut.
+ *  A GitHub body is a text Dispatch does not store, so it carries no tree and is parsed. Each
+ *  card mounts its own body, since each is its own row of the reading list. */
+const CARD_BODY_CLASS = `mt-1 ${textSecondaryOnSurface}`;
 
 /** The record a Dispatch card's body is: the target's own text, named by the reference that
  *  resolved it. An ask, a comment and an issue message each write their id in the reference,
@@ -106,7 +93,14 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
       >
         <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
         {description === undefined ? null : (
-          <Body markdown={description} source={cardRecord(card.route)} tree={descriptionTree} />
+          <MarkdownPreview
+            className={CARD_BODY_CLASS}
+            lines={2}
+            markdown={description}
+            source={cardRecord(card.route)}
+            surface="dispatch-reference-card"
+            tree={descriptionTree}
+          />
         )}
       </a>
     </ReferenceHostIs>
@@ -148,7 +142,12 @@ function GitHubUnfurl({ href, path }: { href: string; path: string }): ReactNode
         issue.data.body.trim() === "" ? null : (
           // No `source`: a GitHub issue's body is no record of Dispatch's reference graph
           // (`DISPATCH_READING_SURFACES`, `github-reference-card`).
-          <Body markdown={issue.data.body} />
+          <MarkdownPreview
+            className={CARD_BODY_CLASS}
+            lines={2}
+            markdown={issue.data.body}
+            surface="github-reference-card"
+          />
         )}
       </a>
     </ReferenceHostIs>
@@ -324,6 +323,8 @@ export function UnfurlRead({
   body: string;
   /** The body's references with every fact its queries answered: what the cards are. */
   reading: TextReading;
+  /** The row of the reading list these cards are drawn on (`UnfurlProps`). */
+  surface?: DispatchReadingSurface;
   /** The body's references as the text alone reads: what its shape is read from. */
   written: TextReading;
 }): ReactNode {
@@ -360,7 +361,7 @@ export function UnfurlRead({
  * and starts none. The rendered body mounts `UnfurlRead` with its own readings instead
  * (`MarkdownBody`), having started those queries for the links in the text itself.
  */
-export function Unfurl({ body, source }: UnfurlProps): ReactNode {
+export function Unfurl({ body, source, surface }: UnfurlProps): ReactNode {
   const origin = window.location.origin;
   const written = useMemo(() => readTextReferences(body, { origin }), [body, origin]);
   const shaped = useMemo(
@@ -368,5 +369,5 @@ export function Unfurl({ body, source }: UnfurlProps): ReactNode {
     [body, written]
   );
   const { reading } = useTextReferences(shaped ? body : "", source);
-  return <UnfurlRead body={body} reading={reading} written={written} />;
+  return <UnfurlRead body={body} reading={reading} surface={surface} written={written} />;
 }

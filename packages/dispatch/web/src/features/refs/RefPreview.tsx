@@ -1,3 +1,4 @@
+import type { DispatchReadingSurface } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
@@ -352,6 +353,7 @@ function Body({
       lines={3}
       markdown={markdown}
       source={source}
+      surface="reference-hover-card"
       tree={tree}
     />
   );
@@ -532,6 +534,7 @@ function AskPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
           lines={2}
           markdown={ask.ask.question}
           source={textSourceOf("ask", ask.ask.id)}
+          surface="reference-hover-card-ask"
           tree={ask.ask.question_tree}
         />
       </Heading>
@@ -659,8 +662,12 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
  * populated), links the card to its anchor with `aria-describedby`, and closes it on Escape, on
  * any click (the click follows a link), when the anchor leaves the DOM, or on scroll — unless
  * the anchor holds keyboard focus (focusing it may itself scroll it into view), in which case
- * the card follows the anchor instead. */
-export function RefPreviewHost(): ReactNode {
+ * the card follows the anchor instead.
+ *
+ * `surface` is the row of the reading list the card is drawn on (`DISPATCH_READING_SURFACES`).
+ * The host draws nothing from it: it names the surface a mount draws, which is how the list's
+ * unit test ties each mount to its row (`surface-lists.test.ts`). */
+export function RefPreviewHost(_props: { surface?: DispatchReadingSurface }): ReactNode {
   const current = useSyncExternalStore(subscribe, () => state);
   const queryClient = useQueryClient();
 

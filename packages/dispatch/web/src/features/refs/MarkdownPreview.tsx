@@ -1,3 +1,4 @@
+import type { DispatchReadingSurface } from "@legion/contracts";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { type ReactNode, useCallback, useRef } from "react";
 
@@ -147,6 +148,7 @@ export function MarkdownPreview({
   lines,
   markdown,
   source,
+  surface,
   tree,
 }: {
   className?: string;
@@ -162,6 +164,11 @@ export function MarkdownPreview({
   /** The record this text is - the ask, comment, message or document version whose text it is
    *  (`TextSource`); none for text of no record, which links no `#id`. */
   source?: TextSource;
+  /** The row of the reading list this preview is drawn on (`DISPATCH_READING_SURFACES`). The
+   *  preview draws nothing from it: it names the surface a mount draws, which is how the list's
+   *  unit test ties each mount to its row (`surface-lists.test.ts`), and the plain-text title
+   *  is drawn on the same surface. */
+  surface?: DispatchReadingSurface;
   /** The reading Go made of this stored text, which the preview draws; absent only for a text
    *  Dispatch does not store (`MarkdownBody`). */
   tree?: DisplayTree;
@@ -196,7 +203,8 @@ export function MarkdownPreview({
   // (`useMarkdownHeadline`).
   const { reads, text: title } = usePlainHeadline(
     fullTitle ? tree : undefined,
-    fullTitle && tree === undefined ? markdown : undefined
+    fullTitle && tree === undefined ? markdown : undefined,
+    { surface }
   );
 
   return (
