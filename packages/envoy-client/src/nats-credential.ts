@@ -73,17 +73,28 @@ export function noAuthService(source: string): string {
   return `${source} is broker, but the NATS server sent no nonce to sign: it runs no auth service, so ${remedy} for this hub`;
 }
 
+/** How long {@link BrokerNatsCredential.ready} waits for a trade: nats.js's own dial timeout, so a
+ *  secrets broker that never answers fails a start as a hub that never answers does, named,
+ *  rather than holding it in silence. */
+export const TRADE_DEADLINE_MS = 20_000;
+
+/** Why `ready` failed: the broker has not answered the trade the setting `source` chose. */
+function tradeUnanswered(source: string, deadlineMs: number): string {
+  return `${source} is broker, but the secrets broker did not answer the trade for the session's token within ${deadlineMs / 1000} s`;
+}
+
 /**
  * The broker token of `env`'s machine, or of a person signed in on it, for the session `session`
  * names, as a NATS connection presents it, chosen by the setting `source` names (`NATS_AUTH` by
  * default, or a file's `envoy.natsAuth in <file>`), which a refusal at a hub with no auth service
  * names. Nothing is traded until {@link BrokerNatsCredential.ready} or
- * {@link BrokerNatsCredential.renew}.
+ * {@link BrokerNatsCredential.renew}; `ready` waits `tradeDeadlineMs` for it.
  */
 export function brokerNatsCredential(
   env: BrokerEnvironment,
   session: BrokerSessionName | undefined,
-  source: string = NATS_AUTH_VAR
+  source: string = NATS_AUTH_VAR,
+  tradeDeadlineMs: number = TRADE_DEADLINE_MS
 ): BrokerNatsCredential {
   const take = brokerTokenFor(env, session);
   let held: TradedToken | undefined;
@@ -116,7 +127,20 @@ export function brokerNatsCredential(
     return next;
   };
   return {
-    ready: () => (live() ? Promise.resolve() : renew()),
+    // The trade itself goes on past the deadline, for the keeper and the next `ready`: only this
+    // wait for it ends.
+    ready: () => {
+      if (live()) return Promise.resolve();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(tradeUnanswered(source, tradeDeadlineMs))),
+          tradeDeadlineMs
+        );
+        timer.unref?.();
+      });
+      return Promise.race([renew(), deadline]).finally(() => clearTimeout(timer));
+    },
     renew,
     authenticator(nonce?: string): Auth {
       if (nonce === undefined || nonce === "") throw new Error(noAuthService(source));

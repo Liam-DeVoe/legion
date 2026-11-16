@@ -9,6 +9,10 @@ import { connect, type NatsConnection, type Subscription } from "nats";
 import { EnvelopeSchema } from "../../../packages/contracts/src/envelope";
 import { githubSubject } from "../../../packages/contracts/src/subject";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
+import {
+  natsErrorForLog,
+  natsServerForLog,
+} from "../../../packages/envoy-client/src/nats-connection";
 import { operatorNatsSeed } from "./operator-nats-seed";
 
 const requiredEnvelopeFields = [
@@ -88,13 +92,28 @@ const upstreamNatsUrl =
 // value, its user info or its host is printed with the variable's name in their place.
 export function redactUpstream(text: string, upstreamUrl: string): string {
   const [, userInfo, host] = upstreamNatsUrl.exec(upstreamUrl) ?? [];
-  let redacted = text;
-  for (const value of [upstreamUrl, userInfo, host]) {
-    if (!value) continue;
-    const pattern = new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-    redacted = redacted.replace(pattern, "SMOKE_UPSTREAM_NATS");
-  }
-  return redacted;
+  // One pass, longest first, over the text as the client wrote it: the variable's name a match
+  // puts in is never searched again.
+  const values = [upstreamUrl, userInfo, host]
+    .filter((value): value is string => value !== undefined && value !== "")
+    .sort((a, b) => b.length - a.length)
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (values.length === 0) return text;
+  return text.replace(new RegExp(values.join("|"), "gi"), "SMOKE_UPSTREAM_NATS");
+}
+
+/** The line the bridge prints once both connections answer. The rig's server is named as a log
+ *  names a NATS server (natsServerForLog): SMOKE_RIG_NATS may hold a credential too. */
+export function bridgeReadyLine(config: BridgeConfig): string {
+  return `BRIDGE READY subjects=${config.subjects.join(",")} upstream=SMOKE_UPSTREAM_NATS downstream=${natsServerForLog(config.downstreamUrl)}`;
+}
+
+/** The line the bridge prints when it stops on `error`: the client's own text, with neither
+ *  connection's credential in it (natsErrorForLog for the rig's, redactUpstream for the
+ *  operator's) and the upstream's host not named. */
+export function bridgeFailureLine(error: unknown, config: BridgeConfig): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `BRIDGE UNHEALTHY ${redactUpstream(natsErrorForLog(message, [config.downstreamUrl]), config.upstreamUrl)}`;
 }
 
 export function envelopeValidation(data: string | Uint8Array): EnvelopeValidation {
@@ -202,9 +221,7 @@ export async function runBridge(config: BridgeConfig): Promise<void> {
     try {
       await upstream.flush();
       await downstream.flush();
-      console.log(
-        `BRIDGE READY subjects=${config.subjects.join(",")} upstream=SMOKE_UPSTREAM_NATS downstream=${config.downstreamUrl}`
-      );
+      console.log(bridgeReadyLine(config));
       await Promise.all(
         subscriptions.map((subscription, index) =>
           forwardMessages(subscription, config.subjects[index] as string, activeDownstream)
@@ -222,8 +239,7 @@ export async function runBridge(config: BridgeConfig): Promise<void> {
 if (import.meta.main) {
   const config = bridgeConfigFromEnvironment(process.env);
   await runBridge(config).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`BRIDGE UNHEALTHY ${redactUpstream(message, config.upstreamUrl)}`);
+    console.error(bridgeFailureLine(error, config));
     process.exitCode = 1;
   });
 }

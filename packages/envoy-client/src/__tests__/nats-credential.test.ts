@@ -347,6 +347,35 @@ describe("the broker token's authenticator", () => {
   });
 });
 
+describe("ready", () => {
+  test("a broker that never answers the trade fails it, named, at the deadline", async () => {
+    // A broker that takes the request and never answers: with no deadline a start waited on it in
+    // silence (64 s and counting, at 579d9b45f6), where a hub that never answers fails at nats.js's
+    // own dial timeout, naming it.
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => new Promise<Response>(() => undefined),
+    });
+    servers.push(server);
+    const credential = brokerNatsCredential(
+      podEnvironment(`http://127.0.0.1:${server.port}`),
+      "ses_hung",
+      "NATS_AUTH",
+      300
+    );
+    const started = Date.now();
+    const outcome = await credential.ready().then(
+      () => "ready",
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+    expect(outcome).toBe(
+      "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.3 s"
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }, 15_000);
+});
+
 describe("renew", () => {
   test("a switch while a renewal is in flight takes the new session's token", async () => {
     // A trade reads the session's name as it starts, so the keeper's renewal of the session

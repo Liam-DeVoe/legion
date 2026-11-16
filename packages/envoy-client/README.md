@@ -168,7 +168,8 @@ default 120 s interval left a frozen path for up to 6 minutes. A failed connect 
 `natsServerForLog(server)` and `natsErrorForLog(text, servers)`: a server is named by scheme, host
 and port alone, and an address that does not read as a host (a pasted nkey seed or token parses as
 one) is not named at all, nor is it, or any credential a URL holds, left in nats.js's own error text,
-whose resolver errors name the host they looked up.
+whose resolver errors name the host they looked up. Each part goes in one pass over that text, so a
+part that is a word of the stand-in is never searched again.
 
 A session's NATS credential (`@legion/envoy-client/nats-credential`) is one of three: the nkey user
 a seed names, the session's broker token, or none. The broker token is the session's own, the one
@@ -177,9 +178,11 @@ its listener calls present too where they present a broker token rather than a b
 server sent that one connection as its signature
 (`DpopKey.connectionProof`), which is what the auth service of a hub that runs one admits as that
 session alone. `brokerNatsCredential(env, session)` holds it: `ready()` takes a live token before a
-dial, `authenticator(nonce)` signs one snapshot of it per CONNECT and presents nothing, starting a
-trade, where it holds no live token, and `renew()` takes the token again, the next session's after
-a switch. A server that sends no nonce runs no auth service, so nothing there checks a broker token:
+dial, failing after 20 s (`TRADE_DEADLINE_MS`, nats.js's own dial timeout) where the broker has not
+answered the trade; `authenticator(nonce)` signs one snapshot of it per CONNECT and presents
+nothing, starting a trade, where it holds no live token, and `renew()` takes the token again, the
+next session's after a switch. A server that sends no nonce runs no auth service, so nothing there
+checks a broker token:
 the CONNECT fails, naming that and the setting to undo for that hub (`unset NATS_AUTH`, or take
 `natsAuth` out of the file that set it; `noAuthService`), rather than going out with no credential.
 `keepNatsCredential(connection, credential, warn)` renews ahead of each token's expiry and

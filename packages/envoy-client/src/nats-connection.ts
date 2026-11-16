@@ -88,34 +88,55 @@ export function natsServerForLog(server: string): string {
   return server.includes("://") ? `${parsed.protocol}//${parsed.host}` : parsed.host;
 }
 
+/** A server written as `[scheme://][userinfo@]host…`, read without parsing it as a URL. */
+const WRITTEN_SERVER = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:([^/?#@]*)@)?([^/?#:]*)/i;
+
+/** The user, password and host `server` holds: its URL's, or, for one nats.js cannot parse
+ *  either (a port out of range), the user info and host as written, which its error quotes. */
+function serverParts(server: string): { secrets: string[]; hostname: string } {
+  const parsed = parsedServer(server);
+  if (parsed !== undefined)
+    return { secrets: [parsed.username, parsed.password], hostname: parsed.hostname };
+  const [, userInfo = "", hostname = ""] = WRITTEN_SERVER.exec(server.trim()) ?? [];
+  const colon = userInfo.indexOf(":");
+  const secrets =
+    colon < 0 ? [userInfo] : [userInfo, userInfo.slice(0, colon), userInfo.slice(colon + 1)];
+  return { secrets, hostname };
+}
+
 /**
  * `text` (a NATS connect error's, which nats.js's resolver errors fill with the host they looked
  * up, lowercased) with every address of `servers` a log does not name (`natsServerForLog`), as
  * written and as its host name, and every user, password or token a URL of them holds, replaced
- * by `NATS_ADDRESS_NOT_SHOWN` whatever its case.
+ * by `NATS_ADDRESS_NOT_SHOWN` whatever its case. One pass over `text` as nats.js wrote it: a
+ * stand-in is never searched again, so a part that is a word of the stand-in (a user `a`) does
+ * not grow the text, however many servers repeat it.
  */
 export function natsErrorForLog(text: string, servers: readonly string[]): string {
-  const parts: string[] = [];
+  // Keyed lowercased: the search ignores case, so one spelling of a part is enough.
+  const parts = new Map<string, string>();
+  const add = (part: string): void => {
+    if (part.trim() !== "") parts.set(part.toLowerCase(), part);
+  };
   for (const server of servers) {
-    const parsed = parsedServer(server);
-    for (const secret of [parsed?.username, parsed?.password]) {
-      if (secret === undefined || secret === "") continue;
-      parts.push(secret);
+    const { secrets, hostname } = serverParts(server);
+    for (const secret of secrets) {
+      add(secret);
       try {
-        parts.push(decodeURIComponent(secret));
+        add(decodeURIComponent(secret));
       } catch {
         // A malformed escape: the part as written is what the text can carry.
       }
     }
     if (natsServerForLog(server) !== UNNAMED_NATS_SERVER) continue;
-    parts.push(server);
-    if (parsed !== undefined && parsed.hostname !== "") parts.push(parsed.hostname);
+    add(server);
+    add(hostname);
   }
-  let shown = text;
-  // Longest first, so a part inside another is not left behind by the shorter's replacement.
-  for (const part of parts.filter((one) => one.trim() !== "").sort((a, b) => b.length - a.length)) {
-    const escaped = part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    shown = shown.replace(new RegExp(escaped, "gi"), NATS_ADDRESS_NOT_SHOWN);
-  }
-  return shown;
+  if (parts.size === 0) return text;
+  // Longest first: at any one place the longest part that matches is the one replaced, so a part
+  // inside another leaves nothing of the longer behind.
+  const alternatives = [...parts.values()]
+    .sort((a, b) => b.length - a.length)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return text.replace(new RegExp(alternatives.join("|"), "gi"), NATS_ADDRESS_NOT_SHOWN);
 }

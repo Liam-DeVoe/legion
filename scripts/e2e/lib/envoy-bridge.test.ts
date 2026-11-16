@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { bridgeConfigFromEnvironment, envelopeValidation, redactUpstream } from "./envoy-bridge";
+import {
+  bridgeConfigFromEnvironment,
+  bridgeFailureLine,
+  bridgeReadyLine,
+  envelopeValidation,
+  redactUpstream,
+} from "./envoy-bridge";
 
 const currentEnvelope = (overrides: Record<string, unknown> = {}) => ({
   event_id: "evt-1",
@@ -146,6 +152,45 @@ describe("redactUpstream", () => {
     expect(redactUpstream("CONNECTION_REFUSED", "nats://envoy-nats.tailnet.example:4222")).toBe(
       "CONNECTION_REFUSED"
     );
+  });
+
+  test("never searches the variable's name it put in", () => {
+    // A user `NATS` is a word of the stand-in itself.
+    const upstream = "nats://NATS@envoy-nats.tailnet.example:4222";
+    expect(redactUpstream(`connect to ${upstream} failed`, upstream)).toBe(
+      "connect to SMOKE_UPSTREAM_NATS failed"
+    );
+  });
+});
+
+// The rig's NATS (SMOKE_RIG_NATS) may hold a credential too: neither the readiness line nor the
+// failure line prints it, while the rig's server is still named and the upstream still is not.
+// Each URL's user info is joined here, so the source holds no credential-bearing URL for the push
+// leak check to find.
+describe("the bridge's output lines", () => {
+  const userinfo = (...parts: string[]) => `${parts.join(":")}@`;
+  const config = bridgeConfigFromEnvironment({
+    SMOKE_REPO: "a/b",
+    SMOKE_RIG_NATS: `nats://${userinfo("rig", "canary-rig-pw")}172.30.0.1:31000`,
+    SMOKE_UPSTREAM_NATS: `nats://${userinfo("user", "canary-up-pw")}canary-host.tailnet.example:4222`,
+  });
+
+  test("the readiness line names the rig's server without its credential", () => {
+    const line = bridgeReadyLine(config);
+    expect(line).toContain("upstream=SMOKE_UPSTREAM_NATS downstream=nats://172.30.0.1:31000");
+    expect(line.toLowerCase()).not.toContain("canary");
+  });
+
+  test("the failure line quotes neither connection's credential", () => {
+    for (const message of [
+      `"http://${userinfo("rig", "canary-rig-pw")}172.30.0.1:99999" cannot be parsed as a URL.`,
+      `connect to ${config.downstreamUrl} failed`,
+      `connect to ${config.upstreamUrl} failed`,
+    ]) {
+      const line = bridgeFailureLine(new Error(message), config);
+      expect(line.startsWith("BRIDGE UNHEALTHY ")).toBe(true);
+      expect(line.toLowerCase()).not.toContain("canary");
+    }
   });
 });
 
