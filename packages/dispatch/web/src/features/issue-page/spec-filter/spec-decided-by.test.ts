@@ -496,3 +496,46 @@ test("statements under different parents stand in groups of their own", () => {
     by: { id: "session-architect", kind: "agent" },
   });
 });
+
+// R4, review finding 4590606145: a group's heading is its parent's first line drawn by R1's
+// rule, so a line cut inside a sentence ends with an ellipsis, as every other first line of the
+// page does.
+test("a group's heading cut inside its parent's first sentence ends with an ellipsis", () => {
+  const words = `This comment ${"runs on and on ".repeat(8)}until it ends.`;
+  const groups = bodyOf(
+    issueTree([
+      node({ children: [statement("r1")], id: "comment-1", text: words, type: "comment" }),
+    ])
+  );
+  const line = groups[0]?.parent?.line ?? "";
+  expect(line.endsWith("…")).toBe(true);
+  expect(line.length).toBeGreaterThan(1);
+  expect(words.startsWith(line.slice(0, -1))).toBe(true);
+});
+
+// R5, review finding 4590606153: a person's quote is their words, read from the stored markdown
+// to plain words before its first sentence is taken - a link as its words, a mark as nothing -
+// and never the syntax they were stored in; the focus still draws the answer as stored.
+test("a person's quote is the first sentence of their answer's plain words", () => {
+  const stored = "Use [the one-line rule](dispatch://CORE-1/spec#b-r1). **Always** so.";
+  const groups = bodyOf(
+    issueTree([
+      answeredAsk("ask-1", { text: stored }, [statement("r1")]),
+      answeredAsk("ask-2", { text: "Keep `snake_case` *as is*. Then more." }, [statement("r2")]),
+    ])
+  );
+  expect(groups[0]?.runs[0]?.decision?.quote).toBe("Use the one-line rule.");
+  expect(groups[0]?.runs[0]?.decision?.whole).toBe(stored);
+  expect(groups[1]?.runs[0]?.decision?.quote).toBe("Keep snake_case as is.");
+});
+
+// R5, review finding 4590606160, decision 51: a leading label is no sentence end, so an answer
+// that opens with a numbered label is quoted with the sentence after it, never as the label
+// alone.
+test("a first sentence that opens with a numbered label holds the sentence after it", () => {
+  expect(firstSentenceOf("1. Keep the old page. 2. Then drop it.")).toBe("1. Keep the old page.");
+  expect(firstSentenceOf("R1. stands as written.")).toBe("R1. stands as written.");
+  // A first word with no digit, or longer than five characters, is a sentence of its own.
+  expect(firstSentenceOf("Done. Then more.")).toBe("Done.");
+  expect(firstSentenceOf("R12345. Then more.")).toBe("R12345.");
+});

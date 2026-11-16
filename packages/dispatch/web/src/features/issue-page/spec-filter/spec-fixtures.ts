@@ -3,16 +3,19 @@ import type {
   Artifact,
   Decision,
   DecisionLink,
+  IssueCoverage,
   IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
-import type { TreeNode } from "../issue-tree";
+import type { TreeAsk, TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
 
 /**
  * What the Spec filter's two unit tests are given: one issue, one tree and one decisions read,
  * built by hand, so the model and the body are read without a server
- * (`spec-decided-by.test.ts`, `SpecFilterBody.drawn.test.tsx`).
+ * (`spec-decided-by.test.ts`, `SpecFilterBody.drawn.test.tsx`). A case that needs the tree as
+ * part F's model places its nodes builds it with `buildIssueTree` from the reads below
+ * (`askRead`, `coverageRead`) instead.
  *
  * The addresses are the ones this issue would answer with: a statement is a block of the spec,
  * a decision a block of `decisions.md`, and an ask its own id, so a tie resolves through the
@@ -219,4 +222,48 @@ export function decisionNode(block: string, partial: Partial<TreeNode> = {}): Tr
     type: "decision",
     ...partial,
   });
+}
+
+/** A question asked of the issue, as the asks read answers it, which the reader answered with
+ *  `text`: what part F's model builds the answered question's node from. */
+export function askRead(id: string, text: string): TreeAsk {
+  return {
+    anchor: null,
+    answer: { at: "2026-11-14T09:00:00Z", selected: [], text, user: READER },
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "session-architect", kind: "agent" },
+    block_id: null,
+    created_at: "2026-11-14T08:00:00Z",
+    edited_at: null,
+    id,
+    issue_key: KEY,
+    kind: "question",
+    multiple: false,
+    options: [],
+    question: "Does the built page work for you?",
+    state: "answered",
+    urgency: "med",
+  };
+}
+
+/** The coverage read over the statements `blocks`, in that order, each served by a check: what
+ *  part F's model builds each statement's node from. */
+export function coverageRead(blocks: readonly string[]): IssueCoverage {
+  return {
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: blocks.map((block) => ({
+      block_id: block,
+      checks: 1,
+      gaps: [],
+      plan_tasks: 1,
+      ref: statementRef(block),
+      text: `**${block.toUpperCase()}.** The page draws ${block}.`,
+    })),
+    spec_artifact_id: "artifact-spec",
+  };
 }

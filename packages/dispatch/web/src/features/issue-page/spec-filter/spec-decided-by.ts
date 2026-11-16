@@ -38,12 +38,12 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    missing tie visible (R35).
  *
  * What a person's decision quotes is the person's own answer, never a restatement of it
- * (dispatch://INFRA-1150 R4): the answer's first sentence word for word (`firstSentenceOf`), with
- * each reference in it named in plain words (`namedLine`), or, where they wrote none, the options
- * they chose; the whole answer is carried beside it as stored, for the focus on the line to draw
- * character for character (R5). A section of `decisions.md` the server marks a person's whose
- * answered question this tree does not hold is the agent's record of that decision, so it is
- * drawn as an agent's words and never quoted as the person's (R9).
+ * (dispatch://INFRA-1150 R4): the first sentence of the answer's plain words (`plainWords`,
+ * `firstSentenceOf`), with each reference in it named in plain words (`namedLine`), or, where
+ * they wrote none, the options they chose; the whole answer is carried beside it as stored, for
+ * the focus on the line to draw character for character (R5). A section of `decisions.md` the
+ * server marks a person's whose answered question this tree does not hold is the agent's record
+ * of that decision, so it is drawn as an agent's words and never quoted as the person's (R9).
  *
  * An agent's decision carries its own text whole, which the cell draws as a row draws a node's
  * words (`RowText`), and is quoted by its first line with each reference named: the line under a
@@ -78,16 +78,17 @@ export interface SpecDecision {
   /** The node that holds the whole of it, which the link to it names: the answered ask whose
    *  answer this is, or the decision. */
   readonly id: string;
-  /** The decision node the tie came from, where the tree holds it: what the outline's `w` moves
-   *  to from a statement (`tree-keys.ts`'s `decisionBehind`). A person's decision is drawn by
+  /** The decision node the tie came from, where the tree holds it: the node the cell is drawn
+   *  as, which Details draws while the cell holds the focus. A person's decision is drawn by
    *  their answer (`id`), and this is the section of `decisions.md` that names it. */
   readonly node?: string;
   /** The question the words answer, its first line as R1 cuts a row's with each reference
    *  named; absent where the words answer no question. */
   readonly question?: string;
   /** The one line the decision is quoted by under a statement, in plain words with each
-   *  reference named (`namedLine`): a person's answer's first sentence, or the options they
-   *  chose where they wrote nothing, or the first line of an agent's decision's own words. */
+   *  reference named (`namedLine`): the first sentence of a person's answer read to its plain
+   *  words, or the options they chose where they wrote nothing, or the first line of an agent's
+   *  decision's own words. */
   readonly quote: string;
   /** The node's own `dispatch://` address, which the link to the whole of it follows. */
   readonly reference?: string;
@@ -99,8 +100,9 @@ export interface SpecDecision {
   /** Whether the model marks this decision unsure (`Decision.unsure`). */
   readonly unsure: boolean;
   /** A person's whole answer as the store holds it, where it holds anything other than what
-   *  `quote` draws - more than its first sentence, or a reference `quote` names in words: what
-   *  the focus on the decision's line draws, character for character (R5). */
+   *  `quote` draws - more than its first sentence, a mark or a link's address `quote` reads as
+   *  plain words, or a reference `quote` names in words: what the focus on the decision's line
+   *  draws, character for character (R5). */
   readonly whole?: string;
   /** An agent's decision's own text whole, as the cell draws it (`RowText`): as stored, the
    *  server's reading of it where one was sent, and the record it is. Absent for a person's. */
@@ -134,7 +136,7 @@ export interface SpecParent {
   readonly at?: string;
   readonly by?: Actor;
   readonly id: string;
-  /** Its first line, as R1 cuts a row's (`TreeNode.parentLine`), with each reference named; its
+  /** Its own words' first line, as R1 draws one (`drawnLine`), with each reference named; its
    *  kind's word where it has no words. */
   readonly line: string;
   readonly type: NodeType;
@@ -241,14 +243,117 @@ export function specDecidedBy({
  * The first sentence of `text`, word for word: everything up to the first full stop, question
  * mark or exclamation mark followed by a space or the end of the text, and the whole text where
  * it holds none, with no limit of characters (R5). Line breaks inside it are spaces, because
- * the line it is drawn on is one line.
+ * the line it is drawn on is one line. A leading label is no sentence end (decision 51 of
+ * dispatch://INFRA-1196): a first word of at most five characters that ends in `.` and holds a
+ * digit (`R1.`, `12.`) opens the sentence, as part F's `firstLineOf` reads one.
  *
  * It is not `firstLineOf`, which cuts a row's first line at 100 characters (R1): a person's
  * answer is quoted word for word, and a sentence of theirs is as long as they wrote it.
  */
 export function firstSentenceOf(text: string): string {
   const whole = text.replace(/\s+/gu, " ").trim();
-  return /^.*?[.!?](?=\s|$)/u.exec(whole)?.[0] ?? whole;
+  const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
+  const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(label.length))?.[0];
+  return rest === undefined ? whole : `${label}${rest}`;
+}
+
+/** A leading label (decision 51): a first word of at most five characters, holding a digit and
+ *  ending in `.`, which part F's `firstLineOf` reads with the same pattern. */
+const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
+
+/** A blank line, which ends a paragraph: no mark and no code span reaches past one. */
+const BLANK_LINE = /\n\s*\n/u;
+
+/** One ASCII punctuation character: what a backslash escapes, and what a code span and an
+ *  autolink hold that the marks below would otherwise read as marks. */
+const PUNCTUATION = /[!-/:-@[-`{-~]/gu;
+
+/**
+ * What markdown reads literally, each where it starts, left to right: a backslash before an
+ * ASCII punctuation character, which is that character; a code span, a run of backticks closed
+ * by the next run of the same count, which is its content verbatim and inside which a backslash
+ * escapes nothing; an autolink, `<https://…>`, which is its URL; and a run of backticks no run
+ * of its count closes, which is that run as written. They are one pattern because each decides
+ * the others: a backtick a backslash escapes opens no code span, and a backslash inside a code
+ * span escapes nothing.
+ */
+const LITERAL =
+  /\\([!-/:-@[-`{-~])|(`+)(?!`)([\s\S]*?[^`])\2(?!`)|<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)>|`+/gu;
+
+/** A heading marker at the start of a line, `#` to `######` and a space, which markdown allows
+ *  up to three spaces of indent before. */
+const HEADING_MARKER = /^ {0,3}#{1,6}[ \t]+/gmu;
+
+/** An image, `![alt](src)`, whose words the server's reading of it holds none of. */
+const IMAGE = /!\[[^\]]*\]\([^)]*\)/gu;
+
+/** A link, `[words](target)`, which reads as its words; its target is no word of the text. */
+const LINK = /\[([^\]]*)\]\([^)]*\)/gu;
+
+/** `**strong**`, which stands wherever it is written. */
+const STAR_STRONG = /\*\*(?=\S)([\s\S]*?\S)\*\*/gu;
+
+/** `__strong__`, which markdown reads only where no letter or digit stands either side of it. */
+const UNDERSCORE_STRONG = /(?<![\p{L}\p{N}])__(?=\S)([\s\S]*?\S)__(?![\p{L}\p{N}])/gu;
+
+/** `~~struck~~`, which stands wherever it is written. */
+const STRUCK = /~~(?=\S)([\s\S]*?\S)~~/gu;
+
+/** `*emphasis*`, which stands wherever it is written. */
+const STAR_EMPHASIS = /\*(?=\S)([^*]*?\S)\*/gu;
+
+/** `_emphasis_`, which markdown reads only between characters that are no letter or digit, so
+ *  `snake_case_name` is one word. */
+const UNDERSCORE_EMPHASIS = /(?<![\p{L}\p{N}])_(?=\S)([^_]*?\S)_(?![\p{L}\p{N}])/gu;
+
+/** The private-use stand-in of each ASCII punctuation character `LITERAL` keeps from the marks
+ *  (U+E000 plus its code), which `plainWords` puts the character back for. */
+const KEPT = /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu;
+
+/**
+ * The words of a stored markdown text as a reader reads them, on one line. It is part F's
+ * `plainWords` (`tree-drafts.ts`, decision 88 of dispatch://INFRA-1196), less F's last step,
+ * which writes a bare `dispatch://` address as its short form: this view names each reference
+ * by `namedLine` instead. J imports F's and deletes this copy once F's tip is under J's base
+ * (decision 94).
+ *
+ * A place that draws a stored text as plain words draws this, since its marks are markup and no
+ * word of it (R21), and a mark after a sentence's end (`today.**`) would hide that end from
+ * `firstSentenceOf`. Each paragraph is read on its own, since no mark pairs across a blank line.
+ * What markdown reads literally (`LITERAL`) - an escaped punctuation character (`1\.` is `1.`),
+ * a code span's content, an autolink's URL - is read first, and each ASCII punctuation character
+ * of it is held as a private-use stand-in (U+E000 plus its code) while the marks are taken off,
+ * so no mark is read inside it, and put back after. A character of the text already in that
+ * private-use range is no word a reader reads, and reads as the ASCII character it stands in
+ * for. Then a heading marker at the start of any line goes, an image goes whole, a link reads as
+ * its words, and strong, emphasis and struck marks go until none is left, so nested marks
+ * (`***x***`) go too. White space collapses to single spaces.
+ */
+function plainWords(markdown: string): string {
+  const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
+    let words = paragraph
+      .replace(
+        LITERAL,
+        (written, escaped?: string, _run?: string, code?: string, url?: string) =>
+          (escaped ?? code ?? url)?.replace(PUNCTUATION, (character) =>
+            String.fromCharCode(0xe000 + character.charCodeAt(0))
+          ) ?? written
+      )
+      .replace(HEADING_MARKER, "")
+      .replace(IMAGE, "")
+      .replace(LINK, "$1");
+    for (let marked = ""; marked !== words; ) {
+      marked = words;
+      words = words
+        .replace(STAR_STRONG, "$1")
+        .replace(UNDERSCORE_STRONG, "$1")
+        .replace(STRUCK, "$1")
+        .replace(STAR_EMPHASIS, "$1")
+        .replace(UNDERSCORE_EMPHASIS, "$1");
+    }
+    return words.replace(KEPT, (kept) => String.fromCharCode(kept.charCodeAt(0) - 0xe000));
+  });
+  return paragraphs.join(" ").replace(/\s+/gu, " ").trim();
 }
 
 /** Every node of the tree by its id, the first placement of a node drawn under more than one
@@ -377,9 +482,9 @@ function decisionOf(
   };
 }
 
-/** A person's answer to `ask` as the column draws it: their first sentence word for word with
- *  each reference named, or the options they chose where they wrote none (R5), with the whole
- *  answer as stored wherever it is not what the quote draws. */
+/** A person's answer to `ask` as the column draws it: the first sentence of its plain words
+ *  with each reference named, or the options they chose where they wrote none (R5), with the
+ *  whole answer as stored wherever it is not what the quote draws. */
 function answerDecision(
   ask: TreeNode,
   reader: string | undefined,
@@ -387,7 +492,9 @@ function answerDecision(
 ): SpecDecision {
   const answer = ask.answer;
   if (answer === undefined) throw new Error("an answered ask with no answer");
-  const written = firstSentenceOf(answer.text);
+  // A link the person wrote reads as its words and a mark as nothing (`plainWords`), so the
+  // quote is their words and none of the markdown they were stored in.
+  const written = firstSentenceOf(plainWords(answer.text));
   const quote = written === "" ? answer.selected.join(", ") : namedLine(written, nameOf);
   const stored = answer.text.trim();
   return {
@@ -401,8 +508,8 @@ function answerDecision(
     said: isReader(answer.by, reader) ? "you" : "person",
     type: "ask",
     unsure: false,
-    // A quote that names a reference in words is not the characters the person wrote, so the
-    // focus draws those too, though the answer is one sentence.
+    // A quote read to plain words, or naming a reference in words, is not the characters the
+    // person wrote, so the focus draws those too, though the answer is one sentence.
     ...(stored === "" || stored === quote ? {} : { whole: answer.text }),
   };
 }
@@ -422,7 +529,7 @@ function answerUnder(
 }
 
 /** The node a statement hangs under, where the filter draws it as no row (R2), with who made it
- *  and when, which its line says. */
+ *  and when, and its own words' first line, which its heading draws by R1's rule. */
 function parentOf(
   node: TreeNode,
   nodes: ReadonlyMap<string, TreeNode>,
@@ -431,13 +538,16 @@ function parentOf(
   const line = node.parentLine;
   if (line === undefined) return undefined;
   const parent = nodes.get(line.id);
+  // Read from the node and not from `line.line`, which `presets.ts` keeps without its cut: a
+  // first line cut inside a sentence draws its ellipsis (`drawnLine`).
+  const words =
+    parent === undefined ? "" : drawnLine(firstLineOf(namedLine(nodeWords(parent), nameOf)));
   return {
     ...(parent?.at === undefined ? {} : { at: parent.at }),
     ...(parent?.author === undefined ? {} : { by: parent.author }),
     id: line.id,
-    // A parent with no words is given its id as its line (`presets.ts`), which is no word of
-    // it: it is named by its kind's word, never by its id (decision 66).
-    line: line.line === line.id ? NODE_TYPE_NAMES[line.type] : namedLine(line.line, nameOf),
+    // A parent with no words is named by its kind's word, never by its id (decision 66).
+    line: words === "" ? NODE_TYPE_NAMES[line.type] : words,
     type: line.type,
   };
 }
