@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { answerAsk, createAsk, getAsk, getIssue } from "./api";
+import { answerAsk, createAsk, getAsk } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { asPlanner } from "./issue-layout-seed-support";
 import { issuePage, presetRow } from "./issue-page";
@@ -24,7 +24,8 @@ import { longWords, READER } from "./issue-page-g";
  * - **Keep and Change** `button[data-row-action="keep" | "change"]` on each row of the review
  *   part, drawn with no focus on the row.
  * - **A decision's "informs" line**, each statement it shaped a link in
- *   `[data-decision-statement]`, named by the words the page's chips name it by.
+ *   `[data-decision-statement]`, named by the name a chip of the page's tree holds for it, cut
+ *   by `chipWords` with no markdown pass.
  * - **The Decisions control's flag** `[data-preset-flag="to_review"]` in D's view row, whose
  *   number is how many decisions wait for the reader's review.
  *
@@ -59,6 +60,12 @@ export function decisionsPartsDrawn(page: Page): Promise<DrawnPart[]> {
       ),
     }));
   }, SELECTORS.issuePage);
+}
+
+/** The id of each row one part of the Decisions view draws, in the order it draws them: none
+ *  where the part is not drawn. */
+export async function decisionsPartRows(page: Page, part: string): Promise<readonly string[]> {
+  return (await decisionsPartsDrawn(page)).find((one) => one.part === part)?.rows ?? [];
 }
 
 /** The Decisions view's list, which holds every row and part the view draws. */
@@ -174,13 +181,6 @@ export function decisionsFoot(page: Page): Locator {
  *  the five controls apart (from 1280 px up). It is not drawn where nothing waits. */
 export function reviewFlag(page: Page): Locator {
   return presetRow(page).locator('[data-preset-flag="to_review"] [data-author-text]');
-}
-
-/** The slug of the issue's own spec, which is how its blocks are addressed. */
-export async function primarySlug(key: string): Promise<string> {
-  const primary = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
-  expect(primary, `${key} carries no primary document`).toBeDefined();
-  return primary?.slug ?? "";
 }
 
 /** What `seedDecisionsLayout` wrote beside the whole issue. */

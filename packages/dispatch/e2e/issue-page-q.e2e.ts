@@ -32,10 +32,9 @@ import {
   decisionsBody,
   decisionsFoot,
   decisionsPart,
-  decisionsPartsDrawn,
+  decisionsPartRows,
   decisionsRows,
   decisionsWordsWithSource,
-  primarySlug,
   reviewFlag,
   seedDecisionsLayout,
 } from "./issue-page-q";
@@ -87,7 +86,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
 }) => {
   test.setTimeout(240_000);
   await phase(browser, seedDecisionsFilter, async (page, seeded) => {
-    const specSlug = await primarySlug(seeded.key);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
     const D = (index: number) => blockNodeId(decisionsSlug, seeded.decisions[index] ?? "");
     const open = blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID);
@@ -181,7 +180,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
       // The three states, as words: waiting for review, kept with the keeper's name, replaced.
       await decisionsFoot(page).click();
       await expect
-        .poll(async () => (await parts()).find((part) => part.part === "agents")?.rows.length, {
+        .poll(async () => (await decisionsPartRows(page, "agents")).length, {
           message: `the foot did not unfold ${at}`,
         })
         .toBe(3);
@@ -248,18 +247,21 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
 // unfolding waited on each time, then the outline loaded with two rows focused.
 test("only a decision that changed a statement waits for review @phone", async ({ browser }) => {
   test.setTimeout(150_000);
+  // The `iphone` project is the phone half of the pair, so it reads 390 px alone and leaves the
+  // outline at the desktop's width to `chromium`: a fixed width every project reads would only
+  // repeat that run (`AGENTS.md`, phone acceptance).
+  const phone = test.info().project.name === "iphone";
+  const sizes = phone ? [PHONE] : [DESKTOP, PHONE];
   await phase(browser, seedReviewList, async (page, seeded) => {
     const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
-    const partRows = async (part: string) =>
-      (await decisionsPartsDrawn(page)).find((one) => one.part === part)?.rows ?? [];
-    for (const size of [DESKTOP, PHONE]) {
+    for (const size of sizes) {
       const at = `at ${size.width} px`;
       await page.setViewportSize(size);
       await openPreset(page, seeded.key, "decisions");
       // The review list holds the two a tie names a statement for, newest first. This is the
       // row's first reading, so a page whose view draws nothing fails here.
       await expect
-        .poll(() => partRows("review"), { message: `the review list ${at}` })
+        .poll(() => decisionsPartRows(page, "review"), { message: `the review list ${at}` })
         .toEqual([id(seeded.tiedNewer), id(seeded.tiedOlder)]);
       await expectIssuePageDrawn(page);
       // Each with its Keep and Change controls, with no focus on it.
@@ -273,10 +275,13 @@ test("only a decision that changed a statement waits for review @phone", async (
       // controls stand apart (part D's view row, from 1280 px up).
       if (size === DESKTOP) await expect(reviewFlag(page), `the flag ${at}`).toHaveText("2");
       // The other two are in the filter's foot, with no Keep and no Change.
-      expect(await partRows("agents"), `the foot draws its rows unasked ${at}`).toEqual([]);
+      expect(
+        await decisionsPartRows(page, "agents"),
+        `the foot draws its rows unasked ${at}`
+      ).toEqual([]);
       await decisionsFoot(page).click();
       await expect
-        .poll(async () => [...(await partRows("agents"))].sort(), {
+        .poll(async () => [...(await decisionsPartRows(page, "agents"))].sort(), {
           message: `the foot's rows ${at}`,
         })
         .toEqual([id(seeded.tiedToNote), id(seeded.untied)].sort());
@@ -296,6 +301,7 @@ test("only a decision that changed a statement waits for review @phone", async (
         })
         .toEqual([]);
     }
+    if (phone) return;
     // The other two are drawn in the outline under the issue, with no Keep or Change control,
     // the focus on them included.
     await page.setViewportSize(DESKTOP);
@@ -332,14 +338,14 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
     const changed = id(seeded.tiedNewer);
     const words = "Tie it to the first statement instead.";
-    const partRows = async (part: string) =>
-      (await decisionsPartsDrawn(page)).find((one) => one.part === part)?.rows ?? [];
 
     await page.setViewportSize(DESKTOP);
     await openPreset(page, seeded.key, "decisions");
     // The row's first reading, so a page whose view draws nothing fails here.
     await expect
-      .poll(() => partRows("review"), { message: "the review list before the Change" })
+      .poll(() => decisionsPartRows(page, "review"), {
+        message: "the review list before the Change",
+      })
       .toEqual([changed, id(seeded.tiedOlder)]);
     await expectIssuePageDrawn(page);
     await expect(reviewFlag(page)).toHaveText("2");
@@ -351,11 +357,14 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
 
     // The decision leaves the review list and stands with the reader's own decisions.
     await expect
-      .poll(() => partRows("review"), { message: "the changed decision still waits for review" })
+      .poll(() => decisionsPartRows(page, "review"), {
+        message: "the changed decision still waits for review",
+      })
       .toEqual([id(seeded.tiedOlder)]);
-    expect(await partRows("yours"), "the changed decision is not among the reader's own").toEqual([
-      changed,
-    ]);
+    expect(
+      await decisionsPartRows(page, "yours"),
+      "the changed decision is not among the reader's own"
+    ).toEqual([changed]);
     // It says a change was asked for, by a word and a shape, and takes no Keep and no Change.
     expect(rowOf(await drawnRows(page), changed)).toMatchObject({
       state: "change_requested",
@@ -382,7 +391,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     await page.setViewportSize(PHONE);
     await openPreset(page, seeded.key, "decisions");
     await expect
-      .poll(() => partRows("yours"), {
+      .poll(() => decisionsPartRows(page, "yours"), {
         message: "the changed decision is not among the reader's own at 390 px",
       })
       .toEqual([changed]);
@@ -455,8 +464,6 @@ test("the Decisions view draws Keep and Change on each decision that waits, and 
     const newer = id(seeded.tiedNewer);
     const older = id(seeded.tiedOlder);
     const review = decisionsPart(page, "review");
-    const partRows = async (part: string) =>
-      (await decisionsPartsDrawn(page)).find((one) => one.part === part)?.rows ?? [];
 
     await page.setViewportSize(size);
     await openPreset(page, seeded.key, "decisions");
@@ -515,7 +522,7 @@ test("the Decisions view draws Keep and Change on each decision that waits, and 
     // holds her Keep, and the focus goes on to the older one, the next that waits.
     await nodeRow(page, newer).first().locator('button[data-row-action="keep"]').click();
     await expect
-      .poll(() => partRows("yours"), {
+      .poll(() => decisionsPartRows(page, "yours"), {
         message: `Keep did not move the decision to the reader's own ${at}`,
       })
       .toEqual([newer]);

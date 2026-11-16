@@ -67,13 +67,13 @@ export interface RowPerson {
  *
  * A decision draws its words - whole where it waits for the reader's review, cut as an agent's
  * words are anywhere else (ruling 6) - how it stands in the states the page declares
- * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the words
- * the page's chips name it by, cut as a chip's are, and each a link to that statement. A
- * decision of the review list draws Keep and Change with no focus, as the picture does; no
- * other row draws either (R35). The two controls are `DecisionActions.tsx`'s own, so the writes
- * are the ones every other Keep and Change of the page makes. A decision a person asked to
- * change draws what they asked under its words, with a link to it in the conversation (the
- * tester's F6).
+ * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the name a
+ * chip of the page's tree holds for it, cut by `chipWords` with no markdown pass (decision 66),
+ * and each a link to that statement. A decision of the review list draws Keep and Change with
+ * no focus, as the picture does; no other row draws either (R35). The two controls are
+ * `DecisionActions.tsx`'s own, so the writes are the ones every other Keep and Change of the
+ * page makes. A decision a person asked to change draws what they asked under its words, with
+ * a link to it in the conversation (the tester's F6).
  *
  * The node an address names where it is neither a question nor a decision, a comment say, is
  * drawn as the outline draws a node for its context (`NodeRow.tsx`): marked as one, in its grey,
@@ -139,8 +139,9 @@ export function DecisionsRow({
   report?: string;
   /** Whether this decision is an entry of the review list, which draws Keep and Change. */
   review: boolean;
-  /** The words each statement of the issue is named by, by its node id, as the page's chips
-   *  name it (`DecisionsFilterBody.tsx`); a statement it holds no words for is not named. */
+  /** Each statement's name by its node id: the name a chip of the page's tree holds for it
+   *  (`DecisionsFilterBody.tsx`), which the row cuts with `chipWords` alone; a statement it
+   *  holds no name for is not named. */
   statementNames: ReadonlyMap<string, string>;
   /** Whether this row is the list's one tab stop. */
   tabStop: boolean;

@@ -12,7 +12,6 @@ import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { specSummary } from "../spec-summary";
 import { useIssueTree } from "../useIssueTree";
 import { waitingPressOf } from "../waiting";
 
@@ -48,10 +47,9 @@ export function ViewDecisionsSlot({ issue, route }: SlotProps): ReactNode {
     const node = reveal?.at(-1);
     return new Set(node === undefined ? [] : [node.id]);
   }, [reveal]);
-  const memo = useMemo(() => specSummary(root, specSlug ?? "")?.id, [root, specSlug]);
   const view = useMemo(
-    () => presetView(root, "decisions", address.filter, named, memo),
-    [address.filter, memo, named, root]
+    () => presetView(root, "decisions", address.filter, named),
+    [address.filter, named, root]
   );
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   // What the Contents list asks of the outline, which the view takes as the outline does.

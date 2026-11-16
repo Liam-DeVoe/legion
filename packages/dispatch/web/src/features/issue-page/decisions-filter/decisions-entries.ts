@@ -52,15 +52,20 @@ export function useDecisionsEntries({
     queryFn: () => api.listComments(issue.key),
     queryKey: ["comments", issue.key],
   }).data;
+  const changes = useMemo(
+    () => decisionChanges(decisions, comments, issue.artifacts),
+    [decisions, comments, issue.artifacts]
+  );
+  // How this issue addresses a node, which is the one rule the tree was built with, so a
+  // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   return useMemo(() => {
     const parts = decisionsParts({
       asks,
-      changes: decisionChanges(decisions, comments, issue.artifacts),
+      changes,
       decisions,
       issueKey: issue.key,
-      // How this issue addresses a node, which is the one rule the tree was built with, so a
-      // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
-      nodeIdOf: treeContext({ issue }).nodeIdOf,
+      nodeIdOf,
       reader,
       root,
       view,
@@ -73,7 +78,7 @@ export function useDecisionsEntries({
           ? parts.yours
           : newestFirst([...parts.yours, ...parts.others], root),
     };
-  }, [asks, comments, decisions, issue, reader, root, view]);
+  }, [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view]);
 }
 
 /**
