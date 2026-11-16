@@ -109,13 +109,20 @@ func (s *CalloutServer) answer(t testing.TB, issuer nkeys.KeyPair, msg *nats.Msg
 	response := jwt.NewAuthorizationResponseClaims(request.UserNkey)
 	response.Audience = request.Server.ID
 	token := request.ConnectOptions.Password
-	if s.refuse(request.ConnectOptions.Username, token) {
+	expiry, readable := expiryOf(token)
+	switch {
+	case s.refuse(request.ConnectOptions.Username, token):
 		response.Error = "refused by the test's auth service"
-	} else {
+	case !readable:
+		// A token the stand-in cannot read an expiry from is a broken fixture, not a credential to
+		// admit for a made-up life: the test fails, and the connection is refused.
+		t.Errorf("the callout fixture was shown a token naming no expiry")
+		response.Error = "the token names no expiry"
+	default:
 		user := jwt.NewUserClaims(request.UserNkey)
 		user.Audience = "$G"
 		user.Name = "service"
-		user.Expires = expiryOf(token).Unix()
+		user.Expires = expiry.Unix()
 		user.Pub.Allow.Add(">")
 		user.Sub.Allow.Add(s.subscribe...)
 		if response.Jwt, err = user.Encode(issuer); err != nil {
@@ -157,18 +164,21 @@ func ServiceToken(account string, expiry time.Time) string {
 	}, ".")
 }
 
-// expiryOf is token's 'exp', read unverified, or an hour from now when it names none.
-func expiryOf(token string) time.Time {
+// expiryOf is token's 'exp', read unverified, and false when the token names none.
+func expiryOf(token string) (time.Time, bool) {
 	parts := strings.Split(token, ".")
-	if len(parts) == 3 {
-		if payload, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
-			var claims struct {
-				Expiry int64 `json:"exp"`
-			}
-			if json.Unmarshal(payload, &claims) == nil && claims.Expiry > 0 {
-				return time.Unix(claims.Expiry, 0)
-			}
-		}
+	if len(parts) != 3 {
+		return time.Time{}, false
 	}
-	return time.Now().Add(time.Hour)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Expiry int64 `json:"exp"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Expiry <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(claims.Expiry, 0), true
 }

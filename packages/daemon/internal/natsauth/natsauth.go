@@ -232,14 +232,18 @@ func ConnectService(urls []string, tokenFile, name string, options ...nats.Optio
 	if err != nil {
 		return nil, err
 	}
-	// The keeper ends when the connection closes, the daemon's own Close included: nats.go sends
-	// CLOSED to a status listener on every close, and the channel is buffered, so the event is
-	// kept even when it comes before the goroutine waits.
+	// The keeper ends when the connection closes, the daemon's own Close included. nats.go sends
+	// CLOSED to a status listener registered before the close, into a buffered channel, so the
+	// event is kept even when it comes before the goroutine waits; a close before the listener is
+	// registered sends nothing, which the IsClosed read after the registration catches.
 	closed := conn.StatusChanged(nats.CLOSED)
 	keep, stop := context.WithCancel(context.Background())
 	go func() {
+		defer stop()
+		if conn.IsClosed() {
+			return
+		}
 		<-closed
-		stop()
 	}()
 	go keeper.Keep(keep, conn)
 	return conn, nil

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
@@ -216,6 +218,20 @@ func (c natsConnection) log(log *slog.Logger) {
 // and refuses the boot as before.
 func (c natsConnection) waitsOut(err error) bool {
 	return natsauth.Unreachable(err) || c.tokenFile != "" && natsauth.Refused(err)
+}
+
+// options are the connection options the daemon's own connection dials with, after its
+// credential: what the server reports, logged (natsauth.LogEvents), and reconnects that never give
+// up (natsauth.ReconnectForever). The service token's connection also waits its reconnects out on
+// the boot's own schedule, readinessRetry, which waitsOut holds the boot's connect to, so one rule
+// waits a refusal of the auth service out at boot and while running (natsauth.ReconnectBackoff); a
+// seed's keeps nats.go's own reconnect wait.
+func (c natsConnection) options(log *slog.Logger) []nats.Option {
+	options := []nats.Option{natsauth.LogEvents(log), natsauth.ReconnectForever()}
+	if c.tokenFile != "" {
+		options = append(options, natsauth.ReconnectBackoff(readinessRetry.Initial, readinessRetry.Max))
+	}
+	return options
 }
 
 // tmuxReads is what a daemon on this host needs that readBoot reads: a launch for each harness its

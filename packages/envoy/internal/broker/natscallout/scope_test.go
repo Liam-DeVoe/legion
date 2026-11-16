@@ -139,9 +139,11 @@ func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 		require.NotContains(t, strings.ToLower(entry), "priv", "the PUB daemon's grant names PRIV: %s", entry)
 	}
 
-	// The same, through the hub, with the asks to Dispatch the service makes itself.
+	// The same, through the hub, with the asks to Dispatch the service makes itself, and a static
+	// publisher of every notification topic, which proves the served subscribe by a delivery.
 	keys := testnats.NewCalloutKeys(t)
-	url := testnats.StartWithCallout(t, keys)
+	static, staticSeed := publisher(t)
+	url := testnats.StartWithCallout(t, keys, static)
 	startServiceOf(t, url, keys, services, Deps{ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(exchange), Access: dispatch.access})
 	errs := make(chan error, 16)
 	var nc *nats.Conn
@@ -157,7 +159,7 @@ func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 		return err == nil
 	})
 	t.Cleanup(nc.Close)
-	_, err = nc.SubscribeSync(pubExceptions)
+	served, err := nc.SubscribeSync(pubExceptions)
 	require.NoError(t, err)
 	_, err = nc.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + "PRIV.>")
 	require.NoError(t, err)
@@ -167,11 +169,16 @@ func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, nc.Flush())
 	awaitViolation(t, errs, nats.InboxPrefix+">")
-	select {
-	case err := <-errs:
-		require.NotContains(t, err.Error(), pubExceptions, "the hub refused PUB's own subscribe")
-	default:
-	}
+
+	pub, err := testnats.ConnectSeed(t, url, staticSeed)
+	require.NoError(t, err)
+	defer pub.Close()
+	pubException := bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + "PUB.implementer"
+	require.NoError(t, pub.Publish(pubException, []byte("PUB's exception")))
+	require.NoError(t, pub.Flush())
+	msg, err := served.NextMsg(5 * time.Second)
+	require.NoError(t, err, "the PUB daemon received nothing on PUB's role exceptions: its own subscribe was refused or held")
+	require.Equal(t, "PUB's exception", string(msg.Data))
 }
 
 // No admission waits on Dispatch: the service asks about every project at its start and every
