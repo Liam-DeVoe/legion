@@ -195,7 +195,8 @@ function renderAgents({
   messages = [],
 }: {
   agentState?: UserAgentStates;
-  inboxRows?: InboxRow[];
+  /** The inbox read's answer, or a promise a test resolves itself to hold that read out. */
+  inboxRows?: InboxRow[] | Promise<InboxRow[]>;
   initialEntry?: string;
   listedAgents?: Agent[];
   issues?: IssueSummary[];
@@ -206,7 +207,7 @@ function renderAgents({
     kind: "user",
     login: "alice",
   });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(inboxRows);
+  const getInbox = spyOn(api, "getInbox").mockReturnValue(Promise.resolve(inboxRows));
   const listAgents = spyOn(api, "listAgents").mockResolvedValue(listedAgents);
   const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(messages);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
@@ -4935,6 +4936,35 @@ test("j from the bottom of the drawn range reaches the next session and focuses 
     expect(document.activeElement).toBe(landed);
   } finally {
     layout.restore();
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// F2 item 3: the grouping, the group headings' counts and the row pills read `inbox.data ?? []`
+// and the agent state `?? {}`, so a page whose agents had answered counted every session as
+// needing nothing. A heading says how many rows it holds only once the reads that place a row
+// in its group have answered.
+test("a group heading draws no count until the reads that place a row in its group answer", async () => {
+  const held = Promise.withResolvers<InboxRow[]>();
+  const page = renderAgents({ inboxRows: held.promise });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    // The rows are listed: the agents read answered, and it is the inbox that is out.
+    await within(region).findByRole("heading", { level: 2, name: "Planner" });
+    for (const group of ["needs-you", "active", "idle", "quiet"]) {
+      expect(screen.getByTestId(`agents-group-name-${group}`)).toBeDefined();
+      expect(
+        screen.queryByTestId(`agents-group-count-${group}`),
+        `${group} counted before its reads answered`
+      ).toBeNull();
+    }
+
+    held.resolve(inbox);
+    await waitFor(() => expect(screen.getByTestId("agents-group-count-needs-you")).toBeDefined());
+    expect(screen.getByTestId("agents-group-count-active").textContent).toMatch(/^\(\d+\)$/);
+  } finally {
     page.view.unmount();
     page.restore();
   }

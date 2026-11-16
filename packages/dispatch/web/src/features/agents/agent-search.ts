@@ -55,12 +55,15 @@ const NONE: readonly string[] = [];
  * A group the address names that this build does not know is dropped, and the groups are read
  * back in the one order the page draws them in, whatever order they were ticked in.
  *
- * The setter writes only the fields that changed. `q` and `machine` are cut at
- * `SEARCH_QUERY_MAX` when written, so a write of all four would cut a longer value a link
- * carried as soon as an unrelated control moved. Every caller hands back these `filters` with
- * one field replaced, so a field changed exactly where it is no longer the value read here.
+ * The setter takes the fields that changed and writes those alone: each caller hands it only
+ * the field its control moves. `q`, `machine` and `role` are cut at `SEARCH_QUERY_MAX` when
+ * written, so a write of all four would cut a longer value a link carried as soon as an
+ * unrelated control moved.
  */
-export function useAgentFilters(): readonly [AgentFilters, (next: AgentFilters) => void] {
+export function useAgentFilters(): readonly [
+  AgentFilters,
+  (changed: Partial<AgentFilters>) => void,
+] {
   const [values, set] = useAddressFields(AGENT_FILTER_SPEC);
   const filters = useMemo<AgentFilters>(
     () => ({
@@ -71,13 +74,13 @@ export function useAgentFilters(): readonly [AgentFilters, (next: AgentFilters) 
     }),
     [values]
   );
-  const setFilters = (next: AgentFilters) => {
-    const changed: Partial<typeof values> = {};
-    if (next.groups !== filters.groups) changed.group = next.groups;
-    if (next.machines !== filters.machines) changed.machine = next.machines;
-    if (next.roles !== filters.roles) changed.role = next.roles;
-    if (next.search !== filters.search) changed.q = next.search;
-    set(changed);
+  const setFilters = (changed: Partial<AgentFilters>) => {
+    const written: Partial<typeof values> = {};
+    if (changed.groups !== undefined) written.group = changed.groups;
+    if (changed.machines !== undefined) written.machine = changed.machines;
+    if (changed.roles !== undefined) written.role = changed.roles;
+    if (changed.search !== undefined) written.q = changed.search;
+    set(written);
   };
   return [filters, setFilters] as const;
 }

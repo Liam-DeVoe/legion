@@ -862,10 +862,12 @@ function AgentRowDetails({
  * empty or not, so the four states are always on the page and the browser check can read each
  * one's count. A block item rather than a bare button, so the heading keeps its own width, and
  * `keyboard.ts` has a handle on it (`data-agent-fold`): the pin's focus hand-off lands on it,
- * and `j`/`k` step on from it.
+ * and `j`/`k` step on from it. The count is drawn only once the reads that place a row in its
+ * group have answered (`counted`); until then the heading names its group alone.
  */
 function GroupHeading({
   agents,
+  counted,
   expanded,
   group,
   onToggle,
@@ -873,6 +875,9 @@ function GroupHeading({
 }: {
   /** The group's rows the filters match: what the count counts, and what the heading hides. */
   agents: readonly Agent[];
+  /** Whether the grouping is the answered one: the inbox, the sign-in and the reader's agent
+   *  state have each answered, so Needs you holds every session it should. */
+  counted: boolean;
   expanded: boolean;
   group: AgentGroup;
   onToggle: () => void;
@@ -888,9 +893,11 @@ function GroupHeading({
         type="button"
       >
         <span data-testid={`agents-group-name-${group}`}>{AGENT_GROUP_LABELS[group]}</span>
-        <span className="tabular-nums" data-testid={`agents-group-count-${group}`}>
-          {groupCountLabel(agents, selected)}
-        </span>
+        {counted ? (
+          <span className="tabular-nums" data-testid={`agents-group-count-${group}`}>
+            {groupCountLabel(agents, selected)}
+          </span>
+        ) : null}
         <span className={disclosureButtonText}>
           <ChevronIcon expanded={expanded} />
         </span>
@@ -927,7 +934,8 @@ function AgentFilterBar({
 }: {
   agents: readonly Agent[];
   filters: AgentFilters;
-  onFilters: (filters: AgentFilters) => void;
+  /** Writes the fields it is handed and no other (`useAgentFilters`). */
+  onFilters: (changed: Partial<AgentFilters>) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
 }): ReactNode {
   // The options carry every machine the filter names even when no live session reports it, so
@@ -943,19 +951,17 @@ function AgentFilterBar({
     ...filters.groups.map((value) => ({
       key: `group:${value}`,
       label: `Group: ${AGENT_GROUP_LABELS[value]}`,
-      remove: () =>
-        onFilters({ ...filters, groups: filters.groups.filter((one) => one !== value) }),
+      remove: () => onFilters({ groups: filters.groups.filter((one) => one !== value) }),
     })),
     ...filters.machines.map((value) => ({
       key: `machine:${value}`,
       label: `Machine: ${value}`,
-      remove: () =>
-        onFilters({ ...filters, machines: filters.machines.filter((one) => one !== value) }),
+      remove: () => onFilters({ machines: filters.machines.filter((one) => one !== value) }),
     })),
     ...filters.roles.map((value) => ({
       key: `role:${value}`,
       label: `Role: ${value}`,
-      remove: () => onFilters({ ...filters, roles: filters.roles.filter((one) => one !== value) }),
+      remove: () => onFilters({ roles: filters.roles.filter((one) => one !== value) }),
     })),
   ];
   return (
@@ -967,7 +973,7 @@ function AgentFilterBar({
           className="w-full"
           data-testid="agents-filter-search"
           label="Search agents"
-          onChange={(value) => onFilters({ ...filters, search: value })}
+          onChange={(value) => onFilters({ search: value })}
           placeholder="Title, directory, machine, session or open issue"
           ref={searchInputRef}
           value={filters.search}
@@ -990,10 +996,7 @@ function AgentFilterBar({
                 // The control picks strings; these are the four group keys, read back in the one
                 // order the page draws them in, whatever order they were ticked in.
                 onChange={(next) =>
-                  onFilters({
-                    ...filters,
-                    groups: AGENT_GROUPS.filter((group) => next.includes(group)),
-                  })
+                  onFilters({ groups: AGENT_GROUPS.filter((group) => next.includes(group)) })
                 }
                 optionLabel={(value) => AGENT_GROUP_LABELS[value as AgentGroup]}
                 options={AGENT_GROUPS}
@@ -1005,7 +1008,7 @@ function AgentFilterBar({
                 {...filterPanel("machine")}
                 emptyMessage="No machine matches that."
                 label="Machine"
-                onChange={(next) => onFilters({ ...filters, machines: next })}
+                onChange={(next) => onFilters({ machines: next })}
                 options={machines}
                 searchLabel="Search machines"
                 selected={filters.machines}
@@ -1015,7 +1018,7 @@ function AgentFilterBar({
                 {...filterPanel("role")}
                 emptyMessage="No role matches that."
                 label="Role"
-                onChange={(next) => onFilters({ ...filters, roles: next })}
+                onChange={(next) => onFilters({ roles: next })}
                 options={withPicked(roles, filters.roles)}
                 searchLabel="Search roles"
                 selected={filters.roles}
@@ -1475,7 +1478,15 @@ export function AgentsPage(): ReactNode {
   // The viewer's own state for each session, which the rows already read for their unread
   // badges: one query, one answer, and the replies they have not read are what put a session in
   // Needs you beside the asks that wait on them.
-  const agentStates = useQuery(userAgentStateQuery()).data ?? {};
+  const agentStateRead = useQuery(userAgentStateQuery());
+  const agentStates = agentStateRead.data ?? {};
+  // Whether the grouping is the answered one. Until the inbox, the sign-in and the agent state
+  // have each answered, no session can be put in Needs you, so each group heading is drawn
+  // without its count rather than with one taken from a read that has not come in (or whose
+  // first read failed). Every row pill is absent at zero, so none of them draws a number from
+  // such a read either.
+  const groupingAnswered =
+    inbox.data !== undefined && viewer !== undefined && agentStateRead.data !== undefined;
   // The first card number: the reader's own work with this session - a question whose next move
   // is a person's and which waits on them. One meaning for every count of what waits on
   // the reader, wherever it is shown.
@@ -1711,6 +1722,7 @@ export function AgentsPage(): ReactNode {
     item.kind === "group" ? (
       <GroupHeading
         agents={matchingIn[item.group]}
+        counted={groupingAnswered}
         expanded={shown[item.group]}
         group={item.group}
         onToggle={() => toggleGroup(item.group)}

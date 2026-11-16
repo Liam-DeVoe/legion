@@ -2,7 +2,7 @@ import { rankItem, rankings } from "@tanstack/match-sorter-utils";
 import type { ColumnFiltersState } from "@tanstack/react-table";
 import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
 import type { LayoutColumns } from "../../components/table-layout";
-import { capSearchQuery, copyAddress, type TableAddressView } from "../../lib/page-address";
+import { copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
 
@@ -601,14 +601,18 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
           : defaultView.sorting,
     grouping: canGroupBy(grouping) ? [grouping] : [],
     filters,
-    search: capSearchQuery(params.get(key("q")) ?? ""),
+    // Read whole: the search box cuts what the reader types (`useTableAddress`'s `setSearch`),
+    // and every write below rewrites `q` from this, so a cut here would shorten a longer `?q=`
+    // a link carried as soon as the reader sorted or paged.
+    search: params.get(key("q")) ?? "",
     page: Number.isSafeInteger(page) && page > 0 ? page - 1 : 0,
     pageSize: PAGE_SIZES.includes(size) ? size : defaultView.pageSize,
     selection: readSelection(params),
   };
 }
-/** Whether a status pick is exactly the set the table opens with. */
-function isDefaultStatus(value: unknown): boolean {
+/** Whether a status pick is exactly the set the table opens with: no narrowing of the reader's,
+ *  which a link leaves out and **Clear filters** goes back to. */
+export function isDefaultStatus(value: unknown): boolean {
   const picked = Array.isArray(value) ? value.map(String) : [];
   const fallback = (defaultView.filters[0]?.value ?? []) as string[];
   return picked.length === fallback.length && fallback.every((status) => picked.includes(status));

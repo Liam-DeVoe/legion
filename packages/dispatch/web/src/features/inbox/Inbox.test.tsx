@@ -708,6 +708,54 @@ test("a credential list that fails to load keeps the Inbox from saying nothing n
   }
 });
 
+// F2 item 3: `Blocked on you · N` counted a credential request as none while its list was out or
+// its first read had failed, so the number beside the control was a number of a read nobody had
+// answered. It names its narrowing alone until both of its reads are in.
+test("Blocked on you draws no number while the credential list is out, and the number once it lands", async () => {
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const listed = Promise.withResolvers<{ pending: CredentialPendingRow[] }>();
+  mocks.getCredentialPending.mockReturnValue(listed.promise);
+  const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    machine_code_page: false,
+  });
+  const { unmount } = renderInbox();
+  try {
+    // The control is there, since an ask already waits; its count is not, since the requests it
+    // would add are unread.
+    const control = await screen.findByRole("button", { name: "Blocked on you" });
+    expect(control.textContent).toBe("Blocked on you");
+    expect(control).toHaveAttribute("title", "Blocked on you");
+    expect(screen.queryByText(/Blocked on you · \d/)).not.toBeInTheDocument();
+
+    listed.resolve({ pending: [secretRequest()] });
+    const counted = await screen.findByRole("button", {
+      name: /^Blocked on you: 2 items, oldest /,
+    });
+    expect(counted.textContent).toBe("Blocked on you · 2");
+  } finally {
+    unmount();
+    getCredentialCapabilities.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("Blocked on you draws no number after the credential list's first read failed", async () => {
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  mocks.getCredentialPending.mockRejectedValue(
+    new ApiError(503, { code: "AGENT_SECRETS_UNAVAILABLE" })
+  );
+  const { unmount } = renderInbox();
+  try {
+    expect(await screen.findByText("Couldn't load credential requests.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Blocked on you" }).textContent).toBe(
+      "Blocked on you"
+    );
+  } finally {
+    unmount();
+    getInbox.mockRestore();
+  }
+});
+
 test("Inbox narrows to one agent's asks from ?agent and clears back to the whole inbox", async () => {
   const fromPlanner = issueAsk({ id: "ask-planner", question: "Planner question" });
   const plannerWaits = issueAsk({

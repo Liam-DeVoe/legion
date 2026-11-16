@@ -55,8 +55,11 @@ export interface NeedsYou {
 }
 
 /** What the Inbox's own needs-you control is named and titled by: how many things wait for the
- *  viewer, and how long the oldest of them has waited (INFRA-3135, R7). */
-export function blockedOnYouText({ count, oldest }: NeedsYou): string {
+ *  viewer, and how long the oldest of them has waited (INFRA-3135, R7); its name alone while a
+ *  read it counts has not answered (`undefined`), which no number is drawn from. */
+export function blockedOnYouText(needs: NeedsYou | undefined): string {
+  if (needs === undefined) return "Blocked on you";
+  const { count, oldest } = needs;
   const items = `${count} ${count === 1 ? "item" : "items"}`;
   return `Blocked on you: ${items}${oldest === undefined ? "" : `, oldest ${formatAskAge(oldest)}`}`;
 }
@@ -96,13 +99,19 @@ export function needsYou(
   return { count: since.length, oldest };
 }
 
-/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox. */
-export function useNeedsYouCount(): number {
+/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox.
+ *  Undefined until each read it adds up has answered - the inbox, the sign-in that says whose
+ *  asks are the reader's, and the credential requests - and while a first read of any of them
+ *  has failed, so the rail draws no number rather than a sum that counts an unread list as
+ *  empty. A read that answered once keeps its answer through a later refresh that fails. */
+export function useNeedsYouCount(): number | undefined {
   const inbox = useQuery(inboxQuery());
-  // Until `/auth/whoami` answers, the rail shows no number rather than one that is not theirs.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  const { requests } = useCredentialRequests();
-  return needsYou(inbox.data ?? [], requests, viewer).count;
+  const credentials = useCredentialRequests();
+  if (inbox.data === undefined || viewer === undefined || credentials.status !== "listed") {
+    return undefined;
+  }
+  return needsYou(inbox.data, credentials.requests, viewer).count;
 }
 
 /** The project page's `Blocked on you · N` pill, linking to the Inbox: the reader's own

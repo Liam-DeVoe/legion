@@ -184,8 +184,8 @@ export interface ControlRowProps {
   readonly display?: ReactNode;
   /** What **Clear filters** does: takes every narrowing the page counts off at once. The row
    *  draws the button only while this is given - at the end of the chips line while there is a
-   *  chip, and right after the trigger while there is none (the project List's column filters
-   *  and search text draw no chip in the row). */
+   *  chip, and right after the trigger while there is none (the project List's search text and
+   *  the open statuses it opens on draw no chip in the row). */
   readonly onClear?: () => void;
   /** The page's search box, at the head of the row. */
   readonly search?: ReactNode;

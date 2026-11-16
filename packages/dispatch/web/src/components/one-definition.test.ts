@@ -96,9 +96,11 @@ const ADDRESS_MARKS: readonly Mark[] = [
   },
   {
     what: "navigates with a query of its own — `lib/page-address.ts`'s `useAddressNavigate`",
-    // A path holding `?`, or an object naming `search` among its own keys; a key of an object
-    // nested in it is not the query, and a template's `${…}` inside it is skipped whole.
-    pattern: /navigate\(\s*(?:["'`][^"'`]*\?|\{(?:[^{}]|\{[^{}]*\})*?\bsearch\s*[:,}])/,
+    // A path holding `?`, or an object naming `search` among its own keys: the lookbehind takes
+    // `search` only where a key can stand, so `state: search` and `hash: x.search` are values
+    // and not a query. A key of an object nested in it is not the query either, and a
+    // template's `${…}` inside it is skipped whole.
+    pattern: /navigate\(\s*(?:["'`][^"'`]*\?|\{(?:[^{}]|\{[^{}]*\})*?(?<=[{,]\s*)search\s*[:,}])/,
   },
   {
     what: "redirects with the router's own `<Navigate>` — `lib/page-address.ts`'s `AddressRedirect`",
@@ -106,11 +108,19 @@ const ADDRESS_MARKS: readonly Mark[] = [
   },
   {
     what: "reads or writes the address through the browser's own location (`window.location`) — `lib/page-address.ts`'s `usePageAddress` to read it, `useAddressUpdate` or `useAddressNavigate` to write it",
-    pattern: /\b(?:window|document|globalThis)\.location\b/,
+    // `self`, `top` and `parent` name this window as `window` does; each is matched only as a
+    // name of its own, so an object's own `parent.location` is not one.
+    pattern: /(?:\b(?:window|document|globalThis)|(?<![\w$.])(?:self|top|parent))\.location\b/,
   },
   {
     what: "reads the browser's own location through the bare global (`location.search`) — `lib/page-address.ts`'s `usePageAddress`, under a name of its own, since a bare `location` is the browser's",
     pattern: /(?<![\w$.])location\??\.[A-Za-z_$]/,
+  },
+  {
+    what: "takes the browser's own location whole (`const { search } = location`) — `lib/page-address.ts`'s `usePageAddress`, under a name of its own, since a bare `location` is the browser's",
+    // The global bound to a name or destructured, which reads the address just as `location.x`
+    // does: the `=` is an assignment or a default, never a comparison (`==`, `===`, `!==`).
+    pattern: /(?<![=!<>])=\s*location\s*(?![\w$.?(])/,
   },
   {
     what: "writes the address through the browser's own history (`history.pushState` / `history.replaceState`), behind the router's back — `lib/page-address.ts`'s `useAddressUpdate` or `useAddressNavigate`",
@@ -267,6 +277,60 @@ describe("no page builds a control or an address of its own", () => {
         "features/project/open-bugs.ts",
         `navigate({ pathname: \`/search/\${key}\`, state: { search: "x" } });`
       )
+    ).toEqual([]);
+  });
+
+  test("a `navigate({` whose `search` is a value rather than a key is left alone", () => {
+    // `state: search` carries the page's own text into the next page's router state, and
+    // `hash: x.search` is a fragment read off an object: neither names a query of its own.
+    expect(
+      refusals("features/project/open-bugs.ts", "navigate({ pathname, state: search });")
+    ).toEqual([]);
+    expect(
+      refusals("features/project/open-bugs.ts", "navigate({ pathname: p, hash: x.search });")
+    ).toEqual([]);
+    // The key itself is still refused, however the formatter spaced it.
+    expect(
+      refusals("features/project/open-bugs.ts", "navigate({\n  pathname,\n  search: query,\n});")
+    ).toEqual([
+      "features/project/open-bugs.ts:1 navigates with a query of its own — `lib/page-address.ts`'s `useAddressNavigate`",
+    ]);
+  });
+
+  test("a page of the seven that reads `self`, `top` or `parent` `.location` is refused", () => {
+    const what =
+      "reads or writes the address through the browser's own location (`window.location`) — `lib/page-address.ts`'s `usePageAddress` to read it, `useAddressUpdate` or `useAddressNavigate` to write it";
+    for (const name of ["self", "top", "parent"]) {
+      expect(
+        refusals("features/inbox/probe-query.ts", `export const q = ${name}.location.search;`)
+      ).toEqual([`features/inbox/probe-query.ts:1 ${what}`]);
+    }
+    // A `parent` of something else is that object's own field, not this window.
+    expect(
+      refusals("features/inbox/probe-query.ts", "export const q = node.parent.location;")
+    ).toEqual([]);
+  });
+
+  test("a page of the seven that takes the bare global `location` whole is refused", () => {
+    const what =
+      "takes the browser's own location whole (`const { search } = location`) — `lib/page-address.ts`'s `usePageAddress`, under a name of its own, since a bare `location` is the browser's";
+    expect(
+      refusals("features/inbox/probe-query.ts", "const { search } = location;\nexport { search };")
+    ).toEqual([`features/inbox/probe-query.ts:1 ${what}`]);
+    expect(refusals("features/inbox/probe-query.ts", "export const here = location;")).toEqual([
+      `features/inbox/probe-query.ts:1 ${what}`,
+    ]);
+    // A read through the global is the other mark's, reported once; the page address under a
+    // name of its own, a comparison against the global and a feature outside the seven are
+    // left alone.
+    expect(refusals("features/inbox/probe-query.ts", "export const q = location.search;")).toEqual([
+      "features/inbox/probe-query.ts:1 reads the browser's own location through the bare global (`location.search`) — `lib/page-address.ts`'s `usePageAddress`, under a name of its own, since a bare `location` is the browser's",
+    ]);
+    expect(
+      refusals("features/inbox/probe-query.ts", "const { search } = usePageAddress();")
+    ).toEqual([]);
+    expect(
+      refusals("features/architecture/probe-query.ts", "export const here = location;")
     ).toEqual([]);
   });
 

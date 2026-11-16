@@ -58,6 +58,7 @@ import {
   DEFAULT_WINDOW_PRESET,
   hasMalformedWindowParams,
   liveWindow,
+  readBrush,
   readWindow,
   type WindowChoice,
 } from "./lib/window";
@@ -183,10 +184,18 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   const view = useMemo(() => ({ colorBy, lanes, mode, agents }), [colorBy, lanes, mode, agents]);
   const ws = searchParams.get("ws");
   const we = searchParams.get("we");
-  const brush = useMemo(
-    () => (ws === null || we === null ? null : { start: ws, end: we }),
-    [ws, we]
-  );
+  const brush = useMemo(() => readBrush(ws, we), [ws, we]);
+  // A pair that names no brush (`readBrush`) leaves the address as the malformed window does, so
+  // the page shows its whole window and a reload or a shared link does not carry the pair on.
+  const malformedBrush = (ws !== null || we !== null) && brush === null;
+  useEffect(() => {
+    if (!malformedBrush) return;
+    update((params) => {
+      params.delete("ws");
+      params.delete("we");
+      return params;
+    });
+  }, [malformedBrush, update]);
   // On the `?sort=` text, not on the parameters: the search box writes `?q=` on every keystroke
   // and hands out a new `URLSearchParams` each time, while TanStack compares its sorted row
   // model's dependencies by reference and would re-sort the whole window per letter typed.
@@ -438,6 +447,13 @@ function Facet({
  * counts here are the answer's, never the page's. Under Parent agent's old place, **Edit
  * groups** opened the session-groups editor; it sits at the foot of this panel now, since that
  * facet is a column.
+ *
+ * The row is drawn from the address alone, before the first answer and after a first read that
+ * failed (`data` undefined), so a link's narrowing has its chip, its count and its way off while
+ * the page has nothing else to show. A value is named in the words the answer gives it - an
+ * issue's title, a group's or a component's name - only once there is an answer; until then it
+ * reads as the address spells it. The panel then offers only what is picked, and no **Edit
+ * groups**, whose editor edits the groups the answer lists.
  */
 function DeliveryControls({
   columnsDrawn,
@@ -447,22 +463,25 @@ function DeliveryControls({
 }: {
   /** Whether the list is drawn, whose headers hold the five facets that are its columns. */
   columnsDrawn: boolean;
-  data: Pick<
-    DeliveryTimelineWithMeasures,
-    | "facet_counts"
-    | "components"
-    | "issue_titles"
-    | "session_groups"
-    | "session_titles"
-    | "session_pr_counts"
-  >;
+  /** The answer the panel counts and names values from; undefined until the first one. */
+  data:
+    | Pick<
+        DeliveryTimelineWithMeasures,
+        | "facet_counts"
+        | "components"
+        | "issue_titles"
+        | "session_groups"
+        | "session_titles"
+        | "session_pr_counts"
+      >
+    | undefined;
   filters: Filters;
   onFilters: (next: Filters) => void;
 }): ReactNode {
   const [panelOpen, setPanelOpen] = useState(false);
   const facetPanel = useNestedPanels<FacetKey>(panelOpen);
   const [editingGroups, setEditingGroups] = useState(false);
-  const countsOf = (key: FacetKey) => data.facet_counts?.[FACET_PARAMS[key]] ?? {};
+  const countsOf = (key: FacetKey) => data?.facet_counts?.[FACET_PARAMS[key]] ?? {};
   // Rework and Deployed offer every verdict in their own order, as their headers do; every other
   // facet offers what the window counts, busiest first.
   const valuesOf = (key: FacetKey): readonly string[] => {
@@ -478,29 +497,31 @@ function DeliveryControls({
   // one descendant walk per component as architecture-model.ts's descendantComponents would take.
   const subComponents = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const component of Object.values(data.components ?? {})) {
+    for (const component of Object.values(data?.components ?? {})) {
       const seen = new Set<string>();
       for (let parent = component.parent; parent !== null && !seen.has(parent); ) {
         seen.add(parent);
         counts.set(parent, (counts.get(parent) ?? 0) + 1);
-        parent = data.components?.[parent]?.parent ?? null;
+        parent = data?.components?.[parent]?.parent ?? null;
       }
     }
     return counts;
-  }, [data.components]);
-  // A column facet's value reads as its header's filter reads it.
+  }, [data?.components]);
+  // A column facet's value reads as its header's filter reads it. Before the first answer an
+  // issue has no title to read beside its key, so it reads as its key alone.
   const valueLabel = (key: FacetKey, value: string): string => {
     const column = COLUMN_FACETS.find((one) => one === key);
     if (column !== undefined) {
+      if (data === undefined && column === "issue") return PLACEHOLDER_LABELS[value] ?? value;
       return columnFacetValue(column, value, {
-        issueTitles: data.issue_titles ?? {},
-        sessionGroups: data.session_groups ?? [],
+        issueTitles: data?.issue_titles ?? {},
+        sessionGroups: data?.session_groups ?? [],
       });
     }
     const placeholder = PLACEHOLDER_LABELS[value];
     if (placeholder !== undefined) return placeholder;
     if (key === "component") {
-      const title = data.components?.[value]?.title ?? value;
+      const title = data?.components?.[value]?.title ?? value;
       const children = subComponents.get(value) ?? 0;
       if (children === 0) return title;
       return `${title} (includes ${children} sub-component${children === 1 ? "" : "s"})`;
@@ -552,19 +573,21 @@ function DeliveryControls({
                   values={valuesOf(key)}
                 />
               ))}
-              <button
-                className={`text-xs underline ${linkText}`}
-                onClick={() => setEditingGroups(true)}
-                type="button"
-              >
-                Edit groups
-              </button>
+              {data === undefined ? null : (
+                <button
+                  className={`text-xs underline ${linkText}`}
+                  onClick={() => setEditingGroups(true)}
+                  type="button"
+                >
+                  Edit groups
+                </button>
+              )}
             </>
           )}
         </PanelTrigger>
       }
     >
-      {editingGroups ? (
+      {editingGroups && data !== undefined ? (
         <SessionGroupsEditor
           counts={data.session_pr_counts ?? {}}
           groups={data.session_groups ?? []}
@@ -735,6 +758,15 @@ export function DeliveryPage(): ReactNode {
     (element) => (generatedLine.current?.contains(element) ? generatedLine.current : null),
     () => windowSelect.current
   );
+  // The list's own body is drawn once an answer is in; the control row is drawn before it
+  // (`DeliveryControls`), at the one place in the tree, so the answer arriving does not remount
+  // it and a link's narrowing has its chip and its way off while the page reads.
+  const drawn = data !== undefined && activeWindow !== null;
+  // The count is the answer's for the filter and the window the address names, so it is drawn
+  // only while the answer on screen is that one: not while a new filter's or a new window's read
+  // is out and the previous answer stays on screen (`isPlaceholderData`), nor while a search the
+  // reader is typing waits out its debounce before it is asked for.
+  const counted = !query.isPlaceholderData && search === state.filters.search.trim();
   return (
     <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)]">
       {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the header needs no role of its own. */}
@@ -805,105 +837,107 @@ export function DeliveryPage(): ReactNode {
             <MeasuresPanel data={measures} />
           )}
 
-          {data === undefined || activeWindow === null ? null : (
-            <>
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <ModeToggle
-                  mode={state.view.mode}
-                  onChange={(mode) => setView({ ...state.view, mode })}
-                />
-                <label className={`flex items-center gap-2 ${textMutedOnCanvas}`}>
-                  Color merges by
-                  <select
-                    className={`rounded border px-2 py-1 ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`}
-                    onChange={(event) => {
-                      const colorBy = COLOR_FACETS.find((facet) => facet === event.target.value);
-                      if (colorBy !== undefined) setView({ ...state.view, colorBy });
-                    }}
-                    value={state.view.colorBy}
-                  >
-                    {COLOR_FACET_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {state.view.colorBy === "parentAgent" ? (
-                  <OwnColourPicker
-                    counts={data.color_counts?.parent_agent ?? {}}
-                    groups={data.session_groups ?? []}
-                    onChange={(agents) => setView({ ...state.view, agents })}
-                    selected={state.view.agents}
-                  />
-                ) : null}
-                {state.view.mode === "timeline" ? (
-                  <LanesSwitch
-                    checked={state.view.lanes}
-                    onChange={(lanes) => setView({ ...state.view, lanes })}
-                  />
-                ) : null}
-                <span className={`ml-4 ${textMutedOnCanvas}`}>
-                  {shownPRs.length} PRs in current filter/window
-                </span>
-              </div>
-
-              <DeliveryControls
-                columnsDrawn={state.view.mode === "list"}
-                data={data}
-                filters={state.filters}
-                onFilters={setFilters}
+          {drawn ? (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <ModeToggle
+                mode={state.view.mode}
+                onChange={(mode) => setView({ ...state.view, mode })}
               />
-
-              <div className="flex min-h-0 flex-1 flex-col gap-4 xl:flex-row">
-                <div className="flex h-[75dvh] min-h-[28rem] min-w-0 flex-col xl:h-auto xl:flex-1">
-                  {state.view.mode === "timeline" ? (
-                    <Timeline
-                      chosen={chosenAgents}
-                      colorBy={state.view.colorBy}
-                      colorScale={colorScale}
-                      components={data.components ?? {}}
-                      filters={state.filters}
-                      lanes={state.view.lanes}
-                      onBrush={(brush) => setState({ ...state, brush })}
-                      onSelect={setSelection}
-                      prs={shownPRs}
-                      runs={data.runs ?? []}
-                      sessionGroups={data.session_groups ?? []}
-                      waiting={waitingMerges}
-                      window={activeWindow}
-                    />
-                  ) : (
-                    <PRList
-                      allRepos={allRepos}
-                      colorBy={state.view.colorBy}
-                      colorScale={colorScale}
-                      columnFilters={columnFilters}
-                      facetCounts={data.facet_counts ?? {}}
-                      issueTitles={data.issue_titles ?? {}}
-                      onColumnFiltersChange={setColumnFilters}
-                      onSelect={(id) => setSelection({ kind: "pr", id })}
-                      onSelectRun={(id) => setSelection({ kind: "deploy", id })}
-                      onSortingChange={setSorting}
-                      prs={shownPRs}
-                      selectedId={selection?.kind === "pr" ? selection.id : undefined}
-                      sessionGroups={data.session_groups ?? []}
-                      sorting={state.sorting}
-                    />
-                  )}
-                </div>
-                <DrillDown
-                  components={data.components ?? {}}
-                  onClose={() => setSelection(null)}
-                  prs={data.prs ?? []}
-                  runs={data.runs ?? []}
-                  selection={drillDownSelection}
-                  sessionGroups={data.session_groups ?? []}
-                  sessionTitles={data.session_titles ?? {}}
+              <label className={`flex items-center gap-2 ${textMutedOnCanvas}`}>
+                Color merges by
+                <select
+                  className={`rounded border px-2 py-1 ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`}
+                  onChange={(event) => {
+                    const colorBy = COLOR_FACETS.find((facet) => facet === event.target.value);
+                    if (colorBy !== undefined) setView({ ...state.view, colorBy });
+                  }}
+                  value={state.view.colorBy}
+                >
+                  {COLOR_FACET_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {state.view.colorBy === "parentAgent" ? (
+                <OwnColourPicker
+                  counts={data.color_counts?.parent_agent ?? {}}
+                  groups={data.session_groups ?? []}
+                  onChange={(agents) => setView({ ...state.view, agents })}
+                  selected={state.view.agents}
                 />
+              ) : null}
+              {state.view.mode === "timeline" ? (
+                <LanesSwitch
+                  checked={state.view.lanes}
+                  onChange={(lanes) => setView({ ...state.view, lanes })}
+                />
+              ) : null}
+              <span className={`ml-4 ${textMutedOnCanvas}`}>
+                {counted
+                  ? `${shownPRs.length} PRs in current filter/window`
+                  : "Counting PRs in current filter/window…"}
+              </span>
+            </div>
+          ) : null}
+
+          <DeliveryControls
+            columnsDrawn={state.view.mode === "list"}
+            data={data}
+            filters={state.filters}
+            onFilters={setFilters}
+          />
+
+          {drawn ? (
+            <div className="flex min-h-0 flex-1 flex-col gap-4 xl:flex-row">
+              <div className="flex h-[75dvh] min-h-[28rem] min-w-0 flex-col xl:h-auto xl:flex-1">
+                {state.view.mode === "timeline" ? (
+                  <Timeline
+                    chosen={chosenAgents}
+                    colorBy={state.view.colorBy}
+                    colorScale={colorScale}
+                    components={data.components ?? {}}
+                    filters={state.filters}
+                    lanes={state.view.lanes}
+                    onBrush={(brush) => setState({ ...state, brush })}
+                    onSelect={setSelection}
+                    prs={shownPRs}
+                    runs={data.runs ?? []}
+                    sessionGroups={data.session_groups ?? []}
+                    waiting={waitingMerges}
+                    window={activeWindow}
+                  />
+                ) : (
+                  <PRList
+                    allRepos={allRepos}
+                    colorBy={state.view.colorBy}
+                    colorScale={colorScale}
+                    columnFilters={columnFilters}
+                    facetCounts={data.facet_counts ?? {}}
+                    issueTitles={data.issue_titles ?? {}}
+                    onColumnFiltersChange={setColumnFilters}
+                    onSelect={(id) => setSelection({ kind: "pr", id })}
+                    onSelectRun={(id) => setSelection({ kind: "deploy", id })}
+                    onSortingChange={setSorting}
+                    prs={shownPRs}
+                    selectedId={selection?.kind === "pr" ? selection.id : undefined}
+                    sessionGroups={data.session_groups ?? []}
+                    sorting={state.sorting}
+                  />
+                )}
               </div>
-            </>
-          )}
+              <DrillDown
+                components={data.components ?? {}}
+                onClose={() => setSelection(null)}
+                prs={data.prs ?? []}
+                runs={data.runs ?? []}
+                selection={drillDownSelection}
+                sessionGroups={data.session_groups ?? []}
+                sessionTitles={data.session_titles ?? {}}
+              />
+            </div>
+          ) : null}
         </>
       )}
     </section>

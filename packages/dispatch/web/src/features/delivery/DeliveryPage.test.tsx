@@ -1283,3 +1283,96 @@ test("in the List a value picked on a column's header draws its chip in the row,
       .map((trigger) => trigger.getAttribute("aria-label")?.split(":")[0])
   ).toEqual(NINE_FACETS.slice(0, 4));
 });
+
+// F2 item 2: the row was drawn only once an answer was in, so while the page read - and after a
+// first read that failed - `?author=x` narrowed it with no chip, no count and no way off.
+test("before its first answer the row draws the link's chips and its count, from the address alone", async () => {
+  const user = userEvent.setup();
+  renderPage(`${DELIVERY_URL}&author=octocat&issue=ACME-1&rework=rework`);
+  const socket = await openSocket();
+  await subscription(socket, "timeline");
+
+  // Nothing has answered: the chips are the address's own, an issue reading as the key the
+  // address spells, since no title has been read for it.
+  expect(await screen.findByText("Loading delivery timeline…")).toBeDefined();
+  expect(rowControls()).toEqual([
+    "Filter · 3",
+    "Remove Issue: ACME-1 filter",
+    "Remove Author: octocat filter",
+    "Remove Rework: rework filter",
+  ]);
+
+  // A chip's press takes its value off while the page is still reading.
+  await user.click(screen.getByRole("button", { name: "Remove Author: octocat filter" }));
+  await waitFor(() => expect(currentSearch().has("author")).toBe(false));
+  expect(currentSearch().get("issue")).toBe("ACME-1");
+
+  // Once the answer is in - the one the press subscribed, since taking a value off asks
+  // Dispatch again - a value the answer names reads in its words.
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "issue=ACME-1&rework=rework",
+  });
+  serve(socket, snapshotFrame(sub, everyFacet));
+  await waitFor(() =>
+    expect(rowControls()).toEqual([
+      "Filter · 2",
+      "Remove Issue: ACME-1 \u2014 Ship widgets filter",
+      "Remove Rework: rework filter",
+    ])
+  );
+});
+
+test("after a first read that failed the row still draws the link's chips", async () => {
+  renderPage(`${DELIVERY_URL}&author=octocat`);
+  const socket = await openSocket();
+  const { sub } = await subscription(socket, "timeline");
+  serve(socket, errorFrame(sub, "INTERNAL", "the timeline is down"));
+  expect(await screen.findByText("Couldn't load the delivery timeline.")).toBeDefined();
+  expect(rowControls()).toEqual(["Filter · 1", "Remove Author: octocat filter"]);
+});
+
+// F2 item 3: the count is the answer's for the filter and the window the address names, so the
+// previous answer's number is never shown as this filter's.
+test("the count says it is counting while a new filter's read is out, and shows the answer's number again", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(everyFacet);
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+
+  await user.click(await screen.findByRole("button", { name: "Filter Author" }));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Author options" })).getByRole("option", {
+      name: /^octocat/,
+    })
+  );
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "author=octocat",
+  });
+  // The previous answer is still on screen (`keepPreviousData`), so its number is not this
+  // filter's and no number is drawn.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(screen.queryByText(/^\d+ PRs in current filter\/window$/)).toBeNull();
+
+  serve(socket, snapshotFrame(sub, { ...everyFacet, prs: [] }));
+  expect(await screen.findByText("0 PRs in current filter/window")).toBeDefined();
+});
+
+// F2 item 4: `?ws=x&we=y` was kept as written, `Date.parse` gave NaN and every pull request was
+// filtered out of the chart, the list and the count.
+test.each([
+  ["two words", "ws=x&we=y"],
+  ["one end alone", "ws=2024-06-01T06%3A00%3A00Z"],
+  ["an end before its start", "ws=2024-06-01T18%3A00%3A00Z&we=2024-06-01T06%3A00%3A00Z"],
+])("a brush window that is %s is dropped, and the page shows its whole window", async (_, bad) => {
+  renderPage(`${DELIVERY_URL}&${bad}`);
+  await answered(everyFacet);
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
+  expect(currentSearch().has("we")).toBe(false);
+  // A window that was never brushed draws no control to clear one.
+  expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
+});

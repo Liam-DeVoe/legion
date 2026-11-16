@@ -703,3 +703,41 @@ test("j and k walk the priorities from outside every table, and each issue table
   await user.keyboard("j");
   expect(workRows[1], "j from a row of the opened work").toHaveFocus();
 });
+
+// R1, the architect's chip rule: every narrowing that is on is visible and removable from the
+// control row, whatever set it. This table's narrowings are all its columns', set on their own
+// headers, and the reader may hide a column with the columns menu, which leaves its filter
+// narrowing the table with no header to show it. So the row draws a chip for each.
+test("a column filter of the priorities table is a chip of its row, even while its column is hidden", async () => {
+  const user = userEvent.setup();
+  page(FIFTEEN);
+  // The page draws a table for each fault list beside this one, each with a Columns menu and a
+  // row of its own, so every control here is read inside the priorities section.
+  const section = await screen.findByRole("region", { name: "Priorities" });
+  const table = await within(section).findByRole("table", { name: "Priorities table" });
+  /** How many priorities the table lists, its header row left out. */
+  const listed = () => within(table).getAllByRole("row").length - 1;
+  const before = listed();
+
+  await user.click(within(table).getByRole("button", { name: "Filter Owner" }));
+  await user.click(await screen.findByRole("option", { name: /^BET controller/ }));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(listed()).toBe(1));
+  expect(within(table).getByRole("row", { name: /Linkage closure eval/ })).toBeDefined();
+  const chip = () =>
+    within(section).getByRole("button", { name: "Remove Owner: BET controller filter" });
+  expect(chip()).toBeDefined();
+
+  // Hidden, the column takes its header and its filter control off the page; the chip is then
+  // the one place the narrowing shows, and its press gives every row back.
+  await user.click(within(section).getByRole("button", { name: "Columns" }));
+  await user.click(screen.getByRole("checkbox", { name: "Owner" }));
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(within(table).queryByRole("button", { name: "Filter Owner" })).toBeNull()
+  );
+  expect(listed()).toBe(1);
+  await user.click(chip());
+  await waitFor(() => expect(listed()).toBe(before));
+  expect(screen.queryByRole("button", { name: /^Remove Owner: / })).toBeNull();
+});

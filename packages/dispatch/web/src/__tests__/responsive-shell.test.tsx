@@ -74,6 +74,7 @@ const issue: IssueDetails = {
 
 const originalApi = {
   getAsk: api.getAsk,
+  getCredentialPending: api.getCredentialPending,
   getInbox: api.getInbox,
   getIssue: api.getIssue,
   getIssueSubscribers: api.getIssueSubscribers,
@@ -120,6 +121,9 @@ function renderShellAt(
     rows: [],
     total: unreadThreads,
   });
+  // No secrets broker, which is a credential list that answered: the shell's one Inbox number
+  // is drawn only once every read it adds up has answered (`useInboxCount`).
+  api.getCredentialPending = async () => null;
   api.listIssues = async () => [
     {
       advances: [],

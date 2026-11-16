@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 
 import type { IssueSummary } from "../../api/types";
+import type { FilterChip } from "../../components/filter-chips";
 import {
   cappedTextParam,
   flagParam,
@@ -10,12 +11,6 @@ import {
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { issueIsUnread } from "./UnreadDot";
-
-/** One removable chip in the filter strip. */
-export interface ActiveFilter {
-  readonly label: string;
-  readonly remove: () => void;
-}
 
 export interface IssueFiltersState {
   /** The project's `?label=` values (every one required, case-insensitively). */
@@ -35,7 +30,8 @@ export interface IssueFiltersState {
    *  strip says so. `undefined` while the filter is off or the list is current or loading. */
   readonly unclaimedUnchecked: "refilling" | "unreachable" | undefined;
   readonly activeFilterCount: number;
-  readonly activeFilters: ActiveFilter[];
+  /** The Board's chips, one per narrowing that is on, as `filterChips` draws them. */
+  readonly activeFilters: FilterChip[];
   readonly setLabels: (next: string[]) => void;
   readonly setSearch: (next: string) => void;
   readonly setNeedsYou: (next: boolean) => void;
@@ -111,7 +107,7 @@ export function useIssueFilters(): IssueFiltersState {
     Number(needsYou) +
     Number(unread) +
     Number(unclaimed);
-  const activeFilters: ActiveFilter[] = [
+  const activeFilters: FilterChip[] = [
     ...labels.map((label) => ({
       label: `Label: ${label}`,
       remove: () => setLabels(labels.filter((current) => current !== label)),

@@ -1682,9 +1682,12 @@ test("Clear filters restores the default view rather than loading every closed i
 });
 
 // The List draws its toolbar while it reads issues it has not loaded, as the Board draws its
-// controls: a press in the toolbar that starts that read leaves the toolbar, the control pressed
-// and the keyboard focus on it where they were, and the skeleton stands in for the table alone.
-test("a press in the toolbar that sends the List off to read its issues keeps the toolbar, and the focus on that control", async () => {
+// controls: a press in the toolbar that starts that read leaves the toolbar where it was, with
+// the keyboard focus in it, and the skeleton stands in for the table alone. **Clear filters**
+// takes every chip off with it, so it moves from the chips line into the first line and hands
+// its focus to the row's filter trigger, which is the rule for it on every page
+// (`components/ControlRow.tsx`); what must not happen is the focus dropping to the page's body.
+test("a press in the toolbar that sends the List off to read its issues keeps the toolbar, and the focus in it", async () => {
   const user = userEvent.setup();
   // Opened on the closed issues, whose listing answers. The open issues' listing is still out
   // when Clear filters goes back to them.
@@ -1693,17 +1696,17 @@ test("a press in the toolbar that sends the List off to read its issues keeps th
     open: open.promise,
   });
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
-  const clear = screen.getByRole("button", { name: "Clear filters" });
-  await user.click(clear);
+  await user.click(screen.getByRole("button", { name: "Clear filters" }));
   expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
   expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
   expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
-  expect(screen.getByRole("button", { name: "Clear filters" })).toBe(clear);
+  expect(screen.getByRole("button", { name: "Clear filters" })).toBeDefined();
+  const trigger = screen.getByRole("button", { name: /^Filters · \d+$/ });
   // Not the page's body, from which a keyboard reader would start again at its first link.
-  expect(clear).toHaveFocus();
+  expect(trigger).toHaveFocus();
   open.resolve([issue("CORE-1")]);
   expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
-  expect(clear).toHaveFocus();
+  expect(trigger).toHaveFocus();
 });
 
 // A column filter goes with the table it heads when its press sends the List off to read its
@@ -2102,13 +2105,15 @@ test("the narrowing chip shows the picked issues alone, and its remove gives the
   );
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-3"]);
-  const chip = screen.getByRole("button", { name: "Stop showing only Finished last week" });
+  // Named as every other chip of the row is, and wearing the selected fill they wear.
+  const chip = screen.getByRole("button", { name: "Remove Showing: Finished last week filter" });
+  expect(chip).toHaveAttribute("aria-pressed", "true");
   expect(chip.textContent).toContain("Finished last week");
   expect(chip.textContent).toContain("2 of 2 issues");
   await user.click(chip);
   await waitFor(() => expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-2", "CORE-3"]));
   expect(screen.getByTestId("route-search").textContent).not.toContain("only=");
-  expect(screen.queryByRole("button", { name: /^Stop showing only/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /^Remove Showing: / })).toBeNull();
 });
 
 // The toolbar is drawn while the issues load and after their read fails, so the chip counts what
@@ -2118,7 +2123,7 @@ test("the narrowing chip shows the picked issues alone, and its remove gives the
 test("the narrowing chip counts the picked issues only once the table has loaded them", async () => {
   const picked = "?only=CORE-1,CORE-3&onlyLabel=Finished+last+week&nofilter=1";
   const count = () => {
-    const chip = screen.getByRole("button", { name: "Stop showing only Finished last week" });
+    const chip = screen.getByRole("button", { name: "Remove Showing: Finished last week filter" });
     expect(chip.textContent).toContain("Showing: Finished last week");
     return chip.textContent?.match(/\d+ of \d+ issues?/)?.[0];
   };
@@ -2145,6 +2150,61 @@ test("the narrowing chip counts the picked issues only once the table has loaded
   failing.reject(new Error("the listing is down"));
   expect(await screen.findByRole("button", { name: "Retry loading issues" })).toBeDefined();
   expect(count()).toBeUndefined();
+});
+
+// R1, the architect's chip rule: every narrowing that is on is visible and removable from the
+// control row, whatever set it. A column filter is set on that column's header, and the reader
+// may hide the column with the columns menu - which leaves the filter narrowing the list with no
+// header to show it - so the row draws a chip for it either way.
+test("a column filter is a chip of the row, counted by the trigger, while its column is hidden", async () => {
+  const user = userEvent.setup();
+  table(
+    [
+      issue("CORE-1", { labels: ["frontend"] }),
+      issue("CORE-2", { labels: ["backend"] }),
+      issue("CORE-3", { labels: ["frontend"] }),
+    ],
+    "?label=frontend"
+  );
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-3"]);
+  // One chip for the one narrowing, in the words the Board gives `?label=` too, since both
+  // views read that parameter.
+  const chip = () => screen.getByRole("button", { name: "Remove Label: frontend filter" });
+  expect(screen.getAllByRole("button", { name: /^Remove .* filter$/ }).length).toBe(1);
+  expect(chip()).toBeDefined();
+  expect(screen.getByRole("button", { name: "Filters · 1" })).toBeDefined();
+
+  // Hidden, the column takes its header and its filter control off the page; the chip is then
+  // the one place the narrowing shows, and it still takes it off.
+  await user.click(screen.getByRole("button", { name: "Columns" }));
+  await user.click(screen.getByRole("checkbox", { name: "Labels" }));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("button", { name: /^Filter Labels/ })).toBeNull());
+  expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-3"]);
+  expect(screen.getByRole("button", { name: "Filters · 1" })).toBeDefined();
+  await user.click(chip());
+  await waitFor(() => expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-2", "CORE-3"]));
+  expect(screen.getByTestId("route-search").textContent).not.toContain("label=");
+  expect(screen.getByRole("button", { name: "Filters · 0" })).toBeDefined();
+});
+
+// The statuses the List opens with are no narrowing of the reader's: a link leaves them out and
+// Clear filters goes back to them, so they draw no chip. A status the reader picked does, and
+// taking that chip off goes back to the open statuses rather than asking the server for every
+// closed issue in the project.
+test("the open statuses draw no chip, and taking a Status chip off goes back to them", async () => {
+  const user = userEvent.setup();
+  const { listing } = table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?status=done");
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const chip = screen.getByRole("button", { name: "Remove Status: Done filter" });
+  await user.click(chip);
+  await waitFor(() =>
+    expect(screen.getByTestId("route-search").textContent).not.toContain("status=")
+  );
+  expect(screen.getByTestId("route-search").textContent).not.toContain("nofilter");
+  expect(screen.queryByRole("button", { name: /^Remove Status: / })).toBeNull();
+  expect(listing.mock.calls.every(([options]) => options?.open !== false)).toBe(true);
 });
 
 // The listing columns exist only where they mean something: a project's own table would name its

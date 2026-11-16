@@ -1783,12 +1783,17 @@ export function Inbox({
   // search text with the section it writes, so the list holds every ask the number counts, and
   // keeps the sort, the grouping and the view. It is absent at a count of zero, as the banner
   // was, and absent beside an agent filter or in the Dismissed view, where a count over the
-  // whole inbox would contradict the list under it - the rule the banner held to here.
+  // whole inbox would contradict the list under it - the rule the banner held to here. Its
+  // number and its oldest age are drawn only once the credential requests and the sign-in have
+  // answered: until then, or while the requests' first read has failed, the control is drawn
+  // without them wherever an ask already waits, since a number that counted an unread list as
+  // empty would be no number of the reader's.
   const waiting = needsYou(adoptedInbox ?? [], credentials.requests, viewer);
+  const waitingCounted = credentials.status === "listed" && viewer !== undefined;
   const needsYouControl =
     agent !== undefined || showDismissed || waiting.count === 0 ? null : (
       <button
-        aria-label={blockedOnYouText(waiting)}
+        aria-label={blockedOnYouText(waitingCounted ? waiting : undefined)}
         className={PAGE_CONTROL_CLASS}
         data-inbox-needs-you=""
         onClick={() =>
@@ -1800,10 +1805,10 @@ export function Inbox({
             section: "needs-you",
           })
         }
-        title={blockedOnYouText(waiting)}
+        title={blockedOnYouText(waitingCounted ? waiting : undefined)}
         type="button"
       >
-        Blocked on you · {waiting.count}
+        {waitingCounted ? `Blocked on you · ${waiting.count}` : "Blocked on you"}
       </button>
     );
   // The page's own controls, or nothing at all: an empty slot would still cost the row a gap.

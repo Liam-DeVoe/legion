@@ -1,6 +1,5 @@
 import type { SortingState } from "@tanstack/react-table";
 import {
-  capSearchQuery,
   copyAddress,
   type TableAddressGrammar,
   type TableAddressView,
@@ -23,7 +22,10 @@ const DEFAULT_PAGE_SIZE = 50;
  * grouped by; a filter of a column the table does not have is left where it is, since it is
  * another table's or an older link's. A control at its default writes nothing, so a shared link
  * carries what the reader changed and nothing else, and every other table's parameters and
- * every other parameter are left alone.
+ * every other parameter are left alone. The search is read as the address holds it: the search
+ * box cuts what the reader types (`useTableAddress`'s `setSearch`), and a write rewrites `q`
+ * from what was read, so a cut on the way in would shorten a longer `?p.q=` a link carried as
+ * soon as the reader sorted or paged.
  */
 export function priorityTableGrammar<Row>(
   prefix: string,
@@ -54,7 +56,7 @@ export function priorityTableGrammar<Row>(
           ? [group]
           : [],
         filters,
-        search: capSearchQuery(params.get(key("q")) ?? ""),
+        search: params.get(key("q")) ?? "",
         page: Number.isSafeInteger(page) && page > 0 ? page - 1 : 0,
         pageSize: PAGE_SIZES.includes(size) ? size : DEFAULT_PAGE_SIZE,
       };

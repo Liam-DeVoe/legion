@@ -6,7 +6,7 @@ import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
-import { copyAddress } from "../../lib/page-address";
+import { addressPath, copyAddress } from "../../lib/page-address";
 import {
   linkHoverText,
   linkText,
@@ -16,6 +16,7 @@ import {
 } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
+import { buildProjectPath } from "../refs/routes";
 import { useKeymapScope } from "../shell/keymap";
 import { InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
@@ -193,7 +194,10 @@ export function PriorityPage(): ReactNode {
                   <Link
                     className={`mr-3 ${linkText} ${linkHoverText}`}
                     key={project}
-                    to={`/projects/${project}/issues?${selectIssues(copyAddress(), keys, title)}`}
+                    to={addressPath(
+                      buildProjectPath({ kind: "issues", project }),
+                      selectIssues(copyAddress(), keys, title)
+                    )}
                   >
                     {project}’s issues table
                   </Link>

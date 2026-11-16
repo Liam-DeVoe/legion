@@ -144,12 +144,20 @@ export function copyAddress(init?: string | URLSearchParams): URLSearchParams {
   return new URLSearchParams(init);
 }
 
+/** The address of `pathname` with `query` as its parameters, and `hash` after them: the one way
+ *  a page joins a path to a query it built here, with no `?` while the query is empty. A link or
+ *  a navigation to a built address takes this rather than joining the parts itself. */
+export function addressPath(pathname: string, query: URLSearchParams, hash = ""): string {
+  const search = query.toString();
+  return `${pathname}${search === "" ? "" : `?${search}`}${hash}`;
+}
+
 /** `location` with `name` set to `value`, as a path `AddressRedirect` or a link can take: the
  *  pathname and the hash are kept exactly as they are, and every other parameter with them. */
 export function addressWithParam(location: PageAddress, name: string, value: string): string {
   const params = copyAddress(location.search);
   params.set(name, value);
-  return `${location.pathname}?${params.toString()}${location.hash}`;
+  return addressPath(location.pathname, params, location.hash);
 }
 
 /**
@@ -394,7 +402,10 @@ export interface TableAddressNames {
 
 const TABLE_SORT = textParam();
 const TABLE_GROUP = textParam();
-const TABLE_SEARCH = CAPPED_TEXT;
+/** Written as it was read, not cut: `setSearch` below cuts what the reader types, and every
+ *  write rewrites the whole view, so a cut here would shorten a longer `?q=` a link carried as
+ *  soon as the reader sorted or paged. */
+const TABLE_SEARCH = textParam();
 const TABLE_FILTER = repeatedParam();
 
 /**

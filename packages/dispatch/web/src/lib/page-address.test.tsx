@@ -8,10 +8,12 @@ import { renderAddress } from "../__tests__/render-address";
 import {
   AddressRedirect,
   type AddressRedirectProps,
+  addressPath,
   addressWithParam,
   capSearchQuery,
   choiceParam,
   commaListParam,
+  copyAddress,
   flagParam,
   numberParam,
   repeatedParam,
@@ -323,6 +325,34 @@ test("a narrowing change takes the table back to its first page", () => {
   } finally {
     hook.unmount();
   }
+});
+
+// The reader's own edit of the box cuts the search; an unrelated write leaves the address's own
+// value whole. The grammar rewrites every field, so a cut on the way out would shorten a longer
+// `?q=` a link carried as soon as the reader sorted or paged.
+test("a sort leaves a longer ?q= a link carried whole, and the box's own edit still cuts it", () => {
+  const long = "z".repeat(SEARCH_QUERY_MAX + 7);
+  const hook = renderAddress(() => useTableAddress(PLAIN_TABLE), [`/page?q=${long}`]);
+  try {
+    expect(hook.result.current.value.view.search).toBe(long);
+    act(() => hook.result.current.value.setSorting([{ id: "title", desc: true }]));
+    expect(hook.result.current.value.view.search).toBe(long);
+    act(() => hook.result.current.value.setSearch(long));
+    expect(hook.result.current.value.view.search).toBe("z".repeat(SEARCH_QUERY_MAX));
+  } finally {
+    hook.unmount();
+  }
+});
+
+// The one join of a path to a query built here: a link or a navigation takes this rather than
+// writing the `?` itself, so an empty query leaves a bare path and the hash stays last.
+test("an address built from a path and a query carries its `?` only while the query has one", () => {
+  expect(addressPath("/projects/CORE/issues", copyAddress())).toBe("/projects/CORE/issues");
+  expect(addressPath("/projects/CORE/issues", copyAddress("only=CORE-1&onlyLabel=Ship"))).toBe(
+    "/projects/CORE/issues?only=CORE-1&onlyLabel=Ship"
+  );
+  expect(addressPath("/page", copyAddress("q=x"), "#anchor")).toBe("/page?q=x#anchor");
+  expect(addressPath("/page", copyAddress(), "#anchor")).toBe("/page#anchor");
 });
 
 // Two tables on one page: each keeps its own sorting, grouping, search, paging and filters, and
