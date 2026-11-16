@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -118,7 +117,7 @@ func TestTheSweepDeletesACarriedChildsOwnSandboxOnceItLeavesTheLine(t *testing.T
 type carriedCleanup struct {
 	t                         *testing.T
 	ctx                       context.Context
-	pool                      *pgxpool.Pool
+	pool                      *store.Pool
 	st                        *store.Store
 	records                   record.Store
 	api                       *issueSandboxAPI
@@ -203,9 +202,8 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 	sup := newSupervisor(runtimeCtx, st, "legion", t.TempDir(), logger)
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: stillClock{}, Log: logger,
-		Settings: supervise.FixedSettings(
-			supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
-			supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond}),
+		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}

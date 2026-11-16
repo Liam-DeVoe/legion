@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { ISSUE_TITLE_MAX, PROJECT_NAME_MAX } from "./dispatch-api";
+import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatch-api";
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
@@ -176,6 +176,7 @@ const validCalls = {
     summary: "A live sync replaces the nightly export.",
   },
   dispatch_plan_approve: { issue: "DSP-1", version: 2 },
+  dispatch_review: { issue: "DSP-1", version: 2, verdict: "approved" },
   dispatch_result: {
     issue: "DSP-1",
     check: "k1",
@@ -191,6 +192,7 @@ const validCalls = {
   dispatch_issues: { project: "ACME" },
   dispatch_project: { key: "CORE", name: "Core" },
   dispatch_projects: {},
+  dispatch_priorities: { project: ["DSP"] },
   dispatch_architecture_sync: { project: "CORE" },
   dispatch_open_asks: {},
   dispatch_answers: {},
@@ -206,7 +208,7 @@ function schemaFor(name: keyof typeof validCalls) {
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
@@ -283,6 +285,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_doc_read",
       "dispatch_request_approval",
       "dispatch_plan_approve",
+      "dispatch_review",
       "dispatch_result",
       "dispatch_results",
       "dispatch_artifact",
@@ -292,6 +295,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_issues",
       "dispatch_project",
       "dispatch_projects",
+      "dispatch_priorities",
       "dispatch_architecture_sync",
       "dispatch_open_asks",
       "dispatch_answers",
@@ -480,6 +484,63 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({}).success).toBe(true);
     expect(schema.safeParse({ project: "ACME" }).success).toBe(true);
     expect(schema.safeParse({ session_id: "another-session" }).success).toBe(false);
+  });
+
+  // The route takes `project` repeatable, so the tool takes a list and the command derives one
+  // `--project` per key; a bare string is the shape `dispatch open-asks` takes, not this one.
+  test("dispatch_priorities takes no arguments or a list of projects and names the two faults", () => {
+    const schema = schemaFor("dispatch_priorities");
+
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ project: ["DSP", "CORE"] }).success).toBe(true);
+    expect(schema.safeParse({ project: "DSP" }).success).toBe(false);
+    expect(schema.safeParse({ summary: true }).success).toBe(false);
+    const { description } = specFor("dispatch_priorities");
+    expect(description).toContain("advances no priority");
+    expect(description).toContain("backlog or icebox");
+  });
+
+  // A priority is advanced by an issue, which states at most MAX_ISSUE_ADVANCES of them; the
+  // bound is the contract's one literal, which the server reads through its generated copy.
+  test("both issue tools bound advances by MAX_ISSUE_ADVANCES", () => {
+    const ids = Array.from({ length: MAX_ISSUE_ADVANCES }, (_, index) => `priority-${index}`);
+
+    for (const [tool, call] of [
+      ["dispatch_issue", { project: "DSP", title: "Native workspace" }],
+      ["dispatch_issue_update", { issue: "DSP-1" }],
+    ] as const) {
+      const schema = schemaFor(tool);
+      expect(schema.safeParse({ ...call, advances: ids }).success, tool).toBe(true);
+      expect(schema.safeParse({ ...call, advances: [...ids, "one-too-many"] }).success, tool).toBe(
+        false
+      );
+      expect(schema.safeParse({ ...call, advances: [""] }).success, tool).toBe(false);
+      expect(schema.safeParse({ ...call, advances: "ship-the-daemon" }).success, tool).toBe(false);
+    }
+  });
+
+  // A whole-set write of `advances` carries the revision the read it answers returned, or the
+  // server refuses a write moving two relations (409 ADVANCES_REVISION). The update takes that
+  // revision so an agent can answer the refusal against the revision it named; a create answers
+  // no read and takes none. The revision alone changes nothing, so it is not a field an update
+  // may stand on.
+  test("dispatch_issue_update takes advances_revision beside advances, never alone", () => {
+    const update = schemaFor("dispatch_issue_update");
+
+    for (const advances of [["ship-the-daemon", "cut-the-latency"], []]) {
+      const args = { issue: "DSP-1", advances, advances_revision: 7 };
+      expect(update.safeParse(args).success, JSON.stringify(args)).toBe(true);
+    }
+    expect(update.safeParse({ issue: "DSP-1", advances: [], advances_revision: "7" }).success).toBe(
+      false
+    );
+    const alone = update.safeParse({ issue: "DSP-1", advances_revision: 7 });
+    expect(alone.success).toBe(false);
+    if (alone.success) return;
+    expect(alone.error.issues.map((issue) => issue.message)).toEqual([ISSUE_UPDATE_FIELDS_RULE]);
+    const createFields = specFor("dispatch_issue").arguments(schemaApi) as Record<string, unknown>;
+    expect(Object.keys(createFields)).toContain("advances");
+    expect(Object.keys(createFields)).not.toContain("advances_revision");
   });
 
   test("dispatch_answers accepts no arguments and rejects any key", () => {
@@ -764,6 +825,8 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", parent: "" },
       { issue: "DSP-1", blocked_by: ["DSP-2"] },
       { issue: "DSP-1", blocked_by: [] },
+      { issue: "DSP-1", advances: ["ship-the-daemon"] },
+      { issue: "DSP-1", advances: [] },
       { issue: "DSP-1", components: { mode: "inherit" } },
       { issue: "DSP-1", components: { mode: "explicit", ids: ["web", "dispatch-server"] } },
       { issue: "DSP-1", components: { mode: "none", reason: "hiring" } },
@@ -810,7 +873,8 @@ describe("dispatchToolSpecs", () => {
     const turn =
       "turn requires reply_to_ask: turn says who holds an open ask's thread after the reply. Pass reply_to_ask with the open ask's id, or drop turn.";
     const precondition = "A precondition selects exactly one of document or blocks.";
-    const source = "Exactly one of path or content is required.";
+    const source =
+      "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
     const artifactOwner =
       "Exactly one of issue and project is required; with project, artifact names the document.";
     const edit = { artifact: "spec.md", ops: [{ op: "delete", find: "x" }] };
@@ -824,9 +888,9 @@ describe("dispatchToolSpecs", () => {
       ["dispatch_comment", { body: "y" }, artifactOwner],
       ["dispatch_doc_edit", { issue: "DSP-1", ...edit, precondition: {} }, precondition],
       ["dispatch_doc_edit", { ...edit }, artifactOwner],
-      ["dispatch_artifact", { issue: "DSP-1", name: "n" }, source],
+      ["dispatch_artifact", { issue: "DSP-1", name: "n", path: "p", content: "c" }, source],
       ["dispatch_artifact", { name: "n", content: "c" }, artifactOwner],
-      ["dispatch_artifact", { name: "n" }, `${artifactOwner} ${source}`],
+      ["dispatch_artifact", { name: "n", path: "p", content: "c" }, `${artifactOwner} ${source}`],
       ["dispatch_read", { issue: "DSP-1", message: "m" }, readMessage],
       ["dispatch_read", {}, readOwner],
     ] as const) {
@@ -1135,16 +1199,24 @@ describe("dispatchToolSpecs", () => {
     ).toBe(false);
   });
 
-  test("requires exactly one artifact upload source", () => {
+  // A create takes at most one source: a file, inline text, or neither, which makes an empty
+  // document under the name. The name of a document is Markdown whichever of the three it is, so
+  // the Markdown-name rule holds a name-only create as it holds inline content.
+  test("takes at most one artifact upload source", () => {
     const schema = schemaFor("dispatch_artifact");
     const shared = { issue: "DSP-1", name: "spec.md" };
 
     expect(schema.safeParse({ ...shared, path: "spec.md" }).success).toBe(true);
     expect(schema.safeParse({ ...shared, content: "# Spec\n" }).success).toBe(true);
-    expect(schema.safeParse(shared).success).toBe(false);
+    expect(schema.safeParse(shared).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", name: "Launch notes" }).success).toBe(true);
     expect(schema.safeParse({ ...shared, path: "spec.md", content: "# Spec\n" }).success).toBe(
       false
     );
+    expect(schema.safeParse({ issue: "DSP-1", name: "rows.jsonl" }).success).toBe(false);
+    expect(
+      schema.safeParse({ issue: "DSP-1", name: "rows.jsonl", path: "rows.jsonl" }).success
+    ).toBe(true);
   });
 
   // INFRA-1522 R15: the refusal of inline text the store would change names --path only where
@@ -1375,6 +1447,63 @@ describe("dispatchToolSpecs", () => {
     ).toBe(true);
   });
 
+  test("dispatch_review takes an issue, a version from 1 and a verdict, and nothing else", () => {
+    const schema = schemaFor("dispatch_review");
+
+    expect(schema.safeParse({ issue: "DSP-1", version: 1, verdict: "approved" }).success).toBe(
+      true
+    );
+    expect(
+      schema.safeParse({
+        issue: "DSP-1",
+        artifact: "verification-md",
+        version: 3,
+        verdict: "approved",
+        reason: "Reads well.",
+      }).success
+    ).toBe(true);
+    for (const args of [
+      { version: 2, verdict: "approved" },
+      { issue: "DSP-1", verdict: "approved" },
+      { issue: "DSP-1", version: 0, verdict: "approved" },
+      { issue: "DSP-1", version: 1.5, verdict: "approved" },
+      { issue: "DSP-1", version: 2 },
+      { issue: "DSP-1", version: 2, verdict: "rejected" },
+      { issue: "DSP-1", version: 2, verdict: "approved", state: "approved" },
+    ]) {
+      expect(schema.safeParse(args).success, JSON.stringify(args)).toBe(false);
+    }
+  });
+
+  test("dispatch_review requests changes only with a reason, and names the rule without one", () => {
+    const schema = schemaFor("dispatch_review");
+    const changes = { issue: "DSP-1", version: 2, verdict: "changes_requested" };
+
+    expect(schema.safeParse({ ...changes, reason: "Name the rollback path." }).success).toBe(true);
+    for (const args of [changes, { ...changes, reason: "" }, { ...changes, reason: "   " }]) {
+      const result = schema.safeParse(args);
+      expect(result.success, JSON.stringify(args)).toBe(false);
+      expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+        "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved.",
+      ]);
+    }
+  });
+
+  test("dispatch_review's description, which --help prints, says whose name it writes in, what Dispatch refuses and what a build without its route does", () => {
+    const { description } = specFor("dispatch_review");
+
+    for (const words of [
+      "A review records an approval or a changes request in the person's name at that version, so it works only with a token that names a person who holds approve",
+      "403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED",
+      "it must be the version the review would record",
+      "409 REVIEW_VERSION_MOVED",
+      "A Dispatch build without the versioned review route answers no route and records nothing; the command then says so and names /healthz",
+      "every other browser action is dispatch://INFRA-910's",
+    ]) {
+      expect(description).toContain(words);
+    }
+  });
+
   test("points dispatch_issue's spec and dispatch_doc_edit at the skill that writes specs", () => {
     const issue = dispatchToolSpecs.find((spec) => spec.name === "dispatch_issue");
     const documentEdit = dispatchToolSpecs.find((spec) => spec.name === "dispatch_doc_edit");
@@ -1471,7 +1600,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_doc_edit",
-      "One replace per paragraph: more new paragraphs go in one insert after the last one you rewrote, since two inserts at one anchor come out reversed; read the passage back with dispatch doc-read afterwards.",
+      "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again.",
     ],
     [
       "dispatch_artifact",
@@ -1507,7 +1636,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_read",
-      "A block read prints `Block:`, `Type:` for a block of a document, `Document:`, every attribute a typed block carries (a `check`'s serves, surface, run, when and negative_control; a `plan_task`'s serves and needs), `Changed in version:` and `Text:`, then those two sections; a pinned one adds the block's text at that version and whether it is unchanged, changed or removed since, and an absent block, unpinned, reads `No block <id> in <document>.`",
+      "A block read prints `Block:`, `Type:` for a block of a document, `Document:`, every attribute a typed block carries (a `check`'s serves, surface, run, when, negative_control and ci_check; a `plan_task`'s serves and needs), `Changed in version:` and `Text:`, then those two sections; a pinned one adds the block's text at that version and whether it is unchanged, changed or removed since, and an absent block, unpinned, reads `No block <id> in <document>.`",
     ],
   ])("%s's description, which --help prints, holds the rule moved from the skill", (name, rule) => {
     expect(specFor(name).description).toContain(rule);
@@ -1518,7 +1647,7 @@ describe("dispatchToolSpecs", () => {
     [
       "dispatch_issue",
       "assignee",
-      "else the project's default assignee when it still names a person who has signed in, else unassigned.",
+      "else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one.",
     ],
     [
       "dispatch_read",

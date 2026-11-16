@@ -3,9 +3,8 @@
 A person who mentions the Legion Slack app in one of the project's Slack channels is talking to
 you, and you answer in that thread. The `Slack channels:` line of your system prompt names each
 channel `legion.yaml` gives the project (`projects.<KEY>.slack_channels`). Only the controller the
-daemon launches has one: the Slack bot token is the Legion daemon service's, which the secrets
-broker grants to that service's own pods alone. With no such line the project has no channel, and
-nothing here applies.
+daemon launches has one, because the daemon names a project's channels to that controller alone.
+With no such line the project has no channel, and nothing here applies.
 
 ## Your session subscribes for you
 
@@ -101,7 +100,8 @@ a thread read, `channels:history` in a public channel or `groups:history` in a p
 person in the workspace can fix either, so say so in the next daily report rather than retrying.
 When it answers that the secrets broker has not granted `LEGION_SLACK_BOT_TOKEN` (its request waits
 for approval, or was denied), nothing was posted and no reply can be until the operator stores the
-token with owner `legion-daemon` and tier `agent`: name the error in the next daily report.
+token as a shared agent secret, owner `shared` and tier `agent`: name the error in the next daily
+report.
 
 ## Decide what the person wants
 
@@ -115,9 +115,8 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   Answer from `read_state` and Dispatch as they stand now, never from memory: each issue's
   `issues.<KEY>.phase` and `issues.<KEY>.tree`, its pull request, `admission.trees` for the trees
   that run, and `admission.active` and `admission.waiting` for the issues holding a slot and the
-  issues in the line: an issue holds its slot from the moment the daemon starts it
-  until it is done, leaves the workflow or waits only for its merge, so `admission.active` names
-  a tree's waits as well as its work. Say what you
+  issues in the line: an issue holds a slot as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)
+  says, so `admission.active` names some of a tree's waits as well as its work. Say what you
   read, citing for each fact the `read_state` field or the `dispatch read` line it came from.
 - **A request for work.** Someone wants a change made, a bug fixed, something investigated. Search
   first (`skill://dispatch-first`): when an open issue already tracks it, reply with that issue and
@@ -141,9 +140,10 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   no label and waits for a person to hand it over. Never label a request outside the scope the
   deployment instructions state. Reply with the new issue's key, its title, the link and assignee
   the `Created` line names (naming nobody, Dispatch assigns the issue to your token's owner, or,
-  under the shared token, to the project's default assignee when a person set one),
-  and whether Legion will take it: with the label, triage admits it in its next turn unless the
-  request, the weekly plan or the deployment instructions say to wait.
+  under the shared token, to the project's default assignee, which every project names),
+  and whether Legion will take it: with the label, triage admits it in its next turn unless a
+  person's request says to wait or puts it out of scope. That request is the request itself, the
+  deployment instructions, or a line of the weekly plan that names the person's request behind it.
 - **Something an issue's architect owns.** A question about a tree's design, a change of direction,
   a decision only the tree's architect can make about an issue Legion runs. Find the tree: follow
   `Links:` up through each `child_of` parent with `dispatch read` until you reach the issue

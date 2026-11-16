@@ -1,5 +1,3 @@
-import type { LegionSettingsChange } from "@legion/contracts/legion-api";
-
 export type {
   Actor,
   ActorAct,
@@ -12,6 +10,7 @@ export type {
   AnswerAskInput,
   ApproverGrantResp,
   ApproverGrantsResponse,
+  ArchitectureComponentRead,
   ArchitectureSource,
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -22,6 +21,7 @@ export type {
   ArchitectureTreeSource,
   Artifact,
   ArtifactApproval,
+  ArtifactApprovalWithTrees,
   ArtifactBlock,
   ArtifactReview,
   ArtifactReviewEventPayload,
@@ -29,27 +29,35 @@ export type {
   ArtifactUploadResponse,
   ArtifactVersionContent,
   ArtifactVersionText,
+  ArtifactWithTrees,
   Ask,
   AskAnchorArtifact,
   AskAnswer,
+  AskAnswerWithTrees,
   AskApproval,
   AskBlockArtifact,
   AskEdit,
   AskEditPrevious,
+  AskEditPreviousWithTrees,
+  AskEditWithTrees,
   AskFollower,
   AskLastReply,
   AskOption,
+  AskOptionWithTrees,
   AskRead,
   AskResolution,
+  AskResolutionWithTrees,
   AskSnooze,
   AskThread,
   AskTurn,
   AskUrgency,
+  AskWithTrees,
   AuthenticatedUser,
   BlockAttributeKind,
   BlockAttributeSchema,
   BlockAttributeValue,
   BlockContentRule,
+  BlockElementVersions,
   BlockPin,
   BlockSchema,
   BlockTypeSchema,
@@ -71,12 +79,15 @@ export type {
   CommentEventPayload,
   CommentMention,
   CommentRead,
+  CommentWithTrees,
   CreateAgentMessageInput,
   CreateArtifactInput,
   CreateBroadcastInput,
   CreateCommentInput,
   CreatedAgentToken,
+  CreatedProject,
   CreateIssueInput,
+  CreatePriorityInput,
   CreateProjectInput,
   CredentialPendingResponse,
   CredentialPendingRow,
@@ -85,6 +96,7 @@ export type {
   DecisionKeep,
   DecisionLink,
   DecisionResponse,
+  DeliveryAttemptState,
   DeliveryCapability,
   DeliveryColorFacet,
   DeliveryComponent,
@@ -133,6 +145,7 @@ export type {
   DispatchEvent,
   DispatchScope,
   DispatchUser,
+  DisplayTree,
   DocumentRead,
   DocumentReferenceSummary,
   DocumentRole,
@@ -185,16 +198,7 @@ export type {
   ItemBlock,
   ItemBlocks,
   LauncherCredentialResp,
-  LegionBoardCard,
-  LegionBoardColumn,
-  LegionBoardColumnID,
-  LegionBoardFacts,
-  LegionBoardHeader,
-  LegionBoardResponse,
-  LegionBoardWait,
   LegionSetting,
-  LegionSettingSource,
-  LegionSettingSources,
   LiveAgentFrame,
   LiveClientFrame,
   LiveEnded,
@@ -213,6 +217,7 @@ export type {
   MessageDeliveryMode,
   MessageEventPayload,
   MessageRead,
+  MessageWithTrees,
   MyAnswerRow,
   MyAnswersResponse,
   MyRepliesResponse,
@@ -221,14 +226,23 @@ export type {
   MyReplyThreadRow,
   NewIssueSettings,
   OpenAskOwner,
+  PatchPriorityInput,
   PersonSignInResp,
   PersonSignInsResponse,
+  Priorities,
+  Priority,
+  PriorityAct,
+  PriorityIssue,
+  PriorityRow,
+  PriorityWork,
+  PriorityWorkParked,
   ProgressCount,
   Project,
   ProjectDefaultAssignee,
   RecordResponse,
   ReferenceQuestion,
   ReferenceQuestions,
+  ReplyBlockWithTrees,
   RepoProject,
   RequirementCoverage,
   ResultCommitStands,
@@ -254,6 +268,7 @@ export type {
   UserIssueState,
   UserState,
   Version,
+  WorkUnderNoPriority,
   WriteSuggestion,
 } from "@legion/contracts";
 
@@ -266,24 +281,3 @@ import type { IssueCollaboratorAgent, IssueCollaboratorLegion } from "@legion/co
 export type IssueCollaboratorLegionAgent = IssueCollaboratorAgent & {
   readonly legion: IssueCollaboratorLegion;
 };
-
-/** What one key of a relayed settings change was decided, and the body that carries them: the
- *  daemon's own shapes (`api.SettingResult` and `api.SettingsChangeResponse`), since Dispatch
- *  relays the daemon's body unchanged (packages/envoy/internal/dispatch/api/settings_legion.go,
- *  `putLegionProjectSettings`). A verdict is `answer.settings[path]`: the daemon keys its results
- *  under `settings`, and the one shape lives in `@legion/contracts/legion-api` beside the state
- *  route's, so Dispatch's web client, its fakes and the daemon's own route cannot drift apart. */
-export type {
-  LegionSettingsChange as LegionSettingsChangeResponse,
-  LegionSettingVerdict,
-} from "@legion/contracts/legion-api";
-
-/** What a relayed settings change ended as, for the one caller of it (`putLegionProjectSettings`):
- *  the daemon's verdicts, and whether the daemon recorded the change in its own store.
- *  `recorded` is false for the one answer that says the change took effect and will not outlive
- *  the daemon's restart — the daemon applied it and could not write it down, which it answers
- *  with a failing status and the verdicts (`config.NotRecorded`). */
-export interface LegionSettingsChangeResult {
-  readonly settings: LegionSettingsChange["settings"];
-  readonly recorded: boolean;
-}

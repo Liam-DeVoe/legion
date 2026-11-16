@@ -25,6 +25,8 @@ export const walkRoutes = [
   { page: "MachinesPage", path: "/machines" },
   { page: "MachinePage", path: "/machines/:machine" },
   { page: "IssuePage", path: "/issues/:key/*" },
+  { page: "PrioritiesPage", path: "/priorities" },
+  { page: "PriorityPage", path: "/priorities/:id" },
   { page: "ProjectPage", path: "/projects/:key" },
   { page: "ProjectPage", path: "/projects/:key/architecture" },
   { page: "ProjectPage", path: "/projects/:key/issues" },
@@ -34,7 +36,7 @@ export const walkRoutes = [
   { page: "MachineLoginRoute", path: "/credentials/machine" },
   { page: "SettingsPage", path: "/settings" },
   { page: "DeliveryPage", path: "/delivery" },
-  { page: "PipelineRedirect", path: "/pipeline" },
+  { page: "PipelinePage", path: "/pipeline" },
   { page: "NotFoundPage", path: "*" },
 ] as const satisfies readonly WalkRoute[];
 

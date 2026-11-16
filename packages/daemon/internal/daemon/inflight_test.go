@@ -198,7 +198,7 @@ func runLogging(t *testing.T, cfg config.Config, o overrides) (context.CancelFun
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, config.Settled(cfg), Build{}, slog.New(slog.NewJSONHandler(logs, nil)), o) }()
+	go func() { done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(logs, nil)), o) }()
 	return cancel, done, logs
 }
 
@@ -510,6 +510,12 @@ func storedClaim(t *testing.T, cfg config.Config, token claim.Token) supervise.C
 	if err != nil {
 		t.Fatalf("read the claims: %v", err)
 	}
+	return storedOf(t, claims, token)
+}
+
+// storedOf is token's claim among the stored claims.
+func storedOf(t *testing.T, claims []supervise.Claim, token claim.Token) supervise.Claim {
+	t.Helper()
 	for _, c := range claims {
 		if c.Token == token {
 			return c

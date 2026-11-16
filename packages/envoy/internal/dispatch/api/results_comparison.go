@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -69,8 +70,9 @@ import (
 // must not make a reviewer refuse an approval.
 //
 // Where the reader was given a commit (?at=), that one commit is the only basis of every check
-// of the issue and no read of GitHub is made at all: the reader asked what the results say
-// about one commit, and nothing about that question turns on what GitHub holds now.
+// of the issue and the comparison makes no read of GitHub at all: the reader asked what the
+// results say about one commit, and nothing about that question turns on what GitHub holds now.
+// The check runs of a check CI proves are read apart from this reader (deriveCIResults).
 //
 // The repository each issue resolves to, its default branch, the branch each issue's pull
 // request merged into, the pull request heads of each issue, the stored heads of each
@@ -216,7 +218,7 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 		return memoized
 	}
 	var compared comparison
-	if check.When == checkWhenBeforeMerge {
+	if check.When == docs.CheckWhenBeforeMerge {
 		compared = c.headBases(ctx, check.IssueKey)
 	} else {
 		compared = c.branchBases(ctx, check)
@@ -377,7 +379,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 		return
 	}
 	for _, check := range checks {
-		if check.When != checkWhenBeforeMerge {
+		if check.When != docs.CheckWhenBeforeMerge {
 			continue
 		}
 		compared := c.comparedWith(ctx, check)
@@ -437,7 +439,7 @@ func (c *comparisonReader) commitStands(
 	if c.at != noCommitNamed {
 		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 	}
-	if check.When == checkWhenBeforeMerge {
+	if check.When == docs.CheckWhenBeforeMerge {
 		// The heads are the whole of this check's comparison, and none of them is this commit.
 		// Two answers Dispatch cannot give stand against reading that as another commit: a
 		// repository the App cannot read, where nothing can have taught Dispatch this commit's
@@ -540,6 +542,15 @@ func (c *comparisonReader) onNamedBranch(
 	return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 }
 
+// standingCommit is where a result's commit stands while the check's words have not moved
+// and no retraction stands against it. It answers no standing without both comparison fields.
+func standingCommit(result model.CheckResult) string {
+	if result.Retracted != nil || result.CheckWordsMoved == nil || *result.CheckWordsMoved || result.CommitStands == nil {
+		return ""
+	}
+	return result.CommitStands.Answer
+}
+
 // passStandsOf is the one line that answers the gate's question for a check: whether a pass of
 // it stands at what it compared with, against the check's words now, and from which roles.
 //
@@ -548,24 +559,23 @@ func (c *comparisonReader) onNamedBranch(
 // stand, in the order the results come, which is newest first.
 //
 // A check whose repository Dispatch could not read answers unknown, since it could compare
-// nothing at all. So does a check whose standing pass is held up only by a commit Dispatch
-// could not place. A check that compared with nothing because there is no pull request and no
-// branch answers no: there is nothing for a pass to stand at, and that is a fact about the
-// work rather than a failed read.
+// nothing at all. So does a check CI proves whose check runs GitHub could not be read for: it
+// holds no result, and the read that would have made one failed. So does a check whose standing
+// pass is held up only by a commit Dispatch could not place. A check that compared with nothing
+// because there is no pull request and no branch answers no: there is nothing for a pass to
+// stand at, and that is a fact about the work rather than a failed read.
 func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
-	if compared.reason == model.ReasonRepositoryUnreadable {
+	if compared.reason == model.ReasonRepositoryUnreadable ||
+		(check.CI != nil && check.CI.State == model.CIStateUnread) {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
 	var roles []string
 	unknown := false
 	for _, result := range check.Results {
-		if result.Verdict != "pass" || result.Retracted != nil {
+		if result.Verdict != "pass" {
 			continue
 		}
-		if result.CheckWordsMoved == nil || *result.CheckWordsMoved || result.CommitStands == nil {
-			continue
-		}
-		switch result.CommitStands.Answer {
+		switch standingCommit(result) {
 		case model.CommitAtBasis:
 			if !slices.Contains(roles, result.Role) {
 				roles = append(roles, result.Role)

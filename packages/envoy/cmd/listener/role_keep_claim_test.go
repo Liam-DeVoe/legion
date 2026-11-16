@@ -42,7 +42,7 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 	var keys []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-forward-failed-%02d", i))
-		if !keepRoleMessage(harness.client, harness.config.logger, role, item) {
+		if _, kept := keepRoleMessage(harness.config, role, item); !kept {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
@@ -70,8 +70,12 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 		}
 		return errors.New("the forward this listener ended on")
 	})
-	if err := drainKeptRole(ctx, failing, role, time.Now); err == nil {
-		t.Fatalf("the drain whose second forward failed reported no error, so this test no longer reaches the moment it is about")
+	// The handover ends on the walk its pass after that failure makes with no live holder, which
+	// stops at the copy the failed forward left and fails nothing, so it reports no error. That
+	// its first walk ended on that forward is what attempted says below, and what the next drain
+	// is handed.
+	if err := drainKeptRole(ctx, failing, role, time.Now); err != nil {
+		t.Fatalf("the drain whose second forward failed reported %v; want none: its last walk had no live holder and stopped at the copy that forward left", err)
 	}
 	if !slices.Equal(attempted, keys[:2]) {
 		t.Fatalf("the first drain attempted %v, want the first two copies %v", attempted, keys[:2])
@@ -112,13 +116,13 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 		holder = "ses_kept_confirm_lost"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-confirm-lost-00")
-	if !keepRoleMessage(harness.client, harness.config.logger, role, item) {
+	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	key := roleForwardDedupePrefix + item.DedupeKey
-	// This holder answers no receipt: no listener pushes to a session's port, so only a session
-	// consumer of its own reaches it. Its forward ends in bus.ErrReceiptTimeout with the stream's
-	// stored copy on its agent subject, which is the copy this test counts.
+	// No listener pushes to a session's port, so only a session consumer of its own reaches this
+	// holder and it answers the forward with nothing. The forward's whole answer is the stream's
+	// acknowledgement of the copy stored on its agent subject, which is the copy this test counts.
 	entry := session.SessionEntry{MachineID: "test-machine", Port: 1}
 	subject := contracts.AgentSubject(holder)
 
@@ -126,10 +130,10 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 	defer cancel()
 	claimRoleWith(t, harness, holder, role, entry)
 	var handed []string
-	record := func(cfg listenerDeliveryHandlerConfig, after func()) func(string, contracts.Envelope, string, time.Duration, bool) (func() error, error) {
+	record := func(cfg listenerDeliveryHandlerConfig, after func()) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		forward := cfg.forwardRole
-		return func(subject string, forwarded contracts.Envelope, msgID string, timeout time.Duration, storedOnly bool) (func() error, error) {
-			wait, err := forward(subject, forwarded, msgID, timeout, storedOnly)
+		return func(subject string, forwarded contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+			wait, err := forward(subject, forwarded, msgID, timeout)
 			if err != nil {
 				return nil, err
 			}
@@ -198,7 +202,7 @@ func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) 
 		holder = "ses_kept_claim_abandoned"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-claim-abandoned-00")
-	if !keepRoleMessage(harness.client, harness.config.logger, role, item) {
+	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	key := roleForwardDedupePrefix + item.DedupeKey

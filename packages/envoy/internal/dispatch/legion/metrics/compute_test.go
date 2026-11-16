@@ -105,7 +105,7 @@ func TestTheSevenBarsOfAnIssueAddUpToItsWorkTime(t *testing.T) {
 				t.Fatalf("the bars are %v, want %v", hoursPerBar, one.bars)
 			}
 			if whole != row.WorkHours {
-				t.Fatalf("the seven bars hold %g hours against a work time of %g: the two cards of one page disagree",
+				t.Fatalf("the seven bars hold %g hours against a work time of %g: metric 2's bars and metric 1's work time disagree",
 					whole, row.WorkHours)
 			}
 		})
@@ -485,8 +485,8 @@ func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
 }
 
 // TestAnAdmittedIssueHoldingASlotIsDesignAndOneHoldingNoneIsQueue: the daemon has one `admitted`
-// phase; the view's Design column is the part of it an issue holds a slot through, and the rest is
-// the waiting line, whose hours are on no bar.
+// phase; the board's Design column is the part of it an issue holds a slot through, and the rest
+// is the waiting line, whose hours are on no bar.
 func TestAnAdmittedIssueHoldingASlotIsDesignAndOneHoldingNoneIsQueue(t *testing.T) {
 	root := newIssue("INFRA-1").worked("architect", hour(0)).closedAt(hour(4)).
 		observeString(legion.FieldPhase, hour(0), "admitted").

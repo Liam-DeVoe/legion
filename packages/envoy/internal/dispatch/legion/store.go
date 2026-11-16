@@ -26,7 +26,7 @@ type Settings struct {
 const settingsColumns = `project, state_url, created_by, updated_at`
 
 // ErrNoSettings is "this project names no Legion daemon": the sampler reads nothing for it and
-// the operator relay has nowhere to send a change.
+// the board has nothing to show.
 var ErrNoSettings = errors.New("this project has no Legion daemon configured")
 
 // StateChannel is the Postgres notification channel one read of a daemon's state announces itself
@@ -138,7 +138,7 @@ func RecordRead(ctx context.Context, pool *store.Pool, project string, at time.T
 	return nil
 }
 
-// ReadRetention is how long legion_reads keeps a read of a daemon. The Legion view reads the
+// ReadRetention is how long legion_reads keeps a read of a daemon. The Legion board reads the
 // newest row of a project and nothing reads an older one, so the rest are a week of history for
 // whoever asks why a daemon stopped answering — the horizon delivery_changes keeps for the same
 // reason, a day, measured against a table that gains a row a minute per project rather than one

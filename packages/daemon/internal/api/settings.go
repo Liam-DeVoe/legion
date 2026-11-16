@@ -4,7 +4,6 @@ import (
 	"maps"
 	"net/url"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -76,13 +75,30 @@ type Settings struct {
 	// file takes them, decimal numbers of hours.
 	LingerHours          float64 `json:"linger_hours"`
 	ProductionCheckHours float64 `json:"production_check_hours"`
-	// PodUpdateRetaskHours and PodUpdateNoticeHours are `pod_update_retask_hours` and
-	// `pod_update_notice_hours`, decimal numbers of hours as the two above are: how long an open
-	// update round waits before it asks a worker again, and how long after the round opened the
-	// controller is told it is stalled. They are decimals so a live proof and the production
-	// check can drive each bound inside one run.
-	PodUpdateRetaskHours float64 `json:"pod_update_retask_hours"`
-	PodUpdateNoticeHours float64 `json:"pod_update_notice_hours"`
+	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
+	// a pod's update round waits for its roles after it opens. An answer from every role ends the
+	// round before it, and no answer holds the round past it. It is a decimal so a live proof can
+	// drive the bound inside one run.
+	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
+	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
+	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
+	// project's controller once for that tree; which quiet trees are told is admit's
+	// tellStalledTrees (dispatch://INFRA-2560 R5). No value turns that notice off, since the
+	// loader refuses zero for every key in hours; a deployment that wants fewer notices raises the
+	// number.
+	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`
+	// WorkerSilenceMinutes is `worker_silence_minutes`, a decimal number of minutes: how long a
+	// phase worker's last recorded step may be in the past before the daemon reads that worker as
+	// one nothing will prompt and sends it its phase's task again. It is in minutes, where the
+	// three hour keys above are in hours, because the bound is tens of minutes and the file takes
+	// it that way (config's readMinutes).
+	WorkerSilenceMinutes float64 `json:"worker_silence_minutes"`
+	// WorkerBackgroundHours is `worker_background_hours`, a decimal number of hours: how long
+	// the background work a phase worker's own session reports may stand before the daemon names
+	// that worker to its architect, which it does once and with nothing sent. It is in hours,
+	// where the bound above is in minutes, because this bound is hours and the file takes it
+	// that way (config's readHours).
+	WorkerBackgroundHours float64 `json:"worker_background_hours"`
 	// PodUpdateMaxOpenRounds and PodUpdateRoundsPerMinute are `pod_update_max_open_rounds` and
 	// `pod_update_rounds_per_minute`: how many issues may hold an open update round at once, and
 	// how many rounds one sweep may open in a minute. Each is null, and neither is omitted, when
@@ -135,8 +151,8 @@ type TmuxSettings struct {
 
 // KubernetesSettings is the settled `runtime.kubernetes` block without its credential file
 // (`kubeconfig`, `context`), the session store's own fields (`session_dsn_secret`, the credential
-// source, and `session_database`, the instance and login behind it) and the operator's `pod`
-// pieces, which every pod reads from its own spec.
+// source, and `session_database`, the instance, login and service account behind it) and the
+// operator's `pod` pieces, which every pod reads from its own spec.
 type KubernetesSettings struct {
 	Namespace    string               `json:"namespace"`
 	Image        string               `json:"image"`
@@ -169,6 +185,11 @@ type KubernetesSettings struct {
 	// credential, and a role reads both to know whether its own pod may go away under it, so
 	// every pod may read them.
 	IdleRelease IdleReleaseSettings `json:"idle_release"`
+	// MemoryGuard is the settled `runtime.kubernetes.memory_guard`: whether each issue pod's
+	// launcher runs a memory guard, and the shares, wait and interval it runs by. None of it is a
+	// credential, and a role reads it to know when a process of its own may be ended under it, so
+	// every pod may read it.
+	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
 }
 
 // IdleReleaseSettings is the settled `runtime.kubernetes.idle_release`. Zero `idle_minutes` is
@@ -176,6 +197,22 @@ type KubernetesSettings struct {
 type IdleReleaseSettings struct {
 	IdleMinutes     int `json:"idle_minutes"`
 	BackstopMinutes int `json:"backstop_minutes"`
+}
+
+// MemoryGuardSettings is the settled `runtime.kubernetes.memory_guard`, by the kind of pod a
+// guard runs in.
+type MemoryGuardSettings struct {
+	IssuePods MemoryGuardPodSettings `json:"issue_pods"`
+}
+
+// MemoryGuardPodSettings is one kind of pod's settled memory guard. `enabled` false is the guard
+// switched off, and the pod's launcher is then handed no settings at all.
+type MemoryGuardPodSettings struct {
+	Enabled              bool `json:"enabled"`
+	ActPercent           int  `json:"act_percent"`
+	FloorPercent         int  `json:"floor_percent"`
+	WaitSeconds          int  `json:"wait_seconds"`
+	IntervalMilliseconds int  `json:"interval_milliseconds"`
 }
 
 // SchedulingSettings is `runtime.kubernetes.scheduling`; the selector and the tolerations are `{}`
@@ -238,10 +275,15 @@ type PluginsSettings struct {
 // ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
 // the state's `repositories` shows, never this file's.
 type ProjectSettings struct {
-	MergeQueueRole string         `json:"merge_queue_role,omitempty"`
-	Merge          MergeSettings  `json:"merge"`
-	SlackChannels  []string       `json:"slack_channels"`
-	Memory         MemorySettings `json:"memory"`
+	SlackChannels []string       `json:"slack_channels"`
+	Memory        MemorySettings `json:"memory"`
+	// Experiments is `projects.<KEY>.experiments` as the file writes it, in the file's order, and
+	// `[]` for a project that declares none under that key, as `slack_channels` is for one that
+	// names none: the key always rides the wire, so a reader tells a project that declares no
+	// experiment under the key from a daemon too old to know the key. The `memory` block is no
+	// part of it: it stands under `memory` above, as the file writes it, and the two are mapped to
+	// one list of experiments only below the loader (config.Project.ExperimentsDeclared).
+	Experiments []ExperimentSettings `json:"experiments"`
 	// ProductionCheck is `production_check` as the file writes it: the role that works the
 	// production check a merge closing one of the project's issues opens, or the word `off`
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
@@ -256,6 +298,50 @@ type ProjectSettings struct {
 	Deploys []DeploySettings `json:"deploys"`
 }
 
+// DeclaredExperiments is every experiment this project declares, as the daemon's own loader
+// builds the list: the `memory` block's experiment first, then the `experiments` key's own in the
+// file's order (config.Project.ExperimentsDeclared, which this reverses the two keys back
+// through). A project that declares `experiments.memory` writes no block, since the loader refuses
+// the two together, so its `memory` experiment is one of the key's own and stands at its place in
+// the file's order (config.Project.MemoryIsBlock). key
+// is the project's own Dispatch key, which is the map key the settings carry this project under
+// and which each arm's overlay key path begins with.
+//
+// The settings carry the two keys as the file writes them — the block under `memory`, the key's
+// own under `experiments` — because that is what an operator reads them for, so a reader that
+// must answer for every experiment the deployment draws, as `legion state` does when it counts
+// each one's arms, asks here rather than writing the mapping a second time.
+//
+// A project whose settings carry no `memory` block and no experiment of its own declares the
+// memory experiment all the same, at mode off: every tree such a project opens is drawn for it
+// and recorded at no arm, so `legion state` prints that project's memory line with the arms its
+// issues hold, as it printed one before any experiment was declared.
+//
+// The daemon serves the settings from the same configuration it declares its experiments from
+// (internal/daemon's source), so this answers what that daemon drew for.
+func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
+	project := config.Project{
+		Memory: config.Memory{
+			Mode:             p.Memory.Mode,
+			ConfigFiles:      p.Memory.ConfigFiles,
+			InstructionsPath: p.Memory.Instructions,
+		},
+		Experiments: make([]config.Experiment, 0, len(p.Experiments)),
+	}
+	for _, experiment := range p.Experiments {
+		declared := config.Experiment{
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Variants: make([]config.Variant, 0, len(experiment.Variants)),
+		}
+		for _, variant := range experiment.Variants {
+			declared.Variants = append(declared.Variants, config.Variant{Name: variant.Name, Weight: variant.Weight,
+				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions})
+		}
+		project.Experiments = append(project.Experiments, declared)
+	}
+	return project.ExperimentsDeclared("projects." + key)
+}
+
 // MemorySettings is a project's `memory` block as the file writes it: the mode each new tree is
 // drawn under, absent for a project that names no block, which is off (config.Memory.Word); the
 // Oh My Pi overlays every role of a memory-group tree names after the operator's and its own, `[]`
@@ -263,9 +349,33 @@ type ProjectSettings struct {
 // system prompt, absent when the block names none. The paths are the operator's own file names,
 // which no credential rides in.
 type MemorySettings struct {
-	Mode         config.MemoryMode `json:"mode,omitempty"`
-	ConfigFiles  []string          `json:"config_files"`
-	Instructions string            `json:"instructions,omitempty"`
+	Mode         config.ExperimentMode `json:"mode,omitempty"`
+	ConfigFiles  []string              `json:"config_files"`
+	Instructions string                `json:"instructions,omitempty"`
+}
+
+// ExperimentSettings is one `projects.<KEY>.experiments.<name>` block as the file writes it: the
+// name it is declared under, the mode each new unit it covers is drawn under, the unit one draw
+// covers, the arm `on` gives every unit (absent where the block names none), and the arms it
+// draws among in the file's order.
+type ExperimentSettings struct {
+	Name      string                `json:"name"`
+	Mode      config.ExperimentMode `json:"mode"`
+	Unit      config.ExperimentUnit `json:"unit"`
+	OnVariant string                `json:"on_variant,omitempty"`
+	Variants  []VariantSettings     `json:"variants"`
+}
+
+// VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
+// random draw gives it against its siblings, the Oh My Pi overlays every role of a unit drawn
+// into it names, `[]` for an arm that names none, and the one instructions file such a role's
+// system prompt takes, absent where the arm names none. The paths are the operator's own file
+// names, which no credential rides in, as the `memory` block's are.
+type VariantSettings struct {
+	Name         string   `json:"name"`
+	Weight       int      `json:"weight"`
+	ConfigFiles  []string `json:"config_files"`
+	Instructions string   `json:"instructions,omitempty"`
 }
 
 // DeploySettings is the shape one `projects.<KEY>.deploys` entry had while the daemon read the
@@ -283,11 +393,6 @@ type DeploySettings struct {
 type RepositoryRenameSettings struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-}
-
-// MergeSettings is a project's `merge` policy: the by-hand expressions as written, never compiled.
-type MergeSettings struct {
-	ByHand []string `json:"by_hand"`
 }
 
 // GatesSettings is `gates`. Design is the design-gate steps the deployment gates, in the order
@@ -333,74 +438,6 @@ type HookSettings struct {
 	PromptFile string `json:"prompt_file,omitempty"`
 }
 
-// SettingSource is where one setting's value came from: Source is `file`, the configuration file
-// the daemon read, or `route`, a change the settings route applied (config.SourceFile,
-// config.SourceRoute); By is whoever asked for it, empty for the file; and At is when the daemon
-// took that value — its boot for a value the file alone decides, and the moment of the change for
-// one the route applied.
-type SettingSource struct {
-	Source string    `json:"source"`
-	By     string    `json:"by,omitempty"`
-	At     time.Time `json:"at"`
-}
-
-// SettingProvenance is where each setting of the running daemon came from, which the state
-// carries beside its settings (State.SettingSources). It holds one entry per dotted path the
-// class table names (config.Paths), the file's own until a change names that path, and it is the
-// daemon's one observer of that question: it is registered with config.Live.OnChange, so every
-// change the daemon applies — the file read again, or the settings route — is recorded here by
-// the same path the change carries.
-type SettingProvenance struct {
-	now func() time.Time
-	mu  sync.Mutex
-	// sources is every path's latest source, keyed as the class table writes the path.
-	sources map[string]SettingSource
-}
-
-// NewSettingProvenance is the provenance of a daemon that has just read its file: every settable
-// path is the file's, as of loadedAt.
-func NewSettingProvenance(loadedAt time.Time) *SettingProvenance {
-	sources := map[string]SettingSource{}
-	for _, path := range config.Paths() {
-		sources[path] = SettingSource{Source: config.SourceFile, At: loadedAt.UTC()}
-	}
-	return &SettingProvenance{now: func() time.Time { return time.Now().UTC() }, sources: sources}
-}
-
-// Restore lays the route changes a store kept over the file's own provenance, path for path. It
-// is where the daemon's store of route changes hands back what it kept across a restart: those
-// changes are the values the daemon is running on, and the state must name them as the route's
-// rather than the file's. A path the class table does not name is recorded as it is given: the
-// store holds what a route applied, and this reports it.
-func (p *SettingProvenance) Restore(stored map[string]SettingSource) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	maps.Copy(p.sources, stored)
-}
-
-// Observe records one applied settings change per path, which is what config.Live.OnChange hands
-// every observer. It runs under the settings holder's lock and reads nothing of the
-// configuration: a path's value is Settings' business, and only where it came from is this one's.
-func (p *SettingProvenance) Observe(_ *config.Config, applied []config.Change) {
-	if len(applied) == 0 {
-		return
-	}
-	at := p.now()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, change := range applied {
-		p.sources[change.Path] = SettingSource{Source: change.Source, By: change.By, At: at}
-	}
-}
-
-// Sources is the provenance as the state carries it, a copy the caller may hold while the daemon
-// applies the next change.
-func (p *SettingProvenance) Sources() map[string]SettingSource {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return maps.Clone(p.sources)
-}
-
 // SettingsOf is cfg as the state shows it: every setting of the resolved file the audience of an
 // unauthenticated route may read, and no credential, credential source or credential file path
 // (Settings). Of the URLs it emits, the four address keys ride endpointOf and a plugin source in
@@ -443,8 +480,10 @@ func SettingsOf(cfg config.Config) Settings {
 		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
 		LingerHours:                             cfg.Linger.Hours(),
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
-		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
-		PodUpdateNoticeHours:                    cfg.PodUpdateNotice.Hours(),
+		PodUpdateGraceMinutes:                   cfg.PodUpdateGrace.Minutes(),
+		StalledTreeNoticeHours:                  cfg.StalledTreeNotice.Hours(),
+		WorkerSilenceMinutes:                    cfg.WorkerSilence.Minutes(),
+		WorkerBackgroundHours:                   cfg.WorkerBackground.Hours(),
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,
@@ -463,19 +502,15 @@ func SettingsOf(cfg config.Config) Settings {
 	}
 	for key, project := range cfg.Projects {
 		entry := ProjectSettings{
-			MergeQueueRole: project.MergeQueueRole,
-			Merge:          MergeSettings{ByHand: make([]string, len(project.Merge.ByHand))},
-			SlackChannels:  stringsOf(project.SlackChannels),
+			SlackChannels: stringsOf(project.SlackChannels),
 			Memory: MemorySettings{
 				Mode:         project.Memory.Mode,
 				ConfigFiles:  stringsOf(project.Memory.ConfigFiles),
 				Instructions: project.Memory.InstructionsPath,
 			},
+			Experiments:     experimentsOf(project.Experiments),
 			ProductionCheck: project.ProductionCheckWord(),
 			Deploys:         []DeploySettings{},
-		}
-		for i, pattern := range project.Merge.ByHand {
-			entry.Merge.ByHand[i] = pattern.Expression
 		}
 		settings.Projects[key] = entry
 	}
@@ -581,6 +616,13 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			IdleMinutes:     block.IdleRelease.IdleMinutes,
 			BackstopMinutes: block.IdleRelease.BackstopMinutes,
 		},
+		MemoryGuard: MemoryGuardSettings{IssuePods: MemoryGuardPodSettings{
+			Enabled:              block.MemoryGuard.IssuePods.Enabled,
+			ActPercent:           block.MemoryGuard.IssuePods.ActPercent,
+			FloorPercent:         block.MemoryGuard.IssuePods.FloorPercent,
+			WaitSeconds:          block.MemoryGuard.IssuePods.WaitSeconds,
+			IntervalMilliseconds: block.MemoryGuard.IssuePods.IntervalMilliseconds,
+		}},
 	}
 	maps.Copy(settings.Scheduling.NodeSelector, block.Scheduling.NodeSelector)
 	for i, toleration := range block.Scheduling.Tolerations {
@@ -619,6 +661,26 @@ func seconds(d time.Duration) int {
 // stringsOf is a copy of values that is `[]` on the wire when values is nil.
 func stringsOf(values []string) []string {
 	return append([]string{}, values...)
+}
+
+// experimentsOf is the project's `experiments` key as the settings carry it, in the file's
+// order and `[]` on the wire for a project that declares none under that key, each with its arms
+// in the file's order too: the order a draw reads the weights in, which is why neither is a
+// mapping here.
+func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
+	declared := make([]ExperimentSettings, 0, len(experiments))
+	for _, experiment := range experiments {
+		entry := ExperimentSettings{
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Variants: make([]VariantSettings, 0, len(experiment.Variants)),
+		}
+		for _, variant := range experiment.Variants {
+			entry.Variants = append(entry.Variants, VariantSettings{Name: variant.Name, Weight: variant.Weight,
+				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath})
+		}
+		declared = append(declared, entry)
+	}
+	return declared
 }
 
 // skillsRepositorySetting is repository as `<owner>/<name>`, and "" for the zero repository, which

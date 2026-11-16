@@ -89,7 +89,7 @@
     },
     "/api/v1/agents/{session_id}/answers": {
       "get": {
-        "description": "What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's sent message deliveries (targeted and broadcast messages) and its sent comment deliveries (mentions); of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer; declined_your_ask for a decline), the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/\u003csession_id\u003e/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list.",
+        "description": "What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer; declined_your_ask for a decline), the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/\u003csession_id\u003e/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list.",
         "operationId": "getApiV1AgentsBySessionIdAnswers",
         "parameters": [
           {
@@ -279,7 +279,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Artifact"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -290,7 +290,7 @@
     },
     "/api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {
       "get": {
-        "description": "Download one version of an agent's conversation's file or image, as the issue form serves it (Cache-Control: private, max-age=31536000, immutable).",
+        "description": "Download one version of an agent's conversation's file or image, as the issue form serves it: its bytes under its own content type, with Content-Disposition: attachment naming the file's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true the answer carries Content-Disposition: attachment with that name and Cache-Control: private, no-cache. A conversation holds no document, so no version here answers Markdown.",
         "operationId": "getApiV1AgentsBySessionIdArtifactsBySlugVersionsByNumber",
         "parameters": [
           {
@@ -318,6 +318,13 @@
             }
           },
           {
+            "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -338,7 +345,7 @@
             }
           },
           "200": {
-            "description": "a conversation holds files and images alone, so a version download is that file's bytes under its own content type (serveFileVersion)",
+            "description": "a conversation holds files and images alone, so a version is that file's bytes under its own content type, named by Content-Disposition with the file's name (serveFileVersion)",
             "content": {
               "application/octet-stream": {}
             }
@@ -400,7 +407,7 @@
         ]
       },
       "post": {
-        "description": "Send an issue-less targeted message to a session: {body, delivery, in_reply_to?}, answered once its own delivery attempt has settled, on past a client that gives up. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 with the message the key made and its deliveries as they stand, Idempotency-Replayed: ?1, first sending the one attempt it still owes (none yet, or one stranded past its claim) and nothing else; a listener it cannot reach is recorded on the attempt, so a repeat is answered while the listener is down. An attempt a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not.",
+        "description": "Send an issue-less targeted message to a session: {body, delivery, in_reply_to?, connected_only?}, answered once its own delivery attempt has settled, on past a client that gives up. A session the Envoy listener knows and that is not running is a recipient: the listener stores the message and hands it over when that session runs again, and the attempt is recorded queued rather than sent. A session the listener knows nothing about fails the attempt with \"no live session \u003cid\u003e\". connected_only asks for a session that is running now and fails the attempt with \"the session is stopped\", nothing stored; every later attempt of the message asks what its first asked. A model or thinking switch the session would run as its own turn - a person's own Send or Aside, not one an agent wrote for them, whose whole body is one /model or /effort line, which would otherwise apply at an unknown later time - is held to a running session at every send whether or not the request set connected_only. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 with the message the key made and its deliveries as they stand, Idempotency-Replayed: ?1, first sending the one attempt it still owes (none yet, or one stranded past its claim) and nothing else; a listener it cannot reach is recorded on the attempt, so a repeat is answered while the listener is down. An attempt a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not.",
         "operationId": "postApiV1AgentsBySessionIdMessages",
         "parameters": [
           {
@@ -446,7 +453,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Message"
+                  "$ref": "#/components/schemas/MessageWithTrees"
                 }
               }
             }
@@ -648,13 +655,114 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Artifact"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
           }
         },
         "x-auth": "any"
+      },
+      "delete": {
+        "description": "Remove a document of an issue that is still untouched: made by typing a title and never written in. It answers 204 and appends artifact.removed on the issue, and it leaves no row behind. A document that holds writing or a later version, an edit that has not settled, or a comment, ask, review, approval request, check result, read mark or link from anything in Dispatch is 409 ARTIFACT_NOT_UNTOUCHED, saying which of those it is; the issue's spec, a document that plays a role and an artifact that is no document read the same refusal; and a project's document is 400 ARTIFACT_PROJECT_DOCUMENT, since a project document's events are its own and its removal event would need the row the removal deletes.",
+        "operationId": "deleteApiV1ArtifactsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "project"
+      },
+      "patch": {
+        "description": "Correct a document's title: {name}. It writes the name alone - the slug, the reference key it gives and the role the document plays do not move - and answers the document as it now is. The owner's name it already holds is 409 ARTIFACT_NAME_TAKEN, a name whose slug is one of the documents Dispatch makes itself, on a document that is not that one, 400 ARTIFACT_ROLE_NAME, the issue's spec 400 ARTIFACT_PRIMARY, an artifact that is no document 400 ARTIFACT_KIND_MISMATCH, and a name that is empty or too long 400 INVALID_ARTIFACT.",
+        "operationId": "patchApiV1ArtifactsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameArtifactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Artifact"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "project"
       }
     },
     "/api/v1/artifacts/{id}/_test/hold-persistence": {
@@ -875,6 +983,48 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/artifacts/{id}/_test/newer-content": {
+      "post": {
+        "description": "Test hook: append an element no build knows, so the document holds newer content.",
+        "operationId": "postApiV1ArtifactsByIdTestNewerContent",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/artifacts/{id}/_test/outside-schema": {
       "post": {
         "description": "Test hook: write a crafted tree outside the Proof schema.",
@@ -967,7 +1117,7 @@
     },
     "/api/v1/artifacts/{id}/approval-requests": {
       "post": {
-        "description": "Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same.",
+        "description": "Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same.",
         "operationId": "postApiV1ArtifactsByIdApprovalRequests",
         "parameters": [
           {
@@ -1078,7 +1228,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Ask"
+                    "$ref": "#/components/schemas/AskWithTrees"
                   },
                   "type": "array"
                 }
@@ -1089,7 +1239,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, the three items most like it with each ask item's answer state, and any already-answered ask that may settle the same question, with who answered and when.",
+        "description": "Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state.",
         "operationId": "postApiV1ArtifactsByIdAsks",
         "parameters": [
           {
@@ -1137,7 +1287,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/Ask"
+                      "$ref": "#/components/schemas/AskWithTrees"
                     },
                     {
                       "properties": {
@@ -1333,7 +1483,7 @@
     },
     "/api/v1/artifacts/{id}/comments": {
       "get": {
-        "description": "List a document's comments.",
+        "description": "List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304.",
         "operationId": "getApiV1ArtifactsByIdComments",
         "parameters": [
           {
@@ -1370,7 +1520,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Comment"
+                    "$ref": "#/components/schemas/CommentWithTrees"
                   },
                   "type": "array"
                 }
@@ -1829,7 +1979,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/ArtifactReview"
+                    "$ref": "#/components/schemas/ArtifactReviewRead"
                   },
                   "type": "array"
                 }
@@ -2119,8 +2269,72 @@
     },
     "/api/v1/artifacts/{id}/versions/{number}": {
       "get": {
-        "description": "One named or settled document version.",
+        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension.",
         "operationId": "getApiV1ArtifactsByIdVersionsByNumber",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactVersionText"
+                }
+              },
+              "application/octet-stream": {},
+              "text/markdown": {}
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/artifacts/{id}/versions/{number}/reviews": {
+      "post": {
+        "description": "Approve or request changes on one version of a document {state, reason?}: {number} is the version the caller read, and the route requires it. The review is recorded only when {number} is the version it would record, the document's latest settled version or, with an approval ask open, the version that ask names for the document; any other is 409 REVIEW_VERSION_MOVED, naming the version the review would record, with nothing written, and a {number} that is not a whole number of 1 or more is 400 INVALID_REVIEW. With an approval ask open the review answers it, preserving its thread, and reviews every document the ask named, each at the version the ask names. This is the route a client sends when the version is a guard: a build without it answers no route, rather than recording the review without the guard.",
+        "operationId": "postApiV1ArtifactsByIdVersionsByNumberReviews",
         "parameters": [
           {
             "name": "id",
@@ -2147,6 +2361,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateArtifactReviewInput"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
@@ -2158,19 +2382,23 @@
               }
             }
           },
-          "200": {
-            "description": "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
+          "201": {
+            "description": "Created",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ArtifactVersionText"
+                  "$ref": "#/components/schemas/ArtifactReview"
                 }
-              },
-              "application/octet-stream": {}
+              }
             }
           }
         },
-        "x-auth": "any"
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person",
+          "approve"
+        ],
+        "x-write-scope": "project"
       }
     },
     "/api/v1/asks/open": {
@@ -2326,7 +2554,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2384,7 +2612,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2445,7 +2673,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2506,7 +2734,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2728,7 +2956,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2836,7 +3064,7 @@
         ]
       },
       "post": {
-        "description": "Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session that is not live or does not advertise the mode is excluded and named in the response, never switched to another mode. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not.",
+        "description": "Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session the Envoy listener knows and that is not running is a recipient like any other, its copy stored for it and its attempt recorded queued; one the listener knows nothing about, or that does not advertise the mode, is excluded and named in the response, never switched to another mode. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not.",
         "operationId": "postApiV1Broadcasts",
         "parameters": [
           {
@@ -3072,7 +3300,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Comment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -3297,7 +3525,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Comment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -3348,7 +3576,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Comment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -3483,7 +3711,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Comment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -4049,25 +4277,11 @@
     },
     "/api/v1/delivery/pipeline": {
       "get": {
-        "description": "The Pipeline page over the UTC days its window covers: ?at= (default now) is the seven days ending on its own, and ?from= and ?to= are the days that window covers, bounded by the same 84 days as the other delivery routes. By the day each run started: the PR-checks workflow's run wall time and success, its five slowest jobs and the jobs that failed in the 24 hours before the window's end, which for a whole-day window is its last day; the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main; and merge-to-production and PR-open-to-merge per merge day against their targets. A job is ranked among the slowest with as many timed results as pr_checks.slowest_min_results states: the min_n of the job series (job:*) of the pr-ci eval of the project the deploy repository is mapped to, or 50 where it is mapped to no project or that project holds no pr-ci eval yet; the ranking is the one pr-ci's items read with sort=median. Not filtered by the timeline's facets; 400 INVALID_QUERY for a malformed at or window, for a window over the cap, and for an at beside from or to, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets. A job is ranked among the slowest with as many timed results as pr_checks.slowest_min_results states: the min_n of the job series (job:*) of the pr-ci eval of the project the deploy repository is mapped to, or 50 where it is mapped to no project or that project holds no pr-ci eval yet; the ranking is the one pr-ci's items read with sort=median. Not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at or one named more than once, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
         "operationId": "getApiV1DeliveryPipeline",
         "parameters": [
           {
             "name": "at",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "from",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "to",
             "in": "query",
             "schema": {
               "type": "string"
@@ -4716,7 +4930,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -4895,7 +5109,7 @@
     },
     "/api/v1/inbox": {
       "get": {
-        "description": "Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|\u003cemail\u003e filter on the person each ask waits on - whoever it was handed to, and the assignee of its issue until somebody hands it on (unassigned is every ask nobody waits on, a document ask among them; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED).",
+        "description": "Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|\u003cemail\u003e filter on the person each ask waits on, which is three steps resolved as the ask is read: the person the question was handed to, then the issue's assignee, then the project's default assignee (unassigned is every ask nobody waits on; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED).",
         "operationId": "getApiV1Inbox",
         "parameters": [
           {
@@ -4954,7 +5168,7 @@
     },
     "/api/v1/issues": {
       "get": {
-        "description": "List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
+        "description": "List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
         "operationId": "getApiV1Issues",
         "parameters": [
           {
@@ -4975,7 +5189,10 @@
             "name": "status",
             "in": "query",
             "schema": {
-              "type": "string"
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           {
@@ -5024,6 +5241,23 @@
                 "type": "string"
               },
               "type": "array"
+            }
+          },
+          {
+            "name": "advances",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "moved",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -5098,7 +5332,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, any answered ask that settles it, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -5378,7 +5612,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Artifact"
+                    "$ref": "#/components/schemas/ArtifactWithTrees"
                   },
                   "type": "array"
                 }
@@ -5530,7 +5764,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Artifact"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -5825,7 +6059,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/versions/{number}": {
       "get": {
-        "description": "One version of an issue document, by slug or unambiguous filename.",
+        "description": "One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown.",
         "operationId": "getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber",
         "parameters": [
           {
@@ -5853,6 +6087,13 @@
             }
           },
           {
+            "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -5873,14 +6114,15 @@
             }
           },
           "200": {
-            "description": "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
+            "description": "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtifactVersionText"
                 }
               },
-              "application/octet-stream": {}
+              "application/octet-stream": {},
+              "text/markdown": {}
             }
           }
         },
@@ -5954,7 +6196,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, the three items most like it with each ask item's answer state, and any already-answered ask that may settle the same question, with who answered and when.",
+        "description": "Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state.",
         "operationId": "postApiV1IssuesByKeyAsks",
         "parameters": [
           {
@@ -6002,7 +6244,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/Ask"
+                      "$ref": "#/components/schemas/AskWithTrees"
                     },
                     {
                       "properties": {
@@ -6205,7 +6447,7 @@
     },
     "/api/v1/issues/{key}/comments": {
       "get": {
-        "description": "List an issue's comments; ?artifact= scopes to a document.",
+        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304.",
         "operationId": "getApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -6249,7 +6491,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Comment"
+                    "$ref": "#/components/schemas/CommentWithTrees"
                   },
                   "type": "array"
                 }
@@ -6482,7 +6724,7 @@
     },
     "/api/v1/issues/{key}/events": {
       "get": {
-        "description": "Page an issue's event log (after, before, ids, order, limit).",
+        "description": "Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304.",
         "operationId": "getApiV1IssuesByKeyEvents",
         "parameters": [
           {
@@ -6834,7 +7076,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/Message"
+                      "$ref": "#/components/schemas/MessageWithTrees"
                     },
                     {
                       "properties": {
@@ -6968,7 +7210,7 @@
     },
     "/api/v1/issues/{key}/results": {
       "get": {
-        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read. A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}, and makes no read of GitHub at all. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks.",
+        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:\u003ccheck run id\u003e, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session \"\", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks.",
         "operationId": "getApiV1IssuesByKeyResults",
         "parameters": [
           {
@@ -7020,7 +7262,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch.",
+        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch.",
         "operationId": "postApiV1IssuesByKeyResults",
         "parameters": [
           {
@@ -7226,60 +7468,6 @@
           }
         },
         "x-auth": "any"
-      }
-    },
-    "/api/v1/legion/{project}/settings": {
-      "put": {
-        "description": "Relay an operator's legion.yaml change {changes: {\u003cdotted path\u003e: \u003cvalue\u003e}} to the project's Legion daemon, with the caller's login as the change's author, and answer the daemon's status and per-key result (applied at-once, rebuilt or next-launch, failed with the error of the holder the daemon took the value and could not carry it into, or refused with a reason) unchanged; 404 LEGION_NOT_CONFIGURED when the project names no daemon, 503 LEGION_DAEMON_UNAVAILABLE when it could not be reached.",
-        "operationId": "putApiV1LegionByProjectSettings",
-        "parameters": [
-          {
-            "name": "project",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LegionSettingsRelayInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "the Legion daemon's own answer, relayed byte for byte with its status: the per-key verdicts of its operator settings route, which Dispatch does not model",
-            "content": {
-              "application/json": {}
-            }
-          }
-        },
-        "x-auth": "any",
-        "x-write-scope": "deployment"
       }
     },
     "/api/v1/limits": {
@@ -8643,7 +8831,7 @@
     },
     "/api/v1/messages/{id}/deliveries/{attempt}/accept": {
       "post": {
-        "description": "The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending or sent attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted.",
+        "description": "The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending, sent or queued attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted.",
         "operationId": "postApiV1MessagesByIdDeliveriesByAttemptAccept",
         "parameters": [
           {
@@ -8789,9 +8977,269 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/priorities": {
+      "get": {
+        "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=\u003cKEY\u003e, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.",
+        "operationId": "getApiV1Priorities",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "summary",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Priorities"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none.",
+        "operationId": "postApiV1Priorities",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePriorityInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Priority"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/priorities/{id}": {
+      "delete": {
+        "description": "Delete a priority: its state is written gone and no row is removed, so the listing answers without it while its history still names who ended it and when. An id no priority carries is 404 PRIORITY_NOT_FOUND; 204 otherwise.",
+        "operationId": "deleteApiV1PrioritiesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      },
+      "patch": {
+        "description": "Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND.",
+        "operationId": "patchApiV1PrioritiesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchPriorityInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Priority"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/priorities/{id}/history": {
+      "get": {
+        "description": "One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so any authenticated caller reads this, the shared token every pod carries included. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND.",
+        "operationId": "getApiV1PrioritiesByIdHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PriorityAct"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/projects": {
       "get": {
-        "description": "List projects.",
+        "description": "List projects. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope.",
         "operationId": "getApiV1Projects",
         "parameters": [
           {
@@ -8831,7 +9279,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create a project {key, name}: any signed-in person or agent session; a bearer names its session in actor. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS.",
+        "description": "Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with, the one the call names or the one its credential acts for, is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. The answer is the project with the default_assignee the create stored.",
         "operationId": "postApiV1Projects",
         "parameters": [
           {
@@ -8869,7 +9317,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Project"
+                  "$ref": "#/components/schemas/CreatedProject"
                 }
               }
             }
@@ -9377,7 +9825,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Artifact"
+                    "$ref": "#/components/schemas/ArtifactWithTrees"
                   },
                   "type": "array"
                 }
@@ -9529,7 +9977,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Artifact"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -9879,7 +10327,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/versions/{number}": {
       "get": {
-        "description": "One version of a project document, by slug or unambiguous filename.",
+        "description": "One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown.",
         "operationId": "getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber",
         "parameters": [
           {
@@ -9907,6 +10355,13 @@
             }
           },
           {
+            "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -9927,14 +10382,15 @@
             }
           },
           "200": {
-            "description": "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
+            "description": "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtifactVersionText"
                 }
               },
-              "application/octet-stream": {}
+              "application/octet-stream": {},
+              "text/markdown": {}
             }
           }
         },
@@ -9943,7 +10399,7 @@
     },
     "/api/v1/projects/{key}/default-assignee": {
       "put": {
-        "description": "Set a project's default assignee {assignee} (the email of a person who has signed in, or null to clear it): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none.",
+        "description": "Move a project's default assignee to another person {assignee} (the email of a person who has signed in): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. A project always names a person, so an assignee that is absent, null or blank is 400 INVALID_PROJECT and the default cannot be cleared. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none.",
         "operationId": "putApiV1ProjectsByKeyDefaultAssignee",
         "parameters": [
           {
@@ -10744,7 +11200,7 @@
     },
     "/api/v1/projects/{key}/legion/board": {
       "get": {
-        "description": "The Legion view on the Issues page for the project the path names, from what the sampler recorded of that project's daemon and the stored per-issue Legion facts: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, its pull request's CI verdict, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; an issues map carrying the stored facts of every issue with Legion phase work, open or closed, by issue key; and a header with the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, and how fresh the stored facts are. 404 PROJECT_NOT_FOUND for a project that does not exist, 404 LEGION_NOT_CONFIGURED when the project names no daemon.",
+        "description": "The Legion board of the project its path names, from what the sampler recorded of that project's daemon and the stored per-issue Legion facts: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; an issues map carrying the stored facts of every issue with Legion phase work, open or closed, by issue key; and a header with the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, and how fresh the stored facts are. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 404 NOT_FOUND for a project that does not exist.",
         "operationId": "getApiV1ProjectsByKeyLegionBoard",
         "parameters": [
           {
@@ -10789,9 +11245,158 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/projects/{key}/legion/daemon": {
+      "get": {
+        "description": "The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 404 NOT_FOUND for a project that does not exist.",
+        "operationId": "getApiV1ProjectsByKeyLegionDaemon",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LegionSetting"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "put": {
+        "description": "Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included.",
+        "operationId": "putApiV1ProjectsByKeyLegionDaemon",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutLegionSettingInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegionSetting"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      },
+      "delete": {
+        "description": "Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none.",
+        "operationId": "deleteApiV1ProjectsByKeyLegionDaemon",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
     "/api/v1/projects/{key}/related": {
       "get": {
-        "description": "Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query, related and decision, with up to 3 open issues before any item of another kind and everything a done issue owns last. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND.",
+        "description": "Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. This form answers no other_projects: its caller is the dashboard's new-issue dialog, which runs the check for each burst of typing and draws the items of the asking project alone. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND.",
         "operationId": "getApiV1ProjectsByKeyRelated",
         "parameters": [
           {
@@ -10874,7 +11479,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds; answers the same suggestions shape.",
+        "description": "The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds. The two forms do not answer alike. This one is the check an agent runs to ask a question, so it answers other_projects beside related: at most 2 answered question asks of other projects, each with its ask state, its answer and the project it stands in (owner.project), ranked by meaning alone and offered with no claim that they answer the question. The GET form answers none.",
         "operationId": "postApiV1ProjectsByKeyRelated",
         "parameters": [
           {
@@ -11058,7 +11663,7 @@
     },
     "/api/v1/related-checks": {
       "get": {
-        "description": "Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms.",
+        "description": "Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered.",
         "operationId": "getApiV1RelatedChecks",
         "parameters": [
           {
@@ -11560,145 +12165,6 @@
         "x-write-scope": "deployment"
       }
     },
-    "/api/v1/settings/legion": {
-      "get": {
-        "description": "Every project's Legion setting, by project key: the daemon Dispatch reads that project's `GET /legion/v1/state` from once a minute, with the actor that first set it and when it was last written; [] when no project names one.",
-        "operationId": "getApiV1SettingsLegion",
-        "parameters": [
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/LegionSetting"
-                  },
-                  "type": "array"
-                }
-              }
-            }
-          }
-        },
-        "x-auth": "any"
-      }
-    },
-    "/api/v1/settings/legion/{project}": {
-      "put": {
-        "description": "Name the Legion daemon a project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The setting belongs to the deployment, so a project-scoped credential is refused it.",
-        "operationId": "putApiV1SettingsLegionByProject",
-        "parameters": [
-          {
-            "name": "project",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PutLegionSettingInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LegionSetting"
-                }
-              }
-            }
-          }
-        },
-        "x-auth": "any",
-        "x-write-scope": "deployment"
-      },
-      "delete": {
-        "description": "Stop reading a project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none.",
-        "operationId": "deleteApiV1SettingsLegionByProject",
-        "parameters": [
-          {
-            "name": "project",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "204": {
-            "description": "No Content"
-          }
-        },
-        "x-auth": "any",
-        "x-write-scope": "deployment"
-      }
-    },
     "/api/v1/settings/new-issue": {
       "get": {
         "description": "What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes.",
@@ -11791,7 +12257,7 @@
     },
     "/api/v1/settings/project-default-assignees": {
       "get": {
-        "description": "List every project that names a default assignee, by project key: the last step of a create's assignee chain. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none.",
+        "description": "List every project with the person it defaults to, by project key: every project names one, and that person is the last step of the chain that decides who a question reaches. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none.",
         "operationId": "getApiV1SettingsProjectDefaultAssignees",
         "parameters": [
           {
@@ -12276,6 +12742,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -12322,7 +12801,7 @@
           "reply_block": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ReplyBlock"
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
               },
               {
                 "type": "null"
@@ -12898,7 +13377,7 @@
       "ApprovalRequestResponse": {
         "properties": {
           "approval": {
-            "$ref": "#/components/schemas/ArtifactApproval"
+            "$ref": "#/components/schemas/ArtifactApprovalWithTrees"
           },
           "artifact_id": {
             "type": "string"
@@ -12906,7 +13385,7 @@
           "ask": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Ask"
+                "$ref": "#/components/schemas/AskWithTrees"
               },
               {
                 "type": "null"
@@ -13022,6 +13501,99 @@
         ],
         "type": "object"
       },
+      "ArchitectureComponentRead": {
+        "properties": {
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "done": {
+            "type": "integer"
+          },
+          "external": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "own_done": {
+            "type": "integer"
+          },
+          "own_total": {
+            "type": "integer"
+          },
+          "parent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "prose": {
+            "type": "string"
+          },
+          "prose_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "source": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "title",
+          "parent",
+          "depends_on",
+          "paths",
+          "external",
+          "prose",
+          "done",
+          "total",
+          "own_done",
+          "own_total",
+          "issues"
+        ],
+        "type": "object"
+      },
       "ArchitectureSource": {
         "properties": {
           "branch": {
@@ -13084,7 +13656,7 @@
         "properties": {
           "components": {
             "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeComponent"
+              "$ref": "#/components/schemas/ArchitectureComponentRead"
             },
             "type": [
               "array",
@@ -13550,6 +14122,73 @@
         ],
         "type": "object"
       },
+      "ArtifactApprovalWithTrees": {
+        "properties": {
+          "ask_id": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "content_sha256": {
+            "type": "string"
+          },
+          "content_sha256_source": {
+            "type": "string"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/AskApprovalDocument"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "latest_version": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "requested_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "waiting_on": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "latest_version"
+        ],
+        "type": "object"
+      },
       "ArtifactBlock": {
         "properties": {
           "attributes": {
@@ -13719,6 +14358,83 @@
         ],
         "type": "object"
       },
+      "ArtifactReviewRead": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "ask_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "content_sha256": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "content_sha256_source": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "state": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "artifact_id",
+          "version",
+          "state",
+          "kind",
+          "actor",
+          "reason",
+          "ask_id",
+          "created_at",
+          "content_sha256",
+          "content_sha256_source"
+        ],
+        "type": "object"
+      },
       "ArtifactText": {
         "properties": {
           "blocks": {
@@ -13729,6 +14445,19 @@
           },
           "markdown": {
             "type": "string"
+          },
+          "markdown_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "token": {
             "type": "string"
@@ -13780,6 +14509,19 @@
           "markdown": {
             "type": "string"
           },
+          "markdown_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "mime": {
             "type": "string"
           },
@@ -13812,89 +14554,17 @@
         ],
         "type": "object"
       },
-      "Ask": {
+      "ArtifactWithTrees": {
         "properties": {
-          "anchor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Anchor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "anchor_artifact": {
-            "$ref": "#/components/schemas/AskAnchorArtifact"
-          },
-          "anchor_block": {
-            "$ref": "#/components/schemas/BlockPath"
-          },
-          "anchor_block_error": {
-            "type": "string"
-          },
-          "answer": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AskAnswer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "approval": {
-            "$ref": "#/components/schemas/AskApproval"
-          },
-          "approval_artifact": {
-            "$ref": "#/components/schemas/AskAnchorArtifact"
-          },
-          "artifact_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "asked_of": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "asked_of_at": {
-            "format": "date-time",
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "asked_of_by": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "author": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "block_artifact": {
-            "$ref": "#/components/schemas/AskBlockArtifact"
-          },
-          "block_id": {
-            "type": [
-              "null",
-              "string"
-            ]
+            "$ref": "#/components/schemas/ArtifactApprovalWithTrees"
           },
           "created_at": {
             "format": "date-time",
             "type": "string"
           },
-          "edited_at": {
-            "type": [
-              "null",
-              "string"
-            ]
+          "created_by": {
+            "$ref": "#/components/schemas/Actor"
           },
           "id": {
             "type": "string"
@@ -13908,65 +14578,53 @@
           "kind": {
             "type": "string"
           },
-          "multiple": {
+          "name": {
+            "type": "string"
+          },
+          "primary": {
             "type": "boolean"
           },
-          "opened_event_id": {
-            "type": "integer"
+          "project": {
+            "type": "string"
           },
-          "options": {
+          "ref_key": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "slug": {
+            "type": "string"
+          },
+          "versions": {
             "items": {
-              "$ref": "#/components/schemas/AskOption"
+              "$ref": "#/components/schemas/Version"
             },
             "type": [
               "array",
               "null"
             ]
-          },
-          "question": {
-            "type": "string"
-          },
-          "referenced_by_count": {
-            "type": "integer"
-          },
-          "resolution": {
-            "$ref": "#/components/schemas/AskResolution"
-          },
-          "revision": {
-            "type": "integer"
-          },
-          "state": {
-            "type": "string"
-          },
-          "urgency": {
-            "type": "string"
-          },
-          "waiting_on": {
-            "type": "string"
-          },
-          "waiting_on_person": {
-            "type": "string"
           }
         },
         "required": [
           "id",
           "issue_key",
-          "artifact_id",
-          "block_id",
-          "author",
+          "project",
+          "session_id",
+          "ref_key",
+          "slug",
+          "name",
           "kind",
-          "question",
-          "options",
-          "multiple",
-          "urgency",
-          "anchor",
-          "state",
-          "answer",
+          "primary",
+          "created_by",
           "created_at",
-          "edited_at",
-          "asked_of",
-          "asked_of_by",
-          "asked_of_at"
+          "versions"
         ],
         "type": "object"
       },
@@ -14019,6 +14677,58 @@
               "null",
               "string"
             ]
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user",
+          "selected",
+          "text",
+          "at"
+        ],
+        "type": "object"
+      },
+      "AskAnswerWithTrees": {
+        "properties": {
+          "act": {
+            "$ref": "#/components/schemas/ActorAct"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "selected": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "user": {
             "type": "string"
@@ -14140,25 +14850,6 @@
         ],
         "type": "object"
       },
-      "AskEdit": {
-        "properties": {
-          "at": {
-            "type": "string"
-          },
-          "edited_by": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "previous": {
-            "$ref": "#/components/schemas/AskEditPrevious"
-          }
-        },
-        "required": [
-          "previous",
-          "edited_by",
-          "at"
-        ],
-        "type": "object"
-      },
       "AskEditPrevious": {
         "properties": {
           "multiple": {
@@ -14185,6 +14876,67 @@
           "options",
           "multiple",
           "urgency"
+        ],
+        "type": "object"
+      },
+      "AskEditPreviousWithTrees": {
+        "properties": {
+          "multiple": {
+            "type": "boolean"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "question": {
+            "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "urgency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "options",
+          "multiple",
+          "urgency"
+        ],
+        "type": "object"
+      },
+      "AskEditWithTrees": {
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "edited_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "previous": {
+            "$ref": "#/components/schemas/AskEditPreviousWithTrees"
+          }
+        },
+        "required": [
+          "previous",
+          "edited_by",
+          "at"
         ],
         "type": "object"
       },
@@ -14253,11 +15005,54 @@
         ],
         "type": "object"
       },
+      "AskOptionWithTrees": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "description_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "label_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
       "AskRead": {
         "properties": {
           "answers": {
             "items": {
-              "$ref": "#/components/schemas/AskAnswer"
+              "$ref": "#/components/schemas/AskAnswerWithTrees"
             },
             "type": [
               "array",
@@ -14265,7 +15060,7 @@
             ]
           },
           "ask": {
-            "$ref": "#/components/schemas/Ask"
+            "$ref": "#/components/schemas/AskWithTrees"
           },
           "claimant": {
             "type": [
@@ -14275,7 +15070,7 @@
           },
           "edits": {
             "items": {
-              "$ref": "#/components/schemas/AskEdit"
+              "$ref": "#/components/schemas/AskEditWithTrees"
             },
             "type": [
               "array",
@@ -14293,7 +15088,7 @@
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Comment"
+              "$ref": "#/components/schemas/CommentWithTrees"
             },
             "type": [
               "array",
@@ -14366,6 +15161,46 @@
         ],
         "type": "object"
       },
+      "AskResolutionWithTrees": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "dispatch_words": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind",
+          "reason",
+          "actor",
+          "at"
+        ],
+        "type": "object"
+      },
       "AskSnooze": {
         "properties": {
           "snoozed_until": {
@@ -14395,7 +15230,7 @@
         "properties": {
           "answers": {
             "items": {
-              "$ref": "#/components/schemas/AskAnswer"
+              "$ref": "#/components/schemas/AskAnswerWithTrees"
             },
             "type": [
               "array",
@@ -14410,7 +15245,7 @@
           },
           "edits": {
             "items": {
-              "$ref": "#/components/schemas/AskEdit"
+              "$ref": "#/components/schemas/AskEditWithTrees"
             },
             "type": [
               "array",
@@ -14428,7 +15263,7 @@
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Comment"
+              "$ref": "#/components/schemas/CommentWithTrees"
             },
             "type": [
               "array",
@@ -14470,6 +15305,177 @@
           "route_status",
           "route_holder",
           "route_status_reason"
+        ],
+        "type": "object"
+      },
+      "AskWithTrees": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approval": {
+            "$ref": "#/components/schemas/AskApproval"
+          },
+          "approval_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "block_artifact": {
+            "$ref": "#/components/schemas/AskBlockArtifact"
+          },
+          "block_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "opened_event_id": {
+            "type": "integer"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "question": {
+            "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "referenced_by_count": {
+            "type": "integer"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "block_id",
+          "author",
+          "kind",
+          "question",
+          "options",
+          "multiple",
+          "urgency",
+          "anchor",
+          "state",
+          "answer",
+          "created_at",
+          "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at"
         ],
         "type": "object"
       },
@@ -14638,6 +15644,45 @@
         ],
         "type": "object"
       },
+      "BlockPinRead": {
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "removed_version": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "ref",
+          "text",
+          "state"
+        ],
+        "type": "object"
+      },
       "BlockReferences": {
         "properties": {
           "asks": {
@@ -14730,6 +15775,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -14797,6 +15855,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -14830,11 +15901,11 @@
       "BroadcastRecipient": {
         "properties": {
           "message": {
-            "$ref": "#/components/schemas/Message"
+            "$ref": "#/components/schemas/MessageWithTrees"
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Message"
+              "$ref": "#/components/schemas/MessageWithTrees"
             },
             "type": [
               "array",
@@ -14859,6 +15930,19 @@
           },
           "body": {
             "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "created_at": {
             "format": "date-time",
@@ -14953,6 +16037,12 @@
           "block_id": {
             "type": "string"
           },
+          "ci": {
+            "$ref": "#/components/schemas/CheckCI"
+          },
+          "ci_check": {
+            "type": "string"
+          },
           "compared_nothing": {
             "enum": [
               "no_pull_request_or_branch",
@@ -15028,6 +16118,39 @@
         ],
         "type": "object"
       },
+      "CheckCI": {
+        "properties": {
+          "case": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "line": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "pass",
+              "fail",
+              "no_result",
+              "unread"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "state",
+          "case",
+          "detail",
+          "line"
+        ],
+        "type": "object"
+      },
       "CheckPassStands": {
         "properties": {
           "answer": {
@@ -15081,6 +16204,14 @@
           },
           "created_at": {
             "format": "date-time",
+            "type": "string"
+          },
+          "currency": {
+            "description": "A compatibility field answered only by GET /api/v1/issues/{key}/results with no ?at=, for dispatch clients older than pi-envoy 17.1.0, which print it beside each result and read none of commit_stands, check_words_moved and retracted; read those instead. current: commit_stands is at_basis, check_words_moved is false and no retraction stands. older: commit_stands is other_commit, or it is at_basis and check_words_moved is true. Left out otherwise (commit_stands unknown, a retracted result at its basis under the check's words now). It is removed once no client older than pi-envoy 17.1.0 is in use.",
+            "enum": [
+              "current",
+              "older"
+            ],
             "type": "string"
           },
           "event_seq": {
@@ -15267,6 +16398,19 @@
       },
       "ClaimedIssue": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "assignee": {
             "type": [
               "null",
@@ -15416,6 +16560,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -15685,11 +16831,11 @@
       "CommentRead": {
         "properties": {
           "comment": {
-            "$ref": "#/components/schemas/Comment"
+            "$ref": "#/components/schemas/CommentWithTrees"
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Comment"
+              "$ref": "#/components/schemas/CommentWithTrees"
             },
             "type": [
               "array",
@@ -15748,6 +16894,173 @@
         ],
         "type": "object"
       },
+      "CommentWithTrees": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answers": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ask_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/CommentDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "mentions": {
+            "items": {
+              "$ref": "#/components/schemas/CommentMention"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved": {
+            "type": "boolean"
+          },
+          "resolved_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Suggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "turn": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "author",
+          "body",
+          "anchor",
+          "reply_to",
+          "answers",
+          "ask_id",
+          "turn",
+          "resolved",
+          "resolved_by",
+          "resolved_at",
+          "edited_at",
+          "suggestion",
+          "created_at",
+          "mentions",
+          "deliveries",
+          "reply_block"
+        ],
+        "type": "object"
+      },
       "CommentWriteResponse": {
         "properties": {
           "anchor": {
@@ -15793,6 +17106,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -15833,7 +17159,7 @@
           "reply_block": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ReplyBlock"
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
               },
               {
                 "type": "null"
@@ -15909,6 +17235,9 @@
         "properties": {
           "body": {
             "type": "string"
+          },
+          "connected_only": {
+            "type": "boolean"
           },
           "delivery": {
             "type": "string"
@@ -16027,6 +17356,10 @@
             "type": "string"
           },
           "delivery": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency key is the Idempotency-Key header and never a body member",
             "type": "string"
           },
           "session_ids": {
@@ -16261,6 +17594,15 @@
               }
             ]
           },
+          "advances": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "assignee": {
             "anyOf": [
               {
@@ -16424,6 +17766,36 @@
         ],
         "type": "object"
       },
+      "CreatePriorityInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
+      },
       "CreateProjectInput": {
         "properties": {
           "actor": {
@@ -16435,6 +17807,9 @@
                 "type": "null"
               }
             ]
+          },
+          "default_assignee": {
+            "type": "string"
           },
           "key": {
             "type": "string"
@@ -16521,6 +17896,44 @@
           "last_used_at",
           "revoked_at",
           "token"
+        ],
+        "type": "object"
+      },
+      "CreatedProject": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "default_assignee": {
+            "type": "string"
+          },
+          "gated_steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "open_asks": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "open_asks",
+          "gated_steps",
+          "created_at",
+          "default_assignee"
         ],
         "type": "object"
       },
@@ -16702,6 +18115,19 @@
           },
           "text_sha256": {
             "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "unsure": {
             "type": "boolean"
@@ -18783,6 +20209,9 @@
                 "type": "null"
               }
             ]
+          },
+          "written": {
+            "type": "string"
           }
         },
         "required": [
@@ -18791,7 +20220,8 @@
           "lost_ops",
           "token",
           "unchanged_ops",
-          "version"
+          "version",
+          "written"
         ],
         "type": "object"
       },
@@ -20425,6 +21855,10 @@
           "seq": {
             "type": "integer"
           },
+          "trees": {
+            "additionalProperties": {},
+            "type": "object"
+          },
           "type": {
             "type": "string"
           }
@@ -20742,6 +22176,112 @@
         ],
         "type": "object"
       },
+      "GraphNodeRead": {
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_by": {
+            "items": {
+              "$ref": "#/components/schemas/Actor"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "changed_version": {
+            "type": "integer"
+          },
+          "document": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "made_by": {
+            "items": {
+              "$ref": "#/components/schemas/Actor"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphNodeParent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parent_version": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "pin": {
+            "$ref": "#/components/schemas/BlockPinRead"
+          },
+          "project": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "made_by",
+          "made_at",
+          "changed_by",
+          "changed_at",
+          "parent",
+          "parent_version"
+        ],
+        "type": "object"
+      },
       "GraphReferences": {
         "properties": {
           "edges": {
@@ -20754,7 +22294,13 @@
             ]
           },
           "node": {
-            "$ref": "#/components/schemas/GraphNode"
+            "$ref": "#/components/schemas/GraphNodeRead"
+          },
+          "unknown_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -21054,7 +22600,7 @@
           "answer": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/AskAnswer"
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
               },
               {
                 "type": "null"
@@ -21150,7 +22696,7 @@
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOption"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -21166,11 +22712,24 @@
           "question": {
             "type": "string"
           },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "referenced_by_count": {
             "type": "integer"
           },
           "resolution": {
-            "$ref": "#/components/schemas/AskResolution"
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
           },
           "revision": {
             "type": "integer"
@@ -21225,6 +22784,19 @@
       },
       "Issue": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "assignee": {
             "type": [
               "null",
@@ -21371,6 +22943,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -21387,6 +22961,21 @@
           "plan_artifact_id",
           "decisions_artifact_id",
           "last_seq"
+        ],
+        "type": "object"
+      },
+      "IssueAdvance": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "inherited": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "inherited"
         ],
         "type": "object"
       },
@@ -21414,7 +23003,7 @@
           "answer": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/AskAnswer"
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
               },
               {
                 "type": "null"
@@ -21504,7 +23093,7 @@
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOption"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -21514,11 +23103,24 @@
           "question": {
             "type": "string"
           },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "referenced_by_count": {
             "type": "integer"
           },
           "resolution": {
-            "$ref": "#/components/schemas/AskResolution"
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
           },
           "revision": {
             "type": "integer"
@@ -22060,9 +23662,22 @@
       },
       "IssueDetails": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "artifacts": {
             "items": {
-              "$ref": "#/components/schemas/Artifact"
+              "$ref": "#/components/schemas/ArtifactWithTrees"
             },
             "type": [
               "array",
@@ -22286,6 +23901,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -22366,7 +23983,7 @@
           "answer": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/AskAnswer"
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
               },
               {
                 "type": "null"
@@ -22456,7 +24073,7 @@
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOption"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -22466,11 +24083,24 @@
           "question": {
             "type": "string"
           },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "referenced_by_count": {
             "type": "integer"
           },
           "resolution": {
-            "$ref": "#/components/schemas/AskResolution"
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
           },
           "revision": {
             "type": "integer"
@@ -22658,6 +24288,19 @@
       },
       "IssueSummary": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "assignee": {
             "type": [
               "null",
@@ -22721,6 +24364,13 @@
           },
           "last_seq": {
             "type": "integer"
+          },
+          "moved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "moved_by": {
+            "$ref": "#/components/schemas/Actor"
           },
           "open_asks": {
             "type": "integer"
@@ -22802,6 +24452,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -22950,8 +24602,7 @@
           }
         },
         "required": [
-          "name",
-          "content"
+          "name"
         ],
         "type": "object"
       },
@@ -23064,12 +24715,6 @@
               "null"
             ]
           },
-          "checks_verdict": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
           "children": {
             "type": "integer"
           },
@@ -23170,7 +24815,6 @@
           "slot_since",
           "waiting_place",
           "roles",
-          "checks_verdict",
           "blocked_by",
           "waiting_on",
           "slot_use",
@@ -23389,13 +25033,6 @@
           "project": {
             "type": "string"
           },
-          "setting_sources": {
-            "additionalProperties": {},
-            "type": [
-              "object",
-              "null"
-            ]
-          },
           "settings": {
             "additionalProperties": {},
             "type": [
@@ -23410,7 +25047,6 @@
           "columns",
           "issues",
           "settings",
-          "setting_sources",
           "computed_at"
         ],
         "type": "object"
@@ -23495,31 +25131,6 @@
         ],
         "type": "object"
       },
-      "LegionSettingsRelayInput": {
-        "properties": {
-          "actor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Actor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "changes": {
-            "additionalProperties": {},
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "changes"
-        ],
-        "type": "object"
-      },
       "ListUsersResponse": {
         "properties": {
           "users": {
@@ -23578,79 +25189,6 @@
         },
         "required": [
           "markdown"
-        ],
-        "type": "object"
-      },
-      "Message": {
-        "properties": {
-          "author": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "body": {
-            "type": "string"
-          },
-          "broadcast_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "deliveries": {
-            "items": {
-              "$ref": "#/components/schemas/MessageDelivery"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "in_reply_to": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "issue_key": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "reply_block": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ReplyBlock"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "target": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "issue_key",
-          "author",
-          "body",
-          "target",
-          "in_reply_to",
-          "broadcast_id",
-          "created_at",
-          "deliveries",
-          "reply_block"
         ],
         "type": "object"
       },
@@ -23740,11 +25278,11 @@
       "MessageRead": {
         "properties": {
           "message": {
-            "$ref": "#/components/schemas/Message"
+            "$ref": "#/components/schemas/MessageWithTrees"
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Message"
+              "$ref": "#/components/schemas/MessageWithTrees"
             },
             "type": [
               "array",
@@ -23808,6 +25346,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "broadcast_id": {
             "type": [
               "null",
@@ -23848,7 +25399,93 @@
           "reply_block": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ReplyBlock"
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "author",
+          "body",
+          "target",
+          "in_reply_to",
+          "broadcast_id",
+          "created_at",
+          "deliveries",
+          "reply_block"
+        ],
+        "type": "object"
+      },
+      "MessageWithTrees": {
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "broadcast_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/MessageDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "in_reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
               },
               {
                 "type": "null"
@@ -23938,6 +25575,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "id": {
             "type": "string"
           }
@@ -23951,7 +25601,7 @@
       "MyAnswerRow": {
         "properties": {
           "answer": {
-            "$ref": "#/components/schemas/AskAnswer"
+            "$ref": "#/components/schemas/AskAnswerWithTrees"
           },
           "ask_id": {
             "type": "string"
@@ -23983,6 +25633,19 @@
           },
           "question": {
             "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "ref": {
             "type": "string"
@@ -24523,6 +26186,49 @@
         ],
         "type": "object"
       },
+      "PatchPriorityInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "owner": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "rank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueRankInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "PersonSignInResp": {
         "properties": {
           "created_at": {
@@ -24584,6 +26290,293 @@
         ],
         "type": "object"
       },
+      "Priorities": {
+        "properties": {
+          "empty": {
+            "type": "string"
+          },
+          "priorities": {
+            "items": {
+              "$ref": "#/components/schemas/PriorityRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "priority_work_parked": {
+            "$ref": "#/components/schemas/PriorityWorkParked"
+          },
+          "work_under_no_priority": {
+            "$ref": "#/components/schemas/WorkUnderNoPriority"
+          }
+        },
+        "required": [
+          "priorities",
+          "work_under_no_priority",
+          "priority_work_parked"
+        ],
+        "type": "object"
+      },
+      "Priority": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "made_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "owner",
+          "rank",
+          "state",
+          "made_at",
+          "made_by"
+        ],
+        "type": "object"
+      },
+      "PriorityAct": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "asserted": {
+            "type": "boolean"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "value",
+          "issue",
+          "asserted",
+          "actor",
+          "at"
+        ],
+        "type": "object"
+      },
+      "PriorityIssue": {
+        "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "assignee": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueClaim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "moved_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "moved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "project",
+          "status",
+          "assignee",
+          "claim",
+          "changed_at",
+          "advances",
+          "moved_at",
+          "moved_by"
+        ],
+        "type": "object"
+      },
+      "PriorityRow": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "made_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "work": {
+            "$ref": "#/components/schemas/PriorityWork"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "owner",
+          "rank",
+          "state",
+          "made_at",
+          "made_by",
+          "work"
+        ],
+        "type": "object"
+      },
+      "PriorityWork": {
+        "properties": {
+          "by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "claimed": {
+            "type": "integer"
+          },
+          "closed_last_7_days": {
+            "type": "integer"
+          },
+          "newest_event_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "open_asks": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_status",
+          "claimed",
+          "open_asks",
+          "closed_last_7_days",
+          "newest_event_at"
+        ],
+        "type": "object"
+      },
+      "PriorityWorkParked": {
+        "properties": {
+          "by_priority": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/PriorityIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "count",
+          "by_priority",
+          "issues"
+        ],
+        "type": "object"
+      },
       "ProgressCount": {
         "properties": {
           "done": {
@@ -24636,10 +26629,7 @@
       "ProjectDefaultAssignee": {
         "properties": {
           "assignee": {
-            "type": [
-              "null",
-              "string"
-            ]
+            "type": "string"
           },
           "project": {
             "type": "string"
@@ -24654,16 +26644,7 @@
       "ProjectDefaultAssigneeInput": {
         "properties": {
           "assignee": {
-            "anyOf": [
-              {
-                "description": "the lowercase email of a person who has signed in to Dispatch",
-                "format": "email",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string"
           }
         },
         "required": [
@@ -25233,6 +27214,9 @@
           "keyword_ms": {
             "$ref": "#/components/schemas/RelatedCheckTiming"
           },
+          "other_project_offers": {
+            "type": "integer"
+          },
           "project": {
             "type": [
               "null",
@@ -25274,8 +27258,20 @@
           "by_reason",
           "completed",
           "skipped_for_time",
+          "other_project_offers",
           "keyword_ms",
           "total_ms"
+        ],
+        "type": "object"
+      },
+      "RenameArtifactInput": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -25295,6 +27291,45 @@
           },
           "text": {
             "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "block_id",
+          "text",
+          "removed"
+        ],
+        "type": "object"
+      },
+      "ReplyBlockWithTrees": {
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -25550,7 +27585,7 @@
       "SearchAsk": {
         "properties": {
           "answer": {
-            "$ref": "#/components/schemas/AskAnswer"
+            "$ref": "#/components/schemas/AskAnswerWithTrees"
           },
           "resolution": {
             "$ref": "#/components/schemas/AskResolution"
@@ -25866,6 +27901,19 @@
           },
           "snippet": {
             "type": "string"
+          },
+          "snippet_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -26095,9 +28143,6 @@
       },
       "Suggestions": {
         "properties": {
-          "decision": {
-            "$ref": "#/components/schemas/WriteSuggestion"
-          },
           "likely_duplicate": {
             "$ref": "#/components/schemas/DuplicateCandidate"
           },
@@ -26106,6 +28151,12 @@
           },
           "near_copy_check": {
             "type": "string"
+          },
+          "other_projects": {
+            "items": {
+              "$ref": "#/components/schemas/WriteSuggestion"
+            },
+            "type": "array"
           },
           "outcome": {
             "type": "string"
@@ -26457,6 +28508,21 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "advances": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "advances_revision": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "assignee": {
@@ -26870,6 +28936,37 @@
         ],
         "type": "object"
       },
+      "WorkUnderNoPriority": {
+        "properties": {
+          "by_project": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/PriorityIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "count",
+          "by_project",
+          "issues"
+        ],
+        "type": "object"
+      },
       "WriteAdvice": {
         "properties": {
           "decision_block_checks": {
@@ -26932,13 +29029,6 @@
       },
       "WriteSuggestion": {
         "properties": {
-          "answered_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "answered_by": {
-            "type": "string"
-          },
           "artifact": {
             "$ref": "#/components/schemas/SearchArtifactRef"
           },

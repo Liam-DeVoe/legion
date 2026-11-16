@@ -57,29 +57,40 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/agents", () => Response.json([])),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
-  // (`Sidebar`'s `projectsQuery` read in `features/sidebar/Sidebar.tsx`, drawn by
-  // `NavigationContents` in `app.tsx`). The issue header reads the same `projectsQuery` key for
-  // every root issue, to learn which design steps are gated (`IssueHeader`'s read in
-  // `features/issue/IssueHeader.tsx`, `enabled: issue.parent === null`), and that is the reader
-  // this answer exists for: without it, 36 rows of pages carrying the header fail on an unanswered
-  // read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the palette's project
-  // mode and three settings sections (`ArchitectureSourcesSection`, `ProjectsSection` and
-  // `SettingsPage`, in `features/settings/`) read it too. An empty list is a project with no gate,
-  // which is what a page with no `api.listProjects` spy drew before, and every row that asserts on
-  // project content spies that method above MSW.
+  // (`features/sidebar/Sidebar.tsx:91`, drawn by `app.tsx:375`). The issue header reads the same
+  // `projectsQuery` key for every root issue, to learn which design steps are gated
+  // (`features/issue/IssueHeader.tsx:292`, `enabled: issue.parent === null`), and that is the
+  // reader this answer exists for: without it, 36 rows of pages carrying the header fail on an
+  // unanswered read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the
+  // palette's project mode and three settings sections (`ArchitectureSourcesSection.tsx:52`,
+  // `ProjectsSection.tsx:42`, `SettingsPage.tsx:75`) read it too. An empty list is a project with
+  // no gate, which is what a page with no `api.listProjects` spy drew before, and every row that
+  // asserts on project content spies that method above MSW.
   http.get("/api/v1/projects", () => Response.json([])),
-  // Two pages read every project's Legion setting with no `enabled` guard, so the read happens
-  // wherever one of them is drawn: the Issues page's view selector, which asks whether this
-  // project has a Legion view (`ProjectPage`'s `legionSettingsQuery` read, in
-  // `features/project/ProjectPage.tsx`), and the Settings page's daemon section
-  // (`LegionDaemonsSection`'s, in `features/settings/LegionDaemonsSection.tsx`). An empty list is
-  // a deployment where no project names a daemon, not a failure (`legionSettingsQuery`'s own doc),
-  // and that is what those pages drew before MSW: no view button and an empty daemon list. Every
-  // row that asserts on a setting spies `api.listLegionSettings` above MSW and never reaches this.
-  http.get("/api/v1/settings/legion", () => Response.json([])),
+  // The Settings page's daemon section reads every project's Legion daemon with no `enabled` guard
+  // beyond the project being known (`useLegionDaemons`), so the read happens wherever that section
+  // is drawn. `null` is a project that names no daemon, not a failure (`legionDaemonQuery`'s own
+  // doc), and that is what the page drew before MSW: an empty daemon list. Every row that asserts
+  // on a daemon spies `api.getLegionDaemon` above MSW and never reaches this.
+  http.get("/api/v1/projects/:key/legion/daemon", () => Response.json(null)),
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
+  // The navigation rail reads the two fault counts on every page it is drawn on
+  // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
+  // rail or the shell around it makes this read without being about priorities. The answer is
+  // the server's own for a deployment that has written no priority: both counts zero and the
+  // sentence that says why, which is the case where the rail draws no number at all. A test
+  // that asserts on a count spies `api.listPriorities` above MSW.
+  http.get("/api/v1/priorities", () =>
+    Response.json({
+      empty:
+        "No priority is live now, so the list is empty. Write one, then say which work advances it.",
+      priorities: [],
+      priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+      work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+    })
+  ),
 ];
 
 const network = defineNetwork({

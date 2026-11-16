@@ -48,7 +48,7 @@ func TestTreeRootWalksWhileTheIssueAboveIsLegions(t *testing.T) {
 // TestTreeRootStopsOnACycleRatherThanAtADepthCap: a parent chain that loops, and a `tree` that
 // points back into one, each stop where the walk first meets a key it has already seen. A depth
 // cap would answer differently for a chain longer than the cap, which is what put one issue in
-// two trees when the view and the metrics each held their own walk.
+// two trees when the board and the metrics each held their own walk.
 func TestTreeRootStopsOnACycleRatherThanAtADepthCap(t *testing.T) {
 	population := map[string]TreeNode{
 		"ACME-1": {Parent: "ACME-2", Legion: true},

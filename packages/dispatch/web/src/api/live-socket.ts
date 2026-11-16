@@ -80,7 +80,6 @@ const ERROR_STATUS: Readonly<Partial<Record<string, number>>> = {
   DELIVERY_NOT_CONFIGURED: 404,
   INVALID_FRAME: 400,
   INVALID_QUERY: 400,
-  LEGION_NOT_CONFIGURED: 404,
 };
 
 export type LiveSocketConnection = "connecting" | "open" | "reconnecting" | "closed";
@@ -407,6 +406,15 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     });
   };
 
+  // A refusal is the refused subscription's alone: the socket and every other subscription on it
+  // stay. While a release rolls out, the process this socket reached can be of an older build
+  // that cannot serve one view this page subscribes - a view kind it does not know, as a build
+  // before INFRA-1077 does not know a `legion` view, or a member it declares but refuses on a view
+  // of that kind - and answers that subscription `INVALID_FRAME`. That process still serves every
+  // other view, so the page keeps the socket rather than giving them up to look for another
+  // process. A refused delivery view stays held (`failDelivery`), so it is sent again on the next
+  // socket: one a rotation (4001) opens, or the reconnect after the older process's own shutdown
+  // close (1012), either of which can reach a process that serves it.
   const onError = (frame: LiveError) => {
     const sub = frame.sub === undefined ? undefined : subs.get(frame.sub);
     if (sub === undefined) {

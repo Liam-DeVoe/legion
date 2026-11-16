@@ -109,10 +109,16 @@ type PhaseBackwardRequest struct {
 type PhaseBackwardResponse struct{}
 
 // PhaseRetryRequest records the tree architect's retry-or-escalate choice for a held issue.
+// Reason is why the architect made it, and both decisions carry it: a retry writes it into the
+// task the restarted role is given and into the daemon's own log line for the release, and an
+// escalation sends it to the controller in the held notice, beside the cause that hold already
+// names (record.Notice.Escalation). A request naming none leaves the daemon's own words in the
+// restarted role's task and the escalation's notice without the field, so it is optional.
 type PhaseRetryRequest struct {
 	GrantID  string                         `json:"grantId"`
 	Issue    string                         `json:"issue"`
 	Decision intake.RetryOrEscalateDecision `json:"decision"`
+	Reason   string                         `json:"reason,omitempty"`
 }
 
 // PhaseRetryResponse confirms the retry-or-escalate fact committed.
@@ -298,10 +304,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.rootArchitectOf(w, r, grant, recorded, gateRoute) {
 		return
 	}
-	// The deployment's steps are read once for this registration, so the step it resolves and
-	// the document rule below are decided against one list.
-	steps := s.steps()
-	step, ok := s.registeredStep(w, steps, req.Step)
+	step, ok := s.registeredStep(w, req.Step)
 	if !ok {
 		return
 	}
@@ -319,7 +322,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	// would hold the step open for ever with a document no approval of it opens. A deployment
 	// that gates no step asks nobody, so nothing turns on which document its one record names,
 	// and it takes whatever the architect registers, as it always has under `gates.design: off`.
-	if len(steps) > 0 && !stepDocument(step, approval) {
+	if len(s.steps) > 0 && !stepDocument(step, approval) {
 		writeFailure(w, http.StatusConflict, "GATE_STEP_DOCUMENT_MISMATCH", fmt.Sprintf(
 			"%s is not the %s step's document of %s; that step records the issue's %s", artifactID, step, req.Issue, step.Document()))
 		return
@@ -367,19 +370,19 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 // which is every call a one-step deployment's architect makes. A deployment of several steps
 // needs the call to say which one it registers, since the document alone would leave the daemon
 // guessing.
-func (s *server) registeredStep(w http.ResponseWriter, steps []record.DesignStep, named record.DesignStep) (record.DesignStep, bool) {
+func (s *server) registeredStep(w http.ResponseWriter, named record.DesignStep) (record.DesignStep, bool) {
 	switch {
-	case len(steps) == 0:
+	case len(s.steps) == 0:
 		return record.DesignStepSpec, true
-	case named == "" && len(steps) == 1:
-		return steps[0], true
+	case named == "" && len(s.steps) == 1:
+		return s.steps[0], true
 	case named == "":
 		writeFailure(w, http.StatusBadRequest, "GATE_STEP_REQUIRED", fmt.Sprintf(
-			"this deployment gates the design-gate steps %s; name the step this document is for", stepNames(steps)))
+			"this deployment gates the design-gate steps %s; name the step this document is for", stepNames(s.steps)))
 		return "", false
-	case !slices.Contains(steps, named):
+	case !slices.Contains(s.steps, named):
 		writeFailure(w, http.StatusConflict, "GATE_STEP_NOT_CONFIGURED", fmt.Sprintf(
-			"this deployment does not gate the design-gate step %s; it gates %s", named, stepNames(steps)))
+			"this deployment does not gate the design-gate step %s; it gates %s", named, stepNames(s.steps)))
 		return "", false
 	}
 	return named, true
@@ -514,8 +517,9 @@ const (
 // instead of asking an architect to retry forever.
 //
 // A child the apply did not record while it, or an unrecorded issue of its parent chain up to the
-// first recorded one, resolves to a repository left out because its GitHub App installation read
-// failed (Options.RepositoryUnread) ends nothing, and is answered by what the daemon will do once
+// first recorded one, resolves to a repository left out because GitHub did not answer its read of
+// the repository — its GitHub App installation read, or its default-branch read past GitHub's rate
+// limit — (Options.RepositoryUnread) ends nothing, and is answered by what the daemon will do once
 // GitHub answers and it recovers that repository's issues from Dispatch's listing. When every
 // unrecorded issue of that chain is todo (Dispatch shows it, or this wave writes it: todoNow), on
 // any repository, the chain is recorded under the recorded one, parents first, by the recovery or
@@ -626,7 +630,7 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 	// later), record the chain under the recorded one, parents first. Nothing is told now: a child
 	// still unrecorded when the repository's recovery has run is named then (tellReleaseWaits).
 	if stop == nil {
-		s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation read; the daemon records it then",
+		s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation or default-branch read; the daemon records it then",
 			"issue", child.Key, "tree", tree, "repo", repo)
 		if !s.clearChildReleaseRetry(w, r, child.Key) {
 			return "", false, true
@@ -638,7 +642,7 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 		return "", false, true
 	}
 	return repo, s.tellReleaseWait(w, r, tree, child.Key, parent, repo, fmt.Sprintf(
-		"%s is todo but not recorded: the daemon records a child only under a recorded parent, and %s, on its parent chain, is %s and not recorded, so the recovery of %s (left out for now because GitHub did not answer its App installation read) will not record %s either. Release %s first, then release %s again.",
+		"%s is todo but not recorded: the daemon records a child only under a recorded parent, and %s, on its parent chain, is %s and not recorded, so the recovery of %s (left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit) will not record %s either. Release %s first, then release %s again.",
 		child.Key, blocker.Key, blocker.Status, repo, child.Key, blocker.Key, child.Key)), true
 }
 
@@ -971,7 +975,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 				pending[child.view.Key] = repo
 				parent := intake.ObservedIssue(child.view).Parent
 				if !s.tellReleaseWait(w, r, grant.Tree, child.view.Key, parent, repo, fmt.Sprintf(
-					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read. Release %s again once %s is recorded; the daemon tells you when it recovers %s.",
+					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit. Release %s again once %s is recorded; the daemon tells you when it recovers %s.",
 					child.view.Key, above, repo, child.view.Key, above, repo)) {
 					return
 				}
@@ -1182,13 +1186,18 @@ func (s *server) adoptReleasedChildren(w http.ResponseWriter, r *http.Request, t
 }
 
 // recordedOutside returns each released child whose record, as the release read it before its
-// writes (readReleasedBefore), is in a tree other than tree, with the Dispatch parent the release
-// read. Admission reads each record again under the fact lock before it adopts.
+// writes (readReleasedBefore), is in a tree other than tree, with the Dispatch parent and the
+// blocked-by links the release read. Admission reads each record again under the fact lock before
+// it adopts, but it cannot read Dispatch there, and its mirror of those links can be older than
+// this request's own read — a person's re-parent and link are one edit, and the daemon's consumer
+// may not have delivered its event — so the links travel with the fact and hold the adopted child
+// as the mirror's own do (workflow's enterChild, dispatch://INFRA-714/spec R3).
 func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChild {
 	var outside []intake.AdoptedChild
 	for _, child := range children {
 		if child.before != nil && child.before.Tree != tree {
-			outside = append(outside, intake.AdoptedChild{Issue: child.view.Key, Parent: intake.ObservedIssue(child.view).Parent})
+			outside = append(outside, intake.AdoptedChild{Issue: child.view.Key, Parent: intake.ObservedIssue(child.view).Parent,
+				Status: child.view.Status, BlockedBy: child.view.BlockedBy, Seq: child.view.LastSeq})
 		}
 	}
 	return outside
@@ -1264,7 +1273,7 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyFact(w, r, requestFactID("phase/retry"),
-		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision}, PhaseRetryResponse{})
+		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason}, PhaseRetryResponse{})
 }
 
 func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
@@ -1283,9 +1292,9 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue}, SignOffResponse{})
 }
 
-// closeRoot ends the architect's tree while its root is admitted and no phase has started
-// (workflow's closeRoot): the root's own architect only, with a reason Dispatch takes as a
-// message.
+// closeRoot ends the architect's tree while its root has started no phase — admitted, or waiting
+// on a person (workflow's closeRoot): the root's own architect only, with a reason Dispatch takes
+// as a message.
 func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 	var req RootCloseRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"reason", req.Reason}) {
@@ -1337,7 +1346,7 @@ var (
 		"the design gate belongs to the tree root %s; register it there",
 		"the design gate belongs to the tree root %s; its root architect registers it"}
 	closeRootRoute = rootRoute{"ROOT_REQUIRED",
-		"close_root ends the tree root %s; a child leaves with park_child",
+		"close_root ends the tree root %s; a child leaves with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed",
 		"close_root ends the tree root %s; its root architect closes it"}
 )
 
@@ -1470,7 +1479,7 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if child.Phase != phase.Done {
-		writeFailure(w, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s; park_child takes it out of the workflow before rerun_child runs it again", child.Key, child.Phase))
+		writeFailure(w, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s; park_child takes it out of the workflow before rerun_child runs it again. That pair is the child's restart and not a park", child.Key, child.Phase))
 		return
 	}
 	members, err := s.treeMembers(r.Context(), child.Tree)

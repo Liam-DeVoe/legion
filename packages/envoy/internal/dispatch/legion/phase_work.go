@@ -1,7 +1,7 @@
 package legion
 
 // phase_work.go holds the one read of the phase-work half of tree.go's rule: which issues carry
-// Legion phase work. The Legion view (api/legion_phase_work.go, which keeps the answer and grows
+// Legion phase work. The Legion board (api/legion_phase_work.go, which keeps the answer and grows
 // it from the event feed) and the metrics (legion/metrics, which reads it with the rest of its
 // population) both ask it, so the two place an issue in the same tree.
 

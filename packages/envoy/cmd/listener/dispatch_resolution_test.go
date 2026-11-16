@@ -138,18 +138,21 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		// of for the process. This rig needs one for the same reason as the set above: the handler
 		// refuses a config without it, and nothing here keeps a role message.
 		roleKeepDrains: newRoleKeepGuards(),
+		// The listener's clock, and its dead letter's publish, as main.go sets them.
+		now:               time.Now,
+		publishDeadLetter: d.client.PublishStoredAs,
 	}
 	// The role lane's forwards run off the handler, as main.go wires them (wireRoleForwarder).
 	config = wireTestRoleForwarder(t, config)
 	// The connection carries the threshold the listener's own windows derive, as main opens it
 	// (inactiveThresholdFor): nothing here waits one out, but no rig creates a consumer under a
 	// threshold the deployment would not.
-	delivery := connectSessionDelivery([]string{testnats.URL(t)},
-		inactiveThresholdFor(d.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), config.logger)
-	t.Cleanup(delivery.close)
-	if delivery.consumers == nil {
-		t.Fatal("the session-consumer connection did not open")
+	delivery, err := connectSessionDelivery([]string{testnats.URL(t)},
+		inactiveThresholdFor(d.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), d.client, config.logger)
+	if err != nil {
+		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
+	t.Cleanup(delivery.close)
 	relays, err := startSessionRelays(delivery, config)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)

@@ -76,17 +76,18 @@ next look of its own.
 
 The controller topic is a live wake: a message published while no controller runs reaches nobody
 at the time. `envoy_publish`'s own answer tells you whether one took it. A publish to a role
-answers with its live `holder`. With no claim on `legion-<project>-controller` at all, the answer
-says Envoy kept the message instead (`packages/envoy/cmd/listener`, the test "unheld role is kept
-and answered 202 without publishing on the role topic"): the next session that claims the role is
-handed each kept message once, within one hour of the keep. A keep is not a delivery: a
-controller can stay away for the whole hour, and a message kept longer than an hour is dropped
-unread, so a kept finding can reach nobody. It fails with `role legion-<project>-controller
-holder <session> lapsed; claim retained`, naming the holder, its `holder_state` and its
-`last_seen`, when a controller holds the role and its session has not registered within the live
-window: an `unresponsive` controller is not a stopped one, so release nothing, take nothing from
-it, and publish no second copy.
-Treat a kept answer as a controller not taking it. Either way the finding has not been taken yet,
+answers with its live `holder`, and with no count of recipients: the listener forwards a role
+message to its holder alone. When no live session holds `legion-<project>-controller`, because
+nobody claims it or its holder has not registered within the live window, the answer says Envoy
+kept the message for one hour, and its `kept_until` is the time that hour ends. The next session
+to hold the role live in that hour is handed it once. A keep is not a delivery: a controller can
+stay away for the whole hour, and Envoy then drops the message unread, so a kept finding can
+reach nobody. When your publish named your session, Envoy also sends your session a message that
+names the dropped one, unless it dropped it more than an hour late. For a holder that is not
+live, the answer also names that holder, its `holder_state` and its `last_seen`: an
+`unresponsive` controller is not a stopped one, so release nothing, take nothing from it, and
+publish no second copy.
+Treat a kept answer as a controller not taking it. The finding has not been taken yet,
 so make it an ask, as
 [What the ask says](#what-the-ask-says) spells it, on the first
 of these that holds, so a person sees it and the controller finds it when it returns:
@@ -109,6 +110,9 @@ of these that holds, so a person sees it and the controller finds it when it ret
    alone, and your session is refused `set_status is not
    available to a phase-worker session` (`packages/pi-legion/src/tools.ts`'s `OPERATIONS`). No
    other issue can hold an answerable ask, so this is the one case a role writes the report issue.
+   A report issue holds no work, which is why it sits in `icebox` and why neither write below is
+   the move the rule limits:
+   move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
    - It exists and is closed: `dispatch issue-update --issue <REPORT KEY> --status icebox`. Send
      the status by itself. A closed issue takes a reopening status alone, and refuses it beside
      an assignee or any other field (`api/issue_patch.go`, the `before.ClosedAt` branch). This is

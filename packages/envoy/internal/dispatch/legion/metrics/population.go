@@ -714,13 +714,13 @@ func (p *Population) readReported(ctx context.Context, pool *store.Pool, project
 }
 
 // readReportedTrees is what the daemon reports of every issue of the project: one row per issue
-// the sampler has recorded any observation of — the set the Legion view's own population holds
+// the sampler has recorded any observation of — the set the Legion board's own population holds
 // (api/legion_board.go's readObservations) — against the newest `tree` it recorded for that
-// issue, which is the row the view takes too, and empty where it recorded none. It reads the
+// issue, which is the row the board takes too, and empty where it recorded none. It reads the
 // whole project and not a window's keys, because an issue's tree is a fact of the project.
 //
-// The rows under legion.AdmissionKey belong to no issue — the admission block, the daemon's
-// settings and where each setting came from — so they report nothing.
+// The rows under legion.AdmissionKey belong to no issue — the admission block and the daemon's
+// settings — so they report nothing.
 //
 // It is the one read of that row. A population reads it for the tree rule's own half
 // (readReported), and TreeLinks reads it for the links a reader outside this package climbs, so
@@ -753,7 +753,7 @@ func readReportedTrees(ctx context.Context, pool *store.Pool, project string) (m
 }
 
 // fillReportedTrees gives each issue the `tree` the daemon named for it. That is the newest
-// `tree` row of the whole project (readReported), the one row the Legion view reads too, and it
+// `tree` row of the whole project (readReported), the one row the Legion board reads too, and it
 // is the only writer of Issue.Tree: the window's own observation read carries the same rows for
 // the issues it covers, and a second writer taking the newest non-empty one of those answered a
 // tree where the newest row is empty — a daemon that stopped naming one — while this read
@@ -815,7 +815,7 @@ func (p *Population) linkTrees() {
 //
 // Both facts the walk reads are the project's and not the window's — Issue.Tree is the daemon's
 // newest `tree` for every issue of the project (fillReportedTrees), and isLegionIssue reads the
-// project's reported set — so this population answers what the Legion view answers. It holds
+// project's reported set — so this population answers what the Legion board answers. It holds
 // every issue of the project, Legion's and the rest.
 func (p *Population) TreeRoot(key string) string {
 	return legion.TreeRoot(key, p.TreeNode)
@@ -837,8 +837,8 @@ func (p *Population) TreeNode(key string) (legion.TreeNode, bool) {
 // isLegionIssue answers legion.TreeNode's Legion for this population, which states the rule: the
 // daemon reports the issue — it is in the project's reported set (readReported) — or it carries
 // Legion phase work (readPhaseWork). Both sets are read for the whole project, so the answer
-// does not move with the window being computed, which is what makes it the view's: the Legion
-// view reads the same two facts (api/legion_board.go's treeRoot). A fixture states the rule by
+// does not move with the window being computed, which is what makes it the board's: the Legion
+// board reads the same two facts (api/legion_board.go's treeRoot). A fixture states the rule by
 // filling the two sets, as a read does.
 func (p *Population) isLegionIssue(issue *Issue) bool {
 	_, reported := p.reported[issue.Key]

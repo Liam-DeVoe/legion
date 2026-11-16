@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // infraSizeTrees is the population these measurements run over: the trees of the facts' own rig
@@ -56,10 +57,7 @@ const boardFactsBuild = "legion-envoy-v0.0.0-board-test-build"
 // measurement after it reads rows that loop wrote and that no loop is rewriting.
 func runLegionFactsConsumer(t *testing.T, database *store.Store, project string, want int) {
 	t.Helper()
-	leases, err := database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the lease pool for the facts consumer: %v", err)
-	}
+	leases := storetest.Leases(t, database.Pool)
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {

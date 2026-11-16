@@ -329,7 +329,9 @@ func (k mentionKind) fallbackColumn() string {
 type mentionState int
 
 const (
-	// mentionSent: an attempt reached the session, so the mention delivered the comment.
+	// mentionSent: the listener took an attempt - handed it to the running session, or queued
+	// it for one that is not running, which reads it when it runs again
+	// (model.DeliveryTakenStatesSQL) - so the mention delivered the comment.
 	mentionSent mentionState = iota
 	// mentionResending: an attempt past the lease the outbox waits a send out for
 	// (model.MentionResumedSQL): the delivery sweep's to resend, or a queued send's to make, or
@@ -755,9 +757,10 @@ func (h mentionHolds) liveUnnamed() bool {
 //
 // The copy that asks it is a role route's forward (roleCopyWaitsForAMention), and it is the one
 // copy of the comment that waits in the event's list past that lease rather than being held as
-// a comment_fallback_copies row: nothing else delivers a role copy - a keep waits for the
-// role's next claim and a forward is the holder's one copy - so a copy taken out of the list
-// would let the owner's later events reach that holder first (destination.waiting, planChains).
+// a comment_fallback_copies row: nothing else delivers a role copy - a keep waits up to its hour
+// for the role's next live holder and a forward is the holder's one copy - so a copy taken out of
+// the list would let the owner's later events reach that holder first (destination.waiting,
+// planChains).
 // What the wait costs while it holds is the re-read mentionPendingDelay sets, and the holder's
 // later events of the issue, which the waiting forward holds behind its key for up to
 // unnamedForwardBound - the cost that bound exists to cap (planChains). Every other destination
@@ -1184,7 +1187,7 @@ func (c mentionComment) settleAbandoned(kind mentionKind, key string) (state men
 		}
 		var sent, resending, pending bool
 		if err := tx.QueryRow(ctx, `
-		select coalesce(bool_or(state = 'sent'), false),
+		select coalesce(bool_or(state in `+model.DeliveryTakenStatesSQL+`), false),
 		       coalesce(bool_or(state = 'pending' and `+model.MentionResumedSQL("comment_deliveries")+`), false),
 		       coalesce(bool_or(state = 'pending'), false)
 		from comment_deliveries
@@ -1333,7 +1336,7 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // resolved and forwarded to the role's holder, as a batch's role route is (fallbackRoleForward,
 // roleForward.send): a role no live holder can take has its copy kept on the role's kept lane for
 // the holder that claims it next, and the stream's acknowledgement of that keep marks the row
-// published as a holder's receipt of a forward does, and the copy it keeps carries every settled
+// published as a forward's acknowledgement does, and the copy it keeps carries every settled
 // mention of the comment by session, so that whoever forwards it to the role's next holder keys
 // it by that holder's own mention (roleForward.keep, contracts.Envelope.MentionDedupeKeys); a
 // holder whose own mention of the comment settled - the session the row's key names, which a
@@ -1526,18 +1529,18 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			release(item.held, 0)
 			continue
 		default:
-			// Counted as a batch counts a destination that did not reach NATS (sendChains): a
-			// role forward its holder's resolution held pending sent nothing at all and is
-			// counted under that holder, a forward NATS took whose holder sent no receipt is
-			// unanswered, and a send the server refused under this connection's own publish
-			// permissions is a denial. An answer a stopping process stopped waiting for says
-			// nothing of NATS and counts nothing.
+			// Counted as a batch counts a destination that did not reach NATS, by the batch's
+			// own rule (sendChains, forwardUnanswered): a role forward its holder's resolution
+			// held pending sent nothing at all and is counted under that holder, a forward the
+			// stream never acknowledged is unanswered, and a send the server refused under this
+			// connection's own publish permissions is a denial. An answer a stopping process
+			// stopped waiting for says nothing of NATS and counts nothing.
 			switch forward := item.out.forward; {
 			case errors.Is(err, bus.ErrPublishDenied):
 				deps.countPublishFailure("denied")
 			case forward != nil && forward.err != nil:
 				deps.countPublishFailure("holder")
-			case errors.Is(err, bus.ErrReceiptTimeout) && !errors.Is(err, bus.ErrPublishUnconfirmed):
+			case forwardUnanswered(forward != nil, err):
 				deps.countPublishFailure("unanswered")
 			case !lostToContextEnd(ctx, err):
 				deps.countPublishFailure("failed")

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -105,7 +104,7 @@ type checkWakeRig struct {
 	github      *checkWakeGitHub
 	rt          *fake.Runtime
 	records     record.Store
-	pool        *pgxpool.Pool
+	pool        *store.Pool
 	logs        *syncBuffer
 	// built is what the daemon handed the fake runtime: the worker stream a pane's shim dials.
 	built *built
@@ -177,7 +176,7 @@ func (rig *checkWakeRig) boot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, config.Settled(rig.cfg), Build{}, slog.New(slog.NewJSONHandler(rig.logs, nil)), overrides{
+		done <- run(ctx, rig.cfg, slog.New(slog.NewJSONHandler(rig.logs, nil)), overrides{
 			listen: heldListen, runtime: fakeRuntime(rig.rt, rig.built).runtime, clock: stillClock{},
 			workflowTokens: &workflowTokenRecorder{}, githubAPI: rig.github.url,
 		})

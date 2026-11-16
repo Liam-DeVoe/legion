@@ -1,3 +1,8 @@
+//go:build !race
+
+// The guard is static, as lock_level_test.go's is and for the reason given there: it reads the
+// module's source, so the race detector adds nothing to it.
+
 package api
 
 import (
@@ -46,7 +51,7 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // repository (storetest, pgmigratetest, legiontest), and no package a request reaches is named
 // that way.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
-	sources := moduleSources(t, "../../..")
+	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
 		t.Fatal(err)

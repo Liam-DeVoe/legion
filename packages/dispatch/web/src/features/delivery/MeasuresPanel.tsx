@@ -3,11 +3,10 @@
 // per-day table. Every number, every target and whether each is met come from
 // GET /api/v1/delivery/measures; nothing is computed here. Three differences, each from LEGION-567's
 // slice 2 plan: the change-failure-rate card says flags arrive with flag confirmation while the
-// server stores none, and then shows no rate and no verdict, since the server answers the rate as
-// null (a 0 would be a measured rate the target judges met); the P0 card links each issue inside
-// Dispatch and dates its count by the response's computed_at; and the cards and the strip lay
-// themselves out for the panel's own width, since Dispatch's sidebar leaves it narrower than the
-// prototype's page and a phone narrower still, where the prototype is desktop-only.
+// server stores none; the P0 card links each issue inside Dispatch and dates its count by the
+// response's computed_at; and the cards and the strip lay themselves out for the panel's own
+// width, since Dispatch's sidebar leaves it narrower than the prototype's page and a phone
+// narrower still, where the prototype is desktop-only.
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -27,66 +26,20 @@ import {
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
-import {
-  Chart,
-  type ChartCompareSource,
-  type ChartRange,
-  type ChartSeries,
-  chartCompare,
-  PENDING,
-} from "./Chart";
-import { formatMinutes, NO_VALUE, pct } from "./lib/format";
-import { meetsTarget, targetLabel } from "./lib/target";
+import { formatMinutes, pct } from "./lib/format";
+import { type Better, meetsTarget, type Target, targetLabel } from "./lib/target";
+import { Sparkbars } from "./Sparkbars";
 import { TargetBadge } from "./TargetBadge";
 
 const UNOWNED_P0_SHOWN = 6;
 
-/** The deploys-a-day card's chart: one bar a day against the target, each day toned by it. */
-function deploySeries(response: DeliveryMeasuresResponse): ChartSeries[] {
-  const target = response.targets.deploys_per_day;
-  const daily = response.measures.daily ?? [];
-  return [
-    {
-      kind: "spark",
-      format: (v) => `${v} deploys`,
-      label: "Deploys",
-      max: target === null ? Math.max(1, ...daily.map((d) => d.deploys)) : target.value,
-      met: target === null ? undefined : (v) => meetsTarget(v, target, "higher") === true,
-      points: daily.map((d) => ({
-        label: d.day,
-        value: d.deploys,
-        partial: d.partial,
-      })),
-      target: target?.value,
-    },
-  ];
-}
-
-/** The deploy-run-success card's chart: each day's share of concluded runs that reached
- *  production, against the target. */
-function runSuccessSeries(response: DeliveryMeasuresResponse): ChartSeries[] {
-  const target = response.targets.deploy_run_success_rate;
-  return [
-    {
-      kind: "spark",
-      format: pct,
-      label: "Run success",
-      max: 1,
-      met: target === null ? undefined : (v) => meetsTarget(v, target, "higher") === true,
-      points: (response.measures.daily ?? []).map((d) => ({
-        label: d.day,
-        value: d.run_success_rate,
-        partial: d.partial,
-      })),
-      target: target?.value,
-    },
-  ];
-}
+/** What a pending read shows in each number's place. */
+const PENDING = "\u2026";
 
 /** The change-failure-rate card's breakdown: deploys with a confirmed break, and how many more
  *  have only unreviewed (pending) flags. `confirmedOrPending` counts each deploy once (the
  *  prototype's web/src/lib/dora.ts:297-305). */
-function failureRateBreakdown(confirmed: number, confirmedOrPending: number): string {
+export function failureRateBreakdown(confirmed: number, confirmedOrPending: number): string {
   const onlyPending = confirmedOrPending - confirmed;
   const breaks = `${confirmed} ${confirmed === 1 ? "deploy" : "deploys"} with a confirmed break`;
   return onlyPending === 0
@@ -97,6 +50,13 @@ function failureRateBreakdown(confirmed: number, confirmedOrPending: number): st
 function tone(met: boolean | null): string {
   if (met === null) return textMutedOnCanvas;
   return met ? successText : dangerText;
+}
+
+/** A day's verdict against target for a chart's bars, the rule the server judges the window's
+ *  figures by (`lib/target.ts`); undefined where the target is off, which draws every bar in one
+ *  neutral colour. */
+function judgedBy(target: Target, better: Better): ((value: number) => boolean) | undefined {
+  return target === null ? undefined : (value) => meetsTarget(value, target, better) === true;
 }
 
 function KpiCard(props: {
@@ -139,25 +99,11 @@ function DefinitionCard(props: { title: string; value: string; children: ReactNo
   );
 }
 
-/** The delivery measures for the page's window and facets: the six KPI targets, each its eval's
- *  target and verdict as the server states them, then one compact strip of the DORA headline
- *  numbers; every alternative definition and breakdown lives
+/** The delivery measures for the page's window and facets: Sami's six KPI targets, then one
+ *  compact strip of the DORA headline numbers; every alternative definition and breakdown lives
  *  behind the "Definitions & alternatives" fold, so the timeline keeps the bulk of the page.
- *  `data` is undefined while the read is pending, when the cards show their frame. The two
- *  cards that draw a measure over the window draw it through `Chart`, which gives each the
- *  graph-or-table and compare controls every such chart has; `compare` is the page's own
- *  comparison, omitted where no second range is read. */
-export function MeasuresPanel({
-  compare,
-  data,
-}: {
-  /** The comparison the page offers the panel's two charts: the range it reads beside the
-   *  window, how the reader names another, and that range's answer once it lands (`Chart`). A
-   *  host that reads no second range passes none, and each chart shows its graph-or-table
-   *  control alone. */
-  compare?: ChartCompareSource<DeliveryMeasuresResponse>;
-  data: DeliveryMeasuresResponse | undefined;
-}): ReactNode {
+ *  `data` is undefined while the read is pending, when the cards show their frame. */
+export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undefined }): ReactNode {
   const [open, setOpen] = useState(false);
   const show = (format: (response: DeliveryMeasuresResponse) => string): string =>
     data === undefined ? PENDING : format(data);
@@ -166,33 +112,6 @@ export function MeasuresPanel({
   const targets = data?.targets;
   const status = data?.status;
   const measures = data?.measures;
-  // What the two charts over the window draw, and the range they cover: built once per answer
-  // rather than on every render of the panel, as the fold's own table is, since `Chart` builds
-  // its table of every number from the series it is handed. It is undefined while the read is
-  // out, which is where each chart's own card shows its frame instead.
-  const charts = useMemo(
-    () =>
-      data === undefined
-        ? undefined
-        : {
-            deploys: deploySeries(data),
-            range: {
-              kind: "custom",
-              from: data.window.from,
-              to: data.window.to,
-            } satisfies ChartRange,
-            runSuccess: runSuccessSeries(data),
-          },
-    [data]
-  );
-  const comparedData = compare?.data;
-  const comparedSeries = useMemo(
-    () =>
-      comparedData === undefined
-        ? undefined
-        : { deploys: deploySeries(comparedData), runSuccess: runSuccessSeries(comparedData) },
-    [comparedData]
-  );
 
   const strip = [
     {
@@ -207,7 +126,7 @@ export function MeasuresPanel({
       label: "CFR (per PR)",
       value: show((d) =>
         d.measures.change_failure_rate === null
-          ? NO_VALUE
+          ? "n/a"
           : pct(d.measures.change_failure_rate.per_pr.rate)
       ),
     },
@@ -247,12 +166,20 @@ export function MeasuresPanel({
               </span>
             )}
           </div>
-          {charts === undefined ? null : (
-            <Chart
-              compare={chartCompare(compare, comparedSeries?.deploys)}
-              label="Deploys a day"
-              range={charts.range}
-              series={charts.deploys}
+          {measures === undefined || targets === undefined ? null : (
+            <Sparkbars
+              format={(v) => `${v} deploys`}
+              max={
+                targets.deploys_per_day?.value ??
+                Math.max(1, ...(measures.daily ?? []).map((d) => d.deploys))
+              }
+              met={judgedBy(targets.deploys_per_day, "higher")}
+              points={(measures.daily ?? []).map((d) => ({
+                label: d.day,
+                value: d.deploys,
+                partial: d.partial,
+              }))}
+              target={targets.deploys_per_day?.value}
             />
           )}
         </KpiCard>
@@ -262,7 +189,7 @@ export function MeasuresPanel({
           target={
             targets === undefined
               ? PENDING
-              : `${targetLabel(targets.change_failure_rate, "lower", (v) => pct(v, 0))} per deploy`
+              : targetLabel(targets.change_failure_rate, "lower", (v) => `${pct(v, 0)} per deploy`)
           }
           title="Change failure rate"
         >
@@ -271,7 +198,7 @@ export function MeasuresPanel({
             <BigNumber className={toneOf((d) => d.status.change_failure_rate)}>
               {show((d) =>
                 d.measures.change_failure_rate === null
-                  ? NO_VALUE
+                  ? "n/a"
                   : pct(d.measures.change_failure_rate.per_deploy.rate, 2)
               )}
             </BigNumber>
@@ -310,7 +237,9 @@ export function MeasuresPanel({
           target={
             targets === undefined
               ? PENDING
-              : `${targetLabel(targets.merge_to_production_minutes, "lower", (v) => `${v}m`)} for every change`
+              : targets.merge_to_production_minutes === null
+                ? "off"
+                : `${targetLabel(targets.merge_to_production_minutes, "lower", (v) => `${v}m`)} for every change`
           }
           title={"Merge \u2192 production"}
         >
@@ -340,7 +269,9 @@ export function MeasuresPanel({
           target={
             targets === undefined
               ? PENDING
-              : `median ${targetLabel(targets.opened_to_merge_median_minutes, "lower", (v) => `${v}m`)}`
+              : targets.opened_to_merge_median_minutes === null
+                ? "off"
+                : `median ${targetLabel(targets.opened_to_merge_median_minutes, "lower", (v) => `${v}m`)}`
           }
           title={"PR open \u2192 merge"}
         >
@@ -374,7 +305,7 @@ export function MeasuresPanel({
             <BigNumber className={toneOf((d) => d.status.deploy_run_success)}>
               {show((d) =>
                 d.measures.deploy_run_success.rate === null
-                  ? NO_VALUE
+                  ? "n/a"
                   : pct(d.measures.deploy_run_success.rate)
               )}
             </BigNumber>
@@ -385,13 +316,18 @@ export function MeasuresPanel({
               </span>
             )}
           </div>
-          {charts === undefined || measures === undefined ? null : (
+          {measures === undefined || targets === undefined ? null : (
             <>
-              <Chart
-                compare={chartCompare(compare, comparedSeries?.runSuccess)}
-                label="Deploy runs reaching production"
-                range={charts.range}
-                series={charts.runSuccess}
+              <Sparkbars
+                format={pct}
+                max={1}
+                met={judgedBy(targets.deploy_run_success_rate, "higher")}
+                points={(measures.daily ?? []).map((d) => ({
+                  label: d.day,
+                  value: d.run_success_rate,
+                  partial: d.partial,
+                }))}
+                target={targets.deploy_run_success_rate?.value}
               />
               <div className={`text-[11px] ${textMutedOnSurface}`}>
                 {measures.deploy_run_success.cancelled} cancelled runs not counted
@@ -487,6 +423,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   const newestFirst = useMemo(() => [...(measures.daily ?? [])].reverse(), [measures.daily]);
   const frequency = measures.deploy_frequency;
   const lead = measures.lead_time;
+  // Null while no failure source exists (flags_source `none`): a rate nothing measured is no 0.
   const failures = measures.change_failure_rate;
   return (
     <>
@@ -522,10 +459,10 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
 
         {failures === null ? (
           <>
-            <DefinitionCard title="Change failure rate (per PR)" value={NO_VALUE}>
+            <DefinitionCard title="Change failure rate (per PR)" value="n/a">
               No failure source yet: flags arrive with flag confirmation. Incidents: no source yet.
             </DefinitionCard>
-            <DefinitionCard title="Change failure rate (per deploy)" value={NO_VALUE}>
+            <DefinitionCard title="Change failure rate (per deploy)" value="n/a">
               No failure source yet: flags arrive with flag confirmation.
             </DefinitionCard>
           </>
@@ -536,6 +473,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
               {failures.per_pr.pending} pending, {failures.per_pr.rejected} rejected of{" "}
               {failures.per_pr.total} PRs. Incidents: no source yet.
             </DefinitionCard>
+
             <DefinitionCard
               title="Change failure rate (per deploy)"
               value={pct(failures.per_deploy.rate)}
@@ -604,7 +542,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                           )
                     }`}
                   >
-                    {d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate)}
+                    {d.run_success_rate === null ? "n/a" : pct(d.run_success_rate)}
                   </td>
                   <td className="px-2 py-0.5 text-right">{d.cancelled}</td>
                 </tr>

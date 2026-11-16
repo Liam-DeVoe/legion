@@ -85,7 +85,7 @@ func configured(t *testing.T, daemonURL string) (*store.Store, *Sampler) {
 func seedLegionProject(t *testing.T, database *store.Store, project, daemonURL string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(),
-		`insert into projects (key, name) values ($1, $1) on conflict do nothing`, project); err != nil {
+		`insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict do nothing`, project); err != nil {
 		t.Fatalf("seed project %s: %v", project, err)
 	}
 	if _, err := PutSettings(context.Background(), database.Pool, project, daemonURL,
@@ -161,7 +161,6 @@ func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
 		`INFRA-1/claim.planner="working"`,
 		`INFRA-1/phase="planning"`,
 		`INFRA-1/slot=0`,
-		`INFRA-1/status="doing"`,
 	}
 	if len(first) != len(want) {
 		t.Fatalf("the first pass wrote %v, want %v: a field the issue carries none of writes no first row", first, want)
@@ -247,14 +246,8 @@ func TestTwoProcessesStoreEachChangeOnce(t *testing.T) {
 	second := storetest.SecondProcess(t, database)
 	other := NewSampler(second.Pool)
 
-	firstLeases, err := database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the first process's lease pool: %v", err)
-	}
-	secondLeases, err := second.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the second process's lease pool: %v", err)
-	}
+	firstLeases := storetest.Leases(t, database.Pool)
+	secondLeases := storetest.Leases(t, second.Pool)
 
 	// The two ticks a RunLeased loop makes for one period, with the moment each was due: the
 	// value the ticker delivered, which is the same on both processes.
@@ -272,7 +265,7 @@ func TestTwoProcessesStoreEachChangeOnce(t *testing.T) {
 		t.Errorf("legion_reads = %v, want one row for one period", rows)
 	}
 	stored := observations(t, database, "INFRA")
-	if len(stored) != 4 {
+	if len(stored) != 3 {
 		t.Fatalf("observations = %v, want each change stored once", stored)
 	}
 
@@ -324,7 +317,7 @@ func TestAPassPrunesTheReadsPastTheirRetention(t *testing.T) {
 	// left stay (DeleteSettings). It is here to prove the prune keeps a project's newest read
 	// however old it is, since that row is the freshness the board's header shows.
 	if _, err := database.Pool.Exec(t.Context(),
-		`insert into projects (key, name) values ('LINUX', 'LINUX')`); err != nil {
+		`insert into projects (key, name, default_assignee) values ('LINUX', 'LINUX', 'alice')`); err != nil {
 		t.Fatalf("seed project LINUX: %v", err)
 	}
 	aged := func(project string, age time.Duration) {
@@ -354,4 +347,43 @@ func TestAPassPrunesTheReadsPastTheirRetention(t *testing.T) {
 	if pruned, err := PruneReads(t.Context(), database.Pool); err != nil || pruned != 0 {
 		t.Errorf("a second prune deleted %d (err %v), want none", pruned, err)
 	}
+}
+
+// Every read a pass makes is announced on StateChannel, with the project as the payload, a read
+// that failed as much as one that moved something: that announcement is the one thing that wakes
+// an open Legion board, since nothing commits in Dispatch when a remote daemon's state moves, and
+// the board's header carries the read's own time and failure (spec R2, the `/ws/live` view
+// `legion` pushing the change with no new request). The live view's own tests announce on the
+// channel themselves, so a sampler that stopped announcing would leave every open board frozen at
+// its first answer while every one of them still passed.
+func TestEachReadOfAPassIsAnnouncedToTheOpenBoards(t *testing.T) {
+	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
+	database, sampler := configured(t, daemon.URL)
+	listener, err := database.Pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("take a connection to listen on: %v", err)
+	}
+	defer listener.Release()
+	if _, err := listener.Exec(t.Context(), "listen "+StateChannel); err != nil {
+		t.Fatalf("listen on %s: %v", StateChannel, err)
+	}
+	announced := func(what string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		notification, err := listener.Conn().WaitForNotification(ctx)
+		if err != nil {
+			t.Fatalf("%s: no announcement on %s within 5s (%v): an open board would never hear this read", what, StateChannel, err)
+		}
+		if notification.Payload != "INFRA" {
+			t.Errorf("%s: announced %q, want the project INFRA", what, notification.Payload)
+		}
+	}
+
+	sampler.Pass(t.Context())
+	announced("a read that moved the observations")
+
+	daemon.refuses(http.StatusServiceUnavailable)
+	sampler.Pass(t.Context())
+	announced("a read that failed")
 }

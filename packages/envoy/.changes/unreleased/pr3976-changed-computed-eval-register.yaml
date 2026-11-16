@@ -26,7 +26,7 @@ body: |-
   eval's own, and a register write of one updates their open live views. Their `targets` changed
   shape: each is `{value, inclusive}`, or null where the target is off; every `status` field is
   null where the target is off or nothing is measured; and the Pipeline answers `status` for its
-  two lead-time cards, which the page shows instead of comparing the figure with the target itself.
+  two lead-time cards.
   They judge every statistic those six evals state, a lead time's `n` included; a target judge of
   one of them that the delivery answers state no figure of (`unowned-p0`'s `issues.n`, the count
   of stored days, or any statistic or series the eval does not state) is `400 EVAL_FIELD_INVALID`

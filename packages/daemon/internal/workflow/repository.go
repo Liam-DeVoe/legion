@@ -24,9 +24,10 @@ type Repositories interface {
 // Resolution is the repository an issue is recorded on: Repo and DefaultBranch when Legion serves
 // it, with GitHubRepo, GitHub's spelling of Repo that Envoy's event subjects carry, or Refusal, why
 // it does not. LeftOut is a mapped repository Legion leaves out, for a GitHub App not installed on
-// it or, with Unread, for now, because GitHub did not answer its installation read; Refusal names
-// which. An Unread issue is not refused but left: RefuseRecording says nothing on it, and the
-// daemon takes it from Dispatch's listing once GitHub answers for the repository (its recovery).
+// it or, with Unread, for now, because GitHub did not answer its installation read, or its
+// default-branch read past GitHub's rate limit; Refusal names which. An Unread issue is not refused
+// but left: RefuseRecording says nothing on it, and the daemon takes it from Dispatch's listing
+// once GitHub answers for the repository (its recovery).
 type Resolution struct {
 	Repo          string
 	DefaultBranch string
@@ -46,10 +47,10 @@ func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
 	if resolved == "" {
 		return Resolution{Refusal: resolvesToNone}, nil
 	}
-	if e.settings().Repositories == nil {
+	if e.cfg.Repositories == nil {
 		return Resolution{}, errors.New("the workflow holds no repository mapping to record an issue's repository from")
 	}
-	return e.settings().Repositories.ResolveRepository(resolved)
+	return e.cfg.Repositories.ResolveRepository(resolved)
 }
 
 // SettleRetainedRepository is fact with a retained event's missing repository
@@ -82,9 +83,8 @@ const setRepositoryHint = "the issue header's Repository picker, or dispatch iss
 // the repository meanwhile (its parent's repository, or the project's default, changed) is still
 // recovered.
 func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved string, refused Resolution) (bool, error) {
-	e = e.decision()
 	if refused.Unread {
-		if note := e.settings().NoteUnread; note != nil {
+		if note := e.cfg.NoteUnread; note != nil {
 			note(key, resolved)
 		}
 		return false, nil
@@ -102,7 +102,6 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // name of a configured rename (sameRepository), so re-pointing every open issue at the repository
 // a transfer moved to says nothing on any of them.
 func (e *Engine) NoteRepositoryKept(ctx context.Context, tx pgx.Tx, issue record.Issue, resolved string) error {
-	e = e.decision()
 	if e.sameRepository(resolved, issue.Repo) {
 		return nil
 	}

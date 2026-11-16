@@ -21,7 +21,9 @@ const SETTINGS = `INSERT INTO delivery_settings (
 export async function seedDeliveryFixture(): Promise<void> {
   await sql(
     SETTINGS,
-    `INSERT INTO projects (key, name) VALUES ('ACME', 'Acme') ON CONFLICT DO NOTHING`,
+    // Every project names a default assignee, so the column takes none of these rows without
+    // one; alice is the person every row of this fixture is read as.
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-1', 'ACME', 1, 'Ship the widgets', 'todo', 0, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -63,7 +65,7 @@ export const TIMELINE_FIXTURE_QUERY = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-
 export async function seedSessionGroupsFixture(): Promise<void> {
   await sql(
     SETTINGS,
-    `INSERT INTO projects (key, name) VALUES ('ACME', 'Acme') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-7', 'ACME', 7, 'Group the planners', 'todo', 1, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -97,7 +99,7 @@ export const FIXTURE_WINDOW = { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20
 export async function seedMeasuresFixture(): Promise<void> {
   await sql(
     SETTINGS,
-    `INSERT INTO projects (key, name) VALUES ('ACME', 'Acme') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, route, claimed_by, claimed_at, created_by, rank) VALUES
        ('ACME-100', 'ACME', 100, 'Build timeline UI', 'in_progress', 1, null,
         '{"kind":"session","id":"01a1-e2e-session"}', now(), ${SEED_ACTOR}, 'U100'),
@@ -166,19 +168,9 @@ export async function seedMeasuresFixture(): Promise<void> {
   );
 }
 
-/** The Pipeline route's pinned "today" (`?at=`): the e2e rows and the docs screenshot show the
+/** The Pipeline page's pinned "today" (`?at=`): the e2e rows and the docs screenshot show the
  *  seven days ending on its day, 2026-09-26 to 2026-10-02. */
 export const PIPELINE_AT = "2026-10-02T12:00:00Z";
-
-/** The Delivery page opened at its Pipeline section over those same seven days: `from` is the
- *  first day's midnight and `to` is `PIPELINE_AT`, the instant the rows below are dated for, so
- *  the section's clock is the route's `?at=` clock and its failing-jobs table looks its 24 hours
- *  back from the same moment (INFRA-1077, which folded the Pipeline page into this one). A
- *  preset window ends at the present, so an end inside a day is what the page sends most of the
- *  time; a custom range the window control writes ends at the midnight after its last day. */
-export const PIPELINE_SECTION_URL = `/delivery?from=${encodeURIComponent(
-  "2026-09-26T00:00:00Z"
-)}&to=${encodeURIComponent(PIPELINE_AT)}#pipeline`;
 
 /** A time on 2026-09-<day> (a day past 30 rolls into October), as the prototype's
  *  collector/tests/test_pipeline.py `_ts` writes it. */

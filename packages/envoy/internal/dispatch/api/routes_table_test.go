@@ -127,6 +127,63 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	}
 }
 
+// legionSegment is the path segment that tells the routes dispatch://INFRA-1077 adds from the
+// ones Dispatch already had. Main's committed index where this change forked from it (c5d96534,
+// testdata/routes.txt) holds no path with a `legion` segment, and every route this change adds
+// holds one, so a line of the index with that segment is this change's and every other line is a
+// route R26 of dispatch://INFRA-979/artifact/spec does not bind (the rest move in
+// dispatch://INFRA-2946).
+const legionSegment = "legion"
+
+// projectPathPrefix is where R26 addresses everything that belongs to one project.
+const projectPathPrefix = "/api/v1/projects/{key}/"
+
+// legionRoutesOutsideTheProjectPath names each line of a route index, as routeIndexGolden holds
+// them, that is this change's and is not under projectPathPrefix. R26 of
+// dispatch://INFRA-979/artifact/spec puts everything of one project under a project path and
+// permits no Legion route outside it, so there is nothing to allow: every such line is refused.
+// A line that is not `METHOD path auth` is named too, so an index this cannot read is never
+// passed for one with nothing to refuse.
+func legionRoutesOutsideTheProjectPath(index string) []string {
+	var refused []string
+	for _, line := range strings.Split(strings.TrimSuffix(index, "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			refused = append(refused, line+" (not `METHOD path auth`)")
+			continue
+		}
+		path := fields[1]
+		if !slices.Contains(strings.Split(path, "/"), legionSegment) || strings.HasPrefix(path, projectPathPrefix) {
+			continue
+		}
+		refused = append(refused, line)
+	}
+	return refused
+}
+
+// TestEveryLegionRouteIsUnderTheProjectPath reads the committed route index and refuses a route
+// this change adds that is not under /api/v1/projects/{key}/ (R26), with no allowance: everything
+// of one project is under its path. It is held first to the four routes R26 moved, so a rule that
+// stopped refusing them fails here rather than passing every index.
+func TestEveryLegionRouteIsUnderTheProjectPath(t *testing.T) {
+	moved := []string{
+		"GET /api/v1/settings/legion any",
+		"DELETE /api/v1/settings/legion/{project} any",
+		"PUT /api/v1/settings/legion/{project} any",
+		"GET /api/v1/legion/board any",
+	}
+	if refused := legionRoutesOutsideTheProjectPath(strings.Join(moved, "\n") + "\n"); !slices.Equal(refused, moved) {
+		t.Fatalf("the rule refuses %q of the routes R26 moved, want all four", refused)
+	}
+	index, err := os.ReadFile(routeIndexGolden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range legionRoutesOutsideTheProjectPath(string(index)) {
+		t.Errorf("%s: %s is a route this change adds outside %s", routeIndexGolden, line, projectPathPrefix)
+	}
+}
+
 // WriteRouteIndex is what `envoy-dispatch routes` prints and the docs site's API reference is
 // generated from: every row of the table, as GET /api/v1 serves it, and no test hook.
 func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
@@ -204,8 +261,60 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+13 {
-		t.Fatalf("test hooks add thirteen routes: got %d, want %d", got, len(routes)+13)
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+14 {
+		t.Fatalf("test hooks add fourteen routes: got %d, want %d", got, len(routes)+14)
+	}
+}
+
+// The Inbox route's description states the rule the person a question reaches is resolved by —
+// the person it was handed to, then the issue's assignee, then the project's default assignee —
+// and the four descriptions that rule narrowed no longer carry what it replaced. This is a test
+// of its own because the two route tests above read every description and assert no word of
+// one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
+// having one, so nothing else fails when a description outlives the code it describes.
+func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+	descriptions := map[string]string{}
+	for _, route := range (&server{}).routes() {
+		descriptions[route.Method+" "+route.Pattern] = route.Description
+	}
+	for _, want := range []struct{ route, says string }{
+		// The three steps, in the order the read resolves them.
+		{"GET /api/v1/inbox", "handed to"},
+		{"GET /api/v1/inbox", "the issue's assignee"},
+		{"GET /api/v1/inbox", "the project's default assignee"},
+		// A create names the person, and says what happens when it names nobody.
+		{"POST /api/v1/projects", "default_assignee"},
+		{"POST /api/v1/projects", "ASSIGNEE_NOT_ALLOWED"},
+		// The settings list holds every project, not only the ones that named somebody.
+		{"GET /api/v1/settings/project-default-assignees", "every project"},
+		// The write moves a default and refuses to clear it.
+		{"PUT /api/v1/projects/{key}/default-assignee", "cannot be cleared"},
+	} {
+		description, mounted := descriptions[want.route]
+		if !mounted {
+			t.Fatalf("the table mounts no %s", want.route)
+		}
+		if !strings.Contains(description, want.says) {
+			t.Errorf("%s does not say %q: %s", want.route, want.says, description)
+		}
+	}
+	for _, stale := range []struct{ route, says string }{
+		// A null no longer clears a default, so the write's description cannot offer one.
+		{"PUT /api/v1/projects/{key}/default-assignee", "null to clear"},
+		// Every project names a default, so the list leaves none out.
+		{"GET /api/v1/settings/project-default-assignees", "that names a default assignee"},
+		// The create chain's last step always lands, so it carries no qualification.
+		{"POST /api/v1/issues", "still names a person who has signed in"},
+		// The inbox resolves three steps and stops at none of them.
+		{"GET /api/v1/inbox", "until somebody hands it on"},
+	} {
+		description, mounted := descriptions[stale.route]
+		if !mounted {
+			t.Fatalf("the table mounts no %s", stale.route)
+		}
+		if strings.Contains(description, stale.says) {
+			t.Errorf("%s still says %q, which the three-step rule made false: %s", stale.route, stale.says, description)
+		}
 	}
 }
 
@@ -343,13 +452,14 @@ func routeProbePath(pattern string) string {
 }
 
 // routeProbeBody is the JSON body a probe sends. Every mutation that decodes before it
-// authenticates accepts `actor` (a bearer's self-identification). Two routes need more: the
-// review route's input has no actor field and would answer 400 to an unknown key, and the reply
-// route answers REPLY_FORBIDDEN to a malformed reply as well as to the wrong caller, so its probe
-// must be a complete reply to reach the caller check.
+// authenticates accepts `actor` (a bearer's self-identification). Two kinds of route need more:
+// a review route refuses a body without a valid state (400 INVALID_REVIEW) before it reads the
+// document, so its probe is an approval, and a reply route answers REPLY_FORBIDDEN to a malformed
+// reply as well as to the wrong caller, so its probe must be a complete reply to reach the caller
+// check.
 func routeProbeBody(route apiRoute) string {
 	switch route.Method + " " + route.Pattern {
-	case "POST /api/v1/artifacts/{id}/reviews":
+	case "POST /api/v1/artifacts/{id}/reviews", "POST /api/v1/artifacts/{id}/versions/{number}/reviews":
 		return `{"state":"approved"}`
 	case "POST /api/v1/messages/{id}/reply", "POST /api/v1/comments/{id}/reply":
 		return `{"actor":{"kind":"session","id":"s1"},"attempt":1,"body":"probe"}`
@@ -534,6 +644,15 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 		"POST /api/v1/artifacts/{id}/rebuild",
 		"POST /api/v1/artifacts/{id}/reviews",
+		// The review that names the version its caller read is this change's own row, and the
+		// person's as the review above it is: it records the same review in the person's name.
+		"POST /api/v1/artifacts/{id}/versions/{number}/reviews",
+		// The title correction is this change's own row: a document's title is what every
+		// reader sees it by, so the person whose credential it is corrects one.
+		"PATCH /api/v1/artifacts/{id}",
+		// The removal is this change's own row: a document made by mistake is removed by the
+		// person whose credential it is, as that person's title correction is.
+		"DELETE /api/v1/artifacts/{id}",
 		"GET /api/v1/me/state",
 		"PUT /api/v1/me/issues/{key}/state",
 		"GET /api/v1/me/agents/state",

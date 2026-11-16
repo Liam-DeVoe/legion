@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // strandedLine is the error the daemon logs once a boot has re-adopted its claims, naming every
@@ -127,9 +128,11 @@ func holdingTask(c supervise.Claim, p phase.Phase, task string) supervise.Claim 
 	return c
 }
 
-// runningRoot is a root admitted at generation 1 and working phase p.
+// runningRoot is a root admitted at generation 1 and working phase p, showing the status that
+// phase shows (workflow.PhaseStatus): what the daemon that ran it recorded, and what the boot's
+// correction of a status that is not its phase's leaves alone.
 func runningRoot(key string, p phase.Phase) record.Issue {
-	return record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key, Project: projectOf(key), Title: key, Phase: p, Generation: 1, Status: "in_progress", Rank: "m", HandedOver: true}
+	return record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key, Project: projectOf(key), Title: key, Phase: p, Generation: 1, Status: workflow.PhaseStatus(p), Rank: "m", HandedOver: true}
 }
 
 // projectOf is the Dispatch project key an issue key names.
@@ -369,9 +372,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() {
-		done <- run(runCtx, config.Settled(cfg), Build{}, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{}))
-	}()
+	go func() { done <- run(runCtx, cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{})) }()
 	t.Cleanup(func() {
 		if locked {
 			_ = lock.Rollback(context.Background())
@@ -465,7 +466,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 		t.Fatal(err)
 	}
 	view := &source{
-		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: func() int { return cfg.AdmissionCap },
+		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
 		startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
 		reports: func() map[claim.Token]capabilities.Report { return nil },
 	}

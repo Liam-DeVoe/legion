@@ -36,7 +36,7 @@ func NewSampler(pool *store.Pool) *Sampler {
 }
 
 // RunSampler reads every configured project's daemon state every SampleInterval until ctx ends,
-// each pass under SampleLease. The first tick is at start, so a fresh deployment's view is
+// each pass under SampleLease. The first tick is at start, so a fresh deployment's board is
 // populated at boot rather than a minute later.
 func RunSampler(ctx context.Context, pool *store.Pool, leases duty.Leases) {
 	duty.RunLeased(ctx, leases, SampleLease, SampleInterval, duty.TickAtStart, NewSampler(pool).Pass)
@@ -44,8 +44,8 @@ func RunSampler(ctx context.Context, pool *store.Pool, leases duty.Leases) {
 
 // Pass is one pass: every configured project's daemon read in turn, each recorded whatever the
 // others did, and then the reads older than ReadRetention deleted. A project whose read fails
-// keeps the observations it already has — the failure is in legion_reads, and the view names it
-// there.
+// keeps the observations it already has — the failure is in legion_reads, and the board's header
+// names it there.
 func (s *Sampler) Pass(ctx context.Context) {
 	settings, err := ListSettings(ctx, s.pool)
 	if err != nil {
@@ -57,7 +57,7 @@ func (s *Sampler) Pass(ctx context.Context) {
 		s.read(ctx, setting)
 	}
 	// Once a pass, under the same lease, as the delivery reconcile prunes its own change log:
-	// the table gains a row per project per minute and the view reads only the newest of each.
+	// the table gains a row per project per minute and the board reads only the newest of each.
 	if pruned, err := PruneReads(ctx, s.pool); err != nil {
 		slog.Warn("dispatch: prune the Legion state reads", "error", err)
 	} else if pruned > 0 {
@@ -94,14 +94,13 @@ func (s *Sampler) read(ctx context.Context, setting Settings) {
 }
 
 // keepClients leaves one client per state URL the settings name, keeping the client each URL
-// already had. The sampler's clients hold no token file: `GET /legion/v1/state` authenticates
-// nobody, so a read presents no credential.
+// already had. A read presents no credential: `GET /legion/v1/state` authenticates nobody.
 func (s *Sampler) keepClients(settings []Settings) {
 	kept := make(map[string]*Client, len(settings))
 	for _, setting := range settings {
 		client, held := s.clients[setting.StateURL]
 		if !held {
-			client = New(setting.StateURL, "")
+			client = New(setting.StateURL)
 		}
 		kept[setting.StateURL] = client
 	}

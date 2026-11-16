@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    A view a Dispatch process refuses on the page's live socket fails alone. While a release rolls
+    out, a process of the earlier build answers `INVALID_FRAME` to a view kind it does not know -
+    the `legion` view this change adds among them - and the page used to close the whole socket and
+    reconnect, so the views that process does serve, the delivery timeline among them, were never
+    answered while it lived. The page now keeps the socket: that one view shows its error, every
+    other view on the socket is answered, and the refused view is sent again on the page's next
+    socket, which a rotation or the earlier process's own shutdown opens.
+time: 2026-11-15T12:00:00.000000000Z
+custom:
+    Issue: pr2731

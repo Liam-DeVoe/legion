@@ -199,10 +199,12 @@ func (s *replaySeeder) run(ctx context.Context, plans []seedIssuePlan) error {
 	go s.progress(stop, len(plans))
 	defer close(stop)
 
-	// Step 0: the project.
+	// Step 0: the project. It is created as seedPerson, through the identity header, so that it
+	// names them as its default assignee: the create takes the person creating it where the call
+	// names no login, and the seed's session acts for nobody (internal/dispatch/api/projects.go).
 	if _, err := s.write(ctx, seedWrite{kind: "project-create", step: "project", logged: s.b.State.Project,
-		method: "POST", path: "/api/v1/projects",
-		body: jsonBody(map[string]any{"key": s.b.State.Project, "name": s.b.State.Project, "actor": sessionActor(replaySeedActorID)}),
+		method: "POST", path: "/api/v1/projects", w: who{person: seedPerson},
+		body: jsonBody(map[string]any{"key": s.b.State.Project, "name": s.b.State.Project}),
 		ok:   []int{http.StatusConflict}}); err != nil {
 		return err
 	}
@@ -687,8 +689,9 @@ func (s *replaySeeder) seedIssue(ctx context.Context, p seedIssuePlan) error {
 		}
 	}
 	// Step 5: the issue's fields, then its claim. The marks the comments and asks left are settled
-	// first: a closed issue's documents settle nothing, so closing it with a settlement owed would
-	// leave that settlement owed for good.
+	// first, while the issue is open: a settlement after a close opens no ask for a block with no
+	// ask row and writes its version after the history, so closing the issue with a settlement owed
+	// would leave its ask blocks unindexed and a version past the replayed history.
 	if err := s.waitSettled(ctx, p.Key, locals); err != nil {
 		return err
 	}

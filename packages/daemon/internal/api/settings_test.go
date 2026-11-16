@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
@@ -84,8 +83,10 @@ var settingsEmitted = map[string]string{
 	"Config.GitHubApps":                              "github_apps",
 	"Config.Linger":                                  "linger_hours",
 	"Config.ProductionCheckBound":                    "production_check_hours",
-	"Config.PodUpdateRetask":                         "pod_update_retask_hours",
-	"Config.PodUpdateNotice":                         "pod_update_notice_hours",
+	"Config.PodUpdateGrace":                          "pod_update_grace_minutes",
+	"Config.StalledTreeNotice":                       "stalled_tree_notice_hours",
+	"Config.WorkerSilence":                           "worker_silence_minutes",
+	"Config.WorkerBackground":                        "worker_background_hours",
 	"Config.PodUpdateMaxOpenRounds":                  "pod_update_max_open_rounds",
 	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
@@ -117,6 +118,13 @@ var settingsEmitted = map[string]string{
 	"Kubernetes.IdleRelease":                         "runtime.kubernetes.idle_release",
 	"IdleReleaseConfig.IdleMinutes":                  "runtime.kubernetes.idle_release.idle_minutes",
 	"IdleReleaseConfig.BackstopMinutes":              "runtime.kubernetes.idle_release.backstop_minutes",
+	"Kubernetes.MemoryGuard":                         "runtime.kubernetes.memory_guard",
+	"MemoryGuardConfig.IssuePods":                    "runtime.kubernetes.memory_guard.issue_pods",
+	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.issue_pods.enabled",
+	"MemoryGuardPodConfig.ActPercent":                "runtime.kubernetes.memory_guard.issue_pods.act_percent",
+	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.issue_pods.floor_percent",
+	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.issue_pods.wait_seconds",
+	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.issue_pods.interval_milliseconds",
 	"RepositoryCacheConfig.Volume":                   "runtime.kubernetes.repository_cache.volume",
 	"RepositoryCacheConfig.RefreshMinutes":           "runtime.kubernetes.repository_cache.refresh_minutes",
 	"RepositoryCacheConfig.RetainHours":              "runtime.kubernetes.repository_cache.retain_hours",
@@ -142,16 +150,22 @@ var settingsEmitted = map[string]string{
 	"PluginsConfig.PiLegion":                         "runtime.kubernetes.plugins.pi_legion",
 	"PluginsConfig.PiEnvoy":                          "runtime.kubernetes.plugins.pi_envoy",
 	"ProviderKey.Env":                                "provider_keys[]",
-	"Project.MergeQueueRole":                         "projects.<KEY>.merge_queue_role",
-	"Project.Merge":                                  "projects.<KEY>.merge",
 	"Project.SlackChannels":                          "projects.<KEY>.slack_channels",
 	"Project.Memory":                                 "projects.<KEY>.memory",
 	"Project.ProductionCheck":                        "projects.<KEY>.production_check",
 	"Memory.Mode":                                    "projects.<KEY>.memory.mode",
 	"Memory.ConfigFiles":                             "projects.<KEY>.memory.config_files",
 	"Memory.InstructionsPath":                        "projects.<KEY>.memory.instructions",
-	"MergeRules.ByHand":                              "projects.<KEY>.merge.by_hand",
-	"PathPattern.Expression":                         "projects.<KEY>.merge.by_hand[]",
+	"Project.Experiments":                            "projects.<KEY>.experiments",
+	"Experiment.Name":                                "projects.<KEY>.experiments.<name> (the mapping key the block is declared under)",
+	"Experiment.Mode":                                "projects.<KEY>.experiments.<name>.mode",
+	"Experiment.Unit":                                "projects.<KEY>.experiments.<name>.unit",
+	"Experiment.OnVariant":                           "projects.<KEY>.experiments.<name>.on_variant",
+	"Experiment.Variants":                            "projects.<KEY>.experiments.<name>.variants",
+	"Variant.Name":                                   "projects.<KEY>.experiments.<name>.variants[].name",
+	"Variant.Weight":                                 "projects.<KEY>.experiments.<name>.variants[].weight",
+	"Variant.ConfigFiles":                            "projects.<KEY>.experiments.<name>.variants[].config_files",
+	"Variant.InstructionsPath":                       "projects.<KEY>.experiments.<name>.variants[].instructions",
 	"Gates.Design":                                   "gates.design",
 	"GitHubApps.Implement":                           "github_apps.implement",
 	"GitHubApps.Review":                              "github_apps.review",
@@ -192,11 +206,6 @@ var settingsExcluded = map[string]string{
 	"PodConfig.VolumeMounts":          "runtime.kubernetes.pod: Kubernetes API types",
 	"PodConfig.ServiceAccount":        "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
-	"PathPattern.Regexp":              "compiled from Expression, not a setting",
-	"Config.SettingsRoute":            "not for an unauthenticated reader: who may change this daemon's settings",
-	"SettingsRoute.OIDCIssuer":        "not for an unauthenticated reader: the cluster whose tokens open the settings route",
-	"SettingsRoute.Audience":          "not for an unauthenticated reader: the audience a token must be projected for to open the settings route",
-	"SettingsRoute.ServiceAccounts":   "not for an unauthenticated reader: the ServiceAccounts the settings route admits",
 	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `--check-config` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
@@ -204,88 +213,8 @@ var settingsExcluded = map[string]string{
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
 	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
-}
-
-// The three keys this release adds to the state — `daemon.commit`, a pull request's
-// `requiresChecks` and the `settingSources` block — are in neither table above and belong in
-// neither: those two are a census of `config.Config`'s own fields, which is what SettingsOf
-// emits, and none of the three is a field of that struct. `commit` is the binary's own build
-// (daemon.Build.Revision), `requiresChecks` is read from a pull request's record, and
-// `settingSources` carries no value of any setting at all — only where each came from, which
-// TestSettingSourcesNameEverySettablePath holds to the same class table. The contracts mirror
-// (packages/contracts/src/legion-api.ts) and the state golden pin all three on the wire.
-
-// Every path the class table names has an entry in the state's settingSources, and every entry
-// names a path a caller may set: a reader of `settings` finds the provenance of each key beside
-// it, and a path the state withholds — a credential, the source of one, the path of a file
-// holding one — carries its provenance with no value anywhere, which is how a rotation is seen
-// without the credential.
-func TestSettingSourcesNameEverySettablePath(t *testing.T) {
-	loaded := time.Date(2026, 11, 3, 5, 4, 0, 0, time.UTC)
-	sources := NewSettingProvenance(loaded).Sources()
-	if got, want := slices.Sorted(maps.Keys(sources)), config.Paths(); !slices.Equal(got, want) {
-		t.Fatalf("settingSources name %d paths, want the class table's %d; first difference at %s",
-			len(got), len(want), firstDifference(got, want))
-	}
-	for _, path := range []string{"postgres_dsn", "github_apps.<app>.private_key", "provider_keys.<NAME>", "operator_token_file"} {
-		source, held := sources[path]
-		if !held {
-			t.Errorf("settingSources carry no %s: a path the state withholds still carries its provenance", path)
-			continue
-		}
-		if source.Source != config.SourceFile || !source.At.Equal(loaded) || source.By != "" {
-			t.Errorf("settingSources[%s] = %+v, want the file this boot read", path, source)
-		}
-	}
-}
-
-// A path the daemon has taken no route change for is the file's. One it has applied a change for
-// names that change's source, who asked and when, and the latest change of a path wins.
-func TestSettingProvenanceRecordsEveryAppliedChange(t *testing.T) {
-	loaded := time.Date(2026, 11, 3, 5, 4, 0, 0, time.UTC)
-	applied := time.Date(2026, 11, 3, 6, 30, 0, 0, time.UTC)
-	sources := NewSettingProvenance(loaded)
-	sources.now = func() time.Time { return applied }
-	sources.Observe(nil, []config.Change{
-		{Path: "admission_cap", Old: "2", New: "3", Source: config.SourceRoute, By: "ana@example.com"},
-	})
-	if got, want := sources.Sources()["admission_cap"], (SettingSource{Source: config.SourceRoute, By: "ana@example.com", At: applied}); got != want {
-		t.Errorf("settingSources[admission_cap] = %+v, want %+v", got, want)
-	}
-	if got := sources.Sources()["review_round_cap"]; got.Source != config.SourceFile || !got.At.Equal(loaded) {
-		t.Errorf("settingSources[review_round_cap] = %+v, want the file, untouched by another path's change", got)
-	}
-
-	read := time.Date(2026, 11, 3, 7, 0, 0, 0, time.UTC)
-	sources.now = func() time.Time { return read }
-	sources.Observe(nil, []config.Change{{Path: "admission_cap", Old: "3", New: "4", Source: config.SourceFile}})
-	if got, want := sources.Sources()["admission_cap"], (SettingSource{Source: config.SourceFile, At: read}); got != want {
-		t.Errorf("settingSources[admission_cap] = %+v, want the file that changed it last, %+v", got, want)
-	}
-
-	// The seam the daemon's settings store fills: the route changes it kept across a restart are
-	// the values the daemon is running on, and the state names them as the route's.
-	stored := SettingSource{Source: config.SourceRoute, By: "bo@example.com", At: loaded.Add(-time.Hour)}
-	sources.Restore(map[string]SettingSource{"review_round_cap": stored})
-	if got := sources.Sources()["review_round_cap"]; got != stored {
-		t.Errorf("settingSources[review_round_cap] = %+v, want the stored route change %+v", got, stored)
-	}
-}
-
-// firstDifference is the first path one list holds and the other does not, for a failure that
-// names what to look at.
-func firstDifference(got, want []string) string {
-	for _, path := range want {
-		if !slices.Contains(got, path) {
-			return path + " (missing)"
-		}
-	}
-	for _, path := range got {
-		if !slices.Contains(want, path) {
-			return path + " (unexpected)"
-		}
-	}
-	return "none"
+	"Variant.ConfigFilesField":        "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
+	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -398,8 +327,9 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"launch_failure_limit", "prompt_failure_limit", "prompt_retire_limit",
 		"worker_wakes_per_minute", "worker_wake_burst", "envoy_url", "nats_urls",
 		"dispatch_url", "projects", "gates", "github_apps", "linger_hours", "production_check_hours",
-		"pod_update_retask_hours", "pod_update_notice_hours", "pod_update_max_open_rounds",
-		"pod_update_rounds_per_minute", "review_round_cap",
+		"pod_update_grace_minutes", "stalled_tree_notice_hours", "worker_silence_minutes",
+		"worker_background_hours",
+		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
 		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
 		"hooks",
 	}
@@ -413,9 +343,15 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.runtime.kubernetes", kubernetesKeys, []string{
 		"namespace", "image", "storage_class", "issue_volume", "scheduling", "resources", "session_store",
 		"agent_secrets", "plugins", "setup", "skills_repository", "test_postgres", "repository_cache", "idle_release",
+		"memory_guard",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.idle_release", keysOf(t, kubernetesKeys["idle_release"]), []string{
 		"idle_minutes", "backstop_minutes",
+	})
+	memoryGuardKeys := keysOf(t, kubernetesKeys["memory_guard"])
+	assertKeys(t, "settings.runtime.kubernetes.memory_guard", memoryGuardKeys, []string{"issue_pods"})
+	assertKeys(t, "settings.runtime.kubernetes.memory_guard.issue_pods", keysOf(t, memoryGuardKeys["issue_pods"]), []string{
+		"enabled", "act_percent", "floor_percent", "wait_seconds", "interval_milliseconds",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.repository_cache", keysOf(t, kubernetesKeys["repository_cache"]), []string{
 		"volume", "refresh_minutes", "retain_hours", "resources",
@@ -425,8 +361,11 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.github_apps.implement", keysOf(t, apps["implement"]), []string{"app_id", "installations"})
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
+	// `experiments` always rides the wire, `[]` for the fixture's projects, which declare none
+	// under that key (contract 141); what a project that declares one carries is
+	// TestSettingsOfNamesAProjectsExperiments'.
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"merge_queue_role", "merge", "slack_channels", "memory", "production_check", "deploys",
+		"slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
@@ -471,12 +410,6 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if settings.Runtime.Kubernetes.SessionStore != "postgres" {
 		t.Errorf("session_store = %q, want postgres", settings.Runtime.Kubernetes.SessionStore)
-	}
-	if want := []string{"^deploy/", `\.sql$`}; !slices.Equal(settings.Projects["WIDGETS"].Merge.ByHand, want) {
-		t.Errorf("projects.WIDGETS.merge.by_hand = %q, want %q", settings.Projects["WIDGETS"].Merge.ByHand, want)
-	}
-	if settings.Projects["WIDGETS"].MergeQueueRole != "merge-queue" {
-		t.Errorf("projects = %+v, want WIDGETS's merge queue role", settings.Projects)
 	}
 	// The project that names no `production_check` shows the default role, and the one that turns
 	// the check off shows that word, never the empty string the role takes for off.
@@ -650,6 +583,68 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	}
 	if bytes.Contains(encoded, []byte(stamped)) {
 		t.Errorf("settings carry the configured repository: %s", encoded)
+	}
+}
+
+// A project's `experiments` ride the settings as the file writes them: every block in the file's
+// order, under the name it is declared with, with its mode, its unit, the arm `on` would give and
+// its arms in the file's order, each with its weight and its overlays. The paths are the
+// operator's own file names, as the `memory` block's are (settingsEmitted). A project that
+// declares none under the key carries `[]`, never no key at all, which the census above reads off
+// the fixture.
+func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
+	const declared = `    experiments:
+      plan-length:
+        mode: random
+        unit: issue
+        variants:
+          - {name: short, weight: 3}
+          - name: long
+      review-depth:
+        mode: on
+        on_variant: deep
+        variants:
+          - {name: deep}
+          - {name: shallow}
+`
+	body := strings.Replace(settingsFixtureFile, "  WIDGETS:\n", "  WIDGETS:\n"+declared, 1)
+	if body == settingsFixtureFile {
+		t.Fatal("the fixture's WIDGETS project was not given the key")
+	}
+	settings := SettingsOf(loadSettingsFile(t, body))
+	want := []ExperimentSettings{
+		{Name: "plan-length", Mode: config.ExperimentRandom, Unit: config.ExperimentIssue, Variants: []VariantSettings{
+			{Name: "short", Weight: 3, ConfigFiles: []string{}},
+			{Name: "long", Weight: 1, ConfigFiles: []string{}},
+		}},
+		{Name: "review-depth", Mode: config.ExperimentOn, Unit: config.ExperimentTree, OnVariant: "deep", Variants: []VariantSettings{
+			{Name: "deep", Weight: 1, ConfigFiles: []string{}},
+			{Name: "shallow", Weight: 1, ConfigFiles: []string{}},
+		}},
+	}
+	if got := settings.Projects["WIDGETS"].Experiments; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the project's experiments = %+v, want %+v", got, want)
+	}
+	if got := settings.Projects["LEGION"].Experiments; len(got) != 0 {
+		t.Fatalf("a project that declares no experiment under the key carries %+v, want none", got)
+	}
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	projects := keysOf(t, keysOf(t, encoded)["projects"])
+	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
+		"slack_channels", "memory", "experiments", "production_check", "deploys",
+	})
+	if got := string(keysOf(t, projects["LEGION"])["experiments"]); got != "[]" {
+		t.Errorf("a project that declares no experiment under the key carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 141)", got)
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := nullKeys(document, "settings"); len(got) != 0 {
+		t.Errorf("settings carry the null keys %q, want none: an arm that names no overlay carries `[]`", got)
 	}
 }
 

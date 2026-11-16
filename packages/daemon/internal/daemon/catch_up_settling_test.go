@@ -3,18 +3,17 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -73,7 +72,7 @@ func (p *hookPublisher) ranHook(t *testing.T) {
 // keptCatchUp is the catch-up of root a launch's ready writes, naming every decision nobody
 // claims and claiming them for its row (workflow.QueueCatchUp), for launch. No pacing holds it:
 // the launch took its turn at the machine's gate, so the row is due at now.
-func keptCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root string, launch uint64, now time.Time) {
+func keptCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, launch uint64, now time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -81,7 +80,7 @@ func keptCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root st
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, now, time.Time{})
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now, time.Time{})
 	}); err != nil {
 		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
 	}
@@ -90,7 +89,7 @@ func keptCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root st
 // leaseCatchUp leases the one catch-up of root the outbox holds, as a lane does before it runs it
 // (Store.ClaimRow, which writes the lease from the caller's clock), and returns it with its
 // payload.
-func leaseCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root string, now time.Time) (record.OutboxRow, record.Notice) {
+func leaseCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, now time.Time) (record.OutboxRow, record.Notice) {
 	t.Helper()
 	ctx := context.Background()
 	rows := catchUpRows(t, pool, root)
@@ -120,7 +119,7 @@ func leaseCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root s
 }
 
 // catchUpRows is every catch-up notice of root the outbox holds, oldest first.
-func catchUpRows(t *testing.T, pool *pgxpool.Pool, root string) []record.OutboxRow {
+func catchUpRows(t *testing.T, pool *store.Pool, root string) []record.OutboxRow {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
 		where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up' order by id`, string(record.OutboxKindNotice), root)
@@ -144,7 +143,7 @@ func catchUpRows(t *testing.T, pool *pgxpool.Pool, root string) []record.OutboxR
 
 // catchUpsNaming is, for each catch-up of root in the outbox other than row, whether its task
 // names ref, by row id.
-func catchUpsNaming(t *testing.T, pool *pgxpool.Pool, root string, row int64, ref string) map[int64]bool {
+func catchUpsNaming(t *testing.T, pool *store.Pool, root string, row int64, ref string) map[int64]bool {
 	t.Helper()
 	naming := map[int64]bool{}
 	for _, held := range catchUpRows(t, pool, root) {
@@ -174,7 +173,7 @@ func namingRef(naming map[int64]bool) int {
 
 // keepDecision keeps one person's decision on issue, as the one rule for a decision nobody in its
 // tree hears keeps it (record.RelayParkedDecision).
-func keepDecision(t *testing.T, pool *pgxpool.Pool, records record.Store, issue, ref string, at time.Time) {
+func keepDecision(t *testing.T, pool *store.Pool, records record.Store, issue, ref string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -215,11 +214,11 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, now, time.Time{})
+			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, "", now, time.Time{})
 		})
 	}}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,
-		supervisor: sup, project: "legion", live: config.Settled(config.Config{}), now: func() time.Time { return now }}
+		supervisor: sup, project: "legion", now: func() time.Time { return now }}
 
 	if err := runner.notice(ctx, leased, payload); err != nil {
 		t.Fatalf("run the publishing catch-up: %v", err)
@@ -281,7 +280,7 @@ func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
 		},
 	}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,
-		supervisor: sup, project: "legion", live: config.Settled(config.Config{}), now: func() time.Time { return now }}
+		supervisor: sup, project: "legion", now: func() time.Time { return now }}
 
 	if err := runner.notice(ctx, leased, payload); err != nil {
 		t.Fatalf("run the catch-up whose receipt timed out: %v", err)
@@ -338,7 +337,7 @@ func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
 	publisher := &hookPublisher{answer: fmt.Errorf("publish notice: listener returned 504 Gateway Timeout: %w",
 		notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses-architect"})}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,
-		supervisor: sup, project: "legion", live: config.Settled(config.Config{}), now: func() time.Time { return now }}
+		supervisor: sup, project: "legion", now: func() time.Time { return now }}
 	if err := runner.notice(ctx, leased, payload); err != nil {
 		t.Fatalf("run the catch-up whose last receipt timed out: %v", err)
 	}
@@ -394,8 +393,7 @@ func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
 			}
 			payload.Resends = len(noticeReholdDelays)
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records,
-				notices: &hookPublisher{}, supervisor: sup, project: "legion", live: config.Settled(config.Config{}),
-				now: func() time.Time { return now }}
+				notices: &hookPublisher{}, supervisor: sup, project: "legion", now: func() time.Time { return now }}
 			reported := reportedNotice{issue: "LEGION-1", notice: payload, row: leased.ID, architect: token}
 			if err := runner.reholdNotice(ctx, reported, notify.ReasonReceiptTimeout, "ses-architect"); err != nil {
 				t.Fatalf("answer the late report of the spent copy: %v", err)
@@ -414,70 +412,4 @@ func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
 			}
 		})
 	}
-}
-
-// The design gate a catch-up states is read from the settings holder as that catch-up is
-// written (outbox.gatedSteps), never from the value the daemon booted on: a tree whose
-// architect is caught up after an operator moved the gate is told the steps the daemon is
-// deciding by. Holding the boot's copy, every catch-up and every start task of the daemon's
-// life would state the old steps, and the architect would work the tree under a gate nobody
-// runs any more.
-func TestADesignGateChangedUnderTheRunningOutboxIsStatedByTheNextCatchUp(t *testing.T) {
-	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	noticeTree(t, pool, records, false)
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
-	live := liveSettings(t)
-	now := time.Now()
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records,
-		notices: &hookPublisher{}, supervisor: sup, project: "legion", live: live, now: func() time.Time { return now }}
-
-	keepDecision(t, pool, records, "LEGION-1", "dispatch://LEGION-1/ask/ask-1", time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC))
-	if err := runner.spentKept(ctx, "LEGION-1", 0, "nothing-told-of-the-first"); err != nil {
-		t.Fatalf("name what the tree is owed: %v", err)
-	}
-
-	if got, want := catchUpApproved(t, pool, "LEGION-1"), config.DesignGateRootIssues.Steps(); !slices.Equal(got, want) {
-		t.Fatalf("the catch-up states the gated steps %v, want the file's own %v", got, want)
-	}
-
-	apply(t, live, map[string]any{"gates.design": "off"})
-	keepDecision(t, pool, records, "LEGION-1", "dispatch://LEGION-1/ask/ask-2", time.Date(2026, 10, 24, 10, 0, 0, 0, time.UTC))
-	if err := runner.spentKept(ctx, "LEGION-1", 0, "nothing-told-of-the-second"); err != nil {
-		t.Fatalf("name what the tree is owed after the gate moved: %v", err)
-	}
-
-	if got, want := catchUpApproved(t, pool, "LEGION-1"), config.DesignGateOff.Steps(); !slices.Equal(got, want) {
-		t.Fatalf("the catch-up written after the operator's change states %v, want the gate the daemon decides by, %v", got, want)
-	}
-}
-
-// catchUpApproved is the design-gate steps a person must approve as the newest catch-up of root
-// in the outbox states them (record.CatchUp.Gates, the entries whose Gated is set), which is
-// what its architect is told it must hold open. A catch-up carries one entry per required step
-// whether or not a person approves it, so the gated ones are what the deployment's gate says.
-func catchUpApproved(t *testing.T, pool *pgxpool.Pool, root string) []record.DesignStep {
-	t.Helper()
-	rows := catchUpRows(t, pool, root)
-	if len(rows) == 0 {
-		t.Fatalf("the outbox holds no catch-up of %s", root)
-	}
-	newest := rows[len(rows)-1]
-	payload, err := record.DecodeOutboxPayload(newest)
-	if err != nil {
-		t.Fatalf("decode the catch-up %d of %s: %v", newest.ID, root, err)
-	}
-	notice, ok := payload.(record.Notice)
-	if !ok || notice.CatchUp == nil {
-		t.Fatalf("outbox row %d is %T, want a catch-up notice", newest.ID, payload)
-	}
-	steps := []record.DesignStep{}
-	for _, gate := range notice.CatchUp.Gates {
-		if gate.Gated {
-			steps = append(steps, gate.Step)
-		}
-	}
-	return steps
 }

@@ -6,7 +6,9 @@ GET /api/v1/agents/{session_id}/artifacts/{slug} any
 GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number} any
 GET /api/v1/agents/{session_id}/messages any
 POST /api/v1/agents/{session_id}/messages any
+DELETE /api/v1/artifacts/{id} any
 GET /api/v1/artifacts/{id} any
+PATCH /api/v1/artifacts/{id} any
 POST /api/v1/artifacts/{id}/approval-requests any
 GET /api/v1/artifacts/{id}/asks any
 POST /api/v1/artifacts/{id}/asks any
@@ -27,6 +29,7 @@ DELETE /api/v1/artifacts/{id}/subscribers/{session_id} any
 GET /api/v1/artifacts/{id}/text any
 POST /api/v1/artifacts/{id}/versions any
 GET /api/v1/artifacts/{id}/versions/{number} any
+POST /api/v1/artifacts/{id}/versions/{number}/reviews any
 GET /api/v1/asks/open any
 GET /api/v1/asks/{id} any
 PATCH /api/v1/asks/{id} any
@@ -111,7 +114,6 @@ POST /api/v1/issues/{key}/results any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
 GET /api/v1/issues/{key}/summary any
-PUT /api/v1/legion/{project}/settings any
 GET /api/v1/limits any
 GET /api/v1/machine-logins any
 POST /api/v1/machine-logins/{id}/revoke any
@@ -138,6 +140,11 @@ GET /api/v1/messages/{id}/blocks any
 POST /api/v1/messages/{id}/deliveries any
 POST /api/v1/messages/{id}/deliveries/{attempt}/accept bearer
 POST /api/v1/messages/{id}/reply bearer
+GET /api/v1/priorities any
+POST /api/v1/priorities any
+DELETE /api/v1/priorities/{id} any
+PATCH /api/v1/priorities/{id} any
+GET /api/v1/priorities/{id}/history any
 GET /api/v1/projects any
 POST /api/v1/projects any
 GET /api/v1/projects/{key}/architecture any
@@ -167,6 +174,9 @@ DELETE /api/v1/projects/{key}/evals/{slug}/readings/{id} any
 PUT /api/v1/projects/{key}/evals/{slug}/readings/{id} any
 PUT /api/v1/projects/{key}/gated-steps any
 GET /api/v1/projects/{key}/legion/board any
+DELETE /api/v1/projects/{key}/legion/daemon any
+GET /api/v1/projects/{key}/legion/daemon any
+PUT /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
 GET /api/v1/references any
@@ -180,9 +190,6 @@ GET /api/v1/search/results any
 GET /api/v1/settings/architecture-sources any
 GET /api/v1/settings/delivery any
 PUT /api/v1/settings/delivery any
-GET /api/v1/settings/legion any
-DELETE /api/v1/settings/legion/{project} any
-PUT /api/v1/settings/legion/{project} any
 GET /api/v1/settings/new-issue any
 GET /api/v1/settings/project-default-assignees any
 GET /api/v1/settings/repo-projects any

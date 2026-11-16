@@ -53,7 +53,11 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 		t.Fatalf("session cache not ready: %v", err)
 	}
 	routes := http.NewServeMux()
-	registerV1Routes(routes, &listenerDeps{registry: registry, sessions: sessions}, "test-machine", logging.NewWithWriter("test", io.Discard))
+	// withRoleClaimDrain, because each session's first registration here makes it live and so
+	// hands it the kept lane of the role whose claim record it read (runKeptRoleDrain). That
+	// handover reads the empty lane and writes no bucket, and the heartbeats counted below, of
+	// sessions live already, start none.
+	registerV1Routes(routes, withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}), "test-machine", logging.NewWithWriter("test", io.Discard))
 
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
@@ -72,7 +76,7 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	heartbeat := func(index int) {
 		t.Helper()
 		sessionID := sessionOf(index)
-		body := fmt.Sprintf(`{"session_id":%q,"dir":"/work/%s","topics":["notifications.team.heartbeat"],"self_subscribed":true,"title":"heartbeat %02d","client_instance_id":%q}`, sessionID, sessionID, index, instance)
+		body := fmt.Sprintf(`{"session_id":%q,"dir":"/work/%s","topics":["notifications.team.heartbeat"],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"e"},"title":"heartbeat %02d","client_instance_id":%q}`, sessionID, sessionID, index, instance)
 		recorder := httptest.NewRecorder()
 		routes.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
 		if recorder.Code != http.StatusOK {

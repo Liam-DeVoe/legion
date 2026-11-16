@@ -2,22 +2,17 @@
  * Delivery and Pipeline pages keep themselves current over. It subscribes one view under a bearer
  * token and writes one JSON line per frame Dispatch sends, applying each to the body it holds with
  * the page's own `applyDelta` and `applyRevs`. It reconnects as the page does: at once after
- * Dispatch's rotation (4001), within the first attempt's spread (up to 2 s) after Dispatch's
- * restart close (1012), with backoff after any other close, and by replacing a socket that has
- * carried no frame for three heartbeats; each new connection resumes from the last change it
- * applied. The watch ends after `--minutes`, on Ctrl-C, or when Dispatch refuses the view.
+ * Dispatch's rotation (4001), within the first attempt's spread (up to 2 s, or what
+ * `--reconnect-spread-ms` sets) after Dispatch's restart close (1012), with backoff after any
+ * other close, and by replacing a socket that has carried no frame for three heartbeats; each new
+ * connection resumes from the last change it applied. The watch ends after `--minutes`, on
+ * Ctrl-C, or when Dispatch refuses the view.
  *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
- *  the last window it applied (for an evals view, the view's own window, a preset's days ending
- *  then) and writes, for each, whether the pull request ids, run ids and every measure are equal
- *  (for an evals view, every eval and every field of the list read but the refresher's age, which
- *  the route measures at the moment of its read).
+ *  the last window it applied and writes, for each, whether the pull request ids, run ids and every
+ *  measure are equal.
  *
  *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare
- *
- *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
- *      --view '{"kind":"evals","project":"INFRA","window":{"preset":28},"query":"kind=delivery"}' \
- *      --minutes 10 --compare
  *
  *  It exits 0 when every comparison is equal or none was asked for; 1 when one is not, a read
  *  fails, the first connection is refused, Dispatch refuses the view, or a frame breaks the
@@ -26,7 +21,11 @@ import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 
-import { LIVE_SOCKET_SILENT_MS, reconnectDelayMs } from "../web/src/api/live-socket";
+import {
+  LIVE_SOCKET_SILENT_MS,
+  RECONNECT_SPREAD_MS,
+  reconnectDelayMs,
+} from "../web/src/api/live-socket";
 import type {
   DeliveryLiveBody,
   DeliveryLiveCounts,
@@ -37,13 +36,10 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
-  EvalListResponse,
-  LegionBoardResponse,
   LiveServerFrame,
   LiveSubscribe,
 } from "../web/src/api/types";
 import { applyDelta, applyRevs } from "../web/src/features/delivery/lib/applyDelta";
-import { DAY_MS } from "../web/src/features/delivery/lib/window";
 
 /** The frames `GET /ws/live` sends: a delivery view's own, the freshness verdict, a refusal and
  * the heartbeat. */
@@ -61,9 +57,8 @@ export interface ProbeListChanges {
 /** One frame Dispatch sent: when it arrived and its size on the wire in UTF-8 bytes. A snapshot
  *  counts what it holds: its lists' items, each map's keys, and each count map's values by facet.
  *  A delta names what it changes: each list's upserted and removed ids, each map's keys, each
- *  count map's values by facet, and the fields `set` replaces whole. An evals view's one list is
- *  `items`, its evals by id. A section the frame does not carry is null; an error frame adds its
- *  code and message, a freshness frame the verdict. */
+ *  count map's values by facet, and the fields `set` replaces whole. A section the frame does not
+ *  carry is null; an error frame adds its code and message, a freshness frame the verdict. */
 export interface ProbeFrameLine {
   readonly at: string;
   readonly type: DeliveryServerFrame["type"];
@@ -73,7 +68,6 @@ export interface ProbeFrameLine {
   readonly prs: number | ProbeListChanges | null;
   readonly runs: number | ProbeListChanges | null;
   readonly session_groups: number | ProbeListChanges | null;
-  readonly items: number | ProbeListChanges | null;
   readonly maps: Readonly<Record<string, number | readonly string[]>> | null;
   readonly counts: Readonly<
     Record<string, Readonly<Record<string, number | readonly string[]>>>
@@ -92,12 +86,16 @@ export interface ProbeOpenLine {
   readonly resume: string | null;
 }
 
-/** A connection closing, by Dispatch or by the probe replacing a silent socket. */
+/** A connection closing, by Dispatch or by the probe replacing a silent socket. `wait_ms` is the
+ *  wait the probe computed before it reopens, null on a close it answers with no timer: the
+ *  rotation it reopens at once after, a silent socket's replacement, and the refused first
+ *  connection, which ends the watch. */
 export interface ProbeCloseLine {
   readonly at: string;
   readonly type: "close";
   readonly code: number;
   readonly reason: string;
+  readonly wait_ms: number | null;
 }
 
 /** The ids a GET answer holds that the probe's body lacks (`missing`), and the reverse (`extra`). */
@@ -133,10 +131,14 @@ export interface ProbeHeld {
 }
 
 const USAGE =
-  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--compare] [--body-file <file>]";
+  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--compare] [--body-file <file>] [--reconnect-spread-ms <n>]";
 
 /** The probe's one subscription. */
 const SUB = "probe";
+/** The longest wait a timer holds. A `setTimeout` delay above this is clamped to 1 ms, so a
+ *  `--reconnect-spread-ms` whose draws pass it would make the probe reopen at once: the option
+ *  honoured as its own opposite. The probe refuses such a value instead. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 /** Dispatch closes every socket with this code when it shuts down; the page reconnects within the
  *  first attempt's spread (`reconnectDelayMs(0)`). */
 const SERVICE_RESTART = 1012;
@@ -157,9 +159,6 @@ const COUNTS = ["facet_counts", "color_counts"] as const satisfies readonly Deli
 
 type MeasureField = Exclude<keyof DeliveryMeasuresResponse, "window" | "computed_at" | "freshness">;
 type PipelineField = Exclude<keyof DeliveryPipelineResponse, "computed_at" | "freshness">;
-type LegionField = Exclude<keyof LegionBoardResponse, "computed_at" | "header">;
-type LegionHeaderField = Exclude<keyof LegionBoardResponse["header"], "facts_cursor_age_seconds">;
-type EvalsField = Exclude<keyof EvalListResponse, "freshness">;
 
 /** The measures every comparison holds equal: each field but the window, computed_at and
  *  freshness, which a live body keeps as they were last sent. A record, so a field the response
@@ -182,43 +181,6 @@ const PIPELINE_FIELDS: Readonly<Record<PipelineField, true>> = {
   staging_e2e: true,
   status: true,
   targets: true,
-};
-/** The board's columns, issues and settings: every field but computed_at, which a live body
- *  keeps as it was last sent, and the header, whose own fields are compared below. A record, so
- *  a field the response gains fails the type check until it is named here. */
-const LEGION_FIELDS: Readonly<Record<LegionField, true>> = {
-  columns: true,
-  issues: true,
-  project: true,
-  setting_sources: true,
-  settings: true,
-};
-/** The header's fields, every one but `facts_cursor_age_seconds`. The route measures that age
- *  at the moment of the read (`api/legion_board.go`), so the live body's value and the GET
- *  read's stand seconds apart on essentially every run, and a comparison of them would report a
- *  difference that is the clock and not the board. */
-const LEGION_HEADER_FIELDS: Readonly<Record<LegionHeaderField, true>> = {
-  facts_updated_at: true,
-  legion_issues: true,
-  queue_length: true,
-  read_at: true,
-  read_error: true,
-  read_ok: true,
-  slot_cap: true,
-  slots_in_use: true,
-  trees: true,
-};
-/** The evals list's fields, every one but its freshness, whose refresher age the route measures at
- *  the moment of the read (`api/evals.go`), as the board's header measures its cursor age; the
- *  freshness's other field, the age of the rows the read folded, is compared on its own. A record,
- *  so a field the response gains fails the type check until it is named here. */
-const EVALS_FIELDS: Readonly<Record<EvalsField, true>> = {
-  compare: true,
-  items: true,
-  limit: true,
-  offset: true,
-  total: true,
-  window: true,
 };
 
 const SERVER_FRAME_TYPES: Readonly<Record<DeliveryServerFrame["type"], true>> = {
@@ -244,12 +206,11 @@ interface Options {
   readonly minutes: number;
   readonly compare: boolean;
   readonly bodyFile: string | undefined;
+  /** The window the first reconnect attempt's wait is drawn from, the page's own by default. */
+  readonly reconnectSpreadMs: number;
 }
 
-type Sections = Pick<
-  ProbeFrameLine,
-  "prs" | "runs" | "session_groups" | "items" | "maps" | "counts" | "set"
->;
+type Sections = Pick<ProbeFrameLine, "prs" | "runs" | "session_groups" | "maps" | "counts" | "set">;
 
 const now = () => new Date().toISOString();
 const write = (line: ProbeLine) => console.log(JSON.stringify(line));
@@ -269,14 +230,32 @@ const isTimeline = (body: DeliveryLiveBody): body is DeliveryTimelineWithMeasure
 const isMeasures = (body: DeliveryLiveBody): body is DeliveryMeasuresResponse =>
   "flags_source" in body;
 const isPipeline = (body: DeliveryLiveBody): body is DeliveryPipelineResponse => "days" in body;
-const isLegion = (body: DeliveryLiveBody): body is LegionBoardResponse => "columns" in body;
-const isEvals = (body: DeliveryLiveBody): body is EvalListResponse => "total" in body;
 
 function mapValues<V, W>(
   record: Readonly<Record<string, V>>,
   fn: (value: V) => W
 ): Record<string, W> {
   return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, fn(value)]));
+}
+
+/** The wait before reconnect attempt `attempt`, with the first attempt's spread set to
+ *  `spreadMs`: `reconnectDelayMs` draws that attempt's wait as `random() × RECONNECT_SPREAD_MS`,
+ *  so dividing the draw by that window makes the first attempt's spread `spreadMs` without this
+ *  file restating the backoff's arithmetic. It is the first attempt's spread alone, as
+ *  `--reconnect-spread-ms` says: a later attempt takes the function's own source, so its backoff
+ *  and jitter stay the page's whatever the option is set to.
+ *
+ *  It enforces no bound of its own. `parseOptions` is what refuses a `spreadMs` above
+ *  `MAX_TIMER_DELAY_MS`, because a `setTimeout` delay above that is clamped to 1 ms and the probe
+ *  would reopen at once, the option honoured as its opposite; a caller that reaches this function
+ *  another way gets that defect back with nothing between it and the timer. */
+export function reconnectWaitMs(
+  attempt: number,
+  spreadMs: number,
+  random: () => number = Math.random
+): number {
+  if (attempt !== 0) return reconnectDelayMs(attempt, random);
+  return reconnectDelayMs(0, () => random() * (spreadMs / RECONNECT_SPREAD_MS));
 }
 
 function readArgs(argv: readonly string[]) {
@@ -288,6 +267,7 @@ function readArgs(argv: readonly string[]) {
         "body-file": { type: "string" },
         compare: { type: "boolean" },
         minutes: { type: "string" },
+        "reconnect-spread-ms": { type: "string" },
         "token-file": { type: "string" },
         url: { type: "string" },
         view: { type: "string" },
@@ -304,9 +284,9 @@ function required(value: string | undefined, flag: string): string {
   return value;
 }
 
-/** The view `--view` names. The probe checks what it reads itself (the kind, a timeline, measures
- *  or evals view's window and query, an evals view's project, a pipeline view's `at`); Dispatch
- *  judges the rest and answers a view it refuses with an error frame. */
+/** The view `--view` names. The probe checks what it reads itself (the kind, a timeline or
+ *  measures view's window and query, a pipeline view's `at`); Dispatch judges the rest and answers
+ *  a view it refuses with an error frame. */
 function parseView(text: string): DeliveryLiveView {
   let value: unknown;
   try {
@@ -318,12 +298,7 @@ function parseView(text: string): DeliveryLiveView {
     throw new UsageError("--view is a JSON object");
   }
   const kind = "kind" in value ? value.kind : undefined;
-  if (kind === "timeline" || kind === "measures" || kind === "evals") {
-    if (kind === "evals" && (!("project" in value) || typeof value.project !== "string")) {
-      throw new UsageError(
-        `an evals view's "project" is the key of the project whose evals it shows`
-      );
-    }
+  if (kind === "timeline" || kind === "measures") {
     const window = "window" in value ? value.window : undefined;
     if (typeof window !== "object" || window === null) {
       throw new UsageError(
@@ -340,9 +315,7 @@ function parseView(text: string): DeliveryLiveView {
       throw new UsageError(`a pipeline view's "at" is an RFC 3339 time`);
     }
   } else {
-    throw new UsageError(
-      `--view's "kind" is timeline, measures, pipeline or evals, not ${String(kind)}`
-    );
+    throw new UsageError(`--view's "kind" is timeline, measures or pipeline, not ${String(kind)}`);
   }
   // Checked above as far as the probe reads it; Dispatch refuses the rest of a malformed view.
   const view = value as DeliveryLiveView;
@@ -366,10 +339,24 @@ function parseOptions(argv: readonly string[]): Options {
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new UsageError(`--minutes is a number of minutes above 0, not ${rawMinutes}`);
   }
+  const rawSpread = values["reconnect-spread-ms"];
+  const reconnectSpreadMs = rawSpread === undefined ? RECONNECT_SPREAD_MS : Number(rawSpread);
+  if (
+    rawSpread?.trim() === "" ||
+    !Number.isFinite(reconnectSpreadMs) ||
+    reconnectSpreadMs < 0 ||
+    reconnectSpreadMs > MAX_TIMER_DELAY_MS
+  ) {
+    throw new UsageError(
+      "--reconnect-spread-ms is a number of milliseconds from 0 to " +
+        `${MAX_TIMER_DELAY_MS}, not ${rawSpread}`
+    );
+  }
   return {
     bodyFile: values["body-file"],
     compare: values.compare === true,
     minutes,
+    reconnectSpreadMs,
     tokenFile: required(values["token-file"], "--token-file"),
     url,
     view: parseView(required(values.view, "--view")),
@@ -399,22 +386,12 @@ function listChanges(
   return { remove: [...changes.remove], upsert: changes.upsert.map((item) => item.id) };
 }
 
-/** What a snapshot's body holds, counted. A timeline body has lists, maps and counts, and an evals
- *  body one list, its evals; no other body has any. */
+/** What a snapshot's body holds, counted. Only a timeline body has lists, maps and counts. */
 function holds(body: DeliveryLiveBody): Sections {
-  const none: Sections = {
-    counts: null,
-    items: null,
-    maps: null,
-    prs: null,
-    runs: null,
-    session_groups: null,
-    set: null,
-  };
-  if (isEvals(body)) return { ...none, items: (body.items ?? []).length };
-  if (!isTimeline(body)) return none;
+  if (!isTimeline(body)) {
+    return { counts: null, maps: null, prs: null, runs: null, session_groups: null, set: null };
+  }
   return {
-    ...none,
     counts: Object.fromEntries(
       COUNTS.map((name) => [
         name,
@@ -425,6 +402,7 @@ function holds(body: DeliveryLiveBody): Sections {
     prs: (body.prs ?? []).length,
     runs: (body.runs ?? []).length,
     session_groups: (body.session_groups ?? []).length,
+    set: null,
   };
 }
 
@@ -438,7 +416,6 @@ function changes(delta: DeliveryLiveDelta): Sections {
     prs: listChanges(delta.items.prs),
     runs: listChanges(delta.items.runs),
     session_groups: listChanges(delta.items.session_groups),
-    items: listChanges(delta.items.items),
     set: Object.keys(delta.set),
   };
 }
@@ -449,7 +426,6 @@ function frameLine(frame: DeliveryServerFrame, bytes: number): ProbeFrameLine {
     bytes,
     changed_at: null,
     counts: null,
-    items: null,
     maps: null,
     prs: null,
     runs: null,
@@ -571,19 +547,27 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
 
   const lost = (code: number, reason: string) => {
     socket = null;
-    write({ at: now(), code, reason, type: "close" });
+    // The close line carries the wait the probe computed before it would open again, so a reader
+    // sees what `--reconnect-spread-ms` and the backoff came to; a close answered with no timer
+    // reports none.
+    const closed = (waitMs: number | null) =>
+      write({ at: now(), code, reason, type: "close", wait_ms: waitMs });
     if (!opened) {
+      closed(null);
       fail(`Dispatch refused the connection to ${liveUrl.href}: ${reason || `close ${code}`}`);
       return;
     }
     if (code === LIVE_SOCKET_MAX_AGE_CLOSE) {
+      closed(null);
       open();
       return;
     }
     // As the page does: Dispatch's restart close starts the backoff over, so the next attempt
-    // waits within the first attempt's spread.
+    // waits within the first attempt's spread, which `--reconnect-spread-ms` sets.
     if (code === SERVICE_RESTART) attempt = 0;
-    const handle = setTimeout(open, reconnectDelayMs(attempt));
+    const delayMs = reconnectWaitMs(attempt, options.reconnectSpreadMs);
+    closed(delayMs);
+    const handle = setTimeout(open, delayMs);
     attempt += 1;
     cancelReconnect = () => clearTimeout(handle);
   };
@@ -594,7 +578,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     const silent = socket;
     socket = null;
     const reason = `no frame for ${LIVE_SOCKET_SILENT_MS / 1000} s`;
-    write({ at: now(), code: REPLACED, reason, type: "close" });
+    write({ at: now(), code: REPLACED, reason, type: "close", wait_ms: null });
     silent.close(REPLACED, reason);
     open();
   }, 1_000);
@@ -679,38 +663,9 @@ function compareFields<F extends string>(
   return { differ, equal: differ.length === 0 };
 }
 
-/** The board's comparison: its fields but `computed_at`, and its header's but the cursor age,
- *  each header path reported under `header.` so a reader sees where the difference is. */
-function compareLegion(
-  held: LegionBoardResponse,
-  answer: LegionBoardResponse
-): NonNullable<Checked["measures"]> {
-  const fields = compareFields(held, answer, LEGION_FIELDS);
-  const header = compareFields(held.header, answer.header, LEGION_HEADER_FIELDS);
-  const differ = [...fields.differ, ...header.differ.map((path) => `header.${path}`)];
-  return { differ, equal: differ.length === 0 };
-}
-
-/** An evals list's comparison: its fields but the freshness, and the freshness's rows' age, which
- *  is reported under `freshness.` so a reader sees where the difference is. */
-function compareEvals(
-  held: EvalListResponse,
-  answer: EvalListResponse
-): NonNullable<Checked["measures"]> {
-  const fields = compareFields(held, answer, EVALS_FIELDS);
-  const rows = differences(
-    held.freshness.rows_updated_at,
-    answer.freshness.rows_updated_at,
-    "freshness.rows_updated_at"
-  );
-  const differ = [...fields.differ, ...rows];
-  return { differ, equal: differ.length === 0 };
-}
-
-/** The GET routes that answer the figures `body` holds, for the window it last applied; for an
- *  evals view, for the view's own window. */
+/** The GET routes that answer the figures `body` holds, for the window it last applied. */
 function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
-  const query = (base: string, window: { readonly from: string; readonly to: string }) => {
+  const query = (base: string, window: DeliveryTimelineWithMeasures["window"]) => {
     const params = new URLSearchParams(base);
     params.set("from", window.from);
     params.set("to", window.to);
@@ -766,44 +721,10 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
         })),
       ];
     }
-    case "legion": {
-      if (!isLegion(body)) throw new Error("the legion view's snapshot is not a board body");
-      return [
-        read<LegionBoardResponse>(
-          `/api/v1/projects/${encodeURIComponent(view.project)}/legion/board`,
-          (answer) => ({
-            measures: compareLegion(body, answer),
-            prs: null,
-            runs: null,
-          })
-        ),
-      ];
-    }
-    case "evals": {
-      if (!isEvals(body)) throw new Error("the evals view's snapshot is not an evals body");
-      // The view's window as Dispatch read it, a preset's days ending now, and never the body's:
-      // the list read answers the whole UTC days a window touches, so a preset of 84 days, which
-      // touches 85, holds a window the route refuses to be sent. The route folds the same days,
-      // and the `window` it answers is compared with the rest.
-      const end = Date.now();
-      const window =
-        "preset" in view.window
-          ? {
-              from: new Date(end - view.window.preset * DAY_MS).toISOString(),
-              to: new Date(end).toISOString(),
-            }
-          : view.window;
-      return [
-        read<EvalListResponse>(
-          `/api/v1/projects/${encodeURIComponent(view.project)}/evals?${query(view.query, window)}`,
-          (answer) => ({
-            measures: compareEvals(body, answer),
-            prs: null,
-            runs: null,
-          })
-        ),
-      ];
-    }
+    default:
+      // The delivery-live probe drives only the timeline, measures and pipeline views; the
+      // `/ws/live` `legion` view this pull request adds is read by no page and no probe row.
+      throw new Error(`the delivery-live probe drives no ${view.kind} view`);
   }
 }
 
@@ -891,4 +812,8 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+// The test imports `reconnectWaitMs` from this file: the command line runs only when bun runs
+// the probe itself.
+if (import.meta.main) {
+  process.exit(await main(Bun.argv.slice(2)));
+}

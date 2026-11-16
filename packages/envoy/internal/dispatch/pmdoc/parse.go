@@ -21,9 +21,11 @@ var anchorAttribute = regexp.MustCompile(`([a-zA-Z0-9_-]+)="([^"]*)"`)
 // markdownReader is a goldmark configuration Dispatch reads markdown with. Its only way in is
 // parse. Front matter is read apart from it (parseFrontmatterBlock), so an unclosed opener is
 // ordinary markdown. Its list parser opens no empty item that would interrupt a paragraph
-// (emptyItemGuard).
+// (emptyItemGuard). display marks the one reader whose parse is for display alone
+// (displayReader), which refuses nothing a reader must still be shown.
 type markdownReader struct {
-	md goldmark.Markdown
+	md      goldmark.Markdown
+	display bool
 }
 
 // blockReader is the configuration every document is read with, its delimiter runs read by
@@ -189,6 +191,10 @@ func parseForWrite(markdown string, live *Node, readFrontmatter bool, budget *Wr
 	}
 	if err := RepeatedBlockID(live, doc, doc); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrSchema, err)
+	}
+	// A write may keep an element live holds that this build cannot create, never add one.
+	if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
+		return nil, err
 	}
 	carryBlockIDs(doc, live)
 	EnsureBlockIDs(doc)
@@ -462,7 +468,13 @@ func referencedLabels(nodes []*Node) []string {
 // paragraph, or holds text after its paragraph's last line, is ErrSchema. Every U+0000 in it is
 // read as U+FFFD, as it is in a document's markdown (readInline, parseUnstamped).
 func ParseInline(markdown string, budget *WriteBudget) (nodes []*Node, err error) {
-	return readInline(markdown, inlineMarkdown.run, parser.NewContext(), budget)
+	if nodes, err = readInline(markdown, inlineMarkdown.run, parser.NewContext(), budget); err != nil {
+		return nil, err
+	}
+	if err := refuseUncreatable(nodes, nil); err != nil {
+		return nil, err
+	}
+	return nodes, nil
 }
 
 // readInline is ParseInline read with inline, one of an inlineReader's parsers, in context, a new
@@ -810,6 +822,14 @@ func parseBlock(node ast.Node, source []byte, footnotes map[int]string, depth in
 		return parseTypedDirective(current, source, footnotes, depth)
 	case *extensionast.Table:
 		return parseTable(current, source, footnotes)
+	case *displayText:
+		// Only the display read makes one, where it shows a block as the markdown it is written
+		// as (drawDisplayBlocks).
+		return &Node{Type: "paragraph", Children: displayLiteral(current.text)}, nil
+	case *displayHTML:
+		// Only the display read makes one, where it shows a block of HTML as the browser's
+		// engine draws it (drawDisplayBlocks).
+		return &Node{Type: "paragraph", Children: []*Node{{Type: "html", Attrs: Attrs{"value": current.value}}}}, nil
 	default:
 		// refuseBlocks refuses every block outside convertedBlocks before conversion starts.
 		panic(fmt.Sprintf("conversion reached a %s block, which refuseBlocks passed and parseBlock does not convert (convertedBlocks)", node.Kind()))
@@ -872,10 +892,14 @@ func parseTypedDirective(directive *typedDirective, source []byte, footnotes map
 	if err != nil {
 		return nil, err
 	}
+	// A typed block whose schema content opens with a paragraph is read holding one ahead of what
+	// the markdown wrote (opensWithAParagraph), and the display read marks the blocks it keeps
+	// whose content rule wants one for the same reason (displayFillAttr, displayContentFit).
+	_, fill := directive.Attribute(displayFillAttr)
 	return &Node{
 		Type:     directive.Name,
 		Attrs:    directive.values,
-		Children: emptyParagraphFirst(children, opensWithAParagraph(directive.Name)),
+		Children: emptyParagraphFirst(children, fill || opensWithAParagraph(directive.Name)),
 	}, nil
 }
 
@@ -883,9 +907,10 @@ func parseTypedDirective(directive *typedDirective, source []byte, footnotes map
 // which the browser editor's own schema fills in when the markdown opens the block with another
 // block: an `ask` written with a list first is read holding an empty paragraph ahead of it, since
 // ProseMirror fills a node's content expression from its left (`paragraph+ bullet_list?`). A
-// block whose content is `block+` takes what it is given.
+// block whose content is `block+` takes what it is given, and so does one this build's manifest
+// does not declare, whose content rule it does not know (typedBlock).
 func opensWithAParagraph(name string) bool {
-	typ, ok := schemaTypes[name]
+	typ, ok := typedBlock(name)
 	if !ok {
 		return false
 	}

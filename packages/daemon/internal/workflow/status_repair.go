@@ -58,7 +58,7 @@ import (
 // arriving a moment before its event.
 func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	running map[string]struct{}, trigger string) error {
-	pendingWrites, err := e.store.PendingStatusWrites(ctx, tx, e.settings().Project)
+	pendingWrites, err := e.store.PendingStatusWrites(ctx, tx, e.cfg.Project)
 	if err != nil {
 		return err
 	}
@@ -69,7 +69,7 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 	passedOver, pending := []string{}, []string{}
 	queued := 0
 	for _, issue := range issues {
-		if issue.Project != e.settings().Project || !record.InWorkflow(issue) {
+		if issue.Project != e.cfg.Project || !record.InWorkflow(issue) {
 			continue
 		}
 		want := PhaseStatus(issue.Phase)
@@ -88,7 +88,7 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 		// enqueueing anything when the record's own Status already holds the status asked for. An
 		// issue whose record says one thing while Dispatch shows another is exactly what this
 		// repair is for, so that guard would drop the write it exists to make.
-		if err := e.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: want, ObservedStatus: issue.DispatchStatus}); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(want, issue.DispatchStatus, "")); err != nil {
 			return err
 		}
 		recorded := issue.DispatchStatus
@@ -131,11 +131,11 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 // under it is passed over either way, by the missing root rather than by the tree-runs rule. The
 // boot reads the whole table once for its resume and hands the repair that list (booted).
 func (e *Engine) statusRepairTick(ctx context.Context, tx pgx.Tx) (intake.Result, error) {
-	issues, err := e.store.LiveIssues(ctx, tx, e.settings().Project)
+	issues, err := e.store.LiveIssues(ctx, tx, e.cfg.Project)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	running, err := record.ReadRunningRoots(ctx, tx, e.store, e.settings().Project, issues, e.settings().Steps)
+	running, err := record.ReadRunningRoots(ctx, tx, e.store, e.cfg.Project, issues, e.cfg.Steps)
 	if err != nil {
 		return intake.Result{}, err
 	}

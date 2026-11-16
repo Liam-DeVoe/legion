@@ -359,15 +359,17 @@ type evalDaysWindow struct {
 
 // compareDayRowsWithRoutes folds the day rows of window, read by DayWindow for the project's cut
 // and each repository's, through the folds the delivery routes answer through, and compares each
-// with the route's answer for that window: GET /api/v1/delivery/measures and
-// GET /api/v1/delivery/pipeline for the all-repositories cut; the measures route's pull-request
-// measures (lead_time, rework_share) under repo= for each repository's cut, the measures a
-// delivery repo facet narrows; and the deploy repository's deploy, run and CI measures against the
-// route's whole answer, since every run is the deploy repository's (every other repository's cut
-// reads no data for them). Every value of those answers is compared, the failure-flag measures'
-// no value on both sides and deploys_with_prs and with_prs_per_day included: a deploy with pull
-// requests is one that ships any, whenever it merged, on both sides (delivery.Deploys.ShippedBy).
-// It answers the window's tally and every difference found.
+// with the route's answer: GET /api/v1/delivery/measures for that window, and
+// GET /api/v1/delivery/pipeline at the window's last instant, which shows the seven days ending on
+// it whatever the window's length and so is compared with the rows of those seven days, for the
+// all-repositories cut; the measures route's pull-request measures (lead_time, rework_share)
+// under repo= for each repository's cut, the measures a delivery repo facet narrows; and the
+// deploy repository's deploy, run and CI measures against the route's whole answer, since every
+// run is the deploy repository's (every other repository's cut reads no data for them). Every
+// value of those answers is compared, the failure-flag measures' no value on both sides and
+// deploys_with_prs and with_prs_per_day included: a deploy with pull requests is one that ships
+// any, whenever it merged, on both sides (delivery.Deploys.ShippedBy). It answers the window's
+// tally and every difference found.
 func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, fixture deliverytest.Fixture, settings delivery.DeliverySettings, entries []evals.Entry, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
 	t.Helper()
 	tally := evalDaysWindow{from: from, to: to}
@@ -383,12 +385,15 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		}
 	}
 	window := measures.Window{From: from, To: to}
-	days := pipelineWindowBetween(from, to).days()
+	// The Pipeline reads at alone: the seven days ending on the window's last instant.
+	pipelineAt := to.Add(-time.Second)
+	pipelineSpan := evals.Range{From: measures.WindowStart(pipelineAt), To: to}
+	pipelineDays := measures.ShownDays(pipelineAt)
 	query := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}
-	read := func(repos []string) map[string][]measures.DayPart {
-		rows, err := registry.DayWindow(t.Context(), []string{fixture.Project}, entries, repos, evals.Range{From: from, To: to}, nil)
+	read := func(repos []string, span evals.Range) map[string][]measures.DayPart {
+		rows, err := registry.DayWindow(t.Context(), []string{fixture.Project}, entries, repos, span, nil)
 		if err != nil {
-			t.Fatalf("read the day rows of %s..%s for %v: %v", from.Format(time.DateOnly), to.Format(time.DateOnly), repos, err)
+			t.Fatalf("read the day rows of %s..%s for %v: %v", span.From.Format(time.DateOnly), span.To.Format(time.DateOnly), repos, err)
 		}
 		return partsByEval(fixture.Project, rows)
 	}
@@ -412,8 +417,8 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 	}
 
 	wholeMeasures := route("/api/v1/delivery/measures", query)
-	wholePipeline := route("/api/v1/delivery/pipeline", query)
-	all := read(nil)
+	wholePipeline := route("/api/v1/delivery/pipeline", url.Values{"at": {pipelineAt.Format(time.RFC3339)}})
+	all := read(nil, evals.Range{From: from, To: to})
 	if folded, missing := foldedMeasures(all, window); missing != "" {
 		differ("all repositories: %s", missing)
 	} else {
@@ -428,11 +433,11 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 	}
 	minN := prCIJobsMinN(t, fixture.Project, entries)
 	compare("the pipeline of all repositories",
-		subtree(oracleTree(t, foldedPipeline(all, jobParts(fixture.Project, stored, "", from, to), settings, days, minN, pipelineEvals)), "", pipelineDropped...),
+		subtree(oracleTree(t, foldedPipeline(read(nil, pipelineSpan), jobParts(fixture.Project, stored, "", pipelineSpan.From, pipelineSpan.To), settings, pipelineDays, minN, pipelineEvals)), "", pipelineDropped...),
 		subtree(wholePipeline, "", pipelineDropped...))
 
 	for _, repo := range fixture.Repos {
-		cut := read([]string{repo})
+		cut := read([]string{repo}, evals.Range{From: from, To: to})
 		faceted := route("/api/v1/delivery/measures", url.Values{"from": query["from"], "to": query["to"], "repo": {repo}})
 		folded, missing := foldedMeasures(cut, window)
 		if repo != fixture.DeployRepo {
@@ -462,7 +467,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		for _, field := range []string{"deploy_frequency", "deploy_run_success", "daily"} {
 			compare("the "+field+" of "+repo, subtree(oracleTree(t, folded), field), subtree(wholeMeasures, "measures."+field))
 		}
-		cutPipeline := subtree(oracleTree(t, foldedPipeline(cut, jobParts(fixture.Project, stored, repo, from, to), settings, days, minN, pipelineEvals)), "", pipelineDropped...)
+		cutPipeline := subtree(oracleTree(t, foldedPipeline(read([]string{repo}, pipelineSpan), jobParts(fixture.Project, stored, repo, pipelineSpan.From, pipelineSpan.To), settings, pipelineDays, minN, pipelineEvals)), "", pipelineDropped...)
 		for _, field := range []string{"pr_checks", "staging_e2e", "staging_apply", "production_apply"} {
 			compare("the "+field+" of "+repo, subtree(cutPipeline, field), subtree(subtree(wholePipeline, "", pipelineDropped...), field))
 		}

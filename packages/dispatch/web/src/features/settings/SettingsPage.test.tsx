@@ -24,10 +24,10 @@ function renderPage() {
 function stubUnrelatedQueries() {
   return {
     getDeliverySettings: spyOn(api, "getDeliverySettings").mockResolvedValue(null),
+    getLegionDaemon: spyOn(api, "getLegionDaemon").mockResolvedValue(null),
     getSignIns: spyOn(api, "getSignIns").mockResolvedValue({ signins: [] }),
     listAgentTokens: spyOn(api, "listAgentTokens").mockResolvedValue([]),
     listArchitectureSources: spyOn(api, "listArchitectureSources").mockResolvedValue([]),
-    listLegionSettings: spyOn(api, "listLegionSettings").mockResolvedValue([]),
     listProjectDefaultAssignees: spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]),
     listProjects: spyOn(api, "listProjects").mockResolvedValue([]),
     listRepoProjects: spyOn(api, "listRepoProjects").mockResolvedValue([]),

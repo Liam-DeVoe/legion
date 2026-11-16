@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
-import { PIPELINE_SECTION_URL, seedDeliveryFixture, seedPipelineFixture } from "./delivery-seed";
+import { PIPELINE_AT, seedDeliveryFixture, seedPipelineFixture } from "./delivery-seed";
 import { seedDeliveryReconcileGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
 import { expect, type Page, type TestInfo, test, type WebSocketRoute } from "./test";
@@ -147,21 +147,12 @@ async function waitForFrame(
   return frame;
 }
 
-/** The Delivery page opens more than one subscription since INFRA-1077 folded the Pipeline page
- *  into it, and whichever answers first is no longer the timeline's. A spec that means the
- *  timeline says so (isTimelineSnapshot): the Pipeline section's own view answers a row this page
- *  never shows — a pull request entering its window moves its lead times — so a spec reading the
- *  first snapshot would watch the wrong view and read its frames as the timeline's. */
-function isTimelineSnapshot(frame: LiveFrame): boolean {
-  return frame.type === "snapshot" && isLiveRecord(frame.body) && "prs" in frame.body;
-}
-
 async function openLiveDelivery(page: Page): Promise<LiveSocket> {
   const live = watchDeliverySocket(page);
   await page.goto("/delivery?mode=list");
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await live.opened;
-  await waitForFrame(live.frames, isTimelineSnapshot);
+  await waitForFrame(live.frames, (frame) => frame.type === "snapshot");
   return live;
 }
 
@@ -299,7 +290,7 @@ test("a reconcile-style re-write sends no frame", async ({ browser }) => {
 
   try {
     const live = await openLiveDelivery(page);
-    const snapshot = await waitForFrame(live.frames, isTimelineSnapshot);
+    const snapshot = await waitForFrame(live.frames, (frame) => frame.type === "snapshot");
     const sub = snapshotSubscription(snapshot);
     // The snapshot's own trailing frames land first; a short margin of real time keeps them out
     // of the window this row reads.
@@ -330,7 +321,7 @@ test("each delta carries only what changed", async ({ browser }) => {
 
   try {
     const live = await openLiveDelivery(page);
-    const snapshot = await waitForFrame(live.frames, isTimelineSnapshot);
+    const snapshot = await waitForFrame(live.frames, (frame) => frame.type === "snapshot");
     await insertMergedPR(692, "feat: one narrow delta");
     const delta = await waitForFrame(live.frames, (frame) =>
       deltaIncludesPR(frame, "acme/widgets#692")
@@ -403,7 +394,8 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
 test("an issue title change reaches the page", async ({ browser }) => {
   await seedDeliveryFixture();
   await sql(
-    `INSERT INTO projects (key, name) VALUES ('ACME', 'Acme') ON CONFLICT DO NOTHING`,
+    // Every project names a default assignee; alice is the person this fixture is read as.
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-690', 'ACME', 690, 'Initial live issue title', 'todo', 1, '{"kind":"system","id":"e2e"}', 'U690')`,
     `INSERT INTO delivery_pull_requests (
@@ -432,17 +424,15 @@ test("an issue title change reaches the page", async ({ browser }) => {
   }
 });
 
-test("the Pipeline section updates live", async ({ browser }) => {
+test("the Pipeline page updates live", async ({ browser }) => {
   await seedPipelineFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
     const live = watchDeliverySocket(page);
-    await page.goto(PIPELINE_SECTION_URL);
-    await expect(
-      page.getByRole("heading", { level: 2, name: "Pipeline: CI and deploy" })
-    ).toBeVisible();
+    await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+    await expect(page.getByRole("heading", { name: "Pipeline" })).toBeVisible();
     await live.opened;
     await waitForFrame(live.frames, (frame) => frame.type === "snapshot");
     const production = page.locator('[data-metric="production_apply"]');

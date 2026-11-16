@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
 // work recomputes g's dirty views and the expired ones, one at a time, and keeps the freshness
@@ -296,26 +297,28 @@ func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, 
 	return answer, nil
 }
 
-// readPipelineView is a Pipeline section's read: the delivery settings and the runs, jobs and
-// merges of the window its spec names, with the min_n its slowest jobs are ranked by, through the
-// GET route's own read and compute (readPipelinePopulation, deliveryPipelineCompute), so the view
-// ranks them as the route does.
+// readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
+// of the seven days ending on its at, or on the present for a view that names none, with the
+// min_n its slowest jobs are ranked by, through the GET route's own read and compute
+// (readPipelinePopulation, deliveryPipelineCompute), so the view ranks them as the route does.
 func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error
 	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
 		return nil, err
 	}
-	window := spec.pipelineWindowAt(now)
-	read.at = window.end
-	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, window); err != nil {
+	read.at = now
+	if spec.at != nil {
+		read.at = *spec.at
+	}
+	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
 		return nil, err
 	}
-	body := deliveryPipelineCompute(read.settings, read.pipe, window, now)
-	if spec.pipelineRolls() {
+	body := deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
+	if spec.at == nil {
 		read.expiry = pipelineNextExpiry(read.pipe, now)
 	}
-	read.from = window.start()
+	read.from = measures.WindowStart(read.at)
 	read.prs, read.runs = len(read.pipe.leadTimes.prs), len(read.pipe.checks.Runs)+len(read.pipe.deploys.Runs)
 	read.unfetchable = read.pipe.leadTimes.unfetchable
 	return body, nil
@@ -382,13 +385,11 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	var from, at, expiry time.Time
 	var prs, runs int
 	if spec.kind == deliveryLivePipeline {
-		// Only a rolling window expires, so the window at now is this view's own, one day on.
-		window := spec.pipelineWindowAt(now)
-		at = window.end
-		narrowed := pipe.narrowedTo(settings, window)
-		body = deliveryPipelineCompute(settings, narrowed, window, now)
+		at = now
+		narrowed := pipe.narrowedTo(settings, at)
+		body = deliveryPipelineCompute(settings, narrowed, at, now)
 		expiry = pipelineNextExpiry(narrowed, now)
-		from = window.start()
+		from = measures.WindowStart(at)
 		prs, runs = len(narrowed.leadTimes.prs), len(narrowed.checks.Runs)+len(narrowed.deploys.Runs)
 	} else {
 		from = now.Add(-spec.days())

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -40,7 +42,7 @@ func serve(t *testing.T, src StateSource, method, target string) *httptest.Respo
 
 func serveWithTransactions(t *testing.T, src StateSource, txs *fakeStateTransactions, method, target string) *httptest.ResponseRecorder {
 	t.Helper()
-	server := NewServer("127.0.0.1", 8437, Options{State: src, StateTransactions: txs, Settings: unauthenticatedSettings()})
+	server := NewServer("127.0.0.1", 8437, Options{State: src, StateTransactions: txs, Steps: config.DesignGateRootIssues.Steps()})
 	recorder := httptest.NewRecorder()
 	server.Handler.ServeHTTP(recorder, httptest.NewRequest(method, target, nil))
 	return recorder
@@ -78,8 +80,15 @@ func (*fakeTx) LargeObjects() pgx.LargeObjects                         { return 
 func (*fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescription, error) {
 	return nil, errors.New("unexpected prepare")
 }
-func (*fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
-	return pgconn.CommandTag{}, errors.New("unexpected exec")
+
+// Exec takes the one statement a route runs of its own on this transaction — the state route's
+// bound on its own statements — and refuses every other: those belong to a state source, and the
+// sources here are fakes that run none.
+func (*fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.HasPrefix(sql, "set local statement_timeout = ") {
+		return pgconn.CommandTag{}, nil
+	}
+	return pgconn.CommandTag{}, errors.New("unexpected exec: " + sql)
 }
 func (*fakeTx) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return nil, errors.New("unexpected query")
@@ -88,7 +97,7 @@ func (*fakeTx) QueryRow(context.Context, string, ...any) pgx.Row { return nil }
 func (*fakeTx) Conn() *pgx.Conn                                  { return nil }
 
 func TestServerBindsTheConfiguredAddressOnly(t *testing.T) {
-	server := NewServer("127.0.0.1", 8437, Options{State: fakeSource{}, Settings: unauthenticatedSettings()})
+	server := NewServer("127.0.0.1", 8437, Options{State: fakeSource{}, Steps: config.DesignGateRootIssues.Steps()})
 	if server.Addr != "127.0.0.1:8437" {
 		t.Fatalf("addr = %q, want 127.0.0.1:8437", server.Addr)
 	}
@@ -156,8 +165,8 @@ func TestStateRouteServesTheConsumersLagReadAfterTheCommit(t *testing.T) {
 	oldest := time.Date(2026, 10, 28, 9, 2, 26, 0, time.UTC)
 	committedAtRead := false
 	server := NewServer("127.0.0.1", 8437, Options{
-		Settings: unauthenticatedSettings(),
-		State:    fakeSource{}, StateTransactions: &fakeStateTransactions{tx: tx},
+		Steps: config.DesignGateRootIssues.Steps(),
+		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: tx},
 		ConsumerLag: func(context.Context) []intake.ConsumerLag {
 			committedAtRead = tx.committed
 			return []intake.ConsumerLag{
@@ -219,6 +228,36 @@ func TestStateRouteReportsASourceFailure(t *testing.T) {
 	}
 	if body["error"] == "" {
 		t.Fatalf("body = %v, want an error message", body)
+	}
+}
+
+// A caller that hangs up mid-read — an operator who interrupts the read, a poll past its own
+// timeout, a proxy that drops the connection — cuts the state read short with its own context,
+// and that says nothing about the daemon: the route answers as it must and logs the read at
+// Debug, never as an ERROR line an operator is meant to act on. The daemon's own tests read its
+// ERROR lines to judge a boot (internal/daemon's every-installation-read-failed boot), so an
+// ERROR logged for a caller's hang-up is a failure reported against the daemon that had none.
+func TestStateRouteLogsNoErrorWhenTheCallerHangsUp(t *testing.T) {
+	var logged bytes.Buffer
+	server := NewServer("127.0.0.1", 8437, Options{
+		State:             fakeSource{err: context.Canceled},
+		StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
+		Log:               slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recorder := httptest.NewRecorder()
+
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil).WithContext(ctx))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body %s", recorder.Code, recorder.Body)
+	}
+	if strings.Contains(logged.String(), `"level":"ERROR"`) {
+		t.Fatalf("log = %s, want no ERROR line for a caller that hung up", logged.String())
+	}
+	if !strings.Contains(logged.String(), "api: state source failed") {
+		t.Fatalf("log = %s, want the read logged at Debug", logged.String())
 	}
 }
 

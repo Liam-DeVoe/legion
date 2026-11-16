@@ -50,9 +50,10 @@ func releaseHarness(t *testing.T, open bool) (*harness, *statusRecorder) {
 	// filed under the claim token, the issues and the mirror under the Dispatch key, and a route
 	// that confuses them reads an empty mirror here.
 	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
-		Settings:   operatorSettings(),
-		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		OperatorToken: testOperatorToken,
+		Controller:    h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
 		Handlers: releaseHandlers(), Dispatch: statuses,
 	}).Handler
 	h.recordIssue(record.Issue{Key: releaseRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: releaseRoot,
@@ -281,6 +282,8 @@ func TestWaveReleaseRecordsABacklogChildFromItsOwnWrite(t *testing.T) {
 	if wantWrites := []statusWrite{{blocked, "todo"}, {free, "todo"}}; !reflect.DeepEqual(statuses.writes, wantWrites) {
 		t.Fatalf("Dispatch writes = %#v, want %#v", statuses.writes, wantWrites)
 	}
+	// A child the release starts shows its phase's status, in_progress, from its first phase; one
+	// held at admitted has started nothing and stays todo.
 	wantPhase := map[string]phase.Phase{blocked: phase.Admitted, free: phase.Planning}
 	// The held child keeps the todo the release wrote, since admitted has no status of its own;
 	// the free child's entry into planning writes in_progress over it.
@@ -458,8 +461,9 @@ func TestWaveReleaseStandsWhenTheRecordDoesNotTakeALandedWrite(t *testing.T) {
 	child := "LEGION-209"
 	statuses.issues[child] = backlogChild(child)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
-		Settings: operatorSettings(), Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
+		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
 		Handlers: releaseHandlers(), Dispatch: statuses,
 		PrepareRepository: func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error) {
 			return intake.DispatchIssue{}, errors.New("GitHub did not answer the default branch read")

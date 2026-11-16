@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import type {
   DocumentWriteAdvice,
@@ -659,6 +659,27 @@ function askItem(key: string, id: string, ask?: SearchAsk): WriteSuggestion {
   };
 }
 
+/** An answered question of another project, as the server offers it: an ask item whose owner
+ *  names the project the item is in. */
+function otherProjectAsk(
+  key: string,
+  id: string,
+  project: string,
+  answer: string
+): WriteSuggestion {
+  return {
+    kind: "ask",
+    owner: { kind: "issue", key, title: "Webhook retries", status: "done", project },
+    id,
+    snippet: "Should webhook deliveries back off?",
+    href: `/issues/${key}#ask-${id}`,
+    ask: {
+      state: "answered",
+      answer: { user: "sami", selected: [], text: answer, at: "2026-09-12T13:20:00Z" },
+    },
+  };
+}
+
 async function createIssue(suggestions: Suggestions | undefined, extra: Partial<WriteAdvice> = {}) {
   return executeWrite(
     "dispatch_issue",
@@ -976,22 +997,7 @@ describe("the related-item check", () => {
     expect(lines).toHaveLength(3);
   });
 
-  test("dispatch_ask prints the form between the asked line and the follow line, then a past decision and its latest answer", async () => {
-    // The decision's issue ranks higher, so one item per owner collapses its ask out of the
-    // related items: only the decision lines can show what was chosen.
-    const decision: WriteSuggestion = {
-      ...askItem("DSP-9", "ask-old", {
-        state: "answered",
-        answer: {
-          user: "alice",
-          selected: ["Exponential", "Capped"],
-          text: "Changed my mind.\nBack off exponentially.",
-          at: "2026-09-12T13:20:00Z",
-        },
-      }),
-      answered_by: "alice",
-      answered_at: "2026-09-12T13:20:00Z",
-    };
+  test("dispatch_ask prints the form between the asked line and the follow line", async () => {
     const result = await executeWrite(
       "dispatch_ask",
       { issue: "DSP-42", question: "Should the billing service retry?" },
@@ -1000,7 +1006,6 @@ describe("the related-item check", () => {
           outcome: "found",
           search: "meaning_and_keywords",
           related: [issueItem("DSP-9", "Billing retries", "in_progress")],
-          decision,
         },
       })
     );
@@ -1010,41 +1015,6 @@ describe("the related-item check", () => {
         askedLine,
         "Related items (searched by meaning and keywords):",
         "- DSP-9 [in_progress] Billing retries → http://dispatch.test/issues/DSP-9",
-        "A past decision may already answer this: DSP-9 [in_progress] Billing retries, answered by alice on 2026-09-12T13:20:00Z → http://dispatch.test/issues/DSP-9#ask-ask-old",
-        "  Answered by alice at 2026-09-12T13:20:00Z · options chosen: Exponential, Capped",
-        "  Answer text: Changed my mind.",
-        "    Back off exponentially.",
-        followsLine,
-      ].join("\n")
-    );
-  });
-
-  test("an older server's past decision, with no ask state, says its state was not reported", async () => {
-    const decision: WriteSuggestion = {
-      ...askItem("DSP-9", "ask-old"),
-      answered_by: "alice",
-      answered_at: "2026-09-12T13:20:00Z",
-    };
-    const result = await executeWrite(
-      "dispatch_ask",
-      { issue: "DSP-42", question: "Should the billing service retry?" },
-      advice({
-        suggestions: {
-          outcome: "found",
-          search: "meaning_and_keywords",
-          related: [issueItem("DSP-9", "Billing retries", "in_progress")],
-          decision,
-        },
-      })
-    );
-
-    expect(result.text).toBe(
-      [
-        askedLine,
-        "Related items (searched by meaning and keywords):",
-        "- DSP-9 [in_progress] Billing retries → http://dispatch.test/issues/DSP-9",
-        "A past decision may already answer this: DSP-9 [in_progress] Billing retries, answered by alice on 2026-09-12T13:20:00Z → http://dispatch.test/issues/DSP-9#ask-ask-old",
-        "  Answer state not reported by this Dispatch; open the link to read the ask.",
         followsLine,
       ].join("\n")
     );
@@ -1154,6 +1124,27 @@ describe("dispatch_doc_edit's decision block checks", () => {
     expect(result.text.split("\n")[2]).toEndWith("--query 'Original title'");
   });
 
+  test("an older server's count on a replace searches by the ask block its with holds", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "draft", with: askBlock }],
+      },
+      advice({ decision_blocks_added: 1 })
+    );
+
+    expect(result.text).toBe(
+      [
+        appliedLine,
+        "1 new decision block:",
+        "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'Should webhook deliveries'",
+        "Document token: sha256:edited",
+      ].join("\n")
+    );
+  });
+
   test("an edit that added no block prints no check", async () => {
     const result = await executeWrite(
       "dispatch_doc_edit",
@@ -1241,6 +1232,251 @@ describe("a document write that superseded a person's approval", () => {
 
     expect(result.text).not.toContain("design gate");
     expect(result.text).not.toContain("superseding version");
+  });
+
+  // Dispatch refuses an approval request on a plan with 409 PLAN_APPROVED_BY_REVIEW, whoever
+  // approved it: it refuses by the document, not by the review. So a write that made a plan's
+  // approval stale names `dispatch plan-approve` as the way to approve it again, and never
+  // `dispatch request-approval`, for a plan review's approval and for a person's approval of a
+  // plan alike (a person approves a plan from its document header: the reviews route has no plan
+  // check). Each answer below says the document is a plan as Dispatch answers it, role `plan` and
+  // slug `plan-md`, which is what the architect's ruling keys on
+  // (dispatch://INFRA-3327/comment/d19c71f5-6186-44f0-9017-858947155b75). Each row also puts a
+  // review `kind` on `superseded_approval`, which Dispatch does not send, and it decides nothing.
+  const planUpload = { issue: "DSP-42", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true };
+  const planEdit = {
+    issue: "DSP-42",
+    artifact: "plan.md",
+    ops: [{ op: "replace", find: "One.", with: "Two." }],
+  };
+  test.each([
+    [
+      "dispatch_artifact",
+      "a plan review",
+      planUpload,
+      "01a1b464-9df7-7298-a78f-4ff4f8284ce7",
+      "plan_review",
+    ],
+    [
+      "dispatch_doc_edit",
+      "a plan review",
+      planEdit,
+      "01a1b464-9df7-7298-a78f-4ff4f8284ce7",
+      "plan_review",
+    ],
+    ["dispatch_artifact", "a person", planUpload, "alice", "person"],
+    ["dispatch_doc_edit", "a person", planEdit, "alice", "person"],
+  ])("%s on a plan %s approved names dispatch plan-approve, not dispatch request-approval", async (tool, _approver, args, approvedBy, kind) => {
+    const plan = {
+      id: "artifact-43",
+      issue_key: "DSP-42",
+      project: "DSP",
+      name: "plan.md",
+      slug: "plan-md",
+      role: "plan",
+      primary: false,
+    };
+    const superseded = { approved_version: 1, version: 2, approved_by: approvedBy, kind };
+    const staled = advice({ superseded_approval: superseded });
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      const method = init?.method ?? "GET";
+      const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
+      if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
+        return response({
+          key: "DSP-42",
+          title: "Original title",
+          status: "in_progress",
+          labels: [],
+          route: null,
+          parent: null,
+          external_links: [],
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              project: "DSP",
+              name: "spec.md",
+              slug: "spec",
+              primary: true,
+            },
+            plan,
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+        return response([plan]);
+      }
+      if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+        return response({ markdown: body.markdown });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "POST") {
+        return response(withAdvice({ artifact: plan, version: { number: 2 } }, staled));
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-43/edits" && method === "POST") {
+        return response(
+          withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
+        );
+      }
+      if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
+        return new Response("[]", { headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected request: ${method} ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec(),
+      fetchImpl: fetchImpl as typeof fetch,
+      subscriptions: async () => [],
+    });
+
+    expect(result.text).toContain(
+      `Stored version 2, superseding version 1, which ${approvedBy} approved.`
+    );
+    expect(result.text).toContain("dispatch plan-approve");
+    expect(result.text).not.toContain("dispatch request-approval");
+  });
+
+  // A role belongs to an issue's documents alone, and the slug fallback that names a role-less
+  // `plan-md` a plan exists for an issue document whose role column a rolling deploy left null
+  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf). So an issue's plan.md
+  // with no role is still a plan and names `dispatch plan-approve`, while a project document named
+  // plan.md is a plain document: a person's approval of it comes back through a request, which
+  // Dispatch then accepts, and `dispatch plan-approve`, which takes an issue alone, cannot reach
+  // it. Each document is answered as Dispatch answers it: no role key on either.
+  const roleLessPlan = {
+    id: "artifact-43",
+    issue_key: "DSP-42",
+    project: "DSP",
+    name: "plan.md",
+    slug: "plan-md",
+    primary: false,
+  };
+  const projectPlan = {
+    id: "artifact-91",
+    issue_key: null,
+    project: "DSP",
+    name: "plan.md",
+    slug: "plan-md",
+    primary: false,
+  };
+  test.each([
+    ["dispatch_artifact", "an issue's plan.md with no role", planUpload, roleLessPlan, true],
+    ["dispatch_doc_edit", "an issue's plan.md with no role", planEdit, roleLessPlan, true],
+    [
+      "dispatch_artifact",
+      "a project document named plan.md",
+      { project: "DSP", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true },
+      projectPlan,
+      false,
+    ],
+    [
+      "dispatch_doc_edit",
+      "a project document named plan.md",
+      {
+        project: "DSP",
+        artifact: "plan.md",
+        ops: [{ op: "replace", find: "One.", with: "Two." }],
+      },
+      projectPlan,
+      false,
+    ],
+  ])("%s on %s a person approved names the command that restores it", async (tool, _which, args, document, isPlan) => {
+    const superseded = { approved_version: 1, version: 2, approved_by: "alice" };
+    const staled =
+      document.issue_key === null
+        ? { decision_blocks: 0, decision_blocks_added: 0, superseded_approval: superseded }
+        : advice({ superseded_approval: superseded });
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      const method = init?.method ?? "GET";
+      const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
+      if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
+        return response({
+          key: "DSP-42",
+          title: "Original title",
+          status: "in_progress",
+          labels: [],
+          route: null,
+          parent: null,
+          external_links: [],
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              project: "DSP",
+              name: "spec.md",
+              slug: "spec",
+              primary: true,
+            },
+            roleLessPlan,
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+        return response([roleLessPlan]);
+      }
+      if (target.pathname === "/api/v1/projects/DSP/artifacts" && method === "GET") {
+        return response([projectPlan]);
+      }
+      if (
+        (target.pathname === "/api/v1/projects/DSP/artifacts/plan-md" ||
+          target.pathname === "/api/v1/projects/DSP/artifacts/plan.md") &&
+        method === "GET"
+      ) {
+        return response(projectPlan);
+      }
+      if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+        return response({ markdown: body.markdown });
+      }
+      if (
+        (target.pathname === "/api/v1/issues/DSP-42/artifacts" ||
+          target.pathname === "/api/v1/projects/DSP/artifacts") &&
+        method === "POST"
+      ) {
+        return response(withAdvice({ artifact: document, version: { number: 2 } }, staled));
+      }
+      if (target.pathname === `/api/v1/artifacts/${document.id}/edits` && method === "POST") {
+        return response(
+          withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
+        );
+      }
+      if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
+        return new Response("[]", { headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected request: ${method} ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec(),
+      fetchImpl: fetchImpl as typeof fetch,
+      subscriptions: async () => [],
+    });
+
+    expect(result.text).toContain("Stored version 2, superseding version 1, which alice approved.");
+    if (isPlan) {
+      expect(result.text).toContain("`dispatch plan-approve --issue DSP-42 --version 2`");
+      expect(result.text).not.toContain("dispatch request-approval");
+    } else {
+      expect(result.text).toContain("Request approval with `dispatch request-approval`");
+      expect(result.text).not.toContain("plan-approve");
+    }
   });
 });
 
@@ -1597,13 +1833,266 @@ describe("dispatch_related", () => {
       "Related-item check searched (meaning and keywords) and found nothing."
     );
   });
+
+  test("prints the answered questions of other projects after its own project's items", async () => {
+    const { result } = await related(
+      { project: "DSP", title: "Retry failed webhook deliveries" },
+      {
+        outcome: "found",
+        search: "meaning_and_keywords",
+        related: [issueItem("DSP-7", "Webhook retries")],
+        other_projects: [otherProjectAsk("OPS-9", "a9", "OPS", "Back off exponentially.")],
+      }
+    );
+
+    expect(result.text).toBe(
+      [
+        "Related items (searched by meaning and keywords):",
+        "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
+        "Answered questions in other projects:",
+        "- OPS: OPS-9 [done] Webhook retries → http://dispatch.test/issues/OPS-9#ask-a9",
+        "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+        "  Answer text: Back off exponentially.",
+      ].join("\n")
+    );
+  });
+});
+
+// The check of a write that is a question offers the answered questions of other projects. They
+// print under a heading of their own, after every item of the asking project, so the reader sees
+// which project each one is in and what was answered there.
+describe("the answered questions of other projects", () => {
+  const question = { issue: "DSP-42", question: "Should the billing service retry?" };
+  const ownItem = issueItem("DSP-9", "Billing retries", "in_progress");
+  const ownLines = [
+    "Related items (searched by meaning and keywords):",
+    "- DSP-9 [in_progress] Billing retries → http://dispatch.test/issues/DSP-9",
+  ];
+  const opsLines = [
+    "- OPS: OPS-9 [done] Webhook retries → http://dispatch.test/issues/OPS-9#ask-a9",
+    "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+    "  Answer text: Back off exponentially.",
+  ];
+  const opsItem = otherProjectAsk("OPS-9", "a9", "OPS", "Back off exponentially.");
+
+  test("dispatch_ask prints them under their heading, after its own project's items", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          other_projects: [
+            opsItem,
+            otherProjectAsk("WEB-3", "a3", "WEB", "Retry twice, then stop."),
+          ],
+        },
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        ...ownLines,
+        "Answered questions in other projects:",
+        ...opsLines,
+        "- WEB: WEB-3 [done] Webhook retries → http://dispatch.test/issues/WEB-3#ask-a3",
+        "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+        "  Answer text: Retry twice, then stop.",
+        followsLine,
+      ].join("\n")
+    );
+  });
+
+  // A document owner's label already spells its project, so the row must not spell it twice.
+  test("an ask owned by another project's document names that project once", async () => {
+    const runbookAsk: WriteSuggestion = {
+      kind: "ask",
+      owner: {
+        artifact_id: "document-7",
+        kind: "document",
+        name: "Delivery runbook",
+        project: "OPS",
+        slug: "delivery-runbook",
+      },
+      id: "a7",
+      snippet: "Should webhook deliveries back off?",
+      href: "/projects/OPS/documents/delivery-runbook?ask=a7",
+      ask: {
+        state: "answered",
+        answer: {
+          user: "sami",
+          selected: [],
+          text: "Back off exponentially.",
+          at: "2026-09-12T13:20:00Z",
+        },
+      },
+    };
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          other_projects: [runbookAsk],
+        },
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        ...ownLines,
+        "Answered questions in other projects:",
+        "- Delivery runbook (OPS/delivery-runbook) → http://dispatch.test/projects/OPS/documents/delivery-runbook?ask=a7",
+        "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+        "  Answer text: Back off exponentially.",
+        followsLine,
+      ].join("\n")
+    );
+  });
+
+  test("dispatch_doc_edit prints them under the new block's own items", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [
+          {
+            op: "insert",
+            after: "end",
+            markdown: ':::ask{urgency="med"}\nShould webhook deliveries back off?\n:::\n',
+          },
+        ],
+      },
+      advice({
+        decision_blocks_added: 1,
+        decision_block_checks: [
+          {
+            block_id: "ask-block-1",
+            question: "Should webhook deliveries back off?",
+            suggestions: {
+              outcome: "found",
+              search: "meaning_and_keywords",
+              related: [issueItem("DSP-7", "Webhook retries")],
+              other_projects: [opsItem],
+            },
+          },
+        ],
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        `Applied 1 ops (no new version) ${issueSuffix}`,
+        "Decision block ask-block-1:",
+        "Related items (searched by meaning and keywords):",
+        "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
+        "Answered questions in other projects:",
+        ...opsLines,
+        "Document token: sha256:edited",
+      ].join("\n")
+    );
+  });
+
+  test.each([
+    ["absent", {}],
+    ["null", { other_projects: null }],
+    ["an empty list", { other_projects: [] }],
+  ] as const)("a check that offered none (%s) prints no heading", async (_shape, offered) => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          ...offered,
+        } as unknown as Suggestions,
+      })
+    );
+
+    expect(result.text).toBe([askedLine, ...ownLines, followsLine].join("\n"));
+  });
+
+  test("an older server's past-decision field is ignored, and costs no line", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          other_projects: [opsItem],
+          // The field this client no longer reads. A deployment older than its deletion sends
+          // it, and the lines hold nothing of it.
+          decision: {
+            ...otherProjectAsk("OPS-4", "a4", "OPS", "Retry once."),
+            answered_by: "sami",
+            answered_at: "2026-09-01T09:00:00Z",
+          },
+        } as unknown as Suggestions,
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        ...ownLines,
+        "Answered questions in other projects:",
+        ...opsLines,
+        followsLine,
+      ].join("\n")
+    );
+    expect(result.text).not.toContain("OPS-4");
+  });
+
+  test("a check whose own project found nothing says so, then prints them", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "none",
+          search: "meaning_and_keywords",
+          related: [],
+          other_projects: [opsItem],
+        },
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        "Related-item check searched (meaning and keywords) and found nothing.",
+        "Answered questions in other projects:",
+        ...opsLines,
+        followsLine,
+      ].join("\n")
+    );
+  });
 });
 
 // A notice that cites a skill section sends the agent to read it, so each cited section must be a
 // `## ` heading of that skill's SKILL.md, read as dispatch-tools.test.ts reads the Dispatch skill's.
 test("every skill section a notice cites is a heading of that skill", () => {
   const repoRoot = path.resolve(import.meta.dir, "../../../..");
-  const source = readFileSync(path.resolve(import.meta.dir, "../dispatch-execute.ts"), "utf8");
+  // The dispatcher's entry and every module of its commands: a notice's text sits with the
+  // handler that prints it, and a handler moves between modules, so all of them are read.
+  const commands = path.resolve(import.meta.dir, "../dispatch-commands");
+  const source = [
+    readFileSync(path.resolve(import.meta.dir, "../dispatch-execute.ts"), "utf8"),
+    ...readdirSync(commands)
+      .filter((file) => file.endsWith(".ts"))
+      .map((file) => readFileSync(path.join(commands, file), "utf8")),
+  ].join("\n");
   const citations = [...source.matchAll(/the \\?`([a-z0-9-]+)\\?` skill, "([^"]+)"/gu)].map(
     ([, skill, section]) => ({ skill, section })
   );

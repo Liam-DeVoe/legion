@@ -21,10 +21,9 @@ import (
 // event by event, and the agent view one session's live conversation.
 
 // The five delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
-// three answer the Delivery and Pipeline pages' bodies for a window; the fourth is the Legion
-// board of one project (legion_board.go), which has no window: it shows what the daemon's state
-// says now; the fifth is one project's evals (evals.go), the list read over a window and a
-// compare range.
+// three answer the Delivery and Pipeline pages' bodies; the fourth is the Legion board of one
+// project (legion_board.go), which has no window: it shows what the daemon's state says now; the
+// fifth is one project's evals (evals.go), the list read over a window and a compare range.
 const (
 	deliveryLiveTimeline = "timeline"
 	deliveryLiveMeasures = "measures"
@@ -49,12 +48,10 @@ type DeliveryLiveWindow struct {
 
 // DeliveryLiveView is one view a page shows. A timeline or measures view names its Window and
 // Query, the query string the page would send to the GET route without from/to (search and every
-// facet); a pipeline view names its Window, or an At, which is the seven days ending on that day,
-// or neither, which is the seven days ending at the present, and no Query; a legion view names
-// its Project and nothing else, since the board has no window; an evals view names its Project,
-// its Window and its Query, the query string the page would send to
-// GET /api/v1/projects/{key}/evals without from/to (the compare range, the repositories, the kind
-// and the page).
+// facet); a pipeline view names at most an At; a legion view names its Project and nothing else,
+// since the board has no window; an evals view names its Project, its Window and its Query, the
+// query string the page would send to GET /api/v1/projects/{key}/evals without from/to (the
+// compare range, the repositories, the kind and the page).
 type DeliveryLiveView struct {
 	Kind    string              `json:"kind"`
 	Window  *DeliveryLiveWindow `json:"window,omitempty"`
@@ -218,10 +215,10 @@ func liveEnded(sub, reason string) LiveEnded {
 }
 
 // LiveError refuses a frame or a subscription, by the code the matching GET route would answer
-// (INVALID_QUERY, DELIVERY_NOT_CONFIGURED), the socket's own (INVALID_FRAME,
-// TOO_MANY_SUBSCRIPTIONS) or an agent view's (OAUTH_SCOPE_REQUIRED, SESSION_ID_INPUT,
-// STREAM_UNAVAILABLE). Sub names the subscription it refuses, and is empty for a frame Dispatch
-// could not read a sub from.
+// (INVALID_QUERY, DELIVERY_NOT_CONFIGURED, and the board's LEGION_SETTING_INPUT and
+// LEGION_NOT_CONFIGURED), the socket's own (INVALID_FRAME, TOO_MANY_SUBSCRIPTIONS) or an agent
+// view's (OAUTH_SCOPE_REQUIRED, SESSION_ID_INPUT, STREAM_UNAVAILABLE). Sub names the subscription
+// it refuses, and is empty for a frame Dispatch could not read a sub from.
 type LiveError struct {
 	Type    string `json:"type"`
 	Sub     string `json:"sub,omitempty"`
@@ -347,8 +344,8 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// The Legion board is one project's small, whole picture, so every field of it but its
 	// computed_at and its issues is sent whole: its ten columns are a fixed order rather than a
 	// list a page merges by id (the page's applyDelta sorts each list it knows, which a column
-	// order would have to be taught), and the header, the settings the daemon reports and where
-	// each came from each move as a block.
+	// order would have to be taught), and the header and the settings the daemon reports each
+	// move as a block.
 	//
 	// The issues map is sent entry by entry, by issue key, because the facts consumer writes one
 	// issue's row per change: a whole field would resend every issue's stored facts whenever one
@@ -357,7 +354,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		body: reflect.TypeFor[legionBoardResponse](),
 		maps: []string{"issues"},
 		whole: map[string][]string{
-			"project": nil, "header": nil, "columns": nil, "settings": nil, "setting_sources": nil,
+			"project": nil, "header": nil, "columns": nil, "settings": nil,
 		},
 		out:                 []string{"computed_at"},
 		project:             true,

@@ -445,8 +445,9 @@ func (s *server) registry() *evals.Store {
 }
 
 // evalRanges is the window and the compare range one eval read asked for: each as the whole UTC
-// days it covers, and each as the instants it was asked for, [from, to), which the failing-jobs
-// rows read as the Pipeline route reads the same two (pipelineWindowBetween).
+// days it covers, and each as the instants it was asked for, [from, to), whose end the
+// failing-jobs rows look back measures.FailingWindow from, as the Pipeline route looks back from
+// its at.
 type evalRanges struct {
 	window      evals.Range
 	compare     *evals.Range
@@ -460,6 +461,16 @@ type evalRanges struct {
 func evalDaysOf(from, to time.Time) evals.Range {
 	first := measures.Midnight(from)
 	return evals.Range{From: first, To: measures.Midnight(to.Add(-time.Nanosecond)).AddDate(0, 0, 1)}
+}
+
+// evalRangeDays is the UTC days of days, a range of whole UTC days (evalDaysOf), oldest first, as
+// YYYY-MM-DD: the days a fold over the range's day rows puts its parts on.
+func evalRangeDays(days evals.Range) []string {
+	var shown []string
+	for day := days.From; day.Before(days.To); day = day.AddDate(0, 0, 1) {
+		shown = append(shown, day.Format(time.DateOnly))
+	}
+	return shown
 }
 
 // parseEvalRanges reads an eval read's window and compare range: from and to as every delivery

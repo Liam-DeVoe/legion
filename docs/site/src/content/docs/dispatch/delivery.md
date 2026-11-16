@@ -1,16 +1,15 @@
 ---
 title: Delivery
-description: The Delivery page's timeline and measures, its Pipeline section's step timings, what each figure counts, the targets, and the routes an agent reads.
+description: The Delivery page's timeline and measures, the Pipeline page's step timings, what each figure counts, the targets, and the routes an agent reads.
 sidebar:
   order: 7
 ---
 
 The **Delivery** page shows how work reaches production. A timeline of every merge, deploy and
 failed run sits under a panel of delivery measures. Both read the facts Dispatch stores from
-GitHub, and both follow the same window and filters. A **Pipeline** section of the same page
-shows how long each step of CI and the deploy takes, day by day. Until the deploy repository and
-its workflows are set in **Settings → Delivery timeline**, the Delivery page shows that form
-instead.
+GitHub, and both follow the same window and filters. The **Pipeline** page beside it shows how
+long each step of CI and the deploy takes, day by day. Until the deploy repository and its
+workflows are set in **Settings → Delivery timeline**, the Delivery page shows that form instead.
 
 ![The Delivery page's measures panel: six target cards over a strip of headline numbers](/legion/media/dispatch/delivery-measures.png)
 
@@ -19,9 +18,8 @@ instead.
 The page opens on the last 28 days. **Window**, in the page header, sets it: the last 7, 14, 28 or
 84 days, or a custom range of whole days in UTC, both ends included. A preset rolls, so a link to
 the last 7 days always shows the latest 7; a custom range keeps its dates. The page reads at most
-84 days, and refuses a longer custom range, saying so. The Pipeline section counts whole UTC
-days: a preset there is that many days ending with today, today included. Changing the window
-clears a dragged stretch.
+84 days, and refuses a longer custom range, saying so. Changing the window clears a dragged
+stretch.
 
 The window, the search box and every filter (Repository, Parent agent, Session, Dispatch issue,
 Priority, Component, Author, rework, and whether a pull request has deployed) are written into the
@@ -31,7 +29,7 @@ brush window** puts the measures back.
 
 ## Live updates
 
-An open Delivery page keeps all of itself current over one connection to Dispatch. A merge
+An open Delivery or Pipeline page keeps itself current over one connection to Dispatch. A merge
 or a deploy appears within seconds, without a reload. Nothing reads again on a timer: Dispatch
 sends the page an update only when something it shows has changed, and each update carries only
 what changed, such as the pull requests and runs that moved, the counts beside the filters and
@@ -39,7 +37,7 @@ the measures' new numbers. A preset window keeps its end at the present, so a pu
 leaves the page at the moment it ages out of the window. A deploy shows once its production job
 finishes, without waiting for the rest of its run.
 
-Each section's freshness row says **Live** while the connection is open, with how long ago the last
+Each page's freshness row says **Live** while the connection is open, with how long ago the last
 change arrived. A source Dispatch reports as stale, or a failed reconcile, still shows
 in red with its age and error. While the connection is lost the row reads **Reconnecting** in red,
 with how long it has been lost; the page reconnects by itself and is sent only what changed while
@@ -158,7 +156,7 @@ Every client message is one JSON object:
 
 `sub` identifies that subscription in every response. `unsubscribe` with the same `sub` ends it.
 A delivery view is `timeline` or `measures` with its window and GET-route query; `pipeline` with
-its window, an `at`, or neither; `legion` with the `project` whose Legion board it shows (the body
+an optional `at`; `legion` with the `project` whose Legion board it shows (the body
 of `GET /api/v1/projects/{key}/legion/board`) and nothing else; or `evals` with the `project`
 whose evals it shows, its window, and the query `GET /api/v1/projects/{key}/evals` would be sent
 without `from` and `to` (`compare_from` and `compare_to`, `repo`, `kind`, `limit`, `offset`). A
@@ -228,10 +226,36 @@ bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
 
 It subscribes under the token in the file, writes one JSON line per frame (`at`, `type`, `bytes`,
 and the pull requests, runs, map keys, counts and `set` fields the frame carries), applies each
-frame as the page does, and reconnects and resumes as the page does. When the time is up,
+frame as the page does, and reconnects and resumes as the page does. It writes an `open` line each
+time a connection it holds opens and a `close` line each time one it holds closes, whether
+Dispatch closed it or the probe replaced it as silent; the one it holds when the watch ends, open
+or not, is let go and closed with no close line. A close line carries `wait_ms`: the wait in
+milliseconds the probe computed before it would open again, or `null` where it answers that close
+with no timer, which is the rotation close it answers at once, the silent socket it replaces at
+once, and a first connection Dispatch refused. When the time is up,
 `--compare` reads the GET routes for the last window it applied and writes, for each, whether the
 pull request ids, run ids and every measure equal what it holds; it exits 1 when one does not.
 `--body-file <file>` writes the body it holds.
+`--reconnect-spread-ms <n>` sets the window the probe's first reconnect attempt's wait is drawn
+from, uniformly in [0, n), in place of the page's own `RECONNECT_SPREAD_MS` of two seconds; a
+later attempt keeps the page's backoff whatever it is set to.
+A value above a timer's longest wait, 2147483647 ms, is refused, because the runtime clamps such
+a delay to 1 ms and the probe would reopen at once: the opposite of what the option says. That
+reason rests on a measurement of the runtime rather than on a row or a code reading: on Bun
+1.4.4, `setTimeout` at 2147483648 ms warned `Timeout duration was set to 1` and fired after
+118 ms, measured by the tester of dispatch://INFRA-1571 under six busy loops on two CPUs. That
+delay is the scheduler's, not the clamp's: the same call fired after 71-110 ms in five more runs
+under that load and after 28-42 ms in three idle runs, against the 24.9 days the delay asked for.
+A negative value is refused, and so is one that is not a number, and a blank or whitespace one,
+which `Number` would otherwise read as a spread of zero. Each of these is a usage error: the
+probe writes `--reconnect-spread-ms is a number of milliseconds from 0 to 2147483647, not`
+followed by the value it was given, then the usage line, and exits 2 without connecting to
+Dispatch. Of what this section says, these rest on a reading of the probe's code alone, because no
+row of its test drives or reads them: that a frame's line carries `at`; what it says of the silent
+socket; that an `open` line comes only for a connection the probe still holds; that the connection
+held when the watch ends writes no close line when it had not yet opened; that a negative value
+and one that is not a number are refused; and the usage error's text after
+`--reconnect-spread-ms`.
 
 A session group's Parent agent value is `group:<id>`, so a rename keeps every filter and link that
 names it; the timeline's `session_groups` lists every group with its name and sessions, beside
@@ -246,16 +270,15 @@ route.
 
 ## Pipeline
 
-The **Pipeline** section of the Delivery page (**Pipeline** in the sidebar under **Delivery**,
-which opens the page at it; the old `/pipeline` address redirects to `/delivery#pipeline`) shows
-how long each step between a pull request and production takes, and how often it succeeds, a UTC
-day at a time. Today is the last day of a preset window, drawn faded because it is not over. The
-section follows the page's window, and none of its filters. It updates itself live, as the
-timeline does, and a deploy card moves as soon as the deploy job it times finishes. A pull
-request's CI run reaches the **PR CI** card and its two tables only when the five-minute
-reconcile records it, since Envoy relays no event for a workflow run of a pull request.
+The **Pipeline** page (`/pipeline`, **Pipeline** in the sidebar under **Delivery**) shows how
+long each step between a pull request and production takes, and how often it succeeds, over the
+last seven UTC days. Today is the last day, drawn faded because it is not over. The page follows
+neither the Delivery page's window nor its filters. It updates itself live, as the Delivery page
+does, and a deploy card moves as soon as the deploy job it times finishes. A pull request's CI run
+reaches the **PR CI** card and its two tables only when the five-minute reconcile records it,
+since Envoy relays no event for a workflow run of a pull request.
 
-![The Delivery page's Pipeline section: six timing cards over the slowest-jobs and failing-jobs tables](/legion/media/dispatch/pipeline.png)
+![The Pipeline page: six timing cards over the slowest-jobs and failing-jobs tables](/legion/media/dispatch/pipeline.png)
 
 Each run counts on the day it started, and each job on its run's day. Only a result that ended in
 success or failure is timed; a timed-out result is a failure. A cancelled run or job is counted
@@ -272,35 +295,30 @@ clock; a step's median and 90th percentile are rounded to a tenth of a minute.
   branch, is not counted. The first two are optional settings; a pipeline that names neither has no
   such card.
 - **Merge to production**: the delivery lead time, by the day each pull request merged. A pull
-  request still waiting has none yet. It is judged as the `merge-to-production` eval judges it, on
-  the window's longest change by default: under 45 minutes for every change.
+  request still waiting has none yet. It is judged on the seven days' longest change against the
+  `merge-to-production` eval's target: under 45 minutes for every change until someone changes
+  it.
 - **PR open to merge**: every merged pull request, deployed or not, by the day it merged. It is
-  judged as the `pr-open-to-merge` eval judges it, on the window's median by default: a median
-  under 60 minutes.
+  judged on the seven days' median against the `pr-open-to-merge` eval's target: a median under
+  60 minutes until someone changes it.
 
-**PR CI: slowest jobs** ranks the checks workflow's jobs by their median over the window's days,
-slowest first, and shows five. A job needs a number of timed results in those days to be ranked,
-so a rarely run job cannot top the table on a handful of results: the `min_n` of the `job:*`
-series of the `pr-ci` eval in the project the deploy repository is mapped to (**Settings →
-Repositories → Projects**), which is 50 until someone changes it, and 50 where the deploy
-repository is mapped to no project or that project has no `pr-ci` eval yet. The section says the
-number it ranked by. The `pr-ci` eval's items sorted by median list every job ranked the same way.
-Only jobs of runs that ended in success or failure are counted.
+**PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
+and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely
+run job cannot top the table on a handful of results: the `min_n` of the `job:*` series of the
+`pr-ci` eval in the project the deploy repository is mapped to (**Settings → Repositories →
+Projects**), which is 50 until someone changes it, and 50 where the deploy repository is mapped
+to no project or that project has no `pr-ci` eval yet. The page says the number it ranked by. The
+`pr-ci` eval's items sorted by median list every job ranked the same way. Only jobs of runs that
+ended in success or failure are counted.
 
-**PR CI: jobs that failed in the last 24 hours** looks back 24 hours from where the window stops:
-the present for a preset, and the end of a custom range's last day. It lists every job that failed
-in a pull-request checks run that started in the window's days and completed in those 24 hours,
-most failures first and then by name, with how many of its results in those runs failed and a
-link to the run of its latest failure, whose age is counted from the window's end. Only runs and
-jobs that ended in success or failure are counted, so a cancelled run's jobs are not, and neither
-is the roll-up job named in **Settings → Delivery timeline**, which only reports the other jobs'
-result and fails whenever any of them does, nor a notification or guard step.
+**PR CI: jobs that failed in the last 24 hours** lists every job that failed in a run completed in
+the last day, most failures first, with how many of its results there failed and a link to the run
+of its latest failure. A cancelled run's jobs are not counted, and neither is the roll-up job
+named in **Settings → Delivery timeline**, which only reports the other jobs' result and fails
+whenever any of them does, nor a notification or guard step.
 
-For agents, `GET /api/v1/delivery/pipeline` answers the same numbers. Its optional `from` and
-`to` (RFC 3339) are the window, as the page's control sends it, bounded at the same 84 days as
-the other delivery routes, and its optional `at` is the seven UTC days ending on its own day and
-the moment the failing jobs look back from; the route refuses `at` beside `from` or `to`, and
-with none of the three the window is the seven days ending now. `pr_checks.slowest_min_results`
-is the number of timed results a job needed to be ranked among the slowest, `targets` holds the
-same targets as the measures route, and `status` the verdicts of the two lead-time cards.
-Any signed-in person or agent token reads it.
+For agents, `GET /api/v1/delivery/pipeline` answers the same numbers. Its optional `at`
+(RFC 3339) names the day the seven days end on and the moment the failing jobs look back from;
+left out, it is now. `pr_checks.slowest_min_results` is the number of timed results a job needed
+to be ranked among the slowest, `targets` holds the same targets as the measures route, and
+`status` the verdicts of the two lead-time cards. Any signed-in person or agent token reads it.

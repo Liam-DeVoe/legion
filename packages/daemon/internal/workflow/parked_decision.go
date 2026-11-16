@@ -28,7 +28,7 @@ func (e *Engine) relayParkedDecision(ctx context.Context, tx pgx.Tx, key, ask st
 	if err != nil || root == nil {
 		return err
 	}
-	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(), decision, 0, "", e.settings().Steps)
+	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(), decision, 0, "", e.cfg.Steps)
 	if err != nil {
 		return err
 	}
@@ -134,8 +134,7 @@ func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.
 func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
-	e = e.decision()
-	return ParkedDecisionTask(ctx, tx, e.store, e.settings().Steps, root)
+	return ParkedDecisionTask(ctx, tx, e.store, e.cfg.Steps, root)
 }
 
 // EnqueueNaming enqueues payload for issue, due at, a root-architect start or a catch-up notice
@@ -205,7 +204,9 @@ func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // nothing, and what it is owed waits KEPT for its next start or ready to name, since a catch-up
 // queued for nobody would only be dropped by the ready that follows. No catch-up of a hand-over
 // is paced: it answers a person who is waiting, and it reaches an architect the daemon did not
-// wake, so it is due at once (the zero moment QueueCatchUp reads as now).
+// wake, so it is due at once (the zero moment QueueCatchUp reads as now). Nor does one carry the
+// sentence of what a relaunch ended, which only a launch's ready knows: the prompt the claim's
+// own machine sends carries that sentence whatever becomes of a catch-up.
 func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, trees []string, now time.Time) error {
 	launches, err := store.ArchitectLaunches(ctx, tx, trees)
 	if err != nil {
@@ -226,7 +227,7 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 		if !hears {
 			continue
 		}
-		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], now, time.Time{}); err != nil {
+		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now, time.Time{}); err != nil {
 			return err
 		}
 	}
@@ -249,9 +250,8 @@ func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root rec
 }
 
 // GatedSteps is the design-gate steps the deployment gates, in the order it names them, which
-// admission reads to decide a re-admitted root's kept approval (Admission.keepStaleApproval). It
-// is read from the settings holder at the call, so admission sees the gate the daemon decides by.
-func (e *Engine) GatedSteps() []record.DesignStep { return e.settings().Steps }
+// admission reads to decide a re-admitted root's kept approval (Admission.keepStaleApproval).
+func (e *Engine) GatedSteps() []record.DesignStep { return e.cfg.Steps }
 
 // stepRef is the Dispatch reference of the document a design-gate step reviews on issue key: the
 // issue's spec for the spec step, which is the reference every design decision carried before a

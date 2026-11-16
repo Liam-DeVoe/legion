@@ -782,7 +782,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	var cells []jobCell
 	if read.request.sort == evalSortMedian {
 		// The range's own days: its day rows are of no other.
-		shown := pipelineWindowBetween(read.rng.days.From, read.rng.days.To).days()
+		shown := evalRangeDays(read.rng.days)
 		for _, job := range measures.FoldSlowestJobs(parts, shown, evals.SlowestJobsMinN(read.entry.Series[index].MinN)) {
 			cells = append(cells, jobCell{job.Name, job.Total})
 		}
@@ -826,20 +826,19 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 }
 
 // failingJobRows is pr-ci's jobs that failed in the measures.FailingWindow before the range's end,
-// the list the Pipeline route's failing-jobs table answers for the same from and to: the
-// pull-request checks runs the Pipeline reads for that window (delivery.ReadCIRows over
-// pipelineWindowBetween's days, which hold every run that can finish a job in those 24 hours
-// however long before them it started), those the project's CI day rows counted, through the
-// same measures.FailingJobs; each job with its failures, its results and its latest failed run,
-// which it links to.
+// the list the Pipeline route's failing-jobs table answers for an `at` at that end when the range
+// starts on the first of the seven days that at shows: the pull-request checks runs started on
+// the range's days (delivery.ReadCIRows over read.rng.days, which hold every run that can finish
+// a job in those 24 hours however long before them it started within the range), those the
+// project's CI day rows counted, through the same measures.FailingJobs; each job with its
+// failures, its results and its latest failed run, which it links to.
 func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	if read.settings == nil {
 		return nil, nil
 	}
 	settings := *read.settings
 	end := read.rng.end
-	window := pipelineWindowBetween(read.rng.start, end)
-	span := evals.Range{From: window.start(), To: window.readTo()}
+	span := read.rng.days
 	members, err := s.counted(ctx, read, evals.KindCI, span)
 	if err != nil {
 		return nil, err

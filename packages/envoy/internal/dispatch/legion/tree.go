@@ -1,11 +1,11 @@
 package legion
 
 // tree.go holds the one step every tree walk takes (TreeAbove) and the one rule that places an
-// issue in a tree (TreeChain and TreeRoot, dispatch://INFRA-1077). The Legion view and the four
-// metrics both place an issue in a tree — the view to tell a root from a child and to count a
+// issue in a tree (TreeChain and TreeRoot, dispatch://INFRA-1077). The Legion board and the four
+// metrics both place an issue in a tree — the board to tell a root from a child and to count a
 // root's unstarted children, the metrics to scope a filing and a root's wait on its children —
 // and one rule stated twice is two rules: a board that puts an issue in one tree while the
-// metrics put it in another is a view and a card that disagree about the same issue.
+// metrics put it in another is a board and a metric that disagree about the same issue.
 //
 // A walk that states which rows a computation must read takes the same step under a stopping
 // rule of its own, written in that walk's own doc. That is a second rule with a name and a
@@ -87,7 +87,7 @@ func TreeAbove(key string, node TreeNode) (above string, fromParent bool) {
 
 // TreeChain is the walk TreeRoot makes, kept: the issue itself, then every issue the walk climbs
 // through, ending at the tree root, which is why TreeRoot is its last entry. A reader that must
-// place something on the nearest issue above another — the Legion view counts an unstarted child
+// place something on the nearest issue above another — the Legion board counts an unstarted child
 // on the nearest issue of its tree that carries a card — reads the chain rather than stating the
 // climb a second time.
 //

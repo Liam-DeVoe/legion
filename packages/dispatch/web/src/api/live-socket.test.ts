@@ -407,6 +407,67 @@ test("an error frame rejects the query with an ApiError carrying the code", asyn
   }
 });
 
+// While a release rolls out, the socket can reach a process of an older build that refuses one view
+// this page subscribes with `INVALID_FRAME` — a view kind or a member it does not know. The refusal
+// is that view's alone: the socket stays open, and every view the process does serve is still
+// answered on it. The refused view is sent again on the page's next socket, here the one a rotation
+// opens, which can reach a process that serves it.
+test("an INVALID_FRAME fails that view alone: the socket stays, its other views answer, and the next socket sends it again", async () => {
+  jest.useFakeTimers();
+  const pipelineView: DeliveryLiveView = { kind: "pipeline" };
+  const pipelineKey = ["delivery", "pipeline", pipelineView] as const;
+  const timeline = observe();
+  const pipeline = observe(pipelineView, pipelineKey);
+  try {
+    const { socket, sub } = await opened();
+    const refused = socket.subscribed("pipeline").sub;
+    socket.receive({
+      type: "error",
+      sub: refused,
+      code: "INVALID_FRAME",
+      message: "this build does not serve that view",
+    });
+    await settle();
+    const failed = pipeline.observer.getCurrentResult();
+    expect(failed.status).toBe("error");
+    expect(failed.error).toBeInstanceOf(ApiError);
+    expect((failed.error as ApiError).code).toBe("INVALID_FRAME");
+    expect(socket.closedWith).toBeUndefined();
+    expect(live.state().state).toBe("open");
+
+    // The view the process serves is answered on the same socket.
+    socket.receive(snapshot(sub));
+    await settle();
+    expect(timeline.observer.getCurrentResult().status).toBe("success");
+    expect(timeline.observer.getCurrentResult().data).toEqual(body);
+    // And the page opens no other socket: a reconnect would have waited at most the first
+    // attempt's spread.
+    jest.advanceTimersByTime(RECONNECT_SPREAD_MS);
+    expect(sockets.sockets).toHaveLength(1);
+    expect(socket.closedWith).toBeUndefined();
+
+    // Dispatch rotates the socket: the next one sends the refused view again with the timeline's
+    // resume, and a process that serves the view answers it.
+    socket.drop(LIVE_SOCKET_MAX_AGE_CLOSE);
+    const next = sockets.latest();
+    expect(next).not.toBe(socket);
+    next.open();
+    expect(next.subscribed("pipeline")).toEqual({
+      type: "subscribe",
+      sub: refused,
+      view: pipelineView,
+    });
+    expect(next.subscribed("timeline")).toMatchObject({ sub, resume: { seq: "40" } });
+    next.receive(snapshot(refused, "42"));
+    await settle();
+    expect(pipeline.observer.getCurrentResult().status).toBe("success");
+    expect(pipeline.observer.getCurrentResult().data).toEqual(body);
+  } finally {
+    timeline.unsubscribe();
+    pipeline.unsubscribe();
+  }
+});
+
 test("the last observer leaving unsubscribes", async () => {
   const first = observe();
   const second = observe();
@@ -625,6 +686,34 @@ test("the first reconnect is spread over [0, 2 s); later ones back off within [d
     expect(reconnectDelayMs(attempt, () => 0)).toBe(d / 2);
     expect(reconnectDelayMs(attempt, () => 0.999)).toBeCloseTo(d / 2 + 0.999 * (d / 2));
     expect(reconnectDelayMs(attempt, () => 0.999)).toBeLessThan(d);
+  }
+});
+
+test("the first reconnect's wait is its draw times the window, so a scaled draw scales the wait", () => {
+  // What this holds up: the delivery probe sets its own first-attempt spread by scaling this
+  // function's random source instead of restating the arithmetic. `reconnectWaitMs(0, spreadMs,
+  // random)` in `packages/dispatch/e2e/delivery-live-probe.ts` calls `reconnectDelayMs(0, () =>
+  // random() * (spreadMs / RECONNECT_SPREAD_MS))`, so `--reconnect-spread-ms <n>` draws from
+  // [0, n) only while attempt 0's wait is the draw times the window. A `Math.min`, a floor or a
+  // clamp added to attempt 0 can keep the three points the row above pins and still change what
+  // that option means, with nothing red: a clamp at 1,999 ms passes that row and fails this one.
+  // So this row asserts the property across the window rather than at a value.
+  //
+  // Exact rather than to a tolerance: each side runs the same multiplication of the same doubles
+  // that the function runs, so both round the same way, and halving or doubling scales a double
+  // by a power of two, which IEEE arithmetic does without rounding.
+  for (const draw of [0, 0.001, 0.1, 0.25, 0.5, 0.75, 0.9999]) {
+    expect(reconnectDelayMs(0, () => draw)).toBe(draw * RECONNECT_SPREAD_MS);
+    expect(reconnectDelayMs(0, () => draw)).toBe(reconnectDelayMs(0, () => draw / 2) * 2);
+  }
+  // A factor that is not a power of two rounds twice, once in the draw and once in the wait, so
+  // this one is held to the tolerance the rows above use.
+  for (const factor of [0.3, 0.7]) {
+    for (const draw of [0.1, 0.25, 0.9]) {
+      expect(reconnectDelayMs(0, () => draw * factor)).toBeCloseTo(
+        reconnectDelayMs(0, () => draw) * factor
+      );
+    }
   }
 });
 

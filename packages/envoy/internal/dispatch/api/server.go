@@ -123,13 +123,6 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *agentsecrets.Client
-	// LegionDaemonTokenFile is the file holding Dispatch's own projected Kubernetes
-	// ServiceAccount token, minted for a Legion daemon's audience
-	// (DISPATCH_LEGION_DAEMON_TOKEN_FILE); the operator relay PUT /api/v1/legion/{project}/settings
-	// presents it, read at call time so a rotation is picked up. Empty sends no bearer, and
-	// whatever the daemon answers is what the caller sees. The minute's state read presents it
-	// never: GET /legion/v1/state authenticates nobody.
-	LegionDaemonTokenFile string
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -187,6 +180,13 @@ type Deps struct {
 	// build's. Empty in a process that names none, whose readings write then fails rather than
 	// write a row no build owns.
 	Build string
+	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
+	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
+	// is hashed into every list validator (listETag), so two builds never answer one ETag for
+	// two bodies; a build nothing stamped - every `go test` binary, a devbox `go run` - leaves
+	// it empty, which is one identity for every such build and is why a deploy is what it is
+	// for rather than a key anything depends on being unique.
+	BuildCommit string
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -233,9 +233,6 @@ type DepsInput struct {
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
-	// LegionDaemonTokenFile is the token file the operator relay to a Legion daemon presents;
-	// empty sends no bearer. See Deps.LegionDaemonTokenFile.
-	LegionDaemonTokenFile string
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -263,6 +260,8 @@ type DepsInput struct {
 	DashboardEntry string
 	// Build is the build this process runs as; see Deps.Build.
 	Build string
+	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
+	BuildCommit string
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -334,7 +333,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentSecrets:           agentSecretsClient,
-		LegionDaemonTokenFile:  strings.TrimSpace(input.LegionDaemonTokenFile),
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
@@ -346,6 +344,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
 		Build:                  input.Build,
+		BuildCommit:            input.BuildCommit,
 	}, nil
 }
 
@@ -396,6 +395,11 @@ type server struct {
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
 	// rather than its machine's speed.
 	suggestionTimeout time.Duration
+	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds that one
+	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
+	// as it runs in production.
+	beforeCrossProjectRead func(ctx context.Context) error
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
 	// (the forced create whose check does not answer), so a case's outcome is its own choice
@@ -410,6 +414,12 @@ type server struct {
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
 	rosters rosterCache
+	// listAnswers keeps what the comment list and the activity feed last answered, under the ETag
+	// each answers with, so a warm read of either writes bytes instead of making them again
+	// (list_answers.go). Every server register mounts has one; a server a test builds directly
+	// (directServer) has none, and every method of the cache takes a nil one, which keeps
+	// nothing.
+	listAnswers *listAnswerCache
 	// deliveryHub keeps the open Delivery and Pipeline pages current (LEGION-690); every server
 	// register mounts has one, and only a server a test builds directly (directServer) has none.
 	deliveryHub *deliveryHub
@@ -678,7 +688,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
 	s.liveKinds = map[string]liveKind{
@@ -764,6 +774,13 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			// early answer.
 			handler = s.gateRouteScopes(route.OAuthScopes, handler)
 		}
+		// One place for the whole table: every answer says its body depends on Dispatch-Trees
+		// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
+		// trees an answer written for a reader without them. It is outside the scope gate, so a
+		// refusal of the row's own scopes carries the header too. The answer's other Vary, on
+		// Accept-Encoding, is added by the same loop, where the encoding is chosen
+		// (compressAnswers).
+		handler = varyOnDisplayTrees(handler)
 		if route.Method != http.MethodGet {
 			// Every layer above may answer before the body is read; the answer waits for the body.
 			//
@@ -782,8 +799,11 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		}
 		// The access-log line is outermost, so it records what every layer answered - a keyed
 		// replay, a refused login, an early answer the drain held - and the caller the first of
-		// them resolved.
-		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, s.decideBrokerToken(trackTransactions(handler))))
+		// them resolved. Compression sits just inside it, so every one of those answers is
+		// compressed for a caller that takes gzip and the line counts the bytes that went on the
+		// wire. The two websockets below carry no compressed answer: the upgrade is not a body,
+		// and the frames after it are the socket's (compressAnswers).
+		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -1422,9 +1442,14 @@ type actorInput struct {
 	Actor *model.Actor `json:"actor"`
 }
 
-// decodeJSON decodes r's body, one JSON value of at most maxJSONRequestBytes, into value, which
-// declares every member the body may carry. A string the body holds anywhere that carries U+0000
-// is refused, naming where it stands (unstorableJSON).
+// decodeJSON decodes r's body, one JSON value of at most maxJSONRequestBytes, into value. A member
+// value does not declare is ignored, because two builds of Dispatch serve one database while a
+// release rolls out, and a body a newer build's client sends can reach the older build. A member
+// whose loss would change what a request does therefore ships as a new route, never as a member.
+// The ignored top-level members are logged at debug with the route (logUndeclaredMembers); the
+// test hooks, which no other build calls, refuse them instead (decodeJSONTestHook, and
+// refuseUndeclaredMembers for a hook that reads its body itself). A string the body holds
+// anywhere that carries U+0000 is refused, naming where it stands (unstorableJSON).
 func decodeJSON(r *http.Request, value any) error {
 	return decodeJSONWithin(r, value, maxJSONRequestBytes, errJSONTooLarge)
 }
@@ -1432,28 +1457,61 @@ func decodeJSON(r *http.Request, value any) error {
 // decodeJSONWithin is decodeJSON for a route whose body has a limit of its own (routeBody): a body
 // past limit bytes is tooLarge, the 413 that route answers one with.
 func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiError) error {
+	body, err := readJSONBody(r, value, limit, tooLarge)
+	if err != nil {
+		return err
+	}
+	logUndeclaredMembers(r, value, body)
+	return nil
+}
+
+// decodeJSONTestHook is decodeJSON for a route this tree alone calls: the test hooks, mounted only
+// under Deps.TestHooksEnabled. No page or command of another build reaches one, so a member the
+// hook does not declare is a mistake in the test that sent it, and is refused by name rather than
+// ignored.
+func decodeJSONTestHook(r *http.Request, value any) error {
+	body, err := readJSONBody(r, value, maxJSONRequestBytes, errJSONTooLarge)
+	if err != nil {
+		return err
+	}
+	return refuseUndeclaredMembers(value, body)
+}
+
+// refuseUndeclaredMembers is decodeJSONTestHook's refusal on its own, for a test hook that reads
+// its body itself and decodes it after: it answers the error naming the top-level members of body
+// that value's type does not declare, and nil when it declares them all.
+func refuseUndeclaredMembers(value any, body []byte) error {
+	if undeclared := undeclaredMembers(value, body); len(undeclared) > 0 {
+		return errorf(http.StatusBadRequest, "INVALID_JSON", "the hook does not take: %s", strings.Join(undeclared, ", "))
+	}
+	return nil
+}
+
+// readJSONBody decodes r's body, at most limit bytes of it, into value and returns the bytes it
+// read, for the caller to judge the members value does not declare by. A body past limit is
+// tooLarge, the 413 the route answers one with.
+func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
-		return errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
+		return nil, errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
 	}
 	r.Body = http.MaxBytesReader(maxBytesDiscarder{}, r.Body, limit)
 	var read bytes.Buffer
 	decoder := json.NewDecoder(io.TeeReader(r.Body, &read))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		var maxBytes *http.MaxBytesError
 		if errors.As(err, &maxBytes) {
-			return tooLarge
+			return nil, tooLarge
 		}
-		return errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
 	}
 	if decoder.More() {
-		return errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
+		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
 	}
 	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
-		return refusal
+		return nil, refusal
 	}
-	return nil
+	return read.Bytes(), nil
 }
 
 // WriteJSON writes body as the JSON response with the given status. The body is encoded whole
@@ -1497,10 +1555,16 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 	return s.deps.Events.Append(ctx, tx, event)
 }
 
-func (s *server) publish(events ...model.Event) {
+// publish hands each event to the broker and then stores the display trees of the stored texts
+// their payloads carry (storeEventDisplayTrees). ctx is the caller's own: a route's request
+// context, which by here has committed and holds no connection of the pool, or a background
+// writer's. A caller that publishes while its transaction is still open stores nothing, and loses
+// no tree by it: such an event carries a text its own write already stored.
+func (s *server) publish(ctx context.Context, events ...model.Event) {
 	for _, event := range events {
 		s.deps.Events.Publish(event)
 	}
+	s.storeEventDisplayTrees(ctx, events)
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {

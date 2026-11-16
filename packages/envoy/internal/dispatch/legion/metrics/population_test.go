@@ -35,7 +35,7 @@ func corpus(t *testing.T) *store.Store {
 			t.Fatalf("seed (%s): %v", sql, err)
 		}
 	}
-	exec(`insert into projects (key, name) values ('INFRA', 'INFRA')`)
+	exec(`insert into projects (key, name, default_assignee) values ('INFRA', 'INFRA', 'alice')`)
 	exec(`insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
 		values ('INFRA-1', 'INFRA', 1, 'The root', 'in_progress', 'm', '{"kind":"user","id":"alice"}'::jsonb, $1)`, after(-1))
 	exec(`insert into issues (key, project_key, number, title, status, rank, parent_key, created_by, created_at, closed_at)
@@ -180,7 +180,7 @@ func TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne(t *testing.T) {
 // read's scope does not reach. ReadIssues reads the event log, the handoffs and the observations
 // of the trees of the issues it recomputes (treeScopeKeys), and an open issue in none of those
 // carries no observation of its own there; the daemon's `tree` for it is a fact of the project
-// all the same, and the Legion view reads it project-wide. Reading it for the scope's issues
+// all the same, and the Legion board reads it project-wide. Reading it for the scope's issues
 // alone put one issue in two trees: the board's and the facts'.
 func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheReadDoesNotReach(t *testing.T) {
 	database := corpus(t)

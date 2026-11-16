@@ -17,7 +17,7 @@ import (
 // nameLegionDaemon names project's daemon, which is what brings the board.
 func nameLegionDaemon(t *testing.T, handler http.Handler, project, stateURL string) {
 	t.Helper()
-	written := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/"+project,
+	written := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/legion/daemon",
 		map[string]any{"state_url": stateURL}, "alice")
 	if written.Code != http.StatusOK {
 		t.Fatalf("name %s's daemon: status=%d body=%s", project, written.Code, written.Body.String())
@@ -100,7 +100,6 @@ func seedLegionBoard(t *testing.T, database *store.Store, project string, now ti
 	// The implementer is in a turn; its reviewer's claim ended.
 	seedLegionObservation(t, database, project, project+"-4", legion.ClaimFieldPrefix+"implementer", `"working"`, ago(2))
 	seedLegionObservation(t, database, project, project+"-4", legion.ClaimFieldPrefix+"reviewer", `"idle"`, ago(2))
-	seedLegionObservation(t, database, project, project+"-4", legion.FieldPullRequestChecksVerdict, `"failure"`, ago(1))
 	// What each root in awaiting_person waits on: one answered, which is why the daemon's line
 	// holds it first, and one still with the person.
 	seedLegionObservation(t, database, project, project+"-10", legion.FieldWaitingOn,
@@ -220,9 +219,6 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if !slices.Equal(child.Roles, []string{"implementer"}) {
 		t.Errorf("the child's roles in a turn = %v, want the implementer alone", child.Roles)
 	}
-	if child.ChecksVerdict == nil || *child.ChecksVerdict != "failure" {
-		t.Errorf("the child's CI verdict = %v, want failure", child.ChecksVerdict)
-	}
 	if child.Tree != "INFRA-3" || child.Slot == nil || *child.Slot != 1 {
 		t.Errorf("the child's card = %+v, want slot 1 on its root's tree", child)
 	}
@@ -246,6 +242,54 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	}
 	if !header.ReadOK || header.ReadAt == nil || header.ReadError != nil {
 		t.Errorf("the header's read = %+v, want the successful read the sampler recorded", header)
+	}
+}
+
+// TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded: the daemon's state carries no
+// CI verdict since cybermonklabs/legion#2539, and the card has no field for one (spec version 38
+// of dispatch://INFRA-1077). A database a sampler wrote before then still holds verdict rows, as
+// the browser seed once wrote one, and the card of such an issue answers no verdict key at all.
+// The key is looked for in the answer's own JSON, not in the struct that decodes it, since a
+// struct drops a key it has no field for.
+func TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	key := seedLegionIssue(t, database, "INFRA", 1, "An issue with a recorded verdict", "a", nil, "")
+	seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"implementing"`, now.Add(-time.Hour))
+	seedLegionObservation(t, database, "INFRA", key, "pull_request.checks_verdict", `"failing"`, now.Add(-time.Minute))
+	seedLegionRead(t, database, "INFRA", now, "")
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/INFRA/legion/board", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET the board of INFRA: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var board struct {
+		Columns []struct {
+			ID    string                       `json:"id"`
+			Cards []map[string]json.RawMessage `json:"cards"`
+		} `json:"columns"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &board); err != nil {
+		t.Fatalf("decode the board: %v", err)
+	}
+	var card map[string]json.RawMessage
+	for _, column := range board.Columns {
+		for _, each := range column.Cards {
+			if legion.JSONString(each["key"]) == key {
+				if column.ID != legion.ColumnImplementing {
+					t.Errorf("%s is in the %q column, want %q", key, column.ID, legion.ColumnImplementing)
+				}
+				card = each
+			}
+		}
+	}
+	if card == nil {
+		t.Fatalf("the board holds no card for %s: %s", key, response.Body.String())
+	}
+	if verdict, present := card["checks_verdict"]; present {
+		t.Fatalf("%s's card carries a CI verdict, %s, want none: %s", key, verdict, response.Body.String())
 	}
 }
 
@@ -318,16 +362,11 @@ const newAdmissionShapeState = `{
       "slot": {"index": 0, "admittedAt": "2026-11-03T10:00:00Z"}},
     "INFRA-2": {"key": "INFRA-2", "phase": "implementing", "status": "in_progress", "tree": "INFRA-1",
       "slot": {"index": 1, "admittedAt": "2026-11-03T10:05:00Z"},
-      "workers": {"implementer": {"claim": {"session": "s-1", "state": "working"}, "rounds": 1}},
-      "pullRequest": {"state": "open", "checksVerdict": "pending", "requiresChecks": true}},
+      "workers": {"implementer": {"claim": {"session": "s-1", "state": "working"}, "rounds": 1}}},
     "INFRA-3": {"key": "INFRA-3", "phase": "admitted", "status": "todo", "tree": "INFRA-3"},
     "INFRA-4": {"key": "INFRA-4", "phase": "admitted", "status": "todo", "tree": "INFRA-1"}
   },
-  "settings": {"admission_cap": 6, "review_round_cap": 3, "gates": {"design": true}},
-  "settingSources": {
-    "admission_cap": {"source": "route", "by": "alice", "at": "2026-11-03T12:00:00Z"},
-    "review_round_cap": {"source": "file", "at": "2026-11-03T06:00:00Z"}
-  }
+  "settings": {"admission_cap": 6, "review_round_cap": 3, "gates": {"design": true}}
 }`
 
 // TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape: the board is built from what the loose
@@ -371,8 +410,8 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	if child.Tree != "INFRA-1" || child.Slot == nil || *child.Slot != 1 {
 		t.Errorf("the child's card = %+v, want the slot it holds on the tree the daemon named", child)
 	}
-	if !slices.Equal(child.Roles, []string{"implementer"}) || child.ChecksVerdict == nil || *child.ChecksVerdict != "pending" {
-		t.Errorf("the child's card = %+v, want the implementer in a turn and the pending verdict", child)
+	if !slices.Equal(child.Roles, []string{"implementer"}) {
+		t.Errorf("the child's card = %+v, want the implementer in a turn", child)
 	}
 	if header := board.Header; header.SlotsInUse != 2 || header.SlotCap == nil || *header.SlotCap != 6 {
 		t.Errorf("the header = %+v, want the two slots the issues hold of the cap the daemon named", header)
@@ -389,17 +428,6 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	var gates map[string]bool
 	if err := json.Unmarshal(board.Settings["gates"], &gates); err != nil || !gates["design"] {
 		t.Errorf("the board's gates setting = %s (%v), want the object the daemon sent", board.Settings["gates"], err)
-	}
-	var source struct {
-		Source string `json:"source"`
-		By     string `json:"by"`
-		At     string `json:"at"`
-	}
-	if err := json.Unmarshal(board.SettingSources["admission_cap"], &source); err != nil {
-		t.Fatalf("decode admission_cap's source: %v", err)
-	}
-	if source.Source != "route" || source.By != "alice" || source.At != "2026-11-03T12:00:00Z" {
-		t.Errorf("admission_cap came from %+v, want the route, alice and the moment the daemon named", source)
 	}
 }
 
@@ -427,9 +455,8 @@ func TestTheLegionBoardOfADaemonThatNeverAnsweredIsEmptyWithItsFailure(t *testin
 	if header.SlotsInUse != 0 || header.SlotCap != nil || header.QueueLength != 0 {
 		t.Errorf("the header = %+v, want no slot, no cap and an empty queue", header)
 	}
-	if board.Settings == nil || len(board.Settings) != 0 || board.SettingSources == nil || len(board.SettingSources) != 0 {
-		t.Errorf("the board's settings = %v and sources = %v, want two empty objects rather than null",
-			board.Settings, board.SettingSources)
+	if board.Settings == nil || len(board.Settings) != 0 {
+		t.Errorf("the board's settings = %v, want an empty object rather than null", board.Settings)
 	}
 }
 
@@ -481,8 +508,8 @@ func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
 	}
 }
 
-// TestTheBoardAndTheMetricsPutAnIssueInTheSameTree: the view and the four metrics read one
-// tree-root rule (legion.TreeRoot), so no issue is a child on the board and a root on a card.
+// TestTheBoardAndTheMetricsPutAnIssueInTheSameTree: the board and the four metrics read one
+// tree-root rule (legion.TreeRoot), so no issue is a child on the board and a root in a report.
 // The chain here is 40 deep, longer than the depth cap the board's own walk once stopped at, and
 // it hangs under a tracking issue that carries no Legion work, which the metrics' population
 // holds and the daemon never reported.

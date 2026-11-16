@@ -19,8 +19,9 @@ import (
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
 // session and a session that claims within the tree are legitimate holders. The claim is the one
 // the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim). ReconcileAwaiting
-// keeps a root it answers no for at admitted, holding its slot, and admission removes an awaiting
-// root, and skips an answered one, that it answers no for.
+// keeps a root it answers no for at admitted, where it holds its slot unless it waits on another
+// issue (blockers.waitsOf), and admission removes an awaiting root, and skips an answered one,
+// that it answers no for.
 func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (string, error) {
 	switch {
 	case !issue.HandedOver:
@@ -50,7 +51,7 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue recor
 
 // armed says whether the design gate is armed: the deployment gates at least one step. With no
 // step gated, no approval is asked for.
-func (e *Engine) armed() bool { return len(e.settings().Steps) > 0 }
+func (e *Engine) armed() bool { return len(e.cfg.Steps) > 0 }
 
 // declare records a hand-back of root's architect to the person at mark (its sequence and
 // Dispatch's time of it, where the wait it starts begins), fresh for its ask: one at or below the
@@ -117,7 +118,7 @@ func (e *Engine) itemLeft(ctx context.Context, tx pgx.Tx, root record.Issue, bef
 	if err != nil {
 		return err
 	}
-	isRequest := after.GateRequestOf(gateRequestArtifact(e.settings().Steps, gates))
+	isRequest := after.GateRequestOf(gateRequestArtifact(e.cfg.Steps, gates))
 	if !isRequest && (!before.ByTree || !before.Question()) {
 		return nil
 	}
@@ -126,7 +127,7 @@ func (e *Engine) itemLeft(ctx context.Context, tx pgx.Tx, root record.Issue, bef
 		return err
 	}
 	onSubject := root.Awaiting.Ask == before.Ask || isRequest && root.Awaiting.GateVersion != 0
-	if next, ok := waitSubject(asks[root.Key], e.settings().Steps, gates, root.Awaiting.Since); ok {
+	if next, ok := waitSubject(asks[root.Key], e.cfg.Steps, gates, root.Awaiting.Since); ok {
 		if !onSubject {
 			return nil
 		}

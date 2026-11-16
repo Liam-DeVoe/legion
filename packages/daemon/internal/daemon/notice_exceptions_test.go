@@ -14,13 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -65,7 +63,7 @@ func architectClaimOn(t *testing.T, sup *supervisor, issue string, state supervi
 }
 
 // queuedNotices is every queued notice row, as "<kind> on <issue>" with its payload.
-func queuedNotices(t *testing.T, pool *pgxpool.Pool) []string {
+func queuedNotices(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), "select issue, payload::text from outbox where kind = 'notice' order by id")
 	if err != nil {
@@ -400,7 +398,7 @@ func confirmedAnswer(reason, holder string) error {
 }
 
 // noticeRowID is the id of the one outbox row queued so far.
-func noticeRowID(t *testing.T, pool *pgxpool.Pool) int64 {
+func noticeRowID(t *testing.T, pool *store.Pool) int64 {
 	t.Helper()
 	var id int64
 	if err := pool.QueryRow(context.Background(), "select id from outbox").Scan(&id); err != nil {
@@ -940,7 +938,7 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateRegistered, "ses_arch")
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Resends: 1}, time.Now().Add(noticeReholdDelays[1])))
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: time.Now}
-	w := &workflowRuntime{outbox: runner, log: quietLogger(), readied: map[claim.Token]bool{}, readyWake: make(chan struct{}, 1)}
+	w := &workflowRuntime{outbox: runner, log: quietLogger(), readied: newWakeSet[claim.Token]()}
 	due := func() bool {
 		t.Helper()
 		var due bool
@@ -1180,7 +1178,7 @@ func TestACatchUpCopyCommittedAfterTheFreshOneIsNotPublished(t *testing.T) {
 	var logged bytes.Buffer
 	publisher := &holderPublisher{}
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,
-		supervisor: sup, project: "legion", live: config.Settled(config.Config{}), now: func() time.Time { return clock }}
+		supervisor: sup, project: "legion", now: func() time.Time { return clock }}
 
 	for tick := range 2 {
 		if err := runner.RunOnce(context.Background()); err != nil {

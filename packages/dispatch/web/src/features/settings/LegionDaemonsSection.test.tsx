@@ -26,19 +26,22 @@ const setting: LegionSetting = {
 
 /** The three calls the section makes, over rows a test holds. */
 interface LegionServer {
-  list(): Promise<LegionSetting[]>;
+  get(project: string): Promise<LegionSetting | null>;
   put(project: string, stateUrl: string): Promise<LegionSetting>;
   remove(project: string): Promise<void>;
 }
 
-/** The Legion settings routes' server state as the Settings page reaches it: one row per
- *  project, listed by project key as `ListSettings` does; a save of a project that already names
- *  a daemon moves its URL, and a removal drops the row, so the read a write settles into answers
- *  what the write did rather than the fixture it started from. */
+/** The Legion daemon routes' server state as the Settings page reaches it: at most one row per
+ *  project, read one project at a time, `null` for a project that names none; a save of a project
+ *  that already names a daemon moves its URL, and a removal drops the row, so the read a write
+ *  settles into answers what the write did rather than the fixture it started from. */
 function legionServer(initial: readonly LegionSetting[]): LegionServer {
   let rows = initial.map((row) => ({ ...row }));
   return {
-    list: async (): Promise<LegionSetting[]> => rows.map((row) => ({ ...row })),
+    get: async (project: string): Promise<LegionSetting | null> => {
+      const row = rows.find((one) => one.project === project);
+      return row === undefined ? null : { ...row };
+    },
     put: async (project: string, stateUrl: string): Promise<LegionSetting> => {
       const saved: LegionSetting = {
         ...setting,
@@ -46,10 +49,7 @@ function legionServer(initial: readonly LegionSetting[]): LegionServer {
         state_url: stateUrl,
         updated_at: "2026-11-04T06:00:00Z",
       };
-      rows = rows.some((row) => row.project === project)
-        ? rows.map((row) => (row.project === project ? saved : row))
-        : [...rows, saved];
-      rows.sort((a, b) => (a.project < b.project ? -1 : 1));
+      rows = [...rows.filter((row) => row.project !== project), saved];
       return { ...saved };
     },
     remove: async (project: string): Promise<void> => {
@@ -58,27 +58,28 @@ function legionServer(initial: readonly LegionSetting[]): LegionServer {
   };
 }
 
-/** Renders the section against `server`. `human` is what `/auth/whoami` says: a person is offered
- *  the field and the Remove, a bearer is not. A bearer's answer names a kind the browser's own
- *  contract does not — the SPA types the route by the one answer it is meant to get — so this
- *  writes the answer a bearer really receives. */
+/** Renders the section against `server`, over a deployment of two projects, ACME and CORE.
+ *  `human` is what `/auth/whoami` says: a person is offered the field and the Remove, a bearer is
+ *  not. A bearer's answer names a kind the browser's own contract does not — the SPA types the
+ *  route by the one answer it is meant to get — so this writes the answer a bearer really
+ *  receives. */
 async function renderSection(server: LegionServer, human = true) {
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue(
     human
       ? { event_head: "0", kind: "user", login: "alice" }
       : ({ event_head: "0", kind: "agent", login: "alice" } as unknown as AuthenticatedUser)
   );
-  const listLegionSettings = spyOn(api, "listLegionSettings").mockImplementation(server.list);
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    {
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockImplementation(server.get);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(
+    ["ACME", "CORE"].map((key) => ({
       created_at: "2026-09-01T00:00:00Z",
       gated_steps: [],
-      key: "ACME",
-      name: "Acme",
+      key,
+      name: key,
       open_asks: 0,
-    },
-  ]);
-  spies.push(whoAmI, listLegionSettings, listProjects);
+    }))
+  );
+  spies.push(whoAmI, getLegionDaemon, listProjects);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   spies.push({ mockRestore: () => queryClient.clear() });
   render(
@@ -106,11 +107,27 @@ test("a deployment where no project names a daemon says so", async () => {
   expect(await section.findByText("No project names a Legion daemon yet.")).toBeDefined();
 });
 
+// No route lists every daemon, so one project's read can fail while the others answer: the
+// section says it could not load them rather than drawing a table that leaves that project out.
+test("a project whose daemon cannot be read fails the list rather than dropping out of it", async () => {
+  const server = legionServer([setting]);
+  const section = await renderSection({
+    ...server,
+    get: (project) =>
+      project === "CORE"
+        ? Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "try again" }))
+        : server.get(project),
+  });
+
+  expect(await section.findByText("Couldn't load the Legion daemons.")).toBeDefined();
+  expect(section.queryByRole("cell", { name: "ACME" })).toBeNull();
+});
+
 test("naming a project's daemon sends the PUT and lists what the server stored", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionSetting = spyOn(api, "putLegionSetting").mockImplementation(server.put);
-  spies.push(putLegionSetting);
+  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(server.put);
+  spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
   await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
@@ -119,7 +136,7 @@ test("naming a project's daemon sends the PUT and lists what the server stored",
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
 
   await waitFor(() =>
-    expect(putLegionSetting).toHaveBeenLastCalledWith("ACME", "http://127.0.0.1:9731", keyedAttempt)
+    expect(putLegionDaemon).toHaveBeenLastCalledWith("ACME", "http://127.0.0.1:9731", keyedAttempt)
   );
   expect(await section.findByRole("cell", { name: "http://127.0.0.1:9731" })).toBeDefined();
   // The form is empty again, ready for the next project's daemon.
@@ -129,28 +146,28 @@ test("naming a project's daemon sends the PUT and lists what the server stored",
 test("removing a project's daemon sends the DELETE and drops its row", async () => {
   const user = userEvent.setup();
   const server = legionServer([setting]);
-  const deleteLegionSetting = spyOn(api, "deleteLegionSetting").mockImplementation(server.remove);
-  spies.push(deleteLegionSetting);
+  const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockImplementation(server.remove);
+  spies.push(deleteLegionDaemon);
   const section = await renderSection(server);
 
   await user.click(
     await section.findByRole("button", { name: "Remove the Legion daemon of ACME" })
   );
 
-  await waitFor(() => expect(deleteLegionSetting).toHaveBeenLastCalledWith("ACME", keyedAttempt));
+  await waitFor(() => expect(deleteLegionDaemon).toHaveBeenLastCalledWith("ACME", keyedAttempt));
   expect(await section.findByText("No project names a Legion daemon yet.")).toBeDefined();
 });
 
 test("a refusal the server made is shown as the server wrote it, and the row goes back", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionSetting = spyOn(api, "putLegionSetting").mockRejectedValue(
+  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockRejectedValue(
     new ApiError(403, {
       code: "SCOPE_FORBIDDEN",
       error: "this credential names one project and cannot write a deployment setting",
     })
   );
-  spies.push(putLegionSetting);
+  spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
   await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
@@ -172,8 +189,8 @@ test("a refusal the server made is shown as the server wrote it, and the row goe
 test("a URL with a path is refused by the field, in the words the route uses", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionSetting = spyOn(api, "putLegionSetting").mockImplementation(server.put);
-  spies.push(putLegionSetting);
+  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(server.put);
+  spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
   await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
@@ -186,7 +203,7 @@ test("a URL with a path is refused by the field, in the words the route uses", a
   );
   // No Retry: the URL has to change first.
   expect(section.queryByRole("button", { name: "Retry" })).toBeNull();
-  expect(putLegionSetting).not.toHaveBeenCalled();
+  expect(putLegionDaemon).not.toHaveBeenCalled();
 });
 
 test("a reader who is not a person is shown the daemons and offered no control", async () => {

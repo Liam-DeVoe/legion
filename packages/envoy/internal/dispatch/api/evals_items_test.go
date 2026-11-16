@@ -92,11 +92,12 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 	return value
 }
 
-// TestTheFailingJobsItemsAreThePipelinesFailingJobs: pr-ci's items with sort=failures answer the
-// list GET /api/v1/delivery/pipeline answers in pr_checks.failing_jobs for the same from and to,
-// one list and two readers (measures.FailingJobs over the runs the Pipeline reads for that
-// window): over a window whose 24 hours before its end hold a run of the deliverytest history
-// that started before them and failed a job inside them, and over a whole-day window.
+// TestTheFailingJobsItemsAreThePipelinesFailingJobs: pr-ci's items with sort=failures over the
+// range from the first of the seven days an `at` shows to that at answer the list
+// GET /api/v1/delivery/pipeline answers in pr_checks.failing_jobs for that at, one list and two
+// readers (measures.FailingJobs over the runs of those days): for an at whose 24 hours hold a
+// run of the deliverytest history that started before them and failed a job inside them, and for
+// an at on a midnight.
 func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
@@ -122,15 +123,16 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 		t.Fatal("the history holds no pull-request checks run that failed a job, so no window straddles one")
 	}
 	straddleTo := straddling.StartedAt.Add(measures.FailingWindow + time.Second)
-	for _, window := range []struct {
-		name     string
-		from, to time.Time
+	for _, pinned := range []struct {
+		name string
+		at   time.Time
 	}{
-		{"a window whose 24 hours hold a run started before them", straddleTo.AddDate(0, 0, -7), straddleTo},
-		{"a whole-day window", fixture.From.AddDate(0, 0, 4), fixture.From.AddDate(0, 0, 11)},
+		{"an at whose 24 hours hold a run started before them", straddleTo},
+		{"an at on a midnight", fixture.From.AddDate(0, 0, 11)},
 	} {
-		query := url.Values{"from": {window.from.Format(time.RFC3339Nano)}, "to": {window.to.Format(time.RFC3339Nano)}}.Encode()
-		pipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+query).PRChecks.FailingJobs
+		at := url.Values{"at": {pinned.at.Format(time.RFC3339Nano)}}.Encode()
+		query := url.Values{"from": {measures.WindowStart(pinned.at).Format(time.RFC3339Nano)}, "to": {pinned.at.Format(time.RFC3339Nano)}}.Encode()
+		pipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+at).PRChecks.FailingJobs
 		items := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/"+fixture.Project+"/evals/pr-ci/items?sort=failures&limit=200&"+query)
 		answered := make([]measures.FailingJob, 0, len(items.Items))
 		for _, row := range items.Items {
@@ -141,21 +143,22 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 			answered = append(answered, job)
 		}
 		if len(pipeline) == 0 {
-			t.Fatalf("%s (%s): the Pipeline answers no failing job, so the comparison compares nothing", window.name, query)
+			t.Fatalf("%s (%s): the Pipeline answers no failing job, so the comparison compares nothing", pinned.name, at)
 		}
 		if got, want := mustJSON(t, answered), mustJSON(t, pipeline); got != want {
-			t.Errorf("%s (%s): the items answer the failing jobs %s, the Pipeline %s", window.name, query, got, want)
+			t.Errorf("%s (%s, %s): the items answer the failing jobs %s, the Pipeline %s", pinned.name, at, query, got, want)
 			continue
 		}
-		t.Logf("%s (%s): the items and the Pipeline answer the same %d failing jobs, the first %+v", window.name, query, len(pipeline), pipeline[0])
+		t.Logf("%s (%s, %s): the items and the Pipeline answer the same %d failing jobs, the first %+v", pinned.name, at, query, len(pipeline), pipeline[0])
 	}
-	t.Logf("the straddling run %d started %s, completed %s; its window ends %s", straddling.RunID,
+	t.Logf("the straddling run %d started %s, completed %s; its at is %s", straddling.RunID,
 		straddling.StartedAt.Format(time.RFC3339), straddling.CompletedAt.Format(time.RFC3339), straddleTo.Format(time.RFC3339))
 }
 
-// TestTheSlowestJobsItemsAreThePipelinesSlowestJobs: pr-ci's items with sort=median rank the jobs
-// GET /api/v1/delivery/pipeline ranks in pr_checks.slowest_jobs for the same from and to, one
-// ranking and two readers (R7: no read both families serve gets two answers), and they stay one
+// TestTheSlowestJobsItemsAreThePipelinesSlowestJobs: pr-ci's items with sort=median over the
+// seven days an `at` shows rank the jobs GET /api/v1/delivery/pipeline ranks in
+// pr_checks.slowest_jobs for that at, one ranking and two readers (R7: no read both families
+// serve gets two answers), and they stay one
 // after a register write sets pr-ci's job series' min_n: here to the timed results of the Pipeline's
 // busiest slowest job, so a ranking that reads the registry keeps that job and drops the others,
 // and one that does not keeps them all.
@@ -163,10 +166,14 @@ func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, fixture.To.Add(-time.Minute))
-	query := url.Values{"from": {fixture.From.AddDate(0, 0, 4).Format(time.RFC3339)}, "to": {fixture.From.AddDate(0, 0, 11).Format(time.RFC3339)}}.Encode()
+	// The Pipeline's seven days ending on the history's eleventh, and the items' range of the
+	// same days.
+	pinned := fixture.From.AddDate(0, 0, 11).Add(-time.Second)
+	at := url.Values{"at": {pinned.Format(time.RFC3339)}}.Encode()
+	query := url.Values{"from": {measures.WindowStart(pinned).Format(time.RFC3339)}, "to": {pinned.Format(time.RFC3339)}}.Encode()
 	ranked := func() (pipeline, items []string) {
 		t.Helper()
-		for _, job := range evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+query).PRChecks.SlowestJobs {
+		for _, job := range evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+at).PRChecks.SlowestJobs {
 			pipeline = append(pipeline, job.Name)
 		}
 		for _, row := range evalGet[evalItemsResponse](t, handler, "/api/v1/projects/"+fixture.Project+"/evals/pr-ci/items?sort=median&limit=200&"+query).Items {
@@ -177,7 +184,7 @@ func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 	same := func(pipeline, items []string) bool {
 		return len(items) >= len(pipeline) && slices.Equal(items[:len(pipeline)], pipeline)
 	}
-	slowest := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+query).PRChecks.SlowestJobs
+	slowest := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+at).PRChecks.SlowestJobs
 	if len(slowest) < 2 {
 		t.Fatalf("the Pipeline ranks %d slowest jobs (%s), so no min_n can tell its ranking from another", len(slowest), query)
 	}

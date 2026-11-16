@@ -43,14 +43,14 @@ func TestRerunChildJudgesTheTreeFromOneRead(t *testing.T) {
 	counting := &countingRecords{Store: record.NewStore()}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
-		Settings: operatorSettings(), Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(),
+		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(),
 		Record: counting, Handlers: handlers, Dispatch: statuses,
 	}).Handler
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
 		t.Fatalf("park = %d %s", recorder.Code, recorder.Body)
 	}
-	acceptPhase(t, h, statusRoot, phase.AwaitingMerge)
+	acceptPhase(t, h, statusRoot, phase.Merging)
 
 	issues, trees := counting.issues.Load(), counting.trees.Load()
 	recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)

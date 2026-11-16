@@ -120,10 +120,6 @@
             }
           },
           {
-            "name": "DISPATCH_LEGION_DAEMON_TOKEN_FILE",
-            "value": "/var/run/secrets/legion/daemon-token"
-          },
-          {
             "name": "DISPATCH_ANSWERER",
             "value": "endpoint"
           },
@@ -214,11 +210,6 @@
             "readOnly": true
           },
           {
-            "mountPath": "/var/run/secrets/legion",
-            "name": "legion-daemon-token",
-            "readOnly": true
-          },
-          {
             "mountPath": "/var/run/secrets/chat-token",
             "name": "chat-token",
             "readOnly": true
@@ -300,20 +291,6 @@
           }
         },
         "name": "nats-seed"
-      },
-      {
-        "name": "legion-daemon-token",
-        "projected": {
-          "sources": [
-            {
-              "serviceAccountToken": {
-                "audience": "legion-daemon",
-                "expirationSeconds": 3600,
-                "path": "daemon-token"
-              }
-            }
-          ]
-        }
       },
       {
         "csi": {

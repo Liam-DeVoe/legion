@@ -99,7 +99,10 @@ type AppContextOptions struct {
 	DashboardEntry string
 	// Build is the build this process runs as, which the eval day rows a readings write keeps
 	// record (api.Deps.Build).
-	Build          string
+	Build string
+	// BuildCommit is the commit this process was built from, which main holds in its own
+	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
+	BuildCommit    string
 	Sessions       auth.SessionStore
 	People         auth.PeopleStore
 	Identity       identity.Identity
@@ -141,9 +144,6 @@ type AppContextOptions struct {
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
-	// LegionDaemonTokenFile is the token file the operator relay to a Legion daemon presents;
-	// empty sends no bearer. See api.DepsInput.
-	LegionDaemonTokenFile string
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.
 	Files            files.Store
@@ -217,7 +217,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentStream:            opts.AgentStream,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
-		LegionDaemonTokenFile:  opts.LegionDaemonTokenFile,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -227,6 +226,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		DashboardEntry:         opts.DashboardEntry,
 		Build:                  opts.Build,
+		BuildCommit:            opts.BuildCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -684,7 +684,7 @@ func isRetainedAssetPath(normalized string) bool {
 // the request until that read ends: a client that abandons each request the moment it reaches
 // the store cannot hold more store reads at once than the cap has room for.
 func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, key string) {
-	if asset, ok := r.assets.get(key); ok {
+	if asset, ok := r.assets.Get(key); ok {
 		writeRetainedAsset(w, req, key, asset)
 		return
 	}
@@ -745,7 +745,7 @@ func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, ke
 func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-chan singleflight.Result, error) {
 	read := r.assets.reads.DoChan(key, func() (any, error) {
 		// A read that finished between this request's cache miss and its flight answers it.
-		if asset, ok := r.assets.get(key); ok {
+		if asset, ok := r.assets.Get(key); ok {
 			return asset, nil
 		}
 		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retainedAssetFetchTimeout)
@@ -754,7 +754,7 @@ func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-c
 		if err != nil {
 			return nil, err
 		}
-		r.assets.put(key, asset)
+		r.assets.Put(key, asset)
 		return asset, nil
 	})
 	select {

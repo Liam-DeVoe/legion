@@ -24,7 +24,7 @@ import (
 //     issues' parent chain instead.
 
 // State is a daemon's state as Dispatch records it: its issues, its admission block, the settings
-// it reports with where each came from, and nothing else of the document.
+// it reports, and nothing else of the document.
 type State struct {
 	Issues map[string]Issue `json:"issues"`
 	// Admission is the daemon's admission block, absent from a document that carries none: the
@@ -33,13 +33,9 @@ type State struct {
 	// alone is not it), the blockers each held issue waits on, and the slot cap its header shows.
 	Admission *Admission `json:"admission,omitempty"`
 	// Settings is the settings the daemon reports, which hold no secret, each value kept as the
-	// bytes the daemon sent: the view shows them and Dispatch models none of them, so a key added
-	// to legion.yaml is recorded the day a daemon sends it.
+	// bytes the daemon sent: the board carries them and Dispatch models none of them, so a key
+	// added to legion.yaml is recorded the day a daemon sends it.
 	Settings map[string]json.RawMessage `json:"settings,omitempty"`
-	// SettingSources is where each setting's value came from, by the same key: the file or the
-	// route, who changed it and when (the spec's contract 4). A daemon before that contract sends
-	// none, which is no source rather than an empty one.
-	SettingSources map[string]json.RawMessage `json:"settingSources,omitempty"`
 }
 
 // Admission is the admission block in the members Dispatch records. Every member is optional and
@@ -70,9 +66,8 @@ type BlockedIssue struct {
 
 // Issue is one issue of the daemon's record, in the fields Dispatch observes.
 type Issue struct {
-	Key    string `json:"key"`
-	Phase  string `json:"phase"`
-	Status string `json:"status"`
+	Key   string `json:"key"`
+	Phase string `json:"phase"`
 	// Tree is the issue's tree root (dispatch://INFRA-980), absent from every daemon before it: a
 	// pointer so "the daemon sent no tree field" and "the daemon named a root" stay apart.
 	Tree *string `json:"tree,omitempty"`
@@ -81,10 +76,9 @@ type Issue struct {
 	// WaitingOn is what a root in awaiting_person waits on from a person, kept as the bytes the
 	// daemon sent: Dispatch records the wait, it does not model it, so a field added to it is
 	// recorded rather than dropped.
-	WaitingOn   json.RawMessage   `json:"waitingOn,omitempty"`
-	Architect   *Claim            `json:"architect,omitempty"`
-	Workers     map[string]Worker `json:"workers,omitempty"`
-	PullRequest *PullRequest      `json:"pullRequest,omitempty"`
+	WaitingOn json.RawMessage   `json:"waitingOn,omitempty"`
+	Architect *Claim            `json:"architect,omitempty"`
+	Workers   map[string]Worker `json:"workers,omitempty"`
 }
 
 // Slot is the admission slot an issue holds.
@@ -103,28 +97,11 @@ type Worker struct {
 	Claim Claim `json:"claim"`
 }
 
-// PullRequest is the issue's pull request as the daemon observes it from GitHub.
-type PullRequest struct {
-	State         string `json:"state"`
-	ChecksVerdict string `json:"checksVerdict,omitempty"`
-	// RequiresChecks is kept as the bytes the daemon sent, so an observation records whatever a
-	// daemon writes and a shape no reader expects is stored rather than dropped. One reader
-	// reads it, and it reads a boolean: the CI-wait segment takes true as "the base branch
-	// requires a check" and anything else as no check at all
-	// (legion/metrics/segments.go's requiresChecks, mirroring `legionPullRequestView` in
-	// packages/contracts/src/legion-api.ts).
-	RequiresChecks json.RawMessage `json:"requiresChecks,omitempty"`
-}
-
 // The fields a read observes, one row of legion_observations each where the value moved.
 const (
-	FieldPhase                     = "phase"
-	FieldStatus                    = "status"
-	FieldSlot                      = "slot"
-	FieldWaitingOn                 = "waiting_on"
-	FieldPullRequestState          = "pull_request.state"
-	FieldPullRequestChecksVerdict  = "pull_request.checks_verdict"
-	FieldPullRequestRequiresChecks = "pull_request.requires_checks"
+	FieldPhase     = "phase"
+	FieldSlot      = "slot"
+	FieldWaitingOn = "waiting_on"
 	// FieldTree is the issue's tree root as the daemon named it (dispatch://INFRA-980). It is
 	// observed only for an issue carrying one: a daemon that sends none leaves the reader to the
 	// parent chain rather than to a guess.
@@ -133,11 +110,10 @@ const (
 	// AdmissionKey rather than on any issue: the waiting line's order, the blockers and the cap
 	// belong to the project, not to one issue.
 	FieldAdmission = "admission"
-	// FieldSettings and FieldSettingSources are the settings the daemon reports and where each
-	// came from, observed under AdmissionKey beside the admission block: they belong to the
-	// project's daemon, not to an issue, and the settings control on the Legion view reads them.
-	FieldSettings       = "settings"
-	FieldSettingSources = "setting_sources"
+	// FieldSettings is the settings the daemon reports, observed under AdmissionKey beside the
+	// admission block: they belong to the project's daemon, not to an issue, and the board
+	// carries them (api/legion_board.go).
+	FieldSettings = "settings"
 	// ClaimFieldPrefix starts the field of one role's claim state: `claim.architect`,
 	// `claim.implementer`.
 	ClaimFieldPrefix = "claim."
@@ -185,7 +161,7 @@ func JSONString(raw []byte) string {
 }
 
 // AdmissionKey is the issue key every project-level observation is written under — the admission
-// block, the settings and their sources: the empty string, which no issue key can be
+// block and the settings: the empty string, which no issue key can be
 // (legion_observations.issue_key is free text with no foreign key, so the rows cost no issue).
 const AdmissionKey = ""
 
@@ -202,21 +178,23 @@ type Observation struct {
 // AdmissionKey: the admission block, the settings the daemon reports and where each came from,
 // none of which belongs to an issue.
 //
-// Phase, status, slot, the wait and the pull request's three fields are observed on every issue,
-// `null` where the issue carries none, so a slot released or a wait answered is a change like any
-// other; a first `null` writes no row (store.go's insert). A claim is observed for each role the
-// read names — the architect and each worker — and a tree only for an issue the daemon named one
-// for, since a field the daemon does not name has not changed: it is simply not this daemon's.
+// Phase, slot and the wait are observed on every issue, `null` where the issue carries none, so a
+// slot released or a wait answered is a change like any other; a first `null` writes no row
+// (store.go's insert). A claim is observed for each role the read names — the architect and each
+// worker — and a tree only for an issue the daemon named one for, since a field the daemon does
+// not name has not changed: it is simply not this daemon's. The issue's status and its pull
+// request are not observed, since neither the board nor the metrics reads either: the metrics
+// read an issue's status from Dispatch's own events (metrics' readStatusMarks).
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
-	observations := make([]Observation, 0, len(keys)*8+3)
+	// The three fields every issue carries and one claim each, and the project's two.
+	observations := make([]Observation, 0, len(keys)*4+2)
 	for _, project := range []struct {
 		field string
 		value any
 	}{
 		{FieldAdmission, s.Admission},
 		{FieldSettings, s.Settings},
-		{FieldSettingSources, s.SettingSources},
 	} {
 		observations = append(observations, Observation{
 			IssueKey: AdmissionKey, Field: project.field, Value: encodeValue(project.value),
@@ -228,7 +206,6 @@ func (s State) Observations() []Observation {
 			observations = append(observations, Observation{IssueKey: key, Field: field, Value: encodeValue(value)})
 		}
 		add(FieldPhase, issue.Phase)
-		add(FieldStatus, issue.Status)
 		if issue.Tree != nil {
 			add(FieldTree, optional(*issue.Tree))
 		}
@@ -244,13 +221,6 @@ func (s State) Observations() []Observation {
 		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
 			add(ClaimFieldPrefix+role, optional(issue.Workers[role].Claim.State))
 		}
-		var state, verdict, requires any
-		if pull := issue.PullRequest; pull != nil {
-			state, verdict, requires = optional(pull.State), optional(pull.ChecksVerdict), rawOrNil(pull.RequiresChecks)
-		}
-		add(FieldPullRequestState, state)
-		add(FieldPullRequestChecksVerdict, verdict)
-		add(FieldPullRequestRequiresChecks, requires)
 	}
 	return observations
 }

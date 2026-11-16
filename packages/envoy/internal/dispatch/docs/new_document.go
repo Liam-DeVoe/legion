@@ -64,10 +64,12 @@ type NewArtifact struct {
 // otherwise locks no row before it looks its artifact up by name or slug and takes a new slug, so
 // two uploads at once - `plan.md` and `plan-md` - could each miss the other and leave two
 // documents that one reference names; the eval registry's create of `evals-md` takes the same
-// lock, so it and an upload of `evals.md` cannot both create one. Only those writes take it. An
-// upload takes it before any row or room, and the registry takes it after the eval's own lock
-// (evals' lockEval) and before its version rows, any artifact row or room, which no holder of
-// this lock waits on, so it joins no lock cycle.
+// lock, so it and an upload of `evals.md` cannot both create one, and api's title correction and
+// removal of a project document take it before they read the row again (beginArtifactWrite).
+// Only those writes take it. An upload, a title correction and a removal take it before any row
+// or room, and the registry takes it after the eval's own lock (evals' lockEval) and before its
+// version rows, any artifact row or room, which no holder of this lock waits on, so it joins no
+// lock cycle.
 func LockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('project-artifacts:' || $1))`, project); err != nil {
 		return fmt.Errorf("lock the project's documents: %w", err)
@@ -127,13 +129,15 @@ func WriteDocumentText(ctx context.Context, documents API, artifactID string, nu
 	if err != nil {
 		return WrittenText{}, err
 	}
-	version, err := WriteDocumentVersion(ctx, tx, artifactID, number, stored, []model.Actor{actor}, summary)
+	version, err := WriteDocumentVersion(ctx, tx, artifactID, number, stored, []model.Actor{actor}, summary, ledger.RenderStampOf(artifactID, stored))
 	if err != nil {
 		return WrittenText{}, err
 	}
 	// The version credits the writer alone, and holds the write to the document, which clears the
-	// credit of every edit that write read when it changed the document.
-	ledger.WroteVersion(artifactID, version)
+	// credit of every edit that write read when it changed the document. It carries the markdown
+	// it stored, whose display tree the commit stores (Ledger.storeVersionTrees), since this write
+	// makes the row itself.
+	ledger.WroteVersion(artifactID, version, stored)
 	readBack := ledger.ReadBackOf(artifactID, stored)
 	// The version row exists now, so the count names it (LEGION-542).
 	if err := RecordWrittenTaskProgress(ctx, tx, artifactID, readBack, stored); err != nil {
@@ -173,18 +177,22 @@ func CreateDocument(ctx context.Context, documents API, row NewArtifact, markdow
 // upload, and the eval registry's creation of `evals-md` through CreateDocument), returning the
 // same decoded version the upload route returns to its caller. Those writes keep this separate
 // from writeVersionTx because each writes its own artifact event, and an upload its approval move.
-func WriteDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string) (model.Version, error) {
+// stamp is what the markdown was rendered from (Ledger.RenderStampOf), stored with the head this
+// transaction's own write left, so a text read of a document still standing there serves the
+// stored markdown rather than rendering the document again.
+func WriteDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string, stamp RenderStamp) (model.Version, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {
 		return model.Version{}, fmt.Errorf("encode document version authors: %w", err)
 	}
 	var version model.Version
 	var authorsRaw []byte
-	if err := tx.QueryRow(ctx, `
-		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version)
-		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = $1), 0))
+	if err := tx.QueryRow(ctx, RenderStampHead+`
+		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+RenderStampColumns+`)
+		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
+			`+RenderStampValues+`, $7, $8)
 		returning number, named, summary, authors, created_at, `+model.VersionSize+`
-	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary).Scan(
+	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary, stamp.Token, stamp.Renderer).Scan(
 		&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size,
 	); err != nil {
 		return model.Version{}, fmt.Errorf("write document version: %w", err)

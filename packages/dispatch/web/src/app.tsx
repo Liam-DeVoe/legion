@@ -117,6 +117,14 @@ const ProjectPage = lazy(() =>
 const DocumentPage = lazy(() =>
   import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }))
 );
+const PrioritiesPage = lazy(() =>
+  import("./features/priorities/PrioritiesPage").then((module) => ({
+    default: module.PrioritiesPage,
+  }))
+);
+const PriorityPage = lazy(() =>
+  import("./features/priorities/PriorityPage").then((module) => ({ default: module.PriorityPage }))
+);
 
 const AgentsPage = lazy(() =>
   import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
@@ -147,18 +155,9 @@ const BroadcastPage = lazy(() =>
 const DeliveryPage = lazy(() =>
   import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
 );
-/** `/pipeline` was Dispatch's Pipeline page until INFRA-1077 folded it into the Delivery page as
- *  that page's Pipeline section; the address a reader bookmarked lands them on it. The old page
- *  read only `?at=` from its own address, which the Delivery page does not read; the redirect
- *  keeps the search all the same, so a `/pipeline?from=…&to=…` address, as the visual review row
- *  opens one, lands on the Delivery page with that window rather than the default one. Named, as
- *  every other row's element is, because the router's rows are a roster
- *  (`e2e/two-builds-routes.ts`) that `e2e/__tests__/two-builds-routes.test.ts` reads from this
- *  file by each row's element name. */
-const PipelineRedirect = () => {
-  const { search } = useLocation();
-  return <Navigate replace to={`/delivery${search}#pipeline`} />;
-};
+const PipelinePage = lazy(() =>
+  import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
+);
 
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
@@ -898,6 +897,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
+                <Route element={<PrioritiesPage />} path="/priorities" />
+                <Route element={<PriorityPage />} path="/priorities/:id" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
@@ -907,7 +908,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
                 <Route element={<DeliveryPage />} path="/delivery" />
-                <Route element={<PipelineRedirect />} path="/pipeline" />
+                <Route element={<PipelinePage />} path="/pipeline" />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
             </Suspense>

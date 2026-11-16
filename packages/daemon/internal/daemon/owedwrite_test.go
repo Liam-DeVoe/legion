@@ -281,7 +281,7 @@ type slowClaimWrite struct {
 	supervise.Store
 	// pool is the test's own connection to the same database, which is what makes the wait a
 	// statement of the server's rather than a timer of the test's.
-	pool  *pgxpool.Pool
+	pool  *store.Pool
 	token claim.Token
 	by    time.Duration
 }
@@ -323,7 +323,7 @@ type owedWriteRig struct {
 	ctx context.Context
 	// pool is the test's own connection to the same database, for reading what the store holds
 	// without asking the supervision.
-	pool  *pgxpool.Pool
+	pool  *store.Pool
 	st    *store.Store
 	sup   *supervisor
 	store *switchStore
@@ -384,10 +384,9 @@ func (r *owedWriteRig) boot() {
 	sup.deps = supervise.Deps{
 		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: switcher, Specs: outboxSpecs{},
 		Clock: stillClock{}, Log: slog.New(slog.NewJSONHandler(logs, nil)),
-		Settings: supervise.FixedSettings(
-			supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-			supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second,
-				Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond, ClaimWrite: r.write}),
+		Limits: supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts: supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second,
+			Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond, ClaimWrite: r.write},
 		PluginContract: api.DaemonAPIVersion,
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}

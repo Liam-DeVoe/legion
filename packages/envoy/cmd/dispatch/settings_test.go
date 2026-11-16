@@ -11,9 +11,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -50,126 +47,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
 )
-
-// storetestImport is the one package under internal/dispatch that reads the process environment
-// for itself: the Postgres fixture of Dispatch's tests (DISPATCH_TEST_DATABASE_URL), which only
-// test files may import.
-const storetestImport = "github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-
-// environmentReaders are the functions that read the process environment, by package.
-var environmentReaders = map[string][]string{
-	"os":      {"Getenv", "LookupEnv", "Environ", "ExpandEnv"},
-	"syscall": {"Getenv", "Environ"},
-}
-
-// environmentReads walks the non-test Go files under roots and returns each reference to an
-// environment reader as "<path> <package>.<name>", whatever name the file imports the package
-// under, and each dot import of a reader's package as "<path> import . <package>": with the
-// package's names unqualified, a read cannot be told from a call to the file's own function, so
-// the import is the finding. It also returns the files that import storetest.
-func environmentReads(roots ...string) (reads, storetestImporters []string, err error) {
-	fileSet := token.NewFileSet()
-	for _, root := range roots {
-		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				if entry.Name() == "testdata" || entry.Name() == "node_modules" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			file, err := parser.ParseFile(fileSet, path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return err
-			}
-			fixture := strings.Contains(filepath.ToSlash(path), "store/storetest/")
-			// The name each environment-reading package has in this file.
-			packages := map[string]string{}
-			for _, spec := range file.Imports {
-				importPath, _ := strconv.Unquote(spec.Path.Value)
-				if importPath == storetestImport {
-					storetestImporters = append(storetestImporters, path)
-				}
-				if _, reads := environmentReaders[importPath]; !reads {
-					continue
-				}
-				name := importPath
-				if spec.Name != nil {
-					name = spec.Name.Name
-				}
-				if name == "." && !fixture {
-					reads = append(reads, filepath.ToSlash(path)+" import . "+importPath)
-				}
-				packages[name] = importPath
-			}
-			if fixture {
-				return nil
-			}
-			ast.Inspect(file, func(node ast.Node) bool {
-				selector, ok := node.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				pkg, ok := selector.X.(*ast.Ident)
-				if !ok {
-					return true
-				}
-				if importPath, ok := packages[pkg.Name]; ok && slices.Contains(environmentReaders[importPath], selector.Sel.Name) {
-					position := fileSet.Position(selector.Pos())
-					reads = append(reads, filepath.ToSlash(position.Filename)+" "+importPath+"."+selector.Sel.Name)
-				}
-				return true
-			})
-			return nil
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("walk %s: %w", root, err)
-		}
-	}
-	return reads, storetestImporters, nil
-}
-
-// Dispatch reads its environment in one place: processSettings, over the settings table. Any
-// other reference to the process environment under cmd/dispatch or internal/dispatch is a reader
-// the table, `envoy-dispatch settings` and the generated configuration reference do not list.
-func TestNoReaderBypassesTheSettingsTable(t *testing.T) {
-	reads, storetestImporters, err := environmentReads(".", filepath.Join("..", "..", "internal", "dispatch"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"settings.go os.LookupEnv"}; !slices.Equal(reads, want) {
-		t.Errorf("environment reads outside the settings table: %q, want only %q (processSettings). Add the variable as a row of the settings table (cmd/dispatch/settings.go) and hand its reader the value", reads, want)
-	}
-	if len(storetestImporters) > 0 {
-		t.Errorf("non-test files import %s, which reads DISPATCH_TEST_DATABASE_URL outside the settings table: %q", storetestImport, storetestImporters)
-	}
-}
-
-// The guard sees a read however the file imports its package: under another name, or with no
-// name at all, where the read is a bare Getenv.
-func TestTheGuardSeesAReadUnderAnyImportName(t *testing.T) {
-	for name, probe := range map[string]string{
-		"an aliased import":       "package auth\n\nimport environment \"os\"\n\nfunc acceptProbe() string { return environment.Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",
-		"a dot import":            "package auth\n\nimport . \"os\"\n\nfunc acceptProbe() string { return Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",
-		"a dot import of syscall": "package auth\n\nimport . \"syscall\"\n\nfunc acceptProbe() []string { return Environ() }\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			path := writeFile(t, filepath.Join("auth", "probe.go"), probe)
-			reads, _, err := environmentReads(filepath.Dir(path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(reads) != 1 || !strings.HasPrefix(reads[0], filepath.ToSlash(path)+" ") {
-				t.Errorf("environment reads %q, want the one in %s", reads, path)
-			}
-		})
-	}
-}
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
 	name := regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
@@ -547,55 +424,6 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			return got
 		default:
 			t.Fatal("GET /api/v1/credential-requests answered without calling the broker")
-			return ""
-		}
-	}
-
-	// legionDaemonReceived is the Authorization a project's Legion daemon receives when a
-	// signed-in human relays a legion.yaml change to it, with token in the file
-	// DISPATCH_LEGION_DAEMON_TOKEN_FILE names.
-	legionDaemonReceived := func(t *testing.T, token string) string {
-		t.Helper()
-		received := make(chan string, 1)
-		daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			received <- r.Header.Get("Authorization")
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"concurrency":{"applied":"at-once"}}`))
-		}))
-		defer daemon.Close()
-		boot := resolveWith(t, map[string]string{
-			"DISPATCH_LEGION_DAEMON_TOKEN_FILE": writeFile(t, "legion-daemon-token", token),
-		})
-		router := routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)})
-		send := func(method, path string, body any) *httptest.ResponseRecorder {
-			t.Helper()
-			encoded, err := json.Marshal(body)
-			if err != nil {
-				t.Fatalf("encode the %s body: %v", path, err)
-			}
-			request := signedIn(t, httptest.NewRequest(method, path, bytes.NewReader(encoded)), "alice")
-			request.Header.Set("Content-Type", "application/json")
-			// A browser's own write to the dashboard it is on: the router refuses a cookie
-			// caller's mutation that proves neither its origin nor its site.
-			request.Header.Set("Sec-Fetch-Site", "same-origin")
-			response := httptest.NewRecorder()
-			router.ServeHTTP(response, request)
-			return response
-		}
-		if created := send(http.MethodPost, "/api/v1/projects", map[string]string{"key": "LGN", "name": "Legion"}); created.Code != http.StatusCreated {
-			t.Fatalf("create the project: %d %s", created.Code, created.Body.String())
-		}
-		if set := send(http.MethodPut, "/api/v1/settings/legion/LGN", map[string]any{"state_url": daemon.URL}); set.Code != http.StatusOK {
-			t.Fatalf("set the project's Legion daemon: %d %s", set.Code, set.Body.String())
-		}
-		if relayed := send(http.MethodPut, "/api/v1/legion/LGN/settings", map[string]any{"changes": map[string]any{"concurrency": 4}}); relayed.Code != http.StatusOK {
-			t.Fatalf("relay a settings change: %d %s", relayed.Code, relayed.Body.String())
-		}
-		select {
-		case got := <-received:
-			return got
-		default:
-			t.Fatal("the relay answered without calling the daemon")
 			return ""
 		}
 	}
@@ -1295,7 +1123,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			t.Run("router", func(t *testing.T) {
 				database := storetest.Open(t)
 				if _, err := database.Pool.Exec(context.Background(), `
-					insert into projects (key, name) values ('ARCH', 'ARCH');
+					insert into projects (key, name, default_assignee) values ('ARCH', 'ARCH', 'alice');
 					insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 					values ('ARCH', 'acme/arch', 'main', 1, '{"kind":"session","id":"test"}');
 				`); err != nil {
@@ -1531,24 +1359,6 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			t.Run("router", func(t *testing.T) {
 				if got := brokerReceived(t, " account-token\n"); !strings.HasSuffix(got, " Bearer account-token") {
 					t.Errorf("the broker received %q, want Authorization Bearer account-token", got)
-				}
-			})
-		},
-		"DISPATCH_LEGION_DAEMON_TOKEN_FILE": func(t *testing.T) {
-			if boot := resolveWith(t, nil); boot.LegionDaemonTokenFile != "" {
-				t.Errorf("unset: LegionDaemonTokenFile = %q, want none", boot.LegionDaemonTokenFile)
-			}
-			// The path is never read at boot: the relay reads it on each call, since the kubelet
-			// rewrites a projected token in place.
-			missing := filepath.Join(t.TempDir(), "missing")
-			if boot := resolveWith(t, map[string]string{"DISPATCH_LEGION_DAEMON_TOKEN_FILE": " " + missing + " "}); boot.LegionDaemonTokenFile != missing {
-				t.Errorf("LegionDaemonTokenFile = %q, want the trimmed path a boot does not read", boot.LegionDaemonTokenFile)
-			}
-			// The bearer the project's Legion daemon receives on the relay: the file's trimmed
-			// contents.
-			t.Run("router", func(t *testing.T) {
-				if got := legionDaemonReceived(t, " a-projected-token\n"); got != "Bearer a-projected-token" {
-					t.Errorf("the daemon received %q, want the token file's contents as a bearer", got)
 				}
 			})
 		},

@@ -27,7 +27,7 @@ import (
 // root's tree opened, or a reply of such a session that leaves such a question, or an approval
 // request of the root's closed, armed design gate's document, with the person (the gate's
 // registration declares too, gateRegistered). A person's act still answers a wait it follows the moment it arrives (personAnswered): an answer is
-// a durable fact, and the root takes the next free slot on it. When an ask of the wait leaves the
+// a durable fact, and the root resumes on the slot it holds. When an ask of the wait leaves the
 // person by any other act, the wait moves to what is still with them, and is answered only once
 // nothing is (itemLeft). These decisions read the record beside the row (the gate's document,
 // gateArtifact); the row itself never does.
@@ -372,7 +372,7 @@ func (e *Engine) replyToAsk(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 		return e.declare(ctx, tx, *root, fact.Mark, "question "+fact.Ask+" handed back")
 	case inTree && fact.WaitingOn == "human":
 		gates, err := e.store.GatesOf(ctx, tx, root.Key)
-		if err != nil || !after.GateRequestOf(gateRequestArtifact(e.settings().Steps, gates)) || !change.handsTurn(before) {
+		if err != nil || !after.GateRequestOf(gateRequestArtifact(e.cfg.Steps, gates)) || !change.handsTurn(before) {
 			return err
 		}
 		return e.declare(ctx, tx, *root, fact.Mark, "approval request "+fact.Ask+" handed back")

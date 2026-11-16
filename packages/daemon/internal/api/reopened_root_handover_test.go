@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -40,7 +39,7 @@ func heldChildHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder
 	statuses := &statusRecorder{}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
-		Settings: operatorSettings(), Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
 		Handlers: handlers, Dispatch: statuses, Log: log,
 	}).Handler
 	root := statusRoot
@@ -52,9 +51,6 @@ func heldChildHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder
 		Rank: "B", HandedOver: true, LastDispatchSeq: 4})
 	approved := 1
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: statusRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)}); err != nil {
-			return err
-		}
 		return records.PutGate(context.Background(), tx, record.DesignGate{Issue: statusRoot, ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", LatestVersion: 1, ApprovedVersion: &approved})
 	}); err != nil {
 		t.Fatalf("seed the accepted tree: %v", err)

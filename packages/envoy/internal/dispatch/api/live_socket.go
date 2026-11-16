@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -437,12 +436,14 @@ func (s *server) liveSocketFrame(socket *liveSocket, data []byte) {
 	}
 }
 
-// decodeSocketClientFrame decodes one frame from the page into its struct, refusing a member the
-// struct does not declare, as decodeJSON refuses one in a body.
+// decodeSocketClientFrame decodes one frame from the page into its struct. A member the struct
+// does not declare is ignored, as decodeJSON ignores one in a body, since a page of a newer build
+// can reach this build while a release rolls out. A frame type or a view kind this build cannot
+// serve is still refused (liveSocketFrame, the hub's view check), that subscription alone: the
+// page keeps the socket, whose other subscriptions this build goes on answering, and sends the
+// refused one again on its next socket (packages/dispatch/web/src/api/live-socket.ts).
 func decodeSocketClientFrame(data []byte, frame any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(frame)
+	return json.Unmarshal(data, frame)
 }
 
 // disconnectLiveSockets closes every open GET /ws/live socket on every process with 1012, as a
