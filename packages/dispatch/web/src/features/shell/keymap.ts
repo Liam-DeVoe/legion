@@ -37,11 +37,12 @@ export interface KeyBinding {
   run: (event: KeyboardEvent) => void;
   /** Whether the binding applies right now; `false` neither fires nor shadows lower scopes. */
   when?: () => boolean;
-  /** Fires while a control that takes typed text has focus: a `TEXTAREA`, a `SELECT`, a
-   *  contentEditable element, or a text-entry `INPUT`. The key then reaches every such control,
-   *  so a binding that belongs to only some of them says which in its `when`: the document's
-   *  `$mod+Alt+m` runs only while its editor has focus and a selection, never from a comment
-   *  composer or any other field. */
+  /** Fires while a control that takes typed text has focus - a `TEXTAREA`, a `SELECT`, a
+   *  contentEditable element, or a text-entry `INPUT` - and while the focus is anywhere inside an
+   *  open panel (`PANEL_ATTRIBUTE`). The key then reaches every such control, so a binding that
+   *  belongs to only some of them says which in its `when`: the document's `$mod+Alt+m` runs only
+   *  while its editor has focus and a selection, never from a comment composer or any other
+   *  field. */
   inEditable?: boolean;
   /** Whether `⌘K` offers this binding as an action. The default is `true` for a binding with one
    *  key or none that is not `inEditable`, and `false` otherwise. A row presses only its first
@@ -204,10 +205,16 @@ function isStrictPrefix(shorter: readonly KeyCombo[], longer: readonly KeyCombo[
   );
 }
 
+/** The attribute every open panel's element carries (`AnchoredPanel` writes it): what tells the
+ *  registry a key was pressed inside one (`isEditableTarget`). */
+export const PANEL_ATTRIBUTE = "data-anchored-panel";
+const IN_PANEL = `[${PANEL_ATTRIBUTE}]`;
+
 /** The `<input>` types that take typed text. Everything else an input can be - checkbox, radio,
  *  the button family, file, range, color - takes no text, so a letter or digit pressed while one
- *  has focus is a shortcut, not typing: ticking a checkbox with the pointer must not silence the
- *  page's keys. `HTMLInputElement.type` normalises a missing or unknown attribute to `text`. */
+ *  has focus on the page is a shortcut, not typing: ticking a checkbox with the pointer must not
+ *  silence the page's keys. `HTMLInputElement.type` normalises a missing or unknown attribute to
+ *  `text`. */
 const TEXT_INPUT_TYPES: Record<string, true> = {
   date: true,
   "datetime-local": true,
@@ -223,11 +230,25 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
   week: true,
 };
 
+/**
+ * Whether a key pressed on `target` is the control's own, so that only the bindings that fire
+ * while the reader types (`inEditable`) may take it: a control that takes typed text, a
+ * `<select>`, or anything at all inside an open panel.
+ *
+ * A panel - the display menu, a filter panel and the lists opened from it, a column filter -
+ * stands over the page in place of the selects it replaced, and its keys are its own whatever
+ * control of it holds the focus: Tab and Shift+Tab walk it, the arrows walk a group of radios,
+ * Space ticks a box, and Escape closes it (`AnchoredPanel` takes Escape before this registry
+ * hears it). A radio or a checkbox takes no text, so without this rule `j` on the display menu's
+ * radio would walk the table behind the panel, and the Inbox's single keys would act on its
+ * rows. Only the key's own target counts: a panel standing open while the focus is on the page -
+ * the Board's, restored on load - masks nothing.
+ */
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
-  if (target.isContentEditable) {
+  if (target.isContentEditable || target.closest(IN_PANEL) !== null) {
     return true;
   }
   // An `<input>` takes typed text only in the text-entry types; a checkbox, radio or button

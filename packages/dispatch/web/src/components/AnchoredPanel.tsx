@@ -12,6 +12,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
 import { focusableIn } from "./focus-place";
 
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
@@ -32,6 +33,10 @@ const EDGE: CSSProperties = {
   pointerEvents: "none",
   position: "fixed",
 };
+
+/** The keymap's mark on the panel's element: a key pressed inside it is the panel's own
+ *  (`PANEL_ATTRIBUTE`). */
+const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
 
 /**
  * The one panel that hangs off a control: portalled to the body so no ancestor can clip it,
@@ -56,6 +61,10 @@ const EDGE: CSSProperties = {
  * too, but a press there is no press outside this panel: the reader picking a value is still in
  * the panel they picked it from. Escape and Tab stay each panel's own, so Escape in the inner
  * list closes that list alone.
+ *
+ * The panel's element carries the keymap's `PANEL_ATTRIBUTE`, so a key pressed anywhere inside
+ * it fires only the page's bindings that fire in a text field (`inEditable`): a radio or a
+ * checkbox here stands where a select used to, and `j` on it must not walk the table behind.
  *
  * The host owns whether it is open: it renders the panel or it does not. Every popover in
  * Dispatch is built on this, so a dismissal fix is made once (`MultiSelect`, and the issues
@@ -284,6 +293,7 @@ export function AnchoredPanel({
         style={{ position: "fixed", ...position }}
         tabIndex={-1}
         {...named}
+        {...PANEL_MARK}
       >
         <EnclosingPanel.Provider value={hold}>{children}</EnclosingPanel.Provider>
       </div>
