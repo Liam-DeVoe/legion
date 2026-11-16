@@ -376,6 +376,12 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
+	// readOnlyRefusal is the message every route the read list does not name answers a read-only
+	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
+	// builds it once, before it wraps the first row, so the rows share one text rather than each
+	// holding a copy of its own. A server register did not build has none, and
+	// refuseReadOnlyToken wraps no route of one rather than answer an empty message.
+	readOnlyRefusal string
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
 	going           GoingCatalogue
@@ -708,6 +714,10 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// the table is refused rather than mounted (readScopeRoutes).
 		panic("api.Register: the route table's read list names a route that is not a GET row the table mounts: " + strings.Join(refused, "; "))
 	}
+	// After the check above, so the list it names is one the table mounts, and before the first
+	// row is wrapped, since every row the list does not name answers it (refuseReadOnlyToken).
+	s.readOnlyRefusal = "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
+		strings.Join(readScopeRoutes, ", ") + "): nothing ran"
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
 		// A catalogue entry naming a row this table does not hold or does not class as a write,
@@ -1266,13 +1276,18 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 //
 // The refusal carries no WWW-Authenticate challenge, unlike a missing scope's
 // (refuseMissingScope): RFC 6750 Section 3.1 has the challenge name the scope a request needs, and
-// no scope makes such a route the token's to call. Its code is the contract a client reads.
+// no scope makes such a route the token's to call. Its code is the contract a client reads. Its
+// message is the server's one readOnlyRefusal, which register built before it wrapped a row; a
+// server with none was not built by register, and wrapping a route of it panics rather than
+// answering a refusal that says nothing.
 func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
 	if listed {
 		return next
 	}
-	refusal := "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
-		strings.Join(readScopeRoutes, ", ") + "): nothing ran"
+	refusal := s.readOnlyRefusal
+	if refusal == "" {
+		panic("api: refuseReadOnlyToken wraps a route of a server register did not build, which holds no read-only refusal to answer")
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided && caller.err == nil &&
 			caller.actor.Credential != nil && caller.actor.Credential.ReadOnly {

@@ -76,16 +76,16 @@ func expiryOf(answer Introspection) time.Time {
 // answered it, which is set exactly where the person is not (live refuses an answer naming
 // neither). ProjectScope is carried whole beside them, because a reader deciding what the token
 // may do needs the scope itself and not only the project rule read off it. ReadOnly is shapeOf's
-// verdict: callerOf runs only on an answer live accepted, and live lets a read-only answer
-// through only a verifier that serves one, so a Caller marked read-only is one such a verifier
-// accepted.
-func callerOf(answer Introspection) Caller {
+// verdict on the answer, which live reached and hands over as shape: callerOf runs only on an
+// answer live accepted, and live lets a read-only answer through only a verifier that serves
+// one, so a Caller marked read-only is one such a verifier accepted.
+func callerOf(answer Introspection, shape tokenShape) Caller {
 	caller := Caller{
 		Session:      answer.Session,
 		Person:       answer.Person,
 		Service:      answer.Service,
 		ProjectScope: answer.ProjectScope,
-		ReadOnly:     shapeOf(answer) == shapeReadOnly,
+		ReadOnly:     shape == shapeReadOnly,
 	}
 	if answer.ProjectScope == ProjectScopeNamed {
 		caller.Project = answer.Project

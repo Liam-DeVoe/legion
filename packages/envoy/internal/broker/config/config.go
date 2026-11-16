@@ -990,12 +990,26 @@ func exchangeFields(text string, want int) ([]string, bool) {
 	return nil, false
 }
 
+// podAccountRefusal refuses, naming setting and the entry text, an account no exchange entry for
+// a pod may name: one that is not system:serviceaccount:<namespace>:<name>, and a namespace's
+// default account. It answers nil for an account such an entry may name, and is to a pod's
+// account what vmAccountRefusal is to a VM's.
+func podAccountRefusal(setting, text, account string) error {
+	switch {
+	case !serviceAccountPattern.MatchString(account):
+		return fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
+	case isDefaultServiceAccount(account):
+		return fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)
+	}
+	return nil
+}
+
 // parseExchangeAccounts reads setting's whitespace-separated
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
 // lists, in order. It refuses, naming the entry: one not of that form or with a blank field; an
-// account that is not system:serviceaccount:<namespace>:<name>; a namespace's default account; and
-// an account listed twice, since one account writes as one identity. exchange.NewSet is the second
-// gate, and the session name's own form is its to refuse.
+// account that is not system:serviceaccount:<namespace>:<name>, or a namespace's default account
+// (podAccountRefusal); and an account listed twice, since one account writes as one identity.
+// exchange.NewSet is the second gate, and the session name's own form is its to refuse.
 func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, error) {
 	var entries []exchange.AccountEntry
 	seen := map[string]bool{}
@@ -1004,11 +1018,8 @@ func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, erro
 		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
 			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the session everything after the third =, got %q", setting, text)
 		}
-		if !serviceAccountPattern.MatchString(fields[0]) {
-			return nil, fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
-		}
-		if isDefaultServiceAccount(fields[0]) {
-			return nil, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)
+		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
+			return nil, err
 		}
 		if seen[fields[0]] {
 			return nil, fmt.Errorf("%s names the service account %s twice; one account writes as one identity, so name it once", setting, fields[0])
@@ -1023,26 +1034,25 @@ func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, erro
 // <service account>=<service>=<session> entries, the read entries BROKER_EXCHANGE_READ_ACCOUNTS
 // lists, in order. Every field is required and the session is everything after the second "=",
 // so it alone may carry one. It refuses, naming the setting and the entry: one with fewer than
-// three fields or a blank one; an account that is not system:serviceaccount:<namespace>:<name>;
-// a namespace's default account; a service that is not a service's name, or is
-// policy.OwnerShared, the rule parseServiceAccounts holds a service to; and an account listed
-// twice, since one account reads as one identity. An account BROKER_EXCHANGE_ACCOUNTS lists too
-// is Load's to refuse, since it reads both settings. exchange.NewSet is the second gate, and the
-// session name's own form is its to refuse.
+// three fields or a blank one; an account that is not system:serviceaccount:<namespace>:<name>,
+// or a namespace's default account (podAccountRefusal); a service that is not a service's name,
+// or is policy.OwnerShared, the rule parseServiceAccounts holds a service to; and an account
+// listed twice, since one account reads as one identity. An account BROKER_EXCHANGE_ACCOUNTS
+// lists too is Load's to refuse, since it reads both settings. exchange.NewSet is the second
+// gate, and the session name's own form is its to refuse.
 func parseExchangeReadAccounts(setting, value string) ([]exchange.ReadEntry, error) {
 	var entries []exchange.ReadEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
-		fields := strings.SplitN(text, "=", 3)
-		if len(fields) != 3 || fields[0] == "" || fields[1] == "" || fields[2] == "" {
+		// An entry with no session comes back with a blank one (exchangeFields), which the blank
+		// check refuses as it refuses any other blank field: a read entry's session is required.
+		fields, ok := exchangeFields(text, 3)
+		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
 			return nil, fmt.Errorf("%s must be <service account>=<service>=<session> entries, every field required and the session everything after the second =, got %q", setting, text)
 		}
 		account, service, session := fields[0], fields[1], fields[2]
-		if !serviceAccountPattern.MatchString(account) {
-			return nil, fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
-		}
-		if isDefaultServiceAccount(account) {
-			return nil, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)
+		if err := podAccountRefusal(setting, text, account); err != nil {
+			return nil, err
 		}
 		if !record.ValidService(service) || service == policy.OwnerShared {
 			return nil, fmt.Errorf("%s must name services of lowercase letters, digits and hyphens, at most 64, not %s, got %q", setting, policy.OwnerShared, text)

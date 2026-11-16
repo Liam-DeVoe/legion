@@ -22,7 +22,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -31,9 +30,9 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // readOnlyProbePath is routeProbePath with every wildcard it leaves filled too - a test hook's
@@ -88,8 +87,9 @@ func readOnlyTable() []apiRoute {
 // each a read-only token with a body and a valid Idempotency-Key. Every row the list does not name
 // answers 403 READ_ONLY_TOKEN and never runs its handler; the row the list names runs it once.
 // GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
-// replaced. The walk counts its rows and is held to the table's count, so a walk that skipped
-// rows fails.
+// replaced. A row is counted once its assertions have run, and the count is held to the rows the
+// registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
+// walked none, fails.
 func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *testing.T) {
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
@@ -108,21 +108,21 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 		}
 		response := httptest.NewRecorder()
 		rig.served.routeHandler(route, replays[name]).ServeHTTP(response, caller.presentingProbe(t, route, token))
-		walked++
 		if route.ReadScope {
 			listed++
 			if ran != 1 || response.Code != http.StatusNoContent {
 				t.Errorf("%s is on the read list, and its handler ran %d times (status=%d body=%s), want once",
 					name, ran, response.Code, response.Body.String())
 			}
-			continue
+		} else {
+			if ran != 0 {
+				t.Errorf("%s ran its handler %d times for a read-only token, want none", name, ran)
+			}
+			if why := notTheReadOnlyRefusal(response); why != "" {
+				t.Errorf("%s %s, want 403 %s", name, why, contracts.DispatchReadOnlyToken)
+			}
 		}
-		if ran != 0 {
-			t.Errorf("%s ran its handler %d times for a read-only token, want none", name, ran)
-		}
-		if why := notTheReadOnlyRefusal(response); why != "" {
-			t.Errorf("%s %s, want 403 %s", name, why, contracts.DispatchReadOnlyToken)
-		}
+		walked++
 	}
 
 	socketOpened := 0
@@ -136,8 +136,8 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 		t.Errorf("GET %s %s, want 403 %s", liveSocketPattern, why, contracts.DispatchReadOnlyToken)
 	}
 
-	if walked != len(table) {
-		t.Fatalf("walked %d rows, want every one of the table's %d", walked, len(table))
+	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
+		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
 	if listed != len(readScopeRoutes) {
 		t.Fatalf("%d rows carry the read list's mark, want the list's %d (%v)", listed, len(readScopeRoutes), readScopeRoutes)
@@ -160,7 +160,8 @@ var readListAnswers = map[string]struct {
 // test hooks in, with a read-only token: every row the list does not name and GET /ws/live answer
 // 403 READ_ONLY_TOKEN; GET /ws/doc/{room}, which reads no broker token at all, answers 401; and
 // the listed route answers its handler's own 404 SOURCE_NOT_FOUND for a project with no source.
-// The walk is held to the table's count as the one above is.
+// A row is counted once its assertions have run, and the count is held to the rows the
+// registered server mounts, as the walk above is.
 func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
@@ -172,21 +173,16 @@ func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
 	for _, route := range table {
 		name := route.Method + " " + route.Pattern
 		response := rig.serve(caller.presentingProbe(t, route, token))
-		walked++
 		if !route.ReadScope {
 			if why := notTheReadOnlyRefusal(response); why != "" {
 				t.Errorf("%s %s, want 403 %s", name, why, contracts.DispatchReadOnlyToken)
 			}
-			continue
-		}
-		want, known := readListAnswers[name]
-		if !known {
+		} else if want, known := readListAnswers[name]; !known {
 			t.Errorf("%s is on the read list and readListAnswers says nothing of what it answers", name)
-			continue
-		}
-		if refusal := decodeBody[refusalAnswer](t, response); response.Code != want.status || refusal.Code != want.code {
+		} else if refusal := decodeBody[refusalAnswer](t, response); response.Code != want.status || refusal.Code != want.code {
 			t.Errorf("%s answered %d %s, want its handler's %d %s", name, response.Code, response.Body.String(), want.status, want.code)
 		}
+		walked++
 	}
 
 	live := rig.serve(caller.presenting(t, http.MethodGet, liveSocketPattern, token, nil))
@@ -198,8 +194,8 @@ func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
 		t.Errorf("GET %s answered %d %s, want 401: the document socket takes a cookie alone", room, document.Code, document.Body.String())
 	}
 
-	if walked != len(table) {
-		t.Fatalf("walked %d rows, want every one of the table's %d", walked, len(table))
+	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
+		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
 	t.Logf("walked %d rows of the mounted table (test hooks in), GET %s and GET /ws/doc/{room}", walked, liveSocketPattern)
 }
@@ -330,47 +326,13 @@ func TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey(t *testing.T) {
 	}
 }
 
-// markedStatements records the SQL of every statement a traced pool runs on a context the test
-// marked (countedRead, issue_read_batch_test.go), each statement of a batch on its own and a copy
-// as the insert it is: the one request the test sends and the work it detaches from that
-// request's context, and nothing the server does on a context of its own.
-type markedStatements struct {
-	mu         sync.Mutex
-	statements []string
-}
-
-func (m *markedStatements) record(ctx context.Context, statement string) {
-	if ctx.Value(countedRead{}) == nil {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.statements = append(m.statements, statement)
-}
-
-// taken is every statement recorded so far.
-func (m *markedStatements) taken() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return slices.Clone(m.statements)
-}
-
-func (m *markedStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	m.record(ctx, data.SQL)
-	return ctx
-}
-
-func (m *markedStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (m *markedStatements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	return ctx
-}
-
-func (m *markedStatements) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	m.record(ctx, data.SQL)
-}
-
-func (m *markedStatements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+// markedStatements is sentStatements (comment_window_tick_test.go) with a copy recorded too, as
+// the insert it is: the SQL of every statement a traced pool runs on a context the test marked
+// (countedRead, issue_read_batch_test.go), each statement of a batch on its own. That is the one
+// request the test sends and the work it detaches from that request's context, and nothing the
+// server does on a context of its own. The two calls below are pgx.CopyFromTracer's, which
+// sentStatements does not answer: without them a copy would be a write no tracer call names.
+type markedStatements struct{ sentStatements }
 
 func (m *markedStatements) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
 	m.record(ctx, "insert into "+data.TableName.Sanitize()+" (copy from)")
@@ -429,7 +391,7 @@ func readOnlyTreeFiles(nonce string) map[string]string {
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	database := storetest.Open(t)
 	marked := &markedStatements{}
-	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, marked, nil)}
+	traced := storetest.TracedStore(t, database, marked)
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -515,14 +477,11 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 
 	// The trees are stored beside the request, on a goroutine of the server's background work, so
 	// the statements are read once the rows it stores are back.
-	for deadline := time.Now().Add(10 * time.Second); storedTrees() != len(sums); {
-		if time.Now().After(deadline) {
-			t.Fatalf("the read stored %d of the prose's %d trees within 10s, want every one", storedTrees(), len(sums))
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return storedTrees() == len(sums) }) {
+		t.Fatalf("the read stored %d of the prose's %d trees within 10s, want every one", storedTrees(), len(sums))
 	}
 
-	statements := marked.taken()
+	statements := marked.take()
 	allowed := map[string]bool{"dpop_proofs": true, "text_trees": true, "route_roster": true}
 	var proofInserted, treeInserted, readSources bool
 	var written []string

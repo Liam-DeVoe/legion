@@ -355,7 +355,7 @@ func Presented(r *http.Request) (string, bool) {
 // Its error is one of the sentinels above, and the Caller it answers is only ever one the broker
 // called live and whose proof verified.
 func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) {
-	token, answer, err := v.live(ctx, r)
+	token, answer, shape, err := v.live(ctx, r)
 	if err != nil {
 		return Caller{}, err
 	}
@@ -363,7 +363,7 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 	if _, err := v.strategy.ValidateResourceAccess(ctx, signed, token, answer.Thumbprint, false); err != nil {
 		return Caller{}, v.refused(err, signed, answer.Thumbprint)
 	}
-	return callerOf(answer), nil
+	return callerOf(answer, shape), nil
 }
 
 // Live is Verify without the proof check: the broker's answer alone, cached or fresh.
@@ -375,32 +375,33 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 // and would close a sound connection; what is left to ask of an open connection is whether the
 // token is still live, which is this. Nothing admits a caller through it.
 func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
-	_, answer, err := v.live(ctx, r)
+	_, answer, shape, err := v.live(ctx, r)
 	if err != nil {
 		return Caller{}, err
 	}
-	return callerOf(answer), nil
+	return callerOf(answer, shape), nil
 }
 
-// live is the broker's half of both checks: the token r presents and an answer saying it is
-// live, bound to a key, issued for acting as a session, and of a shape this verifier serves
-// (shapeOf). Verify and Live both read the answer through here, so an open connection's
+// live is the broker's half of both checks: the token r presents, an answer saying it is live,
+// bound to a key, issued for acting as a session, and of a shape this verifier serves, and that
+// shape (shapeOf). Verify and Live both read the answer through here, so an open connection's
 // heartbeat is held to the same rule as the request that opened it, the read-only switch
-// included.
-func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspection, error) {
+// included. The shape is handed back because callerOf marks its Caller by it, and shapeOf then
+// reads an answer once for a request rather than once here and once there.
+func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspection, tokenShape, error) {
 	token, ok := Presented(r)
 	if !ok {
-		return "", Introspection{}, ErrNotPresented
+		return "", Introspection{}, shapeNotASession, ErrNotPresented
 	}
 	answer, err := v.known(ctx, r, token)
 	if err != nil {
-		return "", Introspection{}, err
+		return "", Introspection{}, shapeNotASession, err
 	}
 	if !answer.Active {
-		return "", Introspection{}, ErrNotActive
+		return "", Introspection{}, shapeNotASession, ErrNotActive
 	}
 	if answer.Thumbprint == "" {
-		return "", Introspection{}, ErrKeyMismatch
+		return "", Introspection{}, shapeNotASession, ErrKeyMismatch
 	}
 	// A token names a person or a service: an exchange decided one of the two for every token
 	// issued for acting as a session, and one that names neither is no session's credential
@@ -416,9 +417,9 @@ func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspec
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		shape == shapeNotASession || (shape == shapeReadOnly && !v.servesReadOnly) ||
 		(answer.ProjectScope == ProjectScopeNamed && answer.Project == "") {
-		return "", Introspection{}, ErrNotASession
+		return "", Introspection{}, shapeNotASession, ErrNotASession
 	}
-	return token, answer, nil
+	return token, answer, shape, nil
 }
 
 // tokenShape is what an answer's project scope and its OAuth scope together make of a token

@@ -369,7 +369,9 @@ func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	before := f.count(t, "oauth_access_tokens")
-	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, readAccount, "pod-uid-reader"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	form := f.readPodForm(t)
+	form.Set("session", "implementer-g1")
+	status, body := f.exchange(t, form, key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
 		t.Fatalf("a read entry's exchange naming another session = %d %v, want 400 invalid_request and no access token", status, body)
 	}
