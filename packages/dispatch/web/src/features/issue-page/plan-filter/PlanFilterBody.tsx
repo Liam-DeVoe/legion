@@ -878,7 +878,10 @@ const Units = memo(function Units({ end }: { end: number }): ReactNode {
  * A need is named by the task's own `needs` chip for it (`needsChip`), as part F's view names
  * it and the steps' row draws it (decision 66 of dispatch://INFRA-1196, dispatch://INFRA-3938
  * R3 and R4), in the needed task's marks: the author's words, or the page's own where that task
- * holds none, since F names it then by its kind's word.
+ * holds none, since F names it then by its kind's word. A chip F has not named, or names by no
+ * words, names no task, so the row draws no need for it, names none from the needed task's own
+ * node, and draws "· needs" only before a need it draws (decision 103 of dispatch://INFRA-1196).
+ * The curves are the chart's, and join two drawn bars whatever the names.
  *
  * At 761 px and above the row is the chart's three columns. At 760 px and below it is one card
  * that draws, from the top, the task's first line, the track with the bar at its place and
@@ -924,6 +927,12 @@ function BarRow({
       .filter((chip) => chip.name !== "")
       .map((chip) => ({ line: chip.name, reference: chip.ref })),
   ];
+  // The needs the row names, each by the words of its chip. `planChart` reads each need from one
+  // of the task's `needs` chips, so every need has its chip; one with no words is drawn as none.
+  const needs = bar.needs.flatMap((needed) => {
+    const words = chipWords(needsChip(task, needed)?.name ?? "");
+    return words === "" ? [] : [{ needed, words }];
+  });
   return (
     <div
       aria-level={1}
@@ -956,21 +965,14 @@ function BarRow({
           <span data-plan-no-size="" {...pageChrome}>
             {PLAN_WORDS.no_size}
           </span>
-          {bar.needs.length === 0 ? null : (
+          {needs.length === 0 ? null : (
             <>
               <span {...pageChrome}>· {PLAN_WORDS.needs}</span>
-              {bar.needs.flatMap((needed) => {
-                // `planChart` reads each need from one of the task's `needs` chips, so every
-                // need has its chip.
-                const chip = needsChip(task, needed);
-                return chip === undefined
-                  ? []
-                  : [
-                      <span data-plan-need={needed.id} key={needed.id} {...taskLine(needed).marks}>
-                        {chipWords(chip.name)}
-                      </span>,
-                    ];
-              })}
+              {needs.map(({ needed, words }) => (
+                <span data-plan-need={needed.id} key={needed.id} {...taskLine(needed).marks}>
+                  {words}
+                </span>
+              ))}
             </>
           )}
         </p>

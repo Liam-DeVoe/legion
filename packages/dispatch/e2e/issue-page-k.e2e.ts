@@ -9,10 +9,15 @@ import {
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
-import { createComment, getArtifact, getIssue } from "./api";
-import { type PlanOrderSeed, seedPlanOrder, seedWholeIssue } from "./issue-layout-seed";
+import { createComment, createNamedVersion, getArtifact, getIssue } from "./api";
+import {
+  type PlanOrderSeed,
+  seedPlanOrder,
+  seedWholeIssue,
+  type WholeIssueSeed,
+} from "./issue-layout-seed";
 import { PLAN_ORDER_TASKS, requirementBlockId } from "./issue-layout-seed-text";
-import { gotoIssue, issuePage, phase } from "./issue-page";
+import { gotoIssue, issuePage, phase, presetToggle } from "./issue-page";
 import {
   DESKTOP,
   drawnRows,
@@ -151,8 +156,8 @@ const BLOCKS_READ = "**/api/v1/artifacts/*/blocks";
 
 /** R1 before the reads it needs answer: opened with every document's blocks read held, `path`
  *  draws no line saying the issue has no task and no switch, since a task is a block of the
- *  plan document and the plan holds none until that read answers (`slots/view-plan.tsx`,
- *  `IssueTreeView.blocksRead`); let go, it draws the chart. */
+ *  plan document and the plan holds none until that read answers (`slots/view-plan.tsx`, which
+ *  draws the view once the blocks it draws from are held); let go, it draws the chart. */
 async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<void> {
   const held = Promise.withResolvers<void>();
   let asked = 0;
@@ -187,6 +192,53 @@ async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<v
     "the view does not draw the chart once its blocks are read"
   ).toHaveAttribute("aria-pressed", "true");
   await page.unroute(BLOCKS_READ, hold);
+}
+
+/** Decision 98 of dispatch://INFRA-1196 on what the view waits for (`slots/view-plan.tsx`): the
+ *  blocks held, not the last read's success. With the chart drawn, a version of the plan
+ *  document refreshes that document's reads (`api/event-refresh.ts`), and every blocks read now
+ *  fails: the plan's is asked three times, the page's two retries 500 ms apart included
+ *  (`api/query-client.ts`'s `queryRetry`), and then holds its blocks as a read that failed. A
+ *  move to Spec and back to Plan draws the view again, which draws the chart from the blocks
+ *  held. The version is given again until its event reaches the page, since an event published
+ *  before the page's feed has started reaches no page. */
+async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
+  let failed = 0;
+  const fail = async (route: Route) => {
+    if (route.request().url().includes(seeded.planArtifactId)) failed += 1;
+    await route.fulfill({ status: 500 });
+  };
+  await page.route(BLOCKS_READ, fail);
+  try {
+    await expect(async () => {
+      const before = failed;
+      await createNamedVersion(seeded.planArtifactId, "The plan as it stands");
+      await expect.poll(() => failed - before, { timeout: 5_000 }).toBeGreaterThanOrEqual(3);
+    }, "a version of the plan document sends no read of its blocks again").toPass({
+      timeout: 30_000,
+    });
+    // An absence window longer than the wait between two retries: no read of the plan's blocks
+    // is sent in it, so the last one has failed and none is still to come.
+    await expect
+      .poll(
+        async () => {
+          const at = failed;
+          await page.waitForTimeout(750);
+          return failed - at;
+        },
+        { message: "the read of the plan's blocks is still being asked again" }
+      )
+      .toBe(0);
+    await presetToggle(page, "spec").click();
+    await expect(presetToggle(page, "spec")).toHaveAttribute("aria-pressed", "true");
+    await presetToggle(page, "plan").click();
+    await expect(
+      planChart(page).locator("[data-plan-bar-row]"),
+      "the Plan view drawn again after a failed read of the plan's blocks draws no bar of the blocks held"
+    ).toHaveCount(seeded.planTasks.length);
+  } finally {
+    await page.unroute(BLOCKS_READ, fail);
+  }
 }
 
 // c-rows (1), as the architect's ruling 5 reads R26 (build-rulings-md): the Plan view opens on
@@ -755,7 +807,9 @@ test.fixme("the Plan view's chart is reached in order with the keyboard @phone",
 // outline's own rows, so G's readers of every row hold on them, and the chart names each tie by
 // words and never by an address or a slug. Beyond the check: at 1440 px, with the blocks reads
 // held, the view draws no line saying the issue has no task and no switch, and draws the chart
-// once they are let go (dispatch://INFRA-3938 R1; `expectNothingBeforeTheBlocks`).
+// once they are let go (dispatch://INFRA-3938 R1; `expectNothingBeforeTheBlocks`); and a read of
+// the plan's blocks that fails once the chart is drawn leaves the chart drawn on a return to Plan
+// (decision 98 of dispatch://INFRA-1196; `expectChartAfterAFailedRead`).
 // SLOW(>=2s): the whole seeded issue, loaded and read under both drawings at two widths.
 test("the Plan view's steps are drawn as every row of the outline @phone", async ({ browser }) => {
   test.setTimeout(180_000);
@@ -776,8 +830,9 @@ test("the Plan view's steps are drawn as every row of the outline @phone", async
       ).toHaveCount(seeded.planTasks.length);
       // The chart's words are the batched names read's, which is sent once every other read of
       // the tree has answered (`useIssueTree.ts`): until it lands a bar reads its kind's word and
-      // a need holds no words. So the texts are read once a need holds words (the seed's later
-      // tasks need the earlier ones), and read again until they hold.
+      // the chart draws no need, since a needs chip holds no name until then. So the texts are
+      // read once a need is drawn (the seed's later tasks need the earlier ones), and read again
+      // until they hold.
       await expect(
         planChart(page).locator("[data-plan-need]").first(),
         `the chart on ${where} names no need by its words`
@@ -804,6 +859,7 @@ test("the Plan view's steps are drawn as every row of the outline @phone", async
       ).toHaveCount(seeded.planTasks.length);
       expectRowLayouts(await rowLayouts(page), where, false, size.width);
       expectRowGroups(await rowGroups(page), where, size.width, addresses);
+      if (size === DESKTOP) await expectChartAfterAFailedRead(page, seeded);
     }
   });
 });

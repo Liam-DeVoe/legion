@@ -364,6 +364,51 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   } finally {
     filtered.unmount();
   }
+  // A need whose chip part F's names read has not answered yet (`answered: false`, no name; the
+  // reviewer's case of decision 103 of dispatch://INFRA-1196): the row names no need and draws no
+  // "needs" with nothing after it, and the curves still join the bars, whatever the names.
+  const unanswered = renderBody({
+    ...whole,
+    children: whole.children.map((one) => ({
+      ...one,
+      chips: one.chips.map((chip) => ({ ...chip, answered: false, name: "" })),
+    })),
+  });
+  try {
+    for (const blockId of ["t3", "t2"]) {
+      const row = rowOf(unanswered, blockId);
+      expect(row.querySelectorAll("[data-plan-need]")).toHaveLength(0);
+      expect(row.querySelector("[data-plan-facts]")?.textContent).not.toContain(PLAN_WORDS.needs);
+    }
+    expect(unanswered.container.querySelectorAll("[data-plan-link]")).toHaveLength(2);
+  } finally {
+    unanswered.unmount();
+  }
+  // A first line `firstLineOf` cuts inside its sentence is drawn with part F's ellipsis, on the
+  // bar's row and in a cycle's line, as G's row draws the same task under "Steps" (`drawnLine`,
+  // ruling 1 of dispatch://INFRA-1196; dispatch://INFRA-3938 R4 and R6).
+  const long = (blockId: string): string =>
+    `Task ${blockId} ${"carries its one sentence on ".repeat(5)}to its end`;
+  const cut = (blockId: string): string => {
+    const first = firstLineOf(long(blockId));
+    expect(first.cut).toBe(true);
+    return `${first.line}…`;
+  };
+  const cutView = renderBody(
+    issue([
+      { ...task("t1"), text: long("t1") },
+      { ...task("t2", { needs: ["t3"] }), text: long("t2") },
+      task("t3", { needs: ["t2"] }),
+    ])
+  );
+  try {
+    expect(rowOf(cutView, "t1").querySelector("[data-node-words]")?.textContent).toBe(cut("t1"));
+    expect(
+      [...cutView.container.querySelectorAll("[data-plan-cycle] a")].map((one) => one.textContent)
+    ).toEqual([cut("t2"), "Task t3"]);
+  } finally {
+    cutView.unmount();
+  }
 });
 
 // R26: the chart's bars are "reached in order with the keyboard". The keys are the outline's.
@@ -536,6 +581,22 @@ test("tasks that need each other are one line at their place, and rows at that p
     act(() => cycle?.focus());
     await user.keyboard("k");
     expect(focusedRow()).toBe(D("t1"));
+    // A focus inside the cycle's row, on one of its task links, takes the focus for the row from
+    // the step that held it, as a focus inside a step's row does: the row is the one tab stop and
+    // Details draws the task the row stands for, the one the address names, not the link's
+    // (`CycleRow`, dispatch://INFRA-3938 R7).
+    const place = view.container.querySelector("[data-place]");
+    expect(place?.getAttribute("data-focused")).toBe(D("t1"));
+    const link = cycle?.querySelector<HTMLElement>("a[href]") ?? null;
+    expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/artifacts/${PLAN}#b-t4`);
+    act(() => link?.focus());
+    expect(document.activeElement).toBe(link);
+    expect(
+      [...view.container.querySelectorAll('[role="treeitem"][tabindex="0"]')].map((row) =>
+        row.getAttribute("data-plan-cycle-row")
+      )
+    ).toEqual([`${D("t4")} ${D("t5")}`]);
+    expect(place?.getAttribute("data-focused")).toBe(D("t5"));
 
     // The steps: the same line, and the cycle's tasks as rows where the order puts the cycle.
     await showSteps(view);
