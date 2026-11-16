@@ -3246,6 +3246,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Every JSON file of the scenario goes through the strict reader that `compare` uses, and the spec files of each commit through `Validate`, as `tree` judges them, with the file and line of the first problem.
   Beyond what `ReadApproved` refuses, the reader refuses in `approved.json` only a loop of parent and support relations (R5), since the person approves a level before the checks of its statements exist.
   The derivation itself reads a check whose text names no failing example as `unknown (no_failing_example)`, and a leaf with no check as `unknown` with a wait on it that holds, since the pilot calls it with no reader.
+  A failing example of no letter and no digit is none, by the one test that `Validate` uses for it (`hasWord`), so the derivation and `tree` never read one text two ways.
   It reads a program check as `unknown (fault_by_test_author)` when the record of its failing example names no author of the fault, no author of the test, or the author of the fault among the authors of the test (R9: "An agent that did not write the test writes the fault").
   The statement, check and wait lines have no `spec-check: ` prefix: each starts with its fixed word and passes through `runnerlog.Printable`.
   `TestScenarios` runs the built binary on each scenario and compares its stdout with `want.txt` byte for byte.
