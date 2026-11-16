@@ -3,7 +3,7 @@ import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { issueResultsQuery } from "../../../api/queries";
+import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import { type AddressTarget, issueAddress, pathToTarget } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { EMPTY_STATE_LINES } from "../page-words";
@@ -19,12 +19,14 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const { root } = useIssueTree(issue);
-  // The issue's checks with the results recorded against them, under the key `useIssueTree.ts`
-  // already reads them with, so the view sends no request of its own (R1): it is what holds a
-  // result's commit, its verdict and its withdrawal, which the tree does not carry
-  // (`verification-filter/statement-state.ts`).
-  const results = useQuery(issueResultsQuery(issue.key)).data;
-  const checks = useMemo(() => results?.checks ?? [], [results]);
+  // The coverage read, and the issue's checks with the results recorded against them, under the
+  // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own
+  // (R1). The results read holds a result's commit, its verdict and its withdrawal, which the
+  // tree does not carry (`verification-filter/statement-state.ts`). The view draws its rows only
+  // once both have answered, so it never says that an issue has no checks before they are in.
+  const coverage = useQuery(issueCoverageQuery(issue.key));
+  const results = useQuery(issueResultsQuery(issue.key));
+  const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it (R1). The target is read
   // by what it says rather than by the value `issueAddress` built, which is a new one on every
@@ -47,19 +49,25 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
   );
+  // The view with no words query, which is what the issue holds whatever a query left of it.
+  // With no query typed it is the view itself, so it is built a second time only under one.
+  const whole = useMemo(
+    () => (address.filter === "" ? view.root : presetView(root, "verification", "", named).root),
+    [address.filter, named, root, view.root]
+  );
   return (
     <NoTooltips>
-      {/* The view's own measure, as the checkpoint's `IssueBody.tsx` drew it under this view: at
-          most 1180 px (the prototype's `.ver`), in the middle of the column. On a phone 4 px
-          from the left edge and 10 px from the right, as the outline's measure is there. */}
-      <div className="mx-auto flex w-full max-w-[1180px] min-w-0 flex-col max-[760px]:-mr-1 max-[760px]:-ml-2.5 max-[760px]:w-auto">
+      {/* The stage's column, which the body draws its own measure in (part V's R6). */}
+      <div className="flex w-full min-w-0 flex-col">
         <VerificationFilterBody
+          answered={coverage.isSuccess && results.isSuccess}
           checks={checks}
           context={view.context}
           emptyLine={
             address.filter === "" ? EMPTY_STATE_LINES.verification : EMPTY_STATE_LINES.no_match
           }
           view={view.root}
+          whole={whole}
         />
       </div>
     </NoTooltips>

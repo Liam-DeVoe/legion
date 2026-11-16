@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import type { CheckBlock } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
+import { NoTooltips } from "../NoTooltips";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CHECK_WHEN_WORDS,
@@ -21,17 +22,18 @@ import {
   sentenceCase,
   VERIFICATION_WORDS,
 } from "../page-words";
+import { presetView } from "../presets";
 import { shortCommit } from "./statement-state";
 import { VerificationFilterBody } from "./VerificationFilterBody";
 import {
   COMMIT,
   check,
   checkNode,
+  ISSUE_KEY,
   node,
   OTHER_COMMIT,
   result,
   statementNode,
-  verificationPreset,
 } from "./verification-fixtures";
 
 /**
@@ -47,25 +49,38 @@ import {
  */
 
 /** The body over the statements given, with `checks` as the issue's results read, drawn from
- *  the Verification filter's own view: the tree it leaves and the rows it marks as context. */
+ *  the Verification filter's own view: the tree it leaves and the rows it marks as context. It
+ *  is drawn inside `NoTooltips`, as the slot draws it, so an author is named as the page names
+ *  one. `query` is the words the reader typed, which the view is filtered by (`presetView`);
+ *  `whole` and `answered` are given to the body where a case gives them. */
 function drawBody(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
-  { named = [] }: { named?: readonly string[] } = {}
+  {
+    answered,
+    named = [],
+    query = "",
+    whole,
+  }: { answered?: boolean; named?: readonly string[]; query?: string; whole?: TreeNode } = {}
 ): RenderResult {
-  const view = verificationPreset(statements, named);
+  const issue = node({ children: statements, id: ISSUE_KEY, text: "An issue", type: "issue" });
+  const view = presetView(issue, "verification", query, new Set(named));
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <VerificationFilterBody
-          checks={checks}
-          context={view.context}
-          emptyLine={EMPTY_STATE_LINES.verification}
-          view={view.root}
-        />
+        <NoTooltips>
+          <VerificationFilterBody
+            {...(answered === undefined ? {} : { answered })}
+            checks={checks}
+            context={view.context}
+            emptyLine={EMPTY_STATE_LINES.verification}
+            view={view.root}
+            {...(whole === undefined ? {} : { whole })}
+          />
+        </NoTooltips>
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -575,5 +590,99 @@ test("a check that serves no statement, and a node an address named, are drawn",
     ).toEqual([["comment", named.text]]);
   } finally {
     view.unmount();
+  }
+});
+
+// Part V's R8 and R1: the view keeps one tree, which holds everything it draws. Its first row
+// is the issue's own, holding the summary and the chips, and it is the tree's one tab stop, so
+// `t k` leaves the view's top on screen and the next Tab on the chip All. An issue with nothing
+// to draw draws no row, and until the reads have answered the tree holds nothing at all.
+test("the view's tree holds the issue's row first, and only it is a tab stop", () => {
+  const met = passing("c-one");
+  const loose = passing("c-loose");
+  const named = node({ id: "comment-1", text: "A comment an address named.", type: "comment" });
+  const view = drawBody(
+    [
+      statementNode("r1", "The page draws it.", [checkNode(met)]),
+      statementNode("r2", "Nothing serves this one.", []),
+      checkNode(loose),
+      named,
+    ],
+    [met, loose],
+    { named: [named.id] }
+  );
+  try {
+    const body = view.container.querySelector("[data-verification-body]");
+    const trees = view.container.querySelectorAll('[role="tree"]');
+    expect(trees).toHaveLength(1);
+    const tree = trees[0];
+    expect(body?.childElementCount).toBe(1);
+    expect(body?.firstElementChild).toBe(tree);
+    expect(tree?.getAttribute("aria-label")).toBe(CONTROL_LABELS.tree);
+    expect(tree?.getAttribute("tabindex")).toBe("-1");
+
+    const rows = [...view.container.querySelectorAll('[role="treeitem"]')];
+    const issueRow = rows[0];
+    expect(tree?.firstElementChild).toBe(issueRow);
+    expect(issueRow?.hasAttribute("data-verification-issue")).toBe(true);
+    expect(issueRow?.hasAttribute("data-node-row")).toBe(true);
+    expect(issueRow?.getAttribute("data-node-id")).toBe(ISSUE_KEY);
+    expect(issueRow?.getAttribute("aria-level")).toBe("1");
+    expect(issueRow?.getAttribute("tabindex")).toBe("0");
+    expect(issueRow?.querySelector("[data-verification-summary]")).not.toBeNull();
+    expect(issueRow?.querySelector("[data-verification-chips]")).not.toBeNull();
+    // Every other row, in the order the page draws them: each statement and its checks, the
+    // check that serves no statement, and the node the address named. None is a tab stop.
+    expect(
+      rows
+        .slice(1)
+        .map((row) => [
+          row.getAttribute("data-node-type"),
+          row.getAttribute("aria-level"),
+          row.getAttribute("tabindex"),
+          row.hasAttribute("data-node-row"),
+        ])
+    ).toEqual([
+      ["requirement", "1", "-1", true],
+      ["check", "2", "-1", true],
+      ["requirement", "1", "-1", true],
+      ["check", "1", "-1", true],
+      ["comment", "1", "-1", true],
+    ]);
+    // A statement's checks are one group of rows under it, drawn open; a statement no check
+    // serves holds no group and says nothing of being open.
+    const served = rows[1];
+    expect(served?.querySelectorAll('[role="group"]')).toHaveLength(1);
+    expect(served?.querySelector('[role="group"] > [role="treeitem"]')).toBe(rows[2] ?? null);
+    expect(served?.getAttribute("aria-expanded")).toBe("true");
+    expect(rows[3]?.querySelectorAll('[role="group"]')).toHaveLength(0);
+    expect(rows[3]?.hasAttribute("aria-expanded")).toBe(false);
+    // The outline's own mark is no mark of this view's rows.
+    expect(view.container.querySelectorAll("[data-row-key]")).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+
+  const empty = drawBody([], []);
+  try {
+    expect(empty.container.querySelectorAll("[data-node-row]")).toHaveLength(0);
+    expect(textsOf(empty, '[data-verification-body] > [role="tree"]')).toEqual([
+      EMPTY_STATE_LINES.verification,
+    ]);
+  } finally {
+    empty.unmount();
+  }
+
+  const waiting = drawBody([statementNode("r1", "The page draws it.", [checkNode(met)])], [met], {
+    answered: false,
+  });
+  try {
+    const tree = waiting.container.querySelector('[data-verification-body] > [role="tree"]');
+    expect(tree).not.toBeNull();
+    expect(tree?.childElementCount).toBe(0);
+    expect(textsOf(waiting, "[data-verification-body]")).toEqual([""]);
+    expect(waiting.container.querySelectorAll("[data-node-row]")).toHaveLength(0);
+  } finally {
+    waiting.unmount();
   }
 });
