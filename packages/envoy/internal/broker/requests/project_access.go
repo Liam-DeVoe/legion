@@ -48,12 +48,24 @@ const airlockProjectRecheck = 10 * time.Minute
 type projectFacts struct {
 	projects []string
 	states   map[string]policy.ProjectState
+	// named are the projects the credential names, before the visibility filter projects is the
+	// result of, resolved only when a requested name carries a project-channels tag, which is the
+	// one rule that reads them (policy.Requester.ListsPrivate).
+	named []string
+	// person is who the credential acts for, for the channel limit's own reads.
+	person string
 }
 
 // requester is r with these facts, the form policy.Set.Evaluate reads them in.
 func (f projectFacts) requester(r policy.Requester) policy.Requester {
-	r.Projects, r.ProjectStates = f.projects, f.states
+	r.Projects, r.ProjectStates, r.Named = f.projects, f.states, f.named
 	return r
+}
+
+// anyChannelLimited reports whether any of names carries a project-channels tag, the one tag
+// whose rule reads the credential's own projects rather than the secret's.
+func anyChannelLimited(set *policy.Set, names []string) bool {
+	return slices.ContainsFunc(names, func(name string) bool { return set.Secrets[name].ProjectChannels != "" })
 }
 
 // taggedProjects is each distinct project a name of names is tagged with in set, sorted, and nil
@@ -103,22 +115,34 @@ func (m *Machine) credentialProjects(e enrollmentRow) (person string, projects [
 // for e asking for names under set: one state per distinct project tag among names
 // (projectaccess.Access.States: present, private or public; absent, missing), and the projects
 // the credential names that its person may still see, of those tags alone, since Evaluate reads
-// the credential's list for a tagged private secret and for nothing else. A request holding no
-// tagged name asks Dispatch nothing at all. A failure to ask is ErrProjectAccessUnavailable.
+// the credential's list for a tagged private secret and for nothing else. Where a requested name
+// carries a project-channels tag, the states of the credential's own named projects are resolved
+// too, because that rule reads them whatever project the secret belongs to
+// (policy.Requester.ListsPrivate). A request holding neither tag asks Dispatch nothing at all. A
+// failure to ask is ErrProjectAccessUnavailable.
 func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []string, set *policy.Set) (projectFacts, error) {
 	tagged := taggedProjects(set, names)
-	if len(tagged) == 0 {
+	person, named := m.credentialProjects(e)
+	limited := anyChannelLimited(set, names)
+	if len(tagged) == 0 && !limited {
 		return projectFacts{}, nil
 	}
 	if m.Projects == nil {
 		return projectFacts{}, fmt.Errorf("%w: this broker holds no client of Dispatch's project access", ErrProjectAccessUnavailable)
 	}
-	answers, err := m.Projects.States(ctx, tagged)
+	asking := tagged
+	if limited {
+		asking = slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(tagged), named...))))
+	}
+	answers, err := m.Projects.States(ctx, asking)
 	if err != nil {
 		return projectFacts{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
 	}
-	facts := projectFacts{states: make(map[string]policy.ProjectState, len(tagged))}
-	for _, project := range tagged {
+	facts := projectFacts{states: make(map[string]policy.ProjectState, len(asking)), person: person}
+	if limited {
+		facts.named = named
+	}
+	for _, project := range asking {
 		answer, held := answers[project]
 		switch {
 		case !held:
@@ -129,7 +153,6 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 			facts.states[project] = policy.ProjectPublic
 		}
 	}
-	person, named := m.credentialProjects(e)
 	for _, project := range named {
 		if facts.states[project] != policy.ProjectPrivate {
 			continue
@@ -143,6 +166,42 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 		}
 	}
 	return facts, nil
+}
+
+// ErrProjectChannelsUnknown is a release of a project-channels secret to a credential that names
+// a private project whose Dispatch answered no slack_channels key at all: a Dispatch from before
+// dispatch://INFRA-3862's #t-a-31. The broker refuses rather than read a missing key as "no
+// limit", so the two sides deploy in either order safely.
+var ErrProjectChannelsUnknown = errors.New("dispatch did not say which Slack channels the project allows")
+
+// channelLimit is the channels a grant's credential may post to: the union of what the owner of
+// each private project it names allowed, sorted and each once, with limited true when any such
+// project was named at all. An empty list under limited is a credential that may post nowhere,
+// which is not the same as a credential nobody limits. A grant holding no project-channels name
+// asks Dispatch nothing here.
+func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) ([]string, bool, error) {
+	names := make([]string, len(checked.granted))
+	for i, g := range checked.granted {
+		names[i] = g.name
+	}
+	if !anyChannelLimited(checked.set, names) || !checked.facts.requester(policy.Requester{}).ListsPrivate() {
+		return nil, false, nil
+	}
+	var channels []string
+	for _, project := range checked.facts.named {
+		if checked.facts.states[project] != policy.ProjectPrivate {
+			continue
+		}
+		answer, err := m.Projects.Access(ctx, project, checked.facts.person)
+		if err != nil {
+			return nil, false, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
+		}
+		if !answer.SlackChannelsPresent {
+			return nil, false, fmt.Errorf("%w: %s", ErrProjectChannelsUnknown, project)
+		}
+		channels = append(channels, answer.SlackChannels...)
+	}
+	return slices.Compact(slices.Sorted(slices.Values(channels))), true, nil
 }
 
 // projectNotNamed is the refusal of a granted name the session may no longer have for its

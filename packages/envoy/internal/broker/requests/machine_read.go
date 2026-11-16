@@ -63,6 +63,9 @@ type grantRelease struct {
 	expires                 *time.Time
 	granted                 []requestedSecret
 	set                     *policy.Set
+	// facts are what Dispatch answered for this release, kept so the airlock's own reads
+	// (channelLimit) ask it nothing a second time.
+	facts projectFacts
 }
 
 // checkRelease is every check a release of a grant makes before it reads a value, shared by
@@ -124,17 +127,21 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	// A grant of a project-tagged name is re-checked on every release as a service's is: whether
 	// its project is private, and whether the session's person may still see it, are Dispatch's
 	// and not in the policy version (anyProjectTagged), so they are read here, on the pool and
-	// outside any transaction (projectFacts), before the names are re-evaluated.
+	// outside any transaction (projectFacts), before the names are re-evaluated. A grant holding
+	// a project-channels name is read every time too (anyChannelLimited): which channels its
+	// credential may post to is Dispatch's as well, and the airlock hands the pod that list.
 	set := m.Policy.Get()
-	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyProjectTagged(set, granted) {
-		names := make([]string, len(granted))
-		for i, g := range granted {
-			names[i] = g.name
-		}
-		facts, err := m.projectFacts(ctx, enr, names, set)
+	names := make([]string, len(granted))
+	for i, g := range granted {
+		names[i] = g.name
+	}
+	var facts projectFacts
+	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyProjectTagged(set, granted) || anyChannelLimited(set, names) {
+		resolved, err := m.projectFacts(ctx, enr, names, set)
 		if err != nil {
 			return grantRelease{}, err
 		}
+		facts = resolved
 		requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
 		if err != nil {
 			return grantRelease{}, err
@@ -173,7 +180,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 			}
 		}
 	}
-	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, expires: expires, granted: granted, set: set}, nil
+	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, expires: expires, granted: granted, set: set, facts: facts}, nil
 }
 
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:

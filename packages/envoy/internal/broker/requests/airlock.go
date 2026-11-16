@@ -580,6 +580,13 @@ type AirlockSecret struct {
 	Slots   map[string]string // slot -> the real value that slot's placeholder stands for
 	Expires time.Time         // zero for a stored value, which no clock ends
 	Kind    string
+	// SlackChannels, when Limited, are the Slack channel ids the grant's credential may post to:
+	// the union of what the owner of each private project it names allowed, sorted, each once.
+	// Limited says the limit applies at all, so an empty list under Limited is a credential that
+	// may post nowhere, which is different from a secret nobody limits. The proxy holds a post to
+	// any other channel (airlockproxy's slackPostAllowed).
+	SlackChannels []string
+	Limited       bool
 }
 
 // AirlockValues runs the full release checks of Values - the record chain, the policy
@@ -617,13 +624,24 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	if anyProjectTagged(checked.set, checked.granted) {
 		recheck = time.Now().Add(airlockProjectRecheck)
 	}
+	// The channels the grant's credential may post to, for a project-channels secret released to
+	// a credential that names a private project: the union of what each such project's owner
+	// allowed. Read once per release, from the answers projectFacts already holds.
+	channels, limited, err := m.channelLimit(ctx, checked)
+	if err != nil {
+		return nil, "", err
+	}
 	values := map[string]AirlockSecret{}
 	for _, released := range read {
 		expires := released.expires
 		if !recheck.IsZero() && (expires.IsZero() || expires.After(recheck)) {
 			expires = recheck
 		}
-		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: expires, Kind: released.kind}
+		value := AirlockSecret{Slots: released.split.values, Expires: expires, Kind: released.kind}
+		if limited && checked.set.Secrets[released.name].ProjectChannels == policy.ProjectChannelsSlack {
+			value.SlackChannels, value.Limited = channels, true
+		}
+		values[released.name] = value
 	}
 	// The same grant.used row a session's own release writes, marked as the proxy's: the values
 	// did leave the broker, and an operator reading the trail must see that they did.
