@@ -10,6 +10,8 @@ import type { ReactNode } from "react";
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueClaim } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
+import { usePageWords, useTooltips } from "../../components/tooltips";
+import { pageInkText } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { Timestamp } from "../refs/Timestamp";
@@ -129,15 +131,31 @@ export function claimIsTakeable(
  * Only the holder's name ellipsizes:
  * "Claimed by", the age and "not running" stay whole, because a chip reading "Claimed…" would
  * say nothing. The name is an inline link, so it keeps the chip's line box at a phone width.
+ *
+ * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the chip carries no
+ * `title`, so everything a reader there acts on is drawn instead, in that page's words with
+ * their marks (dispatch://INFRA-1196 R19, R22): both instants after their ages (`Timestamp`'s
+ * `exact`), the moment the issue comes free as "free for another agent from" and the date and
+ * time, and "· running state unknown" where the registry could not be read at all, which is a
+ * claim nobody has judged rather than a held one. There `author` names the holder as that page
+ * names an author (`AgentName`'s `author`), and `inRow` draws the claim as the value of a row
+ * of Details, which draws the label: plain words in the ink that wrap and cut no word, not a
+ * pill. Outside it, neither changes anything.
  */
 export function ClaimChip({
+  author = false,
   claim,
+  inRow = false,
   liveness,
 }: {
+  author?: boolean;
   claim: IssueClaim | null;
+  inRow?: boolean;
   liveness?: ClaimHolderLiveness;
 }): ReactNode {
   const registry = useAgentRegistry(claim?.actor.kind === "session");
+  const tooltips = useTooltips();
+  const page = usePageWords();
   const text = useAgentText();
   if (claim === null) {
     return null;
@@ -173,59 +191,110 @@ export function ClaimChip({
             : `It keeps this issue until ${new Date(takeableAt).toLocaleString()}, when another agent may take it.`
       }`;
   // A session claim the registry could not judge says so, rather than pass for a held one.
-  const uncheckedNote =
-    claim.actor.kind === "session" && registry.isError
-      ? ` Couldn't check whether that session is still running: ${
-          registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
-        }`
-      : "";
+  const unchecked = claim.actor.kind === "session" && registry.isError;
+  const uncheckedNote = !unchecked
+    ? ""
+    : ` Couldn't check whether that session is still running: ${
+        registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
+      }`;
+  const inDetails = page !== null && inRow;
   return (
     <span
-      className={`${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`}
+      className={
+        inDetails
+          ? // Below 1280 px an inline link takes 6 px of padding above and below for a finger
+            // (`styles.css`'s `.dispatch-inline-link`), so wrapped lines stand that far apart.
+            `inline-flex min-w-0 max-w-full flex-wrap items-baseline gap-x-1 gap-y-3 text-sm xl:gap-y-0 ${pageInkText}`
+          : `${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`
+      }
       data-testid="issue-claim"
       style={{ flexShrink: 1 }}
-      title={`${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`}
+      title={
+        tooltips
+          ? `${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`
+          : undefined
+      }
     >
-      <span className="shrink-0">Claimed by</span>
-      <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
-      <span aria-hidden="true" className="shrink-0">
+      {inDetails ? null : (
+        <span className="shrink-0" {...page?.pageChrome}>
+          {page?.PROPERTY_LABELS.claim ?? "Claimed by"}
+        </span>
+      )}
+      <AgentName
+        actor={claim.actor}
+        author={author}
+        className={inDetails ? undefined : "min-w-0 truncate"}
+        inline
+      />
+      <span aria-hidden="true" className="shrink-0" {...page?.pageChrome}>
         ·
       </span>
-      <Timestamp at={claim.at} className="shrink-0" />
+      <Timestamp at={claim.at} className="shrink-0" exact />
       {lapsed ? (
         <>
-          <span aria-hidden="true" className="shrink-0">
+          <span aria-hidden="true" className="shrink-0" {...page?.pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-lapsed">
-            not running
+          <span className="shrink-0" data-testid="issue-claim-lapsed" {...page?.pageChrome}>
+            {page?.CONTROL_LABELS.not_running ?? "not running"}
           </span>
         </>
       ) : null}
       {unresponsive ? (
         <>
-          <span aria-hidden="true" className="shrink-0">
+          <span aria-hidden="true" className="shrink-0" {...page?.pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-unresponsive">
-            unresponsive
+          <span className="shrink-0" data-testid="issue-claim-unresponsive" {...page?.pageChrome}>
+            {page?.CONTROL_LABELS.unresponsive ?? "unresponsive"}
             {heardAt === null ? null : (
               <span data-testid="issue-claim-unresponsive-since">
-                {" since "}
-                <Timestamp at={heardAt} />
+                {page === null ? " since " : ` ${page.CONTROL_LABELS.unresponsive_since} `}
+                <Timestamp at={heardAt} exact />
               </span>
             )}
             {takeableAt === null ? null : (
               <span data-testid="issue-claim-takeable">
                 {takeable ? (
-                  ", takeable now"
-                ) : (
+                  page === null ? (
+                    ", takeable now"
+                  ) : (
+                    `, ${page.CONTROL_LABELS.takeable_now}`
+                  )
+                ) : page === null ? (
                   <>
                     , takeable <Timestamp at={takeableAt} />
+                  </>
+                ) : (
+                  <>
+                    {`, ${page.CONTROL_LABELS.takeable} `}
+                    {/* The moment itself, and no relative age: the words before it end in
+                        "from", and a `Timestamp` would finish the sentence with "in 3 minutes"
+                        or, inside the last minute of the wait, with "just now" - which reads as
+                        free while the server still refuses the take. */}
+                    <time dateTime={takeableAt} {...page.authorText}>
+                      {new Date(takeableAt).toLocaleString(undefined, {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}
+                    </time>
                   </>
                 )}
               </span>
             )}
+          </span>
+        </>
+      ) : null}
+      {/* Where a tooltip carries it, `uncheckedNote` above says it; inside `NoTooltips` the
+          chip says it, because a claim nobody could judge is not a held one and a reader on a
+          phone or on the keyboard has no other way to that. */}
+      {unchecked && page !== null ? (
+        <>
+          <span aria-hidden="true" className="shrink-0" {...page.pageChrome}>
+            ·
+          </span>
+          <span className="shrink-0" data-testid="issue-claim-unchecked" {...page.pageChrome}>
+            {page.CONTROL_LABELS.unchecked}
           </span>
         </>
       ) : null}
