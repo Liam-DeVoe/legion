@@ -123,7 +123,7 @@ HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
 
 usage() {
   cat <<'EOF'
-Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--help]
+Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--project-access] [--help]
 
 Boot dev-oidc-issuer, the secrets broker, a throwaway NATS, the Envoy listener and the Dispatch
 server on one machine, each on a port the kernel chooses, and print the exports a second shell
@@ -134,11 +134,16 @@ With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, a
 agent-secrets-helper and natsd in <dir> in place of building them; a directory short of any of
 them, or holding one that is not an executable file, is refused, naming each, before anything is
 created or started.
+
+With --project-access, the broker asks this run's Dispatch whether a project is private and who
+may see it (BROKER_PROJECT_ACCESS_URL, with a token of its own account for Dispatch's audience),
+and Dispatch admits that account to its access routes. Without it neither does, as before.
 EOF
 }
 
 DATABASE_URL_OPTION=""
 BINARIES_OPTION=""
+PROJECT_ACCESS=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --database-url)
@@ -167,6 +172,10 @@ while [ "$#" -gt 0 ]; do
         echo "dev-stack: --binaries needs the directory that holds the stack's binaries" >&2
         exit 2
       fi
+      shift
+      ;;
+    --project-access)
+      PROJECT_ACCESS=true
       shift
       ;;
     --help | -h)
@@ -282,6 +291,25 @@ POD_TOKEN_FILE="$WORK_DIR/pod-token"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
+# PRIV's pod, the production path of a private project's agent (scripts/project-secrets-check.sh):
+# a Kubernetes service account BROKER_EXCHANGE_ACCOUNTS maps to the project PRIV for its owner,
+# and binds in BROKER_SERVICE_LOGINS alone, as the service legion-priv, so the pod can log in
+# with its own token to enrol itself (agent-secrets enroll --pod). It is not in BROKER_SERVICES:
+# the pod reads no service-owned secret, and its project comes from its exchange entry through
+# its verified subject. Its two token files are one pod, as EXCHANGE_ACCOUNT's are.
+PRIV_PROJECT="PRIV"
+PRIV_OWNER="carol@example.com"
+PRIV_SERVICE="legion-priv"
+PRIV_ACCOUNT="system:serviceaccount:legion-priv:legion-priv-worker"
+PRIV_EXCHANGE_TOKEN_FILE="$WORK_DIR/priv-exchange-token"
+PRIV_POD_TOKEN_FILE="$WORK_DIR/priv-pod-token"
+# The broker's own account for Dispatch's access routes, and Dispatch's audience, as production
+# names them (system:serviceaccount:dispatch:envoy-broker, audience dispatch). Used only with
+# --project-access: the broker presents this token to Dispatch, and Dispatch admits the account
+# in both of its lists (DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS).
+DISPATCH_AUDIENCE="dispatch"
+BROKER_ACCESS_ACCOUNT="system:serviceaccount:example-ns:example-broker"
+BROKER_ACCESS_TOKEN_FILE="$WORK_DIR/broker-access-token"
 # The namespace the fake secrets sit under and an example KMS key in AWS's documentation account;
 # nothing here calls AWS.
 SECRETS_PREFIX="example/agent-secrets/"
@@ -538,6 +566,9 @@ env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
+  --token "$EXCHANGE_AUDIENCE=$PRIV_ACCOUNT=$PRIV_EXCHANGE_TOKEN_FILE" \
+  --token "$BROKER_AUDIENCE=$PRIV_ACCOUNT=$PRIV_POD_TOKEN_FILE" \
+  --token "$DISPATCH_AUDIENCE=$BROKER_ACCESS_ACCOUNT=$BROKER_ACCESS_TOKEN_FILE" \
   --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
   --device-flow "$DEVICE_CLIENT_ID=$DEVICE_SECRET_FILE" \
   --device-flow "$MACHINE_CLIENT_ID=$MACHINE_SECRET_FILE" \
@@ -573,6 +604,13 @@ cat >"$FAKE_SECRETS_FILE" <<EOF
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
+# With --project-access the broker asks this run's Dispatch about projects, at the port the keeper
+# already holds for it, presenting its own account's token; without it the broker holds no such
+# client and serves no project-tagged secret, as before.
+PROJECT_ACCESS_ENV=()
+if [ "$PROJECT_ACCESS" = true ]; then
+  PROJECT_ACCESS_ENV=(BROKER_PROJECT_ACCESS_URL="$DISPATCH_URL" BROKER_PROJECT_ACCESS_TOKEN_FILE="$BROKER_ACCESS_TOKEN_FILE")
+fi
 echo "dev-stack: starting broker..." >&2
 : >"$BROKER_LOG"
 env -i PATH="$PATH" \
@@ -594,13 +632,14 @@ env -i PATH="$PATH" \
   BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
   BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
   BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
-  BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
+  BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN $PRIV_ACCOUNT=$PRIV_PROJECT=$PRIV_OWNER" \
   BROKER_GOOGLE_OIDC_ISSUER="$ISSUER_URL" \
   BROKER_GOOGLE_OIDC_AUDIENCE="$MACHINE_CLIENT_ID" \
   BROKER_VM_SERVICES="$FLEET_SERVICE=$FLEET_ACCOUNT $PERSON_FLEET_SERVICE=$PERSON_FLEET_ACCOUNT" \
   BROKER_VM_EXCHANGE_ACCOUNTS="$PERSON_FLEET_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
   BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
-  BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
+  BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT $PRIV_SERVICE=$PRIV_ACCOUNT" \
+  "${PROJECT_ACCESS_ENV[@]}" \
   "$BIN_DIR/broker" >"$BROKER_LOG" 2>&1 &
 BROKER_PID=$!
 await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broker_addr_in
@@ -671,6 +710,15 @@ echo "dev-stack: listener $LISTENER_URL" >&2
 # deployment's. HOME and the XDG directories are this run's own, so the server reads no app.json
 # and writes no key where a developer keeps theirs. ---
 DISPATCH_TOKEN_VALUE="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+# With --project-access, Dispatch takes this run's issuer's service-account tokens for its own
+# audience, admits the broker's account (DISPATCH_OIDC_ACCOUNTS, R13's list) and lets it read the
+# access routes (DISPATCH_ACCESS_ACCOUNTS), the two lists avenue A's access answers require the
+# broker in. Without it, Dispatch takes no service-account token, as before.
+DISPATCH_ACCESS_ENV=()
+if [ "$PROJECT_ACCESS" = true ]; then
+  DISPATCH_ACCESS_ENV=(DISPATCH_OIDC_ISSUER="$ISSUER_URL" DISPATCH_OIDC_AUDIENCE="$DISPATCH_AUDIENCE"
+    DISPATCH_OIDC_ACCOUNTS="$BROKER_ACCESS_ACCOUNT" DISPATCH_ACCESS_ACCOUNTS="$BROKER_ACCESS_ACCOUNT")
+fi
 echo "dev-stack: starting dispatch at $DISPATCH_URL..." >&2
 : >"$DISPATCH_LOG"
 python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD -- \
@@ -692,6 +740,7 @@ python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD --
   DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist" \
   ENVOY_URL="$LISTENER_URL" \
   NATS_URLS="$NATS_URL" \
+  "${DISPATCH_ACCESS_ENV[@]}" \
   "$BIN_DIR/dispatch" >"$DISPATCH_LOG" 2>&1 &
 DISPATCH_PID=$!
 await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_LOG" 'the address it serves on' dispatch_addr_in
@@ -850,6 +899,13 @@ dev-stack: ready.
   export DEV_STACK_MACHINE_ACCOUNT=$FLEET_ACCOUNT
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
   export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT
+  export DEV_STACK_PRIV_PROJECT=$PRIV_PROJECT
+  export DEV_STACK_PRIV_OWNER=$PRIV_OWNER
+  export DEV_STACK_PRIV_SERVICE=$PRIV_SERVICE
+  export DEV_STACK_PRIV_ACCOUNT=$PRIV_ACCOUNT
+  export DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE=$PRIV_EXCHANGE_TOKEN_FILE
+  export DEV_STACK_PRIV_POD_TOKEN_FILE=$PRIV_POD_TOKEN_FILE
+  export DEV_STACK_PROJECT_ACCESS=$PROJECT_ACCESS
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for

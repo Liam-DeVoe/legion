@@ -243,6 +243,7 @@ ISSUER
 #!/usr/bin/env bash
 echo "fake broker: database=${BROKER_DATABASE_URL:-} issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-}" >&2
 echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
+echo "fake broker: service-logins=${BROKER_SERVICE_LOGINS:-} project-access=${BROKER_PROJECT_ACCESS_URL:-} project-access-token=${BROKER_PROJECT_ACCESS_TOKEN_FILE:-}" >&2
 BROKER
       if [[ -n "${DEV_STACK_TEST_BROKER_FAILS:-}" ]]; then
         cat >>"$target" <<'REFUSES'
@@ -274,6 +275,7 @@ LISTENER
       cat >"$target" <<'DISPATCH'
 #!/usr/bin/env bash
 echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-}" >&2
+echo "fake dispatch: oidc-issuer=${DISPATCH_OIDC_ISSUER:-} oidc-audience=${DISPATCH_OIDC_AUDIENCE:-} oidc-accounts=${DISPATCH_OIDC_ACCOUNTS:-} access-accounts=${DISPATCH_ACCESS_ACCOUNTS:-}" >&2
 echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=127.0.0.1:$$" >&2
 DISPATCH
       ;;
@@ -560,6 +562,44 @@ assert_everything_stopped() {
   done
 }
 
+# PRIV's pod and the broker's own access account (project-secrets-check.sh's production path):
+# every run mints the pod's two tokens and the broker's token for Dispatch's audience, lists the
+# pod's account in the exchange for PRIV and as the service legion-priv's login, and exports
+# them. Only a run with --project-access (want=true) points the broker at its own Dispatch's
+# access routes and has Dispatch admit the broker's account; a run without it changes neither, as
+# before the option existed. Reads the globals assert_instance_ready set.
+assert_project_access() {
+  local label="$1" log_file="$2" want="$3" broker_log="${work_dir}/logs/broker.log" dispatch_log="${work_dir}/logs/dispatch.log"
+  local priv_account='system:serviceaccount:legion-priv:legion-priv-worker' access_account='system:serviceaccount:example-ns:example-broker'
+  local file
+  for file in priv-exchange-token priv-pod-token broker-access-token; do
+    [[ -s "${work_dir}/${file}" ]] || fail "$label: its issuer wrote no ${file}"
+  done
+  grep -q "fake-token-for-${priv_account}" "${work_dir}/priv-exchange-token" ||
+    fail "$label: priv-exchange-token is not PRIV's pod's token"
+  grep -q "fake-token-for-${access_account}" "${work_dir}/broker-access-token" ||
+    fail "$label: broker-access-token is not the broker's own access account's token"
+  grep -q "exchange=.* ${priv_account}=PRIV=carol@example.com " "$broker_log" ||
+    fail "$label: the broker's BROKER_EXCHANGE_ACCOUNTS does not map PRIV's pod to PRIV for carol"
+  grep -q "service-logins=.* legion-priv=${priv_account} " "$broker_log" ||
+    fail "$label: the broker's BROKER_SERVICE_LOGINS does not bind PRIV's pod as legion-priv"
+  [[ "$(exported "$log_file" DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE)" == "${work_dir}/priv-exchange-token" ]] ||
+    fail "$label: the banner does not export PRIV's pod's exchange token file"
+  [[ "$(exported "$log_file" DEV_STACK_PROJECT_ACCESS)" == "$want" ]] ||
+    fail "$label: the banner exports DEV_STACK_PROJECT_ACCESS=$(exported "$log_file" DEV_STACK_PROJECT_ACCESS), want $want"
+  if [[ "$want" == true ]]; then
+    grep -q "project-access=http://127\.0\.0\.1:${kept_port} project-access-token=${work_dir}/broker-access-token\$" "$broker_log" ||
+      fail "$label: the broker was not pointed at its own Dispatch's access routes with its own token"
+    grep -q "oidc-issuer=http://127\.0\.0\.1:${process_port[dev-oidc-issuer]} oidc-audience=dispatch oidc-accounts=${access_account} access-accounts=${access_account}\$" "$dispatch_log" ||
+      fail "$label: Dispatch does not admit the broker's account to its access routes"
+  else
+    grep -q 'project-access= project-access-token=$' "$broker_log" ||
+      fail "$label: a run without --project-access gave the broker a project-access client"
+    grep -q 'oidc-issuer= oidc-audience= oidc-accounts= access-accounts=$' "$dispatch_log" ||
+      fail "$label: a run without --project-access changed Dispatch's service-account settings"
+  fi
+}
+
 assert_databases_dropped() {
   local label="$1" psql_call_file="$2" suffix="$3" dropped
   dropped="$(dropped_databases "$psql_call_file")"
@@ -582,6 +622,7 @@ DEV_STACK_TEST_GO_CALL_FILE="$go_calls1" run_instance 1 "$log1" "$psql_calls1" "
 run_instance 2 "$log2" "$psql_calls2" "$curl_calls2"
 
 assert_instance_ready 'instance 1' "$log1" "$psql_calls1" "$curl_calls1"
+assert_project_access 'instance 1' "$log1" false
 work_dir1="$work_dir"
 suffix1="$run_suffix"
 kept_port1="$kept_port"
@@ -746,6 +787,19 @@ wait_for_exit 1
 assert_everything_stopped 'the --binaries run'
 assert_databases_dropped 'the --binaries run' "$psql_calls1" "$run_suffix"
 printf 'PASS: --binaries called no go, copied the %d prebuilt stubs into its own bin directory (%s/bin) and ran them\n' "${#prebuilt_packages[@]}" "$work_dir"
+
+# (j) --project-access: the same stack, its broker pointed at its own Dispatch's access routes
+# with a token of its own account, and that account admitted to both of Dispatch's lists. Instance
+# 1 above, run without it, is the control: neither is set there.
+run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --project-access
+assert_instance_ready 'the --project-access run' "$log1" "$psql_calls1" "$curl_calls1"
+assert_project_access 'the --project-access run' "$log1" true
+kill -INT "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -eq 130 ]] || fail "the --project-access run exited $exited_status on INT, not 130"
+assert_everything_stopped 'the --project-access run'
+assert_databases_dropped 'the --project-access run' "$psql_calls1" "$run_suffix"
+printf 'PASS: --project-access pointed the broker at its own Dispatch with its own token, and Dispatch admits that account; a run without it sets neither\n'
 
 # (i) A --binaries directory that does not hold each of those executable files is refused with
 # exit 2, naming each file that is missing or not executable and no other, before anything is
