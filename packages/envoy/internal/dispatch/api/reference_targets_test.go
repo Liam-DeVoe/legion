@@ -156,7 +156,9 @@ func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
 // reference's parse. A block id written short that two blocks of the document carry refuses
 // nothing: that reference is answered as one member, gone and ambiguous, with no name, and the
 // other member of the set is answered with its name. The other member's answer carries no key
-// ambiguous at all.
+// ambiguous at all. The tag covers ambiguous: once no block carries the prefix, the reference is
+// gone and not ambiguous, every other field as it was, and the ambiguous answer's tag sent back
+// is answered with the new answer under a new tag, never 304.
 func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -228,5 +230,17 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 	}
 	if _, carried := keys[1]["ambiguous"]; carried {
 		t.Errorf("the other member is %v, want no key ambiguous", keys[1])
+	}
+
+	ambiguousTag := answered.Header().Get("ETag")
+	uploadDocument(t, handler, "/api/v1/issues/"+shared.Key, "spec.md", ":::requirement{#cafe-one}\nThe only requirement.\n:::\n")
+	cleared := referenceTargetsRequest(t, handler, []string{short, reference}, ambiguousTag)
+	if cleared.Code != http.StatusOK || cleared.Header().Get("ETag") == ambiguousTag {
+		t.Fatalf("once no block carries the prefix, the ambiguous answer's tag answered status=%d etag=%q (was %q), want the new answer under a new tag",
+			cleared.Code, cleared.Header().Get("ETag"), ambiguousTag)
+	}
+	wanted[0].Ambiguous = false
+	if members := decodeBody[model.ReferenceTargets](t, cleared).Targets; !reflect.DeepEqual(members, wanted) {
+		t.Fatalf("once no block carries the prefix, the set answered %#v, want %#v", members, wanted)
 	}
 }

@@ -197,8 +197,11 @@ func referenceTargetsOf(references ...string) string {
 // comment, of a message and of an ask answers the tree of its own whole text, and a comment's
 // typed block that holds another, neither written with an id, answers its content as the
 // comment wrote it: no read gives the inner block an id, so two reads answer one tree under one
-// ETag, and that tag sent back is answered 304. A member that names no block carries no tree,
-// and neither does any member of a read that asked for none. The names are the same either way.
+// ETag, and that tag sent back is answered 304. A comment's typed block whose content opens with
+// a rule `---` and holds a second one answers both rules and both paragraphs: as the opening of a
+// document of its own, that `---` would start front matter that swallows the content up to the
+// second rule. A member that names no block carries no tree, and neither does any member of a
+// read that asked for none. The names are the same either way.
 //
 // The texts cost one statement however many blocks of a document the set names: a set of 20
 // blocks of one document makes as many statements as a set of 2, and one of them reads the
@@ -259,6 +262,10 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	// opening line.
 	const nestedCallout = "::::callout{}\n:::callout{}\nInner words.\n:::\n::::"
 	nested := createReferenceAPIComment(t, handler, issue.Key, nestedCallout)
+	// A typed block whose content opens with a rule and holds a second one: cut out of the block,
+	// the first `---` would open front matter that runs to the second.
+	const ruledCallout = ":::callout{}\n---\n\nAfter a rule.\n\n---\n\nTail.\n:::"
+	ruled := createReferenceAPIComment(t, handler, issue.Key, ruledCallout)
 	const messageBlock = "A message's second block, with dispatch://TBT-1 in it."
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message's first block.\n\n" + messageBlock}, "alice")
 	ask := readPartAsk(t, handler, createPartAsk(t, handler, issue.Key, "Which day do we ship?",
@@ -283,6 +290,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		notesRef + "#b-l1",
 		notesRef + "#b-l10",
 		"dispatch://" + issue.Key + "/comment/" + nested.ID + "#b-b1",
+		"dispatch://" + issue.Key + "/comment/" + ruled.ID + "#b-b1",
 	}
 	target := referenceTargetsOf(references...)
 	plain := treesRequest(t, handler, target, false)
@@ -316,7 +324,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	requireWholeBlockTree(t, "the plan task's text_tree", json.RawMessage(task.TextTree), issue.Key, wholeBlockTail)
 	for index, content := range map[int]string{
 		1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quoted, 7: listed,
-		8: numbered, 9: ":::callout{}\nInner words.\n:::",
+		8: numbered, 9: ":::callout{}\nInner words.\n:::", 10: "***\n\nAfter a rule.\n\n---\n\nTail.",
 	} {
 		want := sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest))
 		if read[index].TextTree == nil {
