@@ -5,11 +5,13 @@ import type {
   ArtifactBlock,
   Comment,
   Decision,
+  DisplayTree,
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
 } from "../../api/types";
-import { decisionChangeComments } from "./decision-review";
+import { wordsOf } from "../refs/tree-fragment";
+import { anchorQuote, changeAnchor, decisionChangeComments } from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, type TreeNode } from "./issue-tree";
 import { treeContext } from "./tree-drafts";
 import { waitingOnReader } from "./waiting";
@@ -215,10 +217,14 @@ const change: Comment = {
 };
 
 /** Whether `reference` names a statement of the issue, as the header reads it: by the coverage
- *  read's statements, each addressed as the tree addresses it. */
+ *  read's statements, each addressed as the tree addresses it, and none while that read has not
+ *  answered. */
 const nodeIdOf = treeContext({ issue }).nodeIdOf;
-const statements = new Set(coverage.requirements?.map((one) => nodeIdOf(one.ref)));
-const isStatement = (reference: string): boolean => statements.has(nodeIdOf(reference));
+function statementsOf(read: IssueCoverage | undefined): (reference: string) => boolean {
+  const statements = new Set(read?.requirements?.map((one) => nodeIdOf(one.ref)));
+  return (reference) => statements.has(nodeIdOf(reference));
+}
+const isStatement = statementsOf(coverage);
 
 /** The id of every node of `root` that waits on the reader. */
 function waitingIn(root: TreeNode): string[] {
@@ -226,6 +232,85 @@ function waitingIn(root: TreeNode): string[] {
     ...(root.waiting ? [root.id] : []),
     ...root.children.flatMap((child) => waitingIn(child)),
   ];
+}
+
+/** The id of each node of `root` that a placement of the node `id` sits under. */
+function parentsOf(root: TreeNode, id: string): string[] {
+  return root.children.flatMap((child) => [
+    ...(child.id === id ? [root.id] : []),
+    ...parentsOf(child, id),
+  ]);
+}
+
+/** A run of text of a reading (`Decision.text_tree`), as the server writes one. */
+function run(text: string): DisplayTree {
+  return { text, type: "text" };
+}
+
+/** A paragraph of a reading, holding `text`. */
+function paragraph(text: string): DisplayTree {
+  return { content: [run(text)], type: "paragraph" };
+}
+
+/** A bullet list of a reading, each item one paragraph holding its words. */
+function bulletList(items: readonly string[]): DisplayTree {
+  return {
+    content: items.map((item) => ({
+      attrs: { spread: false },
+      content: [paragraph(item)],
+      type: "list_item",
+    })),
+    type: "bullet_list",
+  };
+}
+
+/** A decision whose section is the heading `heading` and then `markdown`, with the server's
+ *  reading of it (`text_tree`): the heading, then the blocks `body`. */
+function readDecision(
+  blockId: string,
+  heading: string,
+  markdown: string,
+  body: readonly DisplayTree[]
+): Decision {
+  return {
+    ...waitingDecision(blockId, []),
+    heading,
+    text: `## ${heading}\n\n${markdown}`,
+    text_tree: {
+      content: [{ attrs: { level: 2 }, content: [run(heading)], type: "heading" }, ...body],
+      type: "doc",
+    },
+  };
+}
+
+/** Where the server puts a Change of each of `rows` written with the anchor `changeAnchor` gives
+ *  it (`chosen`), and where that row's own first block below its heading starts (`own`), both in
+ *  the decisions document's text as `pmdoc.FindQuote` reads it: the words of every row's reading
+ *  joined by one space. The server lists every match of the quote, overlapping ones included, and
+ *  takes the one the occurrence names. A row's words start one space after the rows above it,
+ *  and its first block one space after its heading's words. */
+function changePlaces(rows: readonly Decision[]): {
+  chosen: (number | undefined)[];
+  own: number[];
+} {
+  const words = rows.map((row) => wordsOf(row.text_tree as DisplayTree));
+  const text = words.join(" ");
+  const chosen = rows.map((row) => {
+    const anchor = changeAnchor(row, rows);
+    if (anchor === undefined) return undefined;
+    const matches: number[] = [];
+    for (let at = text.indexOf(anchor.quote); at !== -1; at = text.indexOf(anchor.quote, at + 1)) {
+      matches.push(at);
+    }
+    return matches[anchor.occurrence];
+  });
+  const own = rows.map(
+    (row, index) =>
+      words.slice(0, index).reduce((start, one) => start + one.length + 1, 0) +
+      row.heading.length +
+      1
+  );
+  return { chosen, own };
 }
 
 // R7, R13, R35, and the tester's F4 and F6: what waits on the reader is each open question whose
@@ -248,16 +333,19 @@ test("what waits on the reader is their open questions, the review list and thei
 
 // R3, R7 and R13: a Change belongs to the decision whose section of the decisions document holds
 // the block the person wrote it in (`Anchor.block_id`), though another decision holds its words
-// too. So the count leaves out the decision that was changed and counts the one that still
-// waits, as the tree marks them. Where the anchor stores no block, the quote alone decides: the
-// first decision whose words hold it.
+// too. Here the first decision holds the second's words and is tied to no statement, so it is on
+// no review list, and the Change is written in the second's paragraph: the second decision then
+// waits on its agent, and nothing waits on the reader, in the count as in the tree. A count that
+// read the quote alone would put the Change on the first decision and count the second as
+// waiting. Where the anchor stores no block, the quote alone decides: the first decision whose
+// words hold it.
 test("waitingOnReader counts a Change under the decision whose block holds its anchor", () => {
-  const tied = (blockId: string, text: string): Decision => ({
-    ...waitingDecision(blockId, ["r1"]),
+  const worded = (blockId: string, shaped: readonly string[], text: string): Decision => ({
+    ...waitingDecision(blockId, shaped),
     text,
   });
-  const first = tied("d1", "## Keep the model pure\n\nKeep the model pure. Draw it once.");
-  const second = tied("d2", "## Draw it once\n\nDraw it once.");
+  const first = worded("d1", [], "## Keep the model pure\n\nKeep the model pure. Draw it once.");
+  const second = worded("d2", ["r1"], "## Draw it once\n\nDraw it once.");
   const both: IssueDecisions = { ...decisions, decisions: [first, second] };
   const anchor = {
     artifact_id: made.id,
@@ -301,12 +389,212 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
   });
   const waitingDecisions = waitingIn(root).filter((id) => id.startsWith("decisions-md#"));
 
-  expect(waitingDecisions).toEqual(["decisions-md#b-d1"]);
-  expect(counted.decisions).toBe(1);
+  expect(counted.decisions).toBe(0);
+  expect(waitingDecisions).toEqual([]);
   expect(counted.decisions).toBe(waitingDecisions.length);
+  expect(parentsOf(root, moved.id)).toEqual(["decisions-md#b-d2"]);
+  expect(decisionChangeComments(both, [moved], issue.artifacts, documents)).toEqual(
+    new Map([["c-change", second.ref]])
+  );
 
   const unplaced: Comment = { ...moved, anchor: { ...anchor, block_id: null } };
   expect(decisionChangeComments(both, [unplaced], issue.artifacts, documents)).toEqual(
     new Map([["c-change", first.ref]])
   );
+});
+
+// R7, R13 and R35: a statement is a requirement the coverage read holds, as the header's count is
+// handed the statements. A decision tied only to a `requirement` block of the plan, which no
+// coverage row holds, is on no review list; nor is one tied to the spec's `r1` while the coverage
+// read has not answered, though the spec's blocks read has drawn that block already. The tree
+// marks neither and the count counts neither, and the decision tied to `r1` once the coverage
+// read holds it waits, in the tree as in the count.
+test("a tie to a requirement the coverage read does not hold puts no decision on the review list", () => {
+  const plan = issueDocument("artifact-plan", "plan-md");
+  const planned: IssueDetails = {
+    ...issue,
+    artifacts: [spec, made, plan],
+    plan_artifact_id: plan.id,
+  };
+  const requirementBlock = (id: string): ArtifactBlock => ({
+    attributes: [],
+    from: 0,
+    id,
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: id,
+    type: "requirement",
+  });
+  const documents: DocumentBlocks[] = [
+    { artifactId: spec.id, blocks: [requirementBlock("r1")] },
+    { artifactId: plan.id, blocks: [requirementBlock("p1")] },
+  ];
+  const tiedToPlan = waitingDecision("planned", ["p1"]);
+  const toPlan: Decision = {
+    ...tiedToPlan,
+    links: (tiedToPlan.links ?? []).map((link) => ({
+      ...link,
+      to: { ...link.to, id: plan.id, ref: `dispatch://${KEY}/artifact/plan-md#b-p1` },
+    })),
+  };
+  const both: IssueDecisions = {
+    ...decisions,
+    decisions: [waitingDecision("listed", ["r1"]), toPlan],
+  };
+  const waitingDecisions = (read: IssueCoverage | undefined): string[] =>
+    waitingIn(
+      buildIssueTree({
+        ...(read === undefined ? {} : { coverage: read }),
+        decisions: both,
+        documents,
+        issue: planned,
+        viewer: "alice",
+      })
+    ).filter((id) => id.startsWith("decisions-md#"));
+
+  expect(waitingDecisions(coverage)).toEqual(["decisions-md#b-listed"]);
+  expect(waitingOnReader(planned, "alice", both, isStatement, [], documents).decisions).toBe(1);
+
+  expect(waitingDecisions(undefined)).toEqual([]);
+  expect(
+    waitingOnReader(planned, "alice", both, statementsOf(undefined), [], documents).decisions
+  ).toBe(0);
+});
+
+// Decision 92 of dispatch://INFRA-1196: a Change is a comment anchored to the decision's first
+// block below its heading, and the server refuses a quote that matches more than one place in the
+// decisions document unless the write names which one. Here the first and the third decision open
+// with the same sentence: each Change names the occurrence that is its own block's, and the
+// server, choosing among the quote's matches as `pmdoc.FindQuote` does, puts each Change on its
+// own decision's block. An occurrence of 0 for every decision would put the third's Change on the
+// first decision. A decision whose heading is all it holds has no block to anchor a Change to.
+test("a Change of a decision whose first sentence another decision also opens with names its own occurrence", () => {
+  const first = readDecision("d1", "Purity", "Keep the model pure.\n\nDraw it once.", [
+    paragraph("Keep the model pure."),
+    paragraph("Draw it once."),
+  ]);
+  const second = readDecision("d2", "One read", "Read it from one place.", [
+    paragraph("Read it from one place."),
+  ]);
+  const third = readDecision("d3", "Purity again", "Keep the model pure.\n\nTest it alone.", [
+    paragraph("Keep the model pure."),
+    paragraph("Test it alone."),
+  ]);
+  const rows = [first, second, third];
+
+  expect(rows.map((row) => changeAnchor(row, rows))).toEqual([
+    { occurrence: 0, quote: "Keep the model pure." },
+    { occurrence: 0, quote: "Read it from one place." },
+    { occurrence: 1, quote: "Keep the model pure." },
+  ]);
+  const places = changePlaces(rows);
+  expect(places.chosen).toEqual(places.own);
+
+  expect(changeAnchor(readDecision("d4", "Heading only", "", []), rows)).toBeUndefined();
+});
+
+// Decision 92 of dispatch://INFRA-1196: the server's text holds one space between two list items
+// (`buildFlattenedText`), so a decision whose first block below its heading is a list is quoted by
+// the list's words, its items one space apart, and the same words in an earlier decision's list
+// are a match above it. The second decision's list holds "Hold the deploy." and "Then ship.":
+// where the first decision's list holds only "Hold the deploy.", the quote matches nowhere in it
+// and the occurrence is 0; where it holds both items, the quote matches there first and the
+// occurrence is 1. Either way the server puts the Change on the second decision's list.
+test("a Change of a decision whose first block is a list counts the same words inside an earlier decision's list item", () => {
+  const second = readDecision("d2", "Ship after the hold", "- Hold the deploy.\n- Then ship.", [
+    bulletList(["Hold the deploy.", "Then ship."]),
+  ]);
+  expect(anchorQuote(second)).toBe("Hold the deploy. Then ship.");
+
+  for (const [items, occurrence] of [
+    [["Hold the deploy."], 0],
+    [["Hold the deploy.", "Then ship."], 1],
+  ] as const) {
+    const first = readDecision("d1", "Freeze", items.map((item) => `- ${item}`).join("\n"), [
+      bulletList(items),
+    ]);
+    const rows = [first, second];
+    expect(changeAnchor(second, rows)).toEqual({
+      occurrence,
+      quote: "Hold the deploy. Then ship.",
+    });
+    const places = changePlaces(rows);
+    expect(places.chosen).toEqual(places.own);
+  }
+});
+
+// Decision 92 of dispatch://INFRA-1196: the server lists every match of a quote, overlapping ones
+// included (`findAll`), so a match that starts in a decision's heading and runs into its first
+// block is listed before the block's own. The second decision's heading ends with "go" and its
+// first paragraph is "go go go": its words, "Ready, set, go go go go", hold the quote where the
+// heading's "go" starts and again at the paragraph, and the first decision's "go go go go" holds
+// it twice more, overlapping. The paragraph's own match is the fourth, occurrence 3; with no
+// decision above it, the second.
+test("a Change counts a match that starts in the decision's heading and runs into its first block", () => {
+  const first = readDecision("d1", "Chant", "go go go go", [paragraph("go go go go")]);
+  const second = readDecision("d2", "Ready, set, go", "go go go", [paragraph("go go go")]);
+  const rows = [first, second];
+
+  expect(changeAnchor(second, rows)).toEqual({ occurrence: 3, quote: "go go go" });
+  expect(changeAnchor(second, [second])).toEqual({ occurrence: 1, quote: "go go go" });
+  const places = changePlaces(rows);
+  expect(places.chosen).toEqual(places.own);
+});
+
+// Decision 92 of dispatch://INFRA-1196, from a pod of the build before during a rolling deploy,
+// whose read sends no reading of a decision's text: each decision is then counted by its stored
+// markdown, and its first block starts at its first paragraph below its heading, the paragraph
+// `anchorQuote` quotes there. Two decisions opening with the same paragraph name its first and
+// its second occurrence. A decision the read does not hold is counted with no decision above it.
+test("a Change of a decision read with no reading counts the decisions' stored markdown", () => {
+  const worded = (blockId: string, text: string): Decision => ({
+    ...waitingDecision(blockId, []),
+    text,
+  });
+  const first = worded("d1", "## Purity\n\nKeep the model pure.");
+  const second = worded("d2", "## Purity again\n\nKeep the model pure.\n\nTest it alone.");
+  const rows = [first, second];
+
+  expect(rows.map((row) => changeAnchor(row, rows))).toEqual([
+    { occurrence: 0, quote: "Keep the model pure." },
+    { occurrence: 1, quote: "Keep the model pure." },
+  ]);
+  expect(changeAnchor(second, [first])).toEqual({ occurrence: 0, quote: "Keep the model pure." });
+});
+
+// One rule reads a decision for a Change: a reading that holds no blocks - a `text_tree` with no
+// `content` - is no reading, so the decision is read by its stored markdown, both as the decision
+// the Change is written for and as a row above another. Read as that reading's words, which are
+// none, the first decision held no match above the second, whose Change then named the first
+// decision's paragraph, and a Change quoting the first decision's words was placed on none.
+test("a decision whose reading holds no blocks is read by its stored markdown", () => {
+  const worded = (blockId: string, text: string): Decision => ({
+    ...waitingDecision(blockId, []),
+    text,
+    text_tree: { type: "doc" },
+  });
+  const first = worded("d1", "## Purity\n\nKeep the model pure.");
+  const second = worded("d2", "## Purity again\n\nKeep the model pure.\n\nTest it alone.");
+  const rows = [first, second];
+
+  expect(anchorQuote(first)).toBe("Keep the model pure.");
+  expect(rows.map((row) => changeAnchor(row, rows))).toEqual([
+    { occurrence: 0, quote: "Keep the model pure." },
+    { occurrence: 1, quote: "Keep the model pure." },
+  ]);
+  const quoted: Comment = {
+    ...change,
+    anchor: {
+      artifact_id: made.id,
+      block_id: null,
+      mark_id: "c-quoted",
+      orphaned: false,
+      quote: "Keep the model pure.",
+      version: 3,
+    },
+    id: "c-quoted",
+  };
+  expect(
+    decisionChangeComments({ ...decisions, decisions: rows }, [quoted], issue.artifacts, undefined)
+  ).toEqual(new Map([["c-quoted", first.ref]]));
 });

@@ -90,3 +90,32 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
     restoreMatchMedia();
   }
 });
+
+// A press on a view control leaves the focus where it is (decision 93). Focus taken on
+// mousedown would leave the outline, whose row then closes its body under the pointer, and on an
+// address that names a node (`#b-`) the press would end elsewhere and do nothing.
+test("a press on a view control leaves the focus where it is, and moves to the view's address", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubMatchMedia(false);
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1#b-r1"]}>
+      <button type="button">a row of the outline</button>
+      <IssuePresets active="conversation" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    const row = screen.getByRole("button", { name: "a row of the outline" });
+    row.focus();
+    const spec = screen.getByRole("button", { name: "Spec" });
+    await user.pointer({ keys: "[MouseLeft>]", target: spec });
+    expect(document.activeElement, "the press's mousedown took the focus").toBe(row);
+    await user.pointer({ keys: "[/MouseLeft]", target: spec });
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "spec")
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
