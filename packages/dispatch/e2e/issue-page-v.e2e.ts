@@ -1,6 +1,10 @@
+import AxeBuilder from "@axe-core/playwright";
+
+import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
   CHECK_WHEN_WORDS,
   type CheckState,
+  CONTROL_LABELS,
   EMPTY_STATE_LINES,
   GAP_LINES,
   GLYPH_TOKENS,
@@ -22,17 +26,40 @@ import {
 import { seedWholeIssue } from "./issue-layout-seed";
 import { HEAD_SHA, PROJECT, recorderActor } from "./issue-layout-seed-support";
 import { requirementBlockId } from "./issue-layout-seed-text";
-import { issuePage, phase } from "./issue-page";
-import { DESKTOP, expectIssuePageDrawn, nodeRows, PHONE, tree } from "./issue-page-g";
-import { activePreset, openPreset } from "./issue-page-i";
+import { gotoIssue, issuePage, phase } from "./issue-page";
+import {
+  DESKTOP,
+  expectIssuePageDrawn,
+  focusThePage,
+  nodeRows,
+  PHONE,
+  rowMore,
+  rowWords,
+  tree,
+} from "./issue-page-g";
+import { activePreset, focusInside, identityBlockBottom, openPreset } from "./issue-page-i";
 import {
   boxesPastTheirCard,
+  checkLegendCounts,
   copyCommandControls,
+  type DrawnCheck,
+  glyphsWithNoBox,
+  linkLook,
   namedCommit,
   nodeCommands,
   overlappingTexts,
+  RUNBOOK,
+  STATEMENT_B_WORDS,
+  seedLinkedChecks,
+  tabWalk,
+  verificationBody,
+  verificationCard,
   verificationCardBoxes,
   verificationCards,
+  verificationCheck,
+  verificationChip,
+  verificationFrame,
+  verificationIssueRow,
 } from "./issue-page-v";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -43,8 +70,8 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  * with D's `phase`, seeds what it reads, and reads the view's cards through this part's
  * `e2e/issue-page-v.ts`, whose measures fail where the view draws no card.
  *
- * The two rows come from the checkpoint's `e2e/issue-layout.e2e.ts`, each under the title its
- * check names (`verification.md` of dispatch://INFRA-3936, c-view rows 1 and 2).
+ * Rows 1 and 2 come from the checkpoint's `e2e/issue-layout.e2e.ts`, and rows 3 and 4 are new,
+ * each under the title its check names (`verification.md` of dispatch://INFRA-3936, c-view).
  */
 
 /** The slug of the issue's own spec, which is how its blocks are addressed. */
@@ -61,10 +88,16 @@ async function primarySlug(key: string): Promise<string> {
 // check, and `unreadable` by taking `pass_stands` out of the results answer in a route handler
 // of its own, which is the one way a page meets a server that does not send it. The seeded
 // Verification document holds no picture, so the row records a result carrying the issue's own
-// uploaded shot.
+// uploaded shot. It reads too the view's measure at each break (part V's R6), the legend's
+// counts, the facts opening on the focus and not on hover (R5), and the forced-colours marks.
+// Each load's cards are counted before the page's tree is read, so at a base whose slot draws
+// nothing the row fails on its own message.
+// SLOW(>=2s): a whole seeded issue with one result recorded and another withdrawn, then seven
+// loads of the view - six widths and a rewritten answer - each read clause by clause, with
+// presses, focus moves and a forced-colours pass waited on at each width.
 test("the Verification filter is readable @phone", async ({ browser }) => {
-  // Four loads of the view - three widths and the rewritten answer - each read clause by clause.
-  test.setTimeout(240_000);
+  // Seven loads of the view - six widths and the rewritten answer - each read clause by clause.
+  test.setTimeout(420_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const specSlug = await primarySlug(seeded.key);
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
@@ -90,8 +123,14 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
       (check) => check.block_id === seeded.checks.uncontrolled
     );
     expect(withdrawing?.results ?? [], "the seed recorded no result to withdraw").not.toEqual([]);
+    // The session that recorded a result is one of the three callers that may withdraw it, and
+    // the agent bearer acts as no session unless it names one (`retractCheckResult`).
     for (const result of withdrawing?.results ?? []) {
-      await retractCheckResult(result.id, { reason: "The run was wrong." });
+      await retractCheckResult(
+        result.id,
+        { reason: "The run was wrong." },
+        { actor: recorderActor, as: "agent" }
+      );
     }
 
     // What the issue's own reads say, which the page is read against.
@@ -99,19 +138,34 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
     const covered = statements.filter((statement) => statement.checks > 0).length;
     const nodeOf = (index: number) => blockNodeId(specSlug, requirementBlockId(index));
     const twice = blockNodeId(verificationSlug, seeded.checks.passed);
+    // The checks that serve each statement: check i serves statement i, for 1 to 6.
+    const servedBy = new Map(
+      seeded.checks.all.map((check, at) => [nodeOf(at + 1), [blockNodeId(verificationSlug, check)]])
+    );
+    // What the legend counts: each drawn check once, in the state it is drawn in, and 0 for a
+    // state no drawn check is in.
+    const legendOf = (checks: readonly DrawnCheck[]) => {
+      const states = [...new Map(checks.map((check) => [check.id, check.state])).values()];
+      return Object.fromEntries(
+        Object.keys(NODE_STATE_WORDS.check).map((state) => [
+          state,
+          states.filter((held) => held === state).length,
+        ])
+      );
+    };
 
-    for (const width of [1440, 1024, 390]) {
+    for (const width of [1440, 1024, 800, 760, 390, 320]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await openPreset(page, seeded.key, "verification");
       expect(await activePreset(page), `the view is not named Verification at ${width} px`).toBe(
         PRESET_NAMES.verification
       );
-      await expectIssuePageDrawn(page);
       await expect
         .poll(() => verificationCardBoxes(page).count(), {
           message: `the Verification filter draws no statement at ${width} px`,
         })
         .toBeGreaterThan(0);
+      await expectIssuePageDrawn(page);
       const cards = await verificationCards(page);
 
       // Each statement of the issue is drawn, with the checks that serve it under it.
@@ -123,6 +177,10 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         new Set(cards.flatMap((card) => card.checks.map((check) => check.id))).size,
         `the Verification view draws no six checks at ${width} px`
       ).toBe(6);
+      expect(
+        Object.fromEntries(cards.map((card) => [card.id, card.checks.map((check) => check.id)])),
+        `a card draws other checks than the ones that serve its statement at ${width} px`
+      ).toEqual(Object.fromEntries(cards.map((card) => [card.id, servedBy.get(card.id) ?? []])));
 
       // No value renders outside its card at any width, and no two values overlap: the sixteen
       // faults of the old tab this requirement is here for.
@@ -134,6 +192,61 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         await overlappingTexts(page),
         `two pieces of text are drawn over each other at ${width} px`
       ).toEqual([]);
+
+      // The view's measure (part V's R6). The document is no wider than the screen. From 761 px
+      // up the body is 1180 px wide, or its column less 48 px where that is less, with 22 px
+      // above it and 120 px under it, and the table's three columns stand at 38, 36 and 26 per
+      // cent of its width; at 760 px and below the body is its column less 20 px with 10 px above
+      // it, no heading is drawn, and each statement is a card with a 4 px left edge and 8 px
+      // corners, 8 px from the next.
+      const frame = await verificationFrame(page);
+      expect(frame.page.scroll, `the page scrolls sideways at ${width} px`).toBeLessThanOrEqual(
+        frame.page.viewport
+      );
+      if (width === 1440 || width === 1024) {
+        const measure = width === 1440 ? 1180 : frame.body.parent - 48;
+        expect(
+          Math.abs(frame.body.width - measure),
+          `the body is ${frame.body.width} px wide, not ${measure} px, at ${width} px`
+        ).toBeLessThanOrEqual(1);
+      }
+      if (width > 760) {
+        expect(
+          [frame.body.top, frame.body.bottom],
+          `the body's top and bottom margins are not 22 and 120 px at ${width} px`
+        ).toEqual([22, 120]);
+      } else {
+        expect(frame.body.top, `the body's top margin is not 10 px at ${width} px`).toBe(10);
+        expect(
+          Math.abs(frame.body.width - (frame.body.parent - 20)),
+          `the body is ${frame.body.width} px wide in a column of ${frame.body.parent} px at ${width} px`
+        ).toBeLessThanOrEqual(1);
+        await expect(
+          page.locator("[data-verification-head]"),
+          `a column heading is drawn at ${width} px`
+        ).toBeHidden();
+        expect(
+          frame.firstCard,
+          `the first statement is no card with a 4 px left edge and 8 px corners at ${width} px`
+        ).toMatchObject({ borderLeft: "4px", radius: "8px" });
+        expect(
+          Math.abs((frame.firstCard.gap ?? Number.NaN) - 8),
+          `the first two cards do not stand 8 px apart at ${width} px`
+        ).toBeLessThanOrEqual(1);
+      }
+      if (width === 800) {
+        expect(
+          frame.columns.heads,
+          "the table draws other than three headings at 800 px"
+        ).toHaveLength(3);
+        for (const [at, percent] of [38, 36, 26].entries()) {
+          const head = frame.columns.heads[at] ?? 0;
+          expect(
+            Math.abs(head - (frame.columns.table * percent) / 100),
+            `heading ${at + 1} is ${head} px of the table's ${frame.columns.table} px, not ${percent} per cent, at 800 px`
+          ).toBeLessThanOrEqual(2);
+        }
+      }
 
       // The page names one commit for the issue's results, the newest standing result's, drawn
       // once, in the ten characters the prototype draws a commit in, and on no result's own
@@ -221,9 +334,17 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         `two of the seeded states are drawn the same way at ${width} px: ${JSON.stringify([...states])}`
       ).toBe(states.size);
 
+      // The legend counts each drawn check once, in the state it is drawn in, the states no
+      // check is in included (part V's R2).
+      expect(
+        await checkLegendCounts(page),
+        `the legend does not count the drawn checks in their states at ${width} px`
+      ).toEqual(legendOf(drawnChecks));
+
       // Ruling 6: the body draws the newest result of each check, and its earlier results are
       // one line with their count, which opens them in place. The check with two results draws
-      // one, says "1 earlier result", and draws both once that line is pressed.
+      // one, marked as the one its state stands on, says "1 earlier result", draws both once
+      // that line is pressed, and one again at a second press.
       expect(
         drawnChecks.filter((check) => check.results > 1).map((check) => check.id),
         `a check draws more than its newest result at ${width} px`
@@ -232,6 +353,20 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         drawnChecks.find((check) => check.id === twice)?.earlier,
         `the check with two results does not say how many earlier ones it holds at ${width} px`
       ).toBe(`1 ${VERIFICATION_WORDS.earlier_one}`);
+      const standing = page.locator(
+        `[data-verification-check][data-node-id="${twice}"] [data-verification-result][data-result-stands]`
+      );
+      await expect(
+        standing,
+        `check 1 marks no one result as the one it stands on at ${width} px`
+      ).toHaveCount(1);
+      expect(
+        (await standing.locator("p").first().innerText()).slice(
+          0,
+          VERIFICATION_WORDS.stands.length
+        ),
+        `check 1's standing result's line does not begin with its mark at ${width} px`
+      ).toBe(VERIFICATION_WORDS.stands);
       const folded = page.locator(
         `[data-verification-check][data-node-id="${twice}"] [data-verification-earlier]`
       );
@@ -247,11 +382,29 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         `the line does not open the earlier result in place at ${width} px`
       ).toBe(2);
       await folded.click();
+      await expect
+        .poll(
+          async () =>
+            (await verificationCards(page))
+              .flatMap((card) => card.checks)
+              .find((check) => check.id === twice)?.results,
+          { message: `a second press on the line does not fold the earlier result at ${width} px` }
+        )
+        .toBe(1);
 
       // A command renders as code with a copy control, and `when` reads as words: both in the
-      // check's own facts, which the reader's press on its words opens.
-      const opened = page.locator(`[data-verification-check][data-node-id="${twice}"]`);
-      await opened.locator("[data-verification-check-words]").click();
+      // check's own facts, which the reader's focus on its words opens, with no press (R5).
+      const opened = verificationCheck(page, twice);
+      await focusThePage(page);
+      await expect(
+        opened.locator("[data-node-body]"),
+        `check 1's facts are drawn with the focus off it at ${width} px`
+      ).toHaveCount(0);
+      await opened.locator("[data-verification-check-words]").focus();
+      await expect(
+        opened.locator("[data-node-body]").first(),
+        `the focus on check 1's words does not open its facts at ${width} px`
+      ).toBeVisible();
       expect(
         await nodeCommands(page).count(),
         `the check's command is not drawn as code at ${width} px`
@@ -294,6 +447,16 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         `an element of the opened check reaches past its card at ${width} px`
       ).toEqual([]);
 
+      // Nothing opens on hover (R5): with the focus off the view, the pointer over check 2's
+      // words draws no facts under it.
+      const failing = verificationCheck(page, blockNodeId(verificationSlug, seeded.checks.failed));
+      await focusThePage(page);
+      await failing.locator("[data-verification-check-words]").hover();
+      expect(
+        await failing.locator("[data-node-body]").count(),
+        `the pointer over check 2's words opened its facts at ${width} px`
+      ).toBe(0);
+
       // Nothing the body draws is told apart by colour alone.
       await page.emulateMedia({ forcedColors: "active" });
       const forced = await verificationCards(page);
@@ -305,6 +468,23 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         forced.map((card) => card.stateWord),
         `the statements are told apart differently once the colours are forced at ${width} px`
       ).toEqual(cards.map((card) => card.stateWord));
+      // Each shape keeps a box of its own, and the pressed chip keeps a mark of its own, its
+      // outline, where the system draws every chip's fill and border alike (departure 4).
+      const glyphs = await glyphsWithNoBox(page);
+      expect(
+        glyphs.drawn,
+        `the view draws no shape once the colours are forced at ${width} px`
+      ).toBeGreaterThan(0);
+      expect(
+        glyphs.empty,
+        `a shape draws no box once the colours are forced at ${width} px`
+      ).toEqual([]);
+      const pressed = issuePage(page).locator('[data-verification-chip][aria-pressed="true"]');
+      await expect(pressed, `no one chip is pressed at ${width} px`).toHaveCount(1);
+      await expect(
+        pressed,
+        `the pressed chip draws no outline once the colours are forced at ${width} px`
+      ).not.toHaveCSS("outline-style", "none");
       await page.emulateMedia({ forcedColors: "none" });
     }
 
@@ -338,6 +518,10 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         { message: "a check whose results the page cannot read draws no state of its own" }
       )
       .toEqual([[NODE_STATE_WORDS.check.unreadable, GLYPH_TOKENS.states.check.unreadable]]);
+    expect(
+      await checkLegendCounts(page),
+      "the legend does not count the check whose results the page cannot read in its own state"
+    ).toEqual(legendOf((await verificationCards(page)).flatMap((card) => card.checks)));
     await page.unroute("**/api/v1/issues/*/results");
   });
 });
@@ -345,7 +529,9 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
 // c-view, row 2. The reviewer's finding on verification.e2e.ts:440: an issue that holds no
 // statement and no check says so in the Verification view's own column once the load has
 // settled, in the page's one line for it, and the line is read inside the tree the view draws
-// and not off the whole page, which says it nowhere else.
+// and not off the whole page, which says it nowhere else. The body is counted before the page's
+// tree is read, so at a base whose slot draws nothing the row fails on its own message.
+// SLOW(>=2s): a new issue's view loaded and waited out to a 1.5 s quiet window before it is read.
 test("the Verification filter says an issue holds no checks, in its own column", async ({
   browser,
 }) => {
@@ -357,9 +543,9 @@ test("the Verification filter says an issue holds no checks, in its own column",
     const settling = watchApiRequests(page);
     await openPreset(page, seeded.key, "verification");
     await expectLoadSettled(settling);
-    await expectIssuePageDrawn(page);
     const body = issuePage(page).locator("[data-verification-body]");
     await expect(body, "the Verification filter draws no body of its own").toHaveCount(1);
+    await expectIssuePageDrawn(page);
     await expect(
       tree(page).getByText(EMPTY_STATE_LINES.verification, { exact: true }),
       "the view's tree does not say the issue holds no checks"
@@ -372,5 +558,399 @@ test("the Verification filter says an issue holds no checks, in its own column",
       0
     );
     expect(await nodeRows(page).count(), "an issue with no check draws a row").toBe(0);
+  });
+});
+
+// c-view, row 3 (part V's R5, R7, R8 and R9). A check's words are drawn with their links through
+// G's `RowText`: a link in the words' colour, underlined in the bullets' grey, and a
+// `dispatch://` reference as the chip that names its target, never as its address. A result an
+// agent recorded names it by its role's word. A check that serves two statements is drawn under
+// each, names the other by its first words, and is counted once. A statement that only a child's
+// check serves is covered, carries no gap, and says so in one line. A statement of 200 words is
+// cut at six lines, and its "more" is a tab stop between the chips and the check's link.
+// SLOW(>=2s): an issue, its child and their two documents seeded and waited for in the coverage
+// read, then the view loaded and read at two widths, with a walk by Tab at the first.
+test("the Verification view draws a check's links, its agent's role and a child's checks @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedLinkedChecks, async (page, seeded) => {
+    const { a, b, c, check } = seeded.nodes;
+    const cut = new RegExp(
+      `^${CONTROL_LABELS.read_more} · [\\d,]+ ${CONTROL_LABELS.read_more_words}$`,
+      "u"
+    );
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
+      await openPreset(page, seeded.key, "verification");
+      const statementA = verificationCard(page, a);
+      await expect(
+        statementA,
+        `the Verification view draws no card for statement A at ${width} px`
+      ).toHaveCount(1);
+      await expectIssuePageDrawn(page);
+
+      // The check is drawn on A's card and on B's, and on no other, and the legend counts it
+      // once, in its state.
+      const cards = await verificationCards(page);
+      expect(
+        Object.fromEntries(cards.map((card) => [card.id, card.checks.map((one) => one.id)])),
+        `the check is not drawn under each statement it serves and under no other at ${width} px`
+      ).toEqual({ [a]: [check], [b]: [check], [c]: [] });
+      const legend = await checkLegendCounts(page);
+      const state = cards.find((card) => card.id === a)?.checks[0]?.state ?? "";
+      expect(
+        [Object.values(legend).reduce((sum, count) => sum + count, 0), legend[state]],
+        `the legend does not count the check it draws twice once, in its state, at ${width} px`
+      ).toEqual([1, 1]);
+
+      // A is cut at six lines, and its "more" opens it whole: at 1440 px from the keyboard, Tab
+      // from the chip All reaching it and then the link in the check's words (R8); at 390 px by a
+      // press.
+      const words = rowWords(statementA);
+      const more = rowMore(statementA);
+      await expect(more, `statement A draws no "more" at ${width} px`).toHaveText(cut);
+      expect(
+        Number(/[\d,]+/u.exec(await more.innerText())?.[0]?.replace(/,/g, "")),
+        `statement A's cut holds back 20 words or fewer at ${width} px`
+      ).toBeGreaterThan(20);
+      expect(
+        (await words.boundingBox())?.height ?? Number.POSITIVE_INFINITY,
+        `statement A is not cut at six lines at ${width} px`
+      ).toBeLessThanOrEqual(6 * 24 + 12);
+      const link = statementA.locator(`[data-verification-check-words] a[href="${RUNBOOK}"]`);
+      const tabTo = tabWalk(page, 20);
+      if (width === 1440) {
+        await verificationChip(page, "all").focus();
+        await tabTo(
+          more,
+          `Tab from the chip All does not reach statement A's "more" at ${width} px`
+        );
+        await page.keyboard.press("Enter");
+      } else {
+        await more.click();
+      }
+      await expect(more, `"more" does not open statement A at ${width} px`).toHaveText(
+        CONTROL_LABELS.read_less
+      );
+      expect(
+        await words.evaluate((element) => element.scrollHeight - element.clientHeight),
+        `statement A hides a word once "more" opened it at ${width} px`
+      ).toBeLessThanOrEqual(1);
+      if (width === 1440) {
+        await tabTo(
+          link,
+          `Tab from statement A's "more" does not reach the link in the check's words at ${width} px`
+        );
+      }
+
+      // The link is an `a` with its address, in the words' colour, underlined in #A8A29E (R5).
+      await expect(
+        link,
+        `the check's words draw no link to the runbook at ${width} px`
+      ).toHaveCount(1);
+      const look = await linkLook(link);
+      expect(look.color, `the link is not in the check's words' colour at ${width} px`).toBe(
+        look.words
+      );
+      expect(look.line, `the link is not underlined at ${width} px`).toContain("underline");
+      expect(
+        look.underline,
+        `the link is underlined in another colour than #A8A29E at ${width} px`
+      ).toBe("rgb(168, 162, 158)");
+
+      // No text reads an address: the check's reference to B is the chip that names B.
+      await expect
+        .poll(() => verificationBody(page).innerText(), {
+          message: `the view draws a dispatch:// address as words at ${width} px`,
+        })
+        .not.toContain("dispatch://");
+
+      // The result names the agent that recorded it by its role's word (R7).
+      await expect(
+        statementA.locator("[data-verification-result] [data-node-author]"),
+        `the result does not name its agent by its role at ${width} px`
+      ).toHaveText("Recorder");
+
+      // "Also under" names B by its first words, cut at a word within 32 characters (R7).
+      const alsoUnder = statementA.locator("[data-verification-check] [data-node-trail]");
+      const chip = alsoUnder.locator("[data-node-chip]");
+      await expect(
+        chip,
+        `the check under A names no other statement it serves at ${width} px`
+      ).toHaveCount(1);
+      const named = (await chip.innerText()).trim();
+      await expect(
+        alsoUnder,
+        `the check under A does not say it is also under B at ${width} px`
+      ).toHaveText(`${CONTROL_LABELS.also_under} ${named}`);
+      expect(named, `"Also under" names B by no words at ${width} px`).not.toBe("");
+      expect(
+        named.length,
+        `"Also under" names B by more than 32 characters at ${width} px: "${named}"`
+      ).toBeLessThanOrEqual(32);
+      expect(
+        STATEMENT_B_WORDS.startsWith(named.replace(/…$/u, "")),
+        `"Also under" names B by other than its first words at ${width} px: "${named}"`
+      ).toBe(true);
+
+      // C is covered by the child's check alone: it carries no gap, says so in one line, and the
+      // summary counts it covered (R9).
+      expect(
+        cards.find((card) => card.id === c)?.gapKinds,
+        `statement C carries a gap at ${width} px`
+      ).toEqual([]);
+      await expect(
+        verificationCard(page, c).locator("[data-verification-elsewhere]"),
+        `statement C does not say a check of the issue under this one serves it at ${width} px`
+      ).toHaveText(`1 ${VERIFICATION_WORDS.elsewhere_one}`);
+      await expect(
+        page.locator("[data-verification-covered]"),
+        `statement C is not counted covered at ${width} px`
+      ).toHaveText(`3 ${VERIFICATION_WORDS.of} 3 ${VERIFICATION_WORDS.covered}`);
+    }
+  });
+});
+
+// c-view, row 4 (part V's R8, the tester's F21, F22 and F23). From the issue's own address `t k`
+// turns the view on with the focus on the issue's row and the view's top on screen, and asks the
+// server for nothing the first load did not; Tab alone then reaches the chips, a check's words,
+// the copy control its facts draw and its line of earlier results, in reading order, and Enter
+// works each one; the tree answers the outline's keys, and a press on a result's cell or on a
+// statement's words opens a check's facts; axe finds no break of the tree's structure; `t k`
+// from a row turns the view off; and the view's own address leaves the focus on the issue's row.
+// SLOW(>=2s): a whole seeded issue loaded and waited out to a quiet window twice, a walk of up to
+// 40 Tabs and some twenty keys and presses each waited on, an axe pass, and a third load.
+test("the Verification view is worked by the keyboard alone", async ({ browser }) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await recordCheckResult(
+      seeded.key,
+      {
+        check: seeded.checks.passed,
+        commit: HEAD_SHA,
+        failed: 0,
+        negative_control: "Removed the row's state and the run failed.",
+        observed: "1 passed, a second time",
+        role: "tester",
+        run: "bun run e2e -- e2e/issue-page-v.e2e.ts",
+        surface: "browser",
+        verdict: "pass",
+      },
+      { actor: recorderActor, as: "agent" }
+    );
+    const specSlug = await primarySlug(seeded.key);
+    const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+    const nodeOf = (index: number) => blockNodeId(specSlug, requirementBlockId(index));
+    const checkOf = (index: number) =>
+      blockNodeId(verificationSlug, seeded.checks.all[index - 1] ?? "");
+    const statements = (await getIssueCoverage(seeded.key)).requirements ?? [];
+    const command =
+      ((await getIssueResults(seeded.key)).checks ?? []).find(
+        (one) => one.block_id === seeded.checks.passed
+      )?.run ?? "";
+    expect(command, "check 1 holds no command").not.toBe("");
+
+    // From the issue's own address, with the focus on the page, `t k` turns the view on, leaves
+    // the focus on the issue's row inside it with the view's top on screen under the header's
+    // band, and asks the server for nothing the first load did not (R1, R8).
+    const traffic = watchApiRequests(page);
+    await gotoIssue(page, presetPath(seeded.key, "conversation"));
+    await expectLoadSettled(traffic);
+    await expectIssuePageDrawn(page);
+    const loaded = new Set(traffic.requests.map((request) => request.path));
+    traffic.reset();
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("k");
+    const body = verificationBody(page);
+    await expect
+      .poll(() => focusInside(body), {
+        message: "t k left the focus outside the Verification view",
+      })
+      .toBe(true);
+    await expect(page, "t k did not open the Verification view's address").toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "verification")}$`)
+    );
+    await expect(
+      verificationIssueRow(page),
+      "t k left the focus on another element of the view than the issue's row"
+    ).toBeFocused();
+    // The header's band, where it stays at the top of the screen; 0 where the page draws none
+    // or it does not stay, as I's rows read it.
+    const band = (await identityBlockBottom(page)) ?? 0;
+    const top = await body.evaluate((element) => element.getBoundingClientRect().top);
+    expect(
+      top,
+      `t k left the view's top under the header's band, which ends at ${band} px`
+    ).toBeGreaterThanOrEqual(band);
+    expect(top, "t k left the view's top below the screen").toBeLessThan(
+      page.viewportSize()?.height ?? 0
+    );
+    await expectLoadSettled(traffic);
+    expect(
+      traffic.requests
+        .filter((request) => !loaded.has(request.path))
+        .map((request) => `${request.method} ${request.path}`),
+      "t k sent a request under /api/ to a path the first load did not"
+    ).toEqual([]);
+
+    // Tab alone, at most 40 presses, reaches each control in reading order, and Enter works it
+    // (R8).
+    const tabTo = tabWalk(page, 40);
+    expect(
+      await tabTo(verificationChip(page, "all"), "Tab does not reach the chip All"),
+      "the first Tab after t k reaches another control than the chip All"
+    ).toBe(1);
+    await tabTo(verificationChip(page, "not_met"), "Tab does not reach the chip Not met");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(async () => (await verificationCards(page)).map((card) => card.id), {
+        message: "Enter on the chip Not met does not draw statement 2 alone",
+      })
+      .toEqual([nodeOf(2)]);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(async () => (await verificationCards(page)).length, {
+        message: "a second Enter on the chip Not met does not draw every statement",
+      })
+      .toBe(statements.length);
+    const check1 = verificationCheck(page, checkOf(1));
+    await tabTo(
+      check1.locator("[data-verification-check-words]"),
+      "Tab does not reach check 1's words"
+    );
+    await expect(
+      check1.locator("[data-node-body]").first(),
+      "the focus on check 1's words does not open its facts"
+    ).toBeVisible();
+    await tabTo(
+      check1
+        .locator("[data-node-body]")
+        .getByRole("button", { exact: true, name: CONTROL_LABELS.copy_command })
+        .first(),
+      "Tab does not reach the copy control of check 1's command"
+    );
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()), {
+        message: "Enter on the copy control does not put check 1's whole command on the clipboard",
+      })
+      .toBe(command);
+    await tabTo(
+      check1.locator("[data-verification-earlier]"),
+      "Tab does not reach check 1's line of earlier results"
+    );
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => check1.locator("[data-verification-result]").count(), {
+        message: "Enter on check 1's line of earlier results does not draw two results",
+      })
+      .toBe(2);
+
+    // The tree's keys, counted from the row the focus is on or from the row that holds the
+    // control it is on (R8).
+    await page.keyboard.press("Home");
+    await expect(verificationIssueRow(page), "Home does not focus the issue's row").toBeFocused();
+    await page.keyboard.press("j");
+    await expect(
+      verificationCard(page, nodeOf(1)),
+      "j does not move from the issue's row to statement 1's"
+    ).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect(check1, "ArrowRight does not move from statement 1 to its check").toBeFocused();
+    await expect(
+      check1.locator("[data-node-body]").first(),
+      "the focus on check 1's row does not draw its facts"
+    ).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(check1, "Enter on check 1's row does not shut its facts").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect(check1.locator("[data-node-body]"), "check 1 draws facts it shut").toHaveCount(0);
+    await page.keyboard.press("Enter");
+    await expect(check1, "a second Enter on check 1's row does not open its facts").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await page.keyboard.press("j");
+    await expect(check1, "j does not move on from check 1's row").not.toBeFocused();
+    await expect(check1, "j shut the facts that Enter opened on check 1").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await page.keyboard.press("End");
+    await expect(
+      body.locator("[data-node-row]").last(),
+      "End does not reach the view's last row"
+    ).toBeFocused();
+
+    // A check's facts open from a press on its latest result's cell and on its statement's words
+    // (the tester's F21).
+    const check2 = verificationCheck(page, checkOf(2));
+    await expect(check2, "check 2's facts are drawn before a press").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await check2.locator("[data-verification-result]").first().click();
+    await expect(
+      check2,
+      "a click on check 2's latest result does not open its facts"
+    ).toHaveAttribute("aria-expanded", "true");
+    const check3 = verificationCheck(page, checkOf(3));
+    await expect(check3, "check 3's facts are drawn before a press").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await rowWords(verificationCard(page, nodeOf(3))).click();
+    await expect(
+      check3,
+      "a click on statement 3's words does not open check 3's facts"
+    ).toHaveAttribute("aria-expanded", "true");
+
+    // The tree's structure, by the rules that read it (part V's departure 8).
+    const scan = await new AxeBuilder({ page })
+      .include("[data-verification-body]")
+      .withRules([
+        "aria-required-children",
+        "aria-required-parent",
+        "nested-interactive",
+        "aria-allowed-attr",
+        "aria-valid-attr-value",
+        "button-name",
+        "link-name",
+      ])
+      .analyze();
+    expect(
+      scan.violations.flatMap((violation) =>
+        violation.nodes.map(
+          (node) =>
+            `${violation.id} at ${node.target
+              .map((part) => (Array.isArray(part) ? part.join(" ") : String(part)))
+              .join(" ")}`
+        )
+      ),
+      "axe finds the view's tree breaking a rule of its structure"
+    ).toEqual([]);
+
+    // `t` then `k` with the focus on a row of the view turns it off: the tree's keys do nothing
+    // while a chord is pending, so the page's keymap takes the second key.
+    await verificationCard(page, nodeOf(1)).focus();
+    await page.keyboard.press("t");
+    await page.keyboard.press("k");
+    await expect(page, "t k from a row of the view does not turn it off").toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "conversation")}$`)
+    );
+    await expect(body, "t k from a row of the view leaves the view drawn").toHaveCount(0);
+
+    // The view's own address, opened with nothing focused, leaves the focus on the issue's row
+    // (the tester's F23).
+    await gotoIssue(page, presetPath(seeded.key, "verification"));
+    await expect(
+      verificationIssueRow(page),
+      "the view's own address leaves the focus elsewhere than on the issue's row"
+    ).toBeFocused();
   });
 });

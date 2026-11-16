@@ -453,6 +453,13 @@ const CHECK_COLUMNS =
 /** One cell of the table, in the prototype's `.vt td`. */
 const CELL = "min-w-0 px-3 py-[11px]";
 
+/** Where a result's facts are drawn: in its column, which from 761 px up is the table's
+ *  narrowest, 26 per cent of it and some 130 px inside its cell at 761 px. There the facts'
+ *  widest label ("negative control") took the room of a command's copy control and drew it past
+ *  the card (R5), so a label takes at most half the column and breaks there, still beside its
+ *  value (`NodeFacts.tsx`'s two columns). */
+const RESULT_FACTS = "mt-1 min-w-0 [&_dl]:grid-cols-[fit-content(50%)_minmax(0,1fr)]";
+
 /** What a pointer's press inside a check's words, its latest result's cell or a statement's
  *  words belongs to rather than to the row: a link or a button, whose press is its own (a link
  *  in the words, a statement's "more" control, the copy control, the line of earlier results),
@@ -974,11 +981,16 @@ function Check({
           />
         )}
         {check.earlier.length === 0 ? null : (
+          // The press leaves the focus where it is, as the "more" control's does (`CutWords`):
+          // the focus a pointer's press puts in the row draws the latest result's facts above
+          // this line, which moves it from under the pointer before the press ends, and the
+          // click then opens the facts and not the earlier results ruling 6 opens in place.
           <button
             aria-expanded={earlierShown}
             className={`dispatch-inline-link mt-1 text-xs leading-5 font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
             data-verification-earlier=""
             onClick={() => setEarlierShown(!earlierShown)}
+            onMouseDown={(event) => event.preventDefault()}
             type="button"
             {...pageChrome}
           >
@@ -1053,7 +1065,7 @@ function LatestResult({
         </div>
       )}
       {opened ? (
-        <div className="mt-1 min-w-0" data-node-body="">
+        <div className={RESULT_FACTS} data-node-body="">
           <NodeFacts facts={result.facts} tabStops />
         </div>
       ) : null}
