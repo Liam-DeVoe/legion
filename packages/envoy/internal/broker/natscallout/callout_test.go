@@ -170,8 +170,8 @@ func TestRequestsAreEncryptedToTheServiceKey(t *testing.T) {
 				require.NoError(t, err, "the service did not admit the session")
 			} else {
 				require.ErrorIs(t, err, nats.ErrAuthorization, "the service admitted a session whose request reached it in the clear")
-				testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log", func() bool {
-					return strings.Contains(log.String(), "label="+labelUnsealed)
+				testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log, at error", func() bool {
+					return strings.Contains(log.String(), "level=ERROR") && strings.Contains(log.String(), labelUnsealed+"=1")
 				})
 			}
 			request, err := seen.NextMsg(5 * time.Second)
@@ -216,9 +216,11 @@ func TestAnUnsealedRequestIsRefusedEvenWhenTheHubHasGivenUpOnIt(t *testing.T) {
 	release()
 	require.ErrorIs(t, <-refused, nats.ErrAuthorization)
 	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "both requests refused as unsealed", func() bool {
-		return strings.Count(log.String(), "label="+labelUnsealed) == 2
+		return strings.Contains(scrape(t, registry), `outcome="refused",reason="unsealed"} 2`)
 	})
-	require.Equal(t, 2, strings.Count(log.String(), "level=ERROR msg=\"natscallout: an authorization request arrived in the clear"), "each request in the clear was not logged at error:\n%s", log.String())
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the requests in the clear logged at error", func() bool {
+		return strings.Contains(log.String(), "level=ERROR") && strings.Contains(log.String(), "arrived in the clear")
+	})
 	require.NotContains(t, scrape(t, registry), `reason="hub_gave_up"`, "the request in the clear was dropped")
 }
 

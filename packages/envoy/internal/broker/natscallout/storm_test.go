@@ -5,7 +5,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -307,40 +307,35 @@ func startDebugCalloutServer(t *testing.T, keys testnats.CalloutKeys) (*testnats
 	return server, url
 }
 
-// refusalCost is what each record costlyLog writes takes: a stand-in, scaled up, for the work of
-// answering one request, which for a refusal is about 0.3 ms of CPU to open, read, sign and seal
-// it (3.6 ms under -race, measured with the service's own keys).
+// refusalCost is what each refusal's work takes here (withRefusalWork): a stand-in, scaled up, for
+// the work of answering one request, which for a refusal is about 0.3 ms of CPU to open, read, sign
+// and seal it (3.6 ms under -race, measured with the service's own keys).
 const refusalCost = 50 * time.Millisecond
 
-// costlyHandler is a text handler each record of which takes cost before it is written, outside
-// any lock: records logged on many goroutines take it together, as work on goroutines of their own
-// runs together across a replica's cores, and records logged on one goroutine take it in turn.
-type costlyHandler struct {
-	slog.Handler
-	cost time.Duration
+// withRefusalWork runs the rest of the test with every refusal taking cost before it is answered
+// (refusalWork): made one after another, as the delivery goroutine once made them, the hundred or
+// so refusals of a storm take about five seconds, past the hub's two-second authorization timeout
+// in either build, and made side by side they take about one refusal's time. Set before any
+// replica starts; its cleanup, registered first, runs after every replica's Close.
+func withRefusalWork(t *testing.T, cost time.Duration) {
+	t.Helper()
+	refusalWork = func() { time.Sleep(cost) }
+	t.Cleanup(func() { refusalWork = nil })
 }
 
-func (h costlyHandler) Handle(ctx context.Context, record slog.Record) error {
-	time.Sleep(h.cost)
-	return h.Handler.Handle(ctx, record)
-}
-
-func (h costlyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return costlyHandler{h.Handler.WithAttrs(attrs), h.cost}
-}
-
-func (h costlyHandler) WithGroup(name string) slog.Handler {
-	return costlyHandler{h.Handler.WithGroup(name), h.cost}
-}
-
-// costlyLog is a log whose every record takes refusalCost (costlyHandler), and the buffer it is
-// written to. Every refusal the service answers writes one record, so each refusal costs at least
-// that: made one after another, as the delivery goroutine once made them, the hundred or so
-// refusals of a storm take about five seconds, past the hub's two-second authorization timeout in
-// either build, and made side by side they take about one refusal's time.
-func costlyLog() (*slog.Logger, *logtest.Buffer) {
-	buffer := &logtest.Buffer{}
-	return slog.New(costlyHandler{slog.NewTextHandler(buffer, nil), refusalCost}), buffer
+// refusedFor is how many connections registry counts refused under label, of every kind.
+func refusedFor(t *testing.T, registry *metrics.Registry, label string) int {
+	t.Helper()
+	total := 0
+	for _, line := range strings.Split(scrape(t, registry), "\n") {
+		if !strings.HasPrefix(line, "broker_nats_callout_decisions_total{") || !strings.Contains(line, `outcome="refused",reason="`+label+`"}`) {
+			continue
+		}
+		n, err := strconv.Atoi(line[strings.LastIndex(line, " ")+1:])
+		require.NoError(t, err, "a counter line: %s", line)
+		total += n
+	}
+	return total
 }
 
 // stormRequests is how many connections each storm below sends one replica at once. The storms set
@@ -355,8 +350,8 @@ const stormRequests = 120
 // requireEveryClientHeardInsideTheHubsTimeout fails unless the hub gave up on no request of a
 // storm, every client heard its answer before the hub's authorization timeout, admitted (a nil
 // error) or refused, and the storm reached what it is for: at least half its requests past the
-// waiting bound, read from the refusals in log. It answers how many were admitted.
-func requireEveryClientHeardInsideTheHubsTimeout(t *testing.T, server *testnats.Server, log *logtest.Buffer, errs []error, took []time.Duration) int {
+// waiting bound, read from registry's refusals. It answers how many were admitted.
+func requireEveryClientHeardInsideTheHubsTimeout(t *testing.T, server *testnats.Server, registry *metrics.Registry, errs []error, took []time.Duration) int {
 	t.Helper()
 	hubTimeout := testnats.CalloutAuthTimeout * time.Second
 	// Every request of the storm went out before its client returned, and the hub logs giving up on
@@ -378,7 +373,7 @@ func requireEveryClientHeardInsideTheHubsTimeout(t *testing.T, server *testnats.
 			late++
 		}
 	}
-	pastBound, gaveUp := strings.Count(log.String(), "label="+labelWaitingBound), strings.Count(server.Log(), hubGaveUp)
+	pastBound, gaveUp := refusedFor(t, registry, labelWaitingBound), strings.Count(server.Log(), hubGaveUp)
 	t.Logf("%d requests: %d admitted, %d past the waiting bound, %d heard at or after %s (slowest %s), %d failed otherwise (%v); the hub gave up on %d",
 		len(errs), admitted, pastBound, late, hubTimeout, slowest, failed, other, gaveUp)
 	require.Zero(t, gaveUp, "the hub gave up on %d requests it sent the service", gaveUp)
@@ -395,20 +390,21 @@ func requireEveryClientHeardInsideTheHubsTimeout(t *testing.T, server *testnats.
 // every request behind it, and the last of a storm were delivered after the hub had refused their
 // clients, given a fresh budget, and answered to no one. The bounds here are two slots and sixteen
 // waiting, so the storm is the regime a storm past the deployed bounds is, and each refusal's work
-// is scaled up (costlyLog).
+// is scaled up (withRefusalWork).
 func TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout(t *testing.T) {
+	withRefusalWork(t, refusalCost)
 	withDecisionSlots(t, 2)
 	withWaitingBound(t, 16)
 	keys := testnats.NewCalloutKeys(t)
 	server, url := startDebugCalloutServer(t, keys)
 	sessions := sessionsNamed(t, "ses_storm", stormRequests)
 	deps := slowIntrospect(100*time.Millisecond, sessions...)
-	logger, log := costlyLog()
-	deps.Log = logger
+	registry := metrics.New()
+	deps.Metrics = NewMetrics(registry)
 	startService(t, url, keys, deps, Decide)
 
 	errs, took := connectAll(t, url, sessions)
-	admitted := requireEveryClientHeardInsideTheHubsTimeout(t, server, log, errs, took)
+	admitted := requireEveryClientHeardInsideTheHubsTimeout(t, server, registry, errs, took)
 	require.Positive(t, admitted, "no connection of the storm was admitted")
 }
 
@@ -419,12 +415,13 @@ func TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout(t *testing.T) {
 // waiting, as a flood outruns the cores of a replica, and what goes past them is refused off the
 // delivery goroutine.
 func TestAFloodOfConnectionsHoldingNoCredentialIsAnsweredInsideTheHubsTimeout(t *testing.T) {
+	withRefusalWork(t, refusalCost)
 	withDecisionSlots(t, 1)
 	withWaitingBound(t, 16)
 	keys := testnats.NewCalloutKeys(t)
 	server, url := startDebugCalloutServer(t, keys)
-	logger, log := costlyLog()
-	startService(t, url, keys, Deps{Log: logger}, Decide)
+	registry := metrics.New()
+	startService(t, url, keys, Deps{Metrics: NewMetrics(registry)}, Decide)
 
 	errs := make([]error, stormRequests)
 	took := make([]time.Duration, stormRequests)
@@ -442,6 +439,6 @@ func TestAFloodOfConnectionsHoldingNoCredentialIsAnsweredInsideTheHubsTimeout(t 
 		}()
 	}
 	wait.Wait()
-	admitted := requireEveryClientHeardInsideTheHubsTimeout(t, server, log, errs, took)
+	admitted := requireEveryClientHeardInsideTheHubsTimeout(t, server, registry, errs, took)
 	require.Zero(t, admitted, "a connection holding no credential was admitted")
 }

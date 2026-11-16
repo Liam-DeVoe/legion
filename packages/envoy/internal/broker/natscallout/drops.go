@@ -1,6 +1,7 @@
 package natscallout
 
 import (
+	"log/slog"
 	"sync/atomic"
 	"time"
 )
@@ -25,17 +26,12 @@ const (
 // dropLabels are the reason labels, by reason.
 var dropLabels = [dropReasons]string{"past_bounds", "hub_gave_up", "unopened", "not_a_request"}
 
-// dropLogInterval is the least time between two log lines of drops: the first drop after a quiet
-// interval is logged at the heartbeat's next tick, and the drops that follow it inside the interval
-// are counted and wait for the next line.
-const dropLogInterval = time.Minute
-
 // pastBoundsDetail is the first-drop detail of a drop past both bounds.
 const pastBoundsDetail = "past both bounds of this replica"
 
 // drops counts the requests the service dropped unanswered. Each drop is an atomic add, and the
 // first detail since the last log line a compare-and-swap, so deliver can record one without
-// blocking (deliver); the heartbeat (reportDropped) moves the counts into the metric and writes the
+// blocking (deliver); the reporter (reportDropped) moves the counts into the metric and writes the
 // log line, so neither a counter's lock nor a write is taken where a request is dropped.
 type drops struct {
 	// pending counts each reason's drops since the last report.
@@ -43,8 +39,7 @@ type drops struct {
 	// first is the detail of the first drop since the last log line.
 	first atomic.Pointer[string]
 	// unlogged counts each reason's drops since the last log line, and logged is when that line was
-	// written; only reportDropped reads or writes them, from the heartbeat and then from Close
-	// once the heartbeat has ended, so never two at once.
+	// written; only reportDropped reads or writes them, from the reporter alone.
 	unlogged [dropReasons]int64
 	logged   time.Time
 }
@@ -64,9 +59,9 @@ func (d *drops) note(detail string) {
 }
 
 // reportDropped moves the drops counted since the last report into broker_nats_callout_dropped_total
-// and, when any wait to be logged and dropLogInterval has passed since the last line, logs them by
-// reason with the first one's detail. The heartbeat runs it every tick and Close once more at the
-// end.
+// and, when any wait to be logged and logInterval has passed since the last line, logs them by
+// reason with the first one's detail. The reporter runs it every tick and once more at the end
+// (reportWhileRunning).
 func (s *Service) reportDropped() {
 	d := s.answer.drops
 	total := int64(0)
@@ -76,7 +71,7 @@ func (s *Service) reportDropped() {
 		d.unlogged[reason] += n
 		total += d.unlogged[reason]
 	}
-	if total == 0 || time.Since(d.logged) < dropLogInterval {
+	if total == 0 || time.Since(d.logged) < logInterval {
 		return
 	}
 	fields := []any{"dropped", total}
@@ -87,7 +82,7 @@ func (s *Service) reportDropped() {
 	if first := d.first.Swap(nil); first != nil {
 		fields = append(fields, "first", *first)
 	}
-	fields = append(fields, "waiting_bound", maxWaiting, "refusing_bound", maxRefusing)
+	fields = append(fields, "waiting_bound", s.settings.maxWaiting, "refusing_bound", s.settings.maxRefusing)
 	d.logged = time.Now()
-	s.answer.log("natscallout: dropped authorization requests unanswered; the hub refuses each client at its authorization timeout", fields...)
+	s.answer.logAt(slog.LevelWarn, "natscallout: dropped authorization requests unanswered; the hub refuses each client at its authorization timeout", fields...)
 }

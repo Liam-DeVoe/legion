@@ -169,9 +169,14 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 	}
 	log := &logtest.Buffer{}
 	deps.Log = slog.New(slog.NewTextHandler(log, nil))
+	registry := metrics.New()
+	deps.Metrics = NewMetrics(registry)
+	// The holder keeps the one slot until the waiter's refusal is counted, so the waiter's is the
+	// first refusal, whose detail the reporter's line carries (report).
+	release := make(chan struct{})
 	startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 		if req.Token == holder.token {
-			time.Sleep(decideBudget - 100*time.Millisecond)
+			<-release
 		}
 		return Decide(ctx, deps, services, req)
 	})
@@ -180,8 +185,12 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	_, err := connectSession(t, url, waiter, nil)
 	require.ErrorIs(t, err, nats.ErrAuthorization)
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "both refusals in the broker's log", func() bool {
-		return strings.Count(log.String(), "refused a NATS connection") >= 2
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the waiter's refusal counted", func() bool {
+		return strings.Contains(scrape(t, registry), `outcome="refused",reason="budget"} 1`)
+	})
+	close(release)
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log", func() bool {
+		return strings.Contains(log.String(), "budget=")
 	})
 	require.Contains(t, log.String(), "budget at the wait for a decision slot", "no refusal named the wait:\n%s", log.String())
 	require.Zero(t, asked.Load(), "the broker was asked about a token whose wait had spent its budget:\n%s", log.String())
@@ -234,7 +243,7 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	require.ErrorIs(t, err, nats.ErrAuthorization, "the request past the waiting bound was admitted after %s", took)
 	require.Less(t, took, 500*time.Millisecond, "the request past the waiting bound was answered after %s: it waited rather than being refused at once", took)
 	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log", func() bool {
-		return strings.Contains(log.String(), "label="+labelWaitingBound)
+		return strings.Contains(log.String(), labelWaitingBound+"=1")
 	})
 	require.Contains(t, log.String(), "2 requests already wait for a decision slot", "the refusal did not name the bound:\n%s", log.String())
 	require.NoError(t, <-held, "the slot's holder was refused")
