@@ -117,7 +117,7 @@ test("of two merge bases, the one on the base branch's first-parent line is the 
   const bases = repository
     .git("merge-base", "--all", "HEAD", "origin/legion/INFRA-1149")
     .split("\n");
-  expect(bases.toSorted()).toEqual([branch, main].toSorted());
+  expect([...bases].sort()).toEqual([branch, main].sort());
   // The fixture is the case the default has to get right: `git merge-base` alone answers main's
   // commit, which holds none of the base branch's changes.
   expect(repository.git("merge-base", "HEAD", "origin/legion/INFRA-1149")).toBe(main);
