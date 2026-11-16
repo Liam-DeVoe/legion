@@ -188,7 +188,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await expect(navigation, "the rail's foot opens no navigation").toBeVisible();
     await page.keyboard.press("Escape");
     await expect(navigation).toBeHidden();
-    // `Shift+S`, which folds today's sidebar, does nothing in the frame: no sidebar, the rail.
+    // `Shift+S`, which folds today's sidebar, does nothing in the frame: no sidebar, the rail, and
+    // the reader's stored sidebar unchanged, which the Inbox, in today's shell, draws open.
     await focusNothing(page);
     await page.keyboard.press("Shift+S");
     await expect(
@@ -196,6 +197,15 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
       "Shift+S drew the sidebar in the frame"
     ).toHaveCount(0);
     await expect(iconRail(page), "Shift+S took the rail away").toHaveCount(1);
+    await iconRail(page).getByRole("link", { exact: true, name: "Dispatch" }).click();
+    await expect(
+      page.getByRole("complementary", { exact: true, name: "Navigation" }),
+      "Shift+S in the frame folded the sidebar of today's pages"
+    ).toBeVisible();
+    await expect(page.getByTestId("sidebar-rail")).toHaveCount(0);
+    await page.goBack();
+    if (!page.url().includes(`/issues/${key}`)) await page.goBack();
+    await issueRead(page);
 
     // The page's column: the window less the rail.
     const column = await boxOf(issuePage(page), "the page");
