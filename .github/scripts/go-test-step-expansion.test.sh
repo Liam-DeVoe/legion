@@ -158,6 +158,29 @@ else:
   check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
 done
 
+# go test rewrites each part of a -skip before it matches (a space becomes _, a character Go does
+# not print becomes its escape), so a -skip naming what no binary lists can skip a test of another
+# name while a script subtracting by name subtracts nothing. U+200B (a zero-width space) is no
+# whitespace to Python's \s, so the -skip shape reads `Test<U+200B>Alpha` as a name; the membership
+# rule refuses it, and a plain name no package holds too. The listing is stood in for, so no Go is
+# needed: the command lists TestAlpha, Test_Alpha and TestBeta.
+echo "case: a -skip name no package of the command lists is refused, by name"
+skip_run() { # skip_run <pattern>: what list_tests answers for a command skipping by <pattern>
+  py 'step = ex.Step(workflow="(a test case)", job="(a job)", name="(a step)", workdir="packages/envoy", script="")
+command = ex.GoTest(step=step, text="go test -skip PATTERN ./pkg", packages=["./pkg"], skip=sys.argv[1])
+ex.listing = lambda command, pattern: {"example.com/pkg": ["TestAlpha", "Test_Alpha", "TestBeta"]}
+try:
+    run, _ = ex.list_tests(command)
+except ex.Refused as refusal:
+    print("refused:", refusal)
+else:
+    print("runs", " ".join(run["example.com/pkg"]))' "$1"
+}
+check "a listed name is subtracted" "$(is "$(skip_run '^(Test_Alpha)$')" "runs TestAlpha TestBeta")"
+out=$(skip_run $'^(Test\xe2\x80\x8bAlpha|TestGamma)$')
+check "names no package lists are refused" "$(contains "$out" '^refused: ')"
+check "  naming each" "$(contains "$out" "skips 'TestGamma', 'Test\\\\u200bAlpha', which no package of it lists")"
+
 # envoy-go-race-api is a matrix whose legs each run one shard of internal/dispatch/api, and the
 # leg's index and the leg count reach its script as `${{ strategy.job-index }}` and
 # `${{ strategy.job-total }}`. Read as one step, the script holds two expressions no shell can run

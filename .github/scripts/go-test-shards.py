@@ -29,21 +29,27 @@ can be left out of the split.
 pattern selects runs in no leg, and a test two patterns select runs twice; it names each one.
 `pattern` runs it over the patterns it made, in every leg, before the leg runs its tests.
 
-A pattern has one shape, the one `pattern` makes: `^(Name|Name|…)$`, an alternation of whole test
-names, each the prefix Test, Fuzz or Example and then only ASCII letters, digits and `_`, or
-non-ASCII characters (Go's regexp gives none of those a meaning, and no Unicode table of Python's
-is asked). `check` fails any other pattern, naming it, before it lists anything, because
-`-test.list` matches each top-level name against the whole pattern while `go test -run` first
-splits the pattern at every `|` and `/` outside brackets and parentheses and matches the parts
-one by one. Measured on Go 1.27 with TestAlpha and TestBeta:
+A pattern has one shape, the one `pattern` makes: `^(Name|Name|…)$`, an alternation of names,
+every one of them, byte for byte, a name the test binary listed (`-test.list .`). `check` fails any
+other pattern, naming it and each name in it the binary did not list, before it lists anything,
+because `-test.list` matches each top-level name against the whole pattern while `go test -run`
+first splits the pattern at every `|` and `/` outside brackets and parentheses, rewrites each part
+(testing's rewrite: a space becomes `_`, a character Go does not print becomes its escape) and
+matches the parts one by one. Measured on Go 1.27 with TestAlpha, Test_Alpha and TestBeta:
 
-    ^TestBeta$|^TestAlpha$/child          lists TestBeta, runs both: a `/` starts a test for its
-                                          subtests
-    ^TestBeta$|^\QTestAlpha|\Qjunk\E$     lists TestBeta, runs both: the split cuts the quote in two
-    (?i)^TestAlpha$|^Testbeta$            lists both, runs TestAlpha: `(?i)` covers its own part
+    ^TestBeta$|^TestAlpha$/child          lists TestBeta, runs TestAlpha too: a `/` starts a test
+                                          for its subtests
+    ^TestBeta$|^\QTestAlpha|\Qjunk\E$     lists TestBeta, runs TestAlpha too: the split cuts the
+                                          quote in two
+    (?i)^TestAlpha$|^Testbeta$            lists TestAlpha and TestBeta, runs TestAlpha alone: `(?i)`
+                                          covers its own part
+    ^(Test<U+00A0>Alpha|TestBeta)$        lists TestBeta, runs Test_Alpha too: the no-break space
+                                          is rewritten to `_`
 
-In the one shape every `|` is inside the parentheses and no name holds a character either reading
-gives a meaning to, so the listing and the run select the same names.
+The names a test binary lists are Go identifiers: no character of them is one Go's regexp gives a
+meaning to, and none is one the rewrite changes. So a pattern made only of listed names, with every
+`|` inside its parentheses, selects the same names under -list and under -run, whatever Python or
+Unicode version reads it: the proof rests on membership, not on any character class.
 
 Where the names come from. Both commands build the package's test binary with
 `go test -c` under the build flags given (`-race`, `-tags T`), which are the flags the leg's own
@@ -94,8 +100,8 @@ from pathlib import Path
 USAGE = """\
 usage: go-test-shards.py pattern <index> <total> [<build flag>...] <package>
        go-test-shards.py check [<build flag>...] <package> -- <pattern>...
-A <pattern> is ^(Name|Name|...)$ of whole test names, the shape `pattern` makes: go test -run splits
-any other at its `|` and `/`, which -test.list does not."""
+A <pattern> is ^(Name|Name|...)$ of names the test binary lists, the shape `pattern` makes: -list
+and go test -run read any other differently."""
 
 # A name `-test.list` prints that `-run` can start: a top-level test, fuzz target or example.
 # Benchmarks, which it also prints, are left out (`-run` never starts one), and a line with a space
@@ -103,18 +109,17 @@ any other at its `|` and `/`, which -test.list does not."""
 # non-space characters, not a character class: the binary printed it, so Go has already decided it
 # is a test, and Python's own Unicode tables are older than Go's (Python 3.12 has Unicode 15.0, Go
 # 1.27 17.0), so `TestᲉ` (U+1C89, Unicode 16.0), which go test runs, failed `\w` and was in no
-# shard while the proof, reading the same listing, passed. A TestMain that prints one word starting
-# with Test is read as a test too; it then lists under every pattern, and the proof fails it by
-# name as a test in every shard, or, when the word holds a character no test name can, fails the
-# pattern it lands in by the shape rule below.
+# shard while the proof, reading the same listing, passed. A TestMain that printed one word starting
+# with Test while the binary lists would be read as a test too, and then trusted as a listed name;
+# it would list under every pattern, and the proof fails such a word by name as a test in every
+# shard. No package this script splits prints anything there (internal/dispatch/api's TestMain is
+# storetest.Main, which prints only after the tests, to standard error).
 SPLIT = re.compile(r"^(Test|Fuzz|Example)\S*$")
-# The one shape a pattern may have (the module's head says why): `^(Name|Name|…)$`, each Name the
-# prefix and then ASCII letters, digits and `_` or non-ASCII characters. Every ASCII character Go's
-# regexp or -run's split gives a meaning to is outside that set, and no non-ASCII one has a meaning
-# there, so a name is literal to both readings without a Unicode table being asked. fullmatch, so a
-# trailing newline is no part of the shape.
-SHAPE_NAME = r"(?:Test|Fuzz|Example)[A-Za-z0-9_\u0080-\U0010ffff]*"
-SHAPE = re.compile(rf"\^\({SHAPE_NAME}(?:\|{SHAPE_NAME})*\)\$")
+# The outer shape of a pattern: `^(` … `)$`, the whole argument (fullmatch, and `.` takes a line
+# break too, so a trailing newline is no part of it). Its inside is cut at `|` and each part must
+# be a listed name (prove() says why); a part holding `(`, `)` or anything else no test is named is
+# then no listed name.
+SHAPE = re.compile(r"\^\((.*)\)\$", re.DOTALL)
 # Linux's MAX_ARG_STRLEN, 32 pages of 4 KiB: the longest single argument exec accepts, terminator
 # included. The pattern is one argument to go test and one to the test binary.
 MAX_ARGUMENT = 131072
@@ -176,22 +181,34 @@ def package_tests(flags: list[str], package: str, purpose: str):
         yield binary, everything
 
 
-def one_line(pattern: str) -> str:
-    """The pattern with its line breaks written as \\n and \\r, so a refusal naming it is one line
-    of standard error."""
-    return pattern.replace("\n", "\\n").replace("\r", "\\r")
+def shown(text: str) -> str:
+    """The text with every character but printable ASCII written as \\uXXXX, so a refusal naming
+    a pattern or a name is one line and tells a no-break space from a space."""
+    return "".join(c if " " < c <= "~" else f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}"
+                   for c in text)
 
 
 def prove(binary: Path, everything: list[str], patterns: list[str]) -> None:
     """Raise Uncovered naming each test of `everything` that no pattern, or more than one,
-    selects in the binary; or, before it lists anything, each pattern that is not of the one
-    shape SHAPE, whose selection -test.list cannot show (the module's head says why)."""
+    selects in the binary; or, before it lists anything, each pattern that is not `^(` and `)$`
+    around names the binary listed, `|` between them, whose selection -test.list cannot show (the
+    module's head says why)."""
     total = len(patterns)
-    misshapen = [f"pattern {number} of {total}, `{one_line(pattern)}`, is not ^(Name|Name|...)$ of whole test names "
-                 f"(the prefix Test, Fuzz or Example, then letters, digits and `_`): go test -run splits a "
-                 f"pattern at each `|` and `/` outside brackets and parentheses and -test.list does not, so "
-                 f"for any other shape no listing can prove what a leg runs"
-                 for number, pattern in enumerate(patterns, start=1) if not SHAPE.fullmatch(pattern)]
+    known = set(everything)
+    misshapen = []
+    for number, pattern in enumerate(patterns, start=1):
+        shape = SHAPE.fullmatch(pattern)
+        if not shape:
+            misshapen.append(f"pattern {number} of {total}, `{shown(pattern)}`, is not ^(Name|Name|...)$: go test "
+                             f"-run splits a pattern at each `|` and `/` outside brackets and parentheses and "
+                             f"-test.list does not, so for any other shape no listing can prove what a leg runs")
+            continue
+        unlisted = [name for name in shape.group(1).split("|") if name not in known]
+        if unlisted:
+            names = ", ".join(f"`{shown(name)}`" for name in unlisted)
+            misshapen.append(f"pattern {number} of {total}, `{shown(pattern)}`, names {names}, which the test binary "
+                             f"does not list: go test -run rewrites and splits what it does not know as a name, "
+                             f"so a shard's pattern holds only names -test.list printed")
     if misshapen:
         raise Uncovered("\n".join(misshapen))
     shards_of: dict[str, list[int]] = {name: [] for name in everything}

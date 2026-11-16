@@ -632,10 +632,21 @@ def list_tests(command: GoTest) -> tuple[dict[str, list[str]], dict[str, list[st
 
     A `-skip` prints in either listing, since `-list` names the tests a `-skip` would keep from
     running, so it is subtracted from what the step runs and left in what it compiles - which is
-    what a skipped test is: built into the binary and never run by it.
+    what a skipped test is: built into the binary and never run by it. Each name it skips must be,
+    byte for byte, one some package of the command lists: go test rewrites a -skip part before it
+    matches (a no-break space becomes `_`), so a name no binary lists could skip a test of another
+    name while this script subtracted nothing, and a listed name is a Go identifier the rewrite
+    leaves alone.
     """
     compiled = listing(command, ".*")
     skipped = set(skip_names(command.skip) or ())  # the parse refused every other shape
+    known = {name for names in compiled.values() for name in names}
+    unlisted = sorted(skipped - known)
+    if unlisted:
+        raise Refused(f"{command.step.label}: `{command.text}` skips "
+                      f"{', '.join(ascii(name) for name in unlisted)}, which no package of it lists: "
+                      f"go test rewrites a -skip it does not know as a name, so what it skips is "
+                      f"not what this script can subtract")
     run = compiled if not command.run else listing(command, command.run)
     return ({package: [name for name in names if name not in skipped]
              for package, names in run.items()}, compiled)
