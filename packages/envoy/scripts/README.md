@@ -476,9 +476,12 @@ that key (the deployment repository `dispatch/main.go`) and the listener runs no
 `org.opencontainers.image.source` and `.revision`
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
-platform agreeing. A pin built from any repository but `https://github.com/cybermonklabs/legion` is
-refused by name and never compared; any other passes when GitHub's compare of `<commit>...<revision>`
-answers `ahead` or `identical`.
+platform agreeing. A pin built from `https://github.com/cybermonklabs/legion`, or from a name the
+deployment records as the same repository — the `repositoryRenames` pairs of `legion/Pulumi.prod.yaml`,
+which the daemon reads as `repository_renames`, so a build made as `sjawhar/legion` before the
+transfer is a build of this repository — passes when GitHub's compare of `<commit>...<revision>`
+answers `ahead` or `identical`, its line naming the rename; a pin built from any other repository
+is refused by name and never compared.
 
 It prints a line per pin (`PASS`, `GATE SHUT`, `UNKNOWN` or `SKIPPED`) and the verdict on the last:
 `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one, `GATE SHUT`
