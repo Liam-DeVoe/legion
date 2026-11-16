@@ -186,6 +186,7 @@ attempt:
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
+| NATS was reconnecting: the publish waited for the connection until the budget ended, or the connection dropped under the publish after that wait (`bus.ErrReconnecting`) | `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1`, whose reason says `bus: NATS is reconnecting`; nothing was sent, and nothing is sent later |
 | Any other publish failure | `503` with the same prefix and `Retry-After: 1`, carrying the bus's own reason |
 
 A target whose entry the store holds within the gone horizon is resolved whatever its state, so a
@@ -295,15 +296,21 @@ writes, and a request the starting gate turns away while the routes are still op
 write inside the same 3.5 s budget taken from the request's own context, where a silent bus held
 each for the 10 s JetStream wait: nats.go's KV reads, writes and deletes take no context, so each
 bucket call waits through `bus.Bounded` (`internal/bus/kv.go`), which stops waiting when the
-context ends. Store work that did not answer, whatever it names, is
+context ends. While NATS reconnects, `bus.Bounded` first waits for the bucket's connection within
+the same context, since with the reconnect buffer off nats.go refuses every send at once then.
+Store work that did not answer, whatever it names, is
 `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1`
-(`writeStoreError`, `cmd/listener/api.go`). The store's own answers keep the answers they had: a
-refused key its 413 or 400, a held role its 409, and no key, an undecodable record or a lost
-compare-and-swap the status the route always gave it; an error a claim joins from several is one
-only when every part of it is. A write the budget abandoned may still land
-after the 503: a put rewrites the record the caller's retry writes again, and a delete or a claim
-is conditional on the revision it read (`store.Registry.UpsertWithin`, `Remove`,
-`SetRoleWithPrevious`, `session.SessionRegistry.PutWithin` and `Delete` say why each is safe).
+(`writeStoreError`, `cmd/listener/api.go`). The reason of a call whose context ended in that
+wait, or that the connection dropped under after it, says `bus: NATS is reconnecting`
+(`bus.ErrReconnecting`), and never nats.go's `nats: outbound buffer limit exceeded`. The store's
+own answers keep the answers they had: a refused key its 413 or 400, a held role its 409, and no
+key, an undecodable record or a lost compare-and-swap the status the route always gave it; an
+error a claim joins from several is one only when every part of it is. A write still waiting for
+the connection when the budget ended was never sent and never lands. A write the budget abandoned
+after it was sent may still land after the 503: a put rewrites the record the caller's retry
+writes again, and a delete or a claim is conditional on the revision it read
+(`store.Registry.UpsertWithin`, `Remove`, `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin`
+and `Delete` say why each is safe).
 A session holds a role exactly when the role's claim in `envoy_roles` names it, so a claim's
 rollback and its old holder's topic cleanup are best-effort tidying of interest topics within the
 same budget: a claim that landed answers 200 whatever the cleanup did, and a topic left behind

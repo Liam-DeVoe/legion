@@ -89,7 +89,7 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	}
 	bucket := kv.Bucket()
 	named := func(err error) error {
-		return fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
+		return fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, Reconnecting(err))
 	}
 	// The legacy JetStream context of the connection this handle reads the bucket's stream
 	// through: building one sends nothing, and this read is the only caller, so it is built here

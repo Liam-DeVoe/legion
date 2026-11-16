@@ -179,7 +179,7 @@ func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
 		&nats.StreamInfoRequest{SubjectsFilter: KeptRoleSubject(">")},
 		nats.Context(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("bus: read %s's kept role lanes: %w", Stream, err)
+		return nil, fmt.Errorf("bus: read %s's kept role lanes: %w", Stream, Reconnecting(err))
 	}
 	roles := make([]string, 0, len(info.State.Subjects))
 	for subject, held := range info.State.Subjects {

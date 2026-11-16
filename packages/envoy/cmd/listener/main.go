@@ -338,8 +338,8 @@ const attemptCacheTTL = 5 * time.Minute
 // consecutive rebuilds enters the bounded shutdown path so Docker can replace
 // an unrecoverable listener.
 // A probe that lands in a reconnect gap is that transient case: it fails at
-// once with "outbound buffer limit exceeded" while the bus is disconnected (its
-// reconnect buffer is off), or at its deadline when the reconnect lands during
+// once with bus.ErrReconnecting while the bus is disconnected (its reconnect
+// buffer is off), or at its deadline when the reconnect lands during
 // the probe. Either is one WARN, then "self-health recovered" from the next -
 // unless connected reads false for disconnectedFailureThreshold consecutive
 // probes, in which case the bounded shutdown path runs for this too. That
@@ -610,7 +610,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 			}
 		}
 		for _, c := range d.caches {
-			if answered, err := healthzPing(ctx, c.cache); err != nil {
+			if answered, err := healthzPing(ctx, d.client.Connection(), c.cache); err != nil {
 				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed))
 				return
 			}
@@ -618,7 +618,8 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		consumerInfo, err := d.client.JS().ConsumerInfo(bus.Stream, d.consumer, nats.Context(ctx))
 		if err != nil {
 			// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
-			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
+			// A read the connection dropped under since the flush is named as the reconnect it is.
+			writeDependencyHealth(w, "durable consumer", bus.Reconnecting(err), ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
 			return
 		}
 		// One read and no confirming second one, unlike durableProbe's: the endpoint reports the
@@ -707,14 +708,14 @@ func roleClaimRepairHealthOf(report store.RoleClaimRepairReport) roleClaimRepair
 // healthzBudget bounds the bus checks of one /healthz answer.
 const healthzBudget = 3 * time.Second
 
-// healthzPing is cache's Ping as a /healthz request holding ctx waits for it (bus.Bounded): nats.go's
-// KV Status takes no context, so a ping that has not answered when ctx ends is answered false, with
-// ctx's error, the "context deadline exceeded" a ping that waited out the JetStream MaxWait failed
-// with. The abandoned ping runs on to its answer or that wait; what it can still do then - record a
-// recreated bucket's error on its watcher, or prune the session cache's last-seen times - is what
-// any later ping would do.
-func healthzPing(ctx context.Context, cache kvCache) (answered bool, err error) {
-	_, answered, err = bus.Bounded(ctx, func() (struct{}, error) { return struct{}{}, cache.Ping() })
+// healthzPing is cache's Ping as a /healthz request holding ctx waits for it (bus.Bounded), on
+// conn, the client's connection the caches' buckets are on: nats.go's KV Status takes no context,
+// so a ping that has not answered when ctx ends is answered false, with ctx's error, the "context
+// deadline exceeded" a ping that waited out the JetStream MaxWait failed with. The abandoned ping
+// runs on to its answer or that wait; what it can still do then - record a recreated bucket's error
+// on its watcher, or prune the session cache's last-seen times - is what any later ping would do.
+func healthzPing(ctx context.Context, conn *nats.Conn, cache kvCache) (answered bool, err error) {
+	_, answered, err = bus.Bounded(ctx, conn, func() (struct{}, error) { return struct{}{}, cache.Ping() })
 	return answered, err
 }
 

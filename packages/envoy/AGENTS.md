@@ -3886,6 +3886,12 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   The listener itself does not wait on that forever: see the self-health bullet below for its own bound on sustained disconnection.
   A publish while reconnecting waits for the reconnect within its own deadline (5 s for a publish, 2 s for a role-lane forward), and reconnect attempts run every second.
   The reconnect buffer is off, so a publish that fails was not sent.
+  A bucket call that a caller bounds by its deadline (`bus.Bounded`, which every request route's store work goes through) waits for the reconnect in the same way before it starts, so a role claim made during a NATS restart lands once the server is back.
+  A publish or a bucket call whose deadline ends in that wait fails with `bus.ErrReconnecting`, `bus: NATS is reconnecting: context deadline exceeded`, and is never sent, so it never lands after its caller has answered.
+  A route answers it `503` with `Retry-After: 1`, under the bus-outage prefix `envoy: the message bus did not answer` (`writeBusUnavailable`).
+  A send that waits for no connection fails at once with `bus: NATS is reconnecting` (`bus.Reconnecting`): a bucket call with no deadline, a write of the CI store or the legion agent registry, and the listener's own reads and writes of its durable consumer.
+  So does a send the connection drops under after its wait.
+  No answer and no log line holds nats.go's own `nats: outbound buffer limit exceeded`, which said nothing of the reconnect.
   A subscription nats.go re-sent on the reconnected connection is kept as it is; one on a replaced connection is bound again.
   Every reconnect recreates the interest, role claim, session and CI KV watchers on the reconnected connection, because a server restart loses their ordered consumers and nats.go would replace them only after missed heartbeats, and a connection the bus dials to replace a closed one moves them onto itself.
 
@@ -4075,7 +4081,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   each watcher's subscription ends and the ordered consumer nats.go created for it is deleted as a request the drain waits for.
   Left to the connection's drain, nats.go sends that delete only after it has removed the subscription, so the drain can reach its publishes first and refuse the delete as `connection draining`, an ERROR, whether or not the consumer exists.
   A consumer already gone (a restart loses an ordered consumer outright, since it is kept in memory;
-  a disconnect longer than its inactive threshold lets the server delete it) is logged at WARN, `<cache> watcher's consumer was already gone at its end`, and so is a delete the connection was lost before or during (`bus.ErrConnectionLost`, which ends the hooks' context the moment the connection drops, and nats.go's own `outbound buffer limit exceeded`, `connection reconnecting` and `connection closed`), `<cache> watcher's consumer was left to the server: the connection was lost before its delete`:
+  a disconnect longer than its inactive threshold lets the server delete it) is logged at WARN, `<cache> watcher's consumer was already gone at its end`, and so is a delete the connection was lost before or during (`bus.ErrConnectionLost`, which ends the hooks' context the moment the connection drops, nats.go's refusal of a send while it reconnects, which the line names `bus: NATS is reconnecting` (`bus.Reconnecting`), and nats.go's `connection closed`), `<cache> watcher's consumer was left to the server: the connection was lost before its delete`:
   the server deletes an ordered consumer whose interest is gone on its own, five seconds on.
   A watch still starting when the connection was lost arms its watcher after `End` gave up on it and stops that watcher itself, on a connection the drain has gone on without, so that stop's failure (`connection draining` among them) is the same WARN.
   `End` runs once: a second call, or one beside the first, waits for the first.
@@ -4804,10 +4810,12 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 The write routes - `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe`, `POST /v1/roles/set`, `DELETE /v1/interests/<session_id>` and `DELETE /v1/sessions/<session_id>` - do every store read and write within one 3.5 s budget (`sendRequestBudget`) taken from the request's own context (`store.Registry.UpsertWithin`, `Remove`, `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin` and `Delete`, each bucket call bounded by `bus.Bounded`), where a silent bus held them for the 10 s JetStream wait.
 Store work that did not answer, whatever it names, is `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` (`writeStoreError`).
+While NATS reconnects, each bucket call waits for the connection within the budget, and the reason of a call whose budget ends first says `bus: NATS is reconnecting` (`bus.ErrReconnecting`).
 The store's own answers keep the answers they had:
 a refused key its 413 or 400, a held role its 409, no key, an undecodable record or a lost compare-and-swap the status the route always gave it;
 an error a claim joins from several (a lost compare-and-swap with its holder read and its rollback) is one only when every part of it is.
-A write the budget abandons may still land after the 503.
+A write still waiting for the connection when the budget ends was never sent and never lands.
+A write the budget abandons after it was sent may still land after the 503.
 The session record's put rewrites it, so the caller's retry writes it again and rides the connection ahead of any later write from this listener (`session.SessionRegistry.PutWithin`);
 every interest-row write, every claim and every delete is conditional on the revision it read, so none removes or overwrites a write that landed since.
 A delete whose read found the key absent makes no delete at all and reports it absent, so a registration that stored the row between that read and it is kept (`bus.KeyValue.DeleteAtRead`).

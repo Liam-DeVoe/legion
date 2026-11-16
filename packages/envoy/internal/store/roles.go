@@ -420,7 +420,7 @@ func (r *Registry) writeRoleClaim(ctx context.Context, claim RoleClaim, w roleCl
 		}
 		at := claim
 		epoch := r.roleViewEpoch()
-		revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return w.send(at) })
+		revision, answered, err := bus.Bounded(ctx, r.roles().Conn(), func() (uint64, error) { return w.send(at) })
 		switch {
 		case !answered:
 			return roleClaimWriteFailed, claim, err
@@ -740,7 +740,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	// revision it requires is weighed a second time by the write itself, so a claim that landed
 	// between this call's read and its write refuses this one rather than being overwritten by it.
 	// Both losers are answered below.
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) {
+	revision, answered, err := bus.Bounded(ctx, roles.Conn(), func() (uint64, error) {
 		switch {
 		case !req.Soft && req.IfClaimRevision == nil:
 			return roles.Put(req.Role, data)
@@ -855,7 +855,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 // claim.Revision, as releaseReadRoleClaim already does.
 func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error) {
 	roles := r.roles()
-	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return roles.Get(role) })
+	entry, answered, err := bus.Bounded(ctx, roles.Conn(), func() (nats.KeyValueEntry, error) { return roles.Get(role) })
 	if !answered {
 		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
 	}

@@ -85,12 +85,13 @@ func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
 	return kv, nil
 }
 
-// within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded). A
-// read that did not answer in time is named by what.
-func within[T any](ctx context.Context, what string, read func() (T, error)) (T, error) {
+// within runs read on conn, waiting for it no longer than ctx and at most readTimeout
+// (bus.Bounded), which waits within that bound for a connection nats.go is reconnecting. A read
+// that did not answer in time is named by what.
+func within[T any](ctx context.Context, conn *nats.Conn, what string, read func() (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
-	value, answered, err := bus.Bounded(ctx, read)
+	value, answered, err := bus.Bounded(ctx, conn, read)
 	if !answered {
 		return value, fmt.Errorf("%s: %w", what, err)
 	}
@@ -102,7 +103,7 @@ func within[T any](ctx context.Context, what string, read func() (T, error)) (T,
 // claim without an error when there is no role bucket and when the bucket holds no claim for the
 // role.
 func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
-	return within(ctx, "read role "+role+"'s claim", func() (store.RoleClaim, error) {
+	return within(ctx, b.client.Connection(), "read role "+role+"'s claim", func() (store.RoleClaim, error) {
 		kv, err := b.bucket(bus.RoleClaimBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			return store.RoleClaim{}, nil
@@ -132,7 +133,7 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 // read may name (bus.ErrRefused) and a value that does not decode are nats.ErrKeyNotFound: no
 // record stands for the session. Any other error is a read that did not answer.
 func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	entry, err := within(ctx, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
+	entry, err := within(ctx, b.client.Connection(), "read session "+sessionID, func() (nats.KeyValueEntry, error) {
 		kv, err := b.bucket(bus.SessionBucket)
 		if err != nil {
 			return nil, err

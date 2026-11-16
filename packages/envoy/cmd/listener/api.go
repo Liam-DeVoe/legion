@@ -415,6 +415,16 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
 // has room, so the caller's retry is right.
+//
+// A send or a bucket call made while NATS reconnects is this 503 with Retry-After: 1, under
+// busUnansweredPrefix, which a deployed filter matches for every bus outage. The error after the
+// prefix wraps bus.ErrReconnecting and says `bus: NATS is reconnecting`, so the body names the
+// reconnect: `envoy: the message bus did not answer: refresh role claimant registration: write
+// session <id> to the bucket: bus: NATS is reconnecting: context deadline exceeded` for a write
+// that waited for the connection until its request's deadline, and the same without the deadline
+// for one the connection dropped under after its wait. Neither was sent, so the retry is safe. No
+// body holds nats.go's own `nats: outbound buffer limit exceeded`, which internal/bus names away
+// (bus.Reconnecting).
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
@@ -2477,7 +2487,7 @@ func streamInfoWithin(ctx context.Context, inspector streamInfoLookup, streamNam
 	}()
 	select {
 	case result := <-resultCh:
-		return result.info, result.err
+		return result.info, bus.Reconnecting(result.err)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

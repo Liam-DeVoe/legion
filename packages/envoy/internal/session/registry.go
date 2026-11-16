@@ -786,11 +786,13 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 }
 
 // PutWithin writes sessionID's entry, its bucket write waiting no longer than ctx (bus.Bounded): an
-// HTTP route passes its request's own context. A write ctx abandoned may still land after this
-// answer. That is safe: it writes the entry the caller's retry writes again, it rides the
-// connection ahead of any write this listener sends on it later, so it cannot undo one, and
-// against another listener's write it is last-writer-wins, as every Put already is. The write
-// reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made through a
+// HTTP route passes its request's own context. While nats.go reconnects the bucket's connection the
+// write waits for it within ctx, and a ctx that ends first fails it as bus.ErrReconnecting with
+// nothing sent, so it never lands after this answer. A write ctx abandoned once it was sent may
+// still land after this answer. That is safe: it writes the entry the caller's retry writes again,
+// it rides the connection ahead of any write this listener sends on it later, so it cannot undo
+// one, and against another listener's write it is last-writer-wins, as every Put already is. The
+// write reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made through a
 // handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	// Two live processes can register under one session id, each with a client instance of its
@@ -804,7 +806,7 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		return err
 	}
 	kv, epoch := r.watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(sessionID, buf) })
+	revision, answered, err := bus.Bounded(ctx, kv.Conn(), func() (uint64, error) { return kv.Put(sessionID, buf) })
 	if !answered {
 		return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
 	}
@@ -899,7 +901,7 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 // marker, a value that does not decode and a row past its TTL are not found.
 func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
-	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, answered, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}

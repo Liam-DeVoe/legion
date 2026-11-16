@@ -245,7 +245,8 @@ func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.
 //
 // A frame whose headers and data together are past the server's max payload is refused before it
 // is sent, as ErrTooLarge naming both sizes: a stored message that fits the limit alone can still
-// make such a frame once the relay adds its headers, and every send of it is refused again.
+// make such a frame once the relay adds its headers, and every send of it is refused again. A
+// frame the connection dropped under after the wait is refused as ErrReconnecting (Reconnecting).
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 	if err := s.client.ensureConnWithContext(ctx); err != nil {
 		return err
@@ -258,7 +259,7 @@ func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 		return fmt.Errorf("%w: a frame of %d bytes, headers included, against the server's max payload of %d bytes",
 			ErrTooLarge, msg.Size()-len(msg.Subject)-len(msg.Reply), conn.MaxPayload())
 	}
-	return err
+	return Reconnecting(err)
 }
 
 // SubscribeReplies subscribes handler over core NATS to subject, typically a reply-inbox wildcard,

@@ -1477,11 +1477,13 @@ const reconnectRecheck = time.Second
 // reconnecting is waited for, until it reconnects, ctx ends or the client stops, and read again at
 // each connection event (ConnectionChanged) and at least every reconnectRecheck, rather than
 // polled: with the reconnect buffer off, a publish while reconnecting would otherwise fail at once,
-// and a webhook that fails answers 503 to a sender that does not redeliver. A closed connection is
-// replaced by dialling a new one, unless the client is stopped. Callers that find the same
-// connection closed at once (the recovery its ClosedCB starts, and a publish) each dial one, and
-// only the first to finish replaces it: the others close theirs and serve with that one. So every
-// connection the client dials is either c.Conn, which Close and Drain close, or closed already; one
+// and a webhook that fails answers 503 to a sender that does not redeliver. A wait whose ctx ends
+// first returns ErrReconnecting with ctx's error (reconnectWaitEnded), so the caller's answer says
+// the bus is reconnecting, and the caller sends nothing. A closed connection is replaced by
+// dialling a new one, unless the client is stopped. Callers that find the same connection closed
+// at once (the recovery its ClosedCB starts, and a publish) each dial one, and only the first to
+// finish replaces it: the others close theirs and serve with that one. So every connection the
+// client dials is either c.Conn, which Close and Drain close, or closed already; one
 // left open beside it would outlive Close, and, with MaxReconnect -1, reconnect forever once its
 // server is gone. A client that connects in the background (WithConnectInBackground) holds, from
 // its constructor on, a connection nats.go has yet to connect for the first time and does not
@@ -1518,7 +1520,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				recheck.Stop()
-				return fmt.Errorf("bus: waiting for NATS to reconnect: %w", ctx.Err())
+				return reconnectWaitEnded(ctx)
 			case <-c.stopCh:
 				recheck.Stop()
 				return errStopped
@@ -1721,15 +1723,17 @@ func validSubject(subject string) bool {
 }
 
 // refused names nats.go's refusal of a message past the server's max payload as the ErrTooLarge it
-// is, naming its envelope of size bytes. checkSubject has already refused every subject nats.go
-// would.
+// is, naming its envelope of size bytes, and its refusal of a send while it reconnects the
+// connection as the ErrReconnecting it is (Reconnecting): a send can still meet that refusal after
+// its wait for the connection, when the connection drops again before the send. checkSubject has
+// already refused every subject nats.go would.
 func (c *Client) refused(err error, size int) error {
 	if errors.Is(err, nats.ErrMaxPayload) {
 		conn := c.Connection()
 		return fmt.Errorf("%w: an envelope of %d bytes against the server's max payload of %d bytes",
 			ErrTooLarge, size, conn.MaxPayload())
 	}
-	return err
+	return Reconnecting(err)
 }
 
 // publishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and

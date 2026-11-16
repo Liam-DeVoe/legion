@@ -97,14 +97,16 @@ func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 
 // listenerDurable reads the machine's durable. It returns a nil info when there is none,
 // listenerDurableRefusal's error when the listener's policy cannot use the one there is, and the
-// lookup's error when NATS cannot say.
+// lookup's error when NATS cannot say: bus.ErrReconnecting while nats.go reconnects the
+// connection, since the read goes through the client's JetStream context and waits for nothing
+// (bus.Reconnecting).
 func listenerDurable(client *bus.Client, consumer string) (*nats.ConsumerInfo, error) {
 	info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
 	if errors.Is(err, nats.ErrConsumerNotFound) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, bus.Reconnecting(err)
 	}
 	if err := listenerDurableRefusal(consumer, info.Config); err != nil {
 		return nil, err
@@ -121,6 +123,10 @@ func listenerDurable(client *bus.Client, consumer string) (*nats.ConsumerInfo, e
 // drain paths trigger exactly that — silently resetting the durable cursor.
 // The config drift-correction also stamps consumerInactiveThreshold onto
 // consumers created before the threshold existed.
+//
+// Its requests go through the client's JetStream context and wait for no connection, so one made
+// while nats.go reconnects fails at once as bus.ErrReconnecting (bus.Reconnecting), and the bind
+// or the rebuild that called it tries again.
 func startListenerSubscription(client *bus.Client, consumer string, handler nats.MsgHandler) (*nats.Subscription, error) {
 	subjects := bus.StreamSubjects()
 	info, err := listenerDurable(client, consumer)
@@ -138,7 +144,7 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		}
 		applyListenerConsumerPolicy(&config, subjects)
 		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
-			return nil, err
+			return nil, bus.Reconnecting(err)
 		}
 	default:
 		// Only a field the policy writes can differ: the copy shares every other one, the
@@ -148,16 +154,17 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		applyListenerConsumerPolicy(&corrected, subjects)
 		if !reflect.DeepEqual(corrected, info.Config) {
 			if _, err := client.JS().UpdateConsumer(bus.Stream, &corrected); err != nil {
-				return nil, err
+				return nil, bus.Reconnecting(err)
 			}
 		}
 	}
-	return client.Subscribe(
+	subscription, err := client.Subscribe(
 		"",
 		handler,
 		nats.Bind(bus.Stream, consumer),
 		nats.ManualAck(),
 	)
+	return subscription, bus.Reconnecting(err)
 }
 
 // errListenerDurableBindExhausted marks a bind still refused at its deadline: something other than
