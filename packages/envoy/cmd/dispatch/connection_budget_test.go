@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ import (
 // from testlimits, allows.
 const postgresDefaultMaxConnections = 100
 
-// budgetSampleEvery is how often the row below reads pg_stat_activity.
+// budgetSampleEvery is how often the row below reads its relays' counts and pg_stat_activity.
 const budgetSampleEvery = 100 * time.Millisecond
 
 // budgetTakeOverWithin is what the row below gives the standby to bind both delivery durables once
@@ -40,11 +41,22 @@ const budgetTakeOverWithin = 15 * time.Second
 // its pools scaled to the budget a Postgres of the default 100 connections gives it
 // (testlimits.PoolBudget: 19 with the default superuser reserve of 3), boot, serve load at once,
 // hand both delivery intakes' durables over from a dead holder, and drain the outbox, and none
-// opens more than that budget: pg_stat_activity, read every 100 ms from before the first start
-// until the outbox has drained, never counts more of one process's connections at once than its
-// budget. Each process reaches Postgres through a relay of its own (connectionRelay), which knows
-// the client port of every connection it holds, so a backend is counted for the process that
-// opened it. The processes together stay inside the 100 less the reserve and the suite's own
+// opens more than that budget: read every 100 ms from before the first start until the outbox has
+// drained, no process ever holds more connections to Postgres at once than its budget.
+//
+// Each process reaches Postgres through a relay of its own (connectionRelay), and a process's
+// count is the connections its relay holds open to the server: each from the moment the relay's
+// dial succeeds, before its first byte reaches Postgres, until both of its directions have closed.
+// That counts a connection a little longer than its backend lives, which only makes the budget
+// stricter: it never leaves out a connection the process holds. pg_stat_activity cannot say whose
+// a backend is. Its client_port is the port the server sees, which behind a relay or a service
+// container (CI's Postgres, reached through docker's proxy) is not the port the relay dialed from.
+// Its application_name is not the process's either: Dispatch names some of its pools' connections
+// itself, whatever the connection string sets - dispatch-rooms, dispatch-room-appends and
+// dispatch-compaction, the same in every process (store.Pool.openSeparateLocked) - and its shared
+// listener and room-sync sender by a process id it mints at boot (store.Pool.Dedicated,
+// docs.ListenerApplicationPrefix). So pg_stat_activity gives the row only the database's total,
+// which it logs. The processes together stay inside the 100 less the reserve and the suite's own
 // testlimits.SuiteHeadroom whenever each stays inside its budget, since PoolBudget gives each at
 // most a quarter of that, so the row counts them one by one.
 //
@@ -97,7 +109,7 @@ func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing
 	for i := range relays {
 		relays[i] = startConnectionRelay(t, databaseURL)
 	}
-	peaks := sampleConnections(t, sampler, database.Pool.Config().ConnConfig.Database, relays)
+	peaks := sampleConnections(t, sampler, relays)
 	start := func(i int, extra map[string]string) *dispatchProcess {
 		env := map[string]string{"DISPATCH_TEST_POOL_BUDGET": strconv.Itoa(budget)}
 		maps.Copy(env, extra)
@@ -213,22 +225,22 @@ func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing
 	t.Logf("the standby bound both durables %v after it took both holds at once", time.Since(released).Round(time.Millisecond))
 	waitForEveryEventPublished(t, database, 60*time.Second)
 
-	byProcess, elsewhere, samples := peaks()
+	byProcess, total, samples := peaks()
 	failures.Range(func(request, failure any) bool {
 		t.Errorf("%s answered %s, want 200", request, failure)
 		return true
 	})
-	t.Logf("%d samples of pg_stat_activity: peak connections by process %v, budget %d; at most %d at once opened by none of them",
-		samples, byProcess, budget, elsewhere)
+	t.Logf("%d samples: peak connections held open to Postgres by process %v, budget %d; at most %d client backends on the database at once, the test's own among them",
+		samples, byProcess, budget, total)
 	if samples < 10 {
-		t.Fatalf("pg_stat_activity was read %d times, too few to hold the row to", samples)
+		t.Fatalf("the connections were read %d times, too few to hold the row to", samples)
 	}
 	for i, peak := range byProcess {
 		if peak == 0 {
-			t.Errorf("process %d never showed a connection: the count does not see the process", i)
+			t.Errorf("process %d never showed a connection: its relay held none, so the count does not see the process", i)
 		}
 		if peak > budget {
-			t.Errorf("process %d opened %d connections at once, over its budget of %d", i, peak, budget)
+			t.Errorf("process %d held %d connections to Postgres at once, over its budget of %d", i, peak, budget)
 		}
 	}
 	for i, process := range processes {
@@ -238,27 +250,18 @@ func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing
 	}
 }
 
-// connectionRelay forwards one Dispatch process's database connections to the test's Postgres, and
-// knows the local port of each connection it holds there, which pg_stat_activity names as that
-// backend's client_port: a row whose processes share one database tells one process's backends
-// from another's by the relay that opened them.
+// connectionRelay forwards one Dispatch process's database connections to the test's Postgres and
+// counts the connections it holds open there (held), so a row whose processes share one database
+// counts each process's connections by the relay they pass through.
 type connectionRelay struct {
-	url   string
-	mu    sync.Mutex
-	ports map[int]bool
-}
-
-// holds reports whether the relay holds a connection to Postgres from local port port.
-func (r *connectionRelay) holds(port int) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.ports[port]
+	url  string
+	held atomic.Int64
 }
 
 // startConnectionRelay starts a relay to the server databaseURL names, until the test ends, and
-// returns it with url, the same URL through the relay. A connection's port is the relay's from
-// before the first byte reaches Postgres, so before its backend is listed, until both directions
-// have closed, so after its backend has gone.
+// returns it with url, the same URL through the relay. A connection is counted in held from the
+// moment the relay's dial to the server succeeds, before the first byte reaches Postgres, until
+// both its directions have closed.
 func startConnectionRelay(t *testing.T, databaseURL string) *connectionRelay {
 	t.Helper()
 	target, err := url.Parse(databaseURL)
@@ -271,7 +274,7 @@ func startConnectionRelay(t *testing.T, databaseURL string) *connectionRelay {
 	}
 	through := *target
 	through.Host = listener.Addr().String()
-	relay := &connectionRelay{url: through.String(), ports: map[int]bool{}}
+	relay := &connectionRelay{url: through.String()}
 	var open sync.Map
 	t.Cleanup(func() {
 		_ = listener.Close()
@@ -291,10 +294,7 @@ func startConnectionRelay(t *testing.T, databaseURL string) *connectionRelay {
 				_ = client.Close()
 				continue
 			}
-			port := server.LocalAddr().(*net.TCPAddr).Port
-			relay.mu.Lock()
-			relay.ports[port] = true
-			relay.mu.Unlock()
+			relay.held.Add(1)
 			open.Store(client, true)
 			open.Store(server, true)
 			go func() {
@@ -312,62 +312,42 @@ func startConnectionRelay(t *testing.T, databaseURL string) *connectionRelay {
 				_ = server.Close()
 				open.Delete(client)
 				open.Delete(server)
-				relay.mu.Lock()
-				delete(relay.ports, port)
-				relay.mu.Unlock()
+				relay.held.Add(-1)
 			}()
 		}
 	}()
 	return relay
 }
 
-// sampleConnections reads pg_stat_activity's backends on database through conn every
-// budgetSampleEvery, counting each for the relay that holds its client port, until the returned
-// stop is called; stop answers the highest count each relay's process reached, the highest count
-// of backends no relay holds (the test's own) in one read, and how many reads were made. conn's
-// own connection is left out of the count. The test's cleanup stops the reads too, before conn
-// closes, for a test that ends before it calls stop.
-func sampleConnections(t *testing.T, conn *pgx.Conn, database string, relays []*connectionRelay) (stop func() (byProcess []int, elsewhere, samples int)) {
+// sampleConnections reads, every budgetSampleEvery until the returned stop is called, how many
+// connections each relay holds open to Postgres and how many client backends pg_stat_activity
+// lists on conn's database, conn's own left out; stop answers the highest count each relay's
+// process reached, the highest count of client backends in one read, and how many reads were
+// made. The test's cleanup stops the reads too, before conn closes, for a test that ends before it
+// calls stop.
+func sampleConnections(t *testing.T, conn *pgx.Conn, relays []*connectionRelay) (stop func() (byProcess []int, total, samples int)) {
 	t.Helper()
 	done, finished := make(chan struct{}), make(chan struct{})
 	byProcess := make([]int, len(relays))
-	var elsewhere, samples int
+	var total, samples int
 	var failed error
 	go func() {
 		defer close(finished)
 		ticker := time.NewTicker(budgetSampleEvery)
 		defer ticker.Stop()
 		for {
-			rows, err := conn.Query(context.Background(), `
-				select client_port from pg_stat_activity
-				where datname = $1 and pid <> pg_backend_pid() and client_port is not null`, database)
-			var ports []int
-			if err == nil {
-				ports, err = pgx.CollectRows(rows, pgx.RowTo[int])
-			}
-			if err != nil {
+			var backends int
+			if err := conn.QueryRow(context.Background(), `
+				select count(*) from pg_stat_activity
+				where datname = current_database() and backend_type = 'client backend' and pid <> pg_backend_pid()`,
+			).Scan(&backends); err != nil {
 				failed = err
 				return
 			}
-			counts := make([]int, len(relays))
-			unheld := 0
-			for _, port := range ports {
-				held := false
-				for i, relay := range relays {
-					if relay.holds(port) {
-						counts[i]++
-						held = true
-						break
-					}
-				}
-				if !held {
-					unheld++
-				}
+			for i, relay := range relays {
+				byProcess[i] = max(byProcess[i], int(relay.held.Load()))
 			}
-			for i, count := range counts {
-				byProcess[i] = max(byProcess[i], count)
-			}
-			elsewhere = max(elsewhere, unheld)
+			total = max(total, backends)
 			samples++
 			select {
 			case <-done:
@@ -386,6 +366,6 @@ func sampleConnections(t *testing.T, conn *pgx.Conn, database string, relays []*
 		if failed != nil {
 			t.Fatalf("read pg_stat_activity: %v", failed)
 		}
-		return byProcess, elsewhere, samples
+		return byProcess, total, samples
 	}
 }
