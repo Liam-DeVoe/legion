@@ -219,8 +219,8 @@ func (s *Server) dropAccess(name string) {
 // itself with the real federated token, keeps the access token, and answers the command the
 // endpoint's own answer with a placeholder in place of that token. Nothing of this request
 // reaches the endpoint as the command wrote it, and nothing of it reaches the endpoint at all
-// unless it is made as app, the application and tenant the name's document names.
-func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Request, chosen pair, federated string, app requests.AzureApplication) {
+// unless it is made as secret.Azure, the application and tenant the name's document names.
+func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Request, chosen pair, secret requests.AirlockSecret) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxTokenRequest))
 	if err != nil {
 		s.refuse(w, r, info.callFor(chosen), http.StatusBadRequest, codeTokenRequest, "reading this token request's form: "+err.Error())
@@ -238,7 +238,7 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeTokenAssertion, "refusing a token request whose client_assertion is not this grant's placeholder")
 		return
 	}
-	if err := azureBound(chosen.name, app, form["client_id"], r.URL.Path); err != nil {
+	if err := azureBound(chosen.name, secret.Azure, form["client_id"], r.URL.Path); err != nil {
 		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeTokenApplication, err.Error())
 		return
 	}
@@ -247,9 +247,9 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 		// decision has already tied to the entry's hosts, the TLS name and the Host header.
 		Endpoint: "https://" + hostHeaderOf(info.target) + r.URL.Path,
 		Scope:    form.Get("scope"),
-		ClientID: form.Get("client_id"),
+		ClientID: secret.Azure.ClientID, // the one client_id the form carries, azureBound says
 	}
-	form.Set("client_assertion", federated)
+	form.Set("client_assertion", secret.Slots[requests.SlotAzureFederated])
 	status, answer, err := s.exchangeAt(r.Context(), x.Endpoint, form)
 	if err != nil {
 		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the exchange of this grant's federated token could not be made at "+x.Endpoint+": "+err.Error())

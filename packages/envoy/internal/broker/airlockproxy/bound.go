@@ -344,7 +344,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// The one request the proxy answers itself: the broker makes the exchange with the
 		// real federated token and hands the command a placeholder access token, as the
 		// application and in the tenant the name's own document names and no other.
-		s.exchangeToken(w, info, r, chosen, value, secret.Azure)
+		s.exchangeToken(w, info, r, chosen, secret)
 		return
 	}
 

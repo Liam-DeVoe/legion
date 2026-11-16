@@ -52,10 +52,10 @@ var ErrAirlockValueShape = errors.New("a name of this grant does not hold what i
 //   - SlotAzureFederated: an azure-login secret's federated token.
 //
 // The set is open, not closed: the proxy adds one slot per exchange it makes of an azure-login
-// secret's federated token, opening with SlotAzureAccessPrefix and carrying the token endpoint
-// and the scope of that exchange (internal/broker/airlockproxy's azure.go, which writes and
-// reads that text and is the only code that does). Nothing may assume a slot it does not know
-// is a mistake.
+// secret's federated token, opening with SlotAzureAccessPrefix and carrying the token endpoint,
+// the scope and the client_id of that exchange (internal/broker/airlockproxy's azure.go, which
+// writes and reads that text and is the only code that does). Nothing may assume a slot it does
+// not know is a mistake.
 const (
 	SlotValue              = "value"
 	SlotAWSAccessKeyID     = "aws-access-key-id"
