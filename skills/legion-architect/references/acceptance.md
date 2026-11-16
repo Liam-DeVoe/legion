@@ -103,8 +103,9 @@ deploy skill says.
 
 If the pull request merged before its last round, it can carry no new head, so move nothing back.
 Once they have closed, have a fresh `task` subagent run each check with no `ci_check` on the
-default branch and record each result. Read each `ci_check` check's derived result in
-`dispatch results`, which no role records. Post them in the acceptance comment, then `sign_off`.
+default branch and record each result. Read each `ci_check` check's results from CI in
+`dispatch results`: its derived result and each one its CI job recorded, which no role records.
+Post them in the acceptance comment, then `sign_off`.
 
 ## The order after your acceptance
 

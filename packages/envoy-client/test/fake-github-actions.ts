@@ -13,6 +13,11 @@ import { createHash, generateKeyPairSync, type KeyObject, sign } from "node:cryp
 //   - GET /repos/{owner}/{repo}/check-runs/{id}, the one check run Dispatch reads by its id;
 //   - GET /repos/{owner}/{repo}/git/trees/{sha}:{dir} and GET .../git/blobs/{sha}, the reads of
 //     githubapp.Client.Dir and DirFiles;
+//   - the reads of the issue's results route: GET /repos/{owner}/{repo} with `default_branch`
+//     main (Client.DefaultBranch), GET .../git/ref/heads/{branch}, a branch's head as setBranch
+//     set it (Client.Branch), GET .../commits/{sha}, which holds every commit (Client.HasCommit),
+//     GET .../commits/{sha}/check-runs, which names no run, and GET .../commits/{sha}/pulls,
+//     which names no pull request;
 //   - the App installation of a repository and the installation token Dispatch mints there.
 //
 // Every route answers what this process set and nothing else, as GitHub's 404 for the rest.
@@ -68,6 +73,8 @@ export interface FakeGitHubActions {
     dir: string,
     files: Readonly<Record<string, string>>
   ): void;
+  /** The head of `branch` of `repository` is `sha` from now on, as a push moves it. */
+  setBranch(repository: string, branch: string, sha: string): void;
   stop(): Promise<void>;
 }
 
@@ -104,6 +111,8 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   // "<owner>/<name>@<sha>:<dir>" → file name → blob id, and blob id → content.
   const trees = new Map<string, Map<string, string>>();
   const blobs = new Map<string, string>();
+  // "<owner>/<name>:<branch>" → the branch's head.
+  const branches = new Map<string, string>();
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -194,7 +203,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
       }
 
       // Every read of a repository's contents and checks takes an installation token.
-      const repositoryRead = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/(.+)$/);
+      const repositoryRead = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)(?:\/(.+))?$/);
       if (request.method === "GET" && repositoryRead !== null) {
         const repository = `${repositoryRead[1]}/${repositoryRead[2]}`;
         const rest = repositoryRead[3] ?? "";
@@ -203,7 +212,27 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
         if (request.headers.get("Authorization") !== `Bearer ghs_local_${id}`) {
           return Response.json({ message: "Requires authentication" }, { status: 401 });
         }
+        if (rest === "") return Response.json({ full_name: repository, default_branch: "main" });
 
+        // The branch's name is one path segment, its "/" percent-encoded, as the Go client
+        // escapes it.
+        const ref = rest.match(/^git\/ref\/heads\/([^/]+)$/);
+        if (ref !== null) {
+          const branch = decodeURIComponent(ref[1] ?? "");
+          const head = branches.get(`${repository}:${branch}`);
+          if (head === undefined) return notFound(`branch ${branch}`);
+          return Response.json({
+            ref: `refs/heads/${branch}`,
+            object: { sha: head, type: "commit" },
+          });
+        }
+        const commit = rest.match(/^commits\/([0-9a-f]{40})(\/check-runs|\/pulls)?$/);
+        if (commit !== null) {
+          if (commit[2] === "/check-runs") return Response.json({ total_count: 0, check_runs: [] });
+          if (commit[2] === "/pulls") return Response.json([]);
+          // Client.HasCommit asks for the commit's SHA alone (application/vnd.github.sha).
+          return new Response(commit[1] ?? "", { headers: { "Content-Type": "text/plain" } });
+        }
         const checkRun = rest.match(/^check-runs\/(\d+)$/);
         if (checkRun !== null) {
           const run = checkRuns.get(`${repository}#${checkRun[1]}`);
@@ -268,6 +297,9 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
         listing.set(name, id);
       }
       trees.set(`${repository}@${sha}:${dir}`, listing);
+    },
+    setBranch(repository, branch, sha): void {
+      branches.set(`${repository}:${branch}`, sha);
     },
     async stop(): Promise<void> {
       await server.stop(true);

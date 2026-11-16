@@ -91,10 +91,14 @@ function Screenshot({ reference }: { reference: string }): ReactNode {
 }
 
 /** What one basis is, in words: the commit a reader named in the request, the head of a pull
- *  request, or a branch. The commit itself is drawn beside this, whole. */
+ *  request, a branch, or the head of a branch a CI job pushed. The commit itself is drawn beside
+ *  this, whole. */
 function basisWords(basis: CheckBasis): string {
   if (basis.kind === "branch") {
     return `branch ${basis.branch ?? ""}`;
+  }
+  if (basis.kind === "branch_head") {
+    return `the head of branch ${basis.branch ?? ""}`;
   }
   if (basis.kind === "pull_request") {
     return basis.pull_request === undefined

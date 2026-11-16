@@ -688,6 +688,8 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ issue: "DSP-1", at: project.commit, brief: true }).success).toBe(
       true
     );
+    // With issue, json prints the route's answer whole, each CI job's result with its statement.
+    expect(schema.safeParse({ issue: "DSP-1", json: true }).success).toBe(true);
     const owner =
       "Exactly one of issue and project is required. With issue, the read prints the checks of the issue's Verification document. With project, it prints the results that CI jobs stored for checks of the spec files at commit.";
     expect(refusal({})).toEqual([owner]);
@@ -698,8 +700,8 @@ describe("dispatchToolSpecs", () => {
     expect(refusal({ ...project, at: project.commit, brief: true })).toEqual([
       "With project, the read takes commit, check and json alone, and this call also carries at, brief.",
     ]);
-    expect(refusal({ issue: "DSP-1", commit: project.commit, check: "p-1", json: true })).toEqual([
-      "With issue, the read takes at and brief alone, and this call also carries commit, check, json.",
+    expect(refusal({ issue: "DSP-1", commit: project.commit, check: "p-1" })).toEqual([
+      "With issue, the read takes at, brief and json alone, and this call also carries commit, check.",
     ]);
   });
 

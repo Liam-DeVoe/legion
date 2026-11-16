@@ -165,7 +165,8 @@ and decides there, the only gate on such an issue.
   What a handoff does carry is `head`, the 40-character lower-case commit its work was done
   against, which the completion sends to the daemon.
 - **The tester judges the implementer's results and records its own.** It runs and records no
-  check with `ci_check`, whose result `dispatch results` derives. A derived fail, or a run that
+  check with `ci_check`, whose results come from CI: the one `dispatch results` derives, and each
+  one its CI job recorded. A derived fail, or a run that
   concluded `skipped`, `neutral` or `cancelled`, is a test failure. A run still going, or GitHub
   unread, goes in `implementerProof.how` and fails no round. A name no run answers once the head's
   checks have settled goes to the architect as a finding. It re-runs the

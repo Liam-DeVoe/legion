@@ -2230,6 +2230,101 @@ describe("dispatch result --project, as a CI job writes it", () => {
       `?commit=${SPEC_COMMIT}&check=p-1`,
     ]);
   });
+
+  // The same job records its result of a check of an issue's Verification document whose
+  // ci_check names it: with its own identity on --issue, and the body it sends names what the run
+  // observed and nothing about who the job is, which Dispatch reads from its token and GitHub.
+  const issueRecord = [
+    "result",
+    "--issue",
+    "DSP-1",
+    "--check",
+    "c1",
+    "--verdict",
+    "pass",
+    "--commit",
+    SPEC_COMMIT,
+  ];
+  /** The issue route's answer for the job's result of c1. */
+  const recordedOnIssue = {
+    line: `- Check c1 (before_merge): pass at ${SPEC_COMMIT}, recorded by ci. ok`,
+    result: {
+      id: "00000000-0000-4000-8000-000000000051",
+      check_block_id: "c1",
+      role: "ci",
+      verdict: "pass",
+      commit_sha: SPEC_COMMIT,
+      branch: "legion/DSP-1",
+    },
+  };
+
+  test("with the job's identity, --issue posts {check, commit, verdict, observed} to the issue's results route and nothing else", async () => {
+    dispatchAnswer = () => Response.json(recordedOnIssue, { status: 201 });
+    // A person's bearer and a session in the job's environment are not what the job writes with.
+    const env = { ...jobEnvironment(), ...omp, DISPATCH_TOKEN: "a-person-bearer" };
+    const withObserved = await runJob([...issueRecord, "--observed", "ok"], env);
+    expect(withObserved.code, withObserved.stdout).toBe(0);
+    expect(JSON.parse(withObserved.stdout)).toEqual(recordedOnIssue);
+    const bare = await runJob(issueRecord, env);
+    expect(bare.code, bare.stdout).toBe(0);
+
+    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+      ["POST", "/api/v1/issues/DSP-1/results"],
+      ["POST", "/api/v1/issues/DSP-1/results"],
+    ]);
+    expect(written.map((seen) => seen.body)).toStrictEqual([
+      { check: "c1", commit: SPEC_COMMIT, verdict: "pass", observed: "ok" },
+      { check: "c1", commit: SPEC_COMMIT, verdict: "pass" },
+    ]);
+    expect(written.map((seen) => seen.authorization)).toEqual([
+      `DPoP ${RESULTS_TOKEN}`,
+      `DPoP ${RESULTS_TOKEN}`,
+    ]);
+    expect(requests).toEqual([]);
+  });
+
+  test("with the job's identity, an argument of a role's record is refused on --issue, naming its flag, before any request", async () => {
+    for (const [flag, value] of [
+      ["--role", "tester"],
+      ["--surface", "api"],
+      ["--run", "go test ./..."],
+      ["--negative-control", "The test without its check."],
+      ["--failed", "0"],
+      ["--skipped", "0"],
+      ["--excluded", "0"],
+      ["--screenshot", "dispatch://DSP-1/artifact/shot-png"],
+      ["--retract", "00000000-0000-4000-8000-000000000041"],
+    ] as const) {
+      const { code, stdout } = await runJob([...issueRecord, flag, value], jobEnvironment());
+      expect(code, `${flag}: ${stdout}`).toBe(2);
+      expect(stdout, flag).toContain(`This call also carries ${flag}.`);
+    }
+    const missing = await runJob(
+      issueRecord.filter((word, at) => word !== "--verdict" && issueRecord[at - 1] !== "--verdict"),
+      jobEnvironment()
+    );
+    expect(missing.code, missing.stdout).toBe(2);
+    expect(missing.stdout).toContain("a CI job's result needs --verdict.");
+    sentNothing();
+  });
+
+  test("with the job's identity, --issue sends what a result keeps of observed: its start and its end around the note", async () => {
+    dispatchAnswer = () => Response.json(recordedOnIssue, { status: 201 });
+    const first = "=== RUN   TestX\n";
+    const last = "--- FAIL: TestX (0.01s)\n";
+    const log = join(stateDir, "observed-issue-failing.txt");
+    writeFileSync(log, `${first}${"x\n".repeat((10_000 - first.length - last.length) / 2)}${last}`);
+    const ran = await runJob([...issueRecord, "--observed-file", log], jobEnvironment());
+    expect(ran.code, ran.stdout).toBe(0);
+    const body = written[0]?.body as { observed?: string } | undefined;
+    const sent = body?.observed ?? "";
+    expect({
+      characters: [...sent].length,
+      first: sent.startsWith(first),
+      last: sent.endsWith(last),
+      note: sent.includes(SPEC_CHECK_OBSERVED_CUT_NOTE),
+    }).toEqual({ characters: SPEC_CHECK_OBSERVED_MAX, first: true, last: true, note: true });
+  });
 });
 
 describe("the dispatch CLI's envoy.json", () => {

@@ -8292,6 +8292,176 @@ describe("executeDispatchTool", () => {
     expect(read.details).toMatchObject({ issue: "DSP-42", checks: 4, results: 2 });
   });
 
+  /** A check CI proves, k5, whose results the route serves as `results`, with `ci` as given. */
+  function ciCheckRead(ci: Record<string, unknown>, results: readonly Record<string, unknown>[]) {
+    return {
+      issue: "DSP-42",
+      verification_artifact_id: "artifact-9",
+      checks: [
+        {
+          ...threeResults.checks[0],
+          block_id: "k5",
+          ref: "dispatch://DSP-42/artifact/verification-md#b-k5",
+          text: "The contracts job passes at the head.",
+          run: "",
+          ci_check: "contracts",
+          pass_stands: { answer: "yes", roles: ["ci"] },
+          ci,
+          results,
+        },
+      ],
+    };
+  }
+
+  /** A result the CI job `contracts` recorded on a push of legion/DSP-42 at `commit`. */
+  function jobResult(id: string, commit: string, stands: Record<string, unknown>, created: string) {
+    return {
+      id,
+      issue_key: "DSP-42",
+      check_issue_key: "DSP-42",
+      check_artifact_id: "artifact-9",
+      check_block_id: "k5",
+      check_version: 4,
+      check_sha256: "d4",
+      check_words_moved: false,
+      role: "ci",
+      verdict: "pass",
+      commit_sha: commit,
+      commit_stands: stands,
+      branch: "legion/DSP-42",
+      surface: "",
+      run: "contracts",
+      observed: "ok",
+      negative_control: "Break one case and see the run fail.",
+      failed: 0,
+      skipped: 0,
+      excluded: 0,
+      screenshots: [],
+      session: "ci-results:owner/repo/.github/workflows/ci-results.yaml",
+      actor: { kind: "session", id: "ci-results:owner/repo/.github/workflows/ci-results.yaml" },
+      created_at: created,
+    };
+  }
+
+  async function readCICheck(read: unknown) {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") return response(read);
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    return await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+  }
+
+  // A CI job records its own result of the check its ci_check names, on a push of the change's
+  // branch. The derived result is the one whose id begins with ci-run:, wherever the route serves
+  // it, and each result the job recorded prints after it as a recorded result prints, in the
+  // order the route serves them, with the branch the job ran on.
+  test("dispatch_results prints a CI check's derived result and then each result its CI job recorded", async () => {
+    const branchHead = "3333333333333333333333333333333333333333";
+    const read = await readCICheck(
+      ciCheckRead(
+        {
+          run: "contracts",
+          state: "pass",
+          case: "success",
+          detail: `CI run contracts concluded success at ${headCommit}, the head of owner/repo#3530.`,
+          line: `- Check k5 (before_merge): pass at ${headCommit}, from CI run contracts. The contracts job passes at the head.`,
+        },
+        [
+          jobResult(
+            "job-2",
+            branchHead,
+            {
+              answer: "at_basis",
+              basis: { kind: "branch_head", branch: "legion/DSP-42", commit: branchHead },
+            },
+            "2026-11-10T11:00:00Z"
+          ),
+          {
+            ...jobResult(
+              "ci-run:71",
+              headCommit,
+              {
+                answer: "at_basis",
+                basis: { kind: "pull_request", commit: headCommit, pull_request: 3530 },
+              },
+              "2026-11-10T10:30:00Z"
+            ),
+            branch: undefined,
+            session: "",
+            actor: { kind: "github_app", id: "github-actions" },
+            observed: "conclusion: success\nhttps://github.com/owner/repo/actions/runs/7/job/71",
+          },
+          jobResult("job-1", headCommit, { answer: "other_commit" }, "2026-11-10T10:00:00Z"),
+        ]
+      )
+    );
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k5 (before_merge): pass at 1111111111111111111111111111111111111111 by ci (CI run contracts, success), that commit is the head of pull request #3530. The contracts job passes at the head.",
+        "  A pass stands: yes, from ci.",
+        "  Pull request line: - Check k5 (before_merge): pass at 1111111111111111111111111111111111111111, from CI run contracts. The contracts job passes at the head.",
+        "  Reading: conclusion: success",
+        "https://github.com/owner/repo/actions/runs/7/job/71",
+        "  - pass by ci on branch legion/DSP-42 at 3333333333333333333333333333333333333333. That commit is at the head of branch legion/DSP-42. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T11:00:00Z. Result job-2.",
+        "    Reading: ok",
+        "  - pass by ci on branch legion/DSP-42 at 1111111111111111111111111111111111111111. That commit is none of the compared commits. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result job-1.",
+        "    Reading: ok",
+      ].join("\n")
+    );
+  });
+
+  // An issue with no pull request has no body to write a line into, and the pass its CI job
+  // recorded stands at the head of the branch the job pushed.
+  test("dispatch_results prints no pull request line for a CI check of an issue with no pull request", async () => {
+    const branchHead = "3333333333333333333333333333333333333333";
+    const read = await readCICheck(
+      ciCheckRead(
+        {
+          run: "contracts",
+          state: "no_result",
+          case: "no_head",
+          detail: "Dispatch holds no open or merged pull request head of DSP-42.",
+          line: "- Check k5 (before_merge): CI run contracts has no result (no_head)",
+        },
+        [
+          jobResult(
+            "job-1",
+            branchHead,
+            {
+              answer: "at_basis",
+              basis: { kind: "branch_head", branch: "legion/DSP-42", commit: branchHead },
+            },
+            "2026-11-10T10:00:00Z"
+          ),
+        ]
+      )
+    );
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k5 (before_merge): no result: Dispatch holds no open or merged pull request head of DSP-42. The contracts job passes at the head.",
+        "  A pass stands: yes, from ci.",
+        "  - pass by ci on branch legion/DSP-42 at 3333333333333333333333333333333333333333. That commit is at the head of branch legion/DSP-42. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result job-1.",
+        "    Reading: ok",
+      ].join("\n")
+    );
+  });
+
   test("dispatch_result --retract records the retraction and prints what it holds", async () => {
     const posts: Array<{ path: string; body: unknown }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {

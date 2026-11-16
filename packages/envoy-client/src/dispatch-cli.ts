@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { IDENTITY_GITHUB_ACTIONS } from "@legion/broker-client/environment";
 import {
   askgateState,
   bytesDigest,
@@ -16,6 +17,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { checkCIJobResultCall, ciJobResultCommand } from "./dispatch-commands/ci-job-result";
 import { defined } from "./dispatch-commands/context";
 import { specCheckResultCommand } from "./dispatch-commands/issues";
 import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-config";
@@ -180,10 +182,12 @@ export function fitOutput(
 }
 
 /**
- * `dispatch result --project`, a CI job's record of its result of a check of the spec files. The
- * job writes with its own identity alone (`ownIdentityDispatch`): no host, no session, no
- * envoy.json, no AskGate and no listener, since a job has none of them, and no bearer or
- * person's sign-in, since the result must carry the identity the broker authenticated. The
+ * `dispatch result` as a CI job writes it, with its own identity alone (`ownIdentityDispatch`): no
+ * host, no session, no envoy.json, no AskGate and no listener, since a job has none of them, and
+ * no bearer or person's sign-in, since the result must carry the identity the broker
+ * authenticated. Two forms: `--project`, its result of a check of the spec files, and, under
+ * AGENT_SECRETS_MACHINE_IDENTITY=github-actions, `--issue`, its result of the check of an issue's
+ * Verification document that the check's ci_check gives to the job (`ciJobResultCommand`). The
  * call's own argument check runs first, as for every command, so a refused call sends nothing.
  * It prints the stored result as JSON and exits 0, or prints Dispatch's refusal as
  * `<CODE>: <message>` and exits 1. A write that landed with its answer lost prints
@@ -200,13 +204,15 @@ async function ownIdentityResult(
   refuse: (text: string, code: number, tool?: string) => number
 ): Promise<number> {
   const resolution = ownIdentityDispatch(env);
-  const checked = await checkDispatchCall({
+  const projectForm = parsed.args["project"] !== undefined;
+  const check = {
     tool: parsed.tool,
     args: parsed.args,
     cwd: io.cwd,
     env,
     serverUrls: resolution.enabled ? dispatchServerUrls(resolution) : [],
-  });
+  };
+  const checked = projectForm ? await checkDispatchCall(check) : await checkCIJobResultCall(check);
   if (checked.problems.length > 0) {
     return refuse(new ToolInputError(parsed.tool, checked.problems).message, USAGE, parsed.tool);
   }
@@ -219,7 +225,10 @@ async function ownIdentityResult(
   }
   const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch);
   try {
-    print((await specCheckResultCommand(client, checked.args)).text);
+    const written = projectForm
+      ? await specCheckResultCommand(client, checked.args)
+      : await ciJobResultCommand(client, checked.args);
+    print(written.text);
     return OK;
   } catch (error) {
     // A write that landed with its answer lost is done. A program reads the job's output, so it
@@ -250,8 +259,9 @@ async function ownIdentityResult(
  * an outer session left there. Memory a long-lived host kept across calls lives in the session's
  * state directory.
  *
- * The one call that runs as no session is a CI job's `dispatch result --project`
- * (`ownIdentityResult`), which reads none of the above.
+ * The one call that runs as no session is a CI job's `dispatch result`, `--project`, or `--issue`
+ * under AGENT_SECRETS_MACHINE_IDENTITY=github-actions (`ownIdentityResult`), which reads none of
+ * the above.
  */
 export async function runDispatchCli(
   argv: readonly string[],
@@ -317,7 +327,11 @@ export async function runDispatchCli(
           parsed.tool
         );
   }
-  if (parsed.tool === "dispatch_result" && parsed.args["project"] !== undefined) {
+  if (
+    parsed.tool === "dispatch_result" &&
+    (parsed.args["project"] !== undefined ||
+      env.AGENT_SECRETS_MACHINE_IDENTITY === IDENTITY_GITHUB_ACTIONS)
+  ) {
     return await ownIdentityResult(parsed, env, io, print, refuse);
   }
 

@@ -497,11 +497,11 @@ Verification document, and each runs that check's `run` and asserts its `negativ
   refuses `400 INVALID_CI_CHECK` each of the four writes that break a rule, naming the block and
   the rule, and stores nothing of them: `ci_check` beside a `run`, `ci_check` with a `when` of
   `after_merge`, `ci_check` with no `negative_control`, and `ci_check` added to a check that
-  holds a recorded result. A `ci_check` on a fresh block id is stored, and a new block under the
-  old id is refused again. A check carrying neither `ci_check` nor `run` is stored as before. A
-  document socket that declares schema version 3 is admitted with the scope `readonly`, and one
-  that declares version 4 with `read-write` (`e2e/acceptance/socket-scope.ts`, the Hocuspocus
-  frames the browser sends). The live editor's half of `k1` is the browser row of
+  holds a result a role recorded. A `ci_check` on a fresh block id is stored, and a new block
+  under the old id is refused again. A check carrying neither `ci_check` nor `run` is stored as
+  before. A document socket that declares schema version 3 is admitted with the scope
+  `readonly`, and one that declares version 4 with `read-write` (`e2e/acceptance/socket-scope.ts`,
+  the Hocuspocus frames the browser sends). The live editor's half of `k1` is the browser row of
   `e2e/verification.e2e.ts`.
 - `k2`: `dispatch results` answers the check with the result of the named run at the issue's open
   pull request head: the run's name, conclusion, output and URL, and a pull-request body line that
@@ -515,7 +515,10 @@ Verification document, and each runs that check's `run` and asserts its `negativ
   of one name are decided by the higher id, in both orders of their conclusions.
 - `k4`: a tester's and an implementer's result for a check CI proves are refused `409
   CHECK_PROVED_BY_CI`, naming the block and the CI job; the same call against an ordinary check
-  is recorded and `dispatch results` shows it.
+  is recorded and `dispatch results` shows it. A run of that CI job records the check's result
+  with its own identity through the secrets broker, which
+  `packages/envoy-client/src/__tests__/ci-check-results.live.test.ts` proves on a stack of its
+  own.
 - `k5`: the whole line the reviewer's gate reads (verdict, commit, role and where the commit
   stands), then a failed run, a head moved to a commit the run does not cover, and a head the fake
   GitHub serves that Dispatch's own head record does not hold yet.

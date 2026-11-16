@@ -35,10 +35,11 @@ import {
 // broker is dev-oidc-issuer, as packages/envoy/scripts/dev-broker.sh starts it.
 //
 // Run as a script, `bun packages/envoy-client/test/ci-results-stack.ts` starts the stack, seeds
-// project ACME mapped to the repository local-org/local-repo and one commit of it with the probe
-// spec, prints the variables of one job of a push run and the commands of the try line, and runs
-// until Ctrl-C. With `--forge-only` it starts the stand-in's Actions token endpoint alone and
-// prints the three variables a job reads it by: each token it mints is signed by a key no real
+// project ACME mapped to the repository local-org/local-repo as its default, one commit of it with
+// the probe spec and issue ACME-1 whose Verification document holds a check CI proves and an
+// ordinary one, prints the variables of one job of a push run and the commands of the try line,
+// and runs until Ctrl-C. With `--forge-only` it starts the stand-in's Actions token endpoint alone
+// and prints the three variables a job reads it by: each token it mints is signed by a key no real
 // issuer holds, so a broker that verifies GitHub's tokens refuses it on its signature.
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
@@ -105,6 +106,24 @@ export function writeProbeSpec(dir: string): void {
   writeFileSync(path.join(dir, "probe.md"), PROBE_SPEC);
 }
 
+/** The check of the seeded issue's Verification document that its ci_check gives to the job
+ *  go-checks, and the ordinary check beside it, which no job proves. */
+export const CI_CHECK = "c1";
+export const ORDINARY_CHECK = "k1";
+
+/** The negative control both checks name: a check CI proves names one (docs.CICheckRuleIn). */
+const NEGATIVE_CONTROL = "A build whose server does not build.";
+
+/** The seeded issue's Verification document. */
+const VERIFICATION = `:::check{#${CI_CHECK} negative_control="${NEGATIVE_CONTROL}" ci_check="go-checks"}
+The server builds at the head.
+:::
+
+:::check{#${ORDINARY_CHECK} negative_control="${NEGATIVE_CONTROL}"}
+A person reads the issue page.
+:::
+`;
+
 /** One job of a push run of the workflow, as `jobEnv` makes its variables. */
 export interface JobRun {
   /** The commit the run tested, 40 lowercase hex characters. */
@@ -145,6 +164,9 @@ export interface CIResultsStack {
   readonly github: FakeGitHubActions;
   readonly project: string;
   readonly repository: string;
+  /** The seeded issue of the project, ACME-1, whose Verification document holds CI_CHECK, which
+   *  its ci_check gives to the job go-checks, and ORDINARY_CHECK. */
+  readonly issue: string;
   /** The person the result entry acts for: the broker's configuration, which no result names. */
   readonly person: string;
   /** The session and the principal every results token of the entry writes under. */
@@ -155,6 +177,8 @@ export interface CIResultsStack {
   jobEnv(run: JobRun): Record<string, string>;
   /** The spec files of the commit `sha`: every `.md` file directly in `dir`. */
   setFiles(sha: string, dir: string): void;
+  /** The head of `branch` of the repository is `sha` from now on, as a push moves it. */
+  setBranch(branch: string, sha: string): void;
   /** Every result of the project at `commit`, as a person reads them, newest first. */
   results(commit: string): Promise<StoredResult[]>;
   /** Stops Dispatch, the broker, the issuer and the stand-in, and drops the broker's database. */
@@ -350,7 +374,21 @@ export async function startCIResultsStack(options: {
       return JSON.parse(text);
     };
     await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: `${PROJECT} project` });
-    await asPerson("PUT", `/api/v1/settings/repo-projects/${REPOSITORY}`, { project: PROJECT });
+    // The project's default repository, so its issues resolve to the repository a job's run is
+    // of: the issue's results route takes a job's result only for such an issue.
+    await asPerson("PUT", `/api/v1/settings/repo-projects/${REPOSITORY}`, {
+      project: PROJECT,
+      default: true,
+    });
+    const filed = (await asPerson("POST", "/api/v1/issues", {
+      project: PROJECT,
+      title: "A change a CI job proves",
+      spec: "The server builds at the head of the change's branch.\n",
+    })) as { key: string };
+    await asPerson("POST", `/api/v1/issues/${filed.key}/artifacts`, {
+      name: "verification.md",
+      content: VERIFICATION,
+    });
 
     // One workflow run for each push of a ref at a commit, as GitHub numbers them: the attempts
     // and the legs of one push share its run.
@@ -362,6 +400,7 @@ export async function startCIResultsStack(options: {
       project: PROJECT,
       repository: REPOSITORY,
       person: PERSON,
+      issue: filed.key,
       resultSession: RESULT_SESSION,
       resultPrincipal: RESULT_PRINCIPAL,
       jobEnv(run: JobRun): Record<string, string> {
@@ -396,6 +435,9 @@ export async function startCIResultsStack(options: {
           }
         }
         github.setFiles(REPOSITORY, sha, SPEC_DIR, files);
+      },
+      setBranch(branch: string, sha: string): void {
+        github.setBranch(REPOSITORY, branch, sha);
       },
       async results(commit: string): Promise<StoredResult[]> {
         const read = (await asPerson(
@@ -474,14 +516,24 @@ async function wholeStack(): Promise<void> {
     };
     const job = stack.jobEnv(run);
     const forged = stack.jobEnv({ ...run, checkRunId: 2, forged: true });
+    // A run of the same job on a push of the issue's own branch, whose head is the tested commit.
+    const branch = `legion/${stack.issue}`;
+    stack.setBranch(branch, tested);
+    const onBranch = stack.jobEnv({ ...run, ref: `refs/heads/${branch}`, checkRunId: 3 });
+    const asSession = `env -u AGENT_SECRETS_URL DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN='${stack.dispatch.token}'`;
     const result = `${CLI} result --project ${stack.project} --verdict pass`;
     console.log("# One job of a push run of local-org/local-repo at the commit below:");
     for (const [name, value] of Object.entries(job)) console.log(`export ${name}='${value}'`);
     console.log("# The try line: one stored result, then a session's read of it:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${tested}`);
+    console.log(`${asSession} ${CLI} results --project ${stack.project} --commit ${tested}`);
     console.log(
-      `env -u AGENT_SECRETS_URL DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN='${stack.dispatch.token}' ${CLI} results --project ${stack.project} --commit ${tested}`
+      `# The issue's try line: the job's result of ${CI_CHECK}, which its ci_check names, on a push of ${branch}, then a session's read of it:`
     );
+    console.log(
+      `ACTIONS_ID_TOKEN_REQUEST_TOKEN='${onBranch.ACTIONS_ID_TOKEN_REQUEST_TOKEN}' ${CLI} result --issue ${stack.issue} --check ${CI_CHECK} --verdict pass --commit ${tested}`
+    );
+    console.log(`${asSession} ${CLI} results --issue ${stack.issue}`);
     console.log("# Each control is refused:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${other}   # another commit`);
     console.log(`${result} --check ${OTHER_JOBS_CHECK} --commit ${tested}   # another job`);

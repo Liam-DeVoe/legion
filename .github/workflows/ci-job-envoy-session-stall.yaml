@@ -114,6 +114,13 @@ jobs:
       - name: A CI job's result through the real broker and a real Dispatch
         run: bun test src/__tests__/ci-results.live.test.ts
         working-directory: packages/envoy-client
+      # The same path for a check of an issue's Verification document that its ci_check gives to
+      # the job: the job records the check's result on a push of the issue's branch with its own
+      # identity, and `dispatch results --issue` prints it at the head of that branch, with the
+      # in-toto statement of its run in the JSON (packages/envoy-client/test/ci-results-stack.ts).
+      - name: A CI job's result of a check its ci_check names, through the real broker and a real Dispatch
+        run: bun test src/__tests__/ci-check-results.live.test.ts
+        working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

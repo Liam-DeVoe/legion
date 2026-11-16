@@ -558,11 +558,12 @@ test("the worker skill tells a role to read the pull request's head after its ow
 });
 
 // dispatch://INFRA-3204: a check carrying `ci_check` is proved by the CI run it names, so no role
-// runs it or records its result, and `dispatch results` derives that result. The worker skill's
-// page holds the whole rule, and each skill text that orders a check run, recorded or judged, or
-// lists a check's attributes, carries the exception in one phrase, counted once per file, as does
-// the worker prompt's copy of the push step above. The role prompt parts are pinned in
-// roles_test.go `TestEveryRolePartCarriesItsGuidanceRule`, and `dispatch-writing-specs` in the
+// runs it or records its result, and its results come from CI: the one `dispatch results` derives
+// from that run, and each one a run of its CI job records through the secrets broker. The worker
+// skill's page holds the whole rule, and each skill text that orders a check run, recorded or
+// judged, or lists a check's attributes, carries the exception in one phrase, counted once per
+// file, as does the worker prompt's copy of the push step above. The role prompt parts are pinned
+// in roles_test.go `TestEveryRolePartCarriesItsGuidanceRule`, and `dispatch-writing-specs` in the
 // Envoy plugin's guard.
 test("each text that orders a check run or recorded leaves out a check CI proves", () => {
   countedOncePerFile("check carrying `ci_check` is CI's", [
@@ -578,15 +579,15 @@ test("each text that orders a check run or recorded leaves out a check CI proves
 });
 
 // The same rule where a text orders a check's evidence judged or recorded. Retro's trigger is met
-// by a derived result and names R5's three cases: a derived fail, or a run that concluded and
-// proved nothing, goes back to implementing; a run not concluded is waited for; and a name no run
-// answers is the architect's finding. The architect's last round records only the checks with no
-// `ci_check`, and the tester reads a `ci_check` job as that check's evidence, which its prompt's
-// core part says too.
-test("a derived result satisfies the passages that judge or record a check's evidence", () => {
+// by a pass from CI, the derived result or one its CI job recorded, and names R5's three cases: a
+// derived fail, or a run that concluded and proved nothing, goes back to implementing; a run not
+// concluded is waited for; and a name no run answers is the architect's finding. The architect's
+// last round records only the checks with no `ci_check`, and the tester reads a `ci_check` job as
+// that check's evidence, which its prompt's core part says too.
+test("a result from CI satisfies the passages that judge or record a check's evidence", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
   expect(retro).toContain(
-    "A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`."
+    "A `ci_check` check has no pass standing at that head when no result its CI job recorded is a pass there, and its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`."
   );
   expect(retro).toContain(
     "Wait for a run that has not concluded, and read again where GitHub could not be read."

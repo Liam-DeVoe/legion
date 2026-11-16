@@ -293,6 +293,10 @@ test("a check names what the server compared its results with", async () => {
       compared_with: [],
       pass_stands: { answer: "no" },
     }),
+    // A CI job pushed its issue's branch, and its pass stands at that branch's head.
+    check("c-pushed", [result({ id: "result-3" })], {
+      compared_with: [{ branch: "legion/CORE-1", commit, kind: "branch_head" }],
+    }),
   ]);
   restore = () => {
     getIssueResults.mockRestore();
@@ -308,6 +312,7 @@ test("a check names what the server compared its results with", async () => {
   expect(compared[0]).toContain("Dispatch read it");
   // A check that compared with nothing says why instead of showing a blank.
   expect(compared[1]).toBe("This issue holds no pull request and no branch.");
+  expect(compared[2]).toBe(`the head of branch legion/CORE-1 ${commit}`);
 });
 
 test("a result shows how it ran, what was seen, its counts, its role and its screenshots", async () => {

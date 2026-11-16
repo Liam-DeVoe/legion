@@ -72,6 +72,12 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       verdict: "pass",
       commit: "1111111111111111111111111111111111111111",
     }),
+  recordCIJobResult: (client) =>
+    client.recordCIJobResult("DSP-1", {
+      check: "c1",
+      verdict: "pass",
+      commit: "1111111111111111111111111111111111111111",
+    }),
   issueResults: (client) => client.issueResults("DSP-1"),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),

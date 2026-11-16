@@ -9,23 +9,27 @@ cites is in cybermonklabs/legion.
 A `check` block can carry `ci_check`: the name of the GitHub check run that proves the check at
 the head. Such a check has no `run`, its `when` is `before_merge`, and it names its
 `negative_control`. Through the documents API, Dispatch refuses a write that breaks one of these
-rules, or that gives `ci_check` to a check that already holds a recorded result. A write in the
-live editor lands, and the next settlement removes that `ci_check` and names the rule in the
+rules, or that gives `ci_check` to a check that already holds a result a role recorded. A write in
+the live editor lands, and the next settlement removes that `ci_check` and names the rule in the
 issue's Activity.
 
 ## No role runs it
 
 A check carrying `ci_check` is CI's. No role runs its work in its own pod, and no role records a
-result for it: Dispatch refuses such a result with `409 CHECK_PROVED_BY_CI`. The CI job stays a
-job like any other, and the rules for a red CI job apply to it. `dispatch results --issue <issue>`
-reads the named check run at the head of the issue's pull request. It prints the one result it
-derives from that run, the same `A pass stands:` line a recorded check gets, and the line for the
-pull request body:
+result for it: Dispatch refuses a role's result with `409 CHECK_PROVED_BY_CI`, and takes the result
+of a run of its CI job. The CI job stays a job like any other, and the rules for a red CI job apply
+to it. `dispatch results --issue <issue>` reads the named check run at the head of the issue's pull
+request and derives one result from it. A run of the named job on a push of the change's branch
+also records its own result, at the commit it tested, through the secrets broker. The command
+prints the derived result, the same `A pass stands:` line a recorded check gets, and the line for
+the pull request body. Then it prints each result that the job recorded, as a recorded result
+prints, with `on branch <branch>` after `by ci`:
 
 ```
 - <id> (before_merge): <verdict> at <sha> by ci (CI run <name>, <conclusion>), <currency>. <text>
   A pass stands: <yes, from ci | no | not known>.
   Pull request line: - Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <words>
+  - <verdict> by ci on branch <branch> at <sha>. <where that commit stands>. …
 ```
 
 When the run gives no result, the command prints the case in place of a verdict:
@@ -34,6 +38,7 @@ When the run gives no result, the command prints the case in place of a verdict:
 - <id> (before_merge): no result: <detail> <text>
   A pass stands: <no | not known>.
   Pull request line: - Check <id> (before_merge): CI run <name> has no result (<case>)
+  - <verdict> by ci on branch <branch> at <sha>. <where that commit stands>. …
 ```
 
 The case is one of these:
@@ -43,6 +48,9 @@ The case is one of these:
 - `no_head`: Dispatch holds no pull request head of the issue.
 - `neutral`, `skipped` or `cancelled`: the run concluded and proved nothing.
 
+An issue with no pull request (`no_head`) prints no `Pull request line:`, and a pass that the job
+recorded stands at the head of its branch.
+
 The case `github_unreadable` means that Dispatch could not read GitHub. That read is neither a
 pass nor a fail, and the next read tries again. The tester and the reviewer treat it as a run that
 is still going (below). Each read is made at the head, so a push needs no write from any role.
@@ -51,8 +59,9 @@ is still going (below). Each read is made at the head, so a push needs no write 
 
 Read `dispatch results --issue <issue>` first. Then run and record only the checks that carry no
 `ci_check`, and the proofs on a real surface that CI cannot make. A check with `ci_check` needs no
-pass from the implementer. It is an entry in `failures` only when its derived result is a fail, or
-its run concluded `skipped`, `neutral` or `cancelled`.
+pass from the implementer. It is an entry in `failures` only when no pass of it stands at that head
+(its `A pass stands:` line), and its derived result is a fail, or its run concluded `skipped`,
+`neutral` or `cancelled`.
 
 ## The `Checks` line
 

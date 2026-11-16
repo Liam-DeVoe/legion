@@ -563,10 +563,12 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "Findings cite the file and the symbol, or text quoted from it."},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
-		// role runs it or records its result, and `dispatch results` derives that result
-		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or
-		// judged, or lists a check's attributes, carries the exception. The tester's and the
-		// implementer's role parts point at the worker skill's page, which a core part may not name.
+		// role runs it or records its result, and its results come from CI: the one `dispatch
+		// results` derives from that run, and each one a run of its CI job records through the
+		// secrets broker (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check
+		// run, recorded or judged, or lists a check's attributes, carries the exception. The
+		// tester's and the implementer's role parts point at the worker skill's page, which a core
+		// part may not name.
 		{"core/tester.md", ciCheckRule},
 		{"core/implementer.md", ciCheckRule},
 		{"core/reviewer.md", ciCheckRule},

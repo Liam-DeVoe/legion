@@ -1421,6 +1421,27 @@ export class DispatchClient {
     );
   }
 
+  /**
+   * Records a CI job's result of one check of an issue's Verification document whose ci_check
+   * names the job, under the job's results token, and answers it beside the pull-request body
+   * line it implies. The body is built from the four members the route takes from a results
+   * token, so nothing else a caller's object carries reaches the wire: Dispatch takes who
+   * recorded the result, the commit's branch and the job from the credential and from GitHub.
+   * JSON leaves out an `observed` that is undefined.
+   */
+  async recordCIJobResult(
+    issue: string,
+    input: Pick<RecordCheckResultInput, "check" | "commit" | "verdict" | "observed">
+  ): Promise<CheckResultRecorded> {
+    const { check, commit, verdict, observed } = input;
+    const body = { check, commit, verdict, observed };
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      body
+    );
+  }
+
   /** Each check of an issue's Verification document with every result recorded against it, and
    *  for a check CI proves the one result Dispatch derives from its check run.
    *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
