@@ -12,7 +12,7 @@ import {
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { anchorQuote } from "./decision-review";
+import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -259,10 +259,17 @@ function ChangeComposer({
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
-    write: (input: { body: string; quote: string }, bounds) =>
+    write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
       api.createComment(
         issueKey,
-        { anchor: { artifact: documentId, quote: input.quote }, body: input.body },
+        {
+          anchor: {
+            artifact: documentId,
+            occurrence: input.anchor.occurrence,
+            quote: input.anchor.quote,
+          },
+          body: input.body,
+        },
         bounds
       ),
     // The change is a comment of the issue's, and the comments read is what tells the page a
@@ -305,7 +312,15 @@ function ChangeComposer({
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        send.mutate({ body, quote });
+        // Which of the quote's places in the decisions document is this decision's own, read
+        // here, at the send, from the decisions read: `changeAnchor` reads every decision above
+        // this one, which no render of a row pays for (decision 92).
+        const anchor = changeAnchor(
+          decision,
+          queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+            ?.decisions
+        );
+        send.mutate({ anchor: anchor ?? { occurrence: 0, quote }, body });
       }}
     >
       <blockquote
