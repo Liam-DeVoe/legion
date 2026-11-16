@@ -646,10 +646,12 @@ RULES = {
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
     f"{ENVOY}/cmd/spec-check/main_test.go": reads(
         (f"{ENVOY}/internal/dispatch/specgraph/testdata/**",
-         "cmd/spec-check/main_test.go:382 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
-         "lists at :68 and its built binary reads")),
+         "cmd/spec-check/main_test.go:446 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
+         "lists at :69 and its built binary reads")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
                                                             "internal/broker/config/config_test.go:1372,1402 Load the URL whose sslrootcert is this bundle (rdsBundle :1332), which pgx reads to build the root pool")),
+    f"{ENVOY}/internal/broker/store/storetest/storetest_test.go": [
+        run(f"{ENVOY}/internal/broker/store/storetest", ["."], "internal/broker/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:56")),
     f"{ENVOY}/internal/contracts/dedupe_test.go": reads((f"{FIX}/dedupe-keys.json", "internal/contracts/dedupe_test.go:14")),
     f"{ENVOY}/internal/contracts/golden_test.go": reads(
@@ -2636,9 +2638,9 @@ GATES = [
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
     # they are split out), with the tests of the architecture-note and spec-file rules and their
     # commands, the note check over this repository's notes through the composite action, the
-    # spec-file check over its spec directory through the other one, and the guard that no CI file
-    # compares the spec files with the approved spec. Its gofmt step reads the whole module, so no
-    # closure stands for it.
+    # spec-file check over its spec directory through the other one, and the guard that no CI
+    # file compares the spec files with the approved spec. Its gofmt step reads the whole module,
+    # so no closure stands for it.
     gate("envoy_go_checks", "envoy-go-checks", runs=[
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),

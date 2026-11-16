@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,8 +59,9 @@ func TestFixtureHistoryListsBothPathsOfAMove(t *testing.T) {
 }
 
 // ReadFixtureHistory reads each history.json of the scenarios, in the layout that the repository's
-// JSON formatter gives them, and refuses a field it does not know, text after the history, a commit
-// with no id and an id on two commits.
+// JSON formatter gives them, and refuses what the strict JSON reader refuses (a field it does not
+// know, one written in other letters or two times, a byte that is not UTF-8, text after the
+// history), a commit with no id and an id on two commits. A path of a tree keeps its own letters.
 func TestReadFixtureHistory(t *testing.T) {
 	t.Parallel()
 	paths, err := filepath.Glob("testdata/scenarios/*/history.json")
@@ -77,16 +79,24 @@ func TestReadFixtureHistory(t *testing.T) {
 		}
 	}
 	for text, want := range map[string]string{
-		`{"commits":[{"id":"c1","files":{},"tree":"x"}]}`:  `unknown field "tree"`,
-		`{"commits":[],"branches":[]}`:                     `unknown field "branches"`,
-		`{"commits":[{"id":"c1","files":{}}]} {}`:          "text after the history",
-		`{"commits":[{"files":{"a":"1"}}]}`:                "a commit has no id",
-		`{"commits":[{"id":"c1"},{"id":"c1","files":{}}]}`: `commit "c1" is in the history two times`,
+		`{"commits":[{"id":"c1","files":{},"tree":"x"}]}`:           `member "/commits/0/tree" is not in the format`,
+		`{"commits":[],"branches":[]}`:                              `member "/branches" is not in the format`,
+		`{"commits":[{"ID":"c1","files":{}}]}`:                      `member "/commits/0/ID" is not in the format`,
+		`{"commits":[{"id":"c1","id":"c2","files":{}}]}`:            `member "/commits/0/id" is in one object two times`,
+		`{"commits":[{"id":"c1","files":{"a.md":"1","a.md":"2"}}]}`: `member "/commits/0/files/a.md" is in one object two times`,
+		"{\"commits\":[{\"id\":\"c\xff1\",\"files\":{}}]}":          "it is not UTF-8",
+		`{"commits":[{"id":"c1","files":{}}]} {}`:                   "text after the JSON value",
+		`{"commits":[{"files":{"a":"1"}}]}`:                         "a commit has no id",
+		`{"commits":[{"id":"c1"},{"id":"c1","files":{}}]}`:          `commit "c1" is in the history two times`,
 	} {
 		_, err := ReadFixtureHistory(strings.NewReader(text))
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("ReadFixtureHistory(%s): %v, want %q", text, err, want)
 		}
+	}
+	h, err := ReadFixtureHistory(strings.NewReader(`{"commits":[{"id":"c1","files":{"AGENTS.md":"1","docs/README.md":"1"}}]}`))
+	if err != nil || !slices.Equal(slices.Sorted(maps.Keys(h.Commits[0].Files)), []string{"AGENTS.md", "docs/README.md"}) {
+		t.Errorf("ReadFixtureHistory of paths in capitals: %+v, %v; want both paths as written", h, err)
 	}
 }
 

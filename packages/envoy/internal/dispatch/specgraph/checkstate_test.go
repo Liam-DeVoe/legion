@@ -44,6 +44,12 @@ var (
 		Claim:          "A message that production stores before a restart reaches its session after the restart.",
 		ProcedureText:  "The program stores one message in production, starts the listener again and reads the messages of the session.\nIt must find the message one time.",
 		FailingExample: "A listener that deletes its stored messages when it starts."}
+	checkStateGraphProgram = Check{ID: "the-graph-keeps-each-delivery", Serves: "a-stored-message-survives-a-restart",
+		Subject: SubjectGraph, Procedure: ProcedureProgram,
+		Test:           &Test{Runner: "go", Selector: "github.com/sjawhar/envoy/cmd/listener TestTheGraphKeepsEachDelivery", Job: "graph-checks"},
+		Claim:          "Each message record of the graph keeps its delivery record after a restart.",
+		ProcedureText:  "The program reads each message record of the graph after a restart.\nIt must find a delivery record for each one.",
+		FailingExample: "A copy of the graph with one message record that has no delivery record."}
 )
 
 // checkStateTie is the tie of C and of Q: the files that the test of C reads.
@@ -177,6 +183,29 @@ func TestCheckState(t *testing.T) {
 		}, want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
 		{name: "v-state 15, no author: the fault names no author", change: func(c *checkCase) { c.Results[1].FaultAuthor = "" },
 			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		// R9: "An agent that did not write the test writes the fault." A failing example whose record
+		// names no author of the test cannot show that, so it does not count: the check reads unknown,
+		// as it does when the author of the test wrote the fault (the row above) or the fault names no
+		// author. A complete record of another agent counts.
+		{name: "v-state 15, no author of the test: the record names no test authors", change: func(c *checkCase) { c.Results[1].TestAuthors = nil },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		{name: "v-state 15, no author of the test: the list of test authors is empty", change: func(c *checkCase) { c.Results[1].TestAuthors = []string{} },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		{name: "v-state 15, no author of the test: the list of test authors holds only an empty name", change: func(c *checkCase) { c.Results[1].TestAuthors = []string{""} },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		{name: "v-state 15, a complete record: an agent that wrote no part of the test wrote the fault", change: func(c *checkCase) {
+			c.Results[1].TestAuthors = []string{"author-a", "author-c"}
+		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		{name: "v-state 15, production: the failing example of a program check of production names no author of the test", change: func(c *checkCase) {
+			c.productionProgram("docs/x.md", "c1")
+			c.Results[3].TestAuthors = nil
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "fault_by_test_author"}},
+		// An author of only white space names nobody, by the test that Validate reads a missing text
+		// with (hasWord).
+		{name: "v-state 15, no author of the test: the one test author is only white space", change: func(c *checkCase) { c.Results[1].TestAuthors = []string{" "} },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		{name: "v-state 15, no author: the author of the fault is only white space", change: func(c *checkCase) { c.Results[1].FaultAuthor = " " },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
 		{name: "v-state 16: the emptied test passes on the fault", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/restart_test.go")
 			c.Subject.Commit = "c2"
@@ -195,6 +224,57 @@ func TestCheckState(t *testing.T) {
 			}
 			c.Results = c.Results[:1]
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		// R9: "And a check whose current text has no failing example that failed when it should."
+		// A text that names no failing example has none: the pilot builds the approved spec from the
+		// store and calls CheckStates with no reader, so CheckStates itself reads it unknown.
+		{name: "R9: the approved text of the check names no failing example, whatever its results", change: func(c *checkCase) {
+			bare := checkStateCheck
+			bare.FailingExample = ""
+			c.replace(bare)
+		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		{name: "R9: the approved text of the check names no failing example, and it has no result", change: func(c *checkCase) {
+			bare := checkStateCheck
+			bare.FailingExample = ""
+			c.replace(bare)
+			c.Results = nil
+		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		{name: "R9: the approved text of the check names no failing example, and its run fails", change: func(c *checkCase) {
+			bare := checkStateCheck
+			bare.FailingExample = ""
+			c.replace(bare)
+			c.Results[0].Outcome = OutcomeFail
+		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		// A failing example of no letter and no digit is a missing one, by the rule that Validate
+		// reads it with (TestTheTreeAndTheDerivationReadOneMissingFailingExample).
+		{name: "R9: the approved failing example of the check is a text of no letter and no digit", change: func(c *checkCase) {
+			bare := checkStateCheck
+			bare.FailingExample = "-"
+			c.replace(bare)
+		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		// D1: the derivation gives no clean state for a tree that the rules refuse, since the pilot
+		// calls it with no reader. A check that Validate refuses reads unknown, refused, with the
+		// rule as the detail, whatever its results (TestNoTreeThatTheRulesRefuseReadsTrueOrMet).
+		{name: "D1: a program check that names no job", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Test.Job = "" })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "no-job"}},
+		{name: "D1: a program check that names no test", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Test = nil })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "no-test"}},
+		{name: "D1: a check whose claim has no letter and no digit", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Claim = "-" })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "no-claim"}},
+		{name: "D1: a check of a procedure that is not program, query or agent", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Procedure = "script" })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-procedure"}},
+		{name: "D1: a check of a subject that is not code, production or graph", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Subject = "staging" })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-subject"}},
+		{name: "D1: a problem of a term in the file of the check", change: func(c *checkCase) {
+			c.files["spec.md"] = append(c.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-term"}},
+		{name: "D1: a problem of a term in a file that holds no check and no statement", change: func(c *checkCase) {
+			c.files["terms.md"] = []specNode{Term{ID: "message", Name: "message", Definition: "-"}}
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-term"}},
 		{name: "v-state 18: a merge changes a file that the test reads", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/testdata/a.json")
 			c.Subject.Commit = "c2"
@@ -310,9 +390,9 @@ func TestCheckState(t *testing.T) {
 				productionRun(checkStateProduction, "d2", OutcomePass, checkStateRun.Add(2*time.Hour)),
 				Result{Check: checkStateProduction.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)})
 		}, want: CheckState{ID: checkStateProduction.ID}, absent: true},
-		{name: "graph: the newest transaction decides", change: func(c *checkCase) {
+		{name: "graph: the transaction of the subject decides", change: func(c *checkCase) {
 			c.add(checkStateGraph)
-			c.Subject = Point{Commit: "c9", Deploy: "d2"}
+			c.Subject = Point{Commit: "c9", Deploy: "d2", GraphTx: "tx2"}
 			c.Results = append(c.Results,
 				Result{Check: checkStateGraph.ID, Kind: ResultRun, Outcome: OutcomePass, GraphTx: "tx1", At: checkStateRun.Add(time.Hour)},
 				Result{Check: checkStateGraph.ID, Kind: ResultRun, Outcome: OutcomeFail, GraphTx: "tx2", At: checkStateRun.Add(2 * time.Hour)},
@@ -364,7 +444,7 @@ func TestCheckStatesJudgesTheApprovedChecks(t *testing.T) {
 	s := newCheckCase(t)
 	s.add(checkStateGraph)
 	s.files["spec.md"] = append(s.files["spec.md"], checkStateProduction) // in the files, never approved
-	s.Subject = Point{Commit: "c1", Deploy: "d1"}
+	s.Subject = Point{Commit: "c1", Deploy: "d1", GraphTx: "tx1"}
 	earlier := checkStateCheck
 	earlier.Claim = "A message that the listener stores before a restart reaches its session."
 	s.approveEarlier(checkStateApproved.Add(-48*time.Hour), earlier)
@@ -376,6 +456,274 @@ func TestCheckStatesJudgesTheApprovedChecks(t *testing.T) {
 	}
 	if !slices.Equal(states, want) {
 		t.Errorf("CheckStates:\n got %+v\nwant %+v", states, want)
+	}
+}
+
+// R9: "No setting makes the failing example optional", and a check "whose current text has no
+// failing example that failed when it should" reads unknown. The rules of the tree and the
+// derivation read a missing failing example by one rule: Validate refuses the check with
+// no-failing-example exactly when CheckStates reads it unknown, no_failing_example, whatever its
+// results. Each row is the base of TestCheckState, a pass and a caught fault at c1, with the failing
+// example of C's text, in the files and in the approved spec, replaced by the row's text.
+func TestTheTreeAndTheDerivationReadOneMissingFailingExample(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name, text string
+		missing    bool
+	}{
+		{"no text", "", true},
+		{"a dash", "-", true},
+		{"marks of punctuation", "… ?!", true},
+		{"a format character", "\u200b", true},
+		{"a digit", "0", false},
+		{"a sentence", checkStateCheck.FailingExample, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCheckCase(t)
+			c := checkStateCheck
+			c.FailingExample = row.text
+			s.replace(c)
+			refused := slices.ContainsFunc(Validate(s.parse(), Options{}), func(p Problem) bool {
+				return p.Node == c.ID && p.Rule == "no-failing-example"
+			})
+			if refused != row.missing {
+				t.Errorf("Validate refuses the failing example %q with no-failing-example: %t, want %t", row.text, refused, row.missing)
+			}
+			want := CheckState{ID: c.ID, State: "true", Reason: "passed", From: "c1"}
+			if row.missing {
+				want = CheckState{ID: c.ID, State: "unknown", Reason: "no_failing_example"}
+			}
+			if states := CheckStates(s.input()); !slices.Contains(states, want) {
+				t.Errorf("CheckStates with the failing example %q:\n got %+v\nwant %+v", row.text, states, want)
+			}
+		})
+	}
+}
+
+// R7: "The procedure is the text of the check and the code that runs it, so a change to either ends
+// the standing of earlier results." A run of a program check of production or of the graph records
+// the commit of the test that ran (TestCommit), and it counts only while no file of the check's tie
+// differs between that commit and the subject's, as its failing example does (R9: "its test, as it
+// is now"). A failing example that the new test caught does not make a run of the old test count.
+// Each row: subject c2 under deploy d2, where c2 differs from c1 in changed; a pass of the row's
+// check at the test of runCommit, and a failing example that the test at c2 caught (author-b's fault
+// in author-a's test); C taken out, so that L and T follow the row's check alone.
+func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
+	t.Parallel()
+	listenerTest := "packages/envoy/cmd/listener/restart_test.go"
+	for _, row := range []struct {
+		name               string
+		check              Check
+		changed, runCommit string
+		want               CheckState // ID "" is the row's check
+		statements         string     // the state of L and of T
+	}{
+		{"control: production, c2 changes a file outside the tie", checkStateProductionProgram, "docs/x.md", "c1",
+			CheckState{State: "true", Reason: "passed", From: "d2"}, "met"},
+		{"production, c2 changes the test, and the pass ran the test of c1", checkStateProductionProgram, listenerTest, "c1",
+			CheckState{State: "unknown", Reason: "subject_moved"}, "unknown"},
+		{"control: production, c2 changes the test, and the pass ran the test of c2", checkStateProductionProgram, listenerTest, "c2",
+			CheckState{State: "true", Reason: "passed", From: "d2"}, "met"},
+		{"production, the pass names no commit of its test", checkStateProductionProgram, "docs/x.md", "",
+			CheckState{State: "unknown", Reason: "subject_moved"}, "unknown"},
+		{"control: the graph, c2 changes a file outside the tie", checkStateGraphProgram, "docs/x.md", "c1",
+			CheckState{State: "true", Reason: "passed", From: "tx1"}, "met"},
+		{"the graph, c2 changes the test, and the pass ran the test of c1", checkStateGraphProgram, listenerTest, "c1",
+			CheckState{State: "unknown", Reason: "subject_moved"}, "unknown"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCheckCase(t)
+			s.add(row.check)
+			s.Ties[row.check.ID] = s.Ties[s.check]
+			s.commit("c2", "c1", row.changed)
+			s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
+			run := Result{Check: row.check.ID, Kind: ResultRun, Outcome: OutcomePass, Job: row.check.Test.Job, TestCommit: row.runCommit, At: checkStateRun.Add(time.Hour)}
+			if row.check.Subject == SubjectGraph {
+				run.GraphTx = "tx1"
+			} else {
+				run.Deploy = "d2"
+			}
+			s.Results = append(s.Results, run, Result{Check: row.check.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
+				At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+			want := row.want
+			want.ID = row.check.ID
+			deriveAlone(t, s, want, row.statements)
+		})
+	}
+}
+
+// R12: "Each leg of a matrix reports its own result, and no leg replaces the result of another."
+// R9: "When a check has no result that counts after a run of its job ends, it reads unknown." A
+// program check of production runs in the legs of its job's matrix, as a code check does: the newest
+// result of each leg counts, a newer result replaces an older one only in its own leg, a leg whose
+// run of the job ended with no result that counts reads unknown, and legs whose newest results
+// disagree read unknown. Each row: Q at subject c2 under deploy d2, where c2 differs from c1 outside
+// the tie; the runs of legs linux and arm of Q's job ended at c2; the row's runs under d2 at the
+// test of c2, and a failing example that the test at c2 caught; C taken out.
+func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
+	t.Parallel()
+	q := checkStateProductionProgram
+	run := func(leg string, outcome Outcome, after time.Duration) Result {
+		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d2", Job: q.Test.Job, Leg: leg, TestCommit: "c2", At: checkStateRun.Add(after)}
+	}
+	for _, row := range []struct {
+		name       string
+		runs       []Result
+		want       CheckState
+		statements string
+	}{
+		{"control: leg linux and leg arm pass", []Result{run("linux", OutcomePass, time.Hour), run("arm", OutcomePass, time.Hour)},
+			CheckState{State: "true", Reason: "passed", From: "d2"}, "met"},
+		{"leg linux passes after leg arm failed", []Result{run("arm", OutcomeFail, time.Hour), run("linux", OutcomePass, 2*time.Hour)},
+			CheckState{State: "unknown", Reason: "disagree", Disagree: true}, "unknown"},
+		{"leg linux passes, and the run of leg arm ended with no result", []Result{run("linux", OutcomePass, time.Hour)},
+			CheckState{State: "unknown", Reason: "ci_fault", Detail: "arm"}, "unknown"},
+		{"control: in leg arm a newer pass replaces a failure, and leg linux passes", []Result{
+			run("arm", OutcomeFail, time.Hour), run("arm", OutcomePass, 2*time.Hour), run("linux", OutcomePass, 2*time.Hour)},
+			CheckState{State: "true", Reason: "passed", From: "d2"}, "met"},
+		{"control: both legs fail", []Result{run("linux", OutcomeFail, time.Hour), run("arm", OutcomeFail, time.Hour)},
+			CheckState{State: "false", Reason: "failed", From: "d2"}, "not_met"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCheckCase(t)
+			s.add(q)
+			s.commit("c2", "c1", "docs/x.md")
+			s.Subject = Point{Commit: "c2", Deploy: "d2"}
+			s.JobRuns = []JobRun{{Job: q.Test.Job, Leg: "linux", Commit: "c2", Ended: true}, {Job: q.Test.Job, Leg: "arm", Commit: "c2", Ended: true}}
+			s.Results = append(append(s.Results, row.runs...), Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
+				At: checkStateRun.Add(5 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+			want := row.want
+			want.ID = q.ID
+			deriveAlone(t, s, want, row.statements)
+		})
+	}
+}
+
+// R7: "A subject that cannot change, such as a commit, holds one answer. A pass and a failure on one
+// such subject and one procedure make the state unknown." R13: a query "reads the graph at one
+// transaction", and one transaction is such a subject. A pass and a failure at one transaction read
+// unknown in either order, and a later pass does not end the report, while a newer transaction
+// starts a new answer. Each row: G at subject c1 under deploy d2 and at the transaction of the row's
+// last run, the row's runs, and a caught failing example; C taken out.
+func TestOneTransactionOfTheGraphHoldsOneAnswer(t *testing.T) {
+	t.Parallel()
+	g := checkStateGraph
+	run := func(tx string, outcome Outcome, after time.Duration) Result {
+		return Result{Check: g.ID, Kind: ResultRun, Outcome: outcome, GraphTx: tx, At: checkStateRun.Add(after)}
+	}
+	for _, row := range []struct {
+		name       string
+		runs       []Result
+		want       CheckState
+		statements string
+	}{
+		{"control: a failure at tx1, then a pass at tx2", []Result{run("tx1", OutcomeFail, time.Hour), run("tx2", OutcomePass, 2*time.Hour)},
+			CheckState{State: "true", Reason: "passed", From: "tx2"}, "met"},
+		{"a failure at tx1, then a pass at tx1", []Result{run("tx1", OutcomeFail, time.Hour), run("tx1", OutcomePass, 2*time.Hour)},
+			CheckState{State: "unknown", Reason: "disagree", Disagree: true}, "unknown"},
+		{"a pass at tx1, then a failure at tx1", []Result{run("tx1", OutcomePass, time.Hour), run("tx1", OutcomeFail, 2*time.Hour)},
+			CheckState{State: "unknown", Reason: "disagree", Disagree: true}, "unknown"},
+		{"control: a pass at tx1, then a failure at tx2", []Result{run("tx1", OutcomePass, time.Hour), run("tx2", OutcomeFail, 2*time.Hour)},
+			CheckState{State: "false", Reason: "failed", From: "tx2"}, "not_met"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCheckCase(t)
+			s.add(g)
+			s.Subject = Point{Commit: "c1", Deploy: "d2", GraphTx: row.runs[len(row.runs)-1].GraphTx}
+			s.Results = append(append(s.Results, row.runs...),
+				Result{Check: g.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(5 * time.Minute)})
+			want := row.want
+			want.ID = g.ID
+			deriveAlone(t, s, want, row.statements)
+		})
+	}
+}
+
+// R13: a query "reads the graph at one transaction". R7: "A result counts only for the procedure
+// that ran it and for the subject that it read." The subject names its transaction of the graph, as
+// it names its deploy, and a result of a graph check counts only at that transaction: a result at
+// another one is of a subject that moved, whichever transaction is newer or was recorded last. A
+// subject that names no transaction judges no check of the graph (R10: "Only the checks that read
+// the subject count"). Each row: the row's check of the graph, its runs and a failing example that
+// the test at c2 caught, at subject c2 under deploy d2 and the row's transaction, where c2 differs
+// from c1 in the test of the program check G2; C taken out.
+func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
+	t.Parallel()
+	g, g2 := checkStateGraph, checkStateGraphProgram
+	run := func(c Check, tx, testCommit string, outcome Outcome, after time.Duration) Result {
+		r := Result{Check: c.ID, Kind: ResultRun, Outcome: outcome, GraphTx: tx, TestCommit: testCommit, At: checkStateRun.Add(after)}
+		if c.Test != nil {
+			r.Job = c.Test.Job
+		}
+		return r
+	}
+	for _, row := range []struct {
+		name       string
+		check      Check
+		tx         string // the transaction of the subject
+		runs       []Result
+		want       CheckState // ID "" is the row's check
+		statements string
+		absent     bool // the check has no state at the subject
+	}{
+		{name: "control: a pass at tx1, the transaction of the subject", check: g, tx: "tx1",
+			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)},
+			want: CheckState{State: "true", Reason: "passed", From: "tx1"}, statements: "met"},
+		{name: "a failure at tx2, the transaction of the subject, then a pass at tx1 recorded later", check: g, tx: "tx2",
+			runs: []Result{run(g, "tx2", "", OutcomeFail, time.Hour), run(g, "tx1", "", OutcomePass, 2*time.Hour)},
+			want: CheckState{State: "false", Reason: "failed", From: "tx2"}, statements: "not_met"},
+		{name: "the same runs at subject tx3, which no result read", check: g, tx: "tx3",
+			runs: []Result{run(g, "tx2", "", OutcomeFail, time.Hour), run(g, "tx1", "", OutcomePass, 2*time.Hour)},
+			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
+		{name: "the test of c2 passes at tx1, then the test of c1 fails at tx2, the transaction of the subject", check: g2, tx: "tx2",
+			runs: []Result{run(g2, "tx1", "c2", OutcomePass, time.Hour), run(g2, "tx2", "c1", OutcomeFail, 2*time.Hour)},
+			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
+		{name: "control: the test of c2 passes at tx1, then fails at tx2, the transaction of the subject", check: g2, tx: "tx2",
+			runs: []Result{run(g2, "tx1", "c2", OutcomePass, time.Hour), run(g2, "tx2", "c2", OutcomeFail, 2*time.Hour)},
+			want: CheckState{State: "false", Reason: "failed", From: "tx2"}, statements: "not_met"},
+		{name: "a subject that names no transaction judges no check of the graph", check: g, tx: "",
+			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)}, absent: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCheckCase(t)
+			s.add(row.check)
+			s.Ties[row.check.ID] = s.Ties[s.check]
+			s.commit("c2", "c1", "packages/envoy/cmd/listener/restart_test.go")
+			s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: row.tx}
+			s.Results = append(append(s.Results, row.runs...), Result{Check: row.check.ID, Kind: ResultFailingExample, Outcome: OutcomeFail,
+				TestCommit: "c2", At: checkStateRun.Add(5 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+			if row.absent {
+				s.remove(checkStateCheck.ID)
+				if states := Derive(s.input()).Checks; slices.ContainsFunc(states, func(c CheckState) bool { return c.ID == row.check.ID }) {
+					t.Errorf("the checks: %+v, want no state of %s", states, row.check.ID)
+				}
+				return
+			}
+			want := row.want
+			want.ID = row.check.ID
+			deriveAlone(t, s, want, row.statements)
+		})
+	}
+}
+
+// deriveAlone takes C out of the case, so that L and T follow the other checks alone, derives the
+// state, and fails the test unless the check of want reads want and L and T both read statements.
+func deriveAlone(t *testing.T, s *checkCase, want CheckState, statements string) {
+	t.Helper()
+	s.remove(checkStateCheck.ID)
+	state := Derive(s.input())
+	if i := slices.IndexFunc(state.Checks, func(c CheckState) bool { return c.ID == want.ID }); i < 0 || state.Checks[i] != want {
+		t.Errorf("the checks: %+v\nwant %+v", state.Checks, want)
+	}
+	for _, id := range []string{checkStateLeaf.ID, checkStateTop.ID} {
+		if i := slices.IndexFunc(state.Statements, func(st StatementState) bool { return st.ID == id }); i < 0 || state.Statements[i].State != statements {
+			t.Errorf("statement %s in %+v: want %s", id, state.Statements, statements)
+		}
 	}
 }
 
@@ -519,6 +867,27 @@ func (s *checkCase) replace(n specNode) {
 	s.swap(n)
 }
 
+// refuse puts in the files and in the approved spec C's text with change, a text that the tree
+// rules refuse, and gives each result of C the job of that text, so that only the refusal keeps
+// its results from counting.
+func (s *checkCase) refuse(change func(c *Check)) {
+	s.t.Helper()
+	c := checkStateCheck
+	test := *c.Test
+	c.Test = &test
+	change(&c)
+	s.replace(c)
+	job := ""
+	if c.Test != nil {
+		job = c.Test.Job
+	}
+	for i := range s.Results {
+		if s.Results[i].Check == c.ID {
+			s.Results[i].Job = job
+		}
+	}
+}
+
 // swap puts n in the files in the place of the node with its id.
 func (s *checkCase) swap(n specNode) {
 	for name, nodes := range s.files {
@@ -558,17 +927,19 @@ func (s *checkCase) commit(id, from string, changed ...string) map[string]string
 }
 
 // productionProgram is the case of item 19: the program check Q of production, with a pass under
-// deploy d2 and a failing example that its test, at commit testCommit, caught; subject c2 under
-// deploy d2, where c2 differs from c1 in changed.
+// deploy d2 of its test at c2, and a failing example that its test, at commit testCommit, caught;
+// subject c2 under deploy d2, where c2 differs from c1 in changed.
 func (s *checkCase) productionProgram(changed, testCommit string) {
 	s.t.Helper()
 	q := checkStateProductionProgram
 	s.add(q)
 	s.commit("c2", "c1", changed)
 	s.Subject = Point{Commit: "c2", Deploy: "d2"}
+	run := productionRun(q, "d2", OutcomePass, checkStateRun.Add(time.Hour))
+	run.TestCommit = "c2"
 	fault := Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: testCommit,
 		At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}}
-	s.Results = append(s.Results, productionRun(q, "d2", OutcomePass, checkStateRun.Add(time.Hour)), fault)
+	s.Results = append(s.Results, run, fault)
 }
 
 // specNodeID is the id of a statement or a check.

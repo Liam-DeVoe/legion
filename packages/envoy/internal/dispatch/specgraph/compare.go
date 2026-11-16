@@ -1,5 +1,7 @@
 package specgraph
 
+import "slices"
+
 // The Detail of each rule of Compare.
 const (
 	detailUnapprovedID   = "unapproved-id: the approved spec never held this id"
@@ -16,12 +18,16 @@ type Holding struct {
 }
 
 // Comparison is what Compare finds: Problems, each node of the files in a text that the approved
-// spec does not let them hold, and Holds, for each node of the approved spec that it did not
-// remove, the approved text that the files hold. The comparison passes exactly when Problems is
-// empty.
+// spec does not let them hold; Holds, for each node of the approved spec that it did not remove,
+// the approved text that the files hold; and Removed, the id of each node that the files hold in
+// a text that the approved spec held and that it then removed, sorted and once each. The
+// comparison passes exactly when Problems is empty. Removed and each Holds entry that is not
+// current are differences all the same (R28: "a statement is approved and not built, or the
+// files hold one that is no longer approved"), which the work then removes.
 type Comparison struct {
 	Problems []Problem
 	Holds    map[string]Holding
+	Removed  []string
 }
 
 // Compare compares the spec files at one commit with the approved spec (R2). A node's text is its
@@ -38,8 +44,8 @@ type Comparison struct {
 // change that builds the current one lands, and a text of a removed node until the change that
 // removes it lands (R2: the comparison fails on "a text that the approved spec never held";
 // R22: the person approves a removal "before the work on it starts"). A removed node has no entry
-// in Holds. When the files hold one id two times, Holds takes the first of them that holds an
-// approved text; Validate refuses the doubled id.
+// in Holds; its id is in Removed. When the files hold one id two times, Holds takes the first of
+// them that holds an approved text; Validate refuses the doubled id.
 func Compare(files Tree, a Approved) Comparison {
 	c := Comparison{Holds: map[string]Holding{}}
 	texts := make(map[string]map[string]int, len(a.Nodes)) // id -> digest -> its newest version
@@ -68,6 +74,9 @@ func Compare(files Tree, a Approved) Comparison {
 			detail = detailUnapprovedText
 		case approved.Removed:
 			// The files still hold a text of a removed node; it holds no current text.
+			if !slices.Contains(c.Removed, f.id) {
+				c.Removed = append(c.Removed, f.id)
+			}
 		case !c.Holds[f.id].Present:
 			c.Holds[f.id] = Holding{Present: true, Version: version, Current: version == approved.Versions[len(approved.Versions)-1].Version}
 		}
@@ -76,5 +85,6 @@ func Compare(files Tree, a Approved) Comparison {
 		}
 	}
 	SortProblems(c.Problems)
+	slices.Sort(c.Removed)
 	return c
 }

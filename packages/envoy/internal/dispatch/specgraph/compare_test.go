@@ -207,6 +207,11 @@ func TestAChangeThatLeavesARemovedStatementPasses(t *testing.T) {
 					t.Errorf("Holds[%s] = %+v, want no entry for a removed node", id, h)
 				}
 			}
+			// R28: "the files hold one that is no longer approved" is a difference, so the
+			// comparison names each removed node that the files still hold.
+			if want := []string{"a-second-payment-is-refused", "an-order-is-paid-once"}; !reflect.DeepEqual(got.Removed, want) {
+				t.Errorf("Removed = %q, want %q", got.Removed, want)
+			}
 			if h := got.Holds["an-order-survives-a-restart"]; h != (Holding{Present: true, Version: 2, Current: true}) {
 				t.Errorf("Holds[an-order-survives-a-restart] = %+v, want version 2, current", h)
 			}
@@ -267,8 +272,13 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 	}
 	good := version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", "The page shows it."))
 	for _, row := range []struct{ name, json, want string }{
-		{"an unknown field", `{"nodes":[{"id":"a-page-shows-it","removd":true,"versions":[` + good + `]}]}`, `unknown field "removd"`},
-		{"text after the object", `{"nodes":[]} {}`, "after the approved spec"},
+		{"an unknown field", `{"nodes":[{"id":"a-page-shows-it","removd":true,"versions":[` + good + `]}]}`, `member "/nodes/0/removd" is not in the format`},
+		{"a field written in other letters", `{"nodes":[{"id":"a-page-shows-it","Removed":true,"versions":[` + good + `]}]}`, `member "/nodes/0/Removed" is not in the format`},
+		{"one field two times, in two cases", `{"nodes":[{"id":"a-page-shows-it","removed":false,"Removed":true,"versions":[` + good + `]}]}`, `member "/nodes/0/Removed" is not in the format`},
+		{"one field two times", `{"nodes":[{"id":"a-page-shows-it","removed":false,"removed":true,"versions":[` + good + `]}]}`, `member "/nodes/0/removed" is in one object two times`},
+		{"a byte that is not UTF-8", "{\"nodes\":[{\"id\":\"a-page-shows-\xffit\",\"versions\":[" + good + "]}]}", "it is not UTF-8"},
+		{"text after the object", `{"nodes":[]} {}`, "text after the JSON value"},
+		{"no JSON value", ``, "it holds no JSON value"},
 		{"a node with no id", `{"nodes":[{"id":"","versions":[` + good + `]}]}`, "a node has no id"},
 		{"one id on two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + good + `]},{"id":"a-page-shows-it","versions":[` + good + `]}]}`, `node "a-page-shows-it" is in the approved spec two times`},
 		{"a node with no version", `{"nodes":[{"id":"a-page-shows-it","removed":true,"versions":[]}]}`, `approved node "a-page-shows-it": it has no version`},

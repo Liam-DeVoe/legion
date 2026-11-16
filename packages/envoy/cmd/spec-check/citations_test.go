@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,11 +33,17 @@ func testPart(selector, job string) string {
 	return "runner=\"go\" selector=\"" + selector + "\" job=\"" + job + "\""
 }
 
-// goReport is a go test -json report of TestA of package a with outcome, or a run with no end for "".
+// goReport is a go test -json report of TestA of package a with outcome, pass, fail or skip, or a
+// run with no end for "", as go test of Go 1.27 writes it: the run and its end each with go test's
+// own line, a frame, before the end event (testdata/gotest/pass.jsonl of specgraph is one such
+// report). A report of a Go before 1.27 has no frame, and ReadGoTestJSON refuses it.
 func goReport(outcome string) string {
-	report := `{"Action":"run","Package":"example.com/citations/a","Test":"TestA"}` + "\n"
+	const pkg = `"Package":"example.com/citations/a","Test":"TestA"`
+	report := `{"Action":"run",` + pkg + `}` + "\n" +
+		`{"Action":"output",` + pkg + `,"Output":"=== RUN   TestA\n","OutputType":"frame"}` + "\n"
 	if outcome != "" {
-		report += `{"Action":"` + outcome + `","Package":"example.com/citations/a","Test":"TestA","Elapsed":0.01}` + "\n"
+		report += `{"Action":"output",` + pkg + `,"Output":"--- ` + strings.ToUpper(outcome) + `: TestA (0.01s)\n","OutputType":"frame"}` + "\n" +
+			`{"Action":"` + outcome + `",` + pkg + `,"Elapsed":0.01}` + "\n"
 	}
 	return report
 }
@@ -281,6 +288,28 @@ func TestCitationsCommand(t *testing.T) {
 		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), result{
 			stdout: "spec-check: " + f.dir + ": 1 program check; each is cited\n",
 			stderr: "spec-check: warning: " + filepath.Join(f.reports, "spec-report--envoy-go") + ": names no job that spec-citations waits for; passed over\n"})
+	})
+
+	// The --json file is written by printJSON, the writer of the JSON of checks and state: the "[" of
+	// each "##[" in a value is \u005b, which a JSON reader reads back as "[".
+	t.Run("the --json file writes the [ of a ##[ as checks writes its JSON", func(t *testing.T) {
+		t.Parallel()
+		r := newCitationRun()
+		r.spec = citedSpec(testPart("example.com/citations/a TestA", "##[error]forged"))
+		f := r.write(t)
+		got := runBinary(t, binary, "", r.args(f, workflow)...)
+		if got.code != 1 || got.stdout != "spec-check: "+f.dir+": 1 program check; 1 refused\n" || strings.Contains(got.stderr, "##[") {
+			t.Errorf("exit %d, stdout %q, stderr %q; want exit 1, the count line, and no \"##[\"", got.code, got.stdout, got.stderr)
+		}
+		content, err := os.ReadFile(f.json)
+		want := `[{"check":"` + citedCheck + `","rule":"job-not-in-workflow","detail":"job-not-in-workflow: no job \"##\u005berror]forged\""}]` + "\n"
+		if err != nil || string(content) != want {
+			t.Fatalf("--json file %q, %v; want %q", content, err, want)
+		}
+		var faults []struct{ Check, Rule, Detail string }
+		if err := json.Unmarshal(content, &faults); err != nil || len(faults) != 1 || faults[0].Detail != `job-not-in-workflow: no job "##[error]forged"` {
+			t.Errorf("the --json file reads as %+v, %v; want the job as written", faults, err)
+		}
 	})
 
 	t.Run("a directory with no spec file", func(t *testing.T) {

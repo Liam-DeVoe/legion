@@ -1,8 +1,7 @@
 package specgraph
 
 import (
-	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -82,19 +81,28 @@ type scenarioResult struct {
 }
 
 // ReadScenario reads the scenario at the root of fsys, and refuses any file or field that the
-// format does not hold, with a *ScenarioError that names the file:
+// format does not hold, with a *ScenarioError that names the file. Each JSON file is read by
+// decodeJSON, which refuses a byte that is not UTF-8, a member that the format does not name in
+// its own letters, a member that one object gives two times, and text after the value:
 //
-//   - approved.json, as ReadApproved reads it;
-//   - subjects.json, [{"commit","branch","deploy","now"}]: at least one subject, each with a commit,
-//     a now, and exactly one of branch and deploy;
+//   - approved.json, as ReadApproved reads it, and with no cycle of parent and support relations
+//     among the current statements (R5: "Dispatch refuses a change that makes one"). The rules of
+//     the files are not run on it: the person approves a level before the checks of its
+//     statements exist, so an approved leaf can have no check, and the files then do not hold it;
+//   - subjects.json, [{"commit","branch","deploy","graph_tx","now"}]: at least one subject, each
+//     with a commit, a now, and exactly one of branch and deploy; graph_tx, the transaction of the
+//     graph that the subject reads, only with a deploy, and a subject that names none judges no
+//     check of the graph;
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
-//     it that Parse reads with no problem, and no directory that no subject reads;
+//     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
+//     directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it;
 //   - ties.json, as ReadTies reads it: a check that it does not name has a tie that is not known;
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit"}]: check_version
 //     names an approved version of the check, whose Digest the result carries; kind is run or
-//     failing_example, and outcome pass, fail or could_not_run;
+//     failing_example, and outcome pass, fail or could_not_run; a result names at most one of the
+//     subjects commit, deploy and graph_tx, the one that it read;
 //   - jobs.json, [{"job","leg","commit","ended"}];
 //   - uncited.json (optional), {"<commit>":{"<check id>":"<R48 rule>"}};
 //   - units.json (optional), [{"id","serves","needs","waits_on"}]: each id once, serves and
@@ -121,6 +129,9 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 
 	if s.Approved, err = readWith(fsys, "approved.json", ReadApproved); err != nil {
 		return s, err
+	}
+	if cycle := approvedLoop(s.Approved); cycle != nil {
+		return s, scenarioFault("approved.json", "loop: %s", loopDetail(cycle))
 	}
 	if s.Subjects, err = readSubjects(fsys); err != nil {
 		return s, err
@@ -180,6 +191,8 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 			fault = "it sets both branch and deploy; a subject sets exactly one of them"
 		case sub.Branch == "" && sub.Deploy == "":
 			fault = "it sets neither branch nor deploy; a subject sets exactly one of them"
+		case sub.GraphTx != "" && sub.Deploy == "":
+			fault = "it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"
 		}
 		if fault != "" {
 			return nil, scenarioFault("subjects.json", "subject %d: %s", i+1, fault)
@@ -188,8 +201,9 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 	return subjects, nil
 }
 
-// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md, and
-// parses them.
+// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md,
+// parses them and judges the tree by Validate, and refuses the first problem of Parse, or else of
+// Validate, with its file and line.
 func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree, error) {
 	trees := map[string]Tree{}
 	for i, sub := range subjects {
@@ -221,6 +235,9 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 			return nil, scenarioFault(dir, "holds no spec file")
 		}
 		tree, problems := Parse(files)
+		if len(problems) == 0 {
+			problems = Validate(tree, Options{})
+		}
 		if len(problems) > 0 {
 			SortProblems(problems)
 			p := problems[0]
@@ -238,6 +255,16 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 		}
 	}
 	return trees, nil
+}
+
+// approvedLoop is a cycle of parent and serves relations among the current statements of a, as
+// Validate's loop rule writes it, or nil when there is none.
+func approvedLoop(a Approved) []string {
+	current, _ := a.Current() // ReadApproved refused every block that would be a problem here
+	if loops := findLoops(statementEdges(current.Statements)); len(loops) > 0 {
+		return loops[0]
+	}
+	return nil
 }
 
 // readWith reads the file name with read, and names the file in its fault.
@@ -270,6 +297,8 @@ func readResults(fsys fs.FS, approved Approved) ([]Result, error) {
 			fault = fmt.Sprintf("kind %q is not run or failing_example", r.Kind)
 		case r.Outcome != OutcomePass && r.Outcome != OutcomeFail && r.Outcome != OutcomeCouldNotRun:
 			fault = fmt.Sprintf("outcome %q is not pass, fail or could_not_run", r.Outcome)
+		case len(namedSubjects(r)) > 1:
+			fault = fmt.Sprintf("it names the subjects %s; a result reads one subject", strings.Join(namedSubjects(r), " and "))
 		default:
 			if digest, held = checkVersionDigest(approved, r.Check, r.CheckVersion); !held {
 				fault = fmt.Sprintf("the approved spec holds no version %d of check %q", r.CheckVersion, r.Check)
@@ -283,6 +312,18 @@ func readResults(fsys fs.FS, approved Approved) ([]Result, error) {
 			FaultAuthor: r.FaultAuthor, TestAuthors: r.TestAuthors, TestCommit: r.TestCommit}
 	}
 	return results, nil
+}
+
+// namedSubjects is the name of each subject that the result r names, of commit, deploy and
+// graph_tx, in that order.
+func namedSubjects(r scenarioResult) []string {
+	var named []string
+	for _, s := range []struct{ name, value string }{{"commit", r.Commit}, {"deploy", r.Deploy}, {"graph_tx", r.GraphTx}} {
+		if s.value != "" {
+			named = append(named, s.name)
+		}
+	}
+	return named
 }
 
 // checkVersionDigest is the Digest of version v of the check id in the approved spec, and whether
@@ -340,38 +381,30 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 	return units, nil
 }
 
-// readEach reads the JSON array of the file name, each element a T with no field that T does not
-// hold; a fault names the element as "<noun> <n>", from 1.
+// readEach reads the JSON array of the file name, each element a T as decodeJSON reads it; a fault
+// of an element names it as "<noun> <n>", from 1.
 func readEach[T any](fsys fs.FS, name, noun string) ([]T, error) {
-	var raw []json.RawMessage
+	var raw []jsontext.Value
 	if err := readJSON(fsys, name, &raw); err != nil {
 		return nil, err
 	}
 	all := make([]T, len(raw))
 	for i, element := range raw {
-		dec := json.NewDecoder(bytes.NewReader(element))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&all[i]); err != nil {
+		if err := decodeJSON(element, &all[i]); err != nil {
 			return nil, scenarioFault(name, "%s %d: %w", noun, i+1, err)
 		}
 	}
 	return all, nil
 }
 
-// readJSON decodes the file name into v, refusing a field that v does not hold and text after the
-// value.
+// readJSON decodes the file name into v with decodeJSON.
 func readJSON(fsys fs.FS, name string, v any) error {
 	content, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return &ScenarioError{File: name, Err: err}
 	}
-	dec := json.NewDecoder(bytes.NewReader(content))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
+	if err := decodeJSON(content, v); err != nil {
 		return &ScenarioError{File: name, Err: err}
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return scenarioFault(name, "text after the JSON value")
 	}
 	return nil
 }

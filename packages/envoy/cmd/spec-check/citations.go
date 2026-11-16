@@ -297,9 +297,9 @@ func readTiesFile(path string) (map[string]specgraph.Tie, error) {
 	return ties, nil
 }
 
-// writeFaults writes the faults to path as one line of JSON, [] for none, making its directory, and
-// answers whether it could; with no path it writes nothing. It is the input of the state of each
-// check at the commit (Input.Uncited).
+// writeFaults writes the faults to path as one line of JSON with printJSON, [] for none, making its
+// directory, and answers whether it could; with no path it writes nothing. It is the input of the
+// state of each check at the commit (Input.Uncited).
 func writeFaults(stderr io.Writer, path string, faults specgraph.CitationFaults) bool {
 	if path == "" {
 		return true
@@ -309,12 +309,10 @@ func writeFaults(stderr io.Writer, path string, faults specgraph.CitationFaults)
 		entries[i] = citationFault{Check: f.Check, Rule: f.Rule, Detail: f.Detail}
 	}
 	var content bytes.Buffer
-	enc := json.NewEncoder(&content)
-	enc.SetEscapeHTML(false)
-	err := enc.Encode(entries)
-	if err == nil {
-		err = os.MkdirAll(filepath.Dir(path), 0o755)
+	if printJSON(&content, stderr, path, entries) != 0 {
+		return false
 	}
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
 	if err == nil {
 		err = os.WriteFile(path, content.Bytes(), 0o644)
 	}

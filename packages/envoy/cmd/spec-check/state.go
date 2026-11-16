@@ -1,12 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,18 +28,7 @@ func runState(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	dir, ok := absolute(stderr, *scenarioFlag)
-	if !ok {
-		return 2
-	}
-	switch info, err := os.Stat(dir); {
-	case errors.Is(err, fs.ErrNotExist):
-		say(stderr, "%s: does not exist", dir)
-		return 2
-	case err != nil:
-		say(stderr, "%s: cannot be read: %s", dir, err)
-		return 2
-	case !info.IsDir():
-		say(stderr, "%s: is not a directory", dir)
+	if !ok || !isDirectory(stderr, dir) {
 		return 2
 	}
 	scenario, err := specgraph.ReadScenario(os.DirFS(dir))
@@ -90,9 +77,12 @@ func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgra
 
 	for i, state := range states {
 		subject := scenario.Subjects[i]
-		if subject.Branch != "" {
+		switch {
+		case subject.Branch != "":
 			say(stdout, "subject %s, the head of %s", subject.Commit, subject.Branch)
-		} else {
+		case subject.GraphTx != "":
+			say(stdout, "subject %s, the commit that production runs at deploy %s, and the graph at transaction %s", subject.Commit, subject.Deploy, subject.GraphTx)
+		default:
 			say(stdout, "subject %s, the commit that production runs at deploy %s", subject.Commit, subject.Deploy)
 		}
 		checks := make(map[string]specgraph.CheckState, len(state.Checks))
@@ -159,6 +149,11 @@ func statementText(s specgraph.StatementState, checks map[string]specgraph.Check
 		return fmt.Sprintf("unknown (supporter %s: unknown)", s.Detail)
 	case "supporter_not_built":
 		return fmt.Sprintf("unknown (supporter %s: not built)", s.Detail)
+	case "no_check":
+		if s.Detail == s.ID {
+			return "unknown (no check serves it)"
+		}
+		return fmt.Sprintf("unknown (statement %s has no check)", s.Detail)
 	}
 	return fmt.Sprintf("%s (%s %s)", stateWords(s.State), s.Reason, s.Detail)
 }
@@ -185,10 +180,8 @@ func printLine(w io.Writer, format string, args ...any) {
 	fmt.Fprintln(w, runnerlog.Printable(fmt.Sprintf(format, args...)))
 }
 
-// printStatesJSON writes the states as one line of JSON, []State, or with units
-// {"states":[…],"cycle":[…]}, "cycle" [] when there is none. As in checks, the line does not pass
-// through runnerlog.Say: encoding/json escapes each control character of a value, the line starts
-// with "[" or "{", and the "[" of each "##[" is written as \u005b.
+// printStatesJSON writes the states as one line of JSON with printJSON, []State, or with units
+// {"states":[…],"cycle":[…]}, "cycle" [] when there is none.
 func printStatesJSON(stdout, stderr io.Writer, dir string, states []specgraph.State, units bool, cycle []string) int {
 	var value any = states
 	if units {
@@ -200,11 +193,5 @@ func printStatesJSON(stdout, stderr io.Writer, dir string, states []specgraph.St
 			Cycle  []string          `json:"cycle"`
 		}{states, cycle}
 	}
-	line, err := json.Marshal(value)
-	if err != nil {
-		say(stderr, "%s: %s", dir, err)
-		return 2
-	}
-	fmt.Fprintln(stdout, strings.ReplaceAll(string(line), "##[", `##\u005b`))
-	return 0
+	return printJSON(stdout, stderr, dir, value)
 }

@@ -31,7 +31,9 @@ type Result struct {
 	Kind               ResultKind
 	Outcome            Outcome
 	// Commit, Deploy and GraphTx are the subject that the result read: a commit of the code, a
-	// deploy of production, or a transaction of the graph. One of the three is set.
+	// deploy of production, or a transaction of the graph; at most one of the three is set. A result
+	// counts only at the subject of its kind that the derivation is given (R7: "A result counts only
+	// for the procedure that ran it and for the subject that it read").
 	Commit, Deploy, GraphTx string
 	// Job and Leg are the job that reported the result and its matrix values, "" for none (R12).
 	Job, Leg string
@@ -40,12 +42,15 @@ type Result struct {
 	At  time.Time
 	Seq int64
 	// FaultAuthor wrote the fault of a failing example, and TestAuthors the test that ran on it
-	// (R9: "An agent that did not write the test writes the fault").
+	// (R9: "An agent that did not write the test writes the fault"). The failing example of a
+	// program check counts only when both are named and FaultAuthor is none of TestAuthors.
 	FaultAuthor string
 	TestAuthors []string
-	// TestCommit is the commit of the test that ran on the failing example of a program check
-	// whose subject is production or the graph, "" when the result does not name it (R9: "its
-	// test, as it is now").
+	// TestCommit is the commit of the test that ran, for a run or a failing example of a program
+	// check whose subject is production or the graph, "" when the result does not name it. Such a
+	// result counts only while no file of the check's tie differs between TestCommit and the
+	// subject's commit (R7: the procedure is "the code that runs it" too; R9: "its test, as it is
+	// now").
 	TestCommit string
 }
 

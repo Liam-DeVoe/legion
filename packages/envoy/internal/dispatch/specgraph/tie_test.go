@@ -63,8 +63,9 @@ func TestNewTieRefusesAnotherForm(t *testing.T) {
 }
 
 // ReadTies reads the ties form of a scenario's ties.json and of spec-check citations --ties: one
-// known tie for each check it names, none for a check it does not, and a refusal of text after the
-// object and of a tie that NewTie refuses, naming the check.
+// known tie for each check it names, none for a check it does not, and a refusal of what
+// decodeJSON refuses (text after the object, a check named two times) and of a tie that NewTie
+// refuses, naming the check.
 func TestReadTies(t *testing.T) {
 	t.Parallel()
 	ties, err := ReadTies(strings.NewReader(`{"check-b":["b/*"],"check-a":["go.work","a/**"]}` + "\n"))
@@ -72,11 +73,12 @@ func TestReadTies(t *testing.T) {
 		t.Fatalf("ReadTies = %+v, %v; want the two known ties", ties, err)
 	}
 	for text, want := range map[string]string{
-		`{"check-a":["a/*"]} {}`: "text after the JSON value",
-		`{"check-a":["a/*.go"]}`: `check "check-a": specgraph: tie entry "a/*.go"`,
-		`{"check-a":[]}`:         `check "check-a": specgraph: a tie holds no path`,
-		`["a/*"]`:                "cannot unmarshal array",
-		`{"check-a":["a/*"]`:     "unexpected EOF",
+		`{"check-a":["a/*"]} {}`:                "text after the JSON value",
+		`{"check-a":["a/*"],"check-a":["b/*"]}`: `member "/check-a" is in one object two times`,
+		`{"check-a":["a/*.go"]}`:                `check "check-a": specgraph: tie entry "a/*.go"`,
+		`{"check-a":[]}`:                        `check "check-a": specgraph: a tie holds no path`,
+		`["a/*"]`:                               "cannot unmarshal JSON array",
+		`{"check-a":["a/*"]`:                    "unexpected EOF",
 	} {
 		if got, err := ReadTies(strings.NewReader(text)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("ReadTies(%q) = %+v, %v; want an error holding %q", text, got, err, want)

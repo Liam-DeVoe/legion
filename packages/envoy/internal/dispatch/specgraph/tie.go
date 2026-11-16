@@ -1,7 +1,6 @@
 package specgraph
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,16 +37,13 @@ func NewTie(paths []string) (Tie, error) {
 
 // ReadTies reads ties in the form of a scenario's ties.json, {"<check id>":["<path or glob>", …]},
 // each tie as NewTie takes it. A check that the form does not name has no entry, which reads as a
-// tie that is not known. It refuses text after the object, and names the check of a tie that
-// NewTie refuses.
+// tie that is not known. It reads the JSON with decodeJSON, the package's one reader of a JSON
+// file of a format, so it refuses what that reader refuses, a check that the object names two
+// times among them, and it names the check of a tie that NewTie refuses.
 func ReadTies(r io.Reader) (map[string]Tie, error) {
 	var paths map[string][]string
-	dec := json.NewDecoder(r)
-	if err := dec.Decode(&paths); err != nil {
+	if err := decodeJSONFrom(r, &paths); err != nil {
 		return nil, err
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("text after the JSON value")
 	}
 	ties := make(map[string]Tie, len(paths))
 	for _, check := range slices.Sorted(maps.Keys(paths)) {

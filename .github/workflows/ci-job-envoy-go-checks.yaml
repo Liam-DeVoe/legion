@@ -125,8 +125,8 @@ jobs:
       - name: Check the OpenAPI document is generated from the route table
         run: go run ./cmd/dispatch openapi --check
         working-directory: packages/envoy
-      # No CI job compares the spec files with the approved spec: Dispatch makes that comparison
-      # at each push (R2 of The Spec). The guard reads every file under .github/workflows,
+      # No CI job compares the spec files with the approved spec: R2 of The Spec gives that
+      # comparison at each push to Dispatch. The guard reads every file under .github/workflows,
       # .github/actions, .github/scripts and scripts, names each line that runs the command's
       # comparison, and fails on it, and it fails when it read no workflow.
       - name: Check that no CI file of this repository compares the spec files
