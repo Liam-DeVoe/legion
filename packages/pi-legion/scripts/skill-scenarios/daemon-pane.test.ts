@@ -23,7 +23,7 @@ import {
   serves,
   workerPane,
 } from "./daemon-pane";
-import { nameWords, vocabulary } from "./run-names";
+import { nameWords, systemPromptIn, systemPromptOf, vocabulary } from "./run-names";
 import { bundled, spawnChecked } from "./test-programs";
 
 // Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
@@ -256,10 +256,16 @@ test.skipIf(skip)(
       daemonModule: DAEMON_MODULE,
       systemPrompt: true,
     });
-    expect(pane.systemPromptArgument).toContain(
+    // The pane is handed its prompt as a file, as a pod's launch hands it (#4190), so the
+    // addressing is read from the file the argument names (run-names.ts's `systemPromptIn`).
+    const prompt = systemPromptIn(pane.systemPromptArgument ?? "", rig);
+    expect(prompt.place).toBe(
+      "<run>/state/secrets/legion-skillsrig-lweval-1-tester-system-prompt.md"
+    );
+    expect(prompt.text).toContain(
       "Your issue's repository is example/widgets (default branch main); the project's repositories are example/widgets."
     );
-    expect(pane.systemPromptArgument).not.toContain("skills-rig");
+    expect(prompt.text).not.toContain("skills-rig");
     expect(pane.env.GH_CONFIG_DIR).toBe(
       `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh/example`
     );
@@ -1161,7 +1167,7 @@ test.skipIf(skip)(
     ]);
     expect(built.stderr.toString()).toBe("");
     expect(built.exitCode).toBe(0);
-    expect(readFileSync(path.join(dir, "system-args"), "utf8")).toContain(
+    expect(systemPromptOf(dir)?.text).toContain(
       "Your issue's repository is widgets-org/widgets (default branch trunk)"
     );
     expect(readFileSync(path.join(dir, "worker.env"), "utf8")).toContain(

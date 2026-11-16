@@ -7941,6 +7941,21 @@ sleep() { command sleep 0.05; }`;
         }),
       },
       {
+        // The word is in the prompt file alone, which the agent's Oh My Pi reads at its launch
+        // (`--append-system-prompt <file>`, as the daemon hands every pane its prompt since
+        // #4190) and which its world shows, inside the run's own directory: <run>/system-args
+        // holds only the file's path, which names nothing.
+        what: "the system prompt's file, which <run>/system-args names",
+        word: "reviewer-text-findings",
+        place: "<run>/state/secrets/system-prompt.md",
+        options: (work) => ({
+          files: {
+            "system-args": `--append-system-prompt ${runDirOf(work, name)}/state/secrets/system-prompt.md`,
+            "state/secrets/system-prompt.md": "You review a reviewer-text-findings run.\n",
+          },
+        }),
+      },
+      {
         what: "the gh stand-in",
         word: "skill-scenario",
         place: "<run>/bin/gh",
@@ -7967,6 +7982,62 @@ sleep() { command sleep 0.05; }`;
       const refused = `the world of ${path.basename(run)} names "${plant.word}" in ${plant.place}`;
       if (result.code !== 1 || !result.stderr.includes(refused) || existsSync(ran))
         missed.push(`${plant.what}: exit ${result.code}: ${result.stderr.trim()}`);
+    }
+    expect(missed).toEqual([]);
+  });
+
+  // Catches: a guard that reads a system prompt it cannot read as one with nothing wrong in it.
+  // <run>/system-args names a file (run-names.ts's `systemPromptIn`), and a file that is not
+  // there, or is empty, or an argument of neither shape the daemon's composer answers with, is a
+  // prompt the guard cannot hold to the vocabulary: each refuses the launch, naming the run and
+  // what it found, and the agent does not start.
+  test("a system prompt the guard cannot read refuses the launch", () => {
+    const name = "threads-closed-text-fixes-head-1";
+    const rows: {
+      what: string;
+      refusal: string;
+      files: (run: string) => Record<string, string>;
+    }[] = [
+      {
+        what: "a path that names no file",
+        refusal: "names <run>/state/secrets/system-prompt.md, which cannot be read",
+        files: (run) => ({
+          "system-args": `--append-system-prompt ${run}/state/secrets/system-prompt.md`,
+        }),
+      },
+      {
+        what: "an empty prompt file",
+        refusal: "names <run>/state/secrets/system-prompt.md, which is empty",
+        files: (run) => ({
+          "system-args": `--append-system-prompt ${run}/state/secrets/system-prompt.md`,
+          "state/secrets/system-prompt.md": "\n",
+        }),
+      },
+      {
+        what: "an empty prompt carried in the argument",
+        refusal: "is empty: <run>/system-args holds",
+        files: () => ({ "system-args": "--append-system-prompt ''" }),
+      },
+      {
+        what: "no --append-system-prompt argument",
+        refusal: "is no --append-system-prompt argument: <run>/system-args holds",
+        files: () => ({ "system-args": "a prompt with no flag\n" }),
+      },
+      {
+        what: "a word that is neither a quoted prompt nor an absolute path",
+        refusal: "is neither a prompt nor the path of a prompt's file: <run>/system-args holds",
+        files: () => ({ "system-args": "--append-system-prompt system-prompt.md" }),
+      },
+    ];
+    const missed: string[] = [];
+    for (const row of rows) {
+      const work = freshDir("launch-unreadable-prompt");
+      const runDir = runDirOf(work, name);
+      const ran = path.join(runDir, "agent-ran");
+      const { run, result } = launched(work, name, `: >${ran}`, [], { files: row.files(runDir) });
+      const refused = `the world of ${path.basename(run)} cannot be read whole: the system prompt of ${path.basename(run)} ${row.refusal}`;
+      if (result.code !== 1 || !result.stderr.includes(refused) || existsSync(ran))
+        missed.push(`${row.what}: exit ${result.code}: ${result.stderr.trim()}`);
     }
     expect(missed).toEqual([]);
   });

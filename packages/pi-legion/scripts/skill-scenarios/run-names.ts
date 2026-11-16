@@ -17,9 +17,11 @@
 //                                           exits 0 when nothing the run's agent is about to read
 //                                           names a word of the vocabulary (`worldNames`), and 1,
 //                                           printing the first word and where it is, when
-//                                           something does: rig.sh's launch asks before every
-//                                           agent starts, and starts none of a world that names
-//                                           one
+//                                           something does, and 1, printing why, when the run's
+//                                           system prompt cannot be read (`systemPromptOf`):
+//                                           rig.sh's launch asks before every agent starts, and
+//                                           starts none of a world that names one or that it
+//                                           cannot read whole
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -428,6 +430,82 @@ export function mountedPaths(runDir: string): string[] {
   return mounted;
 }
 
+/** A run's system prompt, as `systemPromptIn` reads it: the `--append-system-prompt` argument
+ * <run>/system-args holds, which rig.sh's launch puts on the agent's command line, and the text
+ * of the prompt the agent starts with, with the place that text was read. */
+export interface SystemPrompt {
+  /** The argument, as shell text: what the agent's command line carries. */
+  readonly argument: string;
+  /** The prompt's text. */
+  readonly text: string;
+  /** Where `text` was read: <run>/system-args for a prompt the argument carries itself, else the
+   * file the argument names, as <run>/… where the file is under the run. */
+  readonly place: string;
+}
+
+const PROMPT_FLAG = "--append-system-prompt";
+
+/** The system prompt of the agent of `runDir`, read out of <run>/system-args (`systemPromptIn`),
+ * or undefined for a run with no such file: rig.sh's launch gives an agent a system prompt only
+ * where that file is (a worker pane's, which worker-pane.ts writes), and a spec run's agent starts
+ * with none. Every reader of a run's system prompt reads it here: launch's guard (`worldNames`)
+ * and rule 17 of health.ts (`namesOf`). */
+export function systemPromptOf(runDir: string): SystemPrompt | undefined {
+  const file = path.join(runDir, "system-args");
+  return existsSync(file) ? systemPromptIn(readFileSync(file, "utf8"), runDir) : undefined;
+}
+
+/** The system prompt `argument`, one `--append-system-prompt` argument as shell text, gives the
+ * agent of `runDir`, in either shape the daemon's pane composer has answered with (daemon-pane.go's
+ * systemPromptArgument). Since the daemon hands each role its system prompt as a file
+ * (cybermonklabs/legion#4190, runtime.WriteSystemPrompt), the composer writes the prompt to
+ * <run>/state/secrets/<claim>-system-prompt.md and the argument names that file, one shell word
+ * (shellprefix.Word: a bare path, or a single-quoted one), so the prompt is the file's text.
+ * Before, the argument carried the prompt itself, one quoted word (the role prompts' `$(cat …)` and
+ * the addressing, double-quoted), and that text is the prompt as the agent's command line held it;
+ * a run composed or recorded then still holds that shape. Anything else is refused, and so are a
+ * named file that cannot be read and an empty prompt, each naming the run and what it holds: a
+ * reader that took one of them for a prompt would hold the agent's prompt to nothing, and a guard
+ * or a rule that reads nothing finds nothing wrong. */
+export function systemPromptIn(argument: string, runDir: string): SystemPrompt {
+  const refuse = (what: string): never => {
+    throw new Error(`the system prompt of ${path.basename(runDir)} ${what}`);
+  };
+  // A file's trailing newlines are no part of the argument: rig.sh's launch reads it with
+  // `$(<"$R/system-args")`, which drops them.
+  const given = argument.replace(/\n+$/, "");
+  const held = `<run>/system-args holds ${JSON.stringify(given.slice(0, 200))}`;
+  if (!given.startsWith(`${PROMPT_FLAG} `)) refuse(`is no ${PROMPT_FLAG} argument: ${held}`);
+  const word = given.slice(PROMPT_FLAG.length + 1);
+  const quoted = /^'(?:[^']|'\\'')*'$/.test(word)
+    ? word.slice(1, -1).replaceAll("'\\''", "'")
+    : undefined;
+  const named = /^\/[A-Za-z0-9_./:-]+$/.test(word)
+    ? word
+    : quoted !== undefined && /^\/[^\n]*$/.test(quoted)
+      ? quoted
+      : undefined;
+  if (named === undefined) {
+    if (quoted === undefined && !/^"[\s\S]*"$/.test(word))
+      refuse(`is neither a prompt nor the path of a prompt's file: ${held}`);
+    if ((quoted ?? word.slice(1, -1)).trim() === "") refuse(`is empty: ${held}`);
+    return { argument: given, text: given, place: "<run>/system-args" };
+  }
+  const relative = path.relative(runDir, named);
+  const place =
+    relative.startsWith("..") || path.isAbsolute(relative) ? named : `<run>/${relative}`;
+  let text = "";
+  try {
+    text = readFileSync(named, "utf8");
+  } catch (error) {
+    refuse(
+      `names ${place}, which cannot be read: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (text.trim() === "") refuse(`names ${place}, which is empty`);
+  return { argument: given, text, place };
+}
+
 /** The files of a run the rig composes for each launch of an agent, beside its pane file (read
  * as its variables), its prompt and its system prompt (`worldNames`), each written afresh before
  * the launch the guard reads it for: the stand-ins on its PATH (rig.sh's standins: <run>/bin/gh,
@@ -458,8 +536,9 @@ export const COMPOSED = ["bin/gh", "bin/bun", "lib/gh.js", "jj.toml"];
  * issue and tree (so the Envoy topics they make), its HOME and TMPDIR; every path its namespace
  * mounts (`mountedPaths`: each a mount point and the host source /proc/self/mountinfo names);
  * its working directory and session directory; its prompt and its system prompt, which its
- * command line, /proc/1's, carries; and the files of COMPOSED, each named with the text around
- * the word. */
+ * command line, /proc/1's, carries, and the text of the prompt file that argument names, which
+ * its Oh My Pi reads (`systemPromptOf`, which refuses a system prompt it cannot read, and so does
+ * the guard); and the files of COMPOSED, each named with the text around the word. */
 export function worldNames(
   runDir: string,
   sessionsDir: string,
@@ -479,11 +558,19 @@ export function worldNames(
     checks.push({ place: "a mount of its namespace", value: mounted, name: true });
   checks.push({ place: "its working directory", value: path.join(runDir, "cwd"), name: true });
   checks.push({ place: "its session directory", value: sessionsDir, name: true });
-  for (const file of ["prompt.txt", "system-args", ...COMPOSED]) {
+  const composed = (file: string) => {
     const at = path.join(runDir, file);
     if (existsSync(at) && statSync(at).isFile())
       checks.push({ place: `<run>/${file}`, value: readFileSync(at, "utf8"), name: false });
+  };
+  composed("prompt.txt");
+  const system = systemPromptOf(runDir);
+  if (system !== undefined) {
+    checks.push({ place: "<run>/system-args", value: system.argument, name: false });
+    if (system.place !== "<run>/system-args")
+      checks.push({ place: system.place, value: system.text, name: false });
   }
+  for (const file of COMPOSED) composed(file);
   for (const { place, value, name } of checks) {
     const word = name ? nameWords(value, vocab) : textWords(value, vocab);
     if (word === undefined) continue;
@@ -510,7 +597,16 @@ if (import.meta.main) {
     }
   } else if (command === "guard" && rest.length === 3) {
     const [runDir = "", sessionsDir = "", work = ""] = rest;
-    const named = worldNames(runDir, sessionsDir, workLabels(work));
+    let named: Named | undefined;
+    try {
+      named = worldNames(runDir, sessionsDir, workLabels(work));
+    } catch (error) {
+      // A world the guard cannot read whole (`systemPromptIn`'s refusals) is one it cannot clear.
+      console.error(
+        `the world of ${path.basename(runDir)} cannot be read whole: ${error instanceof Error ? error.message : String(error)}`
+      );
+      process.exit(1);
+    }
     if (named !== undefined) {
       console.error(
         `the world of ${path.basename(runDir)} names "${named.word}" in ${named.place}: ${named.value.slice(0, 200)}`

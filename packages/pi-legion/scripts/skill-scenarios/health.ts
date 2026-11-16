@@ -116,7 +116,9 @@
  *  17. names: a scenario, case or label word an agent of the run says, in its own text or
  *      thinking, makes the run unhealthy only where an input held it before any agent of the run
  *      wrote it (`namesSaid`, the leak test the tester's reader uses): the run's prompt or system
- *      prompt (<run>/prompt.txt, <run>/system-args), or an entry of a transcript that is not an
+ *      prompt (<run>/prompt.txt, <run>/system-args and the prompt file it names, read through
+ *      run-names.ts's `systemPromptOf`, whose refusal of a system prompt it cannot read fails
+ *      the run under this rule), or an entry of a transcript that is not an
  *      agent's own — a user message, a tool result (so every file an agent read), a message it
  *      was sent, an entry Oh My Pi put in its context. The word is run-names.ts's vocabulary,
  *      derived from its SCENARIOS, completion-answers.ts's LABELS and the run's own label, as its
@@ -214,6 +216,7 @@ import {
   RUN_ID,
   runIdentity,
   SCENARIOS,
+  systemPromptOf,
   vocabulary,
   workerWorld,
 } from "./run-names";
@@ -3349,21 +3352,34 @@ export function namesOf(run: Pick<Run, "dir" | "label" | "said" | "wrote" | "hea
   const read = namesRead.get(run);
   if (read !== undefined) return read;
   const vocab = vocabulary([...LABELS, run.label]);
-  const given: TracedPart[] = ["prompt.txt", "system-args"].flatMap((file) => {
-    const at = path.join(run.dir, file);
-    return existsSync(at)
-      ? [
-          {
-            file: `<run>/${file}`,
-            kind: "",
-            text: readFileSync(at, "utf8"),
-            index: -1,
-            at: Number.NaN,
-          },
-        ]
-      : [];
+  const given = (file: string, text: string): TracedPart => ({
+    file,
+    kind: "",
+    text,
+    index: -1,
+    at: Number.NaN,
   });
-  const inputs = [...given, ...run.heard];
+  const prompt = path.join(run.dir, "prompt.txt");
+  const inputs: TracedPart[] = existsSync(prompt)
+    ? [given("<run>/prompt.txt", readFileSync(prompt, "utf8"))]
+    : [];
+  try {
+    const system = systemPromptOf(run.dir);
+    if (system !== undefined) {
+      inputs.push(given("<run>/system-args", system.argument));
+      if (system.place !== "<run>/system-args") inputs.push(given(system.place, system.text));
+    }
+  } catch (error) {
+    // A system prompt that cannot be read is an input no word can be traced to, so no sentence of
+    // the run's agents can be called their own: the rule fails the run, naming why.
+    const names = {
+      leaked: `names: ${error instanceof Error ? error.message : String(error)}, so no word it gave the run's agents can be traced`,
+      own: [],
+    };
+    namesRead.set(run, names);
+    return names;
+  }
+  inputs.push(...run.heard);
   const own: string[] = [];
   let leaked: string | undefined;
   for (const part of run.said) {
