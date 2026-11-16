@@ -77,15 +77,20 @@
 // files run the comparison" on standard output, exit 1. It exits 1 with "spec-check: <dir>: read
 // no workflow" when <dir>/.github/workflows holds no file, since an instrument that read nothing
 // has not passed, and 0 otherwise, with "spec-check: <dir>: no line of <k> CI files runs the
-// comparison". The guard names each line that runs spec-check, under any path, with compare as
-// its first argument, after Bash's quote removal and line continuation. It expands nothing and
-// runs no nested shell. For each other form, such as a brace, a glob, a variable, a command
-// substitution, a nested shell or a quote that an earlier line leaves open, the refusal of
-// compare itself stops the comparison in a step that keeps GITHUB_ACTIONS. Of the lines that the
-// guard reads, only a line that both writes the word in such a form and drops that variable
-// passes both, and no program finds it. A step can run the comparison from a file it does not
-// read, such as a package script or a make target: compare's refusal covers that route when the
-// step passes the runner's environment on, and nothing covers it when the step does not.
+// comparison". The guard names each line whose words run spec-check, under any path, with compare
+// as its first argument, as Bash reads the words: after quote removal and line continuation. A
+// comment, from a # that starts a word to the end of its line, holds no words and continues no
+// line, also after a backslash. A here-document body, up to its delimiter line, holds no words, so
+// a quote or a backslash in it changes nothing after it. The guard also reads each quoted word,
+// each here-document body and each comment as a script of its own, since a nested shell can run
+// it, so it names a comparison there that no shell runs too. It expands nothing: for a form that
+// needs a brace, a glob, a variable or a command substitution, the refusal of compare itself stops
+// the comparison in a step that keeps GITHUB_ACTIONS. Of the lines that the guard reads, only a
+// line that both writes the word in such a form and drops that variable passes both, and no
+// program finds it. In a folded or plain YAML value, the guard can name a line that Bash does not
+// run, and it never misses one for that reason. A step can run the comparison from a file it does
+// not read, such as a package script or a make target: compare's refusal covers that route when
+// the step passes the runner's environment on, and nothing covers it when the step does not.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on

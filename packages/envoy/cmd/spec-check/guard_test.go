@@ -132,6 +132,38 @@ func testGuard(t *testing.T, binary string) {
 			stderr: "spec-check: " + workflow + ":6" + line + "spec-check: " + workflow + ":9" + line,
 		})
 	})
+	// A quote in a comment or in a here-document opens no quote for Bash, so the audit's two inputs
+	// run the split comparison, and env -u takes them past the refusal of compare. The plain
+	// comparison is named, and the same comment before spec-check tree is not.
+	t.Run("guard names a comparison after a quote in a comment or a here-document", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		workflow := filepath.Join(root, ".github", "workflows", "spec.yaml")
+		writeFile(t, workflow, []byte("on: pull_request\njobs:\n  spec:\n    steps:\n"+
+			"      - run: |\n"+
+			"          # \" \\\n"+
+			"          : \"it's\"; env -u GITHUB_ACTIONS spec-check com\\\n"+
+			"          pare --dir .dispatch/spec --approved a.json\n"+
+			"      - run: |\n"+
+			"          cat <<'END\\'\n"+
+			"          \" \\\n"+
+			"          END\\\n"+
+			"          : \"it's\"; env -u GITHUB_ACTIONS spec-check com\\\n"+
+			"          pare --dir .dispatch/spec --approved a.json\n"+
+			"      - run: spec-check compare --dir .dispatch/spec --approved a.json\n"+
+			"      - run: |\n"+
+			"          # \" \\\n"+
+			"          : \"it's\"; env -u GITHUB_ACTIONS spec-check tree --dir .dispatch/spec\n"))
+		line := ": this line runs the comparison of the files with the approved spec, which no CI job does (R2)\n"
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
+			code:   1,
+			stdout: "spec-check: " + root + ": 3 lines of CI files run the comparison\n",
+			stderr: "spec-check: " + workflow + ":7" + line + "spec-check: " + workflow + ":13" + line + "spec-check: " + workflow + ":15" + line,
+		})
+	})
 	t.Run("guard does not pass when it reads no workflow", func(t *testing.T) {
 		t.Parallel()
 		root := ciFiles(t, "no-workflow")

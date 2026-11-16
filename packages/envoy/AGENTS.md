@@ -3219,16 +3219,18 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The built-binary tests start each child without `GITHUB_ACTIONS` and with `CI` as the test process has it (`childEnv` in `cmd/spec-check/main_test.go`), and the row "compare does not run in a CI job" sets each variable.
 
 - `spec-check guard --root <dir>` is the other part of the refusal above: it reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`), every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
-  `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) names each line that runs `spec-check`, under any path, with `compare` as its first argument, after Bash's quote removal and line continuation.
-  So a quote is removed, a backslash escape reads as the character it escapes, Bash's `$'…'` reads as the text its ANSI-C escapes decode to and `$"…"` as the quoted text, and a backslash and the line break after it go first, outside `'…'` and `$'…'`, as Bash removes them.
-  So `spec-check "compare"`, `spec-check $'compare'`, `spec-check $'com\x70are'` and a `$` with its quote on the next line after a backslash are named.
-  It expands nothing and runs no nested shell.
-  For each other form, such as a brace, a glob, a variable, a command substitution, a nested shell or a quote that an earlier line leaves open, the refusal of `compare` itself stops the comparison in a step that keeps `GITHUB_ACTIONS`.
+  `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) names each line whose words run `spec-check`, under any path, with `compare` as its first argument, as Bash reads the words: after quote removal and line continuation.
+  So a quote is removed, a backslash keeps the next character in its word, a space too, Bash's `$'…'` reads as the text its ANSI-C escapes decode to and `$"…"` as the quoted text, and a backslash and the line break after it go first, outside `'…'` and `$'…'`, as Bash removes them.
+  So `spec-check "compare"`, `spec-check $'compare'`, `spec-check $'com\x70are'` and a `$` with its quote on the next line after a backslash are named, and `spec-check \ compare` is not.
+  A comment, from a `#` that starts a word to the end of its line, holds no words and continues no line, also after a backslash.
+  A here-document body, up to its delimiter line, holds no words, so a quote or a backslash in it changes nothing after it.
+  The guard also reads each quoted word, each here-document body and each comment as a script of its own, since a nested shell can run it, so it names `sh -c 'spec-check compare …'`, and also a comparison there that no shell runs.
+  It expands nothing: for a form that needs a brace, a glob, a variable or a command substitution, the refusal of `compare` itself stops the comparison in a step that keeps `GITHUB_ACTIONS`.
   Of the lines that the guard reads, only a line that both writes the word in such a form and drops that variable passes both, and no program finds it.
   It also reads each `run:` value of a `.yml` or `.yaml` file as YAML reads it, so a plain, quoted or folded value over two lines is one line, named at the line where the value starts, and a literal block names its own line.
   It reads the documents of a file up to the first one that YAML cannot read, and keeps the lines of the documents before it.
   From that document on, it reads the file as text alone, since GitHub runs no step of a file it cannot read.
-  A comment that names the command is named too, which errs on the safe side.
+  In a folded or plain YAML value, the guard can name a line that Bash does not run, and it never misses one for that reason.
   A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line runs the comparison of the files with the approved spec, which no CI job does (R2)` on stderr for each, and `spec-check: <dir>: <n> lines of CI files run the comparison` on stdout.
   No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
   a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files runs the comparison`.

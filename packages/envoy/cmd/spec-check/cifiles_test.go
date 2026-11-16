@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -218,26 +219,134 @@ func TestCIFilesThatCompareJoinsALineAsBashDoes(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			var want []string
+			var at []int
 			if strings.Contains("|"+row.bash, "|spec-check|compare|") {
-				want = []string{".github/workflows/a.yaml:5", "scripts/a.sh:1"}
+				at = []int{1}
 			}
-			block := "          " + strings.ReplaceAll(row.text, "\n", "\n          ")
-			files := map[string][]byte{
-				"scripts/a.sh":             []byte(row.text + "\n"),
-				".github/workflows/a.yaml": []byte(workflowSteps + "      - run: |\n" + block + "\n"),
-			}
-			if got := ciFilesThatCompare(files); !reflect.DeepEqual(got, want) {
-				t.Errorf("ciFilesThatCompare(%q) = %q, want %q", row.text, got, want)
+			expectScriptAndBlock(t, row.text, at)
+		})
+	}
+}
+
+// Bash reads a comment, from a # that starts a word to the end of its line, and the body of a
+// here-document, up to its delimiter line, as no words: a quote or a backslash in them opens no
+// quote and continues no line of the commands after them. The audit's two inputs hide a split
+// comparison behind a double quote in such a text; the plain comparison and the same text before
+// spec-check tree are the controls. at is the line, from 1, of each comparison that bash 5.2.21
+// runs when it runs the row's text from a file.
+func TestCIFilesThatCompareReadsACommentAndAHereDocumentAsBashDoes(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name, text string
+		at         []int
+	}{
+		{"a double quote in a comment that a backslash ends",
+			"# \" \\\n: \"it's\"; env -u GITHUB_ACTIONS spec-check com\\\npare --dir /spec --approved /approved.json", []int{2}},
+		{"a double quote in a here-document whose quoted delimiter ends in a backslash",
+			"cat <<'END\\'\n\" \\\nEND\\\n: \"it's\"; env -u GITHUB_ACTIONS spec-check com\\\npare --dir /spec --approved /approved.json", []int{4}},
+		{"the plain comparison", "spec-check compare --dir /spec --approved /approved.json", []int{1}},
+		{"the same comment, then spec-check tree", "# \" \\\n: \"it's\"; env -u GITHUB_ACTIONS spec-check tree --dir /spec", nil},
+		{"the same here-document, then spec-check tree", "cat <<'END\\'\n\" \\\nEND\\\n: \"it's\"; env -u GITHUB_ACTIONS spec-check tree --dir /spec", nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			expectScriptAndBlock(t, row.text, row.at)
+		})
+	}
+}
+
+// A quoted text that spans lines is one word, as in Bash, so a quote that an earlier line opens
+// and this line closes leaves the split comparison after it outside quotes, and an escaped blank
+// stays in its word. The guard also reads each quoted word that holds a blank or a line break,
+// each here-document body and each comment as a script of its own, with a state of its own: so it
+// names a comparison that a nested shell runs, and a quoted text that no shell runs (the stated
+// cost), and a quote or a here-document that such a text leaves open changes nothing after it.
+func TestCIFilesThatCompareReadsAQuotedTextAsAScriptOfItsOwn(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name, text string
+		at         []int
+	}{
+		{"a single quote that an earlier line opens and the split line closes",
+			"echo 'start\nend' && spec-check comp\\\nare --dir .dispatch/spec --approved a.json", []int{2}},
+		{"a single quote that an earlier line opens, then a continuation between the words",
+			"X='\n' spec-check \\\ncompare --dir a", []int{2}},
+		{"a nested shell with a continuation inside single quotes",
+			"bash -c 'spec-check \\\ncompare --dir a'", []int{1}},
+		{"a nested shell behind env -i", "env -i PATH=\"$PATH\" sh -c 'spec-check \\\ncompare --dir a'", []int{1}},
+		{"an escaped space stays in its word", "spec-check \\ compare --dir a", nil},
+		{"a quoted text that no shell runs is named", "echo 'spec-check compare --dir a'", []int{1}},
+		{"a here-document body that no shell runs is named", "cat <<END\nspec-check compare --dir a\nEND", []int{2}},
+		{"a quote that a comment leaves open changes nothing after it",
+			"# it's\nspec-check com\\\npare --dir a", []int{2}},
+		{"a quote that a here-document body leaves open changes nothing after it",
+			"cat <<'END'\nit's\nEND\nspec-check com\\\npare --dir a", []int{4}},
+		{"a quote that a quoted word leaves open changes nothing after it",
+			": \"it's open\"; spec-check com\\\npare --dir a", []int{1}},
+		{"a here-document that a quoted word leaves open changes nothing after it",
+			": \"cat <<END\"\nspec-check com\\\npare --dir a\nEND", []int{2}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			expectScriptAndBlock(t, row.text, row.at)
+		})
+	}
+}
+
+// A folded or a plain run: value turns a line break into a space before Bash reads it, so a
+// backslash at the end of the line escapes that space: Bash runs spec-check " compare", which is
+// no comparison, and the YAML reading does not name it. The text reading reads the file's lines as
+// a script and names the line where the value goes on: the guard can name a line that Bash does
+// not run, and it never misses one for that reason. A literal block keeps its lines, and there
+// Bash runs the comparison.
+func TestCIFilesThatCompareNamesAFoldedValueThatABackslashSplits(t *testing.T) {
+	t.Parallel()
+	steps := "on: pull_request\njobs:\n  spec:\n    runs-on: ubuntu-latest\n    steps:\n"
+	for _, row := range []struct {
+		name, workflow string
+		want           []string
+	}{
+		{"a folded value, named where the text goes on", steps + "      - run: >\n          spec-check \\\n          compare --dir .dispatch/spec --approved a.json\n",
+			[]string{".github/workflows/a.yaml:7"}},
+		{"a plain value, named where the text goes on", steps + "      - run: spec-check \\\n          compare --dir .dispatch/spec --approved a.json\n",
+			[]string{".github/workflows/a.yaml:6"}},
+		{"a literal block, which is the comparison", steps + "      - run: |\n          spec-check \\\n            compare --dir .dispatch/spec --approved a.json\n",
+			[]string{".github/workflows/a.yaml:7"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ciFilesThatCompare(map[string][]byte{".github/workflows/a.yaml": []byte(row.workflow)}); !reflect.DeepEqual(got, row.want) {
+				t.Errorf("ciFilesThatCompare = %q, want %q", got, row.want)
 			}
 		})
 	}
 }
 
-// shellWords reads $'…' as Bash decodes it: each escape that Bash's ANSI-C quoting names, an
+// expectScriptAndBlock checks that ciFilesThatCompare names the lines at (from 1) of text, both as
+// a script and as the literal block of a workflow step, whose first line is line 5.
+func expectScriptAndBlock(t *testing.T, text string, at []int) {
+	t.Helper()
+	var want []string
+	for _, n := range at {
+		want = append(want, fmt.Sprintf(".github/workflows/a.yaml:%d", n+4))
+	}
+	for _, n := range at {
+		want = append(want, fmt.Sprintf("scripts/a.sh:%d", n))
+	}
+	files := map[string][]byte{
+		"scripts/a.sh":             []byte(text + "\n"),
+		".github/workflows/a.yaml": []byte(workflowSteps + "      - run: |\n          " + strings.ReplaceAll(text, "\n", "\n          ") + "\n"),
+	}
+	if got := ciFilesThatCompare(files); !reflect.DeepEqual(got, want) {
+		t.Errorf("ciFilesThatCompare(%q) = %q, want %q", text, got, want)
+	}
+}
+
+// readShell reads $'…' as Bash decodes it: each escape that Bash's ANSI-C quoting names, an
 // unknown escape as its backslash and its letter, and a NUL as the end of the quoted text. Each
 // want but the last is what bash 5.2.21 prints for printf %s with the same text; the last is a
-// quote that the line does not close, which this reader reads to the end of the line.
+// quote that the text does not close, which this reader reads to the end of the text. Each word
+// that readShell gives ends in a NUL byte.
 func TestShellWordsDecodesAnANSICQuoteAsBashDoes(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct{ in, want string }{
@@ -258,8 +367,8 @@ func TestShellWordsDecodesAnANSICQuoteAsBashDoes(t *testing.T) {
 		{`$'com\x70are'`, "compare"},
 		{`$'never closed`, "never closed"},
 	} {
-		if got, _ := shellWords(row.in); got != row.want {
-			t.Errorf("shellWords(%q) = %q, want %q", row.in, got, row.want)
+		if got := string(readShell(row.in).words); got != row.want+"\x00" {
+			t.Errorf("readShell(%q).words = %q, want %q", row.in, got, row.want+"\x00")
 		}
 	}
 }
