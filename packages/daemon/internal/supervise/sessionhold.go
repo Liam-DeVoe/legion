@@ -36,6 +36,35 @@ const MaxHeldNamesPerClaim = 2048
 // keeps every name it holds.
 var ErrHeldNamesCap = errors.New("the claim would hold more session names than one claim may")
 
+// ReleaseOldNamesStatement is the statement an operator runs to let a claim at MaxHeldNamesPerClaim
+// start a new session again: it frees the claim's holds recorded more than 12 hours ago, except
+// every name of the session it records and of the one it last abandoned. A name of its current or
+// abandoned session is its id, or a part of its file's path (the base name, the id an Oh My Pi name
+// gives, the id a Claude Code transcript is named for: RecordedHolds), so a hold whose name is one
+// of those ids or appears in one of those paths stays, which keeps a few more names than it must
+// and frees none it must keep.
+//
+// 12 hours is the secrets broker's carry window by default (BROKER_SESSION_CARRY_SECONDS, 43200):
+// past it the broker has swept the grants of a session nobody enrolled again, so another claim that
+// later takes a freed name takes no grant of it, and a transcript within the project is readable to
+// its roles anyway. A deployment with a longer window puts its own in the interval. The project and
+// token are written as SQL literals, their quotes doubled.
+func ReleaseOldNamesStatement(project string, token claim.Token) string {
+	return "delete from claim_sessions h using claims c" +
+		" where c.project = h.project and c.token = h.claim" +
+		" and h.project = " + SQLLiteral(project) + " and h.claim = " + SQLLiteral(string(token)) +
+		" and h.recorded_at < now() - interval '12 hours'" +
+		" and h.name <> c.session and h.name <> coalesce(c.abandoned_session ->> 'session', '')" +
+		" and strpos(c.session_file || ' ' || coalesce(c.abandoned_session ->> 'sessionFile', ''), h.name) = 0"
+}
+
+// SQLLiteral is s as a PostgreSQL string literal under standard_conforming_strings, the default
+// since PostgreSQL 9.1: quoted, with each quote doubled, so no text of s ends the literal. The
+// statements the daemon prints for an operator to run write every name an agent chose this way.
+func SQLLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
 // HoldKind is which of a session's names a hold keeps (Hold): each is a key some resume path
 // finds a session by.
 type HoldKind string
@@ -133,10 +162,11 @@ func checkSessionNames(session, sessionFile string) error {
 // is asked again every time, because an operator settles a name held for no claim by recording its
 // rightful holder, and that claim's next decision on this same machine must see it. A hold that
 // would take the claim past MaxHeldNamesPerClaim is refused with claim.HeldNamesCapRefusal and
-// records nothing; one of names the claim holds already adds none, so the claim still resumes its
-// own session. A store that does not answer refuses nothing: its error wraps errHoldUnanswered,
-// which a launch tries again at the probe interval charging nothing (launchNow), and any other
-// decision is asked again by the next one.
+// records nothing; one of names the claim holds already adds none, so a claim that records a
+// session still resumes it, while one that needs a new session starts none until an operator runs
+// the line's ReleaseOldNamesStatement. A store that does not answer refuses nothing: its error
+// wraps errHoldUnanswered, which a launch tries again at the probe interval charging nothing
+// (launchNow), and any other decision is asked again by the next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
 	var ask []Hold
 	for _, h := range RecordedHolds(session, sessionFile) {
@@ -153,8 +183,9 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		holders, err = m.deps.Store.HoldSessions(ctx, m.claim.Project, m.claim.Token, ask)
 		return err
 	}); errors.Is(err, ErrHeldNamesCap) {
-		m.log.Warn("supervise: refused a session whose names would take the claim past the most one claim may hold",
-			"claim", m.claim.Token, "names", len(ask), "cap", MaxHeldNamesPerClaim, "error", err)
+		m.log.Warn("supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the statement frees the names of its older sessions for a new one",
+			"claim", m.claim.Token, "names", len(ask), "cap", MaxHeldNamesPerClaim, "error", err,
+			"release", ReleaseOldNamesStatement(m.claim.Project, m.claim.Token))
 		return fmt.Errorf("hold the session of %s: %w", m.claim.Token, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
 	} else if err != nil {
 		return fmt.Errorf("hold the session of %s: %w: %w", m.claim.Token, errHoldUnanswered, err)

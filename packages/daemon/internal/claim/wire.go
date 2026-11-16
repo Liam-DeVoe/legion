@@ -304,11 +304,14 @@ func SessionNameTooLong(what string, bytes int) Refusal {
 // the most one claim may hold, max (supervise.MaxHeldNamesPerClaim): nothing deletes a hold, so
 // without a bound one role could grow the daemon's record of held names without end. It is a 409,
 // as SessionHeldRefusal is: the request is well formed, but the claim's own record refuses it.
-// Nothing of the registration is recorded, and the claim keeps every name it holds, so its next
-// launch resumes the session it recorded.
+// Nothing of the registration is recorded, and the claim keeps every name it holds. So a claim that
+// records a session still resumes that one, but a claim that needs a new session, one that records
+// none after a fresh start or one whose agent began another, starts none until an operator frees
+// the names of its older sessions (supervise.ReleaseOldNamesStatement, which the daemon's log line
+// gives).
 func HeldNamesCapRefusal(max int) Refusal {
 	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
-		"this claim holds the most session names one claim may (%d), so it registers no new session; it resumes one it recorded", max)}
+		"this claim holds the most session names one claim may (%d), so it registers no new session: a session it records still resumes, but a new one waits until an operator frees the names of its older sessions (the daemon's log gives the statement)", max)}
 }
 
 // staleContract renders the opening sentence a stale-caller refusal shares: got is the contract

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -81,8 +80,8 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 			line = append(line, "abandoned", c.Abandoned)
 		}
 		if c.Holder == "" {
-			line = append(line, "settle", "update claim_sessions set claim = '<token>' where project = "+sqlLiteral(s.plan.project)+
-				" and kind = "+sqlLiteral(string(c.Hold.Kind))+" and name = "+sqlLiteral(c.Hold.Name))
+			line = append(line, "settle", "update claim_sessions set claim = '<token>' where project = "+supervise.SQLLiteral(s.plan.project)+
+				" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name))
 		}
 		s.log.Error("supervise: a session name is recorded by claims that do not hold it; each of them this daemon supervises is suspended until an operator gives it a new session, or records it as the rightful holder of a name held for none, and resumes it", line...)
 		for _, token := range c.Claims {
@@ -111,10 +110,4 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// sqlLiteral is s as a PostgreSQL string literal under standard_conforming_strings, the default
-// since PostgreSQL 9.1: quoted, with each quote doubled, so no text of s ends the literal.
-func sqlLiteral(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
