@@ -116,10 +116,11 @@
 # (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
 # server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
 # each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
-# and score.ts does not score two runs that name one database. Docker assigns the containers' host
-# ports, the listener serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds for it
-# until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same way and
-# reports, and the kernel assigns each run's daemon stand-in its port.
+# and score.ts does not score two runs that name one database. Docker chooses the containers' host
+# ports and binds them itself, trying the next port when one is taken (a start fails only when ten
+# in a row are), the listener serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds
+# for it until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same
+# way and reports, and the kernel assigns each run's daemon stand-in its port.
 #
 # Operator input (no default in this repository), for `profile`, `judge` and `judge-omp`:
 #   LEGION_E2E_MODEL_ROUTE        gateway (the default), key-file or provider: how the agents reach

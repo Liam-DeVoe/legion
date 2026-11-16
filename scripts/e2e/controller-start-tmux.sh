@@ -126,7 +126,9 @@ note "legion $("$work/legion" version); OMP pin $pin; daemon port $daemon_port"
 
 refuse_leftovers legion-e2e-controller
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/postgres-password")
-# Docker assigns the containers' host ports when it binds them, so neither can lose a race.
+# Docker chooses each container's host port and binds it itself, trying the next port when one is
+# taken, so no port is free between its choice and its bind; the start fails only when ten ports
+# in a row are taken.
 docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=legion \
   -p "127.0.0.1::5432" mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
