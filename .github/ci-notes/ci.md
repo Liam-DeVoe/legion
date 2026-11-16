@@ -607,7 +607,8 @@ The Lean model of the airlock and the Go code it covers (airlock-lean): `lake bu
 and the axiom print read the model's own project, and the two fuzz runs compile the
 airlock package and compare it against the model's program, so a change to either
 side runs the job. Both sides live under internal/broker/airlock, which one glob
-names; the axiom check is a script of its own, which check k15 runs too; the Lean
+names, and the Go side also compiles internal/fold, the case fold it compares names
+in; the axiom check is a script of its own, which check k15 runs too; the Lean
 toolchain comes from the elan the job's action installs, and that action reads the
 `elan` row of the tool manifest through the fetch helper every install goes through.
 
