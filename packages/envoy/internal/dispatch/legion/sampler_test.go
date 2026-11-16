@@ -348,3 +348,42 @@ func TestAPassPrunesTheReadsPastTheirRetention(t *testing.T) {
 		t.Errorf("a second prune deleted %d (err %v), want none", pruned, err)
 	}
 }
+
+// Every read a pass makes is announced on StateChannel, with the project as the payload, a read
+// that failed as much as one that moved something: that announcement is the one thing that wakes
+// an open Legion board, since nothing commits in Dispatch when a remote daemon's state moves, and
+// the board's header carries the read's own time and failure (spec R2, the `/ws/live` view
+// `legion` pushing the change with no new request). The live view's own tests announce on the
+// channel themselves, so a sampler that stopped announcing would leave every open board frozen at
+// its first answer while every one of them still passed.
+func TestEachReadOfAPassIsAnnouncedToTheOpenBoards(t *testing.T) {
+	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
+	database, sampler := configured(t, daemon.URL)
+	listener, err := database.Pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("take a connection to listen on: %v", err)
+	}
+	defer listener.Release()
+	if _, err := listener.Exec(t.Context(), "listen "+StateChannel); err != nil {
+		t.Fatalf("listen on %s: %v", StateChannel, err)
+	}
+	announced := func(what string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		notification, err := listener.Conn().WaitForNotification(ctx)
+		if err != nil {
+			t.Fatalf("%s: no announcement on %s within 5s (%v): an open board would never hear this read", what, StateChannel, err)
+		}
+		if notification.Payload != "INFRA" {
+			t.Errorf("%s: announced %q, want the project INFRA", what, notification.Payload)
+		}
+	}
+
+	sampler.Pass(t.Context())
+	announced("a read that moved the observations")
+
+	daemon.refuses(http.StatusServiceUnavailable)
+	sampler.Pass(t.Context())
+	announced("a read that failed")
+}
