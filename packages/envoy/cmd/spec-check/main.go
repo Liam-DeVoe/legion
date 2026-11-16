@@ -3,9 +3,10 @@
 // approved spec and prints the approved text, checks that no CI file of a repository runs that
 // comparison, and derives the states of a scenario. It reads the directory as the Dispatch
 // server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file directly in it,
-// within the size bound, and passes over every other entry. Every rule is specgraph's (Parse,
-// Validate, Compare, CIFilesThatCompare, ReadScenario, Derive and WaitCycle); the command states
-// none of its own.
+// within the size bound, and passes over every other entry. Every rule of the spec files and of a
+// scenario is specgraph's (Parse, Validate, Compare, ReadScenario, Derive and WaitCycle); the
+// command states none of its own. The rule of guard is the command's (cifiles.go), since it reads
+// CI files and no spec file.
 //
 // Usage:
 //
@@ -24,9 +25,10 @@
 // ending "; the tree is refused". A file above the size bound gives the line "spec-check: file
 // too large: <dir>/<file> is <n> bytes (limit 1048576)" in place of the problems, and the counts
 // are 0: no file is parsed. With --allow-empty, a directory that does not exist or holds no
-// spec file is the empty tree, exit 0, ending "; the tree is empty"; without it, exit 2. --retired
-// names a file of the ids the approved spec removed, one id a line, "#" lines and blank lines
-// passed over; without it, a line on standard error says that no id was checked against them.
+// spec file is the empty tree, exit 0, ending "; the tree is empty"; without it, exit 2, with a
+// line that names --allow-empty. --retired names a file of the ids the approved spec removed, one
+// id a line, "#" lines and blank lines passed over; without it, a line on standard error says that
+// no id was checked against them.
 //
 // changes prints one line for each statement that only one of the two directories holds, or whose
 // text, parent, relations or checks differ between them, "spec-check: <id>: text, checks", or
@@ -72,16 +74,23 @@
 // prints nothing, when the approved spec does not hold an id or removed it.
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
-// <dir>/.github/scripts and <dir>/scripts, and names each line that runs the comparison
-// (specgraph.CIFilesThatCompare: each line as the shell reads it, and each run: value of a YAML
-// file as YAML reads it) on standard error, "spec-check: <dir>/<path>:<line>: this line runs the
-// comparison of the files with the approved spec, which no CI job does (R2)", with "spec-check:
-// <dir>: <n> lines of CI files run the comparison" on standard output, exit 1. It exits 1 with
-// "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file, since an
+// <dir>/.github/scripts and <dir>/scripts as text, and names each line that holds the command that
+// compares the files (ciFilesThatCompare) on standard error, "spec-check: <dir>/<path>:<line>:
+// this line holds the command that compares the files with the approved spec, and no CI job runs
+// that command (R2). If no shell runs this line, reword it.", with "spec-check: <dir>: <n> lines
+// of CI files hold the command that compares the files" on standard output, exit 1. It exits 1
+// with "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file, since an
 // instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>: no line
-// of <k> CI files runs the comparison". A step can run the comparison from a file it does not
-// read, such as a package script or a make target: compare's refusal covers that route when the
-// step passes the runner's environment on, and nothing covers it when the step does not.
+// of <k> CI files holds the command that compares the files". The guard names each place of a CI
+// file where the command's name and then the word compare stand as two words that follow each
+// other, with quote characters, a $ before a quote, backslashes and line breaks between them
+// ignored, and the indentation after a backslash and a line break ignored too. So it also names a
+// comment or a quoted text that no shell runs, and the author rewords that line. It does not find
+// a command that an expansion or an escape builds, or one with another word between the two, and
+// it is no defence against an author who hides the command: compare itself refuses to run in a CI
+// job. A step can run the comparison from a file it does not read, such as a package script or a
+// make target: compare's refusal covers that route when the step passes the runner's environment
+// on, and nothing covers it when the step does not.
 //
 // state reads a scenario of The Spec in the format of specgraph.ReadScenario (the directories of
 // internal/dispatch/specgraph/testdata/scenarios) and derives the state of each check and each
@@ -101,7 +110,12 @@
 // and support relations in the approved spec.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
-// does not take, with one line naming the case, or the usage. Each entry of a directory that is
+// does not take, with one line naming the case, or the usage, and for a file or a device on
+// standard output that does not take all of its text, its product, such as a full disk, with the
+// line "spec-check: <subcommand>: cannot write standard output: <error>" on standard error. A pipe
+// whose reader has gone ends the command by SIGPIPE instead, with no line. A standard output that
+// is closed at the start reads as /dev/null, since the Go runtime opens /dev/null on it before the
+// program starts, so the text is lost as with >/dev/null. Each entry of a directory that is
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
 // Paths are printed absolute. Every line but the usage, the JSON of checks and of state, the
 // blocks of print, and the statement, check and wait lines of state is written by runnerlog.Say
@@ -156,7 +170,9 @@ func main() {
 }
 
 // run runs the subcommand args name and answers its exit status, or 2 with the usage for no
-// subcommand or one it does not know.
+// subcommand or one it does not know. The subcommand writes its standard output through output,
+// so a write to stdout that fails, or takes part of its text, is one line on stderr and exit 2. A
+// write to a pipe whose reader has gone does not return: SIGPIPE ends the process.
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usage)
@@ -168,7 +184,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	return subcommand(args[1:], stdout, stderr)
+	out := &output{w: stdout}
+	code := subcommand(args[1:], out, stderr)
+	if out.err != nil {
+		say(stderr, "%s: cannot write standard output: %s", args[0], out.err)
+		return 2
+	}
+	return code
 }
 
 // say writes one line through runnerlog.Say with the command's prefix.
@@ -177,8 +199,8 @@ func say(w io.Writer, format string, args ...any) {
 }
 
 // counts is the count line's "3 statements, 4 checks, 2 components, 1 interface, 1 term": the
-// blocks the tree holds, an interface being a component with kind="interface", in the singular
-// for one.
+// blocks the tree holds, where components counts the components other than interfaces and
+// interfaces the components with kind="interface", each noun in the singular for one.
 func counts(statements, checks, components, interfaces, terms int) string {
 	return fmt.Sprintf("%s, %s, %s, %s, %s", count(statements, "statement"), count(checks, "check"),
 		count(components, "component"), count(interfaces, "interface"), count(terms, "term"))
@@ -186,15 +208,10 @@ func counts(statements, checks, components, interfaces, terms int) string {
 
 // count is "<n> <noun>s", with the noun alone for one.
 func count(n int, noun string) string {
-	return fmt.Sprintf("%d %s", n, plural(n, noun))
-}
-
-// plural is "<noun>s", or the noun alone for one.
-func plural(n int, noun string) string {
 	if n == 1 {
-		return noun
+		return "1 " + noun
 	}
-	return noun + "s"
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // parse reads args into flags, the flags of one subcommand, and answers whether the subcommand
@@ -224,8 +241,8 @@ func parse(flags *flag.FlagSet, args []string, stderr io.Writer, required ...str
 	return 2, false
 }
 
-// absolute is path made absolute, as every path the command prints is, and whether it could be;
-// when not, it has written the line that names the path.
+// absolute returns path as an absolute path, as the command prints every path, and whether it
+// could; when it could not, it has written the line that names the path.
 func absolute(stderr io.Writer, path string) (string, bool) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -303,4 +320,18 @@ func cannotJudge(stderr io.Writer, dir string, err error) int {
 	}
 	say(stderr, "%s: %s", dir, err)
 	return 2
+}
+
+// noSpecFile reports whether read, which answered j and err, found no spec file in its directory,
+// and the words that name the case: "does not exist" for notes.ErrNoDirectory, and "holds no spec
+// file" for a directory with none. tree and compare refuse such a directory without --allow-empty,
+// and read it as the empty tree with it.
+func noSpecFile(j judged, err error) (string, bool) {
+	switch {
+	case errors.Is(err, notes.ErrNoDirectory):
+		return "does not exist", true
+	case err == nil && j.files == 0:
+		return "holds no spec file", true
+	}
+	return "", false
 }

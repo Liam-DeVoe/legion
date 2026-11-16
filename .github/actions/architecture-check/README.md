@@ -74,7 +74,7 @@ Each line that the command prints about the directory or an entry of it names th
 
 - **Exit 2: the command did not judge the set.**
   The directory does not exist, cannot be read, or holds no note.
-  The log holds one line that names the directory and the case.
+  The log holds a warning for each entry that is not a note (see [Warnings](#warnings)), then one line that names the directory and the case.
   The command prints no count line, so the action sets no `count`.
 
 ## Warnings
