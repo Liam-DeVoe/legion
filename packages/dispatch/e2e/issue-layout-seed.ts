@@ -838,14 +838,10 @@ export async function seedPlanOrder(): Promise<PlanOrderSeed> {
     content: planOrderDocument(issue.key, true),
     name: "plan.md",
   });
+  // The server matches a quote against the block's text as it renders it, not the directive's
+  // markdown, so the task goes by its block id rather than by a quote of its source.
   await editArtifact(plan.artifact.id, {
-    ops: [
-      {
-        find: `\n\n:::plan_task{#${PLAN_ORDER_TASKS.gone} serves="${specBlockRef(issue.key, requirementBlockId(1))}"}\nTask ${PLAN_ORDER_TASKS.gone} of the redesign is one step of the build.\n:::`,
-        op: "replace",
-        with: "",
-      },
-    ],
+    ops: [{ block: PLAN_ORDER_TASKS.gone, op: "delete" }],
   });
   return {
     key: issue.key,
