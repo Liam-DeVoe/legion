@@ -1210,7 +1210,7 @@ func (s *server) insertSessionReply(
 	stored, err := writeMessageNode(ctx, tx, graphstore.MessageRow{
 		ID: replyID, IssueKey: deref(parent.IssueKey), InReplyTo: parent.ID,
 		RepliesToBlock: deref(block.nodeID()), Target: deref(parent.Target),
-	}, actor)
+	}, actor, nil)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}

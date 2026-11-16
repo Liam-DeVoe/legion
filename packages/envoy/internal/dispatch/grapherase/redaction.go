@@ -25,16 +25,19 @@ type redactedEvent struct {
 // readEvents reads the events about the node whose payload holds an erased text, and redacts each
 // payload in memory (redactPayload), which apply then writes. An event about a comment is one
 // whose payload is that comment's own (model.CommentEventPayload carries it as `id`) or names it
-// as `comment_id` (a delivery receipt); an event about a block is a document event of its own
+// as `comment_id` (a delivery receipt); an event about a message is a message event whose payload
+// is that message's own (model.MessageEventPayload carries it as `id`) or names it as
+// `message_id` (its delivery receipts, model.MessageDeliveryEventPayload, and its acceptance,
+// model.MessageAcceptedEventPayload); an event about a block is a document event of its own
 // document (`artifact.*` and `block.*`, whose payload names it as `artifact_id`), which carries
 // its versions and their diffs. Any other event that holds the same bytes - another person's
-// comment, another document's version - is about another node, and stays.
+// comment, another message, another document's version - is about another node, and stays.
 //
 // A document event's payload carries the whole document, so it holds the erased block's text
 // beside every sibling's: it is redacted where the erased text stands as a block of its own
 // (redactBlockQuote) and nowhere else, which leaves a sibling's line in a version's markdown or
-// in a diff as it was written. A comment's own event carries that comment's body and nothing
-// else of anybody's, so every one of those bytes goes wherever it stands.
+// in a diff as it was written. A comment's or a message's own event carries that item's body and
+// nothing else of anybody's, so every one of those bytes goes wherever it stands.
 func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.texts) == 0 {
 		return nil
@@ -43,6 +46,8 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	switch {
 	case refs.ItemKind(e.Kind) == refs.ItemComment:
 		about, subject = `payload->>'id' = $1 or payload->>'comment_id' = $1`, e.ID
+	case refs.ItemKind(e.Kind) == refs.ItemMessage:
+		about, subject = `type like 'message.%' and (payload->>'id' = $1 or payload->>'message_id' = $1)`, e.ID
 	case read.document != nil:
 		about, subject = `payload->>'artifact_id' = $1 and (type like 'artifact.%' or type like 'block.%')`, read.document.artifact
 	default:

@@ -203,8 +203,12 @@ var storeWriteCallSites = []string{
 	// carry's answer, among the sites of asks.Settle above, and each owed pass, which appends them
 	// at the sentinel in its own transaction: the owed index, the re-index of old text, the
 	// rebuild, a restored wording and the seed). The nodes are taken after the item's own row and
-	// state row, in ascending (kind, id) in one statement (graphstore.WriteUncaused), and Caused
-	// takes no row they did not (refs' TestCausedTakesTheStoreLockOrder proves that step).
+	// state row and before its block rows, in ascending (kind, id) in one statement
+	// (graphstore.WriteUncaused): api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds the
+	// comment and reply paths to those steps, and TestEveryObjectNodeWriterTakesTheStoreLockOrder
+	// the ask and message paths (bodyBlockSteps). refs' TestCausedTakesTheStoreLockOrder proves
+	// that Caused takes no row its pass did not, over a document's block index, the same
+	// WriteUncaused and Caused.
 	"refs/item_blocks.go#indexItemBlocks",
 	"refs/ask_blocks.go#indexAskIfOwed",
 	"refs/reply_blocks.go#IndexItemIfOwed",
@@ -216,10 +220,10 @@ var storeWriteCallSites = []string{
 	"docs/ask_blocks.go#causeIndexedAsks",
 	"docs/decided_wording.go#restoreWordings",
 	"cmd/dispatch-seed/write_items.go#stateAtSentinel",
-	// The erase of a comment's or an ask's block nodes with the item (grapherase's
-	// eraseItemBlocks), after the item's own node, each through EraseNode over the tuples its
-	// listing named.
-	"grapherase/erase.go#eraseItemBlocks",
+	// The erase of a comment's, a message's or an ask's parts with the item (grapherase's
+	// eraseItemParts): its block nodes and its delivery attempts, after the item's own node, each
+	// through EraseNode over the tuples its listing named.
+	"grapherase/erase.go#eraseItemParts",
 }
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,

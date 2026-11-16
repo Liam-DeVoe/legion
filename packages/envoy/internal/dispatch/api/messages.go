@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -293,7 +294,13 @@ func (w messageStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
 // message on none is between its thread's parties (graphstore.ThreadParties): those of the root it
 // answers, read up in_reply_to as messageThreadCTE walks it, or, for a message that answers
 // nothing, its own author and target.
-func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow, author model.Actor) (messageStoreWrite, error) {
+//
+// pages is, for a write that stores several messages, the page each of their targets hangs from,
+// which that write resolved and wrote before any of them ("" for a target that hangs from none;
+// writeBroadcast): a message whose target pages holds hangs from that page without resolving or
+// writing it again, so the write takes every page once, in ascending (kind, id), rather than one
+// per message in the order it writes them. A write of one message passes nil.
+func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow, author model.Actor, pages map[string]string) (messageStoreWrite, error) {
 	var project string
 	var parties []string
 	switch {
@@ -326,14 +333,19 @@ func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow,
 	// A message on no issue that answers nothing sits on the page the store gives the agent it
 	// was sent to, which for a session that claimed a role is that role's (graphstore.AgentPage),
 	// the rule the publisher writes a session's page by.
+	written := false
 	if row.OnAgentPage() {
-		page, ok, err := graphstore.AgentPage(ctx, tx, row.Target)
-		if err != nil {
-			return messageStoreWrite{}, err
+		var page string
+		if page, written = pages[row.Target]; !written {
+			resolved, ok, err := graphstore.AgentPage(ctx, tx, row.Target)
+			if err != nil {
+				return messageStoreWrite{}, err
+			}
+			if ok {
+				page = resolved
+			}
 		}
-		if ok {
-			row.Page = page
-		}
+		row.Page = page
 	}
 	write := messageStoreWrite{}
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&write.at); err != nil {
@@ -341,11 +353,16 @@ func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow,
 	}
 	write.node = graphstore.MessageNode(row.ID, project, parties, author, write.at)
 	nodes, tuples, projected := graphstore.MessageFacts([]graphstore.Node{write.node}, nil, row, author, write.at, graphstore.NoEvent)
-	written, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)
+	if written {
+		// The page is this transaction's already: MessageFacts' part_of names it, and its node is
+		// not written a second time.
+		nodes = slices.DeleteFunc(nodes, func(node graphstore.Node) bool { return node.Kind == graphstore.KindPage })
+	}
+	stored, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)
 	if err != nil {
 		return messageStoreWrite{}, fmt.Errorf("write the node of message %s: %w", row.ID, err)
 	}
-	write.written, write.projected = written, projected
+	write.written, write.projected = stored, projected
 	return write, nil
 }
 
@@ -428,7 +445,7 @@ func (s *server) createStoredMessage(
 	stored, err := writeMessageNode(ctx, tx, graphstore.MessageRow{
 		ID: messageID, IssueKey: deref(issueKey), InReplyTo: deref(input.InReplyTo),
 		RepliesToBlock: deref(block.nodeID()), Target: deref(input.Target),
-	}, actor)
+	}, actor, nil)
 	if err != nil {
 		return model.Message{}, nil, err
 	}

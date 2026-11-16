@@ -236,6 +236,12 @@ func (r *settlementReconciliation) causeFollows(ctx context.Context, tx pgx.Tx, 
 // names, as causeFollows finds an ask.opened: withholdAnswers drops only block.repaired events, so
 // every ask event the reconciliation planned is among them. An indexed ask whose event is not there
 // is a settlement that lost the event recording a write it made, and fails here naming the ask.
+//
+// One settlement can index one ask twice - its restoration, then the rewording of the block that
+// came back (reconcileAskBlocks) - and the second index reads where the store places the ask's
+// parts while the first one's part_of is still held for its event, so it states again the part_of
+// of every part the first one placed (refs' itemBlockParents). A part has one place, so each part's
+// part_of is appended once, under the event of the first write that stated it.
 func (r *settlementReconciliation) causeIndexedAsks(ctx context.Context, tx pgx.Tx, appended []model.Event) error {
 	if len(r.indexed) == 0 {
 		return nil
@@ -249,16 +255,41 @@ func (r *settlementReconciliation) causeIndexedAsks(ctx context.Context, tx pgx.
 			recorded[[2]string{event.Type, payload.Ask.ID}] = event.ID
 		}
 	}
+	// placed is each part whose part_of an earlier write of this settlement states, by its node.
+	var placed map[string]struct{}
 	for _, indexed := range r.indexed {
 		event, found := recorded[[2]string{indexed.event, indexed.ask}]
 		if !found {
 			return fmt.Errorf("settlement indexed ask %s and appended no %s for it", indexed.ask, indexed.event)
 		}
-		if err := graphstore.Caused(ctx, tx, indexed.write, event); err != nil {
+		write := indexed.write
+		if placed != nil {
+			// r.indexed is read here once, so the held tuples are dropped in place.
+			write.Tuples = slices.DeleteFunc(write.Tuples, func(held graphstore.UncausedTuple) bool {
+				_, stated := placed[held.FromID]
+				return stated && partOfItsAsk(held.Tuple)
+			})
+		}
+		for _, held := range write.Tuples {
+			if partOfItsAsk(held.Tuple) {
+				if placed == nil {
+					placed = map[string]struct{}{}
+				}
+				placed[held.FromID] = struct{}{}
+			}
+		}
+		if err := graphstore.Caused(ctx, tx, write, event); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// partOfItsAsk is whether tuple states the place of an ask's part: its part_of, asserted, out of
+// the part's block node into the ask.
+func partOfItsAsk(tuple graphstore.Tuple) bool {
+	return tuple.Asserted && tuple.Kind == graphstore.TuplePartOf && tuple.FromKind == graphstore.KindBlock &&
+		tuple.ToKind == graphstore.KindAsk
 }
 
 // causeSettledAnswers appends what asks.Settle stated on each ask whose answer state this

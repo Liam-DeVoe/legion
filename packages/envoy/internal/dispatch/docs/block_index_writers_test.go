@@ -704,9 +704,10 @@ var indexPasses = map[string]string{
 	"docs/ask_blocks.go#causeIndexedAsks":              "the asks a settlement indexed and the events it appended for them",
 	"docs/decided_wording.go#restoreWordings":          "the decided wording the restore wrote back",
 	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "the seed's own plan",
-	// The erase of an erased comment's or ask's block nodes and their tuples: the node the
-	// operator named and what the store holds of the blocks its address names.
-	"grapherase/erase.go#eraseItemBlocks": "the node the operator named",
+	// The erase of an erased comment's, message's or ask's block nodes and delivery attempts and
+	// their tuples: the node the operator named and what the store holds of the parts its item's
+	// rows name.
+	"grapherase/erase.go#eraseItemParts": "the node the operator named",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the

@@ -2,6 +2,7 @@ package refs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -107,16 +108,28 @@ func (scope itemScope) blockNodeOf(kind ItemKind, itemID, blockID string) bool {
 
 // blockNode is the node of one block of the item, as a pass that writes the block states it: a
 // block, of the closed supertag list's `block` (graphstore.KindBlock), in state, read under its
-// item's visibility, project and parties and made by its item's maker, so it answers who may see
-// it exactly as the item it is a part of does, made at `at` - a node already there keeps the
-// made_at its first write gave it - and with no cause yet, which graphstore.Caused gives it.
-func (scope itemScope) blockNode(address string, at time.Time, state string) graphstore.Node {
+// item's visibility, project and parties, so it answers who may see it exactly as the item it is a
+// part of does, made by maker - the item's maker, or whoever made the block where that is someone
+// else (makerOf) - at `at` - a node already there keeps the made_at and made_by its first write
+// gave it - and with no cause yet, which graphstore.Caused gives it.
+func (scope itemScope) blockNode(address string, at time.Time, state string, maker model.Actor) graphstore.Node {
 	return graphstore.Node{
 		Kind: BlockNodeKind, ID: address, Supertag: BlockSupertag,
 		Visibility: scope.node.Visibility, State: state,
 		Project: scope.node.Project, Parties: scope.node.Parties,
-		MadeAt: at, MadeBy: scope.node.MadeBy, SourceEvent: graphstore.NoEvent,
+		MadeAt: at, MadeBy: maker, SourceEvent: graphstore.NoEvent,
 	}
+}
+
+// makerOf is who made block blockID of the item, which its node and every tuple it states name:
+// the maker makers holds for it - an ask's answer part, made by whoever answered (askPartMakers)
+// - and otherwise the item's own maker, who made every block of a comment or a message and every
+// question and option part of an ask.
+func (scope itemScope) makerOf(makers map[string]model.Actor, blockID string) model.Actor {
+	if maker, own := makers[blockID]; own {
+		return maker
+	}
+	return scope.node.MadeBy
 }
 
 // revisions is whether the kind counts its indexed revisions and records the text its blocks held
@@ -336,7 +349,7 @@ func indexItem(
 // itemBlockSource is one reading of an item's blocks, which indexItemBlocks writes: the blocks in
 // order, the sum of the text they were read from (the state row's body_sha256), how each takes
 // its id against the blocks the item holds, the maker each records (made_by, for a kind whose
-// blocks have one: nil, or an entry per block, null where the item's own author made it), and
+// blocks have one: nil, or an entry per block, nil where the item's own author made it), and
 // the links the blocks hold once their ids are known. The context the blocks are embedded with
 // is not read here: this write records the block index alone, and the window arm reads that
 // context for itself when it writes the windows (itemWindowText).
@@ -344,7 +357,7 @@ type itemBlockSource struct {
 	blocks  []itemblocks.Block
 	bodySum string
 	ids     func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
-	madeBy  []*string
+	madeBy  []*model.Actor
 	pairs   func(next []itemblocks.Block, ids []string) []blockPair
 }
 
@@ -487,7 +500,27 @@ func indexItemBlocks(
 	// a link it holds is stated under (replaceItemBlockRefs): every block a changed revision
 	// writes or keeps that is a node of the store, and otherwise the rows as they were.
 	named := make(map[string]bool, len(written)+len(kept))
+	// makers is each block whose maker is not the item's own, as its row holds it once this call
+	// is done: a block it writes records the source's maker, and every other keeps the one its row
+	// was written with. A kind whose blocks record no maker holds none, and makes no map.
+	var makers map[string]model.Actor
+	own := func(id string, maker *model.Actor) {
+		if maker == nil {
+			delete(makers, id)
+			return
+		}
+		if makers == nil {
+			makers = map[string]model.Actor{}
+		}
+		makers[id] = *maker
+	}
+	for id, row := range rows {
+		own(id, row.madeBy)
+	}
 	if changed {
+		for _, row := range written {
+			own(row.id, row.madeBy)
+		}
 		revision++
 		madeAt := &at
 		if !state.indexed && tables.revisions() && state.edited {
@@ -496,17 +529,17 @@ func indexItemBlocks(
 		nodes := make([]graphstore.Node, 0, len(written)+len(kept)+len(removed))
 		for _, row := range written {
 			if row.named {
-				nodes = append(nodes, scope.blockNode(itemBlockNodeAddress(kind, itemID, row.id), at, graphstore.StateLive))
+				nodes = append(nodes, scope.blockNode(itemBlockNodeAddress(kind, itemID, row.id), at, graphstore.StateLive, scope.makerOf(makers, row.id)))
 			}
 		}
 		for _, row := range kept {
 			if row.named && !rows[row.id].named {
-				nodes = append(nodes, scope.blockNode(itemBlockNodeAddress(kind, itemID, row.id), at, graphstore.StateLive))
+				nodes = append(nodes, scope.blockNode(itemBlockNodeAddress(kind, itemID, row.id), at, graphstore.StateLive, scope.makerOf(makers, row.id)))
 			}
 		}
 		for _, id := range removed {
 			if rows[id].named && scope.blockNodeOf(kind, itemID, id) {
-				nodes = append(nodes, scope.blockNode(itemBlockNodeAddress(kind, itemID, id), at, graphstore.StateGone))
+				nodes = append(nodes, scope.blockNode(itemBlockNodeAddress(kind, itemID, id), at, graphstore.StateGone, scope.makerOf(makers, id)))
 			}
 		}
 		if write, err = graphstore.WriteUncaused(ctx, tx, nodes, nil); err != nil {
@@ -524,7 +557,7 @@ func indexItemBlocks(
 				placed = append(placed, id)
 			}
 		}
-		parents, err := itemBlockParents(ctx, tx, kind, itemID, at, scope, placed, rows)
+		parents, err := itemBlockParents(ctx, tx, kind, itemID, at, scope, placed, rows, makers)
 		if err != nil {
 			return nil, graphstore.Uncaused{}, err
 		}
@@ -535,7 +568,7 @@ func indexItemBlocks(
 		}
 	}
 	pairs := source.pairs(next, ids)
-	moved, links, err := replaceItemBlockRefs(ctx, tx, kind, tables, itemID, at, !state.indexed, pairs, named, scope)
+	moved, links, err := replaceItemBlockRefs(ctx, tx, kind, tables, itemID, at, !state.indexed, pairs, named, scope, makers)
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}
@@ -704,13 +737,31 @@ func lockItemState(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTab
 // removed ones, the most recently removed first, so Align's first untaken match prefers the block
 // in place and, among removed blocks of equal text, the last removed; and beside them, by id, what
 // else the pass reads of each row (storedItemBlock).
+//
+// A current row whose node the store holds gone reads as naming none. Neither arm of graph_edges
+// answers such a row - the old one reads only rows that name no node, and the store's only live
+// nodes - so it is the index's to take over as it takes over an older build's row: the next
+// revision this release writes states the node live again and names it (indexItemBlocks). It is
+// what a restore of a removed block leaves where nothing unmarks the row: the release before this
+// one restores a block by an upsert that moves its position and leaves its node columns as they
+// were, and only migration 20261116150000's trigger has that update name no node, so whatever
+// write leaves a row current under a gone node, this read keeps it from being answered by neither
+// arm for good.
 func storedItemBlocks(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, itemID string) ([]itemblocks.Stored, map[string]storedItemBlock, error) {
+	// Only a kind whose blocks record a maker has the column; kind is this package's own
+	// constant, never caller input.
+	maker := "null::jsonb"
+	if tables.makers {
+		maker = "b.made_by"
+	}
 	rows, err := tx.Query(ctx, `
-		select block_id, type, text_sha256, coalesce(position, -1), excerpt, created_at, node_kind is not null
-		from `+tables.blocks+`
-		where `+tables.item+` = $1::uuid
-		order by position nulls last, removed_at desc, length(block_id), block_id
-	`, itemID)
+		select b.block_id, b.type, b.text_sha256, coalesce(b.position, -1), b.excerpt, b.created_at,
+		       b.node_kind is not null and not (b.position is not null and n.state = $2), `+maker+`
+		from `+tables.blocks+` b
+		left join graph_nodes n on n.kind = b.node_kind and n.id = b.node_address
+		where b.`+tables.item+` = $1::uuid
+		order by b.position nulls last, b.removed_at desc, length(b.block_id), b.block_id
+	`, itemID, graphstore.StateGone)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the blocks of %s %s: %w", kind, itemID, err)
 	}
@@ -720,8 +771,15 @@ func storedItemBlocks(ctx context.Context, tx pgx.Tx, kind ItemKind, tables item
 	for rows.Next() {
 		var block itemblocks.Stored
 		var row storedItemBlock
-		if err := rows.Scan(&block.ID, &block.Type, &block.Hash, &block.Position, &row.excerpt, &row.createdAt, &row.named); err != nil {
+		var madeBy []byte
+		if err := rows.Scan(&block.ID, &block.Type, &block.Hash, &block.Position, &row.excerpt, &row.createdAt, &row.named, &madeBy); err != nil {
 			return nil, nil, fmt.Errorf("scan a block of %s %s: %w", kind, itemID, err)
+		}
+		if madeBy != nil {
+			row.madeBy = &model.Actor{}
+			if err := json.Unmarshal(madeBy, row.madeBy); err != nil {
+				return nil, nil, fmt.Errorf("decode the maker of block %s of %s %s: %w", block.ID, kind, itemID, err)
+			}
 		}
 		row.current = block.Position >= 0
 		stored = append(stored, block)
@@ -733,12 +791,14 @@ func storedItemBlocks(ctx context.Context, tx pgx.Tx, kind ItemKind, tables item
 // storedItemBlock is what an index reads of one block row beside what itemblocks aligns on:
 // whether the block is current, its stored excerpt, which a link it holds shows, when its row
 // was first written, which is the moment its part_of is dated by, as the old arm of graph_edges
-// dates it, and whether the row names its node, which an older build's row does not.
+// dates it, whether the row names a node the store answers it by, which an older build's row
+// does not (storedItemBlocks), and the maker it records, nil where the item's own author made it.
 type storedItemBlock struct {
 	current   bool
 	excerpt   string
 	createdAt time.Time
 	named     bool
+	madeBy    *model.Actor
 }
 
 // blockNumber is the number of block id b<N>.
@@ -752,9 +812,9 @@ func blockNumber(id string) (int, bool) {
 }
 
 // itemBlockRow is one current block indexItemBlocks writes: its id, position, type, identity
-// hash, excerpt, text and, for a kind whose blocks record one, its maker as the json its made_by
-// column holds (nil: the item's own author made it), and whether the block is a node of the
-// store (itemScope.blockNodeOf), which its row then names.
+// hash, excerpt, text and, for a kind whose blocks record one, its maker (nil: the item's own
+// author made it), which its made_by column holds as json, and whether the block is a node of
+// the store (itemScope.blockNodeOf), which its row then names.
 type itemBlockRow struct {
 	id       string
 	position int
@@ -762,7 +822,7 @@ type itemBlockRow struct {
 	sum      string
 	excerpt  string
 	text     string
-	madeBy   *string
+	madeBy   *model.Actor
 	named    bool
 }
 
@@ -800,7 +860,7 @@ func writeItemBlocks(
 		}
 	}
 	if len(written) > 0 {
-		ids, positions, types, sums, excerpts, makers, named := itemBlockColumns(written)
+		ids, positions, types, sums, excerpts, named := itemBlockColumns(written)
 		var err error
 		if tables.revisions() {
 			// Only a kind whose blocks record a maker has the column, so the three fragments are
@@ -808,6 +868,10 @@ func writeItemBlocks(
 			maker, makerValue, makerUpdate := "", "", ""
 			if tables.makers {
 				maker, makerValue, makerUpdate = ", made_by", ", b.made_by::jsonb", ", made_by = excluded.made_by"
+			}
+			var makers []*string
+			if makers, err = itemBlockMakers(kind, itemID, written); err != nil {
+				return err
 			}
 			_, err = tx.Exec(ctx, `
 				insert into `+tables.blocks+` (`+tables.item+`, block_id, node_id, node_kind, node_address, position, type, text_sha256, excerpt, made_at, changed_revision, changed_at, created_at`+maker+`)
@@ -851,7 +915,7 @@ func writeItemBlocks(
 		}
 	}
 	if len(kept) > 0 {
-		ids, positions, types, _, excerpts, _, named := itemBlockColumns(kept)
+		ids, positions, types, _, excerpts, named := itemBlockColumns(kept)
 		if _, err := tx.Exec(ctx, `
 			update `+tables.blocks+` b set position = k.position, type = k.type, excerpt = k.excerpt,
 				node_kind = case when k.named then $7 end, node_address = case when k.named then b.node_id end
@@ -883,17 +947,34 @@ func writeItemBlocks(
 }
 
 // itemBlockColumns is rows as the parallel arrays an unnest reads.
-func itemBlockColumns(rows []itemBlockRow) (ids []string, positions []int32, types, sums, excerpts []string, makers []*string, named []bool) {
+func itemBlockColumns(rows []itemBlockRow) (ids []string, positions []int32, types, sums, excerpts []string, named []bool) {
 	for _, row := range rows {
 		ids = append(ids, row.id)
 		positions = append(positions, int32(row.position))
 		types = append(types, row.nodeType)
 		sums = append(sums, row.sum)
 		excerpts = append(excerpts, row.excerpt)
-		makers = append(makers, row.madeBy)
 		named = append(named, row.named)
 	}
-	return ids, positions, types, sums, excerpts, makers, named
+	return ids, positions, types, sums, excerpts, named
+}
+
+// itemBlockMakers is each row's maker as the json its made_by column holds, nil where the item's
+// own author made it, which is every row of a kind whose blocks record no maker.
+func itemBlockMakers(kind ItemKind, itemID string, rows []itemBlockRow) ([]*string, error) {
+	makers := make([]*string, len(rows))
+	for index, row := range rows {
+		if row.madeBy == nil {
+			continue
+		}
+		encoded, err := json.Marshal(row.madeBy)
+		if err != nil {
+			return nil, fmt.Errorf("encode the maker of block %s of %s %s: %w", row.id, kind, itemID, err)
+		}
+		maker := string(encoded)
+		makers[index] = &maker
+	}
+	return makers, nil
 }
 
 // itemBlockParents states the part_of of each block of the item that is a node once a revision is
@@ -906,8 +987,9 @@ func itemBlockColumns(rows []itemBlockRow) (ids []string, positions []int32, typ
 // the column the release before this one answers it from, so graph_edges answers it at one time on
 // either release: `at` for a row this revision inserted, which writeItemBlocks writes as its
 // created_at, and, for a row already stored (stored), which named no node until this pass took it
-// over, the row's own, the moment of the earlier write that inserted it. Each is made by the item's
-// maker.
+// over, the row's own, the moment of the earlier write that inserted it. Each is made by the
+// block's maker (makerOf): whoever answered, for an ask's answer part, and the item's maker for
+// every other block.
 func itemBlockParents(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -917,6 +999,7 @@ func itemBlockParents(
 	scope itemScope,
 	placed []string,
 	stored map[string]storedItemBlock,
+	makers map[string]model.Actor,
 ) ([]graphstore.UncausedTuple, error) {
 	if len(placed) == 0 {
 		return nil, nil
@@ -951,7 +1034,7 @@ func itemBlockParents(
 		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: BlockNodeKind, FromID: address, Kind: graphstore.TuplePartOf,
 			ToKind: string(kind), ToID: itemID,
-			At: placedAt, Who: scope.node.MadeBy, Asserted: true,
+			At: placedAt, Who: scope.makerOf(makers, placed[index]), Asserted: true,
 		}})
 	}
 	return tuples, nil
@@ -984,9 +1067,10 @@ func itemBlockPairs(next []itemblocks.Block, ids []string, located []text.Locate
 // otherwise, which is the row its old arm answers; only a row that named its node is retracted,
 // since no other had a tuple. The node columns are the insert's alone: a pair an older build wrote
 // keeps the nulls it was written with, and the old arm keeps answering it, as a document's does.
-// Each tuple is made by the item's maker; an asserted one is dated by its row, whose source_seq the
-// item's event fills where the insert left it null (graphstore.UncausedTuple's LegacyFromCause), and
-// a retraction by `at`, the moment the pair stopped being held.
+// Each tuple is made by the maker of the block it is out of (makerOf); an asserted one is dated by
+// its row, whose source_seq the item's event fills where the insert left it null
+// (graphstore.UncausedTuple's LegacyFromCause), and a retraction by `at`, the moment the pair
+// stopped being held.
 func replaceItemBlockRefs(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -998,6 +1082,7 @@ func replaceItemBlockRefs(
 	pairs []blockPair,
 	named map[string]bool,
 	scope itemScope,
+	makers map[string]model.Actor,
 ) ([]Target, []graphstore.UncausedTuple, error) {
 	blockIDs := make([]string, len(pairs))
 	kinds := make([]string, len(pairs))
@@ -1029,7 +1114,7 @@ func replaceItemBlockRefs(
 			tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 				FromKind: BlockNodeKind, FromID: itemBlockNodeAddress(kind, itemID, row.blockID), Kind: row.kind,
 				ToKind: row.toKind, ToID: row.toID,
-				At: at, Who: scope.node.MadeBy, Asserted: false,
+				At: at, Who: scope.makerOf(makers, row.blockID), Asserted: false,
 			}})
 		}
 	}
@@ -1060,7 +1145,7 @@ func replaceItemBlockRefs(
 			Tuple: graphstore.Tuple{
 				FromKind: BlockNodeKind, FromID: itemBlockNodeAddress(kind, itemID, row.blockID), Kind: row.kind,
 				ToKind: row.toKind, ToID: row.toID,
-				At: row.createdAt, Who: scope.node.MadeBy, LegacySourceSeq: row.sourceSeq, Asserted: true,
+				At: row.createdAt, Who: scope.makerOf(makers, row.blockID), LegacySourceSeq: row.sourceSeq, Asserted: true,
 			},
 			LegacyFromCause: true,
 		})

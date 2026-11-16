@@ -111,22 +111,18 @@ func askAnswerText(answer model.AskAnswer) string {
 	}
 }
 
-// askPartMakers is the maker each part records in ask_blocks.made_by, in AskParts' order: null
+// askPartMakers is the maker each part records in ask_blocks.made_by, in AskParts' order: nil
 // for the question and every option, which the ask's author made, and the answerer for the answer
 // part, who is not the ask's author. A part keeps the maker it was written with while its text
-// stands, as it keeps its text.
-func askPartMakers(ask model.Ask, parts []itemblocks.Block) ([]*string, error) {
+// stands, as it keeps its text, and its node and every tuple it states name that maker
+// (indexItemBlocks).
+func askPartMakers(ask model.Ask, parts []itemblocks.Block) []*model.Actor {
 	if ask.Answer == nil || len(parts) == 0 {
-		return nil, nil
+		return nil
 	}
-	encoded, err := json.Marshal(model.Actor{Kind: "user", ID: ask.Answer.User})
-	if err != nil {
-		return nil, fmt.Errorf("encode the answerer of ask %s: %w", ask.ID, err)
-	}
-	maker := string(encoded)
-	makers := make([]*string, len(parts))
-	makers[len(parts)-1] = &maker
-	return makers, nil
+	makers := make([]*model.Actor, len(parts))
+	makers[len(parts)-1] = &model.Actor{Kind: "user", ID: ask.Answer.User}
+	return makers
 }
 
 // askPartsSum is the ask's ask_block_state.body_sha256: an ask has no body to hash, so the state
@@ -215,10 +211,7 @@ func IndexAskPartsCounted(
 // indexAskParts is IndexAskParts over parts the caller has already read and summed, under a scope
 // it has already read.
 func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, parts []itemblocks.Block, sum string, r *Reader, at time.Time, scope itemScope) ([]Target, graphstore.Uncaused, error) {
-	makers, err := askPartMakers(ask, parts)
-	if err != nil {
-		return nil, graphstore.Uncaused{}, err
-	}
+	makers := askPartMakers(ask, parts)
 	return indexItemBlocks(ctx, tx, ItemAsk, ask.ID, at, scope, itemBlockSource{
 		blocks:  parts,
 		bodySum: sum,

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -472,6 +473,24 @@ func (s *server) writeBroadcast(
 	if err := bindRequestKeyRecovery(ctx, tx, broadcastRecovery{BroadcastID: sent.ID, Excluded: excluded}); err != nil {
 		return broadcastRead{}, nil, err
 	}
+	// Every copy hangs from its recipient's page (graphstore.MessageFacts), and a node write locks
+	// a page the store holds already and waits on one another transaction is making: two
+	// broadcasts to [A, B] and [B, A] that each took their recipients' pages copy by copy would
+	// each hold one page the other waits for, and Postgres would end one of them. So every
+	// recipient's page is resolved here and written in one node write, which takes the pages in
+	// ascending (kind, id) as every node write does (graphstore.WriteUncaused), before any copy's
+	// node; each copy then hangs from its page without writing it again (writeMessageNode). A
+	// page that write makes is caused by the event of the first copy that hangs from it, as it was
+	// when that copy's own write made it.
+	pages, pageNodes, err := resolveRecipientPages(ctx, tx, recipients, actor, sent.CreatedAt)
+	if err != nil {
+		return broadcastRead{}, nil, err
+	}
+	pagesWritten, err := graphstore.WriteUncaused(ctx, tx, pageNodes, nil)
+	if err != nil {
+		return broadcastRead{}, nil, fmt.Errorf("write the pages of broadcast %s's recipients: %w", sent.ID, err)
+	}
+	owedPages := writesByPage(pagesWritten)
 	events := make([]model.Event, 0, len(recipients))
 	sent.Recipients = make([]broadcastRecipient, 0, len(recipients))
 	for position, recipient := range recipients {
@@ -481,7 +500,7 @@ func (s *server) writeBroadcast(
 		// its broadcast stated as facts that wait for its event; the row names the node in its
 		// insert.
 		messageID := uuid.NewString()
-		stored, err := writeMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, Target: target, BroadcastID: sent.ID}, actor)
+		stored, err := writeMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, Target: target, BroadcastID: sent.ID}, actor, pages)
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
@@ -517,6 +536,12 @@ func (s *server) writeBroadcast(
 		}
 		if err := graphstore.Caused(ctx, tx, stored.written, event.ID); err != nil {
 			return broadcastRead{}, nil, err
+		}
+		if held, owed := owedPages[pages[target]]; owed {
+			if err := graphstore.Caused(ctx, tx, held, event.ID); err != nil {
+				return broadcastRead{}, nil, err
+			}
+			delete(owedPages, pages[target])
 		}
 		// What the copy's body is in the store, under the same event (indexMessage).
 		if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
@@ -569,6 +594,54 @@ func (s *server) writeBroadcast(
 	// and all of them share the one row keying on the text alone gives them.
 	s.storeDisplayTrees(ctx, sent.ID, body)
 	return sent, events, nil
+}
+
+// resolveRecipientPages is the page each recipient's copy hangs from, by the copy's target: the
+// page the store gives the agent its session is (graphstore.AgentPage), or "" where it gives none.
+// Beside it is the node of each such page once, as a copy's own write would make it
+// (graphstore.PageNode): made by the sender at the broadcast's own time, the transaction's, which
+// every copy and its node carry too. Two sessions that claimed one role hang from that role's page,
+// which is one node, and one node write names a node once.
+func resolveRecipientPages(ctx context.Context, tx pgx.Tx, recipients []broadcastTarget, actor model.Actor, at time.Time) (map[string]string, []graphstore.Node, error) {
+	pages := make(map[string]string, len(recipients))
+	nodes := make([]graphstore.Node, 0, len(recipients))
+	for _, recipient := range recipients {
+		target := "session:" + recipient.sessionID
+		if _, resolved := pages[target]; resolved {
+			continue
+		}
+		page, ok, err := graphstore.AgentPage(ctx, tx, target)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			pages[target] = ""
+			continue
+		}
+		pages[target] = page
+		if !slices.ContainsFunc(nodes, func(node graphstore.Node) bool { return node.ID == page }) {
+			nodes = append(nodes, graphstore.PageNode(page, actor, at, graphstore.NoEvent))
+		}
+	}
+	return pages, nodes, nil
+}
+
+// writesByPage parts the broadcast's write of its recipients' pages into each page's own: its
+// node, and the base attributes the write stated of it, which the first copy that hangs from the
+// page causes (writeBroadcast).
+func writesByPage(written graphstore.Uncaused) map[string]graphstore.Uncaused {
+	byPage := make(map[string]graphstore.Uncaused, len(written.Nodes))
+	for _, node := range written.Nodes {
+		held := byPage[node.ID]
+		held.Nodes = append(held.Nodes, node)
+		byPage[node.ID] = held
+	}
+	for _, tuple := range written.Tuples {
+		held := byPage[tuple.FromID]
+		held.Tuples = append(held.Tuples, tuple)
+		byPage[tuple.FromID] = held
+	}
+	return byPage
 }
 
 // deliverBroadcast sends each recipient's owed attempt, broadcastDeliveryWorkers at a time, and
