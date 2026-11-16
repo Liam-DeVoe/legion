@@ -619,6 +619,7 @@ test("every property with a value is visible in Details at every width @phone", 
       ],
       ["a key of Blocks", blocking.first()],
       ["a pin", pinsList(page).getByRole("link").first()],
+      ["Referenced by's control", referencedBy],
     ];
     for (const [what, link] of links) {
       const colours = await link.evaluate((element) => {
