@@ -101,7 +101,8 @@ const (
 // exchange.ProjectScope.String prints for an operator.
 const (
 	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person and
-	// its Projects holds the entry's one project.
+	// its Projects holds the entry's one project, or none for an account entry naming none (the
+	// shared public-session account's). It never holds two.
 	ProjectScopeNamed = "named"
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
 	// MaxProjects projects the trade asked for, each one its person could see at the trade.
@@ -195,9 +196,10 @@ type Introspection struct {
 	// ProjectScope is what Projects means: ProjectScopeNamed or ProjectScopePerson. A machine
 	// login's own token, which no exchange decided for, carries neither this nor Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
-	// Projects is the token's list of projects: the entry's one project for a ProjectScopeNamed
-	// token, and the 0 to MaxProjects projects a ProjectScopePerson token's trade asked for, each
-	// one its person could see then. Sorted, each once; absent for none.
+	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
+	// project, or none for an account entry naming none; for a ProjectScopePerson token, the 0 to
+	// MaxProjects projects its trade asked for, each one its person could see then. Sorted, each
+	// once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it.
 	Scope string `json:"scope,omitempty"`

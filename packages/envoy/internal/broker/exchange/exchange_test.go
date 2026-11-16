@@ -222,6 +222,36 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 	}
 }
 
+// TestAnAccountEntryWithNoProjectNamesNone: an account entry may name a person and no project,
+// which is the shared public-session account's entry. Its pods' tokens are named, act for the
+// entry's person, and name no project; a request naming one is refused as any entry's is; and
+// MappedProjects and ProjectsForAccount answer the same empty list. Only an account entry may do
+// this: a workflow's and a person-naming Google entry's empty project is still refused (the
+// table above), and a blank project that is not empty is still refused too.
+func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Person: person}}, nil, nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet with an account entry naming no project = %v, want it taken", err)
+	}
+	claims, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", nil)
+	want := exchange.Claims{Session: "public-session-1", Person: person, Scope: exchange.ProjectScopeNamed, Principal: workerPrincipal, Instance: podUID}
+	if err != nil || !reflect.DeepEqual(claims, want) {
+		t.Fatalf("Pod under an entry naming no project = %+v, %v; want %+v: named, its person, no project", claims, err, want)
+	}
+	if _, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", []string{project}); !errors.Is(err, exchange.ErrProjectsFixed) {
+		t.Fatalf("a request naming %s under an entry naming none = %v, want ErrProjectsFixed", project, err)
+	}
+	if gotPerson, projects, ok := set.MappedProjects(workerPrincipal); gotPerson != person || len(projects) != 0 || !ok {
+		t.Fatalf("MappedProjects = %q, %v, %v; want %s, no project, true", gotPerson, projects, ok, person)
+	}
+	if projects, ok := set.ProjectsForAccount(workerAccount); len(projects) != 0 || !ok {
+		t.Fatalf("ProjectsForAccount = %v, %v; want no project, true", projects, ok)
+	}
+	if _, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Project: "  ", Person: person}}, nil, nil, signInDomain); err == nil {
+		t.Fatal("NewSet with an account entry whose project is blank but not empty = nil error, want a refusal")
+	}
+}
+
 func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
 	set, err := exchange.NewSet(
 		[]exchange.AccountEntry{{Account: workerAccount, Project: project, Person: person}},

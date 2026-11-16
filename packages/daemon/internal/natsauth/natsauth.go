@@ -169,12 +169,7 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 		options = append(options, nats.Nkey(public, user.Sign))
 	}
 	// Last, so these pings and this name hold whatever a caller passed before them.
-	// IgnoreAuthErrorAbort with them: nats.go closes a connection for good when the same server
-	// refuses it twice in a row with the same authorization error (nats.go v1.53.1, nats.go:4086),
-	// and a hub whose connections an auth service admits refuses every client while that service
-	// is away, which a restart of the hub itself causes. Without this the daemon would be left
-	// with no bus until someone restarted it.
-	options = append(options, detectSilentCuts, nats.IgnoreAuthErrorAbort(), nats.Name(name))
+	options = append(options, detectSilentCuts, nats.Name(name))
 	return nats.Connect(strings.Join(urls, ","), options...)
 }
 

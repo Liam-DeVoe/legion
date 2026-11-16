@@ -213,41 +213,45 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	otherClient.ClientID = "another-client"
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "everything"
+	// INFRA-3885: a named answer may name no project when it names a person (an account entry may
+	// name none), and names at most one.
 	namedNoProject := liveToken(caller.jkt, time.Hour)
 	namedNoProject.ProjectScope, namedNoProject.Projects = brokertoken.ProjectScopeNamed, nil
+	namedTwoProjects := liveToken(caller.jkt, time.Hour)
+	namedTwoProjects.ProjectScope, namedTwoProjects.Projects = brokertoken.ProjectScopeNamed, []string{"INFRA", "OSSV"}
 	serviceWithProjects := serviceToken(caller.jkt, time.Hour)
 	serviceWithProjects.Projects = []string{"INFRA"}
-	answers := map[string]brokertoken.Introspection{
-		"live":                       liveToken(caller.jkt, time.Hour),
-		"service":                    serviceToken(caller.jkt, time.Hour),
-		"machine login":              machineLoginToken(caller.jkt, time.Hour),
-		"inactive":                   inactive,
-		"bound to no key":            unbound,
-		"no session":                 noSession,
-		"neither person nor service": nobody,
-		"another client":             otherClient,
-		"unknown scope":              unknownScope,
-		"named with no project":      namedNoProject,
-		"service with projects":      serviceWithProjects,
-	}
-	refusals := 0
-	for name, answer := range answers {
-		t.Run(name, func(t *testing.T) {
-			token := "token-" + name
-			rig.broker.Says(token, answer)
+	// Each row names whether Verify admits it, so a row that answers otherwise fails by name with
+	// Verify's own error, rather than as a count that names none.
+	for _, row := range []struct {
+		name     string
+		answer   brokertoken.Introspection
+		admitted bool
+	}{
+		{"live", liveToken(caller.jkt, time.Hour), true},
+		{"service", serviceToken(caller.jkt, time.Hour), true},
+		{"machine login", machineLoginToken(caller.jkt, time.Hour), false},
+		{"inactive", inactive, false},
+		{"bound to no key", unbound, false},
+		{"no session", noSession, false},
+		{"neither person nor service", nobody, false},
+		{"another client", otherClient, false},
+		{"unknown scope", unknownScope, false},
+		{"named with no project, for a person", namedNoProject, true},
+		{"named with two projects", namedTwoProjects, false},
+		{"service with projects", serviceWithProjects, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			token := "token-" + row.name
+			rig.broker.Says(token, row.answer)
 			verified, verifyErr := rig.verifier.Verify(t.Context(), caller.at("/api/v1/issues", token))
-			read, readErr := brokertoken.SessionCaller(answer)
+			read, readErr := brokertoken.SessionCaller(row.answer)
+			require.Equal(t, row.admitted, verifyErr == nil, "Verify answered %v", verifyErr)
+			require.Equal(t, row.admitted, readErr == nil, "SessionCaller answered %v", readErr)
 			require.Equal(t, verified, read)
-			if verifyErr == nil {
-				require.NoError(t, readErr)
-				return
-			}
-			refusals++
 			for _, sentinel := range []error{brokertoken.ErrNotActive, brokertoken.ErrKeyMismatch, brokertoken.ErrNotASession} {
 				require.Equal(t, errors.Is(verifyErr, sentinel), errors.Is(readErr, sentinel), "%v and %v", verifyErr, readErr)
 			}
-			require.Error(t, readErr)
 		})
 	}
-	require.Equal(t, len(answers)-2, refusals, "every answer but the live session and the live service is refused")
 }
