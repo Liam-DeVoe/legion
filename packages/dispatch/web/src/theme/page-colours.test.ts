@@ -2,6 +2,10 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { PAGE_COLORS } from "./classes";
+import { oklchToSrgb8 } from "./contrast";
+import type { Swatch } from "./palette";
+
 /**
  * The new issue page's colour tokens, held to the approved design's table ("The colours" in the
  * spec of dispatch://INFRA-3913). `styles-css-pin.test.ts` holds each literal of `styles.css` to
@@ -9,6 +13,10 @@ import { join } from "node:path";
  * this test holds the value itself. The design has no dark scheme: each dark value is a Tailwind
  * shade of the same hue, and the four icon-rail tokens have none, because the rail is dark in both
  * schemes.
+ *
+ * It holds `PAGE_COLORS` of `classes.ts` to the same table: the contrast checks there measure the
+ * swatch that list names for each token in each scheme, a copy made by hand, so each swatch must
+ * render the token's value or the checks measure a colour the page does not draw.
  */
 
 type DesignRow = readonly [token: string, light: string, dark?: string];
@@ -169,10 +177,48 @@ const darkRootBlocks = topLevel
   .flatMap((media) => topLevelBlocks(media.body))
   .filter((rule) => rule.prelude === ":root");
 
+/** `#rrggbb` of `swatch`, by the palette's own conversion, as `styles-css-pin.test.ts` reads it. */
+function hexOf(swatch: Swatch): string {
+  const channels = oklchToSrgb8(swatch.oklch).map((channel) => channel.toString(16));
+  return `#${channels.map((channel) => channel.padStart(2, "0")).join("")}`;
+}
+
+/**
+ * One line for each token of the table whose swatch in `PAGE_COLORS` renders another value than
+ * the table's, in either scheme, and for each token `PAGE_COLORS` has no swatches for. A key of
+ * `PAGE_COLORS` is its token's name without `--color-`; a key the table has no token for is
+ * passed over. A token with no dark value is dark in both schemes, so its dark swatch renders its
+ * light value.
+ */
+function paletteDifferences(): string[] {
+  const problems: string[] = [];
+  for (const [token, light, dark] of DESIGN) {
+    const key = token.slice("--color-".length);
+    const colors = PAGE_COLORS[key];
+    if (colors === undefined) {
+      problems.push(`${token}: PAGE_COLORS has no "${key}", the design has ${light}`);
+      continue;
+    }
+    for (const [scheme, swatch, value] of [
+      ["light", colors.light, light],
+      ["dark", colors.dark, dark ?? light],
+    ] as const) {
+      const rendered = hexOf(swatch);
+      if (rendered !== value) {
+        problems.push(
+          `${token} (${scheme}): PAGE_COLORS gives ${swatch.name}, which is ${rendered}, the design has ${value}`
+        );
+      }
+    }
+  }
+  return problems;
+}
+
 test("every colour token of the new page has the value of the approved design", () => {
   const problems = [
     ...differences("light", "`@theme`", themeBlocks, LIGHT),
     ...differences("dark", "`@media (prefers-color-scheme: dark) { :root }`", darkRootBlocks, DARK),
+    ...paletteDifferences(),
   ];
   expect(problems).toEqual([]);
 });

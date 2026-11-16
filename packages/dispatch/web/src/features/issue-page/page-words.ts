@@ -21,10 +21,18 @@
  * accessible name from `GLYPH_NAMES`, drawn beside the word rather than in place of it: a state
  * and a type are told apart by a word and a shape, never by colour alone.
  *
- * This module is data and pure functions. It holds no React and touches no DOM, and the only
- * thing it imports is its sibling `page-structure.ts`, whose property and section names and
- * help lines `DECLARED_WORDS` is derived from as well; so a test, a browser spec and a
- * component all read the same list.
+ * This module is data and pure functions. It holds no React and touches no DOM, and it imports
+ * data and types, with one helper:
+ *
+ * - from its sibling `page-structure.ts`, the property and section names and help lines
+ *   `DECLARED_WORDS` is derived from as well, and `freeze`, which its tables are made with;
+ * - from `@legion/contracts`, the most issues one issue may wait on, the most priorities it may
+ *   advance, and the type of how a result's commit stands;
+ * - from `../../api/types`, the type of an actor;
+ * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in: the
+ *   module's one link to a file today's pages use.
+ *
+ * A test, a browser spec and a component therefore all read the same list.
  */
 
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS, type ResultCommitStands } from "@legion/contracts";
@@ -104,11 +112,13 @@ export const NODE_STATE_WORDS = freeze({
   ask: {
     answered: "Answered",
     open: "Open",
-    // How an ask was closed rather than answered, in the words the card and the margin draw
-    // beside the tree (`ASK_RESOLUTION_WORDS`, the one table all three read): an ask whose
-    // `state` is `resolved` stands in the state its resolution names, so a declined question
-    // reads "Declined" on its row and "Declined" on its card. `resolved` is both the block
-    // state the schema declares and the kind of a plain resolution, under the one word.
+    // How an ask was closed rather than answered, in the words of `ASK_RESOLUTION_WORDS`: that
+    // table repeats the words `askResolutionBadge` (`features/refs/actor.ts`) draws on the card,
+    // and the test `each way a question is closed has one word on its card and in the list`
+    // holds the two equal. An ask whose `state` is `resolved` stands in the state its resolution
+    // names, so a declined question reads "Declined" on its row and "Declined" on its card.
+    // `resolved` is both the block state the schema declares and the kind of a plain
+    // resolution, under the one word.
     ...ASK_RESOLUTION_WORDS,
   },
   check: {

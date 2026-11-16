@@ -1041,6 +1041,22 @@ registerText(
   pageColor("page-ink"),
   pageColor("page-waiting-tint")
 );
+// The waiting colour's words on the paper: a state that waits on the reader in the margin
+// (`pageStateText.waiting`) and a waiting question's options in the composer
+// (`pageComposer.option`). The quiet grey on the waiting tint: the control that clears the
+// composer's target while it answers a question (`pageComposer.targetClear` inside
+// `targetAnswering`), and under the pointer an option of an open question that does not wait on
+// the reader (`pageRowOption`'s hover).
+registerText(
+  "page-waiting-text text on page-paper",
+  pageColor("page-waiting-text"),
+  pageColor("page-paper")
+);
+registerText(
+  "page-quiet text on page-waiting-tint",
+  pageColor("page-quiet"),
+  pageColor("page-waiting-tint")
+);
 // The words a row draws in its kind's colour - its tag, its state, a waiting question's
 // options - on the focused row's ground, and the marks of a Contents entry on the pane and on
 // its marked row: text, so 4.5:1 wherever it is drawn, the focused row included (WCAG 1.4.3).

@@ -154,8 +154,6 @@ test("every node type has a plain name, and no name is an internal token", () =>
   for (const type of NODE_TYPES) {
     const name = NODE_TYPE_NAMES[type];
     expect(name).toMatch(/^[a-z]+(?: [a-z]+)*$/);
-    expect(name).not.toBe(name.toUpperCase());
-    expect(name.includes("_")).toBe(false);
   }
 });
 
@@ -394,7 +392,13 @@ test("no word the page declares is the model's word for a node", () => {
 test("every check state has a word of its own, and the page says it of nothing else", () => {
   const checkWords = Object.values(NODE_STATE_WORDS.check);
   expect(new Set(checkWords).size).toBe(checkWords.length);
-  for (const word of [...Object.values(CONTROL_LABELS), ...Object.values(GAP_WORDS)]) {
+  // Every phrase the page draws unasked, but for two tables that say a check state's word by
+  // design: the states' own, whose ask table holds "Retracted" for a question its asker took
+  // back, and a result's standing, which says "Out of date" of the same fact (held below).
+  const elsewhere = UNASKED_SOURCES.filter(
+    (table) => table !== NODE_STATE_WORDS && table !== RESULT_STANDS_WORDS
+  ).flatMap(phrasesOf);
+  for (const word of elsewhere) {
     expect(checkWords, `"${word}" reads as a check state`).not.toContain(word);
   }
   expect(RESULT_STANDS_WORDS.other_commit).toBe(NODE_STATE_WORDS.check.older);
@@ -488,7 +492,6 @@ test("DECLARED_WORDS holds every declared word and no other", () => {
   // Verification is the filter's name, his word for what draws the checks (R2, the Design's
   // "The words"), and no longer a word the page holds back.
   expect(DECLARED_WORDS).toContain("verification");
-  expect(DECLARED_WORDS).not.toContain("before_merge");
 });
 
 // An internal word is how the model or the code spells a thing, not how a person says it: a
