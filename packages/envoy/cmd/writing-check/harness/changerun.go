@@ -152,7 +152,7 @@ func (r *changeRun) connect(ctx context.Context, m *modelFlags, inst LocalInstan
 		if err != nil {
 			return err
 		}
-		r.writer = &Writer{Model: model, Calls: r.plan.writerCalls(r.rounds), Order: r.writerOrder}
+		r.writer = &Writer{Model: model, Order: r.writerOrder}
 	}
 	if !r.plan.local() {
 		return nil

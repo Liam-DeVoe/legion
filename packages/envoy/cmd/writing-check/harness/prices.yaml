@@ -8,10 +8,10 @@ sources:
       The operator's model gateway, GET /model/info: each model's input_cost_per_token,
       output_cost_per_token, cache_creation_input_token_cost and cache_read_input_token_cost,
       times one million. cache_creation_input_token_cost is the price of a five-minute cache
-      write, which is the life the harness's cache marks ask for (ttl 5m). The gateway gives a
-      mark that names no life one hour, at cache_creation_input_token_cost_above_1hr, which the
-      harness never asks for. claude-fable-5-2, a grader that `--grader` may name, was read from
-      the same source on 2026-11-16.
+      write; the gateway prices a write of a mark that names no life, which lives one hour, at
+      cache_creation_input_token_cost_above_1hr. The harness's own calls carry no cache mark.
+      claude-fable-5-2, a grader that `--grader` may name, was read from the same source on
+      2026-11-16.
     read: 2026-11-15
   foundry:
     source: >-

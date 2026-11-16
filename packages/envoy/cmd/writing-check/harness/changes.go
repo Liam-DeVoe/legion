@@ -124,34 +124,6 @@ func (p changePlan) writer() bool {
 	return slices.ContainsFunc(p.steps, func(s string) bool { return s != changeReviewRewrite })
 }
 
-// stepPrompts are the writer's prompts of the steps that play the writer: changes 2 and 7a have
-// it write its text again, 3 act on a review's findings, 5 and 6 answer a side question.
-var stepPrompts = map[string]string{
-	changeRules: promptRewrite, changeCheck: promptRewrite, changeFindings: promptFindings,
-	changeRewrite: promptAnswer, changeDefine: promptAnswer,
-}
-
-// writerCalls are the most calls of each of the writer's prompts that the plan makes for one
-// case. Those calls send the same prefix: the prompt, its schema and the case's record, and in
-// the writer's order session-first its session part. Change 3 calls the writer once in each
-// round of review, up to rounds; each other step calls it at most once. The writer marks a
-// prompt's calls where the case's calls of it, over the lanes that make the change of the case,
-// can be two or more (Writer.marked).
-func (p changePlan) writerCalls(rounds int) map[string]int {
-	calls := map[string]int{}
-	for _, s := range p.steps {
-		prompt, ok := stepPrompts[s]
-		switch {
-		case !ok:
-		case s == changeFindings:
-			calls[prompt] += rounds
-		default:
-			calls[prompt]++
-		}
-	}
-	return calls
-}
-
 // changes are the changes the plan holds, for the exposure log.
 func (p changePlan) changes() []string {
 	out := slices.Clone(p.steps)
@@ -204,7 +176,7 @@ type changeRun struct {
 	rounds   int
 	unedited string
 	sessions map[string]claude.SessionText
-	// writerOrder is the order of the writer's user turn (score --writer-order).
+	// writerOrder is the order of the writer's user message (score --writer-order).
 	writerOrder string
 	// answers are the writer's answers that the lanes of a lockstep run share, nil outside one.
 	answers *sharedAnswers
@@ -267,8 +239,7 @@ func checkFindings(findings []writingcheck.Finding) []TraceFinding {
 	return out
 }
 
-// textRun is one case's text as the steps make it. lanes is the number of the process's lanes
-// that make the change of the case (Change.Apply).
+// textRun is one case's text as the steps make it.
 type textRun struct {
 	c       *Case
 	kind    reviewer.Kind
@@ -278,7 +249,6 @@ type textRun struct {
 	writer string
 	record string
 	text   string
-	lanes  int
 	out    Applied
 }
 
@@ -296,7 +266,7 @@ func (t *textRun) add(calls ...Call) {
 
 // turn is a writer's turn about the text as it stands, with message.
 func (t *textRun) turn(message string) writerTurn {
-	return writerTurn{kind: string(t.kind), text: t.text, record: t.record, session: t.session, message: message, lanes: t.lanes}
+	return writerTurn{kind: string(t.kind), text: t.text, record: t.record, session: t.session, message: message}
 }
 
 // kinds are the reviewer's kinds of the dataset's text kinds.
@@ -307,13 +277,13 @@ var kinds = map[string]reviewer.Kind{
 
 // Apply makes the change of the case's text: each step in turn, each from the text the one before
 // made. The Applied it answers on an error holds the calls made so far.
-func (r *changeRun) Apply(ctx context.Context, c *Case, lanes int) (Applied, error) {
+func (r *changeRun) Apply(ctx context.Context, c *Case) (Applied, error) {
 	kind, ok := kinds[c.Kind]
 	if !ok {
 		return Applied{}, fmt.Errorf("a text of kind %q is none the reviewer reads", c.Kind)
 	}
 	t := &textRun{c: c, kind: kind, session: r.sessions[c.ID], text: c.Agent.Text, record: r.ds.RecordPart(c),
-		writer: cmp.Or(c.WriterSession, localWriter), lanes: lanes}
+		writer: cmp.Or(c.WriterSession, localWriter)}
 	if r.plan.local() {
 		loaded, ok := r.loaded[c.ID]
 		if !ok {
@@ -671,8 +641,7 @@ type sharedAnswer struct {
 // SharedFrom naming that lane's model, so the change's cost per text and its wait hold the call
 // as a run of one model holds it. The local Dispatch's question names the ask by its address, and
 // each lane opens an ask of its own, so the ask's id is the one part of the question that differs
-// from lane to lane: askID, which the key leaves out ("" where the question names no ask). One
-// call makes the answer for every lane, so it counts as one call of the case (Writer.marked).
+// from lane to lane: askID, which the key leaves out ("" where the question names no ask).
 func (r *changeRun) writerAnswer(ctx context.Context, t *textRun, question, askID string) (string, Call, error) {
 	if r.answers == nil {
 		return r.writer.Answer(ctx, t.turn(question))
@@ -690,9 +659,7 @@ func (r *changeRun) writerAnswer(ctx context.Context, t *textRun, question, askI
 		call.SharedFrom = made.model
 		return made.text, call, nil
 	}
-	turn := t.turn(question)
-	turn.lanes = 1
-	text, call, err := r.writer.Answer(ctx, turn)
+	text, call, err := r.writer.Answer(ctx, t.turn(question))
 	if err == nil {
 		r.answers.mu.Lock()
 		r.answers.by[key] = sharedAnswer{text: text, call: call, model: r.candidate}

@@ -373,7 +373,7 @@ func changeRig(t *testing.T, steps []string, fake *fakeDispatch) (*changeRun, *m
 	}
 	run := &changeRun{
 		plan: plan, ds: ds, cfg: cfg, candidate: candidateID, candModel: candidate.Model(), runner: runner,
-		writer: &Writer{Model: writer, Calls: plan.writerCalls(2)}, rules: []reviewer.RuleSet{reviewer.RuleNoslop}, rounds: 2, unedited: uneditedRewrite,
+		writer: &Writer{Model: writer}, rules: []reviewer.RuleSet{reviewer.RuleNoslop}, rounds: 2, unedited: uneditedRewrite,
 		sessions: changeSessions(t), tries: 2, backoff: time.Millisecond, poll: 10 * time.Millisecond, loaded: loaded,
 	}
 	if fake != nil {
@@ -389,10 +389,10 @@ func changeRig(t *testing.T, steps []string, fake *fakeDispatch) (*changeRun, *m
 	return run, stand
 }
 
-// apply is the change of the case id, which must end with no error, as a run of one model makes it.
+// apply is the change of the case id, which must end with no error.
 func apply(t *testing.T, run *changeRun, id string) Applied {
 	t.Helper()
-	applied, err := run.Apply(t.Context(), run.ds.Case(id), 1)
+	applied, err := run.Apply(t.Context(), run.ds.Case(id))
 	if err != nil {
 		t.Fatalf("%s: %v", id, err)
 	}

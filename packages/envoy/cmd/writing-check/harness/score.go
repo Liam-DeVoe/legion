@@ -27,10 +27,8 @@ import (
 type Change interface {
 	// Name is the change's number, as --change names it.
 	Name() string
-	// Apply is the text a person sees after the change, with what it cost. lanes is the number
-	// of the process's lanes that make the change of c one after another (scorer.scoreCase): the
-	// writer's calls of one prefix for the case count over them (Writer.marked).
-	Apply(ctx context.Context, c *Case, lanes int) (Applied, error)
+	// Apply is the text a person sees after the change, with what it cost.
+	Apply(ctx context.Context, c *Case) (Applied, error)
 }
 
 // Applied is what a change made of one case's text.
@@ -56,7 +54,7 @@ type asSeen struct{}
 
 func (asSeen) Name() string { return "1" }
 
-func (asSeen) Apply(_ context.Context, c *Case, _ int) (Applied, error) {
+func (asSeen) Apply(_ context.Context, c *Case) (Applied, error) {
 	return Applied{Text: c.Agent.Text, Same: true}, nil
 }
 
@@ -166,7 +164,7 @@ type reading struct {
 }
 
 // caseRun is one case as one change made its text, ready to grade: its result so far, the fresh
-// readers' readings, the judgements it plans (the readings' first, each with the reader's answer
+// readers' readings, the judgements it gets (the readings' first, each with the reader's answer
 // where the case takes it), and what the runs --grades-from names hold for its same text.
 type caseRun struct {
 	res      CaseResult
@@ -176,21 +174,12 @@ type caseRun struct {
 }
 
 // scoreCase scores case c with each of changes: the change of each lane that scores the case. It
-// applies the changes one after another, so the writer's calls of one prefix go one after another
-// too and count over the lanes (Change.Apply). Then it plans the judgements of every one of them
-// with the grader before the first is sent, so a prefix that the lanes' calls send alike (the
-// case's record and session part) counts its calls over all of them (Grader.Plan) and is marked.
-// Then it grades them all at once, so the calls of one prefix go close together, inside the
-// cache's life.
+// applies the changes one after another, so the lanes of a lockstep run that ask the writer one
+// side question ask it one after another (sharedAnswers). Then it grades them all at once.
 func (s *scorer) scoreCase(ctx context.Context, c *Case, changes []Change) []CaseResult {
 	runs := make([]*caseRun, len(changes))
 	for i, change := range changes {
-		runs[i] = s.prepare(ctx, c, change, len(changes))
-	}
-	for _, cr := range runs {
-		if len(cr.planned) > 0 {
-			s.grader.Plan(cr.planned, cr.earlier)
-		}
+		runs[i] = s.prepare(ctx, c, change)
 	}
 	out := make([]CaseResult, len(runs))
 	var wg sync.WaitGroup
@@ -205,10 +194,10 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case, changes []Change) []Cas
 	return out
 }
 
-// prepare applies change to case c, as one of lanes lanes that make it (Change.Apply), and plans
-// what the case gets: the fresh readers' readings and every judgement the case's group takes. A
-// change that fails leaves the result with its error, and no reading and no judgement.
-func (s *scorer) prepare(ctx context.Context, c *Case, change Change, lanes int) *caseRun {
+// prepare applies change to case c and lists what the case gets: the fresh readers' readings and
+// every judgement the case's group takes. A change that fails leaves the result with its error,
+// and no reading and no judgement.
+func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 	session := s.sessions[c.ID]
 	cr := &caseRun{res: CaseResult{
 		CaseID: c.ID, Group: c.Group, Kind: c.Kind, Part: c.Part, SplitGroup: c.SplitGroup,
@@ -223,7 +212,7 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change, lanes int)
 	if res.SessionStatus == "" {
 		res.SessionStatus = "no_place"
 	}
-	applied, err := change.Apply(ctx, c, lanes)
+	applied, err := change.Apply(ctx, c)
 	res.ChangeCalls, res.WaitSeconds, res.ChangeTrace = applied.Calls, applied.WaitSeconds, applied.Trace
 	if err != nil {
 		res.Error = "change " + change.Name() + ": " + err.Error()
@@ -290,7 +279,7 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change, lanes int)
 		read(JFirstParagraph, &res.FirstParagraphReader, prior.FirstParagraphReader, earlierFirstReaders, first, true)
 	}
 	// planned are the judgements the case gets, the readings' first, each with the reader's
-	// answer where the case takes it. The grader plans their calls before the first is sent.
+	// answer where the case takes it.
 	give := func(j Judgement, answer string) {
 		in := base
 		in.Judgement, in.Answer = j, answer
@@ -330,7 +319,6 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change, lanes int)
 }
 
 // grade makes the readings and the judgements the case plans, each at once, and ends its result.
-// The grader has planned them (scoreCase).
 func (s *scorer) grade(ctx context.Context, cr *caseRun) CaseResult {
 	res := &cr.res
 	if res.Error != "" {
@@ -415,7 +403,7 @@ type RunParams struct {
 	VocabularySHA256 string   `json:"vocabulary_sha256,omitempty"`
 	PromptsSHA256    string   `json:"prompts_sha256"`
 	// WriterSHA256 is the writer's prompts' digest, and WriterOrder the order of the writer's
-	// user turn (--writer-order), for a change that plays the writer.
+	// user message (--writer-order), for a change that plays the writer.
 	WriterSHA256 string `json:"writer_sha256,omitempty"`
 	WriterOrder  string `json:"writer_order,omitempty"`
 	CasesSHA256  string `json:"cases_sha256"`
@@ -539,7 +527,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	loadedPath := fs.String("loaded", "", "the loaded.jsonl of `harness load` into that local Dispatch")
 	rounds := fs.Int("rounds", 2, "change 3: the reviews of one text, the first and those of the writer's edits; the last edit posts")
 	unedited := fs.String("unedited", uneditedRewrite, "change 3 with no writer session: what posts, as DISPATCH_REVIEWER_UNEDITED says: rewrite or as_written")
-	writerOrder := fs.String("writer-order", writerSessionLast, "the order of the writer's user turn: session-last, Dispatch's record, the writer's text and Dispatch's message, then the session part; or session-first, the record and the session part, then the text and the message")
+	writerOrder := fs.String("writer-order", writerSessionLast, "the order of the writer's user message: session-last, Dispatch's record, the writer's text and Dispatch's message, then the session part; or session-first, the record and the session part, then the text and the message")
 	casesDir := fs.String("cases", "", "the dataset build directory: cases.jsonl.gz and documents.jsonl.gz (required)")
 	sessionsDir := fs.String("sessions", "", "the directory `writing-check dataset sessions` wrote: session-rows.jsonl.gz, places.jsonl, sessions-counts.json (required)")
 	out := fs.String("out", "", "the run's output directory, or under --models the directory of each model's run; a run continues the cases it holds no result for (required; keep it under $TMPDIR)")

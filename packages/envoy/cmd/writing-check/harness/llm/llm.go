@@ -1,10 +1,9 @@
-// Package llm makes the harness's model calls: one system prompt and one user turn in, whose
-// start other calls may share and the provider then caches, one reply out, through agentloop.Run,
-// with a bound on the calls in flight and a pace of uncached input tokens a minute that every
-// client of a run shares, retries with a backoff, and each call's tokens priced at the model's
-// price. It holds the Foundry client. The Claude client is package claude, which is the only
-// package that can read a writer session's text: this package cannot name that type, since
-// package claude imports it.
+// Package llm makes the harness's model calls: one system prompt and one user message in, one
+// reply out, through agentloop.Run, with no cache mark, with a bound on the calls in flight and a
+// pace of uncached input tokens a minute that every client of a run shares, retries with a
+// backoff, and each call's tokens priced at the model's price. It holds the Foundry client. The
+// Claude client is package claude, which is the only package that can read a writer session's
+// text: this package cannot name that type, since package claude imports it.
 package llm
 
 import (
@@ -53,20 +52,8 @@ const (
 type Request struct {
 	// Purpose names what the call is for, as the outputs record it ("reader", "grade:answered").
 	Purpose string
-	// System is the system prompt.
-	System string
-	// Shared is the start of the user's turn, each element a text block of its own: the part
-	// that other calls send the same, such as a case's record. It goes as the call's history.
-	// Mark puts a cache mark of five minutes at its end, and nowhere else
-	// (agentloop's HistoryMarkOnly), so a later call within those minutes that sends the same
-	// model, system prompt, schema and Shared, also marked, reads them from the provider's cache,
-	// and no call pays the cache write on its own part. A call that sets no Mark, or sends no
-	// Shared, carries no mark: it pays the input price on all of its prompt, and reads nothing
-	// from the cache. Mark changes nothing else that the call sends. User is the rest of the
-	// user's turn, which goes after Shared.
-	Shared []string
-	Mark   bool
-	User   string
+	// System is the system prompt and User the one user message.
+	System, User string
 	// Schema is the JSON schema the reply must be one object of; nil asks for free text.
 	Schema json.RawMessage
 	// MaxTokens bounds the reply; zero is DefaultMaxTokens.
@@ -85,8 +72,6 @@ type Response struct {
 	// Attempts is how many attempts the call took, and Elapsed how long they took in all.
 	Attempts int
 	Elapsed  time.Duration
-	// Marked says the call carried the cache mark: it set Mark and sent Shared.
-	Marked bool
 }
 
 // Client is one model a run calls. Only package claude's client also takes a writer session's
@@ -118,15 +103,15 @@ func (l Limit) acquire(ctx context.Context) error {
 
 func (l Limit) release() { <-l }
 
-// enter takes a slot of the runner's bound, then passes its pacer with the attempt's estimate,
-// and answers the attempt's charge. On an error it holds no slot.
-func (r *Runner) enter(ctx context.Context, e estimate) (paced, error) {
+// enter takes a slot of the runner's bound, then passes its pacer with the attempt's estimate of
+// tokens, and answers the attempt's charge. On an error it holds no slot.
+func (r *Runner) enter(ctx context.Context, tokens int) (paced, error) {
 	if r.Limit != nil {
 		if err := r.Limit.acquire(ctx); err != nil {
 			return paced{}, err
 		}
 	}
-	charge, err := r.Pacer.admit(ctx, e)
+	charge, err := r.Pacer.admit(ctx, tokens)
 	if err != nil && r.Limit != nil {
 		r.Limit.release()
 	}
@@ -147,7 +132,7 @@ func (r *Runner) leave(charge paced, used agentloop.Usage) {
 // room, and it counts the tokens the call's model calls report. Hold answers the function that
 // gives the slot back, given the usage of each model call the call made.
 func (r *Runner) Hold(ctx context.Context) (func(used ...agentloop.Usage), error) {
-	charge, err := r.enter(ctx, estimate{})
+	charge, err := r.enter(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -255,23 +240,9 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 		zero := 0.0
 		temperature = &zero
 	}
-	// Shared goes as a history of one user message, which Anthropic joins with User's message
-	// into one user turn. A block of white space alone is left out: Anthropic refuses one.
-	var shared []agentloop.Block
-	for _, s := range req.Shared {
-		if strings.TrimSpace(s) != "" {
-			shared = append(shared, agentloop.Block{Kind: agentloop.TextBlock, Text: s})
-		}
-	}
-	var history []agentloop.Message
-	if len(shared) > 0 {
-		history = []agentloop.Message{{Role: agentloop.User, Blocks: shared}}
-	}
-	resp.Marked = req.Mark && history != nil
-	input := []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: req.User}}}}
-	var est estimate
+	var est int
 	if r.Pacer != nil {
-		est = estimateOf(model, req, shared)
+		est = estimateOf(req)
 	}
 	backoffs, replies := 0, 0
 	fail := func(fault agentloop.Fault, detail string, err error) (Response, error) {
@@ -284,15 +255,13 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 		}
 		resp.Attempts++
 		result, err := agentloop.Run(ctx, agentloop.Request{
-			Model:           model,
-			System:          req.System,
-			History:         history,
-			Input:           input,
-			NoCache:         !resp.Marked,
-			HistoryMarkOnly: true,
-			Bounds:          agentloop.Bounds{Time: timeout, Calls: 1, OutputTokens: maxTokens},
-			Final:           req.Schema,
-			Temperature:     temperature,
+			Model:       model,
+			System:      req.System,
+			Input:       []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: req.User}}}},
+			NoCache:     true,
+			Bounds:      agentloop.Bounds{Time: timeout, Calls: 1, OutputTokens: maxTokens},
+			Final:       req.Schema,
+			Temperature: temperature,
 		})
 		r.leave(charge, result.Usage)
 		addUsage(&resp.Usage, result.Usage)

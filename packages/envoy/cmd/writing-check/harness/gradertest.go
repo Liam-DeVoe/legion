@@ -267,19 +267,14 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return usage(err.Error())
 	}
 	started := time.Now()
-	ins := make([]GradeInput, len(planted))
-	for i, p := range planted {
-		c := ds.Case(p.CaseID)
-		ins[i] = p.input(ds, c, sessions[c.ID])
-	}
-	grader.Plan(ins, nil)
 	results := make([]PlantedResult, len(planted))
 	var wg sync.WaitGroup
 	for i, p := range planted {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			g := grader.Grade(ctx, ins[i])
+			c := ds.Case(p.CaseID)
+			g := grader.Grade(ctx, p.input(ds, c, sessions[c.ID]))
 			results[i] = PlantedResult{Planted: p, Expect: p.expectation(), Grade: g, Correct: p.correct(g)}
 		}()
 	}
@@ -347,8 +342,8 @@ func graderReport(results []PlantedResult, grader string, candidate bool, elapse
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %t |\n", r.Planted.ID, r.Planted.Judgement, r.Planted.Planted, r.Expect, gradeText(r.Grade), r.Correct)
 	}
-	fmt.Fprintf(&b, "\nModel cost: %.2f USD, refused calls included; prompt tokens %d at the input price, %d written to the cache, %d read from it; %d calls with the cache mark, %d with none; wall time %s.\n",
-		total.CostUSD, total.Input, total.CacheWrite, total.CacheRead, total.Marked, total.Unmarked, elapsed.Round(time.Second))
+	fmt.Fprintf(&b, "\nModel cost: %.2f USD, refused calls included; prompt tokens %d at the input price, %d written to the cache, %d read from it; wall time %s.\n",
+		total.CostUSD, total.Input, total.CacheWrite, total.CacheRead, elapsed.Round(time.Second))
 	return b.String()
 }
 

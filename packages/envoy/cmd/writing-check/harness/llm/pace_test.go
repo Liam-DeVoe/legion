@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"crypto/sha256"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -14,12 +13,12 @@ import (
 // The tests of the pacer run in a synctest bubble, whose clock is fake: it moves only when every
 // goroutine of the bubble waits, so a test reads the exact time a call went through.
 
-// admitLater asks p to admit e in a goroutine of its own, and answers the channel that gets the
-// time the pacer admitted it.
-func admitLater(p *Pacer, e estimate) <-chan time.Time {
+// admitLater asks p to admit a call of an estimate of tokens in a goroutine of its own, and
+// answers the channel that gets the time the pacer admitted it.
+func admitLater(p *Pacer, tokens int) <-chan time.Time {
 	at := make(chan time.Time, 1)
 	go func() {
-		if _, err := p.admit(context.Background(), e); err == nil {
+		if _, err := p.admit(context.Background(), tokens); err == nil {
 			at <- time.Now()
 		}
 	}()
@@ -38,10 +37,10 @@ func admittedAt(at <-chan time.Time) (time.Time, bool) {
 	}
 }
 
-// admitNow admits e on p, which must not wait.
-func admitNow(t *testing.T, p *Pacer, e estimate) paced {
+// admitNow admits a call of an estimate of tokens on p, which must not wait.
+func admitNow(t *testing.T, p *Pacer, tokens int) paced {
 	t.Helper()
-	c, err := p.admit(t.Context(), e)
+	c, err := p.admit(t.Context(), tokens)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,10 +53,10 @@ func TestACallBeyondTheBudgetWaitsForTheWindowToFree(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := NewPacer(1000)
 		start := time.Now()
-		admitNow(t, p, estimate{whole: 600})
+		admitNow(t, p, 600)
 		time.Sleep(10 * time.Second)
-		admitNow(t, p, estimate{whole: 400})
-		third := admitLater(p, estimate{whole: 500})
+		admitNow(t, p, 400)
+		third := admitLater(p, 500)
 		time.Sleep(49 * time.Second)
 		if got, ok := admittedAt(third); ok {
 			t.Fatalf("the third call went through %s after the start, while the minute's 1000 tokens were spent", got.Sub(start))
@@ -81,8 +80,8 @@ func TestACorrectionGivesBackAnOvercharge(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := NewPacer(1000)
 		start := time.Now()
-		first := admitNow(t, p, estimate{whole: 900})
-		second := admitLater(p, estimate{whole: 500})
+		first := admitNow(t, p, 900)
+		second := admitLater(p, 500)
 		time.Sleep(5 * time.Second)
 		if _, ok := admittedAt(second); ok {
 			t.Fatal("the second call went through while the first's estimate held the minute")
@@ -93,7 +92,7 @@ func TestACorrectionGivesBackAnOvercharge(t *testing.T) {
 		if !ok || !got.Equal(start.Add(5*time.Second)) {
 			t.Fatalf("the second call went through %s after the start (%t), want 5s, when the first's reply gave tokens back", got.Sub(start), ok)
 		}
-		unmetered := admitNow(t, p, estimate{whole: 50})
+		unmetered := admitNow(t, p, 50)
 		unmetered.settle(agentloop.Usage{})
 		if u := p.Use(); u.Tokens != 850 {
 			t.Errorf("the use is %d tokens, want 300 reported, then the estimates 500 and 50", u.Tokens)
@@ -106,14 +105,14 @@ func TestACorrectionGivesBackAnOvercharge(t *testing.T) {
 // calls after it wait until it is a minute old.
 func TestACallLargerThanTheBudgetPassesAlone(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		admitNow(t, NewPacer(1000), estimate{whole: 5000})
+		admitNow(t, NewPacer(1000), 5000)
 
 		p := NewPacer(1000)
 		start := time.Now()
-		admitNow(t, p, estimate{whole: 100})
-		large := admitLater(p, estimate{whole: 5000})
+		admitNow(t, p, 100)
+		large := admitLater(p, 5000)
 		synctest.Wait()
-		small := admitLater(p, estimate{whole: 10})
+		small := admitLater(p, 10)
 		time.Sleep(59 * time.Second)
 		if _, ok := admittedAt(large); ok {
 			t.Fatal("the large call went through while the minute held another charge")
@@ -134,44 +133,6 @@ func TestACallLargerThanTheBudgetPassesAlone(t *testing.T) {
 	})
 }
 
-// A call is charged its whole prompt until a reply of an earlier attempt with the same prefix
-// reports the prefix written to the cache or read from it; then, for the cache's life from that
-// attempt's start, it is charged only the part after the prefix. A call that starts before such a
-// reply is charged whole.
-func TestAPrefixIsChargedOnlyWhileTheCacheHoldsIt(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		p := NewPacer(0)
-		e := estimate{whole: 1000, prefix: 900, key: sha256.Sum256([]byte("a case's parts")), marked: true}
-		charged := func(want int, when string) {
-			t.Helper()
-			if got := p.charges[len(p.charges)-1].tokens; got != want {
-				t.Errorf("%s: charged %d tokens, want %d", when, got, want)
-			}
-		}
-		first := admitNow(t, p, e)
-		together := admitNow(t, p, e)
-		charged(1000, "a call that starts with the first")
-		first.settle(agentloop.Usage{Input: 100, CacheWrite: 900, Metered: true})
-		together.settle(agentloop.Usage{Input: 100, CacheWrite: 900, Metered: true})
-		time.Sleep(time.Minute)
-		read := admitNow(t, p, e)
-		charged(100, "a call after the first's reply")
-		read.settle(agentloop.Usage{Input: 100, CacheRead: 900, Metered: true})
-		time.Sleep(5*time.Minute - time.Second)
-		admitNow(t, p, e)
-		charged(100, "a call within five minutes of the last read")
-		time.Sleep(time.Second)
-		admitNow(t, p, e)
-		charged(1000, "a call five minutes after the last read")
-
-		// A prefix the provider did not cache, such as one too short for it, stays charged whole.
-		short := estimate{whole: 50, prefix: 40, key: sha256.Sum256([]byte("a short prefix")), marked: true}
-		admitNow(t, p, short).settle(agentloop.Usage{Input: 50, Metered: true})
-		admitNow(t, p, short)
-		charged(50, "a call whose prefix no reply reported cached")
-	})
-}
-
 // The busiest minute is the most uncached input of the charges less than a minute apart.
 func TestTheUseHoldsTheBusiestMinute(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -181,7 +142,7 @@ func TestTheUseHoldsTheBusiestMinute(t *testing.T) {
 			tokens int
 		}{{0, 300}, {30 * time.Second, 400}, {40 * time.Second, 500}, {20 * time.Second, 50}} {
 			time.Sleep(c.after)
-			admitNow(t, p, estimate{whole: c.tokens})
+			admitNow(t, p, c.tokens)
 		}
 		// The charges are at 0 s, 30 s, 70 s and 90 s. The minute to 70 s holds 400 and 500; the
 		// minute to 90 s holds 500 and 50, since the charge at 30 s is then a minute old.
@@ -199,7 +160,7 @@ func TestEveryAttemptPassesThePacer(t *testing.T) {
 		modeltest.Rule{Reply: modeltest.Reply{Text: `{"ok":true}`}})
 	p := NewPacer(1_000_000)
 	r := &Runner{Limit: NewLimit(1), Pacer: p}
-	resp, err := r.Run(context.Background(), standInModel(stand.URL), Request{Purpose: "test", System: "s", Shared: []string{"the case's parts"}, User: "u", Schema: schema})
+	resp, err := r.Run(context.Background(), standInModel(stand.URL), Request{Purpose: "test", System: "s", User: "u", Schema: schema})
 	if err != nil {
 		t.Fatal(err)
 	}

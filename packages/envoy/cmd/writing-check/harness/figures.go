@@ -104,15 +104,12 @@ type GroupFigures struct {
 	ChangeCost *Mean `json:"change_cost_usd,omitempty"`
 }
 
-// ModelUse is one model's calls in the results. Marked and Unmarked count the model calls the
-// harness sent with the cache mark and with none (Call.Marked, Call.Unmarked).
+// ModelUse is one model's calls in the results.
 type ModelUse struct {
 	Model      string   `json:"model"`
 	Role       string   `json:"role"`
 	Use        string   `json:"use"`
 	Calls      int      `json:"calls"`
-	Marked     int      `json:"marked_calls"`
-	Unmarked   int      `json:"unmarked_calls"`
 	Attempts   int      `json:"attempts"`
 	Input      int      `json:"input_tokens"`
 	Output     int      `json:"output_tokens"`
@@ -300,8 +297,6 @@ func modelUse(results []CaseResult, cfg Config) []ModelUse {
 			served[key] = map[string]bool{}
 		}
 		u.Calls++
-		u.Marked += c.Marked
-		u.Unmarked += c.Unmarked
 		u.Attempts += c.Attempts
 		u.Input += c.Input
 		u.Output += c.Output
@@ -477,11 +472,11 @@ func (f Figures) markdown() string {
 		row("change's model cost per text (USD)", "-", func(g *GroupFigures) string { return meanText(g.ChangeCost, "") })
 		b.WriteString("\n")
 	}
-	b.WriteString("## Model calls\n\nInput tokens are the prompt tokens read at the input price; the cache columns are the prompt tokens written to the provider's cache and read from it, at their own prices. Marked counts the model calls the harness sent with the cache mark, and Unmarked those it sent with none; the phrases judgement of one text is one call in Calls, and each of its model calls counts in Marked or Unmarked. A candidate call, whose marks the local Dispatch, the reviewer component or the detector's reader set, is in neither.\n\n" +
-		"| Model | Role | Use | Calls | Marked | Unmarked | Attempts | Input tokens | Cache write tokens | Cache read tokens | Output tokens | Cost (USD) | Served |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
+	b.WriteString("## Model calls\n\nInput tokens are the prompt tokens read at the input price; the cache columns are the prompt tokens a provider reports written to its cache and read from it, at their own prices. The harness's own calls carry no cache mark; a candidate call's marks are the local Dispatch's, the reviewer component's or the detector's reader's.\n\n" +
+		"| Model | Role | Use | Calls | Attempts | Input tokens | Cache write tokens | Cache read tokens | Output tokens | Cost (USD) | Served |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
 	var total float64
 	for _, u := range f.Models {
-		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d | %d | %.2f | %s |\n", u.Model, u.Role, u.Use, u.Calls, u.Marked, u.Unmarked, u.Attempts, u.Input, u.CacheWrite, u.CacheRead, u.Output, u.CostUSD, strings.Join(u.Served, ", "))
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %.2f | %s |\n", u.Model, u.Role, u.Use, u.Calls, u.Attempts, u.Input, u.CacheWrite, u.CacheRead, u.Output, u.CostUSD, strings.Join(u.Served, ", "))
 		total += u.CostUSD
 	}
 	fmt.Fprintf(&b, "\nTotal model cost: %.2f USD. Wall time of this run: %.0f s; the calls' own time, summed: %.0f s.\n", total, f.Run.WallSeconds, f.Run.CallSeconds)

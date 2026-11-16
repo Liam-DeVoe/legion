@@ -56,8 +56,7 @@ func scoreSevenA(t *testing.T, stand *modeltest.Model, build, sessions, out stri
 }
 
 // scoresOf are the figures that two runs of the same results share: every score and each model's
-// calls, without the times a run measures (the wait) and the cache marks, which a lockstep sets
-// on more calls than a run of one model.
+// calls, without the times a run measures (the wait).
 func scoresOf(f Figures) Figures {
 	out := Figures{Run: FigureRun{Params: f.Run.Params, Selected: f.Run.Selected, Results: f.Run.Results}}
 	for _, p := range f.Populations {
@@ -73,10 +72,7 @@ func scoresOf(f Figures) Figures {
 		q.All = strip(p.All)
 		out.Populations = append(out.Populations, q)
 	}
-	for _, u := range f.Models {
-		u.Marked, u.Unmarked = 0, 0
-		out.Models = append(out.Models, u)
-	}
+	out.Models = f.Models
 	return out
 }
 
@@ -139,165 +135,6 @@ func TestALockstepRunWritesTheRunOfOneModelForEachModel(t *testing.T) {
 	}
 	if a["phrase/comment:f4@40"].Text != vacuousSentence || b["phrase/comment:f4@40"].Text != writtenAgain {
 		t.Errorf("the phrase case's texts are %q (laneA) and %q (laneB)", a["phrase/comment:f4@40"].Text, b["phrase/comment:f4@40"].Text)
-	}
-}
-
-// The grading calls of a case are planned over every lane before the first is sent. Under change
-// 7a the question case's undefined judgement is one call in a run of one model, so its prefix (its
-// prompt, its schema and the case's parts that it reads, the session part last) goes unmarked. In
-// a lockstep of two models the two lanes' undefined calls send that prefix byte for byte, so the
-// plan counts two calls of it, and both are marked: the first writes the prefix and the second
-// reads it.
-func TestALockstepRunMarksAPrefixItsModelsShare(t *testing.T) {
-	build, sessions := writeFixture(t)
-	stand := modeltest.New(t, lockstepRules(t, nil)...)
-	alone := t.TempDir()
-	if code, stderr := scoreSevenA(t, stand, build, sessions, alone, "--model", laneA); code != 0 {
-		t.Fatalf("the run of one model = %d:\n%s", code, stderr)
-	}
-	before := len(stand.Requests())
-	lockstep := t.TempDir()
-	if code, stderr := scoreSevenA(t, stand, build, sessions, lockstep, "--models", laneA+","+laneB); code != 0 {
-		t.Fatalf("the lockstep run = %d:\n%s", code, stderr)
-	}
-	const question = "question/comment:q1@11"
-	single, err := readResults(filepath.Join(alone, "cases.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if g := single[question].Grades[JUndefined]; g == nil || g.Call == nil || g.Call.Unmarked != 1 {
-		t.Fatalf("the run of one model's undefined call of the question case: %+v, want it unmarked", g)
-	}
-	for _, m := range []string{laneA, laneB} {
-		results, err := readResults(filepath.Join(lockstep, m, "cases.jsonl"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if g := results[question].Grades[JUndefined]; g == nil || g.Call == nil || g.Call.Marked != 1 {
-			t.Errorf("%s: the undefined call of the question case is %+v, want it marked", m, g)
-		}
-	}
-	var calls []wireTurn
-	for _, r := range stand.Requests()[before:] {
-		if strings.Contains(r.Text, markUndefined) && strings.Contains(r.Text, "What is the zork train?") {
-			calls = append(calls, decodeTurn(t, r))
-		}
-	}
-	if len(calls) != 2 {
-		t.Fatalf("the lockstep sent %d undefined calls of the question case, want one for each model", len(calls))
-	}
-	for i, w := range calls {
-		b := w.blocks(t)
-		if w.marks != 1 || len(b) != 2 || !strings.HasSuffix(b[0].Text, "</writer_session>\n") || !reflect.DeepEqual(b[0].CacheControl, fiveMinuteMark) || b[1].CacheControl != nil {
-			t.Errorf("call %d carries %d marks, its blocks %+v; want the parts' block, which ends with the session part, marked", i, w.marks, b)
-		}
-	}
-	if !reflect.DeepEqual(calls[0].blocks(t)[:1], calls[1].blocks(t)[:1]) || !reflect.DeepEqual(calls[0].System, calls[1].System) {
-		t.Error("the two models' undefined calls send different prefixes")
-	}
-}
-
-// The writer's calls count over the lanes that make the change of a case, as the grader's do.
-// Change 7a calls the writer once for a case whose check found something: a run of one model
-// leaves that call unmarked, and in a lockstep of two models the two lanes' calls send the same
-// prompt and record, so both are marked, and the second reads the prefix the first wrote.
-// Change 5's side answer, which one call makes for every lane, stays unmarked.
-func TestALockstepRunMarksTheWritersPrefixItsModelsShare(t *testing.T) {
-	writerCalls := func(stand *modeltest.Model, from int, marker string) []wireTurn {
-		var out []wireTurn
-		for _, r := range stand.Requests()[from:] {
-			if r.Model == "claude-opus-5-5" && strings.Contains(r.Text, marker) {
-				out = append(out, decodeTurn(t, r))
-			}
-		}
-		return out
-	}
-	const comment = "question/comment:c2@20"
-	run, stand := changeRig(t, []string{changeCheck}, nil)
-	if a := apply(t, run, comment); !slices.Contains(outcomes(a), "written_again") {
-		t.Fatalf("change 7a did not call the writer: %v", outcomes(a))
-	}
-	if calls := writerCalls(stand, 0, markWriterRewrite); len(calls) != 1 || calls[0].marks != 0 {
-		t.Errorf("a run of one model's writer call: %d calls, want one with no mark", len(calls))
-	}
-	lanes, err := run.withCandidates(&modelFlags{gateway: stand.URL, keyFile: keyFile(t)}, []string{candidateID, laneB}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := len(stand.Requests())
-	for _, lane := range lanes {
-		if _, err := lane.Apply(t.Context(), run.ds.Case(comment), len(lanes)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	calls := writerCalls(stand, before, markWriterRewrite)
-	if len(calls) != 2 {
-		t.Fatalf("the lockstep's lanes made %d writer calls, want one each", len(calls))
-	}
-	for i, w := range calls {
-		b := w.blocks(t)
-		if w.marks != 1 || len(b) != 2 || !strings.HasPrefix(b[0].Text, "<record>") || !reflect.DeepEqual(b[0].CacheControl, fiveMinuteMark) ||
-			!strings.HasPrefix(b[1].Text, "<your_text>") || b[1].CacheControl != nil {
-			t.Errorf("lane %d's writer call carries %d marks, its blocks %+v; want the record marked", i, w.marks, b)
-		}
-	}
-	if !reflect.DeepEqual(calls[0].blocks(t)[:1], calls[1].blocks(t)[:1]) || !reflect.DeepEqual(calls[0].System, calls[1].System) {
-		t.Error("the two lanes' writer calls send different prefixes")
-	}
-
-	run, stand = changeRig(t, []string{changeRewrite}, newFakeDispatch(t))
-	lanes, err = run.withCandidates(&modelFlags{gateway: stand.URL, keyFile: keyFile(t)}, []string{candidateID, laneB}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, lane := range lanes {
-		if _, err := lane.Apply(t.Context(), run.ds.Case(comment), len(lanes)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if answers := writerCalls(stand, 0, markWriterAnswer); len(answers) != 1 || answers[0].marks != 0 {
-		t.Errorf("change 5's shared side answer: %d calls, want one with no mark", len(answers))
-	}
-}
-
-// A lockstep run makes the change of a case for its models one after another and counts their
-// writer calls together: where both models' detectors find the phrase case's sentence, both
-// writer calls are marked, and a run of one model leaves its one call unmarked.
-func TestALockstepRunCountsTheWritersCallsOverItsModels(t *testing.T) {
-	build, sessions := writeFixture(t)
-	both := append([]modeltest.Rule{{Model: laneA, Contains: markDetector, Match: func(r modeltest.Request) bool { return strings.Contains(r.Text, vacuousSentence) },
-		Reply: modeltest.Reply{Text: `{"vacuous":[{"id":"c1","rewrite":"This is the problem."}]}`}}}, lockstepRules(t, nil)...)
-	stand := modeltest.New(t, both...)
-	writer := func(out, id string) Call {
-		t.Helper()
-		results, err := readResults(filepath.Join(out, "cases.jsonl"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, c := range results[id].ChangeCalls {
-			if c.Model == "claude-opus-5-5" {
-				return c
-			}
-		}
-		t.Fatalf("%s: the phrase case holds no writer call", out)
-		return Call{}
-	}
-	const phrase = "phrase/comment:f4@40"
-	alone := t.TempDir()
-	if code, stderr := scoreSevenA(t, stand, build, sessions, alone, "--model", laneA); code != 0 {
-		t.Fatalf("the run of one model = %d:\n%s", code, stderr)
-	}
-	if c := writer(alone, phrase); c.Marked != 0 || c.Unmarked != 1 {
-		t.Errorf("the run of one model's writer call: %+v, want it unmarked", c)
-	}
-	lockstep := t.TempDir()
-	if code, stderr := scoreSevenA(t, stand, build, sessions, lockstep, "--models", laneA+","+laneB); code != 0 {
-		t.Fatalf("the lockstep run = %d:\n%s", code, stderr)
-	}
-	for _, m := range []string{laneA, laneB} {
-		if c := writer(filepath.Join(lockstep, m), phrase); c.Marked != 1 || c.Unmarked != 0 {
-			t.Errorf("%s: the lockstep's writer call: %+v, want it marked", m, c)
-		}
 	}
 }
 

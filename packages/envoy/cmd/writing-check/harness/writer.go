@@ -58,11 +58,12 @@ const (
 	promptAnswer   = "writer-answer"
 )
 
-// The orders of the writer's user turn (score --writer-order). writerSessionLast, the default, is
-// the order the harness has always sent: Dispatch's record, the writer's text, Dispatch's
-// message, then the session part. writerSessionFirst sends the record and the session part, then
-// the text and the message: the order of the harness's first cache layout, kept so that a change
-// can be scored with each order to see how much its effect depends on where its words sit.
+// The orders of the writer's user message (score --writer-order). writerSessionLast, the
+// default, is the order the harness has always sent: Dispatch's record, the writer's text,
+// Dispatch's message, then the session part. writerSessionFirst sends the record and the session
+// part, then the text and the message: the order of the harness's first cache layout, kept so
+// that a change can be scored with each order to see how much its effect depends on where its
+// words sit.
 const (
 	writerSessionLast  = "session-last"
 	writerSessionFirst = "session-first"
@@ -71,41 +72,25 @@ const (
 // Writer is the writer agent the harness plays (plan Decision 20): the Claude model of
 // candidates.yaml's writer role, given Dispatch's record of the case, its own text, the message
 // Dispatch sent it, and its session up to the text where the case has one. Only a claude.Client
-// takes the session (claude.SessionText). Calls are the most calls of each prompt that one lane's
-// change makes for one case (changePlan.writerCalls), which decide the cache mark (marked).
-// Order is the order of its user turn, writerSessionLast where it is "".
+// takes the session (claude.SessionText). Order is the order of its user message,
+// writerSessionLast where it is "".
 type Writer struct {
 	Model *claude.Client
-	Calls map[string]int
 	Order string
 }
 
-// marked says the calls of prompt for a case carry the cache mark: where lanes lanes that make
-// the change of the case can call it two or more times in all. They send the same prefix (the
-// prompt, its schema and the record, and in the order writerSessionFirst the session part), and
-// they go one after another (scorer.scoreCase), so each after the first reads the prefix from the
-// provider's cache. A call that one lane alone can make once goes unmarked.
-func (w *Writer) marked(prompt string, lanes int) bool {
-	return w.Calls[prompt]*max(lanes, 1) >= 2
-}
-
-// writerTurn is one message Dispatch sends the writer about a case's text. lanes is the number of
-// the process's lanes whose changes make this turn's calls for the case.
+// writerTurn is one message Dispatch sends the writer about a case's text.
 type writerTurn struct {
 	kind    string
 	text    string
 	record  string
 	session claude.SessionText
 	message string
-	lanes   int
 }
 
-// call makes the writer's call for prompt with the turn's inputs and its session, if any, in the
-// writer's order. The record, which every call of a case sends the same, is the first block, as
-// Shared; the writer's text and Dispatch's message, which change from turn to turn, go after it.
-// The session part ends the turn, or, in the order writerSessionFirst, ends the record's block.
-// A marked call marks the end of that block, so a later call of the case with the same prompt
-// (change 3's next round, or another model's lane) reads it from the provider's cache.
+// call makes the writer's call for prompt with the turn's inputs and its session, if any, as one
+// user message in the writer's order. The session part follows the text before it after a blank
+// line (claude.Client.CallWithSession).
 func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTurn, schema json.RawMessage) (llm.Response, error) {
 	var b strings.Builder
 	if err := writerPrompts.ExecuteTemplate(&b, prompt, writerData{
@@ -113,17 +98,13 @@ func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTu
 	}); err != nil {
 		return llm.Response{}, fmt.Errorf("fill the %s prompt: %w", prompt, err)
 	}
-	req := llm.Request{
-		Purpose: purpose, System: strings.TrimSpace(b.String()) + "\n",
-		Shared: []string{strings.TrimSpace(turn.record) + "\n"}, Mark: w.marked(prompt, turn.lanes),
-		User:   tag("your_text", turn.text) + tag("dispatch_message", turn.message),
-		Schema: schema, MaxTokens: writerMaxTokens,
-	}
-	place := claude.SessionEndsUser
+	record, rest := strings.TrimSpace(turn.record)+"\n", tag("your_text", turn.text)+tag("dispatch_message", turn.message)
+	req := llm.Request{Purpose: purpose, System: strings.TrimSpace(b.String()) + "\n", User: record + rest, Schema: schema, MaxTokens: writerMaxTokens}
+	after := ""
 	if w.Order == writerSessionFirst {
-		place = claude.SessionEndsShared
+		req.User, after = record, rest
 	}
-	return w.Model.CallWithSession(ctx, req, turn.session, place)
+	return w.Model.CallWithSession(ctx, req, turn.session, after)
 }
 
 // rewriteSchema is the schema of the writer's text written again.

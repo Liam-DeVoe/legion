@@ -2,9 +2,6 @@ package llm
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"io"
 	"sync"
 	"time"
 
@@ -15,9 +12,6 @@ import (
 const (
 	// paceWindow is the span the pacer's limit holds over: any one minute.
 	paceWindow = time.Minute
-	// cacheLife is how long the provider keeps a prefix after a call writes or reads it: the
-	// five minutes of the cache mark that Run asks for (agentloop's HistoryMarkOnly).
-	cacheLife = 5 * time.Minute
 	// bytesPerToken is how the harness estimates a prompt's tokens from its bytes, as
 	// writing-check's reader budget counts them.
 	bytesPerToken = 4
@@ -44,9 +38,6 @@ type Pacer struct {
 	inWindow int
 	// freed is closed, and replaced, when a correction gives tokens of the last minute back.
 	freed chan struct{}
-	// written is, for each prefix (estimate.key), the start of the newest attempt whose reply
-	// reported the prefix written to the provider's cache or read from it.
-	written map[[sha256.Size]byte]time.Time
 }
 
 // charge is one attempt's uncached input: the estimate until its reply, then what the reply
@@ -59,75 +50,32 @@ type charge struct {
 // NewPacer is a pacer of perMinute uncached input tokens a minute; 0 holds no call back.
 func NewPacer(perMinute int) *Pacer {
 	return &Pacer{
-		limit:   max(perMinute, 0),
-		turn:    make(chan struct{}, 1),
-		freed:   make(chan struct{}),
-		written: map[[sha256.Size]byte]time.Time{},
+		limit: max(perMinute, 0),
+		turn:  make(chan struct{}, 1),
+		freed: make(chan struct{}),
 	}
-}
-
-// estimate is one call's prompt as the pacer reads it: its tokens and those of its marked prefix,
-// each at four bytes a token, and the prefix's key. marked is false for a call that carries no
-// cache mark, which the pacer charges whole.
-type estimate struct {
-	whole, prefix int
-	key           [sha256.Size]byte
-	marked        bool
 }
 
 // tokensOf is n bytes of prompt in tokens, at four bytes a token.
 func tokensOf(n int) int { return (n + bytesPerToken - 1) / bytesPerToken }
 
-// estimateOf is the estimate of req on model, whose Shared goes as the blocks shared. The prefix
-// is what the provider caches up to the mark at Shared's end: the model with its effort, the
-// system prompt, the schema and the Shared blocks. A call that sets no Mark caches nothing, so
-// its estimate is not marked.
-func estimateOf(model agentloop.Model, req Request, shared []agentloop.Block) estimate {
-	prefix := len(req.System) + len(req.Schema)
-	for _, b := range shared {
-		prefix += len(b.Text)
-	}
-	e := estimate{whole: tokensOf(prefix + len(req.User)), prefix: tokensOf(prefix)}
-	if !req.Mark || len(shared) == 0 {
-		return e
-	}
-	// Each field goes after its length, so no two prefixes hash the same bytes.
-	h := sha256.New()
-	length := func(n int) {
-		var b [8]byte
-		binary.BigEndian.PutUint64(b[:], uint64(n))
-		h.Write(b[:])
-	}
-	for _, s := range [...]string{string(model.Endpoint.Kind), model.Endpoint.BaseURL, model.ID, model.Effort, req.System} {
-		length(len(s))
-		_, _ = io.WriteString(h, s)
-	}
-	length(len(req.Schema))
-	h.Write(req.Schema)
-	for _, b := range shared {
-		length(len(b.Text))
-		_, _ = io.WriteString(h, b.Text)
-	}
-	h.Sum(e.key[:0])
-	e.marked = true
-	return e
+// estimateOf is the estimate of req's prompt in tokens: its system prompt, its schema and its
+// user message, at four bytes a token. The harness sets no cache mark, so the pacer charges
+// every prompt whole.
+func estimateOf(req Request) int {
+	return tokensOf(len(req.System) + len(req.Schema) + len(req.User))
 }
 
 // paced is one attempt's charge, which settle corrects after the reply. A paced of no pacer
 // corrects nothing.
 type paced struct {
-	p      *Pacer
-	index  int
-	at     time.Time
-	key    [sha256.Size]byte
-	marked bool
+	p     *Pacer
+	index int
 }
 
-// admit waits until the charges of the last minute leave room for the attempt's estimate, or
-// until ctx ends, and charges it. The estimate is the whole prompt, less the marked prefix where
-// an attempt that sent the same prefix within the cache's life had a reply that reported it
-// written to the cache or read from it. A nil Pacer admits at once and charges nothing.
-func (p *Pacer) admit(ctx context.Context, e estimate) (paced, error) {
+// admit waits until the charges of the last minute leave room for the attempt's estimate of
+// tokens, or until ctx ends, and charges it. A nil Pacer admits at once and charges nothing.
+func (p *Pacer) admit(ctx context.Context, tokens int) (paced, error) {
 	if p == nil {
 		return paced{}, nil
 	}
@@ -143,21 +91,11 @@ func (p *Pacer) admit(ctx context.Context, e estimate) (paced, error) {
 		p.mu.Lock()
 		now := time.Now()
 		p.slide(now)
-		tokens := e.whole
-		if e.marked {
-			if at, ok := p.written[e.key]; ok {
-				if now.Sub(at) < cacheLife {
-					tokens -= e.prefix
-				} else {
-					delete(p.written, e.key)
-				}
-			}
-		}
 		if p.limit == 0 || p.inWindow == 0 || p.inWindow+max(tokens, 1) <= p.limit {
 			p.charges = append(p.charges, charge{at: now, tokens: tokens})
 			p.inWindow += tokens
 			p.mu.Unlock()
-			return paced{p: p, index: len(p.charges) - 1, at: now, key: e.key, marked: e.marked}, nil
+			return paced{p: p, index: len(p.charges) - 1}, nil
 		}
 		// The last minute holds tokens, so it holds a charge: wait until its oldest charge leaves
 		// it, or until a reply gives tokens back.
@@ -184,9 +122,7 @@ func (p *Pacer) slide(now time.Time) {
 }
 
 // settle corrects the attempt's charge to the uncached input its reply reported in used: the
-// input tokens and the cache write tokens. A reply that reported no counts keeps the estimate. A
-// reply that reported a cache write or a cache read puts the attempt's prefix in the cache for
-// the cache's life from the attempt's start.
+// input tokens and the cache write tokens. A reply that reported no counts keeps the estimate.
 func (c paced) settle(used agentloop.Usage) {
 	p := c.p
 	if p == nil || !used.Metered {
@@ -204,9 +140,6 @@ func (c paced) settle(used agentloop.Usage) {
 		}
 	}
 	ch.tokens = tokens
-	if c.marked && (used.CacheWrite > 0 || used.CacheRead > 0) && p.written[c.key].Before(c.at) {
-		p.written[c.key] = c.at
-	}
 }
 
 // PaceUse is the uncached input of the calls that passed a pacer: each attempt's tokens as its

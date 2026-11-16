@@ -57,11 +57,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	if !req.NoCache {
 		switch {
 		case anthropicKind(kind):
-			ttl := ""
-			if req.HistoryMarkOnly {
-				ttl = "5m"
-			}
-			markAnthropicHistory(messages, len(history), ttl)
+			markAnthropicHistory(messages, len(history))
 		case kind == OpenAIResponses:
 			markOpenAIHistory(messages, len(history))
 		}
@@ -383,15 +379,13 @@ func (r *run) failure() error {
 // of the history, the newest message gets one, and the one an earlier step put on its newest
 // message is taken off (the SDK carries a step's message overrides into later steps; Anthropic
 // allows four marks). Where the request's Input is empty, the first call's newest message is
-// the history's own last message, which keeps the history's mark for the whole run. A request
-// that sets HistoryMarkOnly gets no newest-message mark, so the step leaves its messages as
-// they are.
+// the history's own last message, which keeps the history's mark for the whole run.
 func (r *run) prepareStep(state aisdk.PrepareStepState) (*aisdk.PrepareStepResult, error) {
 	result := &aisdk.PrepareStepResult{}
 	if state.StepNumber == r.req.Bounds.Calls-1 {
 		result.ToolChoice = &provider.ToolChoice{Type: provider.ToolChoiceNone}
 	}
-	if !anthropicKind(r.kind) || r.req.NoCache || r.req.HistoryMarkOnly || len(state.Messages) == 0 {
+	if !anthropicKind(r.kind) || r.req.NoCache || len(state.Messages) == 0 {
 		return result, nil
 	}
 	messages := slices.Clone(state.Messages)

@@ -101,38 +101,14 @@ func (c *Client) Call(ctx context.Context, req llm.Request) (llm.Response, error
 // SessionTag is the tag the session part stands in.
 const SessionTag = "writer_session"
 
-// SessionPlace is where a call sends the session part.
-type SessionPlace int
-
-const (
-	// SessionEndsShared sends the session part at the end of the request's Shared, in the
-	// prefix that the request's Mark marks for the provider's cache: after the last Shared
-	// block's text, or as the one Shared block where the request has none.
-	SessionEndsShared SessionPlace = iota
-	// SessionEndsUser sends it at the end of the user turn, after User's text.
-	SessionEndsUser
-)
-
-// CallWithSession makes one call that sends the session part in its tag where place says. The
-// part follows the text before it after one blank line, as the harness's user message has always
-// held it. An empty session part adds nothing.
-func (c *Client) CallWithSession(ctx context.Context, req llm.Request, session SessionText, place SessionPlace) (llm.Response, error) {
+// CallWithSession makes one call whose user message is req.User, then, after a blank line, the
+// session part in its tag, then after. With after "" the session part ends the user message, as
+// every call but the writer's under --writer-order session-first sends it. An empty session part
+// adds nothing: the user message is req.User, then after.
+func (c *Client) CallWithSession(ctx context.Context, req llm.Request, session SessionText, after string) (llm.Response, error) {
 	if !session.Empty() {
-		part := "<" + SessionTag + ">\n" + session.text + "\n</" + SessionTag + ">\n"
-		switch n := len(req.Shared); {
-		case place == SessionEndsUser:
-			req.User = afterBlankLine(req.User, part)
-		case n == 0:
-			req.Shared = []string{part}
-		default:
-			req.Shared = slices.Clone(req.Shared)
-			req.Shared[n-1] = afterBlankLine(req.Shared[n-1], part)
-		}
+		req.User = strings.TrimRight(req.User, "\n") + "\n\n<" + SessionTag + ">\n" + session.text + "\n</" + SessionTag + ">\n"
 	}
+	req.User += after
 	return c.runner.Run(ctx, c.model, req)
-}
-
-// afterBlankLine is part after text, with one blank line between them.
-func afterBlankLine(text, part string) string {
-	return strings.TrimRight(text, "\n") + "\n\n" + part
 }

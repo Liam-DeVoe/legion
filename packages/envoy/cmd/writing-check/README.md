@@ -1201,8 +1201,7 @@ Its inputs are in the package, and they are among the paths that decide a score:
   price of its id. A Foundry candidate with no effort sends none.
 - `prices.yaml`: each model's price in USD per million tokens, with the source and the date of
   each family's prices. The harness refuses a model with no price. A Claude row's cache write is
-  the price of a five-minute write, the life the harness's cache marks ask for (see "The prompt
-  cache").
+  the price of a five-minute write (see "The prompt cache").
 - `prompts/`: `reader.md`, and one `grade-*.md` for each judgement, the system prompt of its
   calls: `answered`, `first-paragraph`, `lost`, `added`, `phrases`, `undefined`, `answer-start`,
   `harder` and `define`. `parts.md` holds the parts they share.
@@ -1234,108 +1233,49 @@ does not sample at temperature 0, and its repeatability is measured, not assumed
 
 ### The prompt cache
 
-The provider caches a prompt's prefix up to a call's cache mark, and a later call that sends the
-same prefix reads it at the cache read price. Anthropic builds the prefix from the tools, then the
-system prompt with the reply's schema, then the messages. So two calls share a prefix only when
-they send the same model, system prompt and schema, and the same first blocks of the user turn.
-
-Each call sends what it sent before the harness marked prefixes for the cache, with one change:
-a grading call's session part now comes before its subject. Apart from that move, the user turn
-holds the old text, cut into blocks so that a mark can end a prefix.
+The harness sets no cache mark on its own calls: `llm.Runner` asks agentloop for none
+(`NoCache`). Each call of the grader, the writer and the fresh reader sends one system prompt and
+one user message of one text block, the bytes the harness sent before it marked prefixes for the
+cache (its code at the parent of commit 00f3c570).
 
 - A grading call sends its judgement's own prompt (its `grade-*.md`) as its system prompt, and its
-  judgement's own reply schema. Its user turn is two blocks. The first holds the case's parts that
-  the judgement's input mode gives, in this order: the question, the record, the writer's answer,
-  and, after a blank line, the session part. The second holds the subject: the reader's answer,
-  the two texts, the text with the owner's own words, or the definition. Before the cache marks,
-  the subject came after the question, and the session part ended the message. The subject moved
-  to the end so that the first block, which each call of the judgement for the case sends the
-  same, holds the session part. The mark goes at the end of the first block, where the call is
-  marked. `TestTheAnsweredCallSendsItsPromptOfBeforeTheCacheMarks` holds `answered`'s system
-  prompt to the bytes it had before.
-- `phrases` sends its prompt as its system prompt, and its candidate sentences in their tag,
-  `<candidates>`, as before. The tag's first line is a block of its own, so the call can mark the
-  prefix that holds the prompt: agentloop marks the end of a call's first blocks (its history),
-  and never the system prompt. The prompt is the same for every text.
-- The writer sends its turn in the order it always has: Dispatch's record, its text, Dispatch's
-  message, and, after a blank line, its session part. The record is a block of its own, and the
-  mark goes at its end, where the call is marked. `score --writer-order session-first` sends the
-  session part at the end of the record's block instead, before the text and the message, and
-  `run.json` records the order as `writer_order`.
-- The fresh reader's call carries no mark: its prompt is small.
+  judgement's own reply schema. Its user message holds the parts that the judgement's input mode
+  gives, in this order: the question, the subject (the reader's answer, the two texts, the text
+  with the owner's own words, or the definition), the record, the writer's answer, and, after a
+  blank line, the session part.
+- `phrases` sends its prompt as its system prompt, and its candidate sentences in their tag.
+- The writer sends Dispatch's record, its text, Dispatch's message and, after a blank line, its
+  session part. `score --writer-order session-first` sends the session part after the record,
+  before the text and the message, and `run.json` records the order as `writer_order`.
 
-The harness's first cache layout (2026-11-16) sent one system prompt for every judgement (the
-sentences about Dispatch, and one sentence that said the tagged parts were data), one reply schema
-that was any of the judgements' own schemas, and each judgement's prompt in the user turn after
-the case's parts. A reply in another judgement's shape was asked again. The writer sent the record
-and the session part first. So the judgements of a case shared one prefix, but the grader's
-grades moved beyond its noise. On the same 229 fresh reader answers, the first cache layout's
-grades agreed with the old layout's on 90.8% of `answered`, 88.2% of `first_paragraph`, 75.0% of
-`undefined` (any finding) and 92.3% of `phrases`. Two runs of the old layout agree on 97.3%,
-95.8%, 89.7% and 97.9%. Change 2's question score also fell, and the writer's order was its only
-changed input. So the harness sends each judgement's own prompt and schema again.
-`--writer-order session-first` keeps the first layout's writer order, so a change can be scored
-with each order.
+`TestTheAnsweredCallSendsWhatItSentBeforeTheCacheMarks` and
+`TestTheWriterSendsWhatItSentBeforeTheCacheMarks` hold the two calls to the SHA-256 of the system
+prompt and the user message that the code at that parent sent for a fixture written for the test.
+The answered grade's `input_sha256` is that code's too. So `--grades-from` takes the grades of a
+run made before the cache marks, and not those of a run made with them.
 
-A call is marked only where at least two calls of the run are known, before the first is sent, to
-send its prefix. A prefix that one call alone sends goes unmarked: it pays the input price, not
-the cache write at 1.25 times that price. The blocks a call sends, and their order, are the same
-whether it is marked or not.
+Two layouts that marked prefixes for the cache moved the grader beyond its noise. Each was
+measured on the same 229 fresh reader answers, graded again, against the layout with no mark:
 
-- The grader counts its calls before it sends them (`Grader.Plan`). `score` counts the calls of a
-  case's judgements before the case's first grading call. A lockstep run (see "Lockstep") counts
-  the calls of the case's texts of every model before the first of them. `grader-test` and
-  `phrases-labels` count the calls of every input before their first call. A judgement counts one
-  call, and `phrases` one call for each 30 candidate sentences. A judgement whose grade the run
-  takes from `--grades-from` counts none. A judgement of the fresh reader's answer counts one call
-  while the reader has not answered yet.
-- The counts add up over the run, and over every model of a lockstep run. A grading call is
-  marked where its prefix counts two or more calls. Each judgement has a system prompt and a
-  schema of its own, so only the calls of one judgement share a prefix. In a run of one model a
-  judgement makes one call for a text, so the calls of one prefix are the `phrases` calls (below)
-  and the calls of one judgement for cases whose parts are the same, byte for byte; the other
-  grading calls are unmarked. In a lockstep run, the models' calls of one judgement for a case
-  read the same parts where the grader reads the same writer's answer for each (changes 5 and 6
-  share one answer, see "Lockstep"; the other changes have none), so they are marked where the
-  run has two models or more.
-- Every text's `phrases` calls send the same prefix, so a `phrases` call is marked once the run
-  has counted two or more of them. In `score`, a case counts its calls only when it starts. So
-  the first texts' `phrases` calls can go unmarked when no other case has counted its calls yet.
-- The grader makes the first marked call of each prefix alone, and the others wait for its
-  reply, since the provider serves a cached prefix only once a call that wrote it has begun to
-  answer. An unmarked call waits for none.
-- A fallback grader's call is unmarked: no count knows that it will be made.
-- The writer marks the calls of a prompt where the case's calls of it can be two or more. Its
-  calls of a case send the same prefix: the prompt, its schema and the record, and under
-  `--writer-order session-first` the session part. Change 3 calls the writer once in each round
-  of review, up to `--rounds` (default 2). So change 3 marks its writer calls where `--rounds` is
-  2 or more. Changes 2, 5, 6 and 7a call the writer once for a case, and change 4 does not call
-  it. In a run of one model their calls are unmarked.
-- A lockstep run counts the writer's calls of a case over its models, as the grader counts its
-  own: the calls of one model times the models that make the change of the case. So change 7a's
-  writer calls, and change 3's with `--rounds 1`, are marked where two models or more score the
-  case. The models make the change of a case one after another, so each writer call after the
-  first reads the prefix from the cache. The count is of the calls the models can make: where the
-  check of only one model finds something, its one writer call is marked all the same. The side
-  answer of changes 5 and 6, which one call makes for every model (see "Lockstep"), counts as one
-  call and stays unmarked.
+- The first layout sent one system prompt for every judgement, one reply schema that was any of
+  the judgements' own, and each judgement's prompt in the user turn after the case's parts. Its
+  grades agreed with those of no mark on 90.8% of `answered`, 88.2% of `first_paragraph`, 75.0% of
+  `undefined` (any finding) and 92.3% of `phrases`. Two runs with no mark agreed on 97.3%, 95.8%,
+  89.7% and 97.9%. Its writer sent the record and the session part first, and change 2's question
+  score fell, though the writer's order was the only input of change 2 that changed.
+- The second layout sent each judgement's own prompt and schema, and moved the session part before
+  the subject, so that a prefix could hold it. Its grades agreed with those of no mark on 90.4% of
+  `answered`, 89.9% of `first_paragraph`, 75.3% of `undefined` and 95.2% of `phrases`. Two runs
+  with no mark agreed on 95.2%, 94.1% and 89.1% of the first three.
 
-The mark is not one of a grade's inputs. `input_sha256` (see "Grades of another run") is the same
-for a marked call and an unmarked one, so `--grades-from` takes grades across the two.
+So where the subject stands moves the grader, and the harness sends what it sent before the
+marks. `--writer-order session-first` keeps the first layout's writer order, so a change can be
+scored with each order.
 
-The mark has a life of five minutes (agentloop's `HistoryMarkOnly`), and only the prefix's end is
-marked, so no call pays a cache write on its own part. The gateway gives a mark that names no life
-one hour, at twice the input price; the five-minute write costs 1.25 times the input price.
-`prices.yaml` prices the cache tokens, and each call records them as `cache_write_tokens` and
+A provider can still report cache tokens. Each call records them as `cache_write_tokens` and
 `cache_read_tokens` beside `input_tokens`, which counts only the prompt tokens read at the input
-price. Each call records `marked_calls` or `unmarked_calls`: the model calls it holds that the
-harness sent with the mark and with none. `scores.md`'s model table counts them in its Marked
-and Unmarked columns, and `grader-test.md` gives them in its cost line. A candidate call is in
-neither: the local Dispatch, the reviewer component or the detector's reader sets its marks.
-
-The gateway serves each Claude model from more than one deployment and sends each call to one of
-them. A deployment reads only the prefixes that it wrote, so a prefix is written once on each
-deployment that its calls reach (measured 2026-11-16: `claude-opus-5` has two).
+price, and `prices.yaml` prices them. A candidate call's marks are not the harness's: the local
+Dispatch, the reviewer component or the detector's reader sets them.
 
 ### Pacing
 
@@ -1353,11 +1293,7 @@ component (see "The changes"). A lockstep run (see "Lockstep") is one process: o
 the calls of all its models together to N.
 
 - Before each attempt, the pacer charges the attempt's estimate: the bytes of its system prompt,
-  schema, shared blocks and user message, at four bytes a token. The pacer leaves the prefix out
-  of the estimate only when the attempt is marked (see "The prompt cache"), an earlier marked
-  attempt sent the same prefix (the model and its effort, the system prompt, the schema and the
-  shared blocks), its reply reported the prefix written to the cache or read from it, and that
-  attempt began less than five minutes before. Else the whole prompt is charged.
+  schema and user message, at four bytes a token.
 - An attempt waits while the charges of the last minute leave no room for its charge. The
   attempts go through in the order they came.
 - After the reply, the charge becomes the reply's input tokens plus its cache write tokens. A
@@ -1417,7 +1353,7 @@ model's id, or when no call answers. Then `probe` exits 1. `--out` also writes t
 | `--models` | In place of `--model`: candidates, by name as `--model` takes one, comma-separated, that one process scores the change with, case by case (see "Lockstep"). Each model's run goes to `<out>/<model>`. |
 | `--local`, `--loaded` | The `local.json` of `harness local` and the `loaded.jsonl` of `harness load`, for a change that holds 2 to 6. |
 | `--rounds`, `--unedited` | Change 3: the reviews of one text (default 2), after which the writer's last edit posts; and what posts for a case with no session, as `DISPATCH_REVIEWER_UNEDITED` says (`rewrite`, the default, or `as_written`). |
-| `--writer-order` | The order of the writer's user turn, for a change that plays the writer: `session-last` (the default), Dispatch's record, the writer's text and Dispatch's message, then the session part; or `session-first`, the record and the session part, then the text and the message (see "The prompt cache"). `run.json` records it as `writer_order`. A change that plays no writer refuses `session-first`. |
+| `--writer-order` | The order of the writer's user message, for a change that plays the writer: `session-last` (the default), Dispatch's record, the writer's text and Dispatch's message, then the session part; or `session-first`, the record and the session part, then the text and the message (see "The prompt cache"). `run.json` records it as `writer_order`. A change that plays no writer refuses `session-first`. |
 | `--cases`, `--sessions` | The build directory of `dataset build`, or the directory of `dataset named`, and the directory of `dataset sessions`. |
 | `--out` | The run's directory, or under `--models` the directory that holds each model's run directory. A run continues the cases that have no result in it, and refuses a directory whose `run.json` records other parameters. |
 | `--part` | `development` (the default), or `held_out`, which only this flag selects. |
@@ -1492,9 +1428,8 @@ changes"). `cases.jsonl` holds Dispatch text, so the run's directory stays under
 whose line holds an error is scored again by the next run. `scores.json` and `scores.md` hold the
 figures: for the whole part and for the cases with a session (plan Decision 18), and for each
 case group and all groups, the cases by kind and by conversation, each score, the wait, the
-change's own model cost per text, and each model's calls, the calls marked for the prompt cache
-and those not (see "The prompt cache"), attempts, prompt tokens at the input price, cache write
-and cache read tokens, reply tokens and cost.
+change's own model cost per text, and each model's calls, attempts, prompt tokens at the input
+price, cache write and cache read tokens, reply tokens and cost.
 `scores.md` also gives the uncached input of the run's own calls and its busiest minute (see
 "Pacing").
 
@@ -1553,19 +1488,12 @@ The run goes case by case, `--concurrency` cases at once:
 
 1. The change runs for each model that has no result for the case, one model after another,
    through the local Dispatch as in a run of one model. Each request names its model.
-2. The grader plans the grading calls of the case's texts of all the models together, before it
-   sends the first (see "The prompt cache"). A prefix that the models' calls send alike, such as
-   the record and the session part, counts its calls over all of them and is marked.
-3. The readers' and the grader's calls of all the models go at once. So the calls of one prefix
-   go close together, inside the cache's life of five minutes: the first writes the prefix, and
-   the others read it.
-4. Each model's result goes to the end of its own `cases.jsonl`.
+2. The readers' and the grader's calls of all the models go at once.
+3. Each model's result goes to the end of its own `cases.jsonl`.
 
 Each lane's figures are the figures of a run of `--model`: the same function (`computeFigures`)
 of the lane's results. Only the facts of the process differ. `scores.json` names the models of
-the lockstep as `lockstep`, and the wall time and the uncached input are the whole process's. A
-lane's model calls can hold more marked calls than a run of one model, since the plan counts the
-calls of every model.
+the lockstep as `lockstep`, and the wall time and the uncached input are the whole process's.
 
 A lockstep run that continues scores, for each model, the cases that model holds no result for.
 A case that one model lacks goes to that model alone.
@@ -1592,11 +1520,8 @@ question, with the ask's id left out, and gives the same answer to every model's
 
 Where the writer's call depends on the candidate, each model's run makes its own: change 3's
 action on the reviewer's findings, change 7a's text written again after the detector's findings,
-and, in a combination, a side question about a text that an earlier step made. Change 3's and
-change 7a's calls of a case send the same prompt and record for every model, so they count
-together and are marked where two calls or more can send them (see "The prompt cache"). A side
-answer counts as one call in a lockstep run, so it stays unmarked. Change 2 calls no candidate, so
-it takes no `--models`.
+and, in a combination, a side question about a text that an earlier step made. Change 2 calls no
+candidate, so it takes no `--models`.
 
 ### The changes
 
@@ -1643,9 +1568,9 @@ grader fails a wrong answer or definition, passes a right one, finds a harder te
 an item that holds the marker for a wrong list output and nothing for a right one, and finds the
 answer within 5 words of `words_before`. It writes `grader-test.json` and `grader-test.md`: for
 each judgement, the wrong and the right outputs it marked correctly, then the cost of every call,
-refused calls included, with its prompt, cache write and cache read tokens and its calls marked
-for the prompt cache and not. The planted outputs are written by hand from development cases and
-hold Dispatch text, so they are kept under `$TMPDIR` and never in the repository.
+refused calls included, with its prompt, cache write and cache read tokens. The planted outputs
+are written by hand from development cases and hold Dispatch text, so they are kept under
+`$TMPDIR` and never in the repository.
 `--grader-inputs` sets the grader's input modes, as `score` takes them. `--grader` names the
 grading model, as `score` takes it, except that a candidate may grade here: no candidate wrote a
 planted output. The report then says the grader is a candidate, and `grader-test.json` records
@@ -1719,12 +1644,12 @@ is the same as its own, byte for byte (`text_sha256`). From such a result it tak
 
 Each answer and each grade records the SHA-256 of its inputs as `input_sha256`. Two of them read
 the same inputs when that SHA-256 is the same. For a grade, it covers the grader and its
-fallbacks with their effort, the system prompt, the case's parts the call sends first, the rest of
-the user message, the reply's schema and bound, and the session part where the call reads one.
-Those parts and the rest of the message hold what the input mode gives the judgement: the texts,
-the reader's answer, the question, the record, the writer's answer, the definition and the owner's
-own words. So the run takes no grade that was made with another input mode, another prompt,
-another layout, another vocabulary or another grader. It gives that judgement itself.
+fallbacks with their effort, the system prompt, the user message, the reply's schema and bound,
+and the session part where the call reads one. The user message holds what the input mode gives
+the judgement: the texts, the reader's answer, the question, the record, the writer's answer, the
+definition and the owner's own words. So the run takes no grade that was made with another input
+mode, another prompt, another layout, another vocabulary or another grader. It gives that
+judgement itself.
 
 An answer or a grade that the run takes is marked `reused` and keeps the call of the run that
 made it. The figures count no call and no cost for it: the model table and the cost in
