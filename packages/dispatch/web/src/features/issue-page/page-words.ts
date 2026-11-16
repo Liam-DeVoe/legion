@@ -579,6 +579,11 @@ export const PROGRESS_NOUNS = freeze({
 export const STATE_LINES = freeze({
   advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
   closed: "This issue is closed.",
+  /** How a subscribed agent stands whose subscription is wider than this issue, which Details
+   *  draws where today's pages draw "via" and its topic with the reason as a tooltip
+   *  (`features/issue/SubscribedAgents.tsx`, dispatch://INFRA-1196 R19). */
+  subscription_wider:
+    "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
 } as const);
 
 /**
@@ -758,6 +763,10 @@ export const CONTROL_LABELS = freeze({
   answer_chose: "you chose",
   /** What the line says while it is empty and answers a question. */
   answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
+  /** What a stale approval chip says of the document's latest version inside `NoTooltips`,
+   *  where no `title` carries it: "Approved v3 · latest v5" (`features/doc/ApprovalChip.tsx`,
+   *  dispatch://INFRA-1196 R19, R22). */
+  approval_latest: "latest",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
   /** Changes the reader's own answer to a question, on its focused row: the line at the foot of
