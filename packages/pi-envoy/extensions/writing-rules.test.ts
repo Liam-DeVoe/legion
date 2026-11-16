@@ -194,68 +194,85 @@ const posted = () =>
   );
 const asked = (path: string) => dispatch.requests.filter((request) => request.path === path);
 
-test("the first write is refused once with the rules, the second posts, and a compaction brings the refusal back once", async () => {
-  const session = await startedSession("writing-rules-on");
-  try {
-    const first = await comment("The deploy finished at 14:02.");
-    expect(first.code).toBe(1);
-    expect(first.stdout).toStartWith(
-      "dispatch comment was not called: this call is the first write of this session"
-    );
-    expect(first.stdout).toContain(RULES.trimEnd());
-    expect(posted()).toEqual([]);
-    expect(asked("/api/v1/writing-rules").map((request) => request.body)).toEqual([
-      {
-        route: "POST /api/v1/issues/DSP-1/comments",
-        body: expect.objectContaining({ body: "The deploy finished at 14:02." }),
-      },
-    ]);
+// Each row loads the extension and runs the command up to four times, so it takes the 30 s bound
+// `extensions/envoy.test.ts` gives such rows: Bun's 5 s default aborts a row on a busy machine, and
+// an aborted row skips its `finally` and leaves its requests to the next row's counts.
+const ROW_MS = 30_000;
 
-    const second = await comment("The deploy finished at 14:02.");
-    expect(second.code).toBe(0);
-    expect(second.stdout).toContain("Posted comment");
-    expect(posted()).toHaveLength(1);
+test(
+  "the first write is refused once with the rules, the second posts, and a compaction brings the refusal back once",
+  async () => {
+    const session = await startedSession("writing-rules-on");
+    try {
+      const first = await comment("The deploy finished at 14:02.");
+      expect(first.code).toBe(1);
+      expect(first.stdout).toStartWith(
+        "dispatch comment was not called: this call is the first write of this session"
+      );
+      expect(first.stdout).toContain(RULES.trimEnd());
+      expect(posted()).toEqual([]);
+      expect(asked("/api/v1/writing-rules").map((request) => request.body)).toEqual([
+        {
+          route: "POST /api/v1/issues/DSP-1/comments",
+          body: expect.objectContaining({ body: "The deploy finished at 14:02." }),
+        },
+      ]);
 
-    await session.compact();
+      const second = await comment("The deploy finished at 14:02.");
+      expect(second.code).toBe(0);
+      expect(second.stdout).toContain("Posted comment");
+      expect(posted()).toHaveLength(1);
 
-    const third = await comment("The rollback took 3 minutes.");
-    expect(third.code).toBe(1);
-    expect(third.stdout).toStartWith("dispatch comment was not called:");
-    expect(posted()).toHaveLength(1);
+      await session.compact();
 
-    const fourth = await comment("The rollback took 3 minutes.");
-    expect(fourth.code).toBe(0);
-    expect(posted()).toHaveLength(2);
-    // The command kept Dispatch's answer about the refusal: one read served all four calls.
-    expect(asked("/api/v1/settings/writing-rules")).toHaveLength(1);
-  } finally {
-    await session.shutdown();
-  }
-});
+      const third = await comment("The rollback took 3 minutes.");
+      expect(third.code).toBe(1);
+      expect(third.stdout).toStartWith("dispatch comment was not called:");
+      expect(posted()).toHaveLength(1);
 
-test("with the refusal off, nothing is refused, before or after a compaction", async () => {
-  dispatch.refusal = "off";
-  const session = await startedSession("writing-rules-off");
-  try {
-    expect((await comment("The deploy finished at 14:02.")).code).toBe(0);
-    await session.compact();
-    expect((await comment("The rollback took 3 minutes.")).code).toBe(0);
-    expect(posted()).toHaveLength(2);
-    expect(asked("/api/v1/writing-rules")).toEqual([]);
-  } finally {
-    await session.shutdown();
-  }
-});
+      const fourth = await comment("The rollback took 3 minutes.");
+      expect(fourth.code).toBe(0);
+      expect(posted()).toHaveLength(2);
+      // The command kept Dispatch's answer about the refusal: one read served all four calls.
+      expect(asked("/api/v1/settings/writing-rules")).toHaveLength(1);
+    } finally {
+      await session.shutdown();
+    }
+  },
+  ROW_MS
+);
 
-test("a call a person typed (DISPATCH_PERSON_TYPED=1) is never refused, and asks nothing about the rules", async () => {
-  const session = await startedSession("writing-rules-person-typed");
-  try {
-    const typed = await comment("The deploy finished at 14:02.", { DISPATCH_PERSON_TYPED: "1" });
-    expect(typed.code).toBe(0);
-    expect(posted()).toHaveLength(1);
-    expect(asked("/api/v1/settings/writing-rules")).toEqual([]);
-    expect(asked("/api/v1/writing-rules")).toEqual([]);
-  } finally {
-    await session.shutdown();
-  }
-});
+test(
+  "with the refusal off, nothing is refused, before or after a compaction",
+  async () => {
+    dispatch.refusal = "off";
+    const session = await startedSession("writing-rules-off");
+    try {
+      expect((await comment("The deploy finished at 14:02.")).code).toBe(0);
+      await session.compact();
+      expect((await comment("The rollback took 3 minutes.")).code).toBe(0);
+      expect(posted()).toHaveLength(2);
+      expect(asked("/api/v1/writing-rules")).toEqual([]);
+    } finally {
+      await session.shutdown();
+    }
+  },
+  ROW_MS
+);
+
+test(
+  "a call a person typed (DISPATCH_PERSON_TYPED=1) is never refused, and asks nothing about the rules",
+  async () => {
+    const session = await startedSession("writing-rules-person-typed");
+    try {
+      const typed = await comment("The deploy finished at 14:02.", { DISPATCH_PERSON_TYPED: "1" });
+      expect(typed.code).toBe(0);
+      expect(posted()).toHaveLength(1);
+      expect(asked("/api/v1/settings/writing-rules")).toEqual([]);
+      expect(asked("/api/v1/writing-rules")).toEqual([]);
+    } finally {
+      await session.shutdown();
+    }
+  },
+  ROW_MS
+);
