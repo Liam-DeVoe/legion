@@ -1,0 +1,363 @@
+//go:build basebuild
+
+package api
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/cmdtest"
+)
+
+// The base build every base-build check of dispatch://INFRA-1152 boots beside this one: the
+// commit BASELINE_SHA names, checked out as a worktree at the path the check names, built with the
+// stamp the image build gives a server, and booted over the database the check names, which that
+// build migrates itself. What it serves is read back over loopback as a person and as the agent
+// bearer, as lib-baseline.sh's baseline_boot serves it to the shell drivers
+// (packages/dispatch/e2e/acceptance/lib-baseline.sh), so a Go check and a driver boot the same
+// server the same way.
+//
+// It carries the basebuild tag, as cmd/dispatch's store_census_test.go does: it reads the
+// repository's history and builds a second server, which no CI suite pays for.
+
+// baselineSHAEnv names the commit the base build is built from. Unset or empty it is the commit of
+// main this branch was built on, `git merge-base origin/main HEAD`, as lib-baseline.sh reads it.
+const baselineSHAEnv = "BASELINE_SHA"
+
+// fullCommit is the only spelling of a commit the harness builds: a revision that resolves to
+// anything else is refused rather than built, so the stamp and the worktree always name one object.
+var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// baselineBoot is how long the base build gets to say it serves and answer /healthz: its first
+// boot migrates a whole schema from empty, which is the longest this wait covers.
+const baselineBoot = 3 * time.Minute
+
+// baselineCommit is the commit the base build is built from: BASELINE_SHA, or `git merge-base
+// origin/main HEAD` when it is empty, resolved with `git rev-parse --verify <rev>^{commit}` to a
+// full sha.
+func baselineCommit(t *testing.T) string {
+	t.Helper()
+	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
+	revision := strings.TrimSpace(os.Getenv(baselineSHAEnv))
+	if revision == "" {
+		revision = gitOutput(t, root, "merge-base", "origin/main", "HEAD")
+	}
+	commit := gitOutput(t, root, "rev-parse", "--verify", revision+"^{commit}")
+	if !fullCommit.MatchString(commit) {
+		t.Fatalf("%s=%q resolves to %q, which is not a full commit sha", baselineSHAEnv, revision, commit)
+	}
+	return commit
+}
+
+// buildBaseline checks the base commit out as a worktree at worktree and builds its
+// ./cmd/dispatch stamped with that commit (-ldflags "-X main.buildCommit=<commit>", the flag
+// packages/envoy/docker/Dockerfile uses), answering the binary and the commit. The worktree is
+// removed when the test ends, so the next run can add it again; a path that already exists is
+// refused rather than deleted, since it may be a worktree another check still reads. The binary is
+// cmdtest's, in a directory of the test's own under TMPDIR, removed when the test ends.
+func buildBaseline(t *testing.T, worktree string) (binary, commit string) {
+	t.Helper()
+	commit = baselineCommit(t)
+	switch _, err := os.Lstat(worktree); {
+	case err == nil:
+		t.Fatalf("%s already exists, so the base build cannot be checked out there: clear it with\n\tgit worktree remove --force %s", worktree, worktree)
+	case !errors.Is(err, fs.ErrNotExist):
+		t.Fatalf("read %s: %v", worktree, err)
+	}
+	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
+	if out, err := exec.Command("git", "-C", root, "worktree", "add", "--detach", worktree, commit).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add --detach %s %s: %v\n%s", worktree, commit, err, out)
+	}
+	t.Cleanup(func() {
+		if out, err := exec.Command("git", "-C", root, "worktree", "remove", "--force", worktree).CombinedOutput(); err != nil {
+			t.Errorf("git worktree remove --force %s: %v\n%s", worktree, err, out)
+		}
+	})
+	binary = cmdtest.BuildCommand(t, cmdtest.Command{
+		Name:   filepath.Base(worktree) + "-dispatch",
+		Dir:    filepath.Join(worktree, "packages", "envoy"),
+		Target: "./cmd/dispatch",
+		Flags:  []string{"-ldflags", "-X main.buildCommit=" + commit},
+	})
+	t.Logf("the base build is %s, built from %s in %s", binary, commit, worktree)
+	return binary, commit
+}
+
+// baselineDatabaseURL is the database a base-build check boots the base build over, read from
+// variable. Unset, the check fails naming the Verification preamble's lines that make it; a
+// database that already holds tables fails too, since the base build migrates the database it is
+// given and a check's corpus seeded over an earlier run's is two corpora. The URL itself is never
+// printed: it carries the test server's credential.
+func baselineDatabaseURL(t *testing.T, variable, database string) string {
+	t.Helper()
+	recreate := fmt.Sprintf("psql \"$LEGION_TEST_PG_DSN\" -c 'drop database if exists %s' -c 'create database %s'", database, database)
+	databaseURL := strings.TrimSpace(os.Getenv(variable))
+	if databaseURL == "" {
+		t.Fatalf("%s is unset: this check boots the base build over a database of its own, which the Verification preamble makes with\n"+
+			"\texport %s=\"$(printf %%s \"$LEGION_TEST_PG_DSN\" | sed -E 's#/[^/?]*(\\?|$)#/%s\\1#')\"\n\t%s",
+			variable, variable, database, recreate)
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to the database %s names: %v", variable, err)
+	}
+	defer conn.Close(ctx)
+	var tables int
+	if err := conn.QueryRow(ctx, `select count(*) from pg_tables where schemaname = 'public'`).Scan(&tables); err != nil {
+		t.Fatalf("read the tables of the database %s names: %v", variable, err)
+	}
+	if tables > 0 {
+		t.Fatalf("the database %s names already holds %d tables, and the base build must migrate an empty one: make it again with\n\t%s",
+			variable, tables, recreate)
+	}
+	return databaseURL
+}
+
+// apiAnswer is one answer of a server a check drives: its status, its body, and the time from the
+// request's send to its body's last byte. The body is encoded before that clock starts.
+type apiAnswer struct {
+	status int
+	body   []byte
+	took   time.Duration
+}
+
+// baselineServer is the base build serving on a loopback port: the process, the dashboard origin
+// every request names (dev sign-in answers only that Host, and a cookie write must carry it as its
+// Origin), the agent bearer it trusts, and one signed-in client per person it has been asked to
+// act as. signInKey is its DISPATCH_DEV_SIGNIN_SHARED_KEY, which a second process booted over the
+// same database must carry too, since a process holding a key of its own is refused beside it.
+type baselineServer struct {
+	process   *cmdtest.Process
+	origin    string
+	token     string
+	signInKey string
+	transport *http.Transport
+	agent     *http.Client
+	people    map[string]*http.Client
+}
+
+// bootBaseline starts binary over databaseURL on a loopback port it holds from the moment the
+// kernel chose it (cmdtest.HoldPort, inherited as DISPATCH_LISTEN_FD), with the environment
+// lib-baseline.sh's baseline_boot gives a server and nothing of the caller's: dev sign-in over a
+// cookie identity, NATS off, a home and a TMPDIR of its own, and a stand-in Envoy listener
+// (standInListener) in place of baseline_boot's port 1, because the write paths a check times
+// deliver to sessions and a delivery refused at once is not the write a session's own listener
+// answers. It returns once the process has said it serves and /healthz answers 200, and stops it
+// when the test ends.
+func bootBaseline(t *testing.T, binary, databaseURL string) *baselineServer {
+	t.Helper()
+	home := t.TempDir()
+	webDist := filepath.Join(home, "web-dist")
+	if err := os.Mkdir(webDist, 0o755); err != nil {
+		t.Fatalf("make the base build's web directory: %v", err)
+	}
+	held := cmdtest.HoldPort(t)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 16
+	t.Cleanup(transport.CloseIdleConnections)
+	server := &baselineServer{
+		origin:    "http://" + held.Addr,
+		token:     randomBaselineSecret(t),
+		signInKey: randomBaselineSecret(t),
+		transport: transport,
+		agent:     &http.Client{Transport: transport},
+		people:    map[string]*http.Client{},
+	}
+	cmd := exec.Command(binary)
+	cmd.Dir = home
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + home,
+		"TMPDIR=" + home,
+		"XDG_CACHE_HOME=" + home,
+		"XDG_CONFIG_HOME=" + home,
+		"XDG_DATA_HOME=" + home,
+		"DATABASE_URL=" + databaseURL,
+		"DISPATCH_AGENT_TOKEN=" + server.token,
+		"DISPATCH_DEV_SIGNIN=1",
+		"DISPATCH_DEV_SIGNIN_SHARED_KEY=" + server.signInKey,
+		"DISPATCH_IDENTITY=cookie",
+		"DISPATCH_INSECURE_COOKIE=1",
+		"DISPATCH_LISTEN_HOST=127.0.0.1",
+		"DISPATCH_PORT=" + strconv.Itoa(held.Port),
+		"DISPATCH_SERVER_URL=" + server.origin,
+		"DISPATCH_NATS_DISABLED=1",
+		"DISPATCH_WEB_DIST=" + webDist,
+		"ENVOY_URL=" + standInListener(t),
+	}
+	held.Pass(cmd, "DISPATCH_LISTEN_FD")
+	server.process = cmdtest.Start(t, "the base build", cmd)
+	server.waitHealthy(t, `msg="dispatch: listening" addr=`+held.Addr)
+	return server
+}
+
+// waitHealthy waits for the listening line, then for /healthz to answer 200 while the process
+// still runs. The inherited socket is not readiness: the kernel queues connections on it before
+// the process serves them.
+func (s *baselineServer) waitHealthy(t *testing.T, listening string) {
+	t.Helper()
+	deadline := time.Now().Add(baselineBoot)
+	for time.Now().Before(deadline) {
+		select {
+		case <-s.process.Exited:
+			t.Fatalf("the base build exited before it served:\n%s", s.process.Output.String())
+		default:
+		}
+		if strings.Contains(s.process.Output.String(), listening) {
+			response, err := s.agent.Get(s.origin + "/healthz")
+			if err == nil {
+				_, _ = io.Copy(io.Discard, response.Body)
+				_ = response.Body.Close()
+				if response.StatusCode == http.StatusOK {
+					return
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("the base build did not answer /healthz within %s:\n%s", baselineBoot, s.process.Output.String())
+}
+
+// call sends body to path as login, or on the agent bearer when login is empty, and answers what
+// the base build answered. A person is signed in through dev sign-in the first time a call names
+// them, off the clock; the clock covers the request and the reading of its whole answer.
+func (s *baselineServer) call(t *testing.T, login, method, path string, body any) apiAnswer {
+	t.Helper()
+	var payload []byte
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encode %s %s: %v", method, path, err)
+		}
+		payload = encoded
+	}
+	request, err := http.NewRequest(method, s.origin+path, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("build %s %s: %v", method, path, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	client := s.agent
+	if login == "" {
+		request.Header.Set("Authorization", "Bearer "+s.token)
+	} else {
+		client = s.person(t, login)
+		// A cookie write is held to the dashboard origin (the router's enforceCookieOrigin), as
+		// the page's own same-origin request carries it.
+		request.Header.Set("Origin", s.origin)
+	}
+	started := time.Now()
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s %s as %q: %v", method, path, login, err)
+	}
+	answer, err := io.ReadAll(response.Body)
+	took := time.Since(started)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatalf("read the answer to %s %s: %v", method, path, err)
+	}
+	return apiAnswer{status: response.StatusCode, body: answer, took: took}
+}
+
+// person is login's signed-in client: GET /auth/_dev/signin?login=<login> records the person and
+// sets their session cookie in the client's jar, which every later call of theirs carries.
+func (s *baselineServer) person(t *testing.T, login string) *http.Client {
+	t.Helper()
+	if client, signed := s.people[login]; signed {
+		return client
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("make %s's cookie jar: %v", login, err)
+	}
+	client := &http.Client{
+		Transport: s.transport,
+		Jar:       jar,
+		// The sign-in answers 302 to the page with the cookie on it; the cookie is all a check needs.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	response, err := client.Get(s.origin + "/auth/_dev/signin?login=" + url.QueryEscape(login))
+	if err != nil {
+		t.Fatalf("sign %s in to the base build: %v", login, err)
+	}
+	answer, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	origin, _ := url.Parse(s.origin)
+	if response.StatusCode != http.StatusFound || len(jar.Cookies(origin)) == 0 {
+		t.Fatalf("sign %s in to the base build: %d %s, want 302 with a session cookie", login, response.StatusCode, answer)
+	}
+	s.people[login] = client
+	return client
+}
+
+// standInListener is a stand-in Envoy listener: every session it is asked about is live and takes
+// every delivery mode, and every send is handed over at once, as cmd/dispatch's census test stands
+// one in for the base build. It answers the registry's one row through writeSessionRecord, which
+// fills in what a live, heartbeating session's row carries.
+func standInListener(t *testing.T) string {
+	t.Helper()
+	var sends atomic.Int64
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch session, lookup := strings.CutPrefix(r.URL.Path, "/v1/registry/"); {
+		case r.Method == http.MethodGet && lookup:
+			row, err := json.Marshal([]map[string]any{{
+				"session_id": session, "title": session, "capabilities": []string{"btw", "aside", "steer"},
+			}})
+			if err != nil {
+				t.Errorf("encode the stand-in listener's row for %s: %v", session, err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			writeSessionRecord(t, w, string(row), session)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			var send struct {
+				TargetSession string `json:"target_session"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&send); err != nil {
+				t.Errorf("decode a send to the stand-in listener: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"event_id": "stand-in-" + strconv.FormatInt(sends.Add(1), 10), "recipient": send.TargetSession,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(listener.Close)
+	return listener.URL
+}
+
+// randomBaselineSecret is a value for one run alone: the agent bearer and the dev sign-in key.
+func randomBaselineSecret(t *testing.T) string {
+	t.Helper()
+	secret := make([]byte, 24)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatalf("make a secret for the base build: %v", err)
+	}
+	return hex.EncodeToString(secret)
+}
