@@ -2879,8 +2879,15 @@ services_up() { printf 'services_up\\n' >>"$work/calls"; }`;
     const calls = existsSync(path.join(work, "calls"))
       ? readFileSync(path.join(work, "calls"), "utf8").trimEnd().split("\n")
       : [];
-    // The batch's start time is the clock's, so each run line is read without it.
-    return { ...result, calls: calls.map((line) => line.split(" ").slice(0, 5).join(" ")) };
+    // The batch's start time is the clock's, so each run line is read without it. cmd_batch hands
+    // the runs to `xargs -P`, which starts them at once, so the order of their lines is the
+    // scheduler's: they are sorted, and the calls before them keep the order the batch made them in.
+    const lines = calls.map((line) => line.split(" ").slice(0, 5).join(" "));
+    const runs = lines.filter((line) => line.startsWith("run run "));
+    return {
+      ...result,
+      calls: [...lines.filter((line) => !line.startsWith("run run ")), ...runs.sort()],
+    };
   }
 
   // Catches: a batch that starts its services and only then finds it has no world, and a gate
