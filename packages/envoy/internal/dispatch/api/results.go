@@ -295,6 +295,9 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 
 	var result model.CheckResult
 	if run != nil {
+		// The job's result and its event name the run alone: the person its results token
+		// carries is the broker's result entry, who ran no test (ciJobActor).
+		actor = ciJobActor(actor)
 		result = ciJobCheckResult(input, check, actor, *run, *credential.CI, issueKey)
 	} else {
 		result = roleCheckResult(input, check, actor, issueKey)
@@ -834,12 +837,22 @@ func roleCheckResult(input checkResultInput, check resolvedCheck, actor model.Ac
 	}
 }
 
+// ciJobActor is the actor a CI job's result and its event are recorded under: the session of the
+// run its results token proved, and no person. The person the broker's result entry names ran
+// nothing, so it stays inside the server, as on the project's results route
+// (model.SpecCheckRecorder): the airlock authenticated the run (R12).
+func ciJobActor(actor model.Actor) model.Actor {
+	actor.Owner = nil
+	return actor
+}
+
 // ciJobCheckResult is the row a CI job's result is stored as: what its run observed, under the
 // identity its token proved and nothing its body named. Its role is ci and its run the check
 // run's name, as on the result derived from that run (ciAnswerOf); its surface and negative
 // control are the check's; its commit is the run's, which ciJobRefusal held the body's to; its
-// session is the token's; and Branch is the branch whose push the run ran on, which marks the row
-// a CI job's, so the fourth rule of its check never counts it (docs.CICheckRuleIn).
+// session and actor are the run's (ciJobActor); and Branch is the branch whose push the run ran
+// on, which marks the row a CI job's, so the fourth rule of its check never counts it
+// (docs.CICheckRuleIn).
 func ciJobCheckResult(input checkResultInput, check resolvedCheck, actor model.Actor, run githubapp.CheckRun, ci oauthwire.CIRun, issueKey string) model.CheckResult {
 	return model.CheckResult{
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,

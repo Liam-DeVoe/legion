@@ -281,10 +281,13 @@ func (r *ciJobRig) readJobCheck(t *testing.T, blockID string) jobCheckRead {
 // TestTheJobACheckNamesRecordsItsResult: the job that c1's ci_check names records c1's result
 // with its own token. The row names role ci and the job's check run as its run, the branch the
 // job ran on, the session the token proved and the commit of the token; the body named none of
-// them. One result.recorded event goes on the issue.
+// them. The actor is the run's session and names no person: the person the broker's result entry
+// names ran nothing, so the answer, the stored row and the event carry no person (R12). One
+// result.recorded event goes on the issue.
 func TestTheJobACheckNamesRecordsItsResult(t *testing.T) {
 	rig := newCIJobRig(t)
-	result := jobRecorded(t, "the job's result for c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
+	response := rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass"))
+	result := jobRecorded(t, "the job's result for c1", response)
 
 	want := jobResult{
 		ID: result.ID, IssueKey: rig.issue, CheckIssueKey: rig.issue, CheckBlockID: "c1",
@@ -296,8 +299,21 @@ func TestTheJobACheckNamesRecordsItsResult(t *testing.T) {
 	if got != want {
 		t.Fatalf("the stored result = %+v, want %+v", got, want)
 	}
-	if result.Actor.Kind != "session" || result.Actor.ID != ciJobSession || result.Actor.Owner == nil || *result.Actor.Owner != "ada@example.com" {
-		t.Fatalf("the result's actor = %+v, want session %s acting for ada@example.com", result.Actor, ciJobSession)
+	if result.Actor.Kind != "session" || result.Actor.ID != ciJobSession || result.Actor.Owner != nil {
+		t.Fatalf("the result's actor = %+v, want session %s naming no person", result.Actor, ciJobSession)
+	}
+	if strings.Contains(response.Body.String(), "ada@example.com") {
+		t.Fatalf("the answer names the result entry's person ada@example.com: %s", response.Body.String())
+	}
+	var rowActor, eventActor string
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select r.actor::text, e.actor::text from check_results r join events e on e.seq = r.event_seq and e.issue_key = r.check_issue_key
+		where r.id = $1::uuid
+	`, result.ID).Scan(&rowActor, &eventActor); err != nil {
+		t.Fatalf("read the stored row's actor and its event's: %v", err)
+	}
+	if strings.Contains(rowActor, "ada@example.com") || strings.Contains(eventActor, "ada@example.com") {
+		t.Fatalf("the stored row's actor %s or its event's actor %s names the result entry's person ada@example.com", rowActor, eventActor)
 	}
 
 	var role, run, branch, session, commit string
