@@ -5,12 +5,14 @@ import { type ReactNode, useState } from "react";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { artifact as specDocument } from "../../__tests__/proof-document";
+import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   Actor,
   ArchitectureSource,
   ArtifactApproval,
   ClaimHolderLiveness,
+  Issue,
   IssueClaim,
   IssueComponents,
   IssueDetails,
@@ -1980,6 +1982,52 @@ test("Escape in the priority's form closes the form alone and returns the focus 
       escapes.stop();
       document.removeEventListener("keydown", onDocument);
       undraw(view);
+    }
+  }
+});
+
+// The same ruling, for the third way the form closes: Add's write disables the add control until
+// the write settles, and a disabled control holds no focus, so the focus waits on the body and
+// moves to the add control once the write settles. A focus the reader put elsewhere in between
+// stays where the reader put it.
+test("Add in the priority's form returns the focus to its add control once its write settles", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["outside", "inside"] as const) {
+    for (const reader of ["waits", "moves on"] as const) {
+      const patchIssue = answerIssuePatches();
+      const written = Promise.withResolvers<Issue>();
+      patchIssue.mockImplementation(() => written.promise);
+      const view = draw(
+        <>
+          <button type="button">Elsewhere</button>
+          {addablePriorityLine(surface)}
+        </>,
+        surface
+      );
+      try {
+        addControlOf(view, surface).focus();
+        await user.keyboard("{Enter}");
+        const picker = await pickerOf(view);
+        await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
+        await user.selectOptions(picker, "evals-now");
+        await user.click(within(view.container).getByRole("button", { name: CONTROL_LABELS.add }));
+        await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+        // While the write is out the add control is disabled and holds no focus.
+        expect(pickerShown(view)).toBe(false);
+        expect(addControlOf(view, surface)).toBeDisabled();
+        expect(document.activeElement).toBe(document.body);
+        const elsewhere = within(view.container).getByRole("button", { name: "Elsewhere" });
+        if (reader === "moves on") elsewhere.focus();
+        written.resolve({} as Issue);
+        await waitFor(() => expect(addControlOf(view, surface)).not.toBeDisabled());
+        await settleReads();
+        expect(document.activeElement).toBe(
+          reader === "waits" ? addControlOf(view, surface) : elsewhere
+        );
+      } finally {
+        patchIssue.mockRestore();
+        undraw(view);
+      }
     }
   }
 });
