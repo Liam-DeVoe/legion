@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -70,11 +71,13 @@ func TestStatementTimings(t *testing.T) {
 
 	// The eight filters main's listing took, narrowed to the project and nothing else: the list a
 	// dashboard opens. listIssues' arguments are those eight, the closed window, the `advances`
-	// keys and the move read's gate, named here as the request that asks for none of them, so
-	// both sides read the same rows; the listing's status is a list where main's was one value,
-	// so each side is passed its own empty status.
+	// keys and the move read's gate, named here as the request that asks for none of them, and
+	// the server's own viewer, which sees every project, so both sides read the same rows; the
+	// listing's status is a list where main's was one value, so each side is passed its own empty
+	// status.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
-	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false})
+	viewer := refs.VisibilityArg(everyReader)
+	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false, viewer})
 	listArguments[1] = []string{}
 	runner.Pair(t, "the issue list, unpaged",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
@@ -98,7 +101,7 @@ func TestStatementTimings(t *testing.T) {
 
 	runner.Pair(t, "the issue's children",
 		benchtime.Statement{SQL: mainIssueChildrenQuery, Args: []any{subjects.Issue}},
-		benchtime.Statement{SQL: issueChildrenStatement, Args: []any{subjects.Issue}})
+		benchtime.Statement{SQL: issueChildrenStatement, Args: []any{subjects.Issue, viewer}})
 
 	// Which side these three readings are is the schema's answer, not the statement's: their
 	// text is the same on both databases, and what differs is whether the indexes a migration

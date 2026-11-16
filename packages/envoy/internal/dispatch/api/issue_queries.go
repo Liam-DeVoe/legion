@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -69,7 +70,7 @@ var (
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
 // reason: it is read only under `?moved=true` ($14), and a request without it reads no event.
 func issueSummaryQuery(pinned, paged, readAdvances bool) string {
-	parameter := 15
+	parameter := 16
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
@@ -115,19 +116,23 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 // issueListFilters are the ten filters a listing request carries, written as thirteen parameters
 // (the priority filter takes a list and a flag for the unset, and the `advances` filter a list
 // and a flag for each of its two keywords), every one but the last written against `issues i`
-// alone, so the filtered term joins nothing. The status filter ($2) is a list of the statuses
-// named, an issue standing in any of them, and the empty list is every status. The closed
-// window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time, is
-// outside every window. The last is the `advances` filter, which no column of an issue holds and
-// whose answer a relation of an issue above it can decide: it reads one term computed once per
-// request (issueAdvancesFilterTerms), joined to the issue by its key, so the filtered term still
-// resolves nothing per row and the page and the count both read it. Its four arms are a union:
-// the ids named ($11), the work under none ($12), and the work under any ($13), which is every
-// issue `advancing` holds and so exactly the issues the arm for none leaves out.
+// alone, so the filtered term joins nothing, and the caller's viewer. The status filter ($2) is a
+// list of the statuses named, an issue standing in any of them, and the empty list is every
+// status. The closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed
+// at no time, is outside every window. The last filter is the `advances` filter, which no column
+// of an issue holds and whose answer a relation of an issue above it can decide: it reads one term
+// computed once per request (issueAdvancesFilterTerms), joined to the issue by its key, so the
+// filtered term still resolves nothing per row and the page and the count both read it. Its four
+// arms are a union: the ids named ($11), the work under none ($12), and the work under any ($13),
+// which is every issue `advancing` holds and so exactly the issues the arm for none leaves out.
 //
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
-// (issueSummaryJoins), and the parameters after it are the pinned login and the page.
-const issueListFilters = `where ($1 = '' or i.project_key = $1)
+// (issueSummaryJoins). $15 is the caller's viewer (refs.VisibilityArg), and the project clause
+// over it keeps every issue of a project the caller does not see out of `filtered`, so out of the
+// page, the count and every read the joins make: a listing narrowed to such a project answers as
+// one narrowed to a project no issue names. The parameters after it are the pinned login and the
+// page.
+var issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
 		  and ($4::timestamptz is null or i.updated_at >= $4)
@@ -141,7 +146,8 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ((cardinality($11::text[]) = 0 and not $12::boolean and not $13::boolean)
 		       or coalesce(advancing.named, false)
 		       or ($12::boolean and advancing.key is null)
-		       or ($13::boolean and advancing.key is not null))`
+		       or ($13::boolean and advancing.key is not null))
+		  and ` + access.ProjectClause("i.project_key", "$15")
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -567,7 +573,9 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		login = actor.ID
-	} else if !s.requireAuthenticated(w, r) {
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	project := strings.TrimSpace(query.Get("project"))
@@ -644,7 +652,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// carries its two cells only then (model.IssueSummary's MovedAt and MovedBy).
 	moved := query.Get("moved") == "true"
 	arguments := []any{project, statuses, parent, microsecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
-		microsecondCeiling(closedSince), microsecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
+		microsecondCeiling(closedSince), microsecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved,
+		refs.VisibilityArg(who)}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -829,13 +838,15 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // given back in turn (store.sharedPoolSize says what that costs a loaded server).
 //
 // Batch 1 is everything keyed on the issue key alone: the issue row, its external links, its
-// artifacts, its open asks, its children and its backlink count. A key no issue carries is what
-// the issue row's callback records, answered as that row's pgx.ErrNoRows - 404 NOT_FOUND - once
-// the batch has closed: a callback that returned the error would close the batch on it, and pgx
-// invalidates every statement of a batch whose Close answers an error in the connection's
-// statement and description caches (invalidateCachesOnBatchResultsError), so one 404 would cost
-// that connection the whole read's prepared statements. The other callbacks run against an issue
-// with no row, answer empty lists, and readIssue drops them with the rest of the read.
+// artifacts, its open asks, its children and its backlink count. A key no issue carries, and the
+// key of an issue of a project the caller does not see, which the issue row's project clause
+// leaves out, are what the issue row's callback records, answered alike as that row's
+// pgx.ErrNoRows - 404 NOT_FOUND - once the batch has closed: a callback that returned the error
+// would close the batch on it, and pgx invalidates every statement of a batch whose Close answers
+// an error in the connection's statement and description caches
+// (invalidateCachesOnBatchResultsError), so one 404 would cost that connection the whole read's
+// prepared statements. The other callbacks run against an issue with no row, or one they too
+// leave out, answer empty lists, and readIssue drops them with the rest of the read.
 //
 // Batch 2 is what only batch 1's answers name: every artifact's versions in one statement, the
 // documents' latest reviews and open approval requests, and the open asks' identity events and
@@ -910,8 +921,9 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 	issueCounts := map[string]int{}
 	missing := false
 
+	viewer := refs.VisibilityArg(who)
 	first := &pgx.Batch{}
-	first.Queue(issueRowStatement, key).QueryRow(func(row pgx.Row) error {
+	first.Queue(issueRowStatement, key, viewer).QueryRow(func(row pgx.Row) error {
 		issue, progress, err := scanIssueRow(row)
 		if errors.Is(err, pgx.ErrNoRows) {
 			missing = true
@@ -920,7 +932,7 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 		read.Issue, read.Progress = issue, progress
 		return err
 	})
-	first.Queue(issueExternalLinksStatement, key).Query(func(rows pgx.Rows) error {
+	first.Queue(issueExternalLinksStatement, key, viewer).Query(func(rows pgx.Rows) error {
 		scanned, err := scanExternalLinks(rows)
 		links = scanned
 		return err
@@ -935,12 +947,12 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 		asks, replies = scannedAsks, scannedReplies
 		return err
 	})
-	first.Queue(issueChildrenStatement, key).Query(func(rows pgx.Rows) error {
+	first.Queue(issueChildrenStatement, key, viewer).Query(func(rows pgx.Rows) error {
 		scanned, err := scanIssueChildren(rows)
 		read.Children = scanned
 		return err
 	})
-	first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown).Query(func(rows pgx.Rows) error {
+	first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown, viewer).Query(func(rows pgx.Rows) error {
 		scanned, err := scanIssueDesignGates(rows)
 		read.DesignGates = scanned
 		return err
@@ -1012,17 +1024,36 @@ func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply, re
 	return openAsks
 }
 
-func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Issue, error) {
-	issue, _, err := s.loadIssueWithProgress(ctx, q, key)
+// loadIssue is one issue as who reads it: an issue of a project who does not see is
+// pgx.ErrNoRows, which every caller answers as it answers a key no issue carries. Every caller
+// binds a reader: a read the one readerOf answers, a write the one it resolved before it opened
+// its transaction.
+func (s *server) loadIssue(ctx context.Context, q queryer, who model.Actor, key string) (model.Issue, error) {
+	issue, _, err := s.loadIssueWithProgress(ctx, q, who, key)
 	return issue, err
 }
 
-// issueRowStatement reads one issue with its progress, $1 its key; scanIssueRow decodes it. It
-// is the issue read's first queued statement (getIssue), whose callback records a missing issue
-// for the read to answer as this row's pgx.ErrNoRows whatever the rest of the batch found. The
-// text is built once, at start, rather than on every read: its component and repository terms
-// are package-level values of their own, so the concatenation is work a request would repeat
-// for a statement that never differs, and pgx caches a prepared plan per statement text.
+// issueClause is access.ProjectClause over the project of the issue keyExpr names, against the
+// viewer at viewerParam, for a statement keyed by an issue whose own row it does not read: the
+// statement holds no row of an issue of a project the viewer does not see, as it holds none of a
+// key no issue carries.
+func issueClause(keyExpr, viewerParam string) string {
+	return access.ProjectClause(`(select clause_issue.project_key from issues clause_issue where clause_issue.key = `+keyExpr+`)`, viewerParam)
+}
+
+// artifactClause is issueClause over the project of the artifact idExpr names.
+func artifactClause(idExpr, viewerParam string) string {
+	return access.ProjectClause(`(select clause_artifact.project_key from artifacts clause_artifact where clause_artifact.id = `+idExpr+`)`, viewerParam)
+}
+
+// issueRowStatement reads one issue with its progress, $1 its key and $2 the reader's viewer,
+// whose project clause leaves out an issue of a project the viewer does not see; scanIssueRow
+// decodes it. It is the issue read's first queued statement (getIssue), whose callback records a
+// missing issue for the read to answer as this row's pgx.ErrNoRows whatever the rest of the batch
+// found. The text is built once, at start, rather than on every read: its component and
+// repository terms are package-level values of their own, so the concatenation is work a request
+// would repeat for a statement that never differs, and pgx caches a prepared plan per statement
+// text.
 var issueRowStatement = `
 		with recursive subjects as (select $1::text as key),
 		` + issueAdvancesTerms + `,
@@ -1045,12 +1076,13 @@ var issueRowStatement = `
 		` + issueAdvancesJoin + `
 		` + issueComponentsJoin + `
 		` + refs.IssueRepoJoin + `
-		where i.key = $1
+		where i.key = $1 and ` + access.ProjectClause("i.project_key", "$2") + `
 	`
 
-// issueExternalLinksStatement reads an issue's external links, $1 its key, in the order the
-// response lists them; scanExternalLinks decodes them.
-const issueExternalLinksStatement = `select url, kind from issue_external_links where issue_key = $1 order by url`
+// issueExternalLinksStatement reads an issue's external links, $1 its key and $2 the reader's
+// viewer, in the order the response lists them; scanExternalLinks decodes them.
+var issueExternalLinksStatement = `select url, kind from issue_external_links where issue_key = $1 and ` +
+	issueClause("$1", "$2") + ` order by url`
 
 // scanIssueRow decodes one issueRowStatement row into the issue and the progress the read
 // carries beside it. ExternalLinks is left nil: issueExternalLinksStatement carries them, run
@@ -1116,12 +1148,13 @@ func scanExternalLinks(rows pgx.Rows) ([]model.ExternalLink, error) {
 
 // loadIssueWithProgress is loadIssue together with the issue's progress, which the read response
 // carries beside the issue (model.IssueProgress says why it is not a field of it).
-func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key string) (model.Issue, model.IssueProgress, error) {
-	issue, progress, err := scanIssueRow(q.QueryRow(ctx, issueRowStatement, key))
+func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, who model.Actor, key string) (model.Issue, model.IssueProgress, error) {
+	viewer := refs.VisibilityArg(who)
+	issue, progress, err := scanIssueRow(q.QueryRow(ctx, issueRowStatement, key, viewer))
 	if err != nil {
 		return model.Issue{}, model.IssueProgress{}, err
 	}
-	rows, err := q.Query(ctx, issueExternalLinksStatement, key)
+	rows, err := q.Query(ctx, issueExternalLinksStatement, key, viewer)
 	if err != nil {
 		return model.Issue{}, model.IssueProgress{}, err
 	}
@@ -1134,10 +1167,12 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 	return issue, progress, nil
 }
 
-// issueChildrenStatement reads the issue's direct children, $1 its key, each with a rollup over
-// its whole subtree (the child itself included, every status): done/total counts and the newest
-// updated_at. The recursive walk uses `union` with parentDepthCap like refs.Closure, so it
-// terminates even if a raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
+// issueChildrenStatement reads the issue's direct children, $1 its key and $2 the reader's viewer,
+// each with a rollup over its whole subtree (the child itself included, every status): done/total
+// counts and the newest updated_at. A child is of its parent's project, so the project clause
+// holds every child of an issue the viewer does not see out. The recursive walk uses `union` with
+// parentDepthCap like refs.Closure, so it terminates even if a raced reparent ever commits a
+// cycle. scanIssueChildren decodes its rows.
 //
 // The walk reads each subtree issue's row already, so it carries that row's status and
 // updated_at and the rollup counts them where it stands. Joining the walk's keys back to issues
@@ -1165,7 +1200,8 @@ var issueChildrenStatement = `
 		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
 		                 from issue_external_links l where l.issue_key = c.key), '[]')
 		from issues c join rollup r on r.root = c.key
-		where c.parent_key = $1 order by c.key
+		where c.parent_key = $1 and ` + access.ProjectClause("c.project_key", "$2") + `
+		order by c.key
 	`
 
 // scanIssueChildren reads the rows issueChildrenStatement returns. An issue with no child keeps
@@ -1188,14 +1224,15 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 }
 
 // issueDesignGatesStatement reads the documents an issue's design-gate steps record, $1 the
-// issue's key and $2 the steps in the order a gate runs them, which is the order the read
-// answers them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
-// (issue_design_gates.go). The order is a parameter rather than a case expression built into
-// the text, so model.GatedStepsKnown stays the one place that order is written. A key no issue
-// carries returns no row, which is what the issue read's first batch requires of every
-// statement beside the issue row's.
-const issueDesignGatesStatement = `
-		select step, artifact_id from design_gates where issue = $1
+// issue's key, $2 the steps in the order a gate runs them, which is the order the read answers
+// them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
+// (issue_design_gates.go), and $3 the reader's viewer. The order is a parameter rather than a case
+// expression built into the text, so model.GatedStepsKnown stays the one place that order is
+// written. A key no issue carries, and an issue of a project the viewer does not see, return no
+// row, which is what the issue read's first batch requires of every statement beside the issue
+// row's.
+var issueDesignGatesStatement = `
+		select step, artifact_id from design_gates where issue = $1 and ` + issueClause("$1", "$3") + `
 		order by array_position($2::text[], step)
 	`
 

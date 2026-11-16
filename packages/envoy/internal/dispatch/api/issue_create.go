@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -71,7 +72,10 @@ type createIssueInput struct {
 }
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	// The reader is resolved before any connection is held: the body's project, and an issue an
+	// external ref names, are read as the caller reads them.
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	var input createIssueInput
@@ -154,7 +158,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.External != "" {
-		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
+		existingKey, err := s.resolveIssueRef(r.Context(), who, input.External)
 		if err == nil {
 			var existingProject string
 			if err := s.deps.Store.Pool.QueryRow(r.Context(), `
@@ -176,7 +180,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.respondWithExistingExternalIssue(w, r, who, existingKey, input.Project, actor)
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -264,7 +268,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		if input.Spec != nil {
 			spec = *input.Spec
 		}
-		outcome = s.runNearCopyGate(r.Context(), input.Project, input.Title, spec, ancestors, input.Force)
+		outcome = s.runNearCopyGate(r.Context(), who, input.Project, input.Title, spec, ancestors, input.Force)
 		if len(outcome.Refuse) > 0 {
 			WriteJSON(w, http.StatusConflict, issueDuplicateError{
 				Candidates: outcome.Refuse,
@@ -314,15 +318,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	var number int
 	var projectDefaultAssignee string
+	// The body's project as the caller reads it: a project it does not see is a project no row
+	// holds, so either is pgx.ErrNoRows here, 404 NOT_FOUND.
 	if err := tx.QueryRow(r.Context(), `
 		update projects
 		set next_number = next_number + 1
-		where key = $1
+		where key = $1 and `+access.ProjectClause("key", "$2")+`
 		-- default_assignee as it stands: the column names a person and refuses nothing
 		-- (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so the
 		-- chain's last step always lands and this statement reads no other table for it.
 		returning next_number - 1, default_assignee
-	`, input.Project).Scan(&number, &projectDefaultAssignee); err != nil {
+	`, input.Project, refs.VisibilityArg(who)).Scan(&number, &projectDefaultAssignee); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -410,12 +416,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			existingKey, err := s.resolveIssueRef(r.Context(), input.External)
+			existingKey, err := s.resolveIssueRef(r.Context(), who, input.External)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.respondWithExistingExternalIssue(w, r, who, existingKey, input.Project, actor)
 			return
 		}
 	}
@@ -476,7 +482,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	issue, err := s.loadIssue(r.Context(), tx, key)
+	issue, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -590,18 +596,18 @@ type nearCopyOutcome struct {
 	NearCopyCheck string
 }
 
-// runNearCopyGate runs the gate for a create and settles every record of it at once. Only a
-// create the gate covers reaches it: createIssue leaves the zero outcome for an external create,
-// whose gate never runs.
+// runNearCopyGate runs the gate for a create, as who reads the project, and settles every record
+// of it at once. Only a create the gate covers reaches it: createIssue leaves the zero outcome for
+// an external create, whose gate never runs.
 //
 // The four states are the gate's own: it did not answer, it found nothing to say, it found a
 // refusal the create forced past, or it found one the create is refused with. Each sets what
 // that state records and leaves the rest zero, so no site downstream reads `force` or `external`
 // again and no record can disagree with another.
 func (s *server) runNearCopyGate(
-	ctx context.Context, project, title, spec string, ancestors []string, force bool,
+	ctx context.Context, who model.Actor, project, title, spec string, ancestors []string, force bool,
 ) nearCopyOutcome {
-	gate := s.duplicateGate(ctx, project, title, spec, ancestors)
+	gate := s.duplicateGate(ctx, who, project, title, spec, ancestors)
 	refusals := gate.refusals()
 	switch {
 	case !gate.answered():
@@ -626,11 +632,12 @@ func (s *server) runNearCopyGate(
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds
-// with that issue. Nothing was created, so no related-item check is made, and the result says so
-// (and the check is recorded as not made, reason already_exists).
+// with that issue, read as who reads it. Nothing was created, so no related-item check is made,
+// and the result says so (and the check is recorded as not made, reason already_exists).
 func (s *server) respondWithExistingExternalIssue(
 	w http.ResponseWriter,
 	r *http.Request,
+	who model.Actor,
 	existingKey string,
 	project string,
 	actor model.Actor,
@@ -648,7 +655,7 @@ func (s *server) respondWithExistingExternalIssue(
 		s.writeHandlerError(w, err)
 		return
 	}
-	existing, err := s.loadIssue(r.Context(), adviceReadTx, existingKey)
+	existing, err := s.loadIssue(r.Context(), adviceReadTx, who, existingKey)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

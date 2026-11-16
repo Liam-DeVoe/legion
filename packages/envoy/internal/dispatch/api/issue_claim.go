@@ -535,6 +535,7 @@ func claimLegionManagedStatus(ctx context.Context, tx pgx.Tx, key string) *bool 
 // reports as errStaleResolution once the rollback has run, for the cycle to redo.
 func (s *server) claimWrite(
 	ctx context.Context,
+	who model.Actor,
 	key string,
 	actor model.Actor,
 	decide func(before model.Issue) (claimChange, error),
@@ -547,7 +548,7 @@ func (s *server) claimWrite(
 	if err := tx.QueryRow(ctx, `select key from issues where key = $1 for no key update`, key).Scan(new(string)); err != nil {
 		return claimApplied{}, err
 	}
-	before, err := s.loadIssue(ctx, tx, key)
+	before, err := s.loadIssue(ctx, tx, who, key)
 	if err != nil {
 		return claimApplied{}, err
 	}
@@ -573,7 +574,7 @@ func (s *server) claimWrite(
 		if err := writeIssueClaim(ctx, tx, key, change.holder); err != nil {
 			return claimApplied{}, err
 		}
-		after, err := s.loadIssue(ctx, tx, key)
+		after, err := s.loadIssue(ctx, tx, who, key)
 		if err != nil {
 			return claimApplied{}, err
 		}
@@ -607,12 +608,18 @@ func (s *server) claimCycle(
 	rule personRule,
 	decide func(before model.Issue, judged judgement) (claimChange, error),
 ) {
+	// The issue is read as the caller reads it, so the reader is resolved here, before the write
+	// holds a connection.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	applied, err := resolveThenLock(r.Context(),
 		func(ctx context.Context) (judgement, error) {
 			return s.judgeHolder(ctx, key, actor, rule)
 		},
 		func(ctx context.Context, judged judgement) (claimApplied, error) {
-			return s.claimWrite(ctx, key, actor, func(before model.Issue) (claimChange, error) {
+			return s.claimWrite(ctx, who, key, actor, func(before model.Issue) (claimChange, error) {
 				return decide(before, judged)
 			})
 		},

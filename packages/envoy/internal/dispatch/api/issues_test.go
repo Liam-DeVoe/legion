@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -733,7 +734,7 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 	}
 
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false).Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, refs.VisibilityArg(everyReader)).Scan(&planJSON); err != nil {
 		t.Fatalf("explain list query: %v", err)
 	}
 

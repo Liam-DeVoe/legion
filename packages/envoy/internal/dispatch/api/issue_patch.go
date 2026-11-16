@@ -61,6 +61,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The issue is read as the caller reads it (loadIssue), so the reader is resolved here,
+	// before the write holds a connection.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	var blockers []string
 	if input.BlockedBy != nil {
 		var err error
@@ -228,7 +234,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	before, err := s.loadIssue(r.Context(), tx, key)
+	before, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -483,7 +489,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// Read once every event so far is in, the document writes' own included, so the response's
 	// last_seq and open asks are what a read of the issue answers.
-	after, err := s.loadIssue(r.Context(), tx, key)
+	after, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
