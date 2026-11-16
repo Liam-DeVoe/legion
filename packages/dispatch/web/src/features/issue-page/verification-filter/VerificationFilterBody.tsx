@@ -28,6 +28,7 @@ import {
   pageWordsText,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
+import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import type { NodeChip, TreeNode } from "../issue-tree";
@@ -77,7 +78,10 @@ import {
  * would leave the top of a view taller than the screen above it. Then come each statement, with
  * its checks in one group under it, each check that serves no statement, and each other row.
  * One row holds the tree's tab stop (WAI-ARIA's roving tabindex): the issue's, until the stop
- * moves, and again when the row that held it is no longer drawn.
+ * moves, and again when the row that held it is no longer drawn. The tree answers the outline's
+ * keys (`j`, `k`, the arrows, Home, End, Enter, `o`) by a handler of its own, and the page's `?`
+ * lists none of them: a binding of the page's keymap is a row of that list (part V's departure
+ * 3).
  *
  * What it says of a statement and of a check is `statement-state.ts`, which is pure. Four
  * rules of R17 are drawn here:
@@ -167,6 +171,99 @@ export function VerificationFilterBody({
       return next;
     });
   }, []);
+  const tree = useRef<HTMLDivElement | null>(null);
+  /** Each check row a press on `row` reaches, by its id in `rows`, and whether its facts are
+   *  drawn, by the focus or by a press, as its row says (`aria-expanded`): a check's own row,
+   *  or each check of a statement. */
+  const checksOf = (row: Element): { drawn: boolean; id: string }[] => {
+    // The tree draws its rows in the order `rows` names them, so the nth row element is the
+    // nth id, as the outline's keys read theirs (`useTreeKeymap.ts`).
+    const elements = [...(tree.current?.querySelectorAll(TREE_ROW) ?? [])];
+    const reached = row.matches(CHECK_ROW)
+      ? [row]
+      : row.matches(STATEMENT_ROW)
+        ? [...row.querySelectorAll(CHECK_ROW)]
+        : [];
+    return reached.flatMap((check) => {
+      const id = rows[elements.indexOf(check)];
+      return id === undefined
+        ? []
+        : [{ drawn: check.getAttribute("aria-expanded") === "true", id }];
+    });
+  };
+  /** Enter on a check's row or a statement's, and a pointer's press on a statement's words (the
+   *  tester's F21 and F22): each check's facts opened, or each shut where all of them are drawn.
+   *  On a check's row that is the press its words take, the opposite of what is drawn. The
+   *  answer is whether the row reached a check. */
+  const pressChecks = (row: Element): boolean => {
+    const reached = checksOf(row);
+    const open = !reached.every((check) => check.drawn);
+    for (const check of reached) press(check.id, open);
+    return reached.length > 0;
+  };
+  /** `o`, on a row or on a control inside it: the facts of each check it reaches kept drawn once
+   *  the focus leaves, or let go where the reader kept them, as the outline's `o` keeps a row's
+   *  body open. The answer is whether the row reached a check. */
+  const keepChecks = (row: Element): boolean => {
+    const reached = checksOf(row);
+    for (const check of reached) {
+      press(check.id, presses.get(check.id) === true ? undefined : true);
+    }
+    return reached.length > 0;
+  };
+  // The tree's keys, which are the outline's (part V's R8 and departure 3). The page's keymap
+  // listens on `window` and leaves a key a handler held back, so this handler holds back each
+  // key it acts on, and only those: every other key reaches the keymap.
+  const keyDown = (event: KeyboardEvent<HTMLElement>) => {
+    // A key with Ctrl, Alt or Meta is the browser's or another binding's; a key that goes on
+    // with a chord the reader began is the keymap's, so `t k` from inside the view turns it
+    // off; and a key a control inside a row held back is that control's.
+    if (event.altKey || event.ctrlKey || event.metaKey || event.defaultPrevented) return;
+    if (appKeymap.pending() !== "") return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    // A key typed into a field or into text the reader edits is typing, as the page's keymap
+    // reads one (`shell/keymap.ts`). The view draws neither; a field a row draws keeps its keys.
+    if (target.isContentEditable || target.matches("input, select, textarea")) return;
+    const elements = [...event.currentTarget.querySelectorAll<HTMLElement>(TREE_ROW)];
+    // The row the focus is on, or the one that holds the control it is on: the innermost, so a
+    // check's words and the links in them are the check's, and a chip is the issue's.
+    const row = target.closest<HTMLElement>(TREE_ROW);
+    const at = row === null ? -1 : elements.indexOf(row);
+    if (row === null || at === -1) return;
+    const key = event.key;
+    // Where a move goes: the next row or the one before, the first or the last, a statement's
+    // first check, or the statement a check is drawn under. Right and Left go nowhere from any
+    // other row.
+    const to =
+      key === "j" || key === "ArrowDown"
+        ? elements[Math.min(at + 1, elements.length - 1)]
+        : key === "k" || key === "ArrowUp"
+          ? elements[Math.max(at - 1, 0)]
+          : key === "Home"
+            ? elements[0]
+            : key === "End"
+              ? elements.at(-1)
+              : key === "ArrowRight" && row.matches(STATEMENT_ROW)
+                ? row.querySelector<HTMLElement>(CHECK_ROW)
+                : key === "ArrowLeft" && row.matches(CHECK_ROW)
+                  ? row.parentElement?.closest<HTMLElement>(STATEMENT_ROW)
+                  : undefined;
+    if (to != null) {
+      event.preventDefault();
+      // The row the focus moves to takes the tree's one tab stop, so Tab back into the tree
+      // lands on the row the reader left.
+      const id = rows[elements.indexOf(to)];
+      if (id !== undefined) setRovingId(id);
+      to.focus();
+      return;
+    }
+    // Enter is the row's only on the row itself: on a control inside it, a chip, a link or a
+    // check's words, it is that control's own.
+    const acted =
+      key === "Enter" ? target === row && pressChecks(row) : key === "o" && keepChecks(row);
+    if (acted) event.preventDefault();
+  };
   return (
     <div className={BODY} data-verification-body="">
       {/* The page holds one tree on every address (R2), and it holds everything the view
@@ -175,6 +272,8 @@ export function VerificationFilterBody({
       <div
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
+        onKeyDown={keyDown}
+        ref={tree}
         role="tree"
         tabIndex={-1}
       >
@@ -214,6 +313,7 @@ export function VerificationFilterBody({
                   context={context.has(statement.node.id)}
                   key={statement.node.id}
                   onPress={press}
+                  onPressChecks={pressChecks}
                   presses={presses}
                   statement={statement}
                   tabIndexFor={tabIndexFor}
@@ -315,11 +415,18 @@ const CHECK_COLUMNS =
 /** One cell of the table, in the prototype's `.vt td`. */
 const CELL = "min-w-0 px-3 py-[11px]";
 
-/** What a pointer's press inside a check's words or its latest result's cell belongs to rather
- *  than to the row: a link or a button, whose press is its own (a link in the words, the copy
- *  control, the line of earlier results), and the drawn facts, where a reader reads and selects
- *  as in the facts beside the words (part V's departure 5). */
+/** What a pointer's press inside a check's words, its latest result's cell or a statement's
+ *  words belongs to rather than to the row: a link or a button, whose press is its own (a link
+ *  in the words, a statement's "more" control, the copy control, the line of earlier results),
+ *  and the drawn facts, where a reader reads and selects as in the facts beside the words
+ *  (part V's departure 5). */
 const OWN_PRESS = "a, button, [data-node-body]";
+
+/** Every row of the tree, which it draws in the order `treeRows` names them; a check's row, in
+ *  its statement's group or of the table's own; and a statement's row. */
+const TREE_ROW = "[data-node-row]";
+const CHECK_ROW = "[data-verification-check]";
+const STATEMENT_ROW = "[data-verification-card]";
 
 /** The colour each state is drawn in, which repeats what its word and its shape already say
  *  (R6): met in the passed green, not met in the failed red, unknown quiet. */
@@ -539,12 +646,17 @@ function Headings(): ReactNode {
  *
  * It is a row of the tree, and its checks are one group of rows under it, drawn open; a
  * statement no check of this issue serves holds no group and so says nothing of being open
- * (part V's R8). As a card its left edge is the statement's teal, or the failed red where it
- * reads Not met or no check serves it, so the card says so before its words are read (R6).
+ * (part V's R8). A pointer's press on its words cell does what Enter on its row does: it opens
+ * the facts of each of its checks, or shuts them where all of them are drawn (the tester's
+ * F21); a press on its "more" control or on a link in its words is that control's own. The
+ * control and the links are tab stops, as every control of the view is (R8). As a card its left
+ * edge is the statement's teal, or the failed red where it reads Not met or no check serves it,
+ * so the card says so before its words are read (R6).
  */
 function Statement({
   context,
   onPress,
+  onPressChecks,
   presses,
   statement,
   tabIndexFor,
@@ -552,6 +664,9 @@ function Statement({
   context: boolean;
   /** Sets the press of the check row with this id (the body's `press`). */
   onPress: (row: string, pressed: boolean | undefined) => void;
+  /** Presses the facts of the checks of this statement's row, as Enter on it does (the body's
+   *  `pressChecks`). */
+  onPressChecks: (row: Element) => void;
   /** Each drawn check's press, by its row's id. */
   presses: ReadonlyMap<string, boolean>;
   statement: StatementReading;
@@ -574,7 +689,18 @@ function Statement({
       role="treeitem"
       tabIndex={tabIndexFor(node.id)}
     >
-      <div className={`flex min-w-0 flex-col ${CELL}`}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
+          pointer's way to what Enter on the statement's row does; the cell is no control of its
+          own (part V's R8). */}
+      <div
+        className={`flex min-w-0 flex-col ${CELL}`}
+        onClick={(event) => {
+          const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
+          if (owner !== null && event.currentTarget.contains(owner)) return;
+          const row = event.currentTarget.closest(TREE_ROW);
+          if (row !== null) onPressChecks(row);
+        }}
+      >
         <p
           className={`mb-0.5 flex items-center gap-1.5 text-xs leading-5 font-semibold ${STATEMENT_TONES[statement.state]}`}
         >
@@ -586,8 +712,12 @@ function Statement({
             {VERIFICATION_WORDS.states[statement.state]}
           </span>
         </p>
-        <CutWords className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`} whole={false}>
-          <RowText markdown={node.text} source={node.source} tree={node.tree} />
+        <CutWords
+          className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`}
+          tabStops
+          whole={false}
+        >
+          <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
         </CutWords>
         <ParentLine node={node} />
         <Gaps node={node} />
@@ -637,7 +767,10 @@ function Statement({
  *
  * It is a row of the tree, across its words and its latest result: a row of the group under
  * its statement, or, for a check that serves no statement, a row of the table of its own
- * (`loose`). The row says whether its facts are drawn (part V's R8).
+ * (`loose`). The row says whether its facts are drawn (part V's R8), which is what the tree's
+ * keys read: Enter on the row itself presses it as its words do, Enter on its statement's row
+ * opens or shuts it with the statement's other checks, and `o` keeps it open or lets it go (the
+ * body's `pressChecks` and `keepChecks`).
  */
 function Check({
   check,

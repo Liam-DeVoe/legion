@@ -7,6 +7,8 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../../__tests__/display-trees";
 import type { CheckBlock } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { KeymapProvider } from "../../shell/KeymapProvider";
+import { appKeymap } from "../../shell/keymap";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import {
@@ -837,6 +839,208 @@ test("a check's words draw their links from the results read's tree", async () =
     expect(card?.getAttribute("aria-expanded")).toBe("false");
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
   } finally {
+    view.unmount();
+  }
+});
+
+// Part V's R8 and departure 3, and the tester's F21 and F22: the view's tree answers the
+// outline's keys by a handler of its own. `j`, `k`, the arrows, Home and End move the focus from
+// the row it is on, or from the row that holds the control it is on, and the tab stop moves with
+// it; Enter on a row presses its checks' facts, `o` keeps them drawn, and a pointer opens them
+// from a check's latest result, from its words and from its statement's words. The tree holds
+// back each key it acts on and no other, and a key that goes on with a chord the reader began is
+// the page's keymap's, so `t k` from inside the view reaches it.
+test("the view's tree answers the outline's keys, and a check's facts open from its words, its result and its statement", async () => {
+  const user = userEvent.setup();
+  const one = passing("c-one");
+  const two = passing("c-two");
+  const loose = passing("c-loose");
+  const served = statementNode("r1", "The page draws it.", [checkNode(one), checkNode(two)]);
+  const unserved = statementNode("r2", "Nothing serves this one.", []);
+  const view = drawBody([served, unserved, checkNode(loose)], [one, two, loose]);
+  // Each key the view held back, in the order pressed.
+  const held: string[] = [];
+  const hold = (event: KeyboardEvent) => {
+    if (event.defaultPrevented) held.push(event.key);
+  };
+  document.addEventListener("keydown", hold);
+  try {
+    const rows = [...view.container.querySelectorAll<HTMLElement>('[role="treeitem"]')];
+    // The rows in the order the page draws them: the issue's, each statement followed by its
+    // checks, and the check that serves no statement.
+    expect(rows.map((row) => row.getAttribute("data-node-id"))).toEqual([
+      ISSUE_KEY,
+      served.id,
+      checkNode(one).id,
+      checkNode(two).id,
+      unserved.id,
+      checkNode(loose).id,
+    ]);
+    const names = ["issue", "r1", "c-one", "c-two", "r2", "c-loose"];
+    /** The row the focus is on, and each row that holds the tree's tab stop, by their names. */
+    const standing = () => ({
+      focus: names[rows.indexOf(document.activeElement as HTMLElement)],
+      stop: rows.flatMap((row, place) =>
+        row.getAttribute("tabindex") === "0" ? names[place] : []
+      ),
+    });
+    /** Whether each check's facts are drawn, as its row says. */
+    const opened = () =>
+      [rows[2], rows[3], rows[5]].map((row) => row?.getAttribute("aria-expanded"));
+
+    act(() => rows[0]?.focus());
+    expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
+    await user.keyboard("j");
+    expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
+    await user.keyboard("{ArrowDown}");
+    expect(standing()).toEqual({ focus: "c-one", stop: ["c-one"] });
+    await user.keyboard("k");
+    expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
+    await user.keyboard("{ArrowUp}");
+    expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
+    await user.keyboard("{End}");
+    expect(standing()).toEqual({ focus: "c-loose", stop: ["c-loose"] });
+    await user.keyboard("{Home}");
+    expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
+    // Right steps into a statement's checks and Left back out to the statement; on any other
+    // row neither moves, and neither is held back there.
+    await user.keyboard("{ArrowRight}");
+    expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
+    await user.keyboard("j{ArrowRight}");
+    expect(standing()).toEqual({ focus: "c-one", stop: ["c-one"] });
+    await user.keyboard("{ArrowLeft}");
+    expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
+    await user.keyboard("{End}{ArrowLeft}");
+    expect(standing()).toEqual({ focus: "c-loose", stop: ["c-loose"] });
+    await user.keyboard("k{ArrowRight}");
+    expect(standing()).toEqual({ focus: "r2", stop: ["r2"] });
+    // A key with Ctrl, Alt or Meta held is no key of the tree's.
+    await user.keyboard("{Control>}j{/Control}{Alt>}k{/Alt}{Meta>}{Home}{/Meta}");
+    expect(standing()).toEqual({ focus: "r2", stop: ["r2"] });
+    // A control inside a row moves the reader as the row does: a chip is the issue's, and a
+    // check's words are the check's.
+    act(() => view.container.querySelector<HTMLElement>('[data-verification-chip="all"]')?.focus());
+    await user.keyboard("j");
+    expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
+    act(() => rows[2]?.querySelector<HTMLElement>("[data-verification-check-words]")?.focus());
+    await user.keyboard("j");
+    expect(standing()).toEqual({ focus: "c-two", stop: ["c-two"] });
+    expect(held).toEqual([
+      "j",
+      "ArrowDown",
+      "k",
+      "ArrowUp",
+      "End",
+      "Home",
+      "j",
+      "ArrowRight",
+      "ArrowLeft",
+      "End",
+      "k",
+      "j",
+      "j",
+    ]);
+    held.length = 0;
+
+    // On a check's row the focus drew its facts; Enter shuts them and a second Enter opens them,
+    // which keeps them drawn once the focus moves on.
+    await user.keyboard("k");
+    expect(standing().focus).toBe("c-one");
+    expect(opened()).toEqual(["true", "false", "false"]);
+    await user.keyboard("{Enter}");
+    expect(opened()).toEqual(["false", "false", "false"]);
+    await user.keyboard("{Enter}");
+    expect(opened()).toEqual(["true", "false", "false"]);
+    await user.keyboard("j");
+    expect(standing().focus).toBe("c-two");
+    expect(opened()).toEqual(["true", "true", "false"]);
+    // `o` keeps what the focus drew once the focus moves on, and a second `o` lets it go.
+    await user.keyboard("oj");
+    expect(standing().focus).toBe("r2");
+    expect(opened()).toEqual(["true", "true", "false"]);
+    await user.keyboard("ko");
+    expect(opened()).toEqual(["true", "true", "false"]);
+    await user.keyboard("j");
+    expect(opened()).toEqual(["true", "false", "false"]);
+    // Enter on a statement's row opens the facts of each of its checks, and where all of them
+    // are drawn a second Enter shuts them.
+    await user.keyboard("{Home}j");
+    expect(standing().focus).toBe("r1");
+    await user.keyboard("{Enter}");
+    expect(opened()).toEqual(["true", "true", "false"]);
+    await user.keyboard("{Enter}");
+    expect(opened()).toEqual(["false", "false", "false"]);
+    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+    // Enter and `o` on the issue's row press nothing, and are not held back.
+    await user.keyboard("{Home}{Enter}o");
+    expect(opened()).toEqual(["false", "false", "false"]);
+    expect(held).toEqual([
+      "k",
+      "Enter",
+      "Enter",
+      "j",
+      "o",
+      "j",
+      "k",
+      "o",
+      "j",
+      "Home",
+      "j",
+      "Enter",
+      "Enter",
+      "Home",
+    ]);
+
+    // A pointer's press on the statement's words does what Enter on its row does.
+    const words = rows[1]?.querySelector("[data-node-words]");
+    expect(words?.textContent).toBe(served.text);
+    await user.click(words as Element);
+    expect(opened()).toEqual(["true", "true", "false"]);
+    await user.click(words as Element);
+    expect(opened()).toEqual(["false", "false", "false"]);
+    // And a press on a check's latest result or on its words opens its facts, which stay drawn
+    // once the focus has gone.
+    await user.click(rows[2]?.querySelector("[data-verification-result]") as Element);
+    await user.click(rows[3]?.querySelector("[data-verification-check-words]") as Element);
+    await user.keyboard("{Home}");
+    expect(standing().focus).toBe("issue");
+    expect(opened()).toEqual(["true", "true", "false"]);
+
+    // The page's keymap listens on `window`, as `KeymapProvider` binds it. While a chord the
+    // reader began is pending, no key is the tree's: `j` moves nothing, and `k` goes on with
+    // `t` to the keymap's `t k`.
+    let turnedOff = 0;
+    const unregister = appKeymap.register("global", [
+      {
+        id: "verification-off",
+        keys: "t k",
+        label: "Turn the view off",
+        run: () => {
+          turnedOff += 1;
+        },
+      },
+    ]);
+    const keymap = render(<KeymapProvider>{null}</KeymapProvider>);
+    try {
+      held.length = 0;
+      await user.keyboard("t");
+      expect(appKeymap.pending()).toBe("t");
+      await user.keyboard("j");
+      expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
+      await user.keyboard("tk");
+      expect(turnedOff).toBe(1);
+      expect(appKeymap.pending()).toBe("");
+      expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
+      // The keymap's own hold comes after the document's listener; the tree held back none.
+      expect(held).toEqual([]);
+    } finally {
+      keymap.unmount();
+      unregister();
+      // A chord a failed step left half typed is let go, so no later test types into it.
+      appKeymap.handleKeyDown(new KeyboardEvent("keydown", { key: "Escape" }));
+    }
+  } finally {
+    document.removeEventListener("keydown", hold);
     view.unmount();
   }
 });
