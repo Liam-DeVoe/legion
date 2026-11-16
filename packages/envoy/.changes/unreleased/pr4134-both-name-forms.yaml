@@ -13,8 +13,9 @@ body: |-
   the new form yet, and nothing is refused for the old one. A role named in the new form under a
   project its role does not work for (`PRIV.legion-zz-controller`) is refused with 400, as every
   dotted role was before. Dispatch's subscriber list and its removal count a session that follows
-  an issue in either form, and an unsubscribe answers every form it took out of the record. On a
-  nats-server that can skip a literal filter beside a wildcard one (2.10, 2.11 before 2.11.12,
-  2.12 before 2.12.4) the consumer's old-form filter is widened to every session's inbox, and the
-  listener hands the session none of the other sessions' messages; there the consumer's
-  `num_pending` counts them.
+  an issue in either form, and an unsubscribe answers every form it took out of the record.
+  **The listener now needs nats-server v2.11.12, v2.12.4, or v2.14.0 and later**, and refuses to
+  start against an older server, naming its version and those releases: every 2.10, 2.11 before
+  2.11.12 and 2.12 before 2.12.4 can skip a message on a consumer that filters on a wildcard and a
+  literal at the same token, which a session's consumer does, and would lose the session's
+  messages with no error.
