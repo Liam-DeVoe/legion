@@ -18,6 +18,18 @@ import (
 func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 	session := "s1"
 	live := ResolvedMention{Target: "session:s1", Delivery: "steer", SessionID: &session}
+	kept := keptForPlanner()
+	// published answers a publish to the role's topic with status and body, and fails the test for
+	// any other request: a role kept for its next holder is published, never sent.
+	published := func(status int, body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
+				t.Errorf("unexpected request %s %s, want the role publish", r.Method, r.URL.Path)
+			}
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}
+	}
 	for _, tc := range []struct {
 		name         string
 		target       ResolvedMention
@@ -55,6 +67,22 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		{name: "the listener stored the send for a stopped session", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"event_id":"envelope-3","recipient":"s1","state":"stopped","last_seen":1700000000000}`))
 		}, wantEnvelope: true, wantQueued: true},
+		// A role kept for its next holder: the listener's 202 kept the message on the role's kept
+		// lane, so the send carries the kept copy's envelope and the attempt it settles is queued.
+		{name: "the listener kept the publish for the role's next holder", target: kept,
+			answer:       published(http.StatusAccepted, `{"event_id":"envelope-4","kept":true,"kept_reason":"unclaimed","kept_until":1793003600000}`),
+			wantEnvelope: true, wantQueued: true},
+		{name: "a live holder of the role took the publish", target: kept,
+			answer:       published(http.StatusOK, `{"event_id":"envelope-5","holder":"s2","holder_state":"live"}`),
+			wantEnvelope: true},
+		{name: "the listener kept nothing of the publish", target: kept,
+			answer:      published(http.StatusNotFound, `{"error":"no holder for role planner","reason":"unclaimed"}`),
+			wantFailure: true},
+		{name: "the listener answered the publish too late", target: kept, answer: func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(400 * time.Millisecond)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"event_id":"envelope-late","kept":true}`))
+		}, wantFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			url := "http://127.0.0.1:1"
@@ -72,5 +100,69 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 					outcome, tc.wantEnvelope, tc.wantDup, tc.wantQueued, tc.wantFailure)
 			}
 		})
+	}
+}
+
+// keptForPlanner is the role planner as resolveDeliveryTarget resolves it when no live session
+// holds it and its newest registry entry is released and not finished: the role itself, kept for
+// its next holder, beside the listener's own no-holder answer.
+func keptForPlanner() ResolvedMention {
+	return ResolvedMention{
+		Target: "role:planner", Delivery: "steer", keepForRole: "planner",
+		listenerAnswer: &ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no holder for role planner"},
+	}
+}
+
+// A role kept for its next holder is published with the failures a send's are worded with: the
+// listener's own text for a publish it kept nothing of, and the receipt-timeout cause for one
+// whose answer missed the window, since the listener keeps the copy before it answers.
+func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		answer  http.HandlerFunc
+		failure string
+	}{
+		{name: "nothing kept", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no holder for role planner","reason":"unclaimed"}`))
+		}, failure: "no holder for role planner"},
+		{name: "answered too late", answer: func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(400 * time.Millisecond)
+			w.WriteHeader(http.StatusAccepted)
+		}, failure: receiptTimeoutText},
+		{name: "a listener that is starting", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"service starting"}`))
+		}, failure: listenerUnreachablePrefix + "listener returned 503: service starting"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(tc.answer)
+			t.Cleanup(listener.Close)
+			s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(150*time.Millisecond))}}
+			outcome := s.sendResolvedDelivery(
+				context.Background(), keptForPlanner(), "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			if outcome.failure != tc.failure || outcome.envelopeID != nil || outcome.queued {
+				t.Fatalf("sendResolvedDelivery = %+v, want failure %q with no envelope", outcome, tc.failure)
+			}
+		})
+	}
+}
+
+// A connected-only send asks for a session that is running now, and a role kept for its next
+// holder has none, so it is not kept: nothing is published, and the attempt settles with the
+// listener's own no-holder answer as refused, as a stopped session refuses it.
+func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request %s %s: a connected-only send keeps nothing for a role", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(listener.Close)
+	s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+	kept := keptForPlanner()
+	outcome := s.sendResolvedDelivery(
+		context.Background(), kept, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), true)
+	if outcome.failure != "no holder for role planner" || outcome.refused != kept.listenerAnswer ||
+		outcome.envelopeID != nil || outcome.queued {
+		t.Fatalf("sendResolvedDelivery = %+v, want the listener's no-holder answer refused, with nothing kept", outcome)
 	}
 }

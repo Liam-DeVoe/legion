@@ -7,6 +7,8 @@ import {
   deliveryOutcomeState,
   duplicateText,
   isSafeRetry,
+  keptForRole,
+  keptForRoleParts,
   plainDelivery,
   queuedParts,
   rowAnsweredWithError,
@@ -60,6 +62,24 @@ test("a queued attempt is never offered a retry, and reads as stored for a stopp
     "Queued: ",
     { sessionId: "s1", storedTitle: undefined },
     " is stopped; it gets the message if it runs again within 72 hours",
+  ]);
+});
+
+// sjawhar/legion#2230. A queued attempt that names no session was kept by the listener for the
+// role it was addressed to, whose Legion pod its daemon released: it waits on the role's kept
+// lane for one hour, for the role's next session. A queued attempt that names a session was
+// stored for that session, a role's holder included, and keeps the session wording.
+test("a queued role attempt with no session reads as kept for the role's next session", () => {
+  const role = "role:legion-infra-infra-204-planner";
+  expect(keptForRole(role, "")).toBe(true);
+  expect(keptForRole(role, null)).toBe(true);
+  expect(keptForRole(role, "s1")).toBe(false);
+  expect(keptForRole("session:s1", "")).toBe(false);
+  expect(keptForRole(null, "")).toBe(false);
+  expect(keptForRoleParts(role)).toEqual([
+    "Kept for ",
+    role,
+    ": the role's next session gets it if one takes the role within one hour",
   ]);
 });
 

@@ -62,8 +62,9 @@ func unavailableStatus(code int, err error) error {
 
 // ErrReceiptTimeout reports a send the listener never answered within the client's window. It
 // is the one failure that says nothing about whether the message landed: the listener publishes
-// the envelope before it answers (cmd/listener/api.go), so the agent may already hold it. Only
-// the send path returns it; a resolution lookup that times out sent nothing.
+// the envelope, or keeps a role's copy, before it answers (cmd/listener/api.go), so the agent may
+// already hold it. Only the two delivery paths return it (Send, PublishToRole); a resolution
+// lookup that times out sent nothing.
 var ErrReceiptTimeout = errors.New("envoy listener did not answer the send in time")
 
 // ErrNotFound reports that the listener has no record of the requested session.
@@ -71,11 +72,12 @@ var ErrNotFound = errors.New("envoy listener: session not found")
 
 // ErrNoHolder reports that the listener holds no live holder for a role: its 404, whose reason
 // is unclaimed or holder_lapsed (cmd/listener/api.go, writeRoleHolderError). The error Role
-// returns carries the listener's own text and matches ErrNoHolder under errors.Is.
+// returns carries the listener's own text and matches ErrNoHolder under errors.Is, and so does
+// the one PublishToRole returns for a role publish the listener kept nothing of.
 var ErrNoHolder = errors.New("envoy listener: no live role holder")
 
-// noHolderError is Role's 404: the listener's text, so a caller recording it records exactly
-// what the listener said, and ErrNoHolder under errors.Is.
+// noHolderError is the 404 of Role and of PublishToRole: the listener's text, so a caller
+// recording it records exactly what the listener said, and ErrNoHolder under errors.Is.
 type noHolderError struct{ text string }
 
 func (e noHolderError) Error() string { return e.text }
@@ -733,6 +735,24 @@ func unavailableGetStatus(response *http.Response, route string) error {
 		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
 }
 
+// deliveryBody is what both of Dispatch's delivery routes read of a request alike (cmd/listener
+// messageBody): Dispatch as its source, the body, the frame, the key and what is wanted back.
+type deliveryBody struct {
+	Source         string                 `json:"source"`
+	Message        string                 `json:"message"`
+	Payload        string                 `json:"payload"`
+	IdempotencyKey string                 `json:"idempotency_key"`
+	Urgency        string                 `json:"urgency,omitempty"`
+	ExpectsReply   contracts.ExpectsReply `json:"expects_reply,omitempty"`
+}
+
+// sendRoute and publishRoute are the two routes a Dispatch delivery is posted to: a send to a
+// session (Send), and a publish to a role's topic (PublishToRole).
+const (
+	sendRoute    = "/v1/messages/send"
+	publishRoute = "/v1/messages/publish"
+)
+
 // Send delivers a Dispatch frame to an already-resolved session. The answer says what that
 // session was when the listener stored the message: connected, or stopped and stored for its own
 // consumer (SendResult). A send that set ConnectedOnly and met a stopped session is refused
@@ -741,46 +761,24 @@ func unavailableGetStatus(response *http.Response, route string) error {
 // session under the target, knows no record of it and handed it off to no daemon is an error
 // carrying the listener's text that matches ErrNotFound; every other refusal is not.
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
-	body, err := json.Marshal(struct {
-		TargetSession  string                 `json:"target_session"`
-		Source         string                 `json:"source"`
-		Message        string                 `json:"message"`
-		Payload        string                 `json:"payload"`
-		IdempotencyKey string                 `json:"idempotency_key"`
-		Urgency        string                 `json:"urgency,omitempty"`
-		ExpectsReply   contracts.ExpectsReply `json:"expects_reply,omitempty"`
-		ConnectedOnly  bool                   `json:"connected_only,omitempty"`
+	response, err := c.post(ctx, sendRoute, struct {
+		TargetSession string `json:"target_session"`
+		deliveryBody
+		ConnectedOnly bool `json:"connected_only,omitempty"`
 	}{
-		TargetSession:  input.TargetSession,
-		Source:         "dispatch",
-		Message:        input.Message,
-		Payload:        string(input.Payload),
-		IdempotencyKey: input.IdempotencyKey,
-		Urgency:        input.Urgency,
-		ExpectsReply:   input.ExpectsReply,
-		ConnectedOnly:  input.ConnectedOnly,
+		TargetSession: input.TargetSession,
+		deliveryBody: deliveryBody{
+			Source:         "dispatch",
+			Message:        input.Message,
+			Payload:        string(input.Payload),
+			IdempotencyKey: input.IdempotencyKey,
+			Urgency:        input.Urgency,
+			ExpectsReply:   input.ExpectsReply,
+		},
+		ConnectedOnly: input.ConnectedOnly,
 	})
 	if err != nil {
-		return SendResult{}, fmt.Errorf("encode POST /v1/messages/send body: %w", err)
-	}
-	// written records that this client finished putting the request on the wire, which is what
-	// separates a listener that went quiet (the envelope may be published) from a connection
-	// that never came up (nothing was). Both surface as the same client-timeout error.
-	var written atomic.Bool
-	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		WroteRequest: func(info httptrace.WroteRequestInfo) { written.Store(info.Err == nil) },
-	})
-	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(body),
-	)
-	if err != nil {
-		return SendResult{}, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	c.authorize(request)
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return SendResult{}, sendTransportError(err, written.Load())
+		return SendResult{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -797,7 +795,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		State      string `json:"state"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return SendResult{}, fmt.Errorf("%w: decode POST /v1/messages/send response: %v", ErrUnavailable, err)
+		return SendResult{}, fmt.Errorf("%w: decode POST %s response: %v", ErrUnavailable, sendRoute, err)
 	}
 	return SendResult{
 		EnvelopeID: result.EnvelopeID, Recipient: result.Recipient, Duplicate: result.Duplicate,
@@ -805,32 +803,136 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	}, nil
 }
 
-// sendTransportError classifies what stopped a send from being answered. Only a request this
-// client finished writing can have reached the listener, and only that one may be
-// ErrReceiptTimeout - the class that tells a human the message may already have been published
-// and a same-mode retry is therefore safe. A connect that timed out wrote nothing, and reports
-// the same "Client.Timeout exceeded while awaiting headers" text as a listener that went quiet,
-// so the text cannot tell them apart; requestWritten can. The cause is wrapped, not formatted,
-// so a caller can ask the same question again. Either way no listener answered, so both are
-// ErrUnreachable.
-func sendTransportError(err error, requestWritten bool) error {
+// RolePublishInput is a targeted Dispatch delivery published to a role's topic through the
+// listener (PublishToRole): the same body, frame, key, urgency and expects_reply a send carries
+// (SendInput), addressed to the role token rather than to a session.
+type RolePublishInput struct {
+	Role           string
+	Message        string
+	Payload        json.RawMessage
+	IdempotencyKey string
+	Urgency        string
+	ExpectsReply   contracts.ExpectsReply
+}
+
+// RolePublishResult is what the listener did with a role publish it took. Kept false is its 200:
+// a live holder of the role took the message, and EnvelopeID names the envelope forwarded to it.
+// Kept true is its 202: no live session holds the role, and the listener keeps the message on the
+// role's kept lane for the next session that holds the role live, until KeptUntil (milliseconds
+// since the epoch, zero when the listener named no end); EnvelopeID names the kept copy, which for
+// a repeat of an idempotency key whose copy is still kept is that earlier copy. The publish route
+// answers no duplicate verdict, so the result carries none.
+type RolePublishResult struct {
+	EnvelopeID string
+	Kept       bool
+	KeptUntil  int64
+}
+
+// PublishToRole publishes a Dispatch frame on a role's topic (contracts.RoleTopicPrefix + role)
+// through the listener's publish route (cmd/listener/api.go publishHandler), asking it to keep the
+// message for the role's next holder when no live session holds the role (keep true, the route's
+// own default written out). The route answers a role publish one of three ways (roleSend): 200, a
+// live holder took it; 202, it was kept (RolePublishResult.Kept); 404, nothing was kept, which is
+// an error carrying the listener's own text that matches ErrNoHolder. Every other answer and every
+// failure is Send's: a refusal the listener named is its reason alone, a 502, 503 or 504 and a
+// transport failure are ErrUnavailable and ErrUnreachable, and a publish written whose answer
+// missed the client's window is ErrReceiptTimeout, since the listener keeps or forwards the
+// message before it answers.
+func (c *Client) PublishToRole(ctx context.Context, input RolePublishInput) (RolePublishResult, error) {
+	response, err := c.post(ctx, publishRoute, struct {
+		Topic string `json:"topic"`
+		deliveryBody
+		Keep bool `json:"keep"`
+	}{
+		Topic: contracts.RoleTopicPrefix + input.Role,
+		deliveryBody: deliveryBody{
+			Source:         "dispatch",
+			Message:        input.Message,
+			Payload:        string(input.Payload),
+			IdempotencyKey: input.IdempotencyKey,
+			Urgency:        input.Urgency,
+			ExpectsReply:   input.ExpectsReply,
+		},
+		Keep: true,
+	})
+	if err != nil {
+		return RolePublishResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
+		err := listenerResponseError(response)
+		if response.StatusCode == http.StatusNotFound && !errors.Is(err, ErrUnavailable) {
+			return RolePublishResult{}, noHolderError{text: err.Error()}
+		}
+		return RolePublishResult{}, err
+	}
+	var result struct {
+		EnvelopeID string `json:"event_id"`
+		KeptUntil  int64  `json:"kept_until"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return RolePublishResult{}, fmt.Errorf("%w: decode POST %s response: %v", ErrUnavailable, publishRoute, err)
+	}
+	return RolePublishResult{
+		EnvelopeID: result.EnvelopeID,
+		Kept:       response.StatusCode == http.StatusAccepted,
+		KeptUntil:  result.KeptUntil,
+	}, nil
+}
+
+// post makes one authorized POST of body, encoded as JSON, to route: the one shape both delivery
+// routes take (Send, PublishToRole). A request that reached no answer is sendTransportError's.
+func (c *Client) post(ctx context.Context, route string, body any) (*http.Response, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode POST %s body: %w", route, err)
+	}
+	// written records that this client finished putting the request on the wire, which is what
+	// separates a listener that went quiet (the envelope may be published) from a connection
+	// that never came up (nothing was). Both surface as the same client-timeout error.
+	var written atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) { written.Store(info.Err == nil) },
+	})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+route, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("%w: build POST %s request: %v", ErrUnavailable, route, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	c.authorize(request)
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, sendTransportError(route, err, written.Load())
+	}
+	return response, nil
+}
+
+// sendTransportError classifies what stopped a delivery posted to route from being answered.
+// Only a request this client finished writing can have reached the listener, and only that one
+// may be ErrReceiptTimeout - the class that tells a human the message may already have been
+// published and a same-mode retry is therefore safe. A connect that timed out wrote nothing, and
+// reports the same "Client.Timeout exceeded while awaiting headers" text as a listener that went
+// quiet, so the text cannot tell them apart; requestWritten can. The cause is wrapped, not
+// formatted, so a caller can ask the same question again. Either way no listener answered, so
+// both are ErrUnreachable.
+func sendTransportError(route string, err error, requestWritten bool) error {
 	var timeout net.Error
 	timedOut := errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout())
 	if requestWritten && timedOut {
-		return unreachable(fmt.Errorf("%w: %w: POST /v1/messages/send: %w", ErrUnavailable, ErrReceiptTimeout, err))
+		return unreachable(fmt.Errorf("%w: %w: POST %s: %w", ErrUnavailable, ErrReceiptTimeout, route, err))
 	}
-	return unreachable(fmt.Errorf("%w: POST /v1/messages/send: %w", ErrUnavailable, err))
+	return unreachable(fmt.Errorf("%w: POST %s: %w", ErrUnavailable, route, err))
 }
 
-// listenerResponseError is the error a role lookup or a send reports for a non-200 answer. A 502,
-// 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says: the listener behind its
-// starting gate answers 503 {"error":"service starting"} (cmd/listener/main.go startingGate), and
-// a gateway in front of one that is gone answers 502 or 504, so either is "ask again" rather than
-// the listener's verdict on the request. Any other status with a JSON reason is that reason alone,
-// which a delivery records and a person reads verbatim ("no live session <id>", "message is
-// required", "unauthorized"). The reason is kept on the unavailable error too, for the same
-// reader. Any other status without one is ErrUnavailable alone: the listener answered, and asking
-// again repeats it.
+// listenerResponseError is the error a role lookup, a send or a publish reports for an answer it
+// does not take. A 502, 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says:
+// the listener behind its starting gate answers 503 {"error":"service starting"}
+// (cmd/listener/main.go startingGate), and a gateway in front of one that is gone answers 502 or
+// 504, so either is "ask again" rather than the listener's verdict on the request. Any other
+// status with a JSON reason is that reason alone, which a delivery records and a person reads
+// verbatim ("no live session <id>", "message is required", "unauthorized"). The reason is kept on
+// the unavailable error too, for the same reader. Any other status without one is ErrUnavailable
+// alone: the listener answered, and asking again repeats it.
 func listenerResponseError(response *http.Response) error {
 	var body struct {
 		Error string `json:"error"`

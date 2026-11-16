@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -24,10 +25,13 @@ import (
 // created: its live holder, or the stopped Legion agent the listener's agent registry names for
 // it (resolveDeliveryTarget). SessionID is nil when neither was found; attemptSessionID remains
 // internal so legacy message attempts retain their existing session-id representation.
-// listenerAnswer is set only beside a registry's session, and is the resolution the listener's
-// own answer gave, which the attempt records when the listener refuses the send. unanswered says
-// the lookup was cut short by its bound while the request was still live (resolveMentionTarget),
-// so the listener has not said who holds the target.
+// keepForRole names the role token of a role no live session holds whose daemon released its idle
+// pod (deliveryTarget.keepForRole): the delivery is published on that role's topic and kept for its
+// next holder, and pins no session. listenerAnswer is set only beside a registry's session or a
+// role kept for its next holder, and is the resolution the listener's own answer gave, which the
+// attempt records when the listener refuses the send. unanswered says the lookup was cut short by
+// its bound while the request was still live (resolveMentionTarget), so the listener has not said
+// who holds the target.
 type ResolvedMention struct {
 	Target       string
 	Delivery     string
@@ -36,6 +40,7 @@ type ResolvedMention struct {
 
 	title            string
 	attemptSessionID string
+	keepForRole      string
 	listenerAnswer   *ResolvedMention
 	unanswered       bool
 }
@@ -69,8 +74,9 @@ const mentionLookupTimeout = 250 * time.Millisecond
 // resolved, so the sender resolves it when it sends (mentionResolutionFor).
 //
 // A target the listener holds no live session for that the Legion agent registry names resolves
-// to that stopped agent's session, carrying the listener's own answer beside it
-// (listenerAnswer), which the attempt records when the listener refuses the send
+// to that stopped agent's session, and a role whose daemon released its idle pod resolves to the
+// role itself, kept for its next holder (keepForRole); either carries the listener's own answer
+// beside it (listenerAnswer), which the attempt records when the listener refuses the send
 // (sendResolvedDelivery).
 func (s *server) resolveMentionTarget(
 	ctx context.Context, target, delivery string, timeout time.Duration,
@@ -102,7 +108,7 @@ func (s *server) resolveMentionTarget(
 func resolvedMention(target, delivery string, found deliveryTarget) ResolvedMention {
 	item := ResolvedMention{
 		Target: target, Delivery: delivery, ResolveError: found.resolveError,
-		title: found.title, attemptSessionID: found.sessionID,
+		title: found.title, attemptSessionID: found.sessionID, keepForRole: found.keepForRole,
 	}
 	// A missing session is not a resolved target, even though the legacy message delivery
 	// model retains its requested id in an attempt row. A live session that lacks a mode is
@@ -120,11 +126,12 @@ func resolvedMention(target, delivery string, found deliveryTarget) ResolvedMent
 
 // sendOutcome is what one send of an already-resolved delivery did, as the attempt row and its
 // receipt record it: the envelope the listener minted, whether the stream already held the
-// message, whether the listener stored it for a stopped session rather than handing it to a
-// running one (queued), and the failure to record otherwise. refused is set only beside a
-// failure of a send to a session the Legion agent registry named that the listener refused with
-// no live session, and is the listener's own resolution of the route, which the attempt records
-// in place of the registry's.
+// message, whether the listener stored it for a recipient that takes it later - a stopped session,
+// or a role's next holder - rather than handing it to a running one (queued), and the failure to
+// record otherwise. refused is set only beside a failure of a send to a target the Legion agent
+// registry named - a stopped agent's session the listener refused with no live session, or a role
+// kept for its next holder that the delivery may not be kept for - and is the listener's own
+// resolution of the route, which the attempt records in place of the registry's.
 type sendOutcome struct {
 	envelopeID *string
 	duplicate  bool
@@ -157,6 +164,9 @@ type sendOutcome struct {
 // failure. The caller records that resolution's session on the attempt in place of the
 // registry's, so the attempt reads exactly as it did before the registry existed: a role's
 // listener answer with no session, a session's "no live session <id>".
+//
+// A role kept for its next holder (target.keepForRole) is published on the role's topic rather
+// than sent (publishForRole).
 func (s *server) sendResolvedDelivery(
 	ctx context.Context, target ResolvedMention, body, idempotencyKey string, urgency *string,
 	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
@@ -164,17 +174,11 @@ func (s *server) sendResolvedDelivery(
 	if target.ResolveError != "" {
 		return sendOutcome{failure: target.ResolveError}
 	}
+	if target.keepForRole != "" {
+		return s.publishForRole(ctx, target, body, idempotencyKey, urgency, wanted, frame, connectedOnly)
+	}
 	if target.SessionID == nil {
 		return sendOutcome{failure: "no live session"}
-	}
-	// What the delivered thing wants back, except in btw mode, which interrupts the session it
-	// reaches to ask something of it and so always waits on an answer, whatever the thing
-	// delivered says. The mode is read here, on every try, because a try after a listener
-	// take-over resolves the target again and sends in the mode that resolution names
-	// (mentionResolutionFor).
-	expectsReply := wanted
-	if target.Delivery == "btw" {
-		expectsReply = contracts.ExpectsReplyRequired
 	}
 	// Message is the body a second time, beside the frame, and the listener puts it on the
 	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
@@ -186,7 +190,7 @@ func (s *server) sendResolvedDelivery(
 		Payload:        frame,
 		IdempotencyKey: idempotencyKey,
 		Urgency:        deref(urgency),
-		ExpectsReply:   expectsReply,
+		ExpectsReply:   deliveryExpectsReply(target, wanted),
 		ConnectedOnly:  connectedOnly,
 	})
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
@@ -207,6 +211,137 @@ func (s *server) sendResolvedDelivery(
 		return sendOutcome{duplicate: true, queued: queued}
 	}
 	return sendOutcome{envelopeID: &send.EnvelopeID, queued: queued}
+}
+
+// deliveryExpectsReply is what the delivered thing wants back, except in btw mode, which
+// interrupts the session it reaches to ask something of it and so always waits on an answer,
+// whatever the thing delivered says. The mode is read on every try, because a try after a
+// listener take-over resolves the target again and sends in the mode that resolution names
+// (mentionResolutionFor).
+func deliveryExpectsReply(target ResolvedMention, wanted contracts.ExpectsReply) contracts.ExpectsReply {
+	if target.Delivery == "btw" {
+		return contracts.ExpectsReplyRequired
+	}
+	return wanted
+}
+
+// publishForRole delivers to a role no live session holds whose daemon released its idle pod
+// (target.keepForRole): it publishes the frame on the role's topic through the listener's publish
+// route (dispatchenvoy.Client.PublishToRole) with the body, key, urgency and expects_reply a send
+// carries. The listener keeps the message on the role's kept lane for the role's next live holder,
+// for one hour, and raises the role's wake, which brings the released pod back to claim the role
+// and take what was kept for it (cmd/listener/confirmed.go roleSend.noHolder).
+//
+// The listener's 202, kept, is outcome queued with the kept copy's envelope: the listener took
+// the message for a recipient that takes it later. Its 200 - a live session claimed the role by
+// the publish and took the message - is a delivery like any send's. Its 404, nothing kept, and
+// every other refusal or failure is the failure the listener's answer gives, worded as a send's
+// is (deliveryErrorText, receiptTimeoutText), with no envelope.
+//
+// A connected-only send - a model or thinking switch, or a message whose request asked for a
+// running session - asks for a session that is running now, and a kept message waits for one
+// that is not running yet, so it is not kept: it settles with the listener's own no-holder answer
+// as refused, as a stopped session refuses it, and nothing is published.
+func (s *server) publishForRole(
+	ctx context.Context, target ResolvedMention, body, idempotencyKey string, urgency *string,
+	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
+) sendOutcome {
+	if connectedOnly {
+		return sendOutcome{failure: target.listenerAnswer.ResolveError, refused: target.listenerAnswer}
+	}
+	carried, _ := model.EventBody(body)
+	published, err := s.deps.Envoy.PublishToRole(ctx, dispatchenvoy.RolePublishInput{
+		Role:           target.keepForRole,
+		Message:        carried,
+		Payload:        frame,
+		IdempotencyKey: idempotencyKey,
+		Urgency:        deref(urgency),
+		ExpectsReply:   deliveryExpectsReply(target, wanted),
+	})
+	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
+		return sendOutcome{failure: receiptTimeoutText}
+	}
+	if err != nil {
+		return sendOutcome{failure: deliveryErrorText(err)}
+	}
+	return sendOutcome{envelopeID: &published.EnvelopeID, queued: published.Kept}
+}
+
+// keptRoleAttempt reports whether a delivery attempt is one Dispatch kept for a role
+// (publishForRole): it names no session, its target is a role, and it settled queued. The listener
+// hands such a message to whichever session holds the role next, which Dispatch cannot know when it
+// records the attempt, so its reply is taken from the session holding the role when the reply comes
+// (keptRoleReplier), and that reply pins the attempt to the replier.
+func keptRoleAttempt(target, sessionID, state string) bool {
+	return sessionID == "" && state == model.DeliveryStateQueued && strings.HasPrefix(target, "role:")
+}
+
+// keptRoleReplier is who may answer an attempt Dispatch kept for a role: the session holding the
+// role, as the listener named it before the reply's transaction opened, and the target it was read
+// for. Its zero value takes no reply, which is what an attempt that is not kept for a role reads as.
+type keptRoleReplier struct{ target, holder string }
+
+// takes reports whether session's reply to the attempt locked as target - naming sessionID and
+// settled as state - is the role holder's reply to an attempt kept for that role, which the reply
+// then pins to session. The row is judged as the reply's lock found it, so an attempt another
+// reply pinned meanwhile takes this reply only through the check every reply passes.
+func (k keptRoleReplier) takes(target, sessionID, state, session string) bool {
+	return k.holder != "" && k.holder == session && k.target == target && keptRoleAttempt(target, sessionID, state)
+}
+
+// keptRoleHolder reads the session holding target's role now, for a reply to an attempt kept for
+// that role, with nothing held: it runs before the reply's transaction opens. A role no live
+// session holds names nobody, so the reply is refused as any reply from a session the attempt does
+// not name is. A listener that did not answer is the 503 ENVOY_UNAVAILABLE the replier retries,
+// never a refusal.
+func (s *server) keptRoleHolder(ctx context.Context, target string) (keptRoleReplier, error) {
+	route, err := model.ParseRoute(target)
+	if err != nil || route.Kind != "role" {
+		return keptRoleReplier{}, nil
+	}
+	if s.deps.Envoy == nil {
+		return keptRoleReplier{}, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE", "%s", listenerNotConfiguredText)
+	}
+	holder, err := s.deps.Envoy.Role(ctx, route.ID)
+	if errors.Is(err, dispatchenvoy.ErrNoHolder) {
+		return keptRoleReplier{}, nil
+	}
+	if err != nil {
+		return keptRoleReplier{}, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE", "%s", err.Error())
+	}
+	return keptRoleReplier{target: target, holder: holder.SessionID}, nil
+}
+
+// keptMentionReplier is who may answer attempt of a comment's mention of target (nil: the
+// comment's one mention) when that attempt is one Dispatch kept for a role (keptRoleAttempt), and
+// nobody otherwise. It reads the attempt through the pool and then the listener, before the
+// reply's transaction opens; the transaction judges the row again under its lock (takes).
+func (s *server) keptMentionReplier(ctx context.Context, commentID string, attempt int, target *string) (keptRoleReplier, error) {
+	if _, err := uuid.Parse(commentID); err != nil {
+		return keptRoleReplier{}, nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select target, coalesce(session_id, ''), state
+		from comment_deliveries
+		where comment_id = $1 and attempt = $2 and ($3::text is null or target = $3)
+	`, commentID, attempt, target)
+	if err != nil {
+		return keptRoleReplier{}, err
+	}
+	type row struct{ target, sessionID, state string }
+	found, err := pgx.CollectRows(rows, func(scanned pgx.CollectableRow) (row, error) {
+		var r row
+		return r, scanned.Scan(&r.target, &r.sessionID, &r.state)
+	})
+	if err != nil {
+		return keptRoleReplier{}, err
+	}
+	// More than one row is a reply naming no target to a comment of several mentions, which the
+	// transaction refuses; none is an attempt it answers as not found.
+	if len(found) != 1 || !keptRoleAttempt(found[0].target, found[0].sessionID, found[0].state) {
+		return keptRoleReplier{}, nil
+	}
+	return s.keptRoleHolder(ctx, found[0].target)
 }
 
 // commentExpectsReply is what a mention of one comment wants back. A comment that joins no ask
@@ -1106,6 +1241,14 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A reply to an attempt Dispatch kept for a role is taken from the session holding that role
+	// now, which only the listener can say, so it is read here with nothing held, before the
+	// transaction opens (keptMentionReplier).
+	kept, err := s.keptMentionReplier(r.Context(), r.PathValue("id"), input.Attempt, input.Target)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1173,6 +1316,24 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
 		return
+	}
+	if kept.takes(attempt.Target, deref(attempt.SessionID), attempt.State, actor.ID) {
+		// The role's holder answers the attempt kept for its role: the attempt is pinned to it,
+		// guarded on still naming no session, so every later reply of this attempt passes the
+		// check below as its own and no other session can take it.
+		pinned, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
+			update comment_deliveries set session_id = $4
+			where comment_id = $1 and target = $2 and attempt = $3 and session_id is null and state = 'queued'
+			returning `+commentDeliveryColumns,
+			comment.ID, attempt.Target, input.Attempt, actor.ID,
+		))
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err == nil {
+			attempt = pinned
+		}
 	}
 	if attempt.SessionID == nil || *attempt.SessionID != actor.ID {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery")

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -290,12 +291,13 @@ type pendingMessageDelivery struct {
 	// switch the session runs as its own turn (deliverMessageResuming, isSessionSwitch): a person's
 	// own issue-less Send or Aside (not one an agent wrote for them), no broadcast's copy, whose
 	// body is one switch line. The listener then refuses a stopped target rather than storing the
-	// message for it: attempt 1's own send, the delivery sweep's resume, a Retry and a mode change
-	// alike. No row records the switch rule, which each send judges from the message and the mode
-	// it is sent in: a switch an earlier release stored has rows with no flag, which a resume
-	// claims as they stand, and the rule's verdict for a Send must not pass to a Use BTW instead,
-	// which changes no model. Every other message - an issue message, a broadcast copy, a BTW, a
-	// session's message - is queued for a stopped session.
+	// message for it, and no role is kept for its next holder either (publishForRole): attempt 1's
+	// own send, the delivery sweep's resume, a Retry and a mode change alike. No row records the
+	// switch rule, which each send judges from the message and the mode it is sent in: a switch an
+	// earlier release stored has rows with no flag, which a resume claims as they stand, and the
+	// rule's verdict for a Send must not pass to a Use BTW instead, which changes no model. Every
+	// other message - an issue message, a broadcast copy, a BTW, a session's message - is queued
+	// for a stopped session, and a role-routed one for a released role's next holder.
 	connectedOnly bool
 	frame         []byte
 }
@@ -813,10 +815,11 @@ func (s *server) deliverMessageResuming(
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
-	// The listener refused the session the registry named, so the attempt records the session and
-	// title the listener's own answer gave, as it did before the registry existed: none for a role,
-	// the requested id for a session. An attempt pinned to a session earlier is one whose message
-	// targets that session, which that answer names too.
+	// The listener refused the session the registry named, or this connected-only send met a role
+	// the registry would have it kept for, which no such send is, so the attempt records the
+	// session and title the listener's own answer gave, as it did before the registry existed: none
+	// for a role, the requested id for a session. An attempt pinned to a session earlier is one
+	// whose message targets that session, which that answer names too.
 	if refused := outcome.refused; refused != nil {
 		pending.resolved.attemptSessionID, pending.resolved.title = refused.attemptSessionID, refused.title
 	}
@@ -918,6 +921,14 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A reply to an attempt Dispatch kept for a role is taken from the session holding that role
+	// now, which only the listener can say, so it is read here with nothing held, before the
+	// transaction opens (keptMessageReplier).
+	kept, err := s.keptMessageReplier(r.Context(), r.PathValue("id"), input.Attempt)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -952,6 +963,24 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
+	}
+	if kept.takes(messageTarget(message.Target), attempt.SessionID, attempt.State, actor.ID) {
+		// The role's holder answers the attempt kept for its role: the attempt is pinned to it,
+		// guarded on still naming no session, so every later reply of this attempt passes the
+		// check below as its own and no other session can take it.
+		pinned, err := scanMessageDelivery(tx.QueryRow(r.Context(), `
+			update message_deliveries set session_id = $3
+			where message_id = $1 and attempt = $2 and coalesce(session_id, '') = '' and state = 'queued'
+			returning `+messageDeliveryColumns,
+			message.ID, input.Attempt, actor.ID,
+		))
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err == nil {
+			attempt = pinned
+		}
 	}
 	if attempt.SessionID != actor.ID {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery")
@@ -1043,6 +1072,33 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r.Context(), events...)
 	WriteJSON(w, status, response)
+}
+
+// keptMessageReplier is who may answer attempt of a targeted message when that attempt is one
+// Dispatch kept for a role (keptRoleAttempt), and nobody otherwise. It reads the attempt through
+// the pool and then the listener, before the reply's transaction opens; the transaction judges the
+// row again under its lock (keptRoleReplier.takes).
+func (s *server) keptMessageReplier(ctx context.Context, messageID string, attempt int) (keptRoleReplier, error) {
+	if _, err := uuid.Parse(messageID); err != nil {
+		return keptRoleReplier{}, nil
+	}
+	var target *string
+	var sessionID, state string
+	err := s.deps.Store.Pool.QueryRow(ctx, `
+		select m.target, coalesce(d.session_id, ''), d.state
+		from messages m join message_deliveries d on d.message_id = m.id
+		where m.id = $1 and d.attempt = $2
+	`, messageID, attempt).Scan(&target, &sessionID, &state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return keptRoleReplier{}, nil
+	}
+	if err != nil {
+		return keptRoleReplier{}, err
+	}
+	if !keptRoleAttempt(messageTarget(target), sessionID, state) {
+		return keptRoleReplier{}, nil
+	}
+	return s.keptRoleHolder(ctx, messageTarget(target))
 }
 
 // replyAfterAnswer is the reply route on an attempt the session already answered with answer.

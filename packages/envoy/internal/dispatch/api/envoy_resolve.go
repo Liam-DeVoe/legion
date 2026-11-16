@@ -141,6 +141,13 @@ func resolveThenLock[R, T any](
 // the message is that worker's, not the stopped one's, and the delivery keeps the listener's own
 // no-holder answer exactly as it did before the registry was read here (registeredAgent).
 //
+// One such role is a target all the same: a role whose newest registry entry is released and not
+// finished. Its daemon released the role's idle issue pod and resumes that session on the next
+// wake of the role, so a holder of the role is coming. Its target is the role itself, kept for
+// that next holder (deliveryTarget.keepForRole, unheldRoleTarget): the delivery publishes on the
+// role's topic and the listener keeps the message on the role's kept lane and raises the role's
+// wake, which no send to a session does for it.
+//
 // The registry names a session whether or not its daemon answers, so the listener may still
 // refuse the send: no daemon answers for that project now. The registry's target therefore keeps
 // the listener's own answer beside it (listenerAnswer), and an attempt whose send the listener
@@ -155,7 +162,7 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	if route.Kind == "role" {
 		target, err = s.deps.Envoy.Role(ctx, route.ID)
 		if errors.Is(err, dispatchenvoy.ErrNoHolder) {
-			return s.registeredTarget(ctx, route, deliveryTarget{resolveError: deliveryErrorText(err)})
+			return s.unheldRoleTarget(ctx, route, deliveryTarget{resolveError: deliveryErrorText(err)})
 		}
 	} else {
 		target, err = s.deps.Envoy.SessionIncludingStopped(ctx, route.ID)
@@ -179,12 +186,15 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 }
 
 // deliveryTarget is what resolveDeliveryTarget found for a route: the session a delivery goes to,
-// what the listener calls it, and why it cannot receive this mode. listenerAnswer is set only on
-// a session the Legion agent registry named in place of the listener's own answer, and is that
-// answer.
+// what the listener calls it, and why it cannot receive this mode. keepForRole is set only on a
+// role the listener holds no live holder for and whose daemon released its idle pod
+// (unheldRoleTarget): it names the role token the delivery is published on and kept for, and the
+// target then names no session. listenerAnswer is set only on a target the Legion agent registry
+// named in place of the listener's own answer - a stopped agent's session, or a role kept for its
+// next holder - and is that answer.
 type deliveryTarget struct {
-	sessionID, title, resolveError string
-	listenerAnswer                 *deliveryTarget
+	sessionID, title, resolveError, keepForRole string
+	listenerAnswer                              *deliveryTarget
 }
 
 // registeredTarget is the session the Legion agent registry names for a route the listener
@@ -196,6 +206,32 @@ func (s *server) registeredTarget(ctx context.Context, route model.Route, answer
 		return answer
 	}
 	return deliveryTarget{sessionID: agent.SessionID, title: agent.Title, listenerAnswer: &answer}
+}
+
+// unheldRoleTarget is the target of a role route the listener answered with no live holder
+// (answer), by the Legion agent registry's newest entry for the role token, read once.
+//
+// An entry that is released and not finished is a claim the daemon suspended by idle release: it
+// released the role's idle issue pod and resumes the same session on the next wake of the role.
+// The role's next holder is coming, so the target is the role itself, kept for that holder
+// (keepForRole), with the listener's answer beside it: the delivery publishes on the role's topic,
+// which keeps the message on the role's kept lane for the role's next live holder and wakes the
+// role (sendResolvedDelivery). It pins no session, since none holds the role now. A released entry
+// is never handed off (registeredAgent), so this is the one way such a role takes a message.
+//
+// Every other role resolves as registeredTarget resolves a role (registeredAgent): to its newest
+// session while that entry is finished and not released, else to the listener's own answer. The
+// listener's answer stays beside the registry's target either way, for the send to record should
+// the listener refuse it, or should the delivery be one no keep may take (sendResolvedDelivery).
+func (s *server) unheldRoleTarget(ctx context.Context, route model.Route, answer deliveryTarget) deliveryTarget {
+	newest, ok := s.newestRoleAgent(ctx, route.ID)
+	switch {
+	case ok && newest.Released && !newest.Finished:
+		return deliveryTarget{keepForRole: route.ID, listenerAnswer: &answer}
+	case ok && answersForRole(newest):
+		return deliveryTarget{sessionID: newest.SessionID, title: newest.Title, listenerAnswer: &answer}
+	}
+	return answer
 }
 
 // registeredAgent is the Legion agent registry's session for a route the listener holds no live
@@ -210,20 +246,15 @@ func (s *server) registeredTarget(ctx context.Context, route model.Route, answer
 //
 // Neither a session nor a role names an entry that is released (dispatchenvoy.LegionAgent.Released):
 // the daemon released that session's idle issue pod and resumes it on the wake the message raises,
-// so the listener hands it to no daemon and answers it as before the registry existed, and the
-// delivery records that answer.
+// so the listener hands it to no daemon. A session route then records the listener's answer; a
+// role route with no live holder is kept for the role's next holder instead (unheldRoleTarget).
 func (s *server) registeredAgent(ctx context.Context, route model.Route) (dispatchenvoy.LegionAgent, bool) {
 	if route.Kind == "role" {
-		agents, err := s.deps.Envoy.RoleAgents(ctx, route.ID)
-		if err != nil {
-			slog.Warn("dispatch: read the Legion agent registry for a role with no live holder",
-				"role", route.ID, "error", err)
+		newest, ok := s.newestRoleAgent(ctx, route.ID)
+		if !ok || !answersForRole(newest) {
 			return dispatchenvoy.LegionAgent{}, false
 		}
-		if len(agents) == 0 || !agents[0].Finished || agents[0].Released {
-			return dispatchenvoy.LegionAgent{}, false
-		}
-		return agents[0], true
+		return newest, true
 	}
 	agent, err := s.deps.Envoy.Agent(ctx, route.ID)
 	if errors.Is(err, dispatchenvoy.ErrNotFound) {
@@ -238,6 +269,29 @@ func (s *server) registeredAgent(ctx context.Context, route model.Route) (dispat
 		return dispatchenvoy.LegionAgent{}, false
 	}
 	return agent, true
+}
+
+// newestRoleAgent is the Legion agent registry's newest entry for a role token, the role's
+// current holder; false when the registry holds none, and when its read did not answer, which is
+// logged.
+func (s *server) newestRoleAgent(ctx context.Context, roleToken string) (dispatchenvoy.LegionAgent, bool) {
+	agents, err := s.deps.Envoy.RoleAgents(ctx, roleToken)
+	if err != nil {
+		slog.Warn("dispatch: read the Legion agent registry for a role with no live holder",
+			"role", roleToken, "error", err)
+		return dispatchenvoy.LegionAgent{}, false
+	}
+	if len(agents) == 0 {
+		return dispatchenvoy.LegionAgent{}, false
+	}
+	return agents[0], true
+}
+
+// answersForRole reports whether a role's newest registry entry is the session its messages go to
+// while no live session holds the role: its issue has finished and its claim is not released
+// (registeredAgent).
+func answersForRole(newest dispatchenvoy.LegionAgent) bool {
+	return newest.Finished && !newest.Released
 }
 
 // advertisesDelivery reports whether target takes this delivery mode, by the rule the listener
@@ -466,11 +520,13 @@ type attemptClaim struct {
 }
 
 // deliveryOutcome maps what a send reported to the state and error an attempt row records.
-// queued is the listener's own word for the target it stored the message for: a session it knows
-// and that is not running (dispatchenvoy.SendStateStopped on the send's answer). The send's
+// queued is the listener's own word that it stored the message for a recipient that will take it
+// later rather than handing it to one now: a session it knows and that is not running
+// (dispatchenvoy.SendStateStopped on the send's answer), or a role no live session holds, whose
+// message it keeps for the role's next holder (dispatchenvoy.RolePublishResult.Kept). The send's
 // answer decides it, not the registry read before it, so a session whose read showed it live and
 // whose process had gone by the send - one that crashed with its registry entry still in place -
-// is recorded queued too.
+// is recorded queued too, and a role a live session claimed by the publish is recorded sent.
 func deliveryOutcome(deliveryError string, queued bool) (string, *string) {
 	switch {
 	case deliveryError != "":

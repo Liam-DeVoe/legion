@@ -21,6 +21,7 @@ function card(props: {
   attempts: readonly TargetedMessageAttempt[];
   capabilities?: readonly string[];
   onRetry?: (delivery: "aside" | "btw" | "steer") => void;
+  targetName?: string;
 }) {
   const capabilities = props.capabilities ?? ["aside", "btw", "steer"];
   return (
@@ -33,7 +34,7 @@ function card(props: {
         deliveries={props.attempts}
         header={null}
         onRetry={props.onRetry ?? (() => {})}
-        targetName="planner"
+        targetName={props.targetName ?? "planner"}
         turnID="turn-1"
       />
     </ul>
@@ -207,6 +208,58 @@ test("a duplicate BTW still reads as waiting on an answer", () => {
   );
   try {
     expect(screen.getByText(/Asking planner \(BTW\)/)).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// sjawhar/legion#2230. A role-routed message to a role whose Legion pod its daemon released is
+// kept by the listener for the role's next session, for one hour. The card says so, rather than
+// calling the role a stopped session that gets it within 72 hours, and offers no Retry: the
+// listener took the message, and a repeat would keep a second copy for the same role.
+test("a queued attempt kept for a role reads as kept for the role's next session, with no Retry", () => {
+  const role = "role:legion-infra-infra-204-planner";
+  const view = render(
+    card({
+      attempts: [attempt({ delivery: "aside", keptForRole: true, state: "queued" })],
+      targetName: role,
+    })
+  );
+  try {
+    expect(
+      screen.getByText(
+        `Kept for ${role}: the role's next session gets it if one takes the role within one hour`
+      )
+    ).toBeTruthy();
+    expect(screen.queryByText(/is stopped/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The session wording stays for a queued attempt stored for a session, and for an earlier
+// attempt the history lists beneath a later one, each attempt read on its own.
+test("a queued attempt stored for a session keeps the session wording, beside an earlier kept one", () => {
+  const view = render(
+    card({
+      attempts: [
+        attempt({ attempt: 1, keptForRole: true, state: "queued", targetName: "role:planner" }),
+        attempt({ attempt: 2, state: "queued" }),
+      ],
+    })
+  );
+  try {
+    expect(
+      screen.getByText(
+        "Queued: planner is stopped; it gets the message if it runs again within 72 hours"
+      )
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        /^Attempt 1: Kept for role:planner: the role's next session gets it if one takes the role within one hour$/
+      )
+    ).toBeTruthy();
   } finally {
     view.unmount();
   }

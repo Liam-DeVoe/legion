@@ -34,16 +34,24 @@ const (
 // `released` while released is set, as the entries of a claim whose idle pod the daemon released
 // do. It takes every send, as its hand-off does, and records the session each one is for; while
 // refuseSends is set it records each and refuses it as a listener with no daemon answering for
-// the agent does.
+// the agent does. It records every role publish's body too, and answers it as the publish route
+// answers a role no live session holds: 202 kept, or, while publishAnswer names it, 200 for a
+// live holder that claimed the role meanwhile or 404 for a publish it kept nothing of. Its role
+// lookup names roleHolder as the role's live holder while that is set, and does not answer while
+// rolesDown is set.
 type stoppedAgentListener struct {
 	*httptest.Server
-	registryDown atomic.Bool
-	refuseSends  atomic.Bool
-	roleRuns     atomic.Bool
-	released     atomic.Bool
+	registryDown  atomic.Bool
+	refuseSends   atomic.Bool
+	roleRuns      atomic.Bool
+	released      atomic.Bool
+	rolesDown     atomic.Bool
+	publishAnswer atomic.Int32
+	roleHolder    atomic.Pointer[string]
 
-	mu    sync.Mutex
-	sends []string
+	mu        sync.Mutex
+	sends     []string
+	publishes []map[string]any
 }
 
 func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
@@ -79,8 +87,18 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 			id := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"no live session ` + id + `"}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/") && listener.rolesDown.Load():
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"service starting"}`))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/"):
 			role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
+			if holder := listener.roleHolder.Load(); holder != nil {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"role": role, "holder": *holder, "holder_state": "live", "title": "planner " + *holder,
+					"capabilities": []string{"aside", "btw", "steer"},
+				})
+				return
+			}
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"no holder for role ` + role + `","reason":"unclaimed"}`))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/legion/agents/sessions/"):
@@ -116,6 +134,34 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"event_id": "handed-off-" + strconv.Itoa(count), "recipient": input.TargetSession,
 			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/publish":
+			var input map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Errorf("decode listener publish: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			listener.mu.Lock()
+			listener.publishes = append(listener.publishes, input)
+			count := len(listener.publishes)
+			listener.mu.Unlock()
+			topic, _ := input["topic"].(string)
+			switch listener.publishAnswer.Load() {
+			case http.StatusOK:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"event_id": "delivered-" + strconv.Itoa(count), "topic": topic, "holder": "woken", "holder_state": "live",
+				})
+			case http.StatusNotFound:
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"no holder for role ` + strings.TrimPrefix(topic, "notifications.role.") +
+					`","reason":"unclaimed","claim_revision":0}`))
+			default:
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"event_id": "kept-" + strconv.Itoa(count), "topic": topic, "kept": true,
+					"kept_reason": "unclaimed", "kept_until": 1793003600000,
+				})
+			}
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"not found"}`))
@@ -129,6 +175,13 @@ func (l *stoppedAgentListener) sent() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]string{}, l.sends...)
+}
+
+// published is the body of every role publish the listener took, in order.
+func (l *stoppedAgentListener) published() []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]map[string]any{}, l.publishes...)
 }
 
 // assertHandedOff checks a message's one attempt was recorded for sessionID and sent.
@@ -263,6 +316,11 @@ func TestRoleMessageToARoleWhoseIssueStillRunsIsNotSentToTheStoppedWorker(t *tes
 
 	if got := listener.sent(); len(got) != 1 || got[0] != stoppedAgent {
 		t.Fatalf("listener sends = %v, want only the session mention's, none for the role", got)
+	}
+	// Its claim is not released, so nothing is kept for the role either: the attempt keeps the
+	// listener's no-holder answer, and nothing is published on the role's topic.
+	if got := listener.published(); len(got) != 0 {
+		t.Fatalf("listener publishes = %v, want none for a role whose claim is not released", got)
 	}
 }
 
@@ -406,6 +464,9 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
 				if _, wanted := tc.wantSends[session]; !wanted {
 					t.Fatalf("listener sends = %v, want none to %s", counted, session)
 				}
+			}
+			if got := listener.published(); len(got) != 0 {
+				t.Fatalf("listener publishes = %v, want none", got)
 			}
 		})
 	}

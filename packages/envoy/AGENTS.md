@@ -1598,8 +1598,13 @@ An attempt settles in one of four states (`deliveryOutcome`, `api/envoy_resolve.
 `sent` and `queued` both say the listener took the message, and every reader that asks whether it took it counts the two alike:
 the outbox publishes no second copy of a comment (`mentionDeliveryQuery`), the delivery sweep resumes neither and settles neither failed (`owedMessageAttempt`, `owedCommentAttempt`), the session's answers list holds both (`sessionanswers.query`), and the session may accept either as its own turn (`acceptDelivery`).
 They differ in one thing:
-a `sent` message is with a session that is running now, and a `queued` one waits in the consumer of a session the listener knows and that is not running, which gets it when it runs again, within the 72 hours the stream keeps it.
-Only a `failed` attempt is retried, since a queued one is already stored and a repeat would store a second copy for the same session to read.
+a `sent` message is with a session that is running now, and a `queued` one waits for a recipient that is not running yet.
+For a session the listener knows and that is not running, the message waits in that session's consumer, which gets it when it runs again, within the 72 hours the stream keeps it.
+For a role whose holder is gone because the Legion daemon released the role's idle issue pod, which its newest Legion agent registry entry says by being `released` and not `finished`, the delivery is published on the role's topic (`unheldRoleTarget`, `publishForRole`, `PublishToRole` on `POST /v1/messages/publish` with `keep` true).
+The listener answers `202` kept, keeps the message on the role's kept lane for one hour and wakes the role, so the role's next holder gets it, and the attempt is recorded `queued` naming no session.
+Its reply is taken from the session the listener names as the role's holder when the reply comes, read before the reply's transaction opens, and that reply pins the attempt to the replier, so every later reply is judged as any reply is (`keptRoleReplier`, on both reply routes);
+a session that does not hold the role is refused `REPLY_FORBIDDEN`, and a listener that does not answer is `503 ENVOY_UNAVAILABLE`, which the replier retries.
+Only a `failed` attempt is retried, since a queued one is already stored and a repeat would store a second copy for its recipient to read.
 The send's own answer decides `queued`, not the registry read before it, so a session whose read showed it live and whose process had gone by the send is recorded `queued` too.
 A delivery reads its session through `SessionIncludingStopped` (`internal/dispatch/envoy/client.go`, `include=unresponsive,stopped` on `GET /v1/registry/<session_id>`), so a session the listener knows only by its record is a target like any other, judged by the record's capabilities (`advertisesDelivery`), and so is each recipient a broadcast names;
 a role resolves through `Role` alone, since a stopped session holds no role, and issue claims, the route roster and every other reader keep `Session` and `Sessions`, which never see `stopped`.
