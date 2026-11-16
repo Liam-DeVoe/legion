@@ -3026,6 +3026,11 @@ GATES = [
                    f"the last step of the fixture CI job, which that test hands buildGoBinaries, run by "
                    f"{at(STALL, CI_REPORT_STEP)}",
                    ENVOY, ["./cmd/ci-report"], mode="build"),
+        script_run("packages/envoy-client/src/__tests__/acceptance-tci2-red.live.test.ts",
+                   'packages: ["./cmd/ci-report"],',
+                   f"ci-report, which that test hands buildGoBinaries to store a long output's text, run by "
+                   f"{at(STALL, CI_REPORT_STEP)}",
+                   ENVOY, ["./cmd/ci-report"], mode="build"),
         ceiling_run(STALL),
     ], reads=reads(
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),

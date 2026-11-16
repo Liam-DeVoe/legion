@@ -28,6 +28,32 @@ func verdictOf(calls []call, check string) string {
 	return ""
 }
 
+// D1. A test's own pass or fail decides its result, even when its output quotes the words that
+// go test writes when it kills a test at its time limit. The test that go test really killed
+// stays could_not_run.
+func TestAcceptanceATestThatQuotesTheTimeoutWordsKeepsItsOwnOutcome(t *testing.T) {
+	binary := cmdtest.Build(t, "ci-report")
+	dir, commit := checkout(t, filepath.Join("testdata", "acceptance-timeout-spec"))
+	report, err := filepath.Abs(filepath.Join("testdata", "acceptance-timeout-words.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newStub(t)
+	got := runReporter(t, binary, dir, s.env("store"),
+		"--dir", ".dispatch/spec", "--job", "go-checks", "--report", report, "--project", "ACME", "--dispatch-cli", s.path)
+	calls := s.calls(t)
+	verdicts := map[string]string{}
+	for _, check := range []string{"passes-saying-timeout", "fails-saying-timeout", "slow-test"} {
+		verdicts[check] = verdictOf(calls, check)
+	}
+	want := map[string]string{"passes-saying-timeout": "pass", "fails-saying-timeout": "fail", "slow-test": "could_not_run"}
+	for check, verdict := range want {
+		if verdicts[check] != verdict {
+			t.Errorf("check %s at %s: verdict %q, want %q (exit %d)\nstdout:\n%s", check, commit, verdicts[check], verdict, got.code, got.stdout)
+		}
+	}
+}
+
 // D3. The step reads the check nodes of the files at its commit (R12). A change of the spec files
 // in the working tree that is not committed makes no check of the commit lose its result: either
 // the step reports the check as the commit's files name it, or it refuses the tree with no call.

@@ -59,7 +59,7 @@ func planReports(tree specgraph.Tree, job string, ran []specgraph.TestOutcome) [
 			case "skip":
 				p.Why = "the test skipped at this commit"
 			case "could_not_run":
-				p.Why = "the test did not end: go test stopped it at its time limit, or the job ended first"
+				p.Why = "the report gives the test no one end: go test stopped it at its time limit, its process or the job ended inside it, or the report gives it two ends"
 			}
 		}
 		planned = append(planned, p)

@@ -3219,8 +3219,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   then `specgraph.Judge` with no retired list, the one reading that the results route makes of the files too, so a tree has one answer in both places.
   It reads the report with `specgraph.ReadGoTestJSON`.
   `planReports` (`report.go`) decides each check with `specgraph.MatchTests`: one run of the test gives its `pass`, `fail`, `skip` or `could_not_run`, no run is `absent`, a runner other than `go` is `absent` with a reason that names the runner, and two or more runs are `two_tests`.
-  A test that go test stopped at its time limit, or whose report the end of the job cut, is `could_not_run` and never `fail`.
-  For each `pass`, `fail` and `could_not_run` it runs `<dispatch-cli> result --project <key> --check <id> --verdict <outcome> --commit <sha> --observed-file -`, with the test's output as `specgraph.TestOutcome.Output` holds it on standard input, whole, so a `--- FAIL` line never reads as a flag.
+  A test that the report gives no one end of its own is `could_not_run` and never `fail` (`specgraph.TestOutcome`): go test stopped it at its time limit, its process or the end of the job ended inside it, or the report gives it two ends; what a test prints, go test's kill line included, decides no outcome.
+
+- `cmd/ci-report`'s calls and lines:
+  for each `pass`, `fail` and `could_not_run` it runs `<dispatch-cli> result --project <key> --check <id> --verdict <outcome> --commit <sha> --observed-file -`, with the test's output as `specgraph.TestOutcome.Output` holds it on standard input, whole, so a `--- FAIL` line never reads as a flag.
   The reporter cuts nothing: the command is the one cut, which keeps the `contracts.SpecCheckObservedStart` first runes and the `contracts.SpecCheckObservedEnd` last runes of a longer text, with `contracts.SpecCheckObservedCutNote` between them;
   a skip, a test that did not run and a test that ran twice get no call.
   Each run of the step writes its results again: a second run at one commit stores a second result of each check, Dispatch keeps each, and the newest counts.

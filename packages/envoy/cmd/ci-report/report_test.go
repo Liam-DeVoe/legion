@@ -86,7 +86,7 @@ func TestEachCheckHasTheOutcomeOfItsTest(t *testing.T) {
 		{"a test that go test stopped at its time limit could not run, and did not fail", "a-read-of-many-claims-ends-in-time", Planned{
 			Test: "example.com/acme/probe/slow TestTheSlowReadEnds", Outcome: "could_not_run",
 			Observed: output("slow", "TestTheSlowReadEnds"),
-			Why:      "the test did not end: go test stopped it at its time limit, or the job ended first",
+			Why:      "the report gives the test no one end: go test stopped it at its time limit, its process or the job ended inside it, or the report gives it two ends",
 		}, "panic: test timed out after 5s"},
 		{"a skipped test gives a skip", "the-daemon-waits-for-the-database", Planned{
 			Test: "example.com/acme/probe/claims TestTheWaitIsSkipped", Outcome: "skip",
@@ -136,7 +136,7 @@ func TestATestTheJobsEndKilledCouldNotRun(t *testing.T) {
 	want := []Planned{{
 		Check: "a-read-of-many-claims-ends-in-time", Test: "example.com/acme/probe/slow TestTheSlowReadEnds",
 		Outcome: "could_not_run", Observed: "=== RUN   TestTheSlowReadEnds\n    slow_test.go:13: the read starts\n",
-		Why: "the test did not end: go test stopped it at its time limit, or the job ended first",
+		Why: "the report gives the test no one end: go test stopped it at its time limit, its process or the job ended inside it, or the report gives it two ends",
 	}}
 	if !slices.Equal(got, want) {
 		t.Errorf("planReports gives %+v\nwant %+v", got, want)

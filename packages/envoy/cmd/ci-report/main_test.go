@@ -121,7 +121,7 @@ func TestTheBuiltBinary(t *testing.T) {
 	}
 	const (
 		notRun    = "the test did not run at this commit"
-		notEnded  = "the test did not end: go test stopped it at its time limit, or the job ended first"
+		notEnded  = "the report gives the test no one end: go test stopped it at its time limit, its process or the job ended inside it, or the report gives it two ends"
 		bunRunner = `the test did not run at this commit: specgraph: selector is not <import path> <TopLevelTestName> for runner go: runner "bun"`
 	)
 	// lines is every line ci-report prints for testdata/spec at a run where each call stored its
