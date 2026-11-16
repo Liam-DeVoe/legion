@@ -34,11 +34,12 @@
 #       lib.sh's fail does.
 #
 #       It prints every id it wrote, one `key=value` line each - and the words of each answer and
-#       of the decline's note (answer_<ask>, decline_note), and the version each review names
-#       (<review>_version) - and keeps each in the associative array seed_ids under the same key,
-#       which a driver reads after the call. Then it prints the corpus's own counts for the
-#       measurements of the spec's section "What this child measures before it writes a
-#       migration", which a driver compares with what its queries read:
+#       of the decline's note (answer_<ask>, decline_note), the version each review names
+#       (<review>_version), and the version that superseded spec D's approval
+#       (review_spec_d_superseded_by_version) - and keeps each in the associative array seed_ids
+#       under the same key, which a driver reads after the call. Then it prints the corpus's own
+#       counts for the measurements of the spec's section "What this child measures before it
+#       writes a migration", which a driver compares with what its queries read:
 #           corpus_documents_holding_an_ask=<n>
 #               the documents it wrote an ask block into, open or answered or declined
 #           corpus_standing_approvals_over_those_documents=<n>
@@ -90,10 +91,16 @@
 #   open, and a person asked for changes on it (review_spec_c), so its newest review is no
 #   approval.
 #
-# So the corpus holds four documents with an ask block (spec_a, decisions_a, spec_b, spec_c), two
-# of them under a standing approval (spec_a and spec_b), two reviews the second count must leave
-# out (an approval of notes.md, which holds no ask block, and spec_c's request for changes), and
-# two collisions, one of each shape.
+#   Issue D (issue_d): a person approved its spec (spec_d) at its newest version while it held
+#   ask_d_approved (#q-d-approved), which the person had answered (review_spec_d); an agent then
+#   removed that block, so the row stays `answered` naming the spec, and the newer version
+#   (review_spec_d_superseded_by_version) leaves that approval standing at no newest version.
+#
+# So the corpus holds five documents with an ask block (spec_a, decisions_a, spec_b, spec_c,
+# spec_d), two of them under a standing approval (spec_a and spec_b), three reviews the second
+# count must leave out (an approval of notes.md, which holds no ask block; spec_c's request for
+# changes; and spec_d's approval, which a newer version superseded), and two collisions, one of
+# each shape.
 
 # What the functions below read of their caller, named here so that a reader of this file sees
 # it, as does shellcheck, which reads one file at a time: lib.sh's work_dir sets `work`, and
@@ -183,9 +190,12 @@ seed_want() {
     fail seed "$2" "HTTP $seed_status, want $1: $(head -c 600 "$seed_dir/body")"
 }
 
-# seed_field WHAT JQ: one value of the last answer's body, which must be there.
+# seed_field WHAT JQ: one value of the last answer's body, which must be there, in seed_value. It
+# sets a variable rather than printing the value, and its caller reads seed_value afterwards: a
+# fail inside `$(…)` would end only that subshell, and the seed would go on with an empty value.
 seed_field() {
-  jq -er "$2" "$seed_dir/body" 2>/dev/null || fail seed "$1" "no $2 in: $(head -c 600 "$seed_dir/body")"
+  seed_value="$(jq -er "$2" "$seed_dir/body" 2>/dev/null)" ||
+    fail seed "$1" "no $2 in: $(head -c 600 "$seed_dir/body")"
 }
 
 # seed_actor: the actor member every agent write names.
@@ -232,8 +242,10 @@ seed_issue() {
     '{project: $p, title: $t, spec: $s, actor: $a}' >"$seed_dir/issue.json"
   seed_request agent POST /api/v1/issues "@$seed_dir/issue.json"
   seed_want 201 "create the issue \"$3\""
-  seed_record "$1" "$(seed_field "create the issue \"$3\"" .key)"
-  seed_record "$2" "$(seed_field "create the issue \"$3\"" .primary_artifact_id)"
+  seed_field "create the issue \"$3\"" .key
+  seed_record "$1" "$seed_value"
+  seed_field "create the issue \"$3\"" .primary_artifact_id
+  seed_record "$2" "$seed_value"
 }
 
 # seed_upload KEY_NAME ISSUE NAME FILE: uploads FILE as the document NAME of ISSUE, as an agent,
@@ -243,7 +255,8 @@ seed_upload() {
     '{name: $n, content: $c, actor: $a}' >"$seed_dir/upload.json"
   seed_request agent POST "/api/v1/issues/$2/artifacts" "@$seed_dir/upload.json"
   seed_want 201 "upload $3 to $2"
-  seed_record "$1" "$(seed_field "upload $3 to $2" .artifact.id)"
+  seed_field "upload $3 to $2" .artifact.id
+  seed_record "$1" "$seed_value"
 }
 
 # seed_edit DOCUMENT WHAT OPS: applies the edit ops OPS (a JSON list) to DOCUMENT as an agent.
@@ -293,8 +306,10 @@ seed_review() {
   seed_request person POST "/api/v1/artifacts/$2/reviews" \
     "$(jq -cn --arg s "$3" --arg r "${4:-}" '{state: $s} + (if $r == "" then {} else {reason: $r} end)')"
   seed_want 201 "$seed_person reviews $2 ($3)"
-  seed_record "$1" "$(seed_field "$seed_person reviews $2" .id)"
-  seed_record "${1}_version" "$(seed_field "$seed_person reviews $2" .version)"
+  seed_field "$seed_person reviews $2" .id
+  seed_record "$1" "$seed_value"
+  seed_field "$seed_person reviews $2" .version
+  seed_record "${1}_version" "$seed_value"
   if [[ "$3" == approved ]]; then
     seed_approved_version["$2"]="${seed_ids[${1}_version]}"
   else
@@ -320,15 +335,21 @@ seed_decisions() {
   [[ -n "$baseline_url" && -n "$baseline_token" && -n "$baseline_database_url" ]] ||
     seed_refuse "seed_decisions writes through the server baseline_start boots: call baseline_start first"
   [[ -n "$work" ]] || seed_refuse "seed_decisions writes its files under \$work: call lib.sh's work_dir first"
-  require_commands curl env jq psql sleep
+  require_commands curl env grep head jq psql sleep
   seed_dir="$work/seed"
   mkdir -p "$seed_dir"
   printf 'Authorization: Bearer %s\n' "$baseline_token" >"$seed_dir/auth"
 
-  # The person, signed in through the dev sign-in.
-  curl -sS -o /dev/null -c "$seed_dir/jar" "$baseline_url/auth/_dev/signin?login=$seed_person" \
-    2>"$seed_dir/curl" || fail seed "sign $seed_person in" "curl: $(<"$seed_dir/curl")"
-  [[ -s "$seed_dir/jar" ]] || fail seed "sign $seed_person in" "the dev sign-in route left no cookie"
+  # The person, signed in through the dev sign-in. The route answers a redirect that sets the
+  # session cookie. curl writes its jar's header lines whether or not a cookie came, so the jar is
+  # read for a cookie line, which alone holds a tab (an HttpOnly one opens `#HttpOnly_`).
+  seed_status="$(curl -sS -o "$seed_dir/body" -w '%{http_code}' -c "$seed_dir/jar" \
+    "$baseline_url/auth/_dev/signin?login=$seed_person" 2>"$seed_dir/curl")" ||
+    fail seed "sign $seed_person in" "curl: $(<"$seed_dir/curl")"
+  [[ "$seed_status" =~ ^[23][0-9][0-9]$ ]] ||
+    fail seed "sign $seed_person in" "HTTP $seed_status: $(head -c 600 "$seed_dir/body")"
+  grep -q $'\t' "$seed_dir/jar" ||
+    fail seed "sign $seed_person in" "the dev sign-in route answered HTTP $seed_status and set no cookie"
   seed_record person "$seed_person"
 
   # The project, whose gated steps hold `decisions`.
@@ -435,7 +456,24 @@ MD
   seed_issue issue_c spec_c "Seeded corpus: a document whose only ask is open" "$seed_dir/spec-c.md"
   seed_ask ask_c_open "${seed_ids[issue_c]}" "${seed_ids[spec_c]}" q-c-open
 
-  # The person settles the asks: three answers on spec A, one on spec B, and a decline.
+  # Issue D, whose spec a person approves while it holds its answered ask, before the ask leaves.
+  cat >"$seed_dir/spec-d.md" <<'MD'
+# Fourth seeded spec
+
+:::requirement{#r-d-one}
+An approval names the version the person read.
+:::
+
+:::ask{#q-d-approved urgency="med"}
+Which version does an approval name?
+:::
+MD
+  seed_issue issue_d spec_d "Seeded corpus: a spec approved before its answered ask left" "$seed_dir/spec-d.md"
+  local spec_d="${seed_ids[spec_d]}"
+  seed_ask ask_d_approved "${seed_ids[issue_d]}" "$spec_d" q-d-approved
+
+  # The person settles the asks: three answers on spec A, one on spec B, one on spec D, and a
+  # decline.
   seed_answer ask_kept "$spec_a" q-kept \
     "Postgres, since it is the store we already back up every night." Postgres
   seed_answer ask_left_store "$spec_a" q-left-store \
@@ -443,6 +481,7 @@ MD
   seed_answer ask_left_format "$spec_a" q-left-format \
     "One line for each measurement, with the time it was taken."
   seed_answer ask_b_left "$spec_b" q-b-left "The base release writes it, through its own API."
+  seed_answer ask_d_approved "$spec_d" q-d-approved "The version the person read when they approved."
   seed_request person POST "/api/v1/asks/${seed_ids[ask_declined]}/decline" \
     '{"note":"Colour is not mine to choose here; print plain text."}'
   seed_want 200 "$seed_person declines the ask of block q-declined"
@@ -450,15 +489,31 @@ MD
   seed_record decline_note "Colour is not mine to choose here; print plain text."
   seed_wait_settled "the answers settle"
 
-  # An agent removes the two answered blocks from spec A, and the one from spec B: each row stays
-  # answered, naming its spec. Two callouts then take the ids q-left-store (the main shape's
-  # collision) and q-doc-collide (the id the decisions document's second ask is written under).
+  # The person approves spec D at its newest version, which holds the answered ask_d_approved.
+  seed_review review_spec_d "$spec_d" approved
+
+  # An agent removes the two answered blocks from spec A, and the one from spec B and from spec D:
+  # each row stays answered, naming its spec. Two callouts then take the ids q-left-store (the
+  # main shape's collision) and q-doc-collide (the id the decisions document's second ask is
+  # written under).
   seed_edit "$spec_a" "an agent removes blocks q-left-store and q-left-format from spec A" \
     '[{"op":"delete","block":"q-left-store"},{"op":"delete","block":"q-left-format"}]'
   seed_edit "$spec_a" "callouts of spec A take the ids q-left-store and q-doc-collide" \
     "$(jq -cn '[{op: "insert", after: "block:r-reader", markdown: (":::callout{#q-left-store kind=\"note\" title=\"\"}\nThe readings name the database they came from.\n:::\n\n:::callout{#q-doc-collide kind=\"note\" title=\"\"}\nA moved block keeps a line of the census.\n:::")}]')"
   seed_collisions+=("$a q-left-store block_left_spec")
   seed_edit "$spec_b" "an agent removes block q-b-left from spec B" '[{"op":"delete","block":"q-b-left"}]'
+  seed_edit "$spec_d" "an agent removes block q-d-approved from spec D" \
+    '[{"op":"delete","block":"q-d-approved"}]'
+  # That version is newer than the one the person approved, so the approval no longer stands: it
+  # names a version that held the answered ask, and the newest holds none.
+  seed_request agent GET "/api/v1/artifacts/$spec_d/text"
+  seed_want 200 "read spec D's newest version"
+  seed_field "read spec D's newest version" .version
+  [[ "$seed_value" -gt "${seed_ids[review_spec_d_version]}" ]] ||
+    fail seed "the removal of q-d-approved supersedes the approval of spec D" \
+      "the approval names version ${seed_ids[review_spec_d_version]}, and the newest is $seed_value"
+  seed_record review_spec_d_superseded_by_version "$seed_value"
+  unset 'seed_approved_version[$spec_d]'
 
   # Spec A's decisions.md, of the old shape: the main shape's two restatements, two sections that
   # cite no ask, two answered ask blocks of its own (the second shape), and `## Replaced`.
@@ -540,12 +595,14 @@ MD
     "$(jq -cn --arg b "Which reader comes first is settled in dispatch://$a/artifact/decisions-md#b-q-doc-plain." \
       --argjson a "$(seed_actor)" '{body: $b, actor: $a}')"
   seed_want 201 "comment citing decisions-md#b-q-doc-plain"
-  seed_record comment_decisions_block "$(seed_field "comment citing decisions-md#b-q-doc-plain" .id)"
+  seed_field "comment citing decisions-md#b-q-doc-plain" .id
+  seed_record comment_decisions_block "$seed_value"
   seed_request agent POST "/api/v1/issues/$a/comments" \
     "$(jq -cn --arg b "The format was asked in dispatch://$a/spec#b-q-left-format." \
       --argjson a "$(seed_actor)" '{body: $b, actor: $a}')"
   seed_want 201 "comment citing spec#b-q-left-format"
-  seed_record comment_old_spec_address "$(seed_field "comment citing spec#b-q-left-format" .id)"
+  seed_field "comment citing spec#b-q-left-format" .id
+  seed_record comment_old_spec_address "$seed_value"
   seed_wait_settled "the decisions documents settle"
 
   # The sections a driver reads by their heading block, and the person's standing Keep.
@@ -578,7 +635,8 @@ MD
   for document in "${!seed_approved_version[@]}"; do
     seed_request agent GET "/api/v1/artifacts/$document/text"
     seed_want 200 "read $document's newest version"
-    version="$(seed_field "read $document's newest version" .version)"
+    seed_field "read $document's newest version" .version
+    version="$seed_value"
     [[ "$version" == "${seed_approved_version[$document]}" ]] ||
       fail seed "the approval of $document stands" \
         "it names version ${seed_approved_version[$document]}, and the newest is $version"
