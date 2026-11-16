@@ -190,10 +190,14 @@ export interface TreeContext {
  *
  * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone.
  * - **A block** - the reference names one, or the read answers that its target is one - by
- *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`), and by `""` where the
- *   read sent none. The read's `name` for a block is its stored excerpt, which is the block's
- *   source: a typed block's directive and the markdown its words are written in are markup and
- *   no word of it (R21).
+ *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`). Where the read
+ *   answered and sent no reading, or one that holds no words, a block of this issue whose
+ *   document the tree read is named by the page's word for its kind (`NODE_TYPE_NAMES`), never
+ *   by its id (R22); another issue's block, whose kind no read of this page gives, by `""`. A
+ *   block the read has not answered for yet is `""` too, which the chip draws as not yet named
+ *   (`NodeChip.answered`). The read's `name` for a block is its stored excerpt, which is the
+ *   block's source: a typed block's directive and the markdown its words are written in are
+ *   markup and no word of it (R21).
  * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
  *   word for it (`documentWord`), and never by its file name.
  * - **Anything else** - an issue, an ask, a comment, a message - by the read's `name` for it.
@@ -209,6 +213,19 @@ export function treeContext(
   const spec = specOf(reads.issue);
   const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
+  // The kind of each typed block of the documents the tree read, by its node id, which is all a
+  // chip can say of a block of this issue the read sent no words for.
+  const types: readonly string[] = NODE_TYPES;
+  const kinds = new Map<string, NodeType>();
+  for (const document of reads.documents ?? []) {
+    const slug = slugs.get(document.artifactId);
+    if (slug === undefined) continue;
+    for (const block of document.blocks) {
+      if (types.includes(block.type)) {
+        kinds.set(blockNodeId(slug, block.id), block.type as NodeType);
+      }
+    }
+  }
   const nodeIdOf = (reference: string): string | undefined => {
     const route = parseNodeReference(reference);
     if (route === undefined || !("key" in route) || route.key !== key) return undefined;
@@ -229,7 +246,10 @@ export function treeContext(
     const block = route !== undefined && "block" in route ? route.block : undefined;
     if (block !== undefined || target?.kind === "block") {
       const reading = target?.text_tree;
-      return reading === undefined ? "" : lineOf(reading);
+      const line = reading === undefined ? "" : lineOf(reading);
+      if (line !== "" || target === undefined) return line;
+      const kind = kinds.get(nodeIdOf(reference) ?? "");
+      return kind === undefined ? "" : NODE_TYPE_NAMES[kind];
     }
     // Another issue's document is named by no role of this issue's.
     if (route?.kind === "spec") {

@@ -94,10 +94,12 @@ export interface NodeChip {
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
   /** The words shown for the target (`treeContext`): a block's first line, as a row draws one
-   *  (R1), cut from the first block of the server's reading of its words (`lineWords`), and `""`
-   *  where the batched reference read sent none; a whole document's word on the page, `Spec` and
-   *  not `spec.md`; and anything else's name as that read answers it, `""` until it answers.
-   *  `""` for a target that is gone. */
+   *  (R1), cut from the first block of the server's reading of its words (`lineWords`); where the
+   *  read answered with no reading or one that holds no words, the page's word for the block's
+   *  kind (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read, and `""`
+   *  for another issue's block; a whole document's word on the page, `Spec` and not `spec.md`;
+   *  and anything else's name as that read answers it. `""` for a block and for anything else
+   *  until the read answers, and for a target that is gone. */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;

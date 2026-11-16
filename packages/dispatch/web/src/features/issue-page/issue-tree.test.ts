@@ -578,8 +578,9 @@ test("a typed block's row and a chip naming it carry its words, not its directiv
 
 // R1, R21: a chip names a block by the first line a row draws for it, read from the server's
 // reading of the block's words and never from its stored source, whose directive and markdown
-// are markup: where the read sent no reading, the chip draws no words of it. A chip naming a
-// whole document names it by the page's word for it, never by its file name.
+// are markup: where the read sent no reading, the chip draws no words of it, only the page's
+// word for its kind (R22). A chip naming a whole document names it by the page's word for it,
+// never by its file name.
 test("a chip of a block draws the first line of its reading, and a document's chip its role word", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
@@ -660,10 +661,63 @@ test("a chip of a block draws the first line of its reading, and a document's ch
   expect(line).not.toContain("**");
   expect(line).not.toContain(":::");
   expect(line).toBe("R2. The second statement.");
-  expect(otherPlacement(build(statement()))).toBe("");
+  expect(otherPlacement(build(statement()))).toBe(NODE_TYPE_NAMES.requirement);
   expect(
     nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips.map(({ name, ref }) => ({ name, ref }))
   ).toEqual([{ name: PRESET_NAMES.spec, ref: whole }]);
+});
+
+// R22: an id is no name a reader reads, and a chip that draws nothing names nothing. A block of
+// this issue the batched read answered for with no reading, or with one that holds no words, is
+// named by the page's word for its kind, which the blocks the tree read give. Another issue's
+// block is of no kind this page read, and a block the read has not answered for yet has no name
+// until it does (`answered: false`).
+test("a needs chip of a block the read sent no words for is named by its kind's word", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const bare = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const ruled = `dispatch://${KEY}/artifact/plan-md#b-t2`;
+  const unread = `dispatch://${KEY}/artifact/plan-md#b-t3`;
+  const foreign = "dispatch://CORE-2/artifact/plan-md#b-t9";
+  const root = buildIssueTree({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [
+          block("t0", "plan_task"),
+          block("t1", "plan_task", { needs: `${bare} ${ruled} ${foreign} ${unread}` }),
+          block("t2", "plan_task"),
+          block("t3", "plan_task"),
+        ],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+    targets: [
+      { gone: false, kind: "block", name: ":::plan_task{#t0}\nAdd the routes.\n:::", ref: bare },
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#t1}\nDraw the panel.\n:::",
+        ref: `dispatch://${KEY}/artifact/plan-md#b-t1`,
+        text_tree: readingOf("Draw the panel."),
+      },
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#t2}\n---\n:::",
+        ref: ruled,
+        text_tree: { content: [{ type: "horizontal_rule" }], type: "doc" },
+      },
+      { gone: false, kind: "block", name: ":::plan_task{#t9}\nShip it.\n:::", ref: foreign },
+    ],
+  });
+
+  expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips).toEqual([
+    { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: bare },
+    { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: ruled },
+    { answered: true, gone: false, label: "needs", name: "", ref: foreign },
+    { answered: false, gone: false, label: "needs", name: "", ref: unread },
+  ]);
 });
 
 // R4, R20: the model takes any depth. Today's data reaches two levels below the issue, because
