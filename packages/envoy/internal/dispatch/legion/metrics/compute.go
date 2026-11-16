@@ -66,9 +66,10 @@ const (
 // classes is every class, in the order the card lists them.
 var classes = []string{ClassInTreeAtDesign, ClassInTreeLater, ClassOutOfTree, ClassByTheController}
 
-// Report is one answer of the Legion section: the window, the issues that finished in it, and the
-// four metrics. It is the body of GET /api/v1/projects/{key}/legion/metrics, which the OpenAPI
-// document declares as LegionMetricsResponse (api/openapi_tables.go's schemaNames).
+// Report is one answer of the metrics computation: the window, the issues that finished in it,
+// and the four metrics. No route of this repository serves it — the root spec says the metrics
+// route never ships — so its one caller is whatever reads the computation, the evals of
+// dispatch://INFRA-2916 among them, and the shape is this type rather than an OpenAPI schema.
 type Report struct {
 	Project    string    `json:"project"`
 	From       time.Time `json:"from"`
@@ -192,8 +193,8 @@ type FiledIssue struct {
 	FilerPhase string `json:"filer_phase" enum:",queued,design,planning,implementing,testing,reviewing,accepting,merging,awaiting_person,held,done"`
 }
 
-// Compute is the metrics answer for a population. It reads nothing: the route and the live hub
-// both call it over a population Read gathered, so a live push and a GET answer the same numbers.
+// Compute is the metrics answer for a population. It reads nothing: a caller hands it a
+// population Read gathered, so two callers of one population answer the same numbers.
 func Compute(population *Population, scope Scope, now time.Time) Report {
 	computed := &computation{
 		population: population,
