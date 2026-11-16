@@ -14,8 +14,10 @@ import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
+import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import { CONTROL_LABELS, DECISIONS_WORDS, GLYPH_NAMES, GLYPH_TOKENS } from "../page-words";
+import { presetView } from "../presets";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
   answeredAsk,
@@ -28,6 +30,7 @@ import {
   issueDetails,
   issueTree,
   KEY,
+  node,
   openAsk,
   READER,
   READER_ACTOR,
@@ -155,6 +158,13 @@ interface Drawn extends RenderResult {
 }
 
 interface BodyProps {
+  /** The issue's nodes as a later read leaves them, where the tree grew since the body was
+   *  first drawn (`useIssueTree.ts` builds it read by read); the body is drawn over that tree,
+   *  with the view the slot hands it, unless `view` says otherwise. */
+  readonly children?: readonly TreeNode[];
+  /** Whether the body is on the page: false takes it off, as the page does when the view is
+   *  turned off, and true draws a new one. */
+  readonly drawn?: boolean;
   readonly isClosed?: boolean;
   readonly request?: OutlineRequest;
   readonly reveal?: string;
@@ -188,7 +198,14 @@ function renderBody(
     comments = [],
     made = [],
   }: { asks?: DecisionsAsk[]; children: TreeNode[]; comments?: Comment[]; made?: Decision[] },
-  props: BodyProps = {}
+  props: BodyProps = {},
+  {
+    requests = false,
+  }: {
+    /** Whether the page's outline requests are held above the body, as the issue page holds
+     *  them (`slots/providers.tsx`), with a control beside the body to take the focus to. */
+    requests?: boolean;
+  } = {}
 ): Drawn {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -199,35 +216,62 @@ function renderBody(
   client.setQueryData(["comments", KEY], comments);
   const issue = issueDetails();
   const root = issueTree(children);
-  const body = ({ isClosed = false, request, reveal, view = root, waitingPress }: BodyProps) => (
-    <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <IssueScope />
-            <Where />
-            {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
-                page names one. */}
-            <NoTooltips>
-              <DecisionsFilterBody
-                artifacts={artifactsBySlug(issue)}
-                emptyLine={EMPTY_LINE}
-                holdsEscape={false}
-                isClosed={isClosed}
-                issue={issue}
-                reader={READER}
-                {...(request === undefined ? {} : { request })}
-                {...(reveal === undefined ? {} : { reveal })}
-                root={root}
-                view={view}
-                {...(waitingPress === undefined ? {} : { waitingPress })}
-              />
-            </NoTooltips>
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  // The view the slot hands the body where no address names a node and no words are typed
+  // (`slots/view-decisions.tsx`).
+  const decisionsView = presetView(root, "decisions", "", new Set()).root;
+  const body = ({
+    children: grown,
+    drawn = true,
+    isClosed = false,
+    request,
+    reveal,
+    view,
+    waitingPress,
+  }: BodyProps) => {
+    const tree = grown === undefined ? root : issueTree(grown);
+    const shown =
+      view ??
+      (grown === undefined ? decisionsView : presetView(tree, "decisions", "", new Set()).root);
+    const list = drawn ? (
+      <DecisionsFilterBody
+        artifacts={artifactsBySlug(issue)}
+        emptyLine={EMPTY_LINE}
+        holdsEscape={false}
+        isClosed={isClosed}
+        issue={issue}
+        reader={READER}
+        {...(request === undefined ? {} : { request })}
+        {...(reveal === undefined ? {} : { reveal })}
+        root={tree}
+        view={shown}
+        {...(waitingPress === undefined ? {} : { waitingPress })}
+      />
+    ) : null;
+    return (
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <IssueScope />
+              <Where />
+              {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
+                  page names one. */}
+              <NoTooltips>
+                {requests ? (
+                  <OutlineRequestProvider>
+                    <button type="button">Elsewhere</button>
+                    {list}
+                  </OutlineRequestProvider>
+                ) : (
+                  list
+                )}
+              </NoTooltips>
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
   const view = render(body(props));
   return { ...view, again: (next) => view.rerender(body(next)), client };
 }
@@ -750,6 +794,112 @@ test("the page's ask and the address put the focus on an entry, unfolding the fo
   view.again({ reveal: D("replaced") });
   await waitFor(() => expect(focusedRow(view)).toBe(D("replaced")));
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+});
+
+// R1, R6: an address that names a node that is neither a question nor a decision, a comment
+// here, outranks the view: the comment is drawn first, under no heading and in no part, as the
+// outline draws a row for its context, and the focus goes to it. It is no entry of the list,
+// so an issue that holds no question and no decision still says so.
+test("an address that names a comment draws its row first and focuses it", async () => {
+  const said = node({
+    at: "2026-11-12T09:00:00Z",
+    author: READER_ACTOR,
+    id: "c-said",
+    reference: `dispatch://${KEY}/comment/c-said`,
+    text: "The rail stays where it is.",
+    type: "comment",
+  });
+  const children = [statement("s1"), said];
+  const view = renderBody(
+    { children },
+    {
+      reveal: said.id,
+      view: presetView(issueTree(children), "decisions", "", new Set([said.id])).root,
+    }
+  );
+
+  const first = view
+    .getByRole("tree", { name: "Issue tree" })
+    .querySelector<HTMLElement>("[data-node-row]");
+  expect(first?.getAttribute("data-node-id")).toBe(said.id);
+  expect(first?.closest("[data-decisions-part]") ?? null).toBeNull();
+  expect(first?.getAttribute("aria-level")).toBe("1");
+  await waitFor(() => expect(focusedRow(view)).toBe(said.id));
+
+  const row = rowOf(view, said.id);
+  // A row drawn for its context, as the outline marks one: no tag, since a comment is no typed
+  // kind, its author out of the reader's ink, its words, and no state.
+  expect(row.getAttribute("data-node-context")).toBe("");
+  expect(row.querySelector("[data-node-tag]")).toBeNull();
+  const author = row.querySelector("[data-node-margin] [data-node-author] [data-author-text]");
+  expect(words(author)).toBe("alice");
+  expect(author?.className).not.toContain("font-semibold");
+  expect(words(row.querySelector("[data-node-words]"))).toBe("The rail stays where it is.");
+  expect(row.hasAttribute("data-node-state")).toBe(false);
+  expect(row.querySelector("[data-node-margin] [data-node-state]")).toBeNull();
+  const link = row.querySelector("a[data-entry-link]");
+  expect(words(link)).toBe("in the conversation ›");
+  expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/${said.id}`);
+  expect(row.querySelectorAll("button[data-row-action]").length).toBe(0);
+  // No heading and no count stand over it, and the issue says it holds no decision.
+  expect(view.container.querySelectorAll("[data-decisions-heading]").length).toBe(0);
+  expect(view.getByText(EMPTY_LINE)).toBeTruthy();
+});
+
+// R6, the reviewer's finding at `DecisionsFilterBody.tsx:268`: the page holds which of the
+// Contents list's requests an outline or a view took (`outline-request.tsx`), so a view drawn
+// again, turned off and on, does not take the reader back to the request it took before.
+test("a body drawn again does not act on a request the page already took", async () => {
+  const request: OutlineRequest = { focusBranch: false, id: D("first"), seq: 1 };
+  const view = renderBody(wholeIssue(), { request }, { requests: true });
+  await waitFor(() => expect(focusedRow(view)).toBe(D("first")));
+
+  const elsewhere = view.getByRole("button", { name: "Elsewhere" });
+  await act(async () => elsewhere.focus());
+  view.again({ drawn: false, request });
+  expect(view.container.querySelector("[data-decisions-body]")).toBeNull();
+
+  view.again({ request });
+  expect(rowOf(view, D("first"))).toBeTruthy();
+  await act(async () => {});
+  expect(document.activeElement).toBe(elsewhere);
+});
+
+// R4, R6: a list that holds only the foot draws no row, so it has no tab stop to take the
+// focus. A page opened on it with nothing focused gives the focus to the foot's control, and
+// so does a focus on the tree, which is where `t d` puts it when the tree holds no tab stop
+// (`useIssueKeymap.ts`): the tree element never keeps the focus.
+test("a list that holds only the foot gives the focus to the foot's control", async () => {
+  const user = userEvent.setup();
+  const control = (drawn: RenderResult) =>
+    drawn.container.querySelector('[data-decisions-part="agents"] button');
+  const footOnly = { children: [decisionNode("minor")], made: [decision("minor")] };
+  expect(document.activeElement).toBe(document.body);
+  const view = renderBody(footOnly);
+  await waitFor(() => expect(document.activeElement).toBe(control(view)));
+
+  (document.activeElement as HTMLElement).blur();
+  expect(document.activeElement).not.toBe(control(view));
+  await act(async () => view.getByRole("tree", { name: "Issue tree" }).focus());
+  expect(document.activeElement).toBe(control(view));
+  view.unmount();
+
+  // The tree is built read by read (`useIssueTree.ts`): a list that holds only the foot until
+  // the asks read answers gives the focus to the foot's control, and once the question's row
+  // is drawn the focus goes to it, where the stage would have put it.
+  const early = renderBody(footOnly);
+  await waitFor(() => expect(document.activeElement).toBe(control(early)));
+  early.again({ children: [openAsk("q-open"), decisionNode("minor")] });
+  await waitFor(() => expect(focusedRow(early)).toBe("q-open"));
+  early.unmount();
+
+  // A reader who presses the control keeps the focus on it, though the foot's rows it unfolds
+  // are drawn.
+  const pressed = renderBody(footOnly);
+  await waitFor(() => expect(document.activeElement).toBe(control(pressed)));
+  await user.click(control(pressed) as HTMLElement);
+  expect(rowsOfPart(pressed, "agents")).toEqual([D("minor")]);
+  expect(document.activeElement).toBe(control(pressed));
 });
 
 // R13, the tester's F12: the header's count of what waits on the reader turns the filter on

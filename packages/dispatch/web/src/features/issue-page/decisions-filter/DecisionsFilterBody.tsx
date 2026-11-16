@@ -1,4 +1,5 @@
 import {
+  type FocusEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -46,6 +47,7 @@ import {
   conversationPath,
   type DecisionsEntry,
   type DecisionsPart,
+  type NamedEntry,
   waitingOrder,
 } from "./decisions-parts";
 
@@ -66,8 +68,11 @@ const NOTHING = (): void => {};
  * name on its row; and, folded at the foot, the agents' decisions that no statement rests on.
  * Which entry stands in which part is `decisions-parts.ts`, which is pure, read through the seam
  * (`decisions-entries.ts`); this draws it. A part that holds nothing is not drawn, and no
- * sentence explains the parts: their headings are the whole of it (R22). It is drawn the same
- * at every width: the rows are the outline's own (`DecisionsRow.tsx`).
+ * sentence explains the parts: their headings are the whole of it (R22). Before the parts
+ * stands the node an address names where it is neither a question nor a decision, a comment
+ * say, as a row with no heading and no count: the address outranks the view (`presets.ts`),
+ * and the four parts stay all the list says. It is drawn the same at every width: the rows are
+ * the outline's own (`DecisionsRow.tsx`).
  *
  * The list is one landmark named by the filter, and inside it answers the WAI-ARIA tree pattern
  * as the outline does, under the outline's own name, so a reader and the browser suite find one
@@ -78,7 +83,10 @@ const NOTHING = (): void => {};
  * `f` steps through a row's links, Enter goes to the entry's node in the conversation, and the
  * key that cycles how much is drawn unfolds the foot. The foot's own control is a plain button
  * in the tab order, as the prototype's is, so Tab reaches it where the foot is all the list
- * holds. A key with nowhere to go says so at the row it was pressed on (the tester's F16).
+ * holds. The tree element never keeps the focus: a focus on it goes on to the tab stop, or to
+ * the foot's control where the list draws no row, which is how `t d` and a page opened here
+ * reach a list that holds only the foot. A key with nowhere to go says so at the row it was
+ * pressed on (the tester's F16).
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
  * by (`useIssueTree.ts`), so the body costs no request of its own (R20).
@@ -159,6 +167,8 @@ export function DecisionsFilterBody({
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
+  const tree = useRef<HTMLDivElement | null>(null);
+  const footControl = useRef<HTMLButtonElement | null>(null);
   const headings = useId();
 
   const [focused, setFocused] = useState<string | undefined>(undefined);
@@ -179,8 +189,11 @@ export function DecisionsFilterBody({
     setReport(line === "" || row === undefined ? undefined : { line, row });
   }, []);
 
-  const drawn = useMemo(
+  // The rows in the order the page draws them, which is the order the outline's keys walk: the
+  // node the address names first, then the parts, then the foot's rows while it is unfolded.
+  const drawn = useMemo<readonly (DecisionsEntry | NamedEntry)[]>(
     () => [
+      ...parts.named,
       ...parts.open_questions,
       ...parts.review,
       ...parts.yours,
@@ -195,7 +208,7 @@ export function DecisionsFilterBody({
   );
 
   const takeFocus = useCallback(
-    (entry: DecisionsEntry, state: string | undefined) => {
+    (entry: DecisionsEntry | NamedEntry, state: string | undefined) => {
       const node = entry.node;
       setFocused(node.id);
       setStop(node.id);
@@ -278,7 +291,8 @@ export function DecisionsFilterBody({
     goTo(next);
   }, [goTo, waiting, waitingPress]);
 
-  // An address that names an entry puts the focus on it, once per address (R19): the row is
+  // An address that names an entry puts the focus on it, once per address (R19), and one that
+  // names a node of another kind, a comment say, on that node's row, drawn first: the row is
   // not on the page until the reads that hold it have answered, so this looks again on every
   // list the body draws, and unfolds the foot where the entry is one of its own.
   const taken = useRef<string | undefined>(undefined);
@@ -293,6 +307,49 @@ export function DecisionsFilterBody({
     taken.current = reveal;
     row.focus();
   }, [drawn, footed, reveal]);
+
+  // The tree element takes the focus only to pass it on, so it never keeps it: to the list's
+  // tab stop, else, where the list draws no row, to the foot's control. `t d` focuses the tree
+  // where it finds no tab stop in it (`useIssueKeymap.ts`), and a list that holds only the foot
+  // has none. A focus that came up from a row is the row's own. The tab stop is looked for in
+  // the whole list, since the foot's rows stand after the tree element and are its rows all
+  // the same (`aria-owns`).
+  const passFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    const stopRow = body.current?.querySelector<HTMLElement>('[data-node-row][tabindex="0"]');
+    (stopRow ?? footControl.current)?.focus();
+  }, []);
+  // A page opened on a list that holds only the foot has no row for the stage to focus
+  // (`slots/stage.tsx`), so the tree takes the focus once, on the stage's own terms: no address
+  // names an entry and nothing holds the focus. It goes through the tree, so `t d` and a page
+  // opened here reach the foot's control by one path. The reads may answer after the body
+  // mounts, so this looks again on every render until it has acted.
+  const footReached = useRef(false);
+  // Whether the focus on the foot's control is the one this body put there on its own, which
+  // the reader has not yet pressed, typed on or left.
+  const footPlaced = useRef(false);
+  useEffect(() => {
+    if (footReached.current || reveal !== undefined) return;
+    if (drawn.length > 0 || parts.agents.length === 0) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    footReached.current = true;
+    tree.current?.focus();
+    footPlaced.current = document.activeElement === footControl.current;
+  });
+  // The tree is built read by read (`useIssueTree.ts`), so a list can hold only the foot until
+  // the asks read answers, and then draw its questions. The focus the body put on the foot's
+  // control was for a list with no row: once one is drawn it goes to the tab stop, where the
+  // stage would have put it, unless the reader has taken the control as their own.
+  useEffect(() => {
+    if (!footPlaced.current || drawn.length === 0) return;
+    footPlaced.current = false;
+    if (document.activeElement === footControl.current) tree.current?.focus();
+  });
+  // Pressing the control, typing on it or leaving it makes the focus the reader's own.
+  const footTaken = (): void => {
+    footPlaced.current = false;
+  };
 
   // A decision the reader kept or asked to change leaves the review list for their own
   // decisions, and its row with it, which drops the focus to the page. The reader is working
@@ -349,7 +406,7 @@ export function DecisionsFilterBody({
   const first = drawn[0]?.node.id;
   const tabStop =
     stop !== undefined && drawn.some((entry) => entry.node.id === stop) ? stop : first;
-  const rowFor = (entry: DecisionsEntry, part: DecisionsPart): ReactNode => {
+  const rowFor = (entry: DecisionsEntry | NamedEntry, part: DecisionsPart): ReactNode => {
     const node = entry.node;
     const id = node.id;
     const place = documentOfNode(id, artifacts);
@@ -358,9 +415,10 @@ export function DecisionsFilterBody({
       entry.kind === "decision" && entry.keptBy !== undefined
         ? agentText.author(entry.keptBy)
         : undefined;
-    // How the node stands, as the panel's facts of the focused node say it.
+    // How the node stands, as the panel's facts of the focused node say it. The node an address
+    // names is drawn for its words, and with no state.
     const standing =
-      entry.kind === "ask" ? node.state : entry.kind === "decision" ? entry.standing : undefined;
+      entry.kind === "named" ? undefined : entry.kind === "ask" ? node.state : entry.standing;
     const state =
       standing === undefined
         ? undefined
@@ -409,13 +467,21 @@ export function DecisionsFilterBody({
       ref={body}
     >
       {/* The foot's rows stand after its control, outside this element, and are this tree's
-          all the same (`aria-owns`), so the page holds one tree. */}
+          all the same (`aria-owns`), so the page holds one tree. The element itself takes the
+          focus only to pass it on (`passFocus`). */}
       <div
         aria-label={CONTROL_LABELS.tree}
         aria-owns={footShown && parts.agents.length > 0 ? footRows : undefined}
         className="flex min-w-0 flex-col"
+        onFocus={passFocus}
+        ref={tree}
         role="tree"
+        tabIndex={-1}
       >
+        {/* The node the address names where it is neither a question nor a decision stands
+            first, at the tree's first level, under no heading and in no part: the address
+            outranks the view, and the parts stay four (R1, R6). */}
+        {parts.named.map((entry) => rowFor(entry, "named"))}
         {HEADED.map((part) => {
           const entries: readonly DecisionsEntry[] = parts[part];
           if (entries.length === 0) return null;
@@ -468,7 +534,11 @@ export function DecisionsFilterBody({
               className={`dispatch-inline-link rounded py-1 text-left text-sm leading-5 font-medium hover:text-page-ink ${pageMutedText} ${focusVisibleRing}`}
               data-decisions-heading=""
               id={foot}
+              onBlur={footTaken}
               onClick={() => setFootShown(!footShown)}
+              onKeyDown={footTaken}
+              onPointerDown={footTaken}
+              ref={footControl}
               type="button"
               {...pageChrome}
             >
@@ -492,7 +562,12 @@ export function DecisionsFilterBody({
           ) : null}
         </div>
       )}
-      {drawn.length === 0 && parts.agents.length === 0 ? (
+      {/* The issue holds no question and no decision the view draws. The node an address
+          names is no entry of the list, so its row and this line are drawn together. */}
+      {parts.open_questions.length === 0 &&
+      parts.review.length === 0 &&
+      parts.yours.length === 0 &&
+      parts.agents.length === 0 ? (
         <p className={`py-1 text-sm ${textMutedOnCanvas}`} {...pageChrome}>
           {emptyLine}
         </p>

@@ -35,10 +35,11 @@ import {
   DECISIONS_WORDS,
   GLYPH_TOKENS,
   NODE_TYPE_NAMES,
+  type NodeType,
   nodeStateWord,
 } from "../page-words";
 import { RowText } from "../RowText";
-import type { DecisionChange, DecisionsEntry } from "./decisions-parts";
+import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
  *  whether they are the reader, whose name is drawn in the ink (R9, R34). */
@@ -73,6 +74,12 @@ export interface RowPerson {
  * are the ones every other Keep and Change of the page makes. A decision a person asked to
  * change draws what they asked under its words, with a link to it in the conversation (the
  * tester's F6).
+ *
+ * The node an address names where it is neither a question nor a decision, a comment say, is
+ * drawn as the outline draws a node for its context (`NodeRow.tsx`): marked as one, in its grey,
+ * with no reader's ink on its author. It draws its kind where its kind is a typed one, who wrote
+ * it and when, its words whole, its parent and its link, and no state, no Keep and no Change,
+ * since it is no entry of the list.
  *
  * The focus opens the row's body, for a decision as for an ask: who made the node where the
  * margin does not say it whole, and the control that keeps the body open.
@@ -115,7 +122,7 @@ export function DecisionsRow({
   decliner?: RowPerson;
   /** The decisions document a decision is a block of, which its Keep writes against. */
   document?: Artifact;
-  entry: DecisionsEntry;
+  entry: DecisionsEntry | NamedEntry;
   focused: boolean;
   /** Whether the issue is closed, which Keep and Change are refused on. */
   isClosed: boolean;
@@ -149,12 +156,19 @@ export function DecisionsRow({
   // An answered question and an agent's decision are cut at six lines, as an agent's words are
   // on every row; a question that waits on the reader and a decision that waits for their
   // review are drawn whole, since they are what the reader is asked to read (rulings 1 and 6).
-  const cuttable = entry.kind === "ask" ? node.state === "answered" && !node.waiting : !review;
+  // So is the node an address names, which the reader was sent to read: R5 (d) cuts no other
+  // words.
+  const cuttable =
+    entry.kind === "ask"
+      ? node.state === "answered" && !node.waiting
+      : entry.kind === "decision"
+        ? !review
+        : false;
   const clamp = useClamp(words, cuttable);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
   const standing = entry.kind === "decision" ? entry.standing : undefined;
-  const tone = entry.kind === "ask" ? "question" : "decision";
+  const tone = toneOf(entry);
   // Each statement the entry shaped by the chip's words, and none the chips give no words: no
   // address, slug or id is drawn in a statement's place (R22).
   const statements = entry.shapes.flatMap((shape) => {
@@ -165,6 +179,7 @@ export function DecisionsRow({
     <div
       aria-level={level}
       className="relative my-0.5 min-w-0 outline-none"
+      data-node-context={entry.kind === "named" ? "" : undefined}
       data-node-id={node.id}
       data-node-row=""
       data-node-state={entry.kind === "ask" ? node.state : standing}
@@ -379,11 +394,31 @@ export function DecisionsRow({
             </p>
           )}
         </div>
-        <RowMargin author={author} entry={entry} keeper={keeper} review={review} />
+        <RowMargin author={author} entry={entry} keeper={keeper} review={review} tone={tone} />
         {threadRead === undefined ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
   );
+}
+
+/** A row's colour, as `pageKindBullet` and `pageKindTag` name them. */
+type Tone = "context" | "decision" | "question";
+
+/** The kinds of node that draw no tag, as G's outline row draws none for them (`NodeRow.tsx`'s
+ *  `UNTYPED`): what somebody said is the conversation's own words, not a typed kind. */
+const UNTYPED: Readonly<Partial<Record<NodeType, true>>> = { comment: true, message: true };
+
+/** A question's colour and a decision's; and for the node an address names, which is no entry
+ *  of the list, the grey G's outline gives a node it draws for its context (`NodeRow.tsx`). */
+function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
+  switch (entry.kind) {
+    case "ask":
+      return "question";
+    case "decision":
+      return "decision";
+    case "named":
+      return "context";
+  }
 }
 
 /**
@@ -395,18 +430,22 @@ export function DecisionsRow({
  * is drawn wherever the decision is, and in the decisions' violet where it asks something of
  * the reader or says what a person did with it: on a decision of the review list, on one a
  * person kept and on one they asked to change (R35: "one rule decides the list and a second
- * rule decides the mark on a row").
+ * rule decides the mark on a row"). The node an address names draws its kind where it is a
+ * typed one, its author and its time, and no state; its author is never in the reader's ink,
+ * as no author of a row drawn for its context is in the outline.
  */
 function RowMargin({
   author,
   entry,
   keeper,
   review,
+  tone,
 }: {
   author: RowPerson;
-  entry: DecisionsEntry;
+  entry: DecisionsEntry | NamedEntry;
   keeper: string | undefined;
   review: boolean;
+  tone: Tone;
 }): ReactNode {
   const node = entry.node;
   const time = node.at === undefined ? "" : shortDay(node.at);
@@ -416,18 +455,19 @@ function RowMargin({
   const askGlyphs: Readonly<Record<string, string>> = GLYPH_TOKENS.states.ask;
   const askGlyph = asked === undefined ? undefined : askGlyphs[asked];
   const authored = author.kind !== "unknown";
+  const context = tone === "context";
   return (
     <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
       <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
-        <span
-          className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${
-            pageKindTag[entry.kind === "ask" ? "question" : "decision"]
-          }`}
-          data-node-tag=""
-        >
-          <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
-          <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
-        </span>
+        {UNTYPED[node.type] === true ? null : (
+          <span
+            className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
+            data-node-tag=""
+          >
+            <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
+            <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+          </span>
+        )}
         {/* A node the model holds no author of draws none on its row (ruling 5). */}
         {!authored && time === "" ? null : (
           <span className="min-w-0 [overflow-wrap:anywhere]" data-node-byline="">
@@ -439,7 +479,7 @@ function RowMargin({
               >
                 <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors[author.kind]} />
                 <span
-                  className={author.reader ? `font-semibold ${pageInkText}` : ""}
+                  className={author.reader && !context ? `font-semibold ${pageInkText}` : ""}
                   {...authorText}
                 >
                   {/* An agent by its role's word, as every row of the page names one
