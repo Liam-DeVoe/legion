@@ -212,12 +212,30 @@ ioc_env_stamp() {
     printf '%s %s\n' "$commit" "$(sha256sum "$@" | cut -d' ' -f1 | tr '\n' ' ')"
 }
 
-# ioc_env_claims; the rows of claims.jsonl, of which env.sh reads two values, the checksum
-# of s-model-checksum and the count of tc-corpus-1. When check.sh --replay sources env.sh
-# they are the rows its one parse read, which it names as IOC_ENV_CLAIMS in its own shell,
-# so no line the parse read no row of reaches jq here; run on its own, env.sh reads the
-# file.
+# ioc_env_claims; the rows of claims.jsonl, of which env.sh reads the values
+# ioc_env_row_fields names. When check.sh --replay sources env.sh they are the rows its one
+# parse read, which it names as IOC_ENV_CLAIMS in its own shell, so no line the parse read
+# no row of reaches jq here; run on its own, env.sh reads the file.
 ioc_env_claims() { cat "${IOC_ENV_CLAIMS:-$IOC_ENV_HERE/claims.jsonl}"; }
+
+# ioc_env_row_fields; the values env.sh reads from rows of claims.jsonl, one per line as
+# <row id>|<field of the row's evidence>|<what env.sh reads it as>. Each is a named field
+# of the row's evidence, and none is read from the row's predicate, so a row recorded again
+# with another predicate changes nothing env.sh reads. check.sh's one parse holds each field
+# to its type, and --replay fails claim-form, naming the row and the field, before it sources
+# env.sh, when no row carries one (check.sh's header, "The one parse of claims.jsonl").
+ioc_env_row_fields() {
+    cat <<'FIELDS'
+s-model-checksum|sha256|the checksum of the model.safetensors it downloads
+tc-corpus-1|corpus_floor|the least number of review bodies the corpus it fetches holds
+FIELDS
+}
+
+# ioc_env_row_field <row id> <field>; prints that field of the evidence of the row, or
+# nothing when no row of that id carries it.
+ioc_env_row_field() {
+    ioc_env_claims | jq -r --arg id "$1" --arg field "$2" 'select(.id == $id) | .evidence[$field] // empty' | head -1
+}
 
 # ioc_env_lock_py prints the one reader of a committed hashed lock, Python source that
 # ioc_env_frozen below and check.sh's reader_py both run, so the two read a lock alike.
@@ -545,17 +563,18 @@ ioc_env_python() {
     ioc_env_stamp_write IOC_VENV "$want"
 }
 
-# The weights, pinned by revision and by the checksum the row s-model-checksum carries.
-# The snapshot is reused only when its stamp, model.built-from under IOC_CACHE, written
-# once the checksum matched, names this revision and checksum; any other is downloaded
-# again, which fetches every file a killed download left out.
+# The weights, pinned by revision and by the sha256 the evidence of the row
+# s-model-checksum names (ioc_env_row_fields). The snapshot is reused only when its stamp,
+# model.built-from under IOC_CACHE, written once the checksum matched, names this revision
+# and checksum; any other is downloaded again, which fetches every file a killed download
+# left out.
 ioc_env_model() {
     local revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41" want got file stamp="$IOC_CACHE/model.built-from"
     export IOC_MODEL_DIR="$HF_HOME/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/$revision"
     file="$IOC_MODEL_DIR/model.safetensors"
-    want="$(ioc_env_claims | jq -r 'select(.id=="s-model-checksum") | .expect.contains' | head -1)"
+    want="$(ioc_env_row_field s-model-checksum sha256)"
     [ -n "$want" ] ||
-        ioc_env_refuse "IOC_MODEL_DIR" "claims.jsonl carries no checksum in the row s-model-checksum" || return 1
+        ioc_env_refuse "IOC_MODEL_DIR" "claims.jsonl holds no row s-model-checksum whose evidence names a sha256" || return 1
     if [ "$(cat "$stamp" 2>/dev/null)" != "$revision $want" ] || [ ! -s "$file" ]; then
         rm -f "$stamp"
         "$IOC_PY" -c "
@@ -679,16 +698,17 @@ ioc_env_scope_shapes() {
 }
 
 # The corpus of tc-corpus-1: the review bodies of the 200 merged pull requests the
-# committed number list pins, read with gh. The fetch takes about four minutes and runs
-# once; the file is the corpus the disagreement search and the recorded script read.
+# committed number list pins, read with gh, at least as many as the corpus_floor the
+# evidence of that row names (ioc_env_row_fields). The fetch takes about four minutes and
+# runs once; the file is the corpus the disagreement search and the recorded script read.
 ioc_env_reviews() {
     export IOC_TC_WORK="$IOC_CACHE/tc-work"
     export IOC_TC_PY="$IOC_TC_WORK/venv/bin/python"
     export IOC_REVIEWS="$IOC_TC_WORK/reviews.jsonl"
     local want part n
-    want="$(ioc_env_claims | jq -r 'select(.id=="tc-corpus-1") | .expect.at_least' | head -1)"
+    want="$(ioc_env_row_field tc-corpus-1 corpus_floor)"
     [ -n "$want" ] ||
-        ioc_env_refuse "IOC_REVIEWS" "claims.jsonl carries no count in the row tc-corpus-1" || return 1
+        ioc_env_refuse "IOC_REVIEWS" "claims.jsonl holds no row tc-corpus-1 whose evidence names a corpus_floor" || return 1
     mkdir -p "$IOC_TC_WORK"
     if [ ! -s "$IOC_REVIEWS" ] || [ "$(wc -l <"$IOC_REVIEWS")" -lt "$want" ]; then
         part="$IOC_REVIEWS.part"

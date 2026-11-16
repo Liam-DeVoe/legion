@@ -11,7 +11,10 @@
 # gate could not run, and ends by the three endings check.sh's header defines: `all N cases
 # passed`, exit 0; `F of N cases failed`, exit 1, naming after the count each case that
 # could not run; or, with no failure, `check.sh cannot run check.test.sh: ...`, exit 2,
-# naming each case that could not run and its run's reason.
+# naming each case that could not run and its run's reason. N counts every case, the ones
+# that could not run among them. Like every run of a mode, it writes its ending record
+# (check.sh's header, "The ending record"), the cases being what it declares, through
+# check.sh's run_ending, and --self-test reads it by that record.
 # It needs what check.sh --self-test needs, which `check.sh --help` prints: the lines of
 # --self-test and of the four modes it runs over its fixture, --replay, --shape, --citations
 # and --landed. A case that needs uv, go or bun prints SKIP when that tool is missing.
@@ -28,129 +31,122 @@ export IOC_ROOT="$(cd "$HERE/../../.." && pwd)"
 # shellcheck disable=SC1090
 . "$HERE/check.sh"
 
-CASES_PASSED=0
-CASES_FAILED=0
-CASES_UNRUN=0
-UNRUN_CASES=()
-
-# Every case reads the ending of the run of the gate it judges in one way, case_ending,
-# which every helper below calls first: by check.sh's run_ending, from the run's status and
-# its last line together. A run that could not run makes its case one that could not run,
-# never a failed case and never a passed one, unless the case expects the run not to run,
-# as ending_result's cases that ask for exit 2 do. The status is the one the case read, or
-# else the one fixture_run or gate_run recorded for a run that printed exactly that output
-# (RUNS_RECORDED); a run nobody recorded fails its case, since how it ended is unknown.
-# Each run a case read is marked read, and a run that could not run and that no case read,
-# as one an inline check reads, is named at the end beside the cases that could not run.
+# Every case reads the run of the gate it judges in one way, case_read, which every helper
+# below calls first, by the one rule of check.sh's header ("The ending record"): from the
+# run's own ending record, read by check.sh's ending_read, never from its exit status alone
+# or its text. fixture_run and gate_run print the directory of the run they made, which
+# holds its text, its record and its status, and a case hands that directory, its own
+# run's, to its helper, so no two runs share one record. Each case ends by case_passed,
+# case_failed or case_unrun, which print its line and write it into this file's own ending
+# record; the summary at the end writes the record by run_ending.
 #
-# case_ending <gate output> [<status>]; sets CASE_ENDING to passed, failed, cannot-run or
-# unrecorded, and CASE_LAST to the run's last line, and marks the run read.
-case_ending() {
-    local out="$1" status="${2:-}" hash
-    hash="$(printf '%s' "$out" | sha256sum | cut -d' ' -f1)"
-    CASE_LAST="$(printf '%s\n' "$out" | tail -1)"
-    if [ -z "$status" ]; then
-        status="$(awk -F'\t' -v h="$hash" '$1 == h { s = $2 } END { print s }' "$RUNS_RECORDED" 2>/dev/null)"
-    fi
-    printf '%s\n' "$hash" >>"$RUNS_RECORDED.read"
-    if [ -z "$status" ]; then
-        CASE_ENDING=unrecorded
-    else
-        CASE_ENDING="$(run_ending "$status" "$out")"
-    fi
+# case_passed <name>; case_failed <name> [<why>]; case_unrun <name> <kind> <reason>.
+case_passed() {
+    printf 'PASS %s\n' "$1"
+    ending_add declared "$1"
+    ending_add passed "$1"
 }
-# case_read <name> <gate output> [<status>]; reads the run's ending by case_ending, and
-# settles the case there, returning non-zero, when the run could not run, which counts the
-# case as one that could not run, or when nobody recorded its status, which fails it.
+case_failed() {
+    printf 'FAIL %s%s\n' "$1" "${2:+: $2}"
+    ending_add declared "$1"
+    ending_add failed "$1"
+}
+case_unrun() {
+    printf 'COULD NOT RUN %s: %s\n' "$1" "$3"
+    ending_add declared "$1"
+    ending_add unrun "$1" "$2" "$3"
+}
+# case_read <name> <run> [<planted reason, an extended regular expression>]; reads the run
+# by ending_read, which leaves RUN_* set, and settles the case there, returning non-zero,
+# when the run crashed, which fails the case, or when an assertion or a case of the run
+# could not run for a reason that does not match <planted>: the case could not run when
+# that reason is from outside the tree, of the kind prerequisite, environment or source,
+# whatever the run's exit status, and failed when it is of the kind gate, the tree's own.
 case_read() {
-    case_ending "$2" "${3:-}"
-    case "$CASE_ENDING" in
-    cannot-run)
-        CASES_UNRUN=$((CASES_UNRUN + 1))
-        UNRUN_CASES+=("$1: $CASE_LAST")
-        printf 'COULD NOT RUN %s: %s\n' "$1" "$CASE_LAST"
+    local name kind reason
+    ending_read "$2"
+    if [ "$RUN_CRASH" = 1 ]; then
+        case_failed "$1" "$RUN_LINE"
         return 1
-        ;;
-    unrecorded)
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: check.test.sh read a run whose status nobody recorded, so how it ended is unknown: %s\n' "$1" "$CASE_LAST"
+    fi
+    while IFS=$'\t' read -r name kind reason; do
+        [ -n "$name" ] || continue
+        [ -n "${3:-}" ] && printf '%s\n' "$reason" | grep -qE -- "$3" && continue
+        case "$kind" in
+        prerequisite | environment | source) case_unrun "$1" "$kind" "$reason" ;;
+        *) case_failed "$1" "its run could not run for a reason of the tree it reads, of the kind ${kind:-none}, and no reason from outside it: $reason" ;;
+        esac
         return 1
-        ;;
-    esac
-}
-# gate_run <check.sh> <mode>; runs a copy of the gate, not over a fixture, and records
-# how it ended, as fixture_run does.
-gate_run() {
-    local out status
-    out="$(bash "$1" "$2" 2>&1)"
-    status=$?
-    printf '%s\n' "$out"
-    run_record "$status" "$out" "$2 of ${1%/check.sh}"
-    return "$status"
+    done <<<"$RUN_UNRUN"
+    return 0
 }
 
 case_result() {
-    # case_result <name> <family the gate should name> <gate output> [<status>]
-    local name="$1" family="$2" out="$3"
-    case_read "$name" "$out" "${4:-}" || return 0
-    if [ "$CASE_ENDING" = passed ]; then
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: the gate passed it: %s\n' "$name" "$CASE_LAST"
-    elif ! printf '%s\n' "$out" | grep -qE "^FAIL ($family)"; then
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: the gate failed but named no %s: %s\n' "$name" "$family" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')$CASE_LAST"
+    # case_result <name> <family the gate should name> <run>
+    local name="$1" family="$2" run="$3"
+    case_read "$name" "$run" || return 0
+    if [ "$RUN_ENDING" = passed ]; then
+        case_failed "$name" "the gate passed it: $RUN_LINE"
+    elif ! grep -qE "^FAIL ($family)" "$run/text"; then
+        case_failed "$name" "the gate failed but named no $family: $(grep '^FAIL' "$run/text" | head -2 | tr '\n' ' ')$RUN_LINE"
     else
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "$name"
+        case_passed "$name"
     fi
 }
 
-# honest_result <name> <family> <gate output>; the honest form beside a planted fault,
-# which passes when the gate ran and names no failure of that family.
+# honest_result <name> <family> <run>; the honest form beside a planted fault, which passes
+# when the gate ran and names no failure of that family.
 honest_result() {
-    local name="$1" family="$2" out="$3"
-    case_read "$name" "$out" || return 0
-    if printf '%s\n' "$out" | grep -qE "^FAIL ($family)"; then
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: %s\n' "$name" "$(printf '%s\n' "$out" | grep -E "^FAIL ($family)" | head -1)"
+    local name="$1" family="$2" run="$3"
+    case_read "$name" "$run" || return 0
+    if grep -qE "^FAIL ($family)" "$run/text"; then
+        case_failed "$name" "$(grep -E "^FAIL ($family)" "$run/text" | head -1)"
     else
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "$name"
+        case_passed "$name"
     fi
 }
 
-# passed_result <name> <gate output>; an honest form that passes only when the gate ends
-# with its all-passed line, with no failure of any family.
+# passed_result <name> <run>; an honest form that passes only when the gate ends with its
+# all-passed line, with no failure of any family.
 passed_result() {
-    local name="$1" out="$2"
-    case_read "$name" "$out" || return 0
-    if [ "$CASE_ENDING" = passed ]; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "$name"
+    local name="$1" run="$2"
+    case_read "$name" "$run" || return 0
+    if [ "$RUN_ENDING" = passed ]; then
+        case_passed "$name"
     else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: %s\n' "$name" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')$CASE_LAST"
+        case_failed "$name" "$(grep '^FAIL' "$run/text" | head -2 | tr '\n' ' ')$RUN_LINE"
     fi
 }
 
-# ending_result <name> <status> <last line, an extended regular expression> <status read>
-# <gate output> [planted]; passes when both match. A case that asks for exit 0 or 1 and
-# reads a run that could not run could not run itself. One that asks for exit 2, or that
-# says with a sixth argument that it plants the source that does not answer itself, holds
-# the run to the ending it asks for, and reads any other as a failure.
+# ending_result <name> <status> <last line, an extended regular expression> <run> [<planted
+# reason, an extended regular expression>]; passes when the run's record holds that status
+# and that last line. A case that asks for exit 2 plants the reason its last line names,
+# unless it names another as its fifth argument, as a case over a run of check.test.sh
+# names the reason of the case inside it; one that asks for exit 1 beside a reason that
+# could not run names that reason. Any other reason is read by case_read's one rule.
 ending_result() {
-    local name="$1" want="$2" last="$3" got="$4" out="$5"
-    if [ "$want" = 2 ] || [ -n "${6:-}" ]; then
-        case_ending "$out" "$got"
+    local name="$1" want="$2" last="$3" run="$4" planted="${5:-}"
+    [ "$want" = 2 ] && [ -z "$planted" ] && planted="$last"
+    case_read "$name" "$run" "$planted" || return 0
+    if [ "$RUN_STATUS" = "$want" ] && printf '%s\n' "$RUN_LINE" | grep -qE -- "$last"; then
+        case_passed "$name"
     else
-        case_read "$name" "$out" "$got" || return 0
+        case_failed "$name" "exit $RUN_STATUS, last line: $RUN_LINE"
     fi
-    if [ "$got" = "$want" ] && printf '%s\n' "$out" | tail -1 | grep -qE -- "$last"; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "$name"
+}
+
+# one_failure_result <name> <family> <the run's last line> <its one FAIL> <run>; the third
+# and fourth are extended regular expressions. It asks whether exactly the planted
+# assertion failed: it passes when the run's record holds exit 1, <family> alone among
+# the assertions that failed and that last line, and its text one FAIL line, that one.
+one_failure_result() {
+    local name="$1" family="$2" summary="$3" failure="$4" run="$5"
+    case_read "$name" "$run" || return 0
+    if [ "$RUN_STATUS" = 1 ] && [ "$RUN_FAILED" = "$family"$'\n' ] && printf '%s\n' "$RUN_LINE" | grep -qE -- "$summary" &&
+        [ "$(grep -c '^FAIL ' "$run/text")" = 1 ] && grep -qE -- "$failure" "$run/text"; then
+        case_passed "$name"
     else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: exit %s, last line: %s\n' "$name" "$got" "$(printf '%s\n' "$out" | tail -1)"
+        case_failed "$name" "exit $RUN_STATUS, $(grep '^FAIL' "$run/text" | head -2 | tr '\n' ' '), last line: $RUN_LINE"
     fi
 }
 
@@ -166,6 +162,8 @@ fresh() {
     cp "$WORK/base/judgement.md" "$WORK/base/base" "$WORK/base/rows" "$dir/"
     printf '%s' "$dir"
 }
+
+# ==== the cases of check.test.sh begin below this line, where cases_copy cuts it ====
 
 # 1. A row that carries a command and a recorded output but no predicate. claims.jsonl has
 # eight such rows (tc-tol-4, tc-install-1 and tc-voc-1 among them): --replay runs the
@@ -242,12 +240,10 @@ dir="$(fresh live-address)"
 out="$(fixture_run "$dir" --citations)"
 if ! case_read "--citations reports the live state of each published copy" "$out"; then
     :
-elif printf '%s\n' "$out" | grep -F 'https://example.org/page' | grep -qiE 'still carries|changed|unreachable|does not answer|no longer'; then
-    CASES_PASSED=$((CASES_PASSED + 1))
-    printf 'PASS %s\n' "--citations reports the live state of each published copy"
+elif grep -F 'https://example.org/page' "$out/text" | grep -qiE 'still carries|changed|unreachable|does not answer|no longer'; then
+    case_passed "--citations reports the live state of each published copy"
 else
-    CASES_FAILED=$((CASES_FAILED + 1))
-    printf 'FAIL %s: no line of the run names https://example.org/page and what its live page holds\n' "--citations reports the live state of each published copy"
+    case_failed "--citations reports the live state of each published copy" "no line of the run names https://example.org/page and what its live page holds"
 fi
 
 # 8. A landed page that names a commit of the base branch which a forward merge brought in.
@@ -303,13 +299,7 @@ grep -qF 'uvx --python 3.12 -c $IOC_EVID/ioc-venv.lock pyshacl==0.40.2' "$dir/re
     exit 1
 }
 out="$(fixture_run "$dir" --replay)"
-if printf '%s\n' "$out" | grep -q '^FAIL install-pinned'; then
-    CASES_FAILED=$((CASES_FAILED + 1))
-    printf 'FAIL %s: %s\n' "a pinned uvx with an option before its package passes install-pinned" "$(printf '%s\n' "$out" | grep '^FAIL install-pinned' | head -1)"
-else
-    CASES_PASSED=$((CASES_PASSED + 1))
-    printf 'PASS %s\n' "a pinned uvx with an option before its package passes install-pinned"
-fi
+honest_result "a pinned uvx with an option before its package passes install-pinned" install-pinned "$out"
 
 # 13. A runner inside a shell string is not read. unpinned_installs splits a command into
 # words, so `sh -c 'uvx pyshacl --version'` is the two words `sh -c` and one quoted word,
@@ -1213,7 +1203,7 @@ case_result "an unbound variable in the second part of admitted-reserved fails i
 dir="$(fresh ending-no-env)"
 rm "$dir/repo/docs/research/internet-of-cognition/env.sh"
 out="$(fixture_run "$dir" --replay)"
-ending_result "a mode whose env.sh is missing cannot run: exit 2, the reason last" 2 '^check\.sh cannot run: env\.sh' "$?" "$out"
+ending_result "a mode whose env.sh is missing cannot run: exit 2, the reason last" 2 '^check\.sh cannot run: env\.sh' "$out"
 dir="$(fresh ending-budget-spent)"
 sed -i '/^github_budget() {$/,/^}$/{/IOC_NO_ENV/d;s#curl -sS https://api.github.com/rate_limit#cat "$IOC_FAKE_RATE_LIMIT"#}' "$dir/repo/docs/research/internet-of-cognition/check.sh"
 grep -qF 'cat "$IOC_FAKE_RATE_LIMIT"' "$dir/repo/docs/research/internet-of-cognition/check.sh" || {
@@ -1222,14 +1212,14 @@ grep -qF 'cat "$IOC_FAKE_RATE_LIMIT"' "$dir/repo/docs/research/internet-of-cogni
 }
 printf '{"resources":{"core":{"limit":60,"remaining":3,"reset":1794700800}}}\n' >"$dir/budget.json"
 out="$(IOC_FAKE_RATE_LIMIT="$dir/budget.json" fixture_run "$dir" --replay)"
-ending_result "a spent GitHub budget cannot run: exit 2, naming the reset" 2 '^check\.sh cannot run --replay now: .* The budget resets at 2026-11-15T[0-9:]+Z\.$' "$?" "$out"
+ending_result "a spent GitHub budget cannot run: exit 2, naming the reset" 2 '^check\.sh cannot run --replay now: .* The budget resets at 2026-11-15T[0-9:]+Z\.$' "$out"
 dir="$(fresh ending-failed)"
 sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains":"ran twice"}/' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 out="$(fixture_run "$dir" --replay)"
-ending_result "an ordinary failed assertion still ends exit 1 with the count" 1 '^1 of 16 assertions failed: replay-command$' "$?" "$out"
+ending_result "an ordinary failed assertion still ends exit 1 with the count" 1 '^1 of 16 assertions failed: replay-command$' "$out"
 dir="$(fresh ending-passed)"
 out="$(fixture_run "$dir" --replay)"
-ending_result "a mode whose assertions all pass ends exit 0" 0 '^all 16 assertions passed$' "$?" "$out"
+ending_result "a mode whose assertions all pass ends exit 0" 0 '^all 16 assertions passed$' "$out"
 
 # 71. The exemption reads every spelling of its files (the tester's note of round 23). At
 # 987017b05f the exemption read -c, --constraint, -r and --requirement alone, and held
@@ -1260,12 +1250,12 @@ case_result "a judgement whose landed pages lost their Landed line fails --lande
 dir="$(fresh landed-empty-judgement)"
 : >"$dir/judgement.md"
 out="$(fixture_run "$dir" --landed)"
-if printf '%s\n' "$out" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
-    CASES_FAILED=$((CASES_FAILED + 1))
-    printf 'FAIL an empty judgement is no pass of --landed: the gate passed it: %s\n' "$(printf '%s\n' "$out" | grep '^PASS landed-proof' | head -1)"
+if ! case_read "an empty judgement is no pass of --landed" "$out"; then
+    :
+elif [ "$RUN_ENDING" = passed ]; then
+    case_failed "an empty judgement is no pass of --landed" "the gate passed it: $(grep '^PASS landed-proof' "$out/text" | head -1)"
 else
-    CASES_PASSED=$((CASES_PASSED + 1))
-    printf 'PASS an empty judgement is no pass of --landed\n'
+    case_passed "an empty judgement is no pass of --landed"
 fi
 # A Dispatch that does not answer is a mode that cannot run, as case 70 says of a missing
 # env.sh and a spent budget. At 8f53f0c8ca, with no Dispatch, --citations ended exit 1
@@ -1273,7 +1263,7 @@ fi
 # for the outage; the empty judgement above is what --landed read with no Dispatch.
 dir="$(fresh citations-no-dispatch)"
 out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"
-ending_result "--citations with no Dispatch to resolve against cannot run: exit 2, the reason last" 2 '^check\.sh cannot run' "$?" "$out"
+ending_result "--citations with no Dispatch to resolve against cannot run: exit 2, the reason last" 2 '^check\.sh cannot run' "$out"
 
 # 73-75 come from test round 24 and the architect's decision on it: no check passes on no
 # input, and a live source that does not answer is a mode that cannot run (the header of
@@ -1296,9 +1286,9 @@ sed -i 's/| inside one tree | 20 | 100 |/| inside one tree | 0 | 100 |/' "$dir/r
 case_result "an empty judgement fails --replay's zero class, named" 'count-zero-premise' "$(fixture_run "$dir" --replay)"
 dir="$(fresh judgement-honest)"
 out="$(fixture_run "$dir" --shape)"
-ending_result "the fixture's judgement passes --shape" 0 '^all 9 assertions passed$' "$?" "$out"
+ending_result "the fixture's judgement passes --shape" 0 '^all 9 assertions passed$' "$out"
 out="$(fixture_run "$dir" --landed)"
-ending_result "the fixture's judgement passes --landed" 0 '^all 5 assertions passed$' "$?" "$out"
+ending_result "the fixture's judgement passes --landed" 0 '^all 5 assertions passed$' "$out"
 
 # 74. A step of sources.json's landed list that no page carries fails by its title. At
 # 8f53f0c8ca the gate read only the pages it found, so a renamed page left the step its
@@ -1323,24 +1313,24 @@ case_result "a record under check read as nothing fails citation-row by its rows
 dir="$(fresh judgement-unreadable)"
 rm "$dir/judgement.md"
 out="$(fixture_run "$dir" --landed)"
-ending_result "--landed whose judgement does not answer cannot run" 2 '^check\.sh cannot run --landed: the judgement file .* did not answer' "$?" "$out"
+ending_result "--landed whose judgement does not answer cannot run" 2 '^check\.sh cannot run --landed: the judgement file .* did not answer' "$out"
 out="$(fixture_run "$dir" --shape)"
-ending_result "--shape whose judgement does not answer cannot run" 2 '^check\.sh cannot run --shape: the judgement file .* did not answer' "$?" "$out"
-out="$(DISPATCH_URL=http://127.0.0.1:1 bash "$HERE/check.sh" --landed 2>&1)"
-ending_result "--landed with no Dispatch cannot run, naming Dispatch" 2 '^check\.sh cannot run --landed: Dispatch, the read of dispatch://INFRA-3134/artifact/judgement-md did not answer' "$?" "$out"
+ending_result "--shape whose judgement does not answer cannot run" 2 '^check\.sh cannot run --shape: the judgement file .* did not answer' "$out"
+out="$(DISPATCH_URL=http://127.0.0.1:1 gate_run "$HERE/check.sh" --landed)"
+ending_result "--landed with no Dispatch cannot run, naming Dispatch" 2 '^check\.sh cannot run --landed: Dispatch, the read of dispatch://INFRA-3134/artifact/judgement-md did not answer' "$out"
 dir="$(fresh record-no-dispatch)"
 jq -c '.records_under_check |= map(del(.copy) | .ref = "dispatch://INFRA-3134/artifact/judgement-md")' "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
     mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json"
 out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --replay)"
-ending_result "--replay whose record under check Dispatch does not answer cannot run" 2 '^check\.sh cannot run --replay: Dispatch, the read of dispatch://INFRA-3134/artifact/judgement-md did not answer' "$?" "$out"
+ending_result "--replay whose record under check Dispatch does not answer cannot run" 2 '^check\.sh cannot run --replay: Dispatch, the read of dispatch://INFRA-3134/artifact/judgement-md did not answer' "$out"
 dir="$(fresh published-no-dispatch)"
 out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --published)"
-ending_result "--published with no Dispatch cannot run, naming Dispatch" 2 '^check\.sh cannot run --published: Dispatch, the read of the comments of INFRA-3134 did not answer' "$?" "$out"
+ending_result "--published with no Dispatch cannot run, naming Dispatch" 2 '^check\.sh cannot run --published: Dispatch, the read of the comments of INFRA-3134 did not answer' "$out"
 dir="$(fresh citations-honest)"
 out="$(fixture_run "$dir" --citations)"
-ending_result "the fixture passes --citations when Dispatch answers" 0 '^all 5 assertions passed$' "$?" "$out"
+ending_result "the fixture passes --citations when Dispatch answers" 0 '^all 5 assertions passed$' "$out"
 out="$(fixture_run "$dir" --replay)"
-ending_result "the fixture passes --replay" 0 '^all 16 assertions passed$' "$?" "$out"
+ending_result "the fixture passes --replay" 0 '^all 16 assertions passed$' "$out"
 
 # 76. A recorded command reproduces on a machine that never ran it. At 9959ca5563 the row
 # m-ctl-our-row-count kept its Go module cache at $TMPDIR/gomod, outside IOC_CACHE and
@@ -1358,8 +1348,7 @@ ending_result "the fixture passes --replay" 0 '^all 16 assertions passed$' "$?" 
 if command -v go >/dev/null 2>&1; then
     row="$(jq -c 'select(.id=="m-ctl-our-row-count")' "$HERE/claims.jsonl")"
     if [ -z "$row" ]; then
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL the row m-ctl-our-row-count is not in claims.jsonl, so nothing replays the count it proves\n'
+        case_failed "the row m-ctl-our-row-count is not in claims.jsonl, so nothing replays the count it proves"
     else
         cold="$WORK/cold-go"
         mkdir -p "$cold/tmp" "$cold/cache" "$cold/our"
@@ -1395,18 +1384,17 @@ if command -v bun >/dev/null 2>&1; then
         printf 'FAIL the fresh checkout of HEAD could not be made\n'
         exit 1
     }
-    out="$(IOC_ROOT="$fresh_checkout" IOC_EVIDENCE="$fresh_checkout/docs/research/internet-of-cognition" bash "$fresh_checkout/docs/research/internet-of-cognition/check.sh" --landed 2>&1)"
-    status=$?
-    if [ "$status" -eq 0 ] || { [ "$status" -eq 2 ] && printf '%s\n' "$out" | tail -1 | grep -q '^check\.sh cannot run --landed: '; }; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS --landed on a checkout with no node_modules ends in a verdict on the step, or cannot run\n'
+    out="$(IOC_ROOT="$fresh_checkout" IOC_EVIDENCE="$fresh_checkout/docs/research/internet-of-cognition" gate_run "$fresh_checkout/docs/research/internet-of-cognition/check.sh" --landed)"
+    if ! case_read "--landed on a checkout with no node_modules ends in a verdict on the step, or cannot run" "$out" '^check\.sh cannot run --landed: '; then
+        :
+    elif [ "$RUN_ENDING" = passed ] || [ "$RUN_ENDING" = cannot-run ]; then
+        case_passed "--landed on a checkout with no node_modules ends in a verdict on the step, or cannot run"
     else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL --landed on a checkout with no node_modules ends in a verdict on the step, or cannot run: exit %s, %s\n' "$status" "$(printf '%s\n' "$out" | grep '^FAIL' | head -1)"
+        case_failed "--landed on a checkout with no node_modules ends in a verdict on the step, or cannot run" "exit $RUN_STATUS, $(grep '^FAIL' "$out/text" | head -1)"
     fi
     (cd "$fresh_checkout" && bun install --frozen-lockfile >/dev/null 2>&1)
-    out="$(IOC_ROOT="$fresh_checkout" IOC_EVIDENCE="$fresh_checkout/docs/research/internet-of-cognition" bash "$fresh_checkout/docs/research/internet-of-cognition/check.sh" --landed 2>&1)"
-    ending_result "--landed on the same checkout after bun install passes" 0 '^all 5 assertions passed$' "$?" "$out"
+    out="$(IOC_ROOT="$fresh_checkout" IOC_EVIDENCE="$fresh_checkout/docs/research/internet-of-cognition" gate_run "$fresh_checkout/docs/research/internet-of-cognition/check.sh" --landed)"
+    ending_result "--landed on the same checkout after bun install passes" 0 '^all 5 assertions passed$' "$out"
 else
     printf 'SKIP --landed on a checkout with no node_modules: bun is missing\n'
 fi
@@ -1422,11 +1410,11 @@ fi
 # that named nothing that provides what was missing; each honest form beside it passes
 # there and here.
 #
-# missing_result <name> <mode> <what is missing> <what provides it> <status read> <gate
-# output>; the second and third are extended regular expressions. It passes when the mode
-# cannot run, exit 2, and its last line names what is missing and ends with what provides it.
+# missing_result <name> <mode> <what is missing> <what provides it> <run>; the second and
+# third are extended regular expressions. It passes when the mode cannot run, exit 2, and
+# its last line names what is missing and ends with what provides it.
 missing_result() {
-    ending_result "$1" 2 "^check\\.sh cannot run --$2: $3; provided by: $4\$" "$5" "$6"
+    ending_result "$1" 2 "^check\\.sh cannot run --$2: $3; provided by: $4\$" "$5"
 }
 # path_without <tool>; makes $WORK/path-without-<tool>, a directory to set PATH to that
 # holds a link to each program of this PATH, the first of each name, but <tool>, so that a
@@ -1455,16 +1443,15 @@ path_without() {
 # whole, which passes each mode it judges.
 missing_tool() {
     # missing_tool <mode> <tool> <what provides it, an extended regular expression>
-    local dir out status
+    local dir out
     path_without "$2"
     dir="$(fresh "missing-$2-$1")"
     if [ "$1" = admitted ]; then
-        out="$(PATH="$WORK/path-without-$2" bash "$HERE/check.sh" --admitted 2>&1)"
+        out="$(PATH="$WORK/path-without-$2" gate_run "$HERE/check.sh" --admitted)"
     else
         out="$(PATH="$WORK/path-without-$2" fixture_run "$dir" "--$1")"
     fi
-    status=$?
-    missing_result "--$1 with no $2 on PATH cannot run, naming $2 and what provides it" "$1" "the tool $2 is not on PATH" "$3" "$status" "$out"
+    missing_result "--$1 with no $2 on PATH cannot run, naming $2 and what provides it" "$1" "the tool $2 is not on PATH" "$3" "$out"
 }
 missing_tool replay go 'curl -fsSL https://go\.dev/dl/go1\.27\.3\.linux-amd64\.tar\.gz \| tar -xzC /usr/local, then PATH=/usr/local/go/bin:\$PATH'
 missing_tool shape dispatch 'the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH'
@@ -1475,11 +1462,11 @@ missing_tool admitted python3 'apt-get install python3'
 missing_tool self-test jq 'apt-get install jq'
 dir="$(fresh tools-whole)"
 out="$(fixture_run "$dir" --replay)"
-ending_result "--replay with every tool of its table on PATH passes the fixture" 0 '^all 16 assertions passed$' "$?" "$out"
+ending_result "--replay with every tool of its table on PATH passes the fixture" 0 '^all 16 assertions passed$' "$out"
 out="$(fixture_run "$dir" --shape)"
-ending_result "--shape with every tool of its table on PATH passes the fixture" 0 '^all 9 assertions passed$' "$?" "$out"
+ending_result "--shape with every tool of its table on PATH passes the fixture" 0 '^all 9 assertions passed$' "$out"
 out="$(fixture_run "$dir" --landed)"
-ending_result "--landed with every tool of its table on PATH passes the fixture" 0 '^all 5 assertions passed$' "$?" "$out"
+ending_result "--landed with every tool of its table on PATH passes the fixture" 0 '^all 5 assertions passed$' "$out"
 
 # 79. An environment variable missing. At 533506542a --replay with no DISPATCH_TOKEN_FILE
 # exported no header, so every recorded read of the Dispatch API would fail as a row of
@@ -1488,11 +1475,11 @@ ending_result "--landed with every tool of its table on PATH passes the fixture"
 # form is the fixture's --replay with the variable as this pod sets it.
 dir="$(fresh variable-missing)"
 out="$(DISPATCH_TOKEN_FILE='' fixture_run "$dir" --replay)"
-missing_result "--replay with DISPATCH_TOKEN_FILE unset cannot run, naming it" replay 'the variable DISPATCH_TOKEN_FILE is not set' 'export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets' "$?" "$out"
+missing_result "--replay with DISPATCH_TOKEN_FILE unset cannot run, naming it" replay 'the variable DISPATCH_TOKEN_FILE is not set' 'export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets' "$out"
 out="$(DISPATCH_TOKEN_FILE="$dir/no-such-token" fixture_run "$dir" --published)"
-missing_result "--published whose DISPATCH_TOKEN_FILE names no file cannot run, naming it" published 'the variable DISPATCH_TOKEN_FILE names .*/no-such-token, which is no readable file' 'export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets' "$?" "$out"
+missing_result "--published whose DISPATCH_TOKEN_FILE names no file cannot run, naming it" published 'the variable DISPATCH_TOKEN_FILE names .*/no-such-token, which is no readable file' 'export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets' "$out"
 out="$(fixture_run "$dir" --replay)"
-ending_result "--replay with DISPATCH_TOKEN_FILE naming a readable file passes the fixture" 0 '^all 16 assertions passed$' "$?" "$out"
+ending_result "--replay with DISPATCH_TOKEN_FILE naming a readable file passes the fixture" 0 '^all 16 assertions passed$' "$out"
 
 # 80. --landed tells a missing install from a proof that fails. Case 77 runs this tree's
 # own --landed on a checkout with no node_modules; this case holds the rule on the fixture,
@@ -1506,15 +1493,15 @@ dir="$(fresh landed-install)"
 mkdir -p "$dir/repo/packages/pi-legion"
 printf '{"name": "@legion/pi-legion", "private": true, "devDependencies": {"typescript": "^5.3.0", "zod": "4.3.6"}}\n' >"$dir/repo/packages/pi-legion/package.json"
 out="$(fixture_run "$dir" --landed)"
-missing_result "--landed with no node_modules cannot run, naming bun install --frozen-lockfile" landed 'the packages packages/pi-legion/package\.json names are not installed \(typescript, zod\)' 'bun install --frozen-lockfile, run at the root of the repository' "$?" "$out"
+missing_result "--landed with no node_modules cannot run, naming bun install --frozen-lockfile" landed 'the packages packages/pi-legion/package\.json names are not installed \(typescript, zod\)' 'bun install --frozen-lockfile, run at the root of the repository' "$out"
 mkdir -p "$dir/repo/node_modules/typescript"
 printf '{"name": "typescript", "version": "5.9.3"}\n' >"$dir/repo/node_modules/typescript/package.json"
 out="$(fixture_run "$dir" --landed)"
-missing_result "--landed with one of two packages installed cannot run, naming the other" landed 'the packages packages/pi-legion/package\.json names are not installed \(zod\)' 'bun install --frozen-lockfile, run at the root of the repository' "$?" "$out"
+missing_result "--landed with one of two packages installed cannot run, naming the other" landed 'the packages packages/pi-legion/package\.json names are not installed \(zod\)' 'bun install --frozen-lockfile, run at the root of the repository' "$out"
 mkdir -p "$dir/repo/packages/pi-legion/node_modules/zod"
 printf '{"name": "zod", "version": "4.3.6"}\n' >"$dir/repo/packages/pi-legion/node_modules/zod/package.json"
 out="$(fixture_run "$dir" --landed)"
-ending_result "--landed with every package installed judges the step" 0 '^all 5 assertions passed$' "$?" "$out"
+ending_result "--landed with every package installed judges the step" 0 '^all 5 assertions passed$' "$out"
 sed -i 's/"command": "true"/"command": "false"/' "$dir/repo/docs/research/internet-of-cognition/sources.json"
 sed -i 's/^- \*\*Proven by:\*\* `true`$/- **Proven by:** `false`/' "$dir/judgement.md"
 grep -qF '"command": "false"' "$dir/repo/docs/research/internet-of-cognition/sources.json" && grep -qF '**Proven by:** `false`' "$dir/judgement.md" || {
@@ -1522,7 +1509,7 @@ grep -qF '"command": "false"' "$dir/repo/docs/research/internet-of-cognition/sou
     exit 1
 }
 out="$(fixture_run "$dir" --landed)"
-ending_result "--landed with every package installed and a proof that fails is a FAIL of the step" 1 '^1 of 5 assertions failed: landed-proof$' "$?" "$out"
+ending_result "--landed with every package installed and a proof that fails is a FAIL of the step" 1 '^1 of 5 assertions failed: landed-proof$' "$out"
 
 # 81. The history and the clone root. At 533506542a --shape with an IOC_HISTORY_REF that
 # names no commit failed order-of-work, blaming the deliverable for a fetch the reader had
@@ -1531,15 +1518,15 @@ ending_result "--landed with every package installed and a proof that fails is a
 # the fixture's own branch and the default clone root.
 dir="$(fresh history-missing)"
 out="$(IOC_HISTORY_REF=refs/heads/no-such-history fixture_run "$dir" --shape)"
-missing_result "--shape whose IOC_HISTORY_REF names no commit cannot run, naming it" shape "the history ref 'refs/heads/no-such-history' names no commit of this repository" 'git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771' "$?" "$out"
+missing_result "--shape whose IOC_HISTORY_REF names no commit cannot run, naming it" shape "the history ref 'refs/heads/no-such-history' names no commit of this repository" 'git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771' "$out"
 out="$(IOC_HISTORY_REF=refs/heads/no-such-history fixture_run "$dir" --landed)"
-missing_result "--landed whose IOC_HISTORY_REF names no commit cannot run, naming it" landed "the history ref 'refs/heads/no-such-history' names no commit of this repository" 'git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771' "$?" "$out"
+missing_result "--landed whose IOC_HISTORY_REF names no commit cannot run, naming it" landed "the history ref 'refs/heads/no-such-history' names no commit of this repository" 'git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771' "$out"
 out="$(IOC_HISTORY_REF=refs/heads/main fixture_run "$dir" --shape)"
-ending_result "--shape whose IOC_HISTORY_REF names the fixture's branch passes" 0 '^all 9 assertions passed$' "$?" "$out"
+ending_result "--shape whose IOC_HISTORY_REF names the fixture's branch passes" 0 '^all 9 assertions passed$' "$out"
 out="$(IOC_CLONES="$dir/judgement.md/clones" fixture_run "$dir" --citations)"
-missing_result "--citations whose IOC_CLONES cannot be made cannot run, naming it" citations 'IOC_CLONES names .*/judgement\.md/clones, which this run cannot make' 'export IOC_CLONES=<a directory this user can write>, or leave it unset for \$TMPDIR/ioc-clones' "$?" "$out"
+missing_result "--citations whose IOC_CLONES cannot be made cannot run, naming it" citations 'IOC_CLONES names .*/judgement\.md/clones, which this run cannot make' 'export IOC_CLONES=<a directory this user can write>, or leave it unset for \$TMPDIR/ioc-clones' "$out"
 out="$(fixture_run "$dir" --citations)"
-ending_result "--citations with the default clone root passes the fixture" 0 '^all 5 assertions passed$' "$?" "$out"
+ending_result "--citations with the default clone root passes the fixture" 0 '^all 5 assertions passed$' "$out"
 
 # 82. Each recorded command runs with an empty TMPDIR of its own. At 533506542a a row ran
 # with the caller's TMPDIR, so a row that read what an earlier run had left there, as
@@ -1599,19 +1586,17 @@ z.close()' "$gocold/proxy/example.com/ioccount/@v/v1.0.0.zip" example.com/ioccou
             plant_behaviour "$dir" 'cd gocount && GOFLAGS=-mod=mod go run ./cmd/count' '{"equals":"rows 38"}'
             out="$(HOME="$gocold/home" IOC_CACHE="$dir/cache" fixture_run "$dir" --replay)"
             case_result "a row whose go downloads on a cold cache fails a predicate over the whole output" 'replay-command: f-behaviour-1 ran .* does not meet \{"equals":"rows 38"\}: go: downloading example\.com/ioccount v1\.0\.0' "$out"
-            if [ "$CASE_ENDING" = cannot-run ] || [ "$CASE_ENDING" = unrecorded ]; then
-                :
-            elif [ -d "$dir/cache/cache/go/mod/example.com/ioccount@v1.0.0" ]; then
-                CASES_PASSED=$((CASES_PASSED + 1))
-                printf 'PASS the module a row downloads stands under IOC_CACHE, in the module cache env.sh names\n'
-            else
-                CASES_FAILED=$((CASES_FAILED + 1))
-                printf 'FAIL the module a row downloads stands under IOC_CACHE, in the module cache env.sh names: %s holds no example.com/ioccount@v1.0.0\n' "$dir/cache/cache/go/mod"
+            if case_read "the module a row downloads stands under IOC_CACHE, in the module cache env.sh names" "$out"; then
+                if [ -d "$dir/cache/cache/go/mod/example.com/ioccount@v1.0.0" ]; then
+                    case_passed "the module a row downloads stands under IOC_CACHE, in the module cache env.sh names"
+                else
+                    case_failed "the module a row downloads stands under IOC_CACHE, in the module cache env.sh names" "$dir/cache/cache/go/mod holds no example.com/ioccount@v1.0.0"
+                fi
             fi
         else
             plant_behaviour "$dir" 'cd gocount && GOFLAGS=-mod=mod go run ./cmd/count' '{"matches":"^rows 38$"}'
             out="$(HOME="$gocold/home" IOC_CACHE="$dir/cache" fixture_run "$dir" --replay)"
-            ending_result "a row whose go downloads on a cold cache meets the measured line, ^rows 38\$" 0 '^all 16 assertions passed$' "$?" "$out"
+            ending_result "a row whose go downloads on a cold cache meets the measured line, ^rows 38\$" 0 '^all 16 assertions passed$' "$out"
         fi
     done
     unset GOPROXY GOSUMDB GOTOOLCHAIN
@@ -1640,14 +1625,14 @@ head_commit="$(git -C "$IOC_ROOT" rev-parse HEAD)"
 dir="$(fresh history-exported)"
 for mode in shape:9 landed:5; do
     out="$(IOC_HISTORY_REF="$head_commit" bash -c '. "$1"; fixture_run "$2" "$3"' _ "$HERE/check.sh" "$dir" "--${mode%:*}")"
-    ending_result "--${mode%:*} over the fixture passes from a shell that exported IOC_HISTORY_REF, a commit of this tree" 0 "^all ${mode#*:} assertions passed\$" "$?" "$out"
+    ending_result "--${mode%:*} over the fixture passes from a shell that exported IOC_HISTORY_REF, a commit of this tree" 0 "^all ${mode#*:} assertions passed\$" "$out"
     out="$(bash -c '. "$1"; fixture_run "$2" "$3"' _ "$HERE/check.sh" "$dir" "--${mode%:*}")"
-    ending_result "--${mode%:*} over the fixture passes from a shell that exported no IOC_HISTORY_REF" 0 "^all ${mode#*:} assertions passed\$" "$?" "$out"
+    ending_result "--${mode%:*} over the fixture passes from a shell that exported no IOC_HISTORY_REF" 0 "^all ${mode#*:} assertions passed\$" "$out"
 done
 dir="$(fresh caller-variable)"
 plant_behaviour "$dir" "printf 'ran once%s\\n' \"\$IOC_CALLER_PROBE\"" '{"equals":"ran once"}'
 out="$(IOC_CALLER_PROBE=' and a variable of the caller' fixture_run "$dir" --replay)"
-ending_result "a variable of the caller's that the header does not name does not reach a fixture's row" 0 '^all 16 assertions passed$' "$?" "$out"
+ending_result "a variable of the caller's that the header does not name does not reach a fixture's row" 0 '^all 16 assertions passed$' "$out"
 
 # 85. A run the self-test makes that cannot run is a self-test that cannot run. At
 # 0fdbb24ddf mode_self_test looked only for the all-passed line at the end of each run it
@@ -1666,14 +1651,17 @@ mkdir -p "$self_copy/evidence"
 cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$HERE/claims.jsonl" "$self_copy/"
 cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
     "$HERE/evidence/build-constraints.txt" "$self_copy/evidence/"
-printf '%s\n' "printf 'all 0 cases passed\\n'" >"$self_copy/check.test.sh"
+# A check.test.sh that runs no case: it sources the copy's check.sh and writes its ending
+# record, all 0 cases passed, by run_ending, as this file's summary does.
+CASES_STUB='. "$(dirname "$0")/check.sh" && run_ending cases'
+printf '%s\n' "$CASES_STUB" >"$self_copy/check.test.sh"
 SELF_CANNOT='^check\.sh cannot run --self-test: --citations over the fixture deliverable could not run, so the self-test stops at self-test-baseline: check\.sh cannot run --citations: Dispatch, the read of dispatch://[^ ]* did not answer'
-out="$(DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" bash "$self_copy/check.sh" --self-test 2>&1)"
-ending_result "--self-test whose fixture's --citations has no Dispatch to read cannot run, naming the run and Dispatch" 2 "$SELF_CANNOT" "$?" "$out"
-out="$(IOC_HISTORY_REF="$head_commit" DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" bash "$self_copy/check.sh" --self-test 2>&1)"
-ending_result "--self-test with IOC_HISTORY_REF exported runs its fixture on the fixture's own history, and ends naming Dispatch" 2 "$SELF_CANNOT" "$?" "$out"
-out="$(IOC_EVIDENCE="$self_copy" bash "$self_copy/check.sh" --self-test 2>&1)"
-ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 39 assertions passed$' "$?" "$out"
+out="$(DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
+ending_result "--self-test whose fixture's --citations has no Dispatch to read cannot run, naming the run and Dispatch" 2 "$SELF_CANNOT" "$out"
+out="$(IOC_HISTORY_REF="$head_commit" DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
+ending_result "--self-test with IOC_HISTORY_REF exported runs its fixture on the fixture's own history, and ends naming Dispatch" 2 "$SELF_CANNOT" "$out"
+out="$(IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
+ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 39 assertions passed$' "$out"
 
 # 86. --admitted reads the status of the install reader. At 0fdbb24ddf it read the
 # classifier's lines through a process substitution, so no status of python3 reached it:
@@ -1696,20 +1684,19 @@ admitted_copy() {
 }
 copy="$(admitted_copy admitted-broken-line)"
 printf '%s\n' '{"id": "broken-row", "kind": ' >>"$copy/claims.jsonl"
-out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
-status=$?
-ending_result "a line of claims.jsonl that is no JSON object fails admitted-rows alone, exit 1" 1 '^1 of 4 assertions failed: admitted-rows$' "$status" "$out"
-case_result "a line of claims.jsonl that is no JSON object is named by its number" "admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims.jsonl is no row" "$out" "$status"
+out="$(IOC_EVIDENCE="$copy" gate_run "$HERE/check.sh" --admitted)"
+ending_result "a line of claims.jsonl that is no JSON object fails admitted-rows alone, exit 1" 1 '^1 of 4 assertions failed: admitted-rows$' "$out"
+case_result "a line of claims.jsonl that is no JSON object is named by its number" "admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims.jsonl is no row" "$out"
 copy="$(admitted_copy admitted-no-env)"
 rm "$copy/env.sh"
-out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
-ending_result "--admitted whose env.sh is missing cannot run: exit 2, the reason last" 2 '^check\.sh cannot run --admitted: env\.sh, which holds .* did not load\.$' "$?" "$out"
+out="$(IOC_EVIDENCE="$copy" gate_run "$HERE/check.sh" --admitted)"
+ending_result "--admitted whose env.sh is missing cannot run: exit 2, the reason last" 2 '^check\.sh cannot run --admitted: env\.sh, which holds .* did not load\.$' "$out"
 plant_gate admitted-reader-start 's/^import json, os, re, shlex, sys$/&, ioc_no_such_module_3134/' 'import json, os, re, shlex, sys, ioc_no_such_module_3134' holds
-out="$(bash "$GATE" --admitted 2>&1)"
-ending_result "--admitted whose install reader does not start cannot run: exit 2, the reason last" 2 "^check\\.sh cannot run --admitted: the install reader cannot load: ModuleNotFoundError: No module named 'ioc_no_such_module_3134'\$" "$?" "$out"
+out="$(gate_run "$GATE" --admitted)"
+ending_result "--admitted whose install reader does not start cannot run: exit 2, the reason last" 2 "^check\\.sh cannot run --admitted: the install reader cannot load: ModuleNotFoundError: No module named 'ioc_no_such_module_3134'\$" "$out"
 copy="$(admitted_copy admitted-honest)"
-out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
-ending_result "--admitted over a copy of claims.jsonl and env.sh passes" 0 '^all 4 assertions passed$' "$?" "$out"
+out="$(IOC_EVIDENCE="$copy" gate_run "$HERE/check.sh" --admitted)"
+ending_result "--admitted over a copy of claims.jsonl and env.sh passes" 0 '^all 4 assertions passed$' "$out"
 
 # 87. Nothing a killed run leaves is trusted. A pod replacement kills a replay part-way.
 # At 0fdbb24ddf env.sh wrote the shapes graph of the scope clone under its own name, so a
@@ -1757,33 +1744,27 @@ if command -v setsid >/dev/null 2>&1; then
     shapes_build "$killed/cache" kill
     shapes_build "$killed/cache"
     if shapes_whole "$killed/cache"; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS the shapes graph a killed build left part-written is built whole by the next run\n'
+        case_passed "the shapes graph a killed build left part-written is built whole by the next run"
     else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL the shapes graph a killed build left part-written is built whole by the next run: the graph holds %s\n' "$(head -c 160 "$killed/cache/scope-shapes.ttl" 2>/dev/null | tr '\n' ' ')"
+        case_failed "the shapes graph a killed build left part-written is built whole by the next run" "the graph holds $(head -c 160 "$killed/cache/scope-shapes.ttl" 2>/dev/null | tr '\n' ' ')"
     fi
     shapes_build "$killed/honest-cache"
     if shapes_whole "$killed/honest-cache"; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS the shapes graph of a build nobody killed is whole\n'
+        case_passed "the shapes graph of a build nobody killed is whole"
     else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL the shapes graph of a build nobody killed is whole: the graph holds %s\n' "$(head -c 160 "$killed/honest-cache/scope-shapes.ttl" 2>/dev/null | tr '\n' ' ')"
+        case_failed "the shapes graph of a build nobody killed is whole" "the graph holds $(head -c 160 "$killed/honest-cache/scope-shapes.ttl" 2>/dev/null | tr '\n' ' ')"
     fi
 else
     printf 'SKIP a killed build of the shapes graph: setsid is missing\n'
 fi
-# stamp_result <name> <gone|stands> <stamp file> <gate output>; passes when the replay
-# passed every assertion and, after it, the stamp is gone, or stands, as named.
+# stamp_result <name> <gone|stands> <stamp file> <run>; passes when the replay passed every
+# assertion and, after it, the stamp is gone, or stands, as named.
 stamp_result() {
     case_read "$1" "$4" || return 0
-    if [ "$CASE_ENDING" = passed ] && { { [ "$2" = gone ] && [ ! -e "$3" ]; } || { [ "$2" = stands ] && [ -e "$3" ]; }; }; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "$1"
+    if [ "$RUN_ENDING" = passed ] && { { [ "$2" = gone ] && [ ! -e "$3" ]; } || { [ "$2" = stands ] && [ -e "$3" ]; }; }; then
+        case_passed "$1"
     else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: the stamp is to be %s after the run, and the run ended %s, %s\n' "$1" "$2" "$CASE_LAST" "$(printf '%s\n' "$4" | grep '^FAIL' | head -1)"
+        case_failed "$1" "the stamp is to be $2 after the run, and the run ended $RUN_LINE, $(grep '^FAIL' "$4/text" | head -1)"
     fi
 }
 # The planted row installs into IOC_TC_WORK as the install reader reads it, and, while it
@@ -1807,9 +1788,10 @@ fi
 
 # 88-89 come from the twelfth review of the pull request and the architect's rulings on it
 # of 2026-11-15T22:45Z and 23:10Z, and the header of check.sh states each rule they hold:
-# the one parse of claims.jsonl, and the three endings, read in one way by run_ending.
-# Each fault ended at 9c82069807 in a mode that could not run, in a pass, or in a failure
-# read for a run that could not run; each honest form beside it passes there and here.
+# the one parse of claims.jsonl, and the three endings, read in one way from each run's
+# ending record. Each fault ended at 9c82069807 in a mode that could not run, in a pass, or
+# in a failure read for a run that could not run; each honest form beside it passes there
+# and here.
 #
 # dir_copy <name> <check.test.sh>; a scratch copy of this directory that --self-test can
 # run, whose check.test.sh is the file <check.test.sh> names.
@@ -1837,32 +1819,8 @@ dir_copy() {
 # to the fixture's claims.jsonl, or to a copy of this directory's; the honest form is the
 # same mode over the same file without it.
 # A case that holds a run to failing, where the gate of 9c82069807 said it could not run,
-# reads a cannot-run as its run's not running only when the reason is outside the tree, a
-# source that did not answer or a missing prerequisite (outside_unrun); any other reason
-# is the fault the case plants, and fails it.
-# outside_unrun <name> <status> <gate output>; true, counting the case as one that could
-# not run, when the run could not run for a reason outside the tree.
-outside_unrun() {
-    case_ending "$3" "$2"
-    [ "$CASE_ENDING" = cannot-run ] && printf '%s\n' "$CASE_LAST" | grep -qE 'did not answer|; provided by: ' || return 1
-    case_read "$1" "$3" "$2"
-    return 0
-}
-# one_failure_result <name> <the run's last line> <its one FAIL> <status> <gate output>; the
-# second and third are extended regular expressions. It passes when the mode ended exit 1
-# with that last line and printed one FAIL, that one.
-one_failure_result() {
-    local name="$1" summary="$2" failure="$3" status="$4" out="$5"
-    outside_unrun "$name" "$status" "$out" && return 0
-    if [ "$status" = 1 ] && printf '%s\n' "$out" | tail -1 | grep -qE -- "$summary" &&
-        [ "$(printf '%s\n' "$out" | grep -c '^FAIL ')" = 1 ] && printf '%s\n' "$out" | grep -qE -- "$failure"; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "$name"
-    else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: exit %s, %s, last line: %s\n' "$name" "$status" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')" "$(printf '%s\n' "$out" | tail -1)"
-    fi
-}
+# reads the run by case_read's one rule: a reason from outside the tree makes the case one
+# that could not run, and any other is the fault the case plants, and fails it.
 BROKEN_LINE='{"id": "broken-row", "kind": '
 LIST_COMMAND='{"id":"command-list","requirement":"r7","source":"the case","kind":"behaviour","claim":"A command that is a list.","mark":"verified","evidence":{"surface":"cli"},"command":["ls"],"expect":{"contains":"ls"},"note":"planted"}'
 NUMBER_ID='{"id":7,"requirement":"r7","source":"the case","kind":"behaviour","claim":"An id that is a number.","mark":"verified","evidence":{"surface":"cli"},"command":"printf ran","expect":{"contains":"ran"},"note":"planted"}'
@@ -1877,62 +1835,75 @@ for mode in replay:16:claim-form citations:5:citation-kinds; do
         claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
         printf '%s\n' "${!planted}" >>"$claims_copy"
         out="$(fixture_run "$dir" "--$mode")"
-        status=$?
-        one_failure_result "--$mode over a claims.jsonl holding ${form#*:} fails $family alone, naming the line, exit 1" \
-            "^1 of $count assertions failed: $family\$" "^FAIL $family: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row" "$status" "$out"
+        one_failure_result "--$mode over a claims.jsonl holding ${form#*:} fails $family alone, naming the line, exit 1" "$family" \
+            "^1 of $count assertions failed: $family\$" "^FAIL $family: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row" "$out"
     done
     dir="$(fresh "parse-$mode-honest")"
     out="$(fixture_run "$dir" "--$mode")"
-    ending_result "--$mode over the fixture's claims.jsonl as it stands passes" 0 "^all $count assertions passed\$" "$?" "$out"
+    ending_result "--$mode over the fixture's claims.jsonl as it stands passes" 0 "^all $count assertions passed\$" "$out"
 done
 for form in 'LIST_COMMAND:a row whose command is a list' 'NUMBER_ID:a row whose id is a number'; do
     planted="${form%%:*}"
     copy="$(admitted_copy "parse-admitted-$planted")"
     printf '%s\n' "${!planted}" >>"$copy/claims.jsonl"
-    out="$(IOC_EVIDENCE="$copy" bash "$HERE/check.sh" --admitted 2>&1)"
-    status=$?
-    one_failure_result "--admitted over a claims.jsonl holding ${form#*:} fails admitted-rows alone, naming the line, exit 1" \
-        '^1 of 4 assertions failed: admitted-rows$' "^FAIL admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$status" "$out"
+    out="$(IOC_EVIDENCE="$copy" gate_run "$HERE/check.sh" --admitted)"
+    one_failure_result "--admitted over a claims.jsonl holding ${form#*:} fails admitted-rows alone, naming the line, exit 1" admitted-rows \
+        '^1 of 4 assertions failed: admitted-rows$' "^FAIL admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
 done
-printf '%s\n' "printf 'all 0 cases passed\\n'" >"$WORK/cases-stub.sh"
+printf '%s\n' "$CASES_STUB" >"$WORK/cases-stub.sh"
 copy="$(dir_copy parse-self-test "$WORK/cases-stub.sh")"
 printf '%s\n' "$LIST_COMMAND" >>"$copy/claims.jsonl"
-out="$(IOC_EVIDENCE="$copy" bash "$copy/check.sh" --self-test 2>&1)"
-status=$?
-one_failure_result "--self-test over a claims.jsonl holding a row whose command is a list fails admitted-table alone, exit 1" \
-    '^1 of 39 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$status" "$out"
+out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
+one_failure_result "--self-test over a claims.jsonl holding a row whose command is a list fails admitted-table alone, exit 1" admitted-table \
+    '^1 of 39 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
 
 # 89. check.test.sh ends the three ways the gate does, and --self-test reads it by its
-# status and its last line together. At 9c82069807 case_result, passed_result and
-# ending_result read a fixture run that could not run as a failed case and honest_result
-# read it as a passed one, so a Dispatch that did not answer during one case ended this
-# file exit 1, or exit 0, and --self-test then failed gate-cases, or passed it; and
-# --self-test took any exit 2 of this file, a bash syntax error's among them, for a run
-# that could not run. The case writes copies of this file from its own text: its helpers,
-# then one case, then its summary. The first copy holds case 4 with a Dispatch that does
-# not answer given to its --citations, and ends exit 2 naming the case and Dispatch; the
-# second holds an honest form, read by honest_result, with the same Dispatch, and ends the
-# same way; the third holds case 4 and then a syntax error, which ends it with bash's own
-# line. --self-test over a copy of this directory whose check.test.sh is the first ends
-# exit 2, naming the case and Dispatch, and over one whose check.test.sh is the third ends
-# exit 1 on gate-cases, since a crash is a failure. The honest form is the copy of case 4
-# with Dispatch answering, which passes. Two forms hold the precedence: a copy holding the
+# ending record. At 9c82069807 case_result, passed_result and ending_result read a fixture
+# run that could not run as a failed case and honest_result read it as a passed one, so a
+# Dispatch that did not answer during one case ended this file exit 1, or exit 0, and
+# --self-test then failed gate-cases, or passed it; and --self-test took any exit 2 of this
+# file, a bash syntax error's among them, for a run that could not run. The case writes
+# copies of this file from its own text: its helpers, then one case, then its summary. The
+# first copy holds case 4 with a Dispatch that does not answer given to its --citations,
+# and ends exit 2 naming the case and Dispatch; the second holds an honest form, read by
+# honest_result, with the same Dispatch, and ends the same way; the third holds case 4 and
+# then a syntax error, which ends it with bash's own line and no ending record.
+# --self-test over a copy of this directory whose check.test.sh is the first ends exit 2,
+# naming the case and Dispatch, and over one whose check.test.sh is the third ends exit 1
+# on gate-cases, since a crash is a failure. The honest form is the copy of case 4 with
+# Dispatch answering, which passes. Two forms hold the precedence: a copy holding the
 # first copy's case and a case that fails ends exit 1, naming the failure and then the case
 # that could not run; and a mode, the fixture's --citations with a line cut short in its
 # claims.jsonl and the same Dispatch, ends exit 1, naming the assertion that failed and
 # then the four that could not run, where at 9c82069807 it ended exit 2 and named neither.
 # cases_copy <name> <case text>; a copy of this directory, by dir_copy, whose check.test.sh
-# is this file up to its first case, then <case text>, then its summary; it prints the
-# copy's path.
+# is this file down to the marker line its cases begin below, then <case text>, then its
+# summary, from the marker line the summary begins below; it prints the copy's path. Each
+# marker stands once in this file, or no copy is cut, so a copy can never hold this case
+# and run it again inside itself.
+CASES_MARK='# ==== the cases of check.test.sh begin below this line, where cases_copy cuts it ===='
+SUMMARY_MARK='# ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ===='
 cases_copy() {
+    local mark
+    for mark in "$CASES_MARK" "$SUMMARY_MARK"; do
+        [ "$(grep -cxF -- "$mark" "$HERE/check.test.sh")" = 1 ] || {
+            printf 'FAIL check.test.sh holds the line "%s" other than once, so no copy of it can be cut\n' "$mark"
+            exit 1
+        }
+    done
     {
-        sed -n '1,/^# 1\. /p' "$HERE/check.test.sh" | sed '$d'
+        awk -v mark="$CASES_MARK" '$0 == mark { exit } { print }' "$HERE/check.test.sh"
         printf '%s\n' "$2"
-        sed -n '/^total=\$((CASES_PASSED/,$p' "$HERE/check.test.sh"
+        awk -v mark="$SUMMARY_MARK" 'found { print } $0 == mark { found = 1 }' "$HERE/check.test.sh"
     } >"$WORK/$1.cases"
     dir_copy "$1" "$WORK/$1.cases"
 }
 case_four="$(sed -n '/^# 4\. /,/^# 5\. /p' "$HERE/check.test.sh" | sed '$d')"
+[ "$(grep -c '^# 4\. ' "$HERE/check.test.sh")" = 1 ] && [ "$(grep -c '^# 5\. ' "$HERE/check.test.sh")" = 1 ] &&
+    [ "$(printf '%s\n' "$case_four" | grep -c '^case_result ')" = 1 ] || {
+    printf 'FAIL case 4 could not be cut from check.test.sh: its first line and the first line of case 5 are each to stand once, with one case_result between them\n'
+    exit 1
+}
 outage="$(printf '%s\n' "$case_four" | sed 's#"$(fixture_run "$dir" --citations)"$#"$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"#')"
 printf '%s\n' "$outage" | grep -qF 'DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations' || {
     printf 'FAIL the Dispatch outage could not be planted in case 4 of a copy of check.test.sh\n'
@@ -1941,66 +1912,236 @@ printf '%s\n' "$outage" | grep -qF 'DISPATCH_URL=http://127.0.0.1:1 fixture_run 
 CASE_FOUR_NAME='a project citation whose quoted text the file does not hold is refused'
 DISPATCH_DOWN='check\.sh cannot run --citations: Dispatch, the read of dispatch://[^ ]* did not answer'
 copy="$(cases_copy cases-outage "$outage")"
-out="$(bash "$copy/check.test.sh" 2>&1)"
+out="$(gate_run "$copy/check.test.sh")"
 ending_result "a case whose --citations has no Dispatch could not run, and check.test.sh ends exit 2 naming it and Dispatch" 2 \
-    "^check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: $CASE_FOUR_NAME: $DISPATCH_DOWN" "$?" "$out"
-out="$(IOC_EVIDENCE="$copy" bash "$copy/check.sh" --self-test 2>&1)"
+    "^check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: $CASE_FOUR_NAME: $DISPATCH_DOWN" "$out" "$DISPATCH_DOWN"
+out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 ending_result "--self-test whose check.test.sh meets no Dispatch in one case ends exit 2, naming the case and Dispatch" 2 \
-    "^check\\.sh cannot run --self-test: check\\.test\\.sh could not run, so the self-test stops at gate-cases: check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: $CASE_FOUR_NAME: $DISPATCH_DOWN" "$?" "$out"
-copy="$(cases_copy cases-honest-outage "$(sed -n '/^honest_result() {$/,/^}$/p' "$HERE/check.test.sh")
-dir=\"\$(fresh honest-no-dispatch)\"
+    "^check\\.sh cannot run --self-test: check\\.test\\.sh could not run, so the self-test stops at gate-cases: check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: $CASE_FOUR_NAME: $DISPATCH_DOWN" "$out"
+copy="$(cases_copy cases-honest-outage "dir=\"\$(fresh honest-no-dispatch)\"
 honest_result \"an honest --citations names no failure of citation-dispatch\" citation-dispatch \"\$(DISPATCH_URL=http://127.0.0.1:1 fixture_run \"\$dir\" --citations)\"")"
-out="$(bash "$copy/check.test.sh" 2>&1)"
+out="$(gate_run "$copy/check.test.sh")"
 ending_result "an honest form whose --citations has no Dispatch could not run, never passed, and check.test.sh ends exit 2" 2 \
-    "^check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: an honest --citations names no failure of citation-dispatch: $DISPATCH_DOWN" "$?" "$out"
+    "^check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: an honest --citations names no failure of citation-dispatch: $DISPATCH_DOWN" "$out" "$DISPATCH_DOWN"
 copy="$(cases_copy cases-honest "$case_four")"
-out="$(bash "$copy/check.test.sh" 2>&1)"
-ending_result "the copy of case 4 with Dispatch answering passes" 0 '^all 1 cases passed$' "$?" "$out"
+out="$(gate_run "$copy/check.test.sh")"
+ending_result "the copy of case 4 with Dispatch answering passes" 0 '^all 1 cases passed$' "$out"
 copy="$(cases_copy cases-precedence "$outage
 case_result \"a planted case that the gate passes\" replay-command \"\$(fixture_run \"\$(fresh precedence-passes)\" --replay)\"")"
-out="$(bash "$copy/check.test.sh" 2>&1)"
+out="$(gate_run "$copy/check.test.sh")"
 ending_result "check.test.sh with a failed case and a case that could not run ends exit 1, naming the failure first" 1 \
-    "^1 of 2 cases failed; 1 could not run: $CASE_FOUR_NAME: $DISPATCH_DOWN" "$?" "$out" planted
+    "^1 of 2 cases failed; 1 could not run: $CASE_FOUR_NAME: $DISPATCH_DOWN" "$out" "$DISPATCH_DOWN"
 dir="$(fresh precedence-citations)"
 printf '%s\n' "$BROKEN_LINE" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"
 ending_result "a mode that failed an assertion and then met no Dispatch ends exit 1, naming the failure and then what could not run" 1 \
-    "^1 of 5 assertions failed: citation-kinds; 4 could not run: citation-our-code citation-project-code citation-published citation-dispatch, since $DISPATCH_DOWN" "$?" "$out" planted
+    "^1 of 5 assertions failed: citation-kinds; 4 could not run: citation-our-code citation-project-code citation-published citation-dispatch, since $DISPATCH_DOWN" "$out" "$DISPATCH_DOWN"
 copy="$(cases_copy cases-syntax "$case_four
 fi")"
-out="$(bash "$copy/check.test.sh" 2>&1)"
-status=$?
-if [ "$status" != 2 ] || ! printf '%s\n' "$out" | grep -q "syntax error near unexpected token \`fi'" ||
-    printf '%s\n' "$out" | tail -1 | grep -qE "$CANNOT_RUN_LINE"; then
-    printf 'FAIL the syntax error could not be planted in a copy of check.test.sh: exit %s, %s\n' "$status" "$(printf '%s\n' "$out" | tail -1)"
+out="$(gate_run "$copy/check.test.sh")"
+ending_read "$out"
+if [ "$RUN_CRASH" != 1 ] || [ -e "$out/ending" ] || ! grep -q "syntax error near unexpected token \`fi'" "$out/text"; then
+    printf 'FAIL the syntax error could not be planted in a copy of check.test.sh: %s\n' "$RUN_LINE"
     exit 1
 fi
-out="$(IOC_EVIDENCE="$copy" bash "$copy/check.sh" --self-test 2>&1)"
-status=$?
-one_failure_result "--self-test whose check.test.sh ends in a bash syntax error, exit 2 with no reason, fails gate-cases" \
-    '^1 of 39 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$status" "$out"
+out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
+one_failure_result "--self-test whose check.test.sh ends in a bash syntax error, exit 2 with no ending record, fails gate-cases" gate-cases \
+    '^1 of 39 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
 
-# The summary, by the three endings and their precedence (check.sh's header). A run that
-# could not run and that no case read, as an inline check reads it, is named beside the
-# cases that could not run.
-total=$((CASES_PASSED + CASES_FAILED + CASES_UNRUN))
-while IFS=$'\t' read -r hash status what last; do
-    [ "$(run_ending "$status" "$last")" = cannot-run ] || continue
-    grep -qxF "$hash" "$RUNS_RECORDED.read" 2>/dev/null && continue
-    UNRUN_CASES+=("the run of $what, which no case read: $last")
-done < <(cat "$RUNS_RECORDED" 2>/dev/null)
-unrun="$(printf '%s; ' "${UNRUN_CASES[@]}")"
-if [ "$CASES_FAILED" -gt 0 ]; then
-    if [ "${#UNRUN_CASES[@]}" -gt 0 ]; then
-        printf '%d of %d cases failed; %d could not run: %s\n' "$CASES_FAILED" "$total" "${#UNRUN_CASES[@]}" "${unrun%; }"
-    else
-        printf '%d of %d cases failed\n' "$CASES_FAILED" "$total"
-    fi
+# 90-92 come from the thirteenth review of the pull request and the architect's rulings on
+# it of 2026-11-16T06:40Z and 07:08Z, and the header of check.sh states each rule they hold:
+# one ending record of each run, which every case and --self-test read the run by; env.sh
+# reading a value of a row from its evidence alone; and an id naming one row. Each fault
+# ended at beda0a6c32 in a failed case for a run that could not run, in a pass for a run
+# that wrote no record, in env.sh refusing or keeping a corpus of any length, or in a pass;
+# each honest form beside it passes there and here.
+#
+# 90. A case reads its run by the run's own record (thread PRRT_kwDORFy7ds63u3C5). At
+# beda0a6c32 one_failure_result excused a run only when it ended exit 2, and ending_result
+# held a run to the one reason it planted, so an outage from outside the tree that a case
+# did not plant counted it as failed: with GitHub cut and an empty clone root, case 88's
+# --citations forms failed citation-kinds, could not fetch mas-lab and ended exit 1, and a
+# form that plants a Dispatch that does not answer met GitHub first. Each form is a copy of
+# this file holding one such case, which now could not run, so the copy ends exit 2 naming
+# it and the source: case 88's two --citations forms with GitHub cut; a form that plants a
+# Dispatch that does not answer, with GitHub cut; and case 88's line cut short beside a
+# Dispatch that does not answer, an outage it does not plant. And a run whose text ends
+# with the all-passed line, exit 0, but that wrote no record, is no pass: the fixture's
+# gate planted to print that line and stop reads as a crash. The honest form is the copy of
+# case 88's two --citations forms with GitHub answering, which passes.
+GITHUB_DOWN='check\.sh cannot run --citations: GitHub, the fetch of the clone of mas-lab did not answer'
+# github_cut <command...>, defined in each copy below: the command run with GitHub cut, as
+# the review cut it, an empty clone root and every https read sent to a port nobody
+# answers; the honest copy defines it as the command alone.
+CUT_DEFINED="$(printf 'BROKEN_LINE=%q\nLIST_COMMAND=%q\nDISPATCH_DOWN=%q\n' "$BROKEN_LINE" "$LIST_COMMAND" "$DISPATCH_DOWN")"
+GITHUB_CUT='github_cut() { IOC_CLONES="$WORK/no-clones" https_proxy=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 no_proxy= NO_PROXY= "$@"; }'
+GITHUB_WHOLE='github_cut() { "$@"; }'
+PARSE_CITATIONS="$(cat <<'CASE'
+for planted in BROKEN_LINE LIST_COMMAND; do
+    dir="$(fresh "cut-$planted")"
+    claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    printf '%s\n' "${!planted}" >>"$claims_copy"
+    one_failure_result "--citations over a claims.jsonl holding $planted fails citation-kinds alone, naming the line, exit 1" citation-kinds \
+        '^1 of 5 assertions failed: citation-kinds$' "^FAIL citation-kinds: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row" \
+        "$(github_cut fixture_run "$dir" --citations)"
+done
+CASE
+)"
+copy="$(cases_copy cut-parse "$CUT_DEFINED
+$GITHUB_CUT
+$PARSE_CITATIONS")"
+ending_result "case 88's --citations forms with GitHub cut could not run, and check.test.sh ends exit 2 naming each and GitHub" 2 \
+    "^check\\.sh cannot run check\\.test\\.sh: 2 of 2 cases could not run: [^;]*BROKEN_LINE[^;]*: $GITHUB_DOWN.*; [^;]*LIST_COMMAND[^;]*: $GITHUB_DOWN" "$(gate_run "$copy/check.test.sh")" "$GITHUB_DOWN"
+copy="$(cases_copy cut-parse-honest "$CUT_DEFINED
+$GITHUB_WHOLE
+$PARSE_CITATIONS")"
+ending_result "case 88's --citations forms in a copy with GitHub answering pass" 0 '^all 2 cases passed$' "$(gate_run "$copy/check.test.sh")"
+copy="$(cases_copy cut-dispatch-planted "$CUT_DEFINED
+$GITHUB_CUT
+$(cat <<'CASE'
+dir="$(fresh cut-dispatch-planted)"
+ending_result "--citations with no Dispatch to read cannot run, naming Dispatch" 2 "^$DISPATCH_DOWN" "$(DISPATCH_URL=http://127.0.0.1:1 github_cut fixture_run "$dir" --citations)"
+CASE
+)")"
+ending_result "a case that plants a Dispatch that does not answer, with GitHub cut, could not run, and check.test.sh ends exit 2 naming it and GitHub" 2 \
+    "^check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: --citations with no Dispatch to read cannot run, naming Dispatch: $GITHUB_DOWN" "$(gate_run "$copy/check.test.sh")" "$GITHUB_DOWN"
+copy="$(cases_copy dispatch-beside-failure "$CUT_DEFINED
+$(cat <<'CASE'
+dir="$(fresh dispatch-beside-failure)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+printf '%s\n' "$BROKEN_LINE" >>"$claims_copy"
+one_failure_result "--citations over a claims.jsonl holding a line cut short fails citation-kinds alone, beside a Dispatch that does not answer" citation-kinds \
+    '^1 of 5 assertions failed: citation-kinds$' "^FAIL citation-kinds: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row" \
+    "$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"
+CASE
+)")"
+ending_result "a planted failure beside an outage it does not plant could not run, neither failed nor passed, and check.test.sh ends exit 2" 2 \
+    "^check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: --citations over a claims\\.jsonl holding a line cut short fails citation-kinds alone, beside a Dispatch that does not answer: $DISPATCH_DOWN" "$(gate_run "$copy/check.test.sh")" "$DISPATCH_DOWN"
+dir="$(fresh no-record)"
+sed -i "s/^    --replay) run_mode replay ;;\$/    --replay) printf 'all 16 assertions passed\\\\n' ;;/" "$dir/repo/docs/research/internet-of-cognition/check.sh"
+grep -qxF "    --replay) printf 'all 16 assertions passed\\n' ;;" "$dir/repo/docs/research/internet-of-cognition/check.sh" || {
+    printf 'FAIL the gate that prints the all-passed line and writes no record could not be planted in the fixture copy of check.sh\n'
     exit 1
+}
+out="$(fixture_run "$dir" --replay)"
+ending_read "$out"
+if [ "$RUN_ENDING" = failed ] && [ "$RUN_CRASH" = 1 ] && [ "$(tail -1 "$out/text")" = 'all 16 assertions passed' ]; then
+    case_passed "a run whose text ends with the all-passed line, exit 0, but that wrote no ending record, reads as a crash"
+else
+    case_failed "a run whose text ends with the all-passed line, exit 0, but that wrote no ending record, reads as a crash" "it reads as $RUN_ENDING: $RUN_LINE"
 fi
-if [ "${#UNRUN_CASES[@]}" -gt 0 ]; then
-    printf 'check.sh cannot run check.test.sh: %d of %d cases could not run: %s\n' "${#UNRUN_CASES[@]}" "$total" "${unrun%; }"
-    exit 2
+
+# 91. env.sh reads a value of a row from its evidence alone (the thirteenth review, item
+# 3). At beda0a6c32 env.sh read the checksum of s-model-checksum from its {"contains": ...}
+# and the floor of tc-corpus-1 from its {"at_least": ...}, so a row recorded again with
+# another predicate, {"matches": ...} as the header's measured-line rule recommends, left
+# env.sh no checksum, and --replay ended exit 2 with no FAIL before it, or no floor, and
+# env.sh kept a corpus of any length. Each value is now a named field of the row's
+# evidence, sha256 and corpus_floor, which the one parse holds to its type. The case runs
+# env.sh's two reads as --replay's env.sh step makes them, ioc_env_model and
+# ioc_env_reviews, over a copy of claims.jsonl whose two rows are recorded with
+# {"matches": ...}: env.sh is to prepare the snapshot the row's sha256 pins, which the case
+# plants under a sha256 of its own, and a corpus of at least the row's floor, fetched by a
+# gh of the case's own that prints 30 review bodies per pull request over a corpus the case
+# plants short. The steps around the two reads that build an environment, which need uv and
+# the package index, are taken as built. The honest form is the same copy with both
+# predicates as committed. A field of the wrong type is no row of the one parse: a row the
+# case appends to the fixture's claims.jsonl fails --replay's claim-form alone, naming the
+# line. A row env.sh reads that is gone fails claim-form before --replay sources env.sh
+# (env_rows_judge).
+MODEL_BYTES='the weights of the snapshot case 91 plants'
+MODEL_SHA="$(printf '%s\n' "$MODEL_BYTES" | sha256sum | cut -d' ' -f1)"
+# env_copy <name> <committed|matches>; a copy of claims.jsonl whose s-model-checksum pins
+# the snapshot this case plants, its two rows carrying their predicates as committed, or
+# recorded again with {"matches": ...}.
+env_copy() {
+    local copy="$WORK/$1.jsonl"
+    jq -c --arg sha "$MODEL_SHA" --arg form "$2" '
+        if .id == "s-model-checksum" then .evidence.sha256 = $sha
+            | .expect = (if $form == "matches" then {matches: ("^" + $sha + "  ")} else {contains: $sha} end)
+        elif .id == "tc-corpus-1" and $form == "matches" then .expect = {matches: "^[0-9]+$"}
+        else . end' "$HERE/claims.jsonl" >"$copy"
+    printf '%s' "$copy"
+}
+# env_reads <name> <claims copy>; runs env.sh's ioc_env_model and ioc_env_reviews over the
+# copy, as --replay's env.sh step does, in a shell of their own with a cache of the case's
+# own; ends 0 when both prepared what the rows pin, and prints env.sh's refusals.
+env_reads() {
+    local cache="$WORK/$1-cache" snapshot
+    snapshot="$cache/cache/hf/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+    mkdir -p "$snapshot" "$cache/bin" "$cache/tc-work"
+    printf '%s\n' "$MODEL_BYTES" >"$snapshot/model.safetensors"
+    printf '1110a243fdf4706b3f48f1d95db1a4f5529b4d41 %s\n' "$MODEL_SHA" >"$cache/model.built-from"
+    seq 10 >"$cache/tc-work/reviews.jsonl"
+    printf '#!/bin/sh\nseq 30\n' >"$cache/bin/gh"
+    chmod +x "$cache/bin/gh"
+    (
+        IOC_ENV_FUNCTIONS_ONLY=1
+        # shellcheck source=env.sh
+        . "$HERE/env.sh" || exit 1
+        ioc_env_built() { return 0; }
+        ioc_env_check_frozen() { return 0; }
+        ioc_env_stamp_write() { return 0; }
+        export IOC_CACHE="$cache" IOC_EVID="$HERE/evidence" IOC_ENV_HERE="$HERE" IOC_ENV_CLAIMS="$2" IOC_PY=/nonexistent-ioc/python PATH="$cache/bin:$PATH"
+        ioc_env_caches
+        ioc_env_model && ioc_env_reviews || exit 1
+        [ "$(wc -l <"$IOC_REVIEWS")" -ge 5000 ] || {
+            printf 'env.sh kept a corpus of %s review bodies, fewer than the 5000 of tc-corpus-1\n' "$(wc -l <"$IOC_REVIEWS")"
+            exit 1
+        }
+    ) 2>&1
+}
+for form in matches committed; do
+    name="env.sh prepares the snapshot and the corpus its rows pin, with both rows' predicates as committed"
+    [ "$form" = matches ] && name="env.sh prepares the snapshot and the corpus its rows pin, with both rows recorded again with {\"matches\": ...}"
+    if why="$(env_reads "env-rows-$form" "$(env_copy "env-rows-$form" "$form")")"; then
+        case_passed "$name"
+    else
+        case_failed "$name" "$(printf '%s\n' "$why" | tail -1)"
+    fi
+done
+for form in 'sha256:"sha256:53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db"' 'corpus_floor:"5000"'; do
+    field="${form%%:*}"
+    dir="$(fresh "typed-$field")"
+    claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    jq -cn --arg field "$field" --argjson value "${form#*:}" \
+        '{id: ("typed-" + $field), requirement: "r7", source: "the case", kind: "behaviour", claim: "An evidence field of the wrong type.", mark: "verified", evidence: {surface: "cli", ($field): $value}, note: "planted"}' >>"$claims_copy"
+    one_failure_result "--replay over a claims.jsonl whose evidence holds $field as ${form#*:} fails claim-form alone, naming the line" claim-form \
+        '^1 of 16 assertions failed: claim-form$' "^FAIL claim-form: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row, so nothing of it is read: its evidence's $field is " \
+        "$(fixture_run "$dir" --replay)"
+done
+copy="$(admitted_copy env-row-gone)"
+jq -c 'select(.id != "s-model-checksum")' "$HERE/claims.jsonl" >"$copy/claims.jsonl"
+out="$(IOC_EVIDENCE="$copy" bash -c '. "$1" && claims_parsed && env_functions && env_rows_judge claim-form' _ "$HERE/check.sh" 2>&1)"
+if printf '%s\n' "$out" | grep -qx 'FAIL claim-form: claims.jsonl holds no row s-model-checksum whose evidence names sha256, which env.sh reads as .*'; then
+    case_passed "a row env.sh reads that is gone fails claim-form by name before --replay sources env.sh"
+else
+    case_failed "a row env.sh reads that is gone fails claim-form by name before --replay sources env.sh" "$(printf '%s\n' "$out" | tail -1)"
 fi
-printf 'all %d cases passed\n' "$total"
-exit 0
+
+# 92. An id names one row (the architect's note of 2026-11-16T06:35Z). At beda0a6c32 the one
+# parse read a second row of an id it had read as a row of its own, so a row recorded twice
+# ran twice and each passed; claims.jsonl holds none, 731 rows and 731 ids. The second is
+# now no row, one FAIL naming both lines, in --replay's claim-form and --admitted's
+# admitted-rows, exit 1. The honest form is each mode over the file as it stands, which
+# cases 88 and 86 run.
+dir="$(fresh duplicate-id)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+row="$(grep -F '"id":"f-behaviour-1"' "$claims_copy")"
+printf '%s\n' "$row" >>"$claims_copy"
+one_failure_result "--replay over a claims.jsonl holding a second row of one id fails claim-form alone, naming both lines, exit 1" claim-form \
+    '^1 of 16 assertions failed: claim-form$' "^FAIL claim-form: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row, so nothing of it is read: its id \"f-behaviour-1\" is the id of line 3 too" \
+    "$(fixture_run "$dir" --replay)"
+copy="$(admitted_copy duplicate-id-admitted)"
+row="$(head -1 "$copy/claims.jsonl")"
+printf '%s\n' "$row" >>"$copy/claims.jsonl"
+one_failure_result "--admitted over a claims.jsonl holding a second row of one id fails admitted-rows alone, naming both lines, exit 1" admitted-rows \
+    '^1 of 4 assertions failed: admitted-rows$' "^FAIL admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row, so nothing of it is read: its id \"[^\"]*\" is the id of line 1 too" \
+    "$(IOC_EVIDENCE="$copy" gate_run "$HERE/check.sh" --admitted)"
+
+# ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
+# The summary, by the three endings and their precedence (check.sh's header): run_ending
+# reads every case this file counted, the ones that could not run among them, prints the
+# last line, writes the ending record and returns the status this file ends with.
+run_ending cases
+exit "$?"
