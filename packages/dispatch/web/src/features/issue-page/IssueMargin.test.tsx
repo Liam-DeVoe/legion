@@ -6,13 +6,20 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
-import type { Issue, IssueDetails, UserState } from "../../api/types";
-import { stateForIssue } from "../issue/pins";
+import type {
+  CommentWithTrees,
+  DisplayTree,
+  Issue,
+  IssueDetails,
+  UserState,
+} from "../../api/types";
+import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { blockedByControlName } from "./BlockedByControl";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
@@ -22,7 +29,12 @@ import { IssueMarginPanel } from "./IssueMargin";
 import { FilledMarginSlot, MarginSlotProvider, useMarginSlotFill } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
 import { MARGIN_SECTION_NAMES, PROPERTY_LABELS } from "./page-structure";
-import { BLOCKED_BY_REFUSALS, CONTROL_LABELS, issueStatusWord } from "./page-words";
+import {
+  BLOCKED_BY_REFUSALS,
+  CONTROL_LABELS,
+  issueStatusWord,
+  NODE_TYPE_NAMES,
+} from "./page-words";
 import { DetailsSlot } from "./slots/details";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -201,6 +213,7 @@ function stubIssueApi() {
 
   return {
     getIssue,
+    getMyState,
     patchIssue,
     pinReads,
     restore: () => {
@@ -463,6 +476,35 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
   }
 });
 
+// R13: only a list of unbounded length folds after its first ten. An issue waits on at most
+// `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show all.
+test("the blockers never fold", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  const blockers = Array.from({ length: MAX_ISSUE_BLOCKERS }, (_, index) => `CORE-${index + 2}`);
+  getIssue.mockResolvedValue({ ...issue, blocked_by: blockers });
+  const { unmount } = renderDetails();
+
+  try {
+    await screen.findByRole("link", { name: "CORE-2" });
+    const row = detailsRow(PROPERTY_LABELS.blocked_by);
+    expect(
+      within(row)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+      "the Blocked by row folds the issues this one waits on"
+    ).toEqual(blockers);
+    expect(
+      within(row).queryByRole("button", {
+        name: (name) => name.startsWith(CONTROL_LABELS.show_all),
+      }),
+      "the Blocked by row offers to show a list it already draws whole"
+    ).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 // R11: the menu lists the properties with no value and presses the control that sets each one,
 // rather than drawing a second copy of it. It finds that control by the name the control
 // exports (`blockedByControlName`), so the two sides cannot spell it apart: while each typed
@@ -485,6 +527,61 @@ test("the add menu opens the control the panel draws, under the name that contro
     ).toBeInTheDocument();
   } finally {
     unmount();
+    restore();
+  }
+});
+
+// R13: the add control lists what has no value yet, so where nothing can be added - a closed
+// issue, or one with a value for every property the menu lists - it is not drawn at all.
+test("the add control is not drawn on a closed issue, nor when every property has a value", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  // The Advances row reads the priorities, to name the one the issue advances.
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
+    empty: "No priority is live now, so the list is empty.",
+    priorities: [],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
+  getIssue.mockResolvedValue({ ...issue, closed_at: "2026-09-10T00:00:00Z", status: "done" });
+  let view = renderDetails();
+
+  try {
+    await screen.findByText(PROPERTY_LABELS.parent, { selector: "[data-page-chrome]" });
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.add }),
+      "the add control is drawn on a closed issue"
+    ).not.toBeInTheDocument();
+    view.unmount();
+
+    // A value for each of the eight properties the menu lists: the components are the parent's.
+    getIssue.mockResolvedValue({
+      ...issue,
+      advances: [{ id: "PRI-7", inherited: false }],
+      assignee: "alice",
+      blocked_by: ["CORE-3"],
+      components: {
+        mode: "inherit",
+        ids: ["api"],
+        unknown: [],
+        reason: null,
+        inherited_from: "CORE-2",
+      },
+      labels: ["bug"],
+      parent: "CORE-2",
+      repo: "acme/widgets",
+      resolved_repo: "acme/widgets",
+      route: "role:legion-controller-core",
+    });
+    view = renderDetails();
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(priorities).toHaveBeenCalled());
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.add }),
+      "the add control is drawn on an issue with a value for every property it lists"
+    ).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
     restore();
   }
 });
@@ -661,6 +758,117 @@ test("the Parent row's first control opens the parent's editor, before the paren
   }
 });
 
+// R3: the parent is set, changed and cleared in its own row, from the control that row draws
+// first, where the old page opened its editor from the overflow menu.
+test("Details saves a parent from the Parent row's editor", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const { unmount } = renderDetails();
+
+  try {
+    await screen.findByText(PROPERTY_LABELS.parent, { selector: "[data-page-chrome]" });
+    await user.click(
+      within(detailsRow(PROPERTY_LABELS.parent)).getByRole("button", {
+        name: CONTROL_LABELS.set_parent,
+      })
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryAllByLabelText(PROPERTY_LABELS.parent),
+        "the Parent row's control opened no editor"
+      ).toHaveLength(1)
+    );
+    await user.click(screen.getByLabelText(PROPERTY_LABELS.parent));
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_parent }));
+
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: "CORE-9" }, keyedAttempt)
+    );
+    // The row draws the parent it saved as the way to it.
+    const link = await within(detailsRow(PROPERTY_LABELS.parent)).findByRole("link", {
+      name: "CORE-9",
+    });
+    expect(link).toHaveAttribute("href", "/issues/CORE-9");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+test("Details clears the parent with an empty editor save", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, parent: "CORE-9" });
+  const { unmount } = renderDetails();
+
+  try {
+    await screen.findByRole("link", { name: "CORE-9" });
+    await user.click(
+      within(detailsRow(PROPERTY_LABELS.parent)).getByRole("button", {
+        name: CONTROL_LABELS.edit_parent,
+      })
+    );
+    const parent = (await screen.findByLabelText(PROPERTY_LABELS.parent)) as HTMLInputElement;
+    expect(parent.value).toBe("CORE-9");
+    await user.clear(parent);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_parent }));
+
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: null }, keyedAttempt)
+    );
+    // The row's first control is the one the header's Set parent issue presses.
+    await waitFor(() =>
+      expect(
+        detailsRow(PROPERTY_LABELS.parent).querySelector(
+          "input, textarea, select, button:not(:disabled), a[href]"
+        ),
+        "the Parent row still offers to edit a parent the issue no longer has"
+      ).toHaveTextContent(CONTROL_LABELS.set_parent)
+    );
+    expect(screen.queryByRole("link", { name: "CORE-9" })).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The editor closes as the save goes out, so a parent Dispatch refuses is said in the row the
+// reader saved it from, in Dispatch's own words, and not as the line for a write that failed.
+test("a parent Dispatch refuses is said in the Parent row with Dispatch's reason", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const reason = "would create a cycle: CORE-1 → CORE-9 → CORE-1";
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(409, { code: "PARENT_INPUT", error: reason }))
+  );
+  const { unmount } = renderDetails();
+
+  try {
+    await screen.findByText(PROPERTY_LABELS.parent, { selector: "[data-page-chrome]" });
+    await user.click(
+      within(detailsRow(PROPERTY_LABELS.parent)).getByRole("button", {
+        name: CONTROL_LABELS.set_parent,
+      })
+    );
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.parent));
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_parent }));
+
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        detailsRow(PROPERTY_LABELS.parent).querySelector("#issue-parent-error")?.textContent,
+        "the Parent row does not say why Dispatch refused the parent"
+      ).toBe(reason)
+    );
+    expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 // R7: the pins are read for their words only where there is a pin, so an issue with none costs
 // no request of the questions, comments and messages.
 test("with no pin, Pinned reads None and sends no request", async () => {
@@ -682,6 +890,131 @@ test("with no pin, Pinned reads None and sends no request", async () => {
       pinReads.messages,
       "Pinned read the issue's messages with no pin"
     ).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** The reader's state with the conversation `id` (`conversationItemId`'s `<kind>:<id>`) of
+ *  CORE-1 pinned, as `pins.ts` writes a pin into `dismissed`. */
+function pinnedState(id: string): UserState {
+  return {
+    "CORE-1": { dismissed: [pinnedItemMarker(id)], last_read_seq: 0, pinned: false, seq: 0 },
+  };
+}
+
+/** A comment of CORE-1 as the comments read answers it, with the server's reading of its body
+ *  where `tree` is given. */
+function commentOf(id: string, body: string, tree?: DisplayTree): CommentWithTrees {
+  return {
+    ...commentDeliveryFields(),
+    anchor: null,
+    ask_id: null,
+    author: { id: "alice", kind: "user" },
+    body,
+    ...(tree === undefined ? {} : { body_tree: tree }),
+    created_at: "2026-09-09T00:00:00Z",
+    edited_at: null,
+    id,
+    issue_key: "CORE-1",
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+}
+
+// R17: until the read that holds a pin's words answers, the pin is drawn by the page's word for
+// its kind, never by the id it was pinned under; once it answers, by its first line.
+test("a pin whose words are not read yet is drawn by its kind's word, never its id", async () => {
+  const id = "5b0f9e64-2c1d-4a7e-8f3b-91d2c6a4e870";
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(pinnedState(conversationItemId("comment", id)));
+  const comments = deferred<CommentWithTrees[]>();
+  pinReads.comments.mockImplementation(() => comments.promise);
+  const { unmount } = renderDetails();
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    const link = await within(pins).findByRole("link");
+    await waitFor(() => expect(pinReads.comments).toHaveBeenCalled());
+    expect(
+      link.textContent,
+      "the pin is not drawn by its kind's word while its words are unread"
+    ).toBe(NODE_TYPE_NAMES.comment);
+    for (const part of id.split("-")) {
+      expect(link.textContent, "the pin is drawn by its comment's id").not.toContain(part);
+    }
+
+    comments.resolve([commentOf(id, "Ship the fix tonight. Then watch the board.")]);
+    await waitFor(() =>
+      expect(
+        within(pins).getByRole("link").textContent,
+        "the pin is not drawn by its comment's first line once the comments are read"
+      ).toBe("Ship the fix tonight.")
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R17: no read holds a handoff's words, so its pin is drawn by the page's word for it, and it
+// opens the history, where the handoff is.
+test("a pinned handoff is drawn by its kind's word and opens the history", async () => {
+  const { getMyState, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(
+    pinnedState(conversationItemId("handoff", "8e2d4c1a-7b3f-4e9d-a6c5-0f1b2d3e4a5c"))
+  );
+  const { unmount } = renderDetails();
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    const link = await within(pins).findByRole("link");
+    expect(link.textContent).toBe(NODE_TYPE_NAMES.handoff);
+    expect(link, "the handoff's pin does not open the history").toHaveAttribute(
+      "href",
+      "/issues/CORE-1/activity"
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R14: a pin's line is its record's words as its row in the outline reads them, from the
+// server's reading of the text, so the symbols that format the body are not drawn as text.
+test("a pinned comment written in markdown is drawn by its words, without the marks", async () => {
+  const id = "3c9a7e15-6d2b-4f80-b1e4-7a5c9d0e2f36";
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(pinnedState(conversationItemId("comment", id)));
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [
+          { marks: [{ type: "strong" }], text: "Bold", type: "text" },
+          { text: " words. Then more.", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  pinReads.comments.mockResolvedValue([commentOf(id, "**Bold** words. Then more.", reading)]);
+  const { unmount } = renderDetails();
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    await waitFor(() =>
+      expect(
+        within(pins).getByRole("link").textContent,
+        "the pin is not drawn by its comment's words"
+      ).toBe("Bold words.")
+    );
+    expect(within(pins).getByRole("link").textContent).not.toContain("*");
   } finally {
     unmount();
     restore();

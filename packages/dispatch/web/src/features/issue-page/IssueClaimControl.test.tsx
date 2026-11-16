@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
+import { dangerText, pageFailedText, pageHeaderControl } from "../../theme/classes";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
 import { IssueClaimControl } from "./IssueClaimControl";
@@ -206,6 +207,39 @@ test("a release that fails says so and offers a retry", async () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Could not release this claim.");
     await view.user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
+  } finally {
+    view.unmount();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// The failure is said by Details' own line (`details-error.tsx`): in the page's colour for
+// what failed, not the app's danger colour, with the page's Retry beside it.
+test("a failed release is said in the page's colours, with Retry", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    running("session-one", "Implementer"),
+  ]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(new Error("network error"));
+  const view = header({ ...base, claim });
+  try {
+    await view.user.click(
+      await screen.findByRole("button", { name: "Release the claim on CORE-1" })
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not release this claim.");
+    expect(alert, "the failure is not in the page's colour for what failed").toHaveClass(
+      pageFailedText
+    );
+    for (const token of dangerText.split(" ")) {
+      expect(alert, "the failure is in the app's danger colour").not.toHaveClass(token);
+    }
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    expect(retry, "Retry is not drawn as the page's control").toHaveClass(pageHeaderControl);
+    await view.user.click(retry);
     await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
   } finally {
     view.unmount();
