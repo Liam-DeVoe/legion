@@ -390,11 +390,11 @@ func TestASecondPassOverAMovedParentSendsNothingAgain(t *testing.T) {
 // acting (dispatch://INFRA-3320 R12): a held planning or implementing starts that phase with the
 // task it held, and a held testing, reviewing or accepting starts implementing with a task that
 // names the held start and its reason. The implementing task ends with the forward-merge request,
-// whose debt the write clears; a held planning keeps the debt for its implementing round. The
-// start raises a new phase entry, marked a move back's, clears the starting role's handoff,
-// counts no pass and no round, and reads no design gate (none is registered here). The parent
-// holds no slot, so with the cap full its start waits in the line among the issues whose work
-// came back.
+// and the record owes the merge until the implementer completes that round; a held planning owes
+// it for its implementing round to come. The start raises a new phase entry, marked a move back's,
+// clears the starting role's handoff, counts no pass and no round, and reads no design gate (none
+// is registered here). The parent holds no slot, so with the cap full its start waits in the line
+// among the issues whose work came back.
 func TestTheReturnStartsTheHeldPhaseOrImplementing(t *testing.T) {
 	const reason = "the tester completed testing, while these Dispatch children of LEGION-300 were open: LEGION-301 (todo)"
 	for _, tc := range []struct {
@@ -426,8 +426,8 @@ func TestTheReturnStartsTheHeldPhaseOrImplementing(t *testing.T) {
 				t.Fatalf("the parent = phase %s, held start %+v, waited at %v, status %s; want %s with no held start, the wait's moment kept, in_progress",
 					got.Phase, got.ChildrenWait, got.ChildrenWaitedAt, got.Status, tc.to)
 			}
-			if wantOwed := tc.to == phase.Planning; got.ForwardMergeOwed != wantOwed {
-				t.Fatalf("the forward merge owed = %t, want %t", got.ForwardMergeOwed, wantOwed)
+			if !got.ForwardMergeOwed {
+				t.Fatalf("the forward merge owed = %t, want it owed until the implementer completes the implementing round", got.ForwardMergeOwed)
 			}
 			starts := startsOf(t, pool, spParent)
 			if len(starts) != 1 || starts[0].role != role || !starts[0].needsSlot || starts[0].claimable {
@@ -486,8 +486,8 @@ func TestTheReturnedTaskCarriesTheForwardMergeRequestOnce(t *testing.T) {
 	if len(starts) != 1 || starts[0].task != heldTask {
 		t.Fatalf("starts of %s = %+v, want one carrying the held task with the request once: %q", spParent, starts, heldTask)
 	}
-	if got := issue(t, pool, spParent); got.Phase != phase.Implementing || got.ForwardMergeOwed {
-		t.Fatalf("the parent = phase %s, merge owed %t; want implementing with the debt cleared", got.Phase, got.ForwardMergeOwed)
+	if got := issue(t, pool, spParent); got.Phase != phase.Implementing || !got.ForwardMergeOwed {
+		t.Fatalf("the parent = phase %s, merge owed %t; want implementing, the merge still owed", got.Phase, got.ForwardMergeOwed)
 	}
 }
 

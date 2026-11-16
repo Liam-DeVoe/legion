@@ -222,10 +222,12 @@ type Issue struct {
 	// other phase: the two change together, as Awaiting and awaiting_person do.
 	ChildrenWait *ChildrenWait
 	// ForwardMergeOwed is whether the parent still owes a forward merge of its children's work. It
-	// is set whenever a parent enters awaiting_children (workflow's awaitChildren), stays set after
-	// the return until an implementing task carries the merge request (workflow's
-	// forwardMergeRequest), and a merged pull request clears it too (dispatch://INFRA-3320 R12). It
-	// outlives the phase, so PutIssue carries it on every write.
+	// is set whenever a parent enters awaiting_children (workflow's awaitChildren), and after the
+	// return every task that starts or starts again the implementing round that owes it asks for
+	// the merge (workflow's forwardMergeRequest). Writing such a task clears nothing: the flag stays
+	// set until the implementer completes that round (workflow's settleForwardMerge), and a merged
+	// pull request clears it too (dispatch://INFRA-3320 R12). It outlives the phase, so PutIssue
+	// carries it on every write.
 	ForwardMergeOwed bool
 	// ChildrenWaitedAt is when the parent last moved into awaiting_children, nil for a parent that
 	// never did. It outlives the phase, which the late-completion guard needs: it refuses a

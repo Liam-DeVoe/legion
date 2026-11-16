@@ -15,12 +15,13 @@
 --
 -- Two columns outlive the phase. forward_merge_owed is whether the parent still owes a forward
 -- merge of its children's work: it is set when the parent enters the wait from a phase that writes
--- a change, stays set after the return until an implementing round carries the merge request, and
--- a merged pull request clears it too (R12, k13). children_waited_at is when the parent last moved
--- into awaiting_children, which the engine's late-completion guard compares a phase entry against
--- after the return (leftItsPhase), so it must survive the start the wait held being consumed. Both
--- are read and written outside the shape check, since they are facts about the parent's run and not
--- about the phase it stands in now.
+-- a change, stays set after the return until the implementer completes the implementing round
+-- whose tasks ask for the merge, and a merged pull request clears it too (R12, k13).
+-- children_waited_at is when the parent last moved into awaiting_children, which the engine's
+-- late-completion guard compares a phase entry against after the return (leftItsPhase), so it
+-- must survive the start the wait held being consumed. Both are read and written outside the
+-- shape check, since they are facts about the parent's run and not about the phase it stands in
+-- now.
 --
 -- phases.entry_from is the phase the start that raised a role's entry moved the issue from
 -- (record.PhaseRow.EntryFrom), written beside phases.entry, entry_task, entry_raised_at and

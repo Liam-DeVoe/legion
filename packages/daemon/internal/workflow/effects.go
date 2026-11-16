@@ -555,7 +555,7 @@ func entryWork(issue record.Issue, row record.PhaseRow) string {
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
 // promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumePhaseTask).
+// in (ResumePhaseTask), which asks for the forward merge an implementing member still owes.
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -958,8 +958,20 @@ func handoffWord(role claim.Role) string {
 // ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
 // begins that phase — the run that did is over — so the task names the phase and says to carry
 // the work on, which is what a resumed session needs to tell this phase from its last.
+//
+// An implementing phase whose parent still owes the forward merge of its children's work is the
+// round that owes it, so its resume task asks for the merge as every implementing task does
+// (forwardMergeRequest): the start of a re-admitted tree's mid-phase member (StartPromotedWorker),
+// and the send of an entry whose task the re-admission cleared (entryWork), each start that round
+// again, and the session they reach may have read none of the task that first asked. No pull
+// request is read for it: a merge clears the flag in the transaction that records it
+// (Engine.merged), so the flag alone says whether the merge is owed.
 func ResumePhaseTask(issue record.Issue) string {
-	return continueLine(issue) + " Resume the existing phase work."
+	text := continueLine(issue) + " Resume the existing phase work."
+	if request := forwardMergeRequest(issue, nil); request != "" {
+		text += " " + request
+	}
+	return text
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

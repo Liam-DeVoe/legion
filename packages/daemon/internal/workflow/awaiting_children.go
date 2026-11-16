@@ -232,8 +232,12 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 // has not merged, and "" for every other task (dispatch://INFRA-3320 R12): merge the default
 // branch into the branch before anything else, push, and complete with a new handoff record,
 // however the children left, and end the forward-merge comment with the line the tester reads as
-// asking for a full round (childrenMergedLine). task adds it, and the write that puts the issue in
-// the phase that task is for clears the flag (settleForwardMerge).
+// asking for a full round (childrenMergedLine). task adds it, and so does the resume task of a
+// phase under way (ResumePhaseTask), so every task that starts the implementing round that owes
+// the merge, or starts it again, asks for it: the return's (ReturnFromChildren), a transition's
+// into implementing, the release of a hold and the operator's restart of the phase (retryPhase),
+// and the start of a re-admitted tree's mid-phase member (StartPromotedWorker). Writing such a
+// task settles nothing; the implementer's completion of that round does (settleForwardMerge).
 func forwardMergeRequest(issue record.Issue, pr *record.PullRequest) string {
 	if issue.Phase != phase.Implementing || !issue.ForwardMergeOwed || (pr != nil && pr.State == record.PullRequestMerged) {
 		return ""
@@ -241,12 +245,18 @@ func forwardMergeRequest(issue record.Issue, pr *record.PullRequest) string {
 	return forwardMergeText(issue)
 }
 
-// settleForwardMerge clears the forward merge issue owes where a task of it carries the request
-// (forwardMergeRequest): the caller writes issue into the phase that task is for, and that write is
-// the one that clears the debt. A transition (transition), the release of a hold (retryPhase) and
-// the return from awaiting_children (ReturnFromChildren) each settle it so.
-func settleForwardMerge(issue *record.Issue, pr *record.PullRequest) {
-	if forwardMergeRequest(*issue, pr) != "" {
+// settleForwardMerge clears the forward merge issue owes (record.Issue.ForwardMergeOwed) where
+// trigger is the implementer's completion of implementing (TriggerImplementationReady): the round
+// the request asked to merge the default branch forward, push and complete with a new handoff
+// record is over. Writing a task that carries the request settles nothing, since the round that
+// task starts can be started again before it is done — a claim that fails before it takes its
+// start and the architect's retry, a fresh session, a re-admitted tree's promotion — and each of
+// those tasks asks for the merge again because the flag still stands (forwardMergeRequest). A
+// merged pull request clears the flag as well (Engine.merged). The transition is the one caller,
+// and a completion an open child holds moves the parent into a new wait before it gets here,
+// which owes the merge again (awaitChildren).
+func settleForwardMerge(issue *record.Issue, trigger TriggerKind) {
+	if trigger == TriggerImplementationReady {
 		issue.ForwardMergeOwed = false
 	}
 }
@@ -407,7 +417,8 @@ func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //     children's merges proves nothing, with a task that names the held start and its reason.
 //   - While the forward merge is owed and the pull request has not merged, the implementing task
 //     ends with the request to merge the default branch forward (forwardMergeRequest), once,
-//     whatever the held task carried, and the write that starts implementing clears the debt.
+//     whatever the held task carried. The record owes the merge until the implementer completes
+//     that round (settleForwardMerge), so a task that starts the round again asks for it too.
 //   - A parent whose pull request merged during the wait goes back to the very start it held,
 //     with no forward merge (the merge cleared the debt, Engine.merged), and keeps today's path
 //     for a merged pull request from there. A held accepting goes back to accepting, where no
@@ -457,7 +468,6 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 	} else if request := forwardMergeRequest(back, pr); request != "" {
 		work += " " + request
 	}
-	settleForwardMerge(&back, pr)
 	status := PhaseStatus(back.Phase)
 	if err := e.status(ctx, tx, issue, status); err != nil {
 		return err

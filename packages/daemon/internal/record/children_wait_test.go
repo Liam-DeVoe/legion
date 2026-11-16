@@ -54,7 +54,7 @@ func TestStoreRoundTripsAParentsChildrenWait(t *testing.T) {
 
 	// A parent that returned to its held start keeps the two outliving marks and carries no held
 	// start: the return clears the four held-start columns and leaves the forward merge owed until
-	// an implementing round carries it.
+	// the implementer completes the implementing round that asks for it.
 	returned := waiting
 	returned.Phase = phase.Implementing
 	returned.ChildrenWait = nil

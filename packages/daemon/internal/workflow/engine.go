@@ -1282,8 +1282,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // holding the retried phase with the task the retry would have given its worker (heldTask) and the
 // retry's reason (awaitChildren), and starts nobody. The round of a reviewing release is not read
 // then: the held reviewing goes back as implementing, whatever that round came to. A retry of
-// implementing whose task asks for the forward merge the parent owes clears that debt in the
-// write that puts the issue back in its phase, as a transition's does (settleForwardMerge).
+// implementing while the parent owes the forward merge of its children's work asks for it again
+// (forwardMergeRequest): the round it starts again is the one that owes the merge, and only the
+// implementer's completion of that round settles it (settleForwardMerge).
 // The release restarts the held phase on the entry it was raised on (restart raises none), so a
 // phase whose role stands on an entry a conflicting head raised out of retro or merging is
 // restarted whatever its children are, as the admission pass leaves it (acceptedEntry,
@@ -1320,10 +1321,6 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 				Task: heldTask(issue, from, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
 		}
 	}
-	// The issue as the restarted worker's task reads it: the write below clears a forward merge
-	// that task asks for.
-	asked := issue
-	settleForwardMerge(&issue, pr)
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return "", err
 	}
@@ -1350,7 +1347,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(asked, record.PhaseRow{}, pr, reason), freshSession)
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -1633,10 +1630,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	from := issue.Phase
 	issue.Phase, issue.Hold = row.To, nil
 	// The task the start below hands the worker. An implementing task carries the forward merge a
-	// parent owes after a wait on its children, and this write, which puts the issue in the phase
-	// that task is for, is the one that clears the debt (settleForwardMerge).
+	// parent owes after a wait on its children, and writing it settles nothing: the implementer's
+	// completion of implementing, the round that does the merge, is the move that clears the debt
+	// (settleForwardMerge).
 	work := task(issue, handoff, pr, reason)
-	settleForwardMerge(&issue, pr)
+	settleForwardMerge(&issue, trigger)
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
 	// not about the issue's history. It lasts as long as the run's record does — through the phase's

@@ -370,8 +370,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		counted := spPhaseRow(t, pool, spParent, claim.RoleImplementer)
 		back := pnChildDone(t, pool, restarted)
 
-		if back.Phase != phase.Implementing || back.ChildrenWait != nil || back.Status != "in_progress" || back.ForwardMergeOwed {
-			t.Fatalf("%s at the pass after its child is done = phase %s, held start %+v, status %s, merge owed %t; want implementing, nothing held, in_progress, the debt in its task",
+		if back.Phase != phase.Implementing || back.ChildrenWait != nil || back.Status != "in_progress" || !back.ForwardMergeOwed {
+			t.Fatalf("%s at the pass after its child is done = phase %s, held start %+v, status %s, merge owed %t; want implementing, nothing held, in_progress, the merge owed until its implementer completes the round",
 				spParent, back.Phase, back.ChildrenWait, back.Status, back.ForwardMergeOwed)
 		}
 		starts := pwWorkerStarts(t, pool, spParent)
@@ -499,8 +499,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 
 			back := pnChildDone(t, pool, admission)
 
-			if back.Phase != phase.Implementing || back.ChildrenWait != nil || back.ForwardMergeOwed {
-				t.Fatalf("the parent = phase %s, held start %+v, merge owed %t; want implementing in place of %s", back.Phase, back.ChildrenWait,
+			if back.Phase != phase.Implementing || back.ChildrenWait != nil || !back.ForwardMergeOwed {
+				t.Fatalf("the parent = phase %s, held start %+v, merge owed %t; want implementing in place of %s, the merge still owed", back.Phase, back.ChildrenWait,
 					back.ForwardMergeOwed, held.start)
 			}
 			starts := pwWorkerStarts(t, pool, spParent)
@@ -536,8 +536,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		pwApplied(t, pool, admission, "api", "planned", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RolePlanner,
 			Claim: "planner", Summary: "planned again", Commit: "head-42", HandoffRecord: "plan-2", HandoffVersion: 2})
 
-		if got := issue(t, pool, spParent); got.Phase != phase.Implementing || got.ForwardMergeOwed {
-			t.Fatalf("the parent after its planner's completion = phase %s, merge owed %t; want implementing with the debt in its task", got.Phase, got.ForwardMergeOwed)
+		if got := issue(t, pool, spParent); got.Phase != phase.Implementing || !got.ForwardMergeOwed {
+			t.Fatalf("the parent after its planner's completion = phase %s, merge owed %t; want implementing, the merge owed until its implementer completes the round", got.Phase, got.ForwardMergeOwed)
 		}
 		work := pnWorkerStart(t, pool, spParent, claim.RoleImplementer).Task
 		if !strings.Contains(work, pnForwardMerge) || strings.Count(work, spMergeLine) != 1 {
@@ -766,8 +766,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		spMirror(t, pool, grandchild, "done", child, 2)
 		spPass(t, pool, admission)
 
-		if back := issue(t, pool, child); back.Phase != phase.Implementing || back.ChildrenWait != nil || back.ForwardMergeOwed {
-			t.Fatalf("the carried root after its child is done = phase %s, held start %+v, merge owed %t; want implementing", back.Phase, back.ChildrenWait, back.ForwardMergeOwed)
+		if back := issue(t, pool, child); back.Phase != phase.Implementing || back.ChildrenWait != nil || !back.ForwardMergeOwed {
+			t.Fatalf("the carried root after its child is done = phase %s, held start %+v, merge owed %t; want implementing, the merge still owed", back.Phase, back.ChildrenWait, back.ForwardMergeOwed)
 		}
 		starts := pwWorkerStarts(t, pool, child)
 		if len(starts) != 1 || starts[0].role != claim.RoleImplementer || !starts[0].needsSlot || starts[0].claimable ||

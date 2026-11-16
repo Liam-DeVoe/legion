@@ -539,10 +539,11 @@ func TestAnImplementingTaskAsksForTheForwardMergeWhileItIsOwed(t *testing.T) {
 	}
 }
 
-// The transition that writes an implementing task carrying the forward merge clears the debt in
-// the same write; a transition into another phase leaves it owed for the implementing round to
-// come.
-func TestTheTransitionThatAsksForTheForwardMergeClearsIt(t *testing.T) {
+// A transition that writes an implementing task carrying the forward merge settles nothing: the
+// merge stays owed through every start of the implementing round that owes it, a retry of a hold
+// among them, and the implementer's completion of implementing, the round that did the merge,
+// is the move that clears the debt.
+func TestOnlyTheImplementersCompletionSettlesTheForwardMerge(t *testing.T) {
 	owed := func(issue *record.Issue) { issue.ForwardMergeOwed = true }
 
 	t.Run("a move into implementing", func(t *testing.T) {
@@ -552,23 +553,23 @@ func TestTheTransitionThatAsksForTheForwardMergeClearsIt(t *testing.T) {
 		cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerTesterFailed, phase.Implementing,
 			record.PhaseRow{Issue: cwParent, Role: claim.RoleTester, Verdict: "fail"}, "")
 
-		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Implementing || got.ForwardMergeOwed {
-			t.Fatalf("the parent = phase %s, forward merge owed %t; want implementing with the debt cleared", got.Phase, got.ForwardMergeOwed)
+		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Implementing || !got.ForwardMergeOwed {
+			t.Fatalf("the parent = phase %s, forward merge owed %t; want implementing with the merge still owed", got.Phase, got.ForwardMergeOwed)
 		}
 		if task := startTask(t, pool, claim.RoleImplementer); !strings.Contains(task, "`"+childrenMergedLine+"`") {
 			t.Fatalf("the implementer's task = %q, want the forward-merge request", task)
 		}
 	})
 
-	t.Run("a move into testing", func(t *testing.T) {
+	t.Run("the implementer's completion, a move into testing", func(t *testing.T) {
 		pool := migratedPool(t)
 		cwSeedParent(t, pool, cwParent, phase.Implementing, 42, owed)
 
 		cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerImplementationReady, phase.Testing,
 			record.PhaseRow{Issue: cwParent, Role: claim.RoleImplementer, HandoffCommit: "head"}, "")
 
-		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Testing || !got.ForwardMergeOwed {
-			t.Fatalf("the parent = phase %s, forward merge owed %t; want testing with the merge still owed", got.Phase, got.ForwardMergeOwed)
+		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Testing || got.ForwardMergeOwed {
+			t.Fatalf("the parent = phase %s, forward merge owed %t; want testing with the debt cleared", got.Phase, got.ForwardMergeOwed)
 		}
 		if task := startTask(t, pool, claim.RoleTester); strings.Contains(task, childrenMergedLine) {
 			t.Fatalf("the tester's task = %q, want no forward-merge request", task)
@@ -583,8 +584,8 @@ func TestTheTransitionThatAsksForTheForwardMergeClearsIt(t *testing.T) {
 
 		applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("retry", intake.RetryOrEscalate{Issue: cwParent, Decision: intake.RetryDecision})
 
-		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Implementing || got.ForwardMergeOwed {
-			t.Fatalf("the parent = phase %s, forward merge owed %t; want implementing with the debt cleared", got.Phase, got.ForwardMergeOwed)
+		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Implementing || !got.ForwardMergeOwed {
+			t.Fatalf("the parent = phase %s, forward merge owed %t; want implementing with the merge still owed", got.Phase, got.ForwardMergeOwed)
 		}
 		if task := startTask(t, pool, claim.RoleImplementer); !strings.Contains(task, "`"+childrenMergedLine+"`") {
 			t.Fatalf("the retried implementer's task = %q, want the forward-merge request", task)
