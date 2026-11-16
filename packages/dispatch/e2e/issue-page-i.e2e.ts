@@ -1,5 +1,9 @@
 import type { Browser, BrowserContext, Page } from "@playwright/test";
 
+import {
+  FOOT_HEIGHT_PROPERTY,
+  IDENTITY_HEIGHT_PROPERTY,
+} from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import { KEY_REPORTS } from "../web/src/features/issue-page/page-structure";
@@ -38,6 +42,7 @@ import {
   patchIssue,
 } from "./api";
 import { countDocumentSockets, cursorLabel } from "./editor";
+import { nextFrames } from "./frames";
 import {
   seedNoChildren,
   seedReplyNesting,
@@ -79,7 +84,6 @@ import {
   unfoldEveryBranch,
 } from "./issue-page-g";
 import {
-  afterTwoFrames,
   branchMoreIndents,
   branchMoreRows,
   bulletBoxes,
@@ -96,7 +100,6 @@ import {
   keysListLines,
   nodeBodies,
   onScreen,
-  openEveryDeeperBranch,
   outlineRows,
   pageStatus,
   pinnedBodies,
@@ -122,7 +125,9 @@ import { asUser } from "./users";
  * editing in a node - read on the real stack. Each row turns the new page on for its reader with
  * `withIssuePage` (D's `phase` and this file's `openTree`), seeds what it reads with the seeds of
  * `e2e/issue-layout-seed.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
- * `e2e/issue-page-g.ts` and this part's `e2e/issue-page-i.ts`, spelling no selector of its own.
+ * `e2e/issue-page-g.ts` and this part's `e2e/issue-page-i.ts`. The few selectors it spells itself
+ * are marks one row reads: a key's report at a row, a crumb, a child's facts and key, a row's
+ * card and author, the links the hover row rests on and the Inbox's owner link.
  *
  * The rows come from the checkpoint's `e2e/issue-layout.e2e.ts` and `e2e/keyboard-issue.e2e.ts`,
  * each under the title its check names (`verification.md` of dispatch://INFRA-3944, c-outline
@@ -137,7 +142,8 @@ interface OpenedTree {
 
 /** The whole issue, opened on the new page by one signed-in reader with the focus on the page
  *  itself, which is where reading mode is. A key pressed before this returns reaches no handler,
- *  because the keymap binds only once sign-in resolves. It asserts nothing: each row below
+ *  because the keymap binds only once sign-in resolves. It asserts only that the page loaded
+ *  and that the focus left for the page itself (`gotoIssue`, `focusThePage`): each row below
  *  asserts the key or the tree property it is about first, and `expectTreeDrawn` after it. The
  *  suite's `test` has emptied the database before the row. */
 async function openTree(browser: Browser): Promise<OpenedTree> {
@@ -522,6 +528,8 @@ function rowsByKind(rows: readonly DrawnRow[]): Record<string, number> {
 // summary callout, which the head draws (R8) and c-three-things reads, and which this row
 // leaves out of its reading either way; and which row of a node the edit key opens, which is
 // c-editing's and touches nothing this row reads.
+// SLOW(>=2s): the whole issue seeded and read back through seven API reads, one load waited out
+// until its reads settle, then every branch unfolded press by press and the rows read whole.
 test("with no filter the page is the conversation, each node edited once, folded to the frontier", async ({
   browser,
 }) => {
@@ -620,7 +628,6 @@ test("with no filter the page is the conversation, each node edited once, folded
     // task, and each child under the issue - read by node id against the server's own reads,
     // and a row for nothing else.
     await unfoldEveryBranch(page);
-    await openEveryDeeperBranch(page);
     const whole = await drawnRows(page);
     expectNoIssueNodeRows(whole, outline.slugs, "the page with every branch open");
     // The memo callout is the head's three sentences and no row of the outline (R8).
@@ -791,6 +798,8 @@ async function expectPhoneBulletGaps(page: Page, where: string): Promise<void> {
 //
 // It sets the width itself, as every row of this file does: `phase` starts every page at the
 // desktop size in every project, the `iphone` project included.
+// SLOW(>=2s): the whole issue seeded, then five cold loads at five widths, each read row by row
+// and measured for its fit, and a branch opened at two of them.
 test("a folded branch's line is its first line, cut at a word @phone @phone-only", async ({
   browser,
 }) => {
@@ -890,6 +899,8 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
 // (INFRA-1950); a reading under its decision (INFRA-1150); and a comment anchored to a node
 // under that node, an edge the model does not store (INFRA-1149, INFRA-1253), so the anchored
 // comment sits under the issue as any node with no stored parent does.
+// SLOW(>=2s): three seeds, each loaded cold with its branches unfolded press by press, and the
+// first seed's parents read off the page one whole read at a time.
 test("each node sits under the parent the model stores", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedSpineCases, async (page, seeded) => {
@@ -1000,7 +1011,6 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
     await unfoldEveryBranch(page);
-    await openEveryDeeperBranch(page);
     const rows = await drawnRows(page);
     const parentOf = (id: string) => ancestorsIn(rows, id).at(-1);
 
@@ -1138,22 +1148,28 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
 // opens with the focus on the outline's first row. The second question is asked after forty
 // older nodes, so the scroll is what puts it in the viewport: on a seed whose one question is
 // the outline's first row, the row is on the first screen whatever the page does.
+// SLOW(>=2s): forty comments and a question written, then ten cold loads at three sizes, of this
+// issue and of a second one of one long comment, each waited on until the focus lands.
 test("an open question is unfolded and on the first screen @phone", async ({ browser }) => {
-  // Eight cold loads of an issue of some ninety rows, at two sizes.
+  // Ten cold loads at three sizes, eight of them of an issue of some ninety rows.
   test.setTimeout(240_000);
-  /** Whether node `id`'s row is whole inside what the reader sees: under the band that stays at
-   *  the top of the screen and above the box at its foot. */
+  /** Whether node `id`'s row starts inside what the reader sees: the top of its card under the
+   *  band that stays at the top of the screen and above the box at its foot. Only the top is
+   *  read, so a row that runs on below the foot still counts. */
   const inView = (page: Page, id: string): Promise<boolean> =>
     nodeRow(page, id)
       .first()
-      .evaluate((row) => {
-        const style = getComputedStyle(document.documentElement);
-        const band = Number.parseFloat(style.getPropertyValue("--issue-identity-height")) || 0;
-        const foot = Number.parseFloat(style.getPropertyValue("--issue-composer-height")) || 0;
-        const card = row.querySelector("[data-node-card]") ?? row;
-        const box = card.getBoundingClientRect();
-        return box.top >= band - 1 && box.top < window.innerHeight - foot;
-      });
+      .evaluate(
+        (row, properties) => {
+          const style = getComputedStyle(document.documentElement);
+          const band = Number.parseFloat(style.getPropertyValue(properties.band)) || 0;
+          const foot = Number.parseFloat(style.getPropertyValue(properties.foot)) || 0;
+          const card = row.querySelector("[data-node-card]") ?? row;
+          const box = card.getBoundingClientRect();
+          return box.top >= band - 1 && box.top < window.innerHeight - foot;
+        },
+        { band: IDENTITY_HEIGHT_PROPERTY, foot: FOOT_HEIGHT_PROPERTY }
+      );
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const first = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
     // Forty nodes a person wrote, each a row of the outline, and then a question asked of the
@@ -1310,8 +1326,10 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
 // the model places them, which for every child today is under the issue; each child's row holds
 // its title, its status, what blocks it and who holds it, with its key as the tag; and
 // `/children` and `t h` move the focus to that group. The header's bar and counts are part P's.
+// SLOW(>=2s): two seeds and twenty-one cold loads - each view's address at two sizes, each waited
+// out until its reads settle - and the children's keys pressed at two sizes.
 test("the children are one group of rows of the outline @phone", async ({ browser }) => {
-  // Two whole seeds and some fifteen cold loads of the issue page.
+  // Two seeds and twenty-one cold loads of the issue page.
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // No seed claims a child, and the check reads who holds the running one, so this test puts a
@@ -1484,7 +1502,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
     const before = await focusedNodeId(page);
     await page.keyboard.press("t");
     await page.keyboard.press("h");
-    await afterTwoFrames(page);
+    await nextFrames(page);
     expect(await focusedNodeId(page), "t h moved the focus on an issue with no children").toBe(
       before
     );
@@ -1499,6 +1517,8 @@ test("the children are one group of rows of the outline @phone", async ({ browse
 // beside it, and Conversation draws the outline again, with the focus on its rows. The views'
 // own bodies are their parts' (J, V, K, Q); until a part fills its slot, its view draws nothing,
 // and the outline is gone all the same.
+// SLOW(>=2s): the whole issue seeded and loaded, then four views turned on and off, the outline
+// waited for after each, two chords pressed and the list of keys opened.
 test("a view replaces the outline, and the outline comes back", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -1565,6 +1585,8 @@ test("a view replaces the outline, and the outline comes back", async ({ browser
 // is a guard that passes at the commit before the outline as well. The outline's own reading is
 // the one before it: a thread the outline folds is not read, however long the page stays open,
 // until the reader opens it.
+// SLOW(>=2s): a seeded thread and a reply, the Inbox polled, a load left folded for a fixed two
+// seconds, then the thread opened and waited on for the dwell that marks it read.
 test("a thread read on the outline is read in the Inbox", async ({ browser }) => {
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     // An agent replies in alice's thread, which makes the thread unread in her Inbox.
@@ -1580,11 +1602,12 @@ test("a thread read on the outline is read in the Inbox", async ({ browser }) =>
       );
     await expect.poll(unread, { message: "the agent's reply left the thread read" }).toBe(true);
 
-    // The page opens at 1440 by 900 with the thread folded, since it holds no open question:
-    // two seconds later, twice the dwell that marks a thread read, it is still unread.
+    // The page opens at 1440 by 900 with the thread folded, since it holds no open question.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
+    // A mark's absence is the claim, so the wait is a span: two seconds, twice the dwell that
+    // marks a thread read, after which the folded thread is still unread.
     await page.waitForTimeout(2_000);
     expect(await unread(), "the thread was marked read before the reader opened it").toBe(true);
     expect(
@@ -1594,7 +1617,6 @@ test("a thread read on the outline is read in the Inbox", async ({ browser }) =>
 
     // Opened, with its newest write's row on screen, the thread is read.
     await unfoldEveryBranch(page);
-    await openEveryDeeperBranch(page);
     const newest = nodeRow(page, answer.id).first();
     await newest.scrollIntoViewIfNeeded();
     await expect(newest, "the agent's reply draws no row once the thread is open").toBeVisible();
@@ -1608,6 +1630,8 @@ test("a thread read on the outline is read in the Inbox", async ({ browser }) =>
 // the tester on 2026-11-09 at 39649c0f269d, where the Spec preset's requirement list drew that
 // run in a span that neither wrapped it nor gave it its own line, and the whole page scrolled
 // sideways: 884 px of page in a 390 px viewport. Read here on the outline, with no view on.
+// SLOW(>=2s): a seeded issue loaded cold at three widths, each waited on until its words draw and
+// measured for its fit.
 test("a statement whose words hold an unbroken run keeps the outline inside its viewport @phone", async ({
   browser,
 }) => {
@@ -1631,6 +1655,8 @@ test("a statement whose words hold an unbroken run keeps the outline inside its 
 // words of the child's row of the outline (the architect's ruling 5). Measured at 320 px with
 // the same 108 character path on 2026-11-09 at 454f2a3107a6, in the children's section the page
 // drew then: 807 px of text in a 288 px box and a page 823 px wide.
+// SLOW(>=2s): a seeded issue and its child, loaded cold at three widths, each waited on until the
+// child's row draws and measured for its fit.
 test("a child whose title holds an unbroken run keeps the page inside its viewport @phone", async ({
   browser,
 }) => {
@@ -1658,6 +1684,8 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
 // crumb is the node's first line by R1's rule, cut at a word, never cut again mid-word by its
 // box, and a line that is a whole sentence carries no ellipsis after its own full stop. The
 // issue's crumb is its key (ruling 5). The Contents entry's half is part J's.
+// SLOW(>=2s): the whole issue seeded and loaded at a phone's size on a reply's address, waited on
+// until the reply has the focus, then zoomed into and measured.
 test("a crumb draws its node's first line, cut at a word @phone @phone-only", async ({
   browser,
 }) => {
@@ -1707,6 +1735,8 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
 });
 
 // c-focus-opens.
+// SLOW(>=2s): the whole issue seeded and loaded, every row hovered, every link rested on past the
+// delay a card opens after, the rows read three times, and the Inbox loaded.
 test("a body opens on focus and nothing opens on hover", async ({ browser }) => {
   // The row rests the pointer on every reference the page draws, each for longer than a card
   // takes to open elsewhere, which is a second or two of absences on top of the row's own walk.
@@ -1846,6 +1876,8 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
   });
 });
 
+// SLOW(>=2s): the whole issue seeded and loaded in a context of its own, then some twenty keys
+// pressed with every row read again after most of them, and a caret put in a node.
 test("the tree's keys move, fold, zoom and open the focused node", async ({ browser }) => {
   const { context, page, seeded } = await openTree(browser);
   try {
@@ -2001,6 +2033,8 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
   }
 });
 
+// SLOW(>=2s): the whole issue seeded and loaded in a context of its own, then some thirty keys
+// pressed, each followed by a read of where the focus is.
 test("Tab enters and leaves the tree at one stop and every move keeps the row on screen", async ({
   browser,
 }) => {
@@ -2057,6 +2091,7 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
   }
 });
 
+// SLOW(>=2s): the whole issue seeded and loaded in a context of its own, for one read of its rows.
 test("the tree answers the WAI-ARIA tree pattern's roles and properties", async ({ browser }) => {
   const { context, page } = await openTree(browser);
   try {
@@ -2106,6 +2141,8 @@ test("the tree answers the WAI-ARIA tree pattern's roles and properties", async 
 });
 
 // c-chain.
+// SLOW(>=2s): the whole issue seeded, loaded until its reads settle and unfolded press by press,
+// then its rows read whole five times or more and seven keys pressed.
 test("the chain is reachable and only gaps that tell a node apart are drawn", async ({
   browser,
 }) => {
@@ -2126,7 +2163,6 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
     await unfoldEveryBranch(page);
-    await openEveryDeeperBranch(page);
 
     // The gaps the page draws are those that tell a node apart and name work somebody owes: each
     // requirement no check serves, and the plan task that serves no requirement - and no other
@@ -2213,6 +2249,7 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 
 // The tester's F16: what a key says when it has nowhere to go - `w` on a row no decision stands
 // behind - is drawn at the row it was pressed on, once, and the reader's next move lets it go.
+// SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for two keys pressed.
 test("a key with nowhere to go says so at its row, and the next move lets it go", async ({
   browser,
 }) => {
@@ -2251,6 +2288,8 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
 // second one's caret. What is typed is stored. Escape gives the same row the focus, and a second
 // Escape leaves the outline. A comment's row holds no document's text, and the key says so at
 // the row.
+// SLOW(>=2s): the whole issue seeded and loaded, a second reader's context loading it too, both
+// carets put in the spec's live room, and two reloads or more reading what was stored.
 test("Enter puts the caret in a node, and Escape gives the row back", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page, seeded } = await openTree(browser);

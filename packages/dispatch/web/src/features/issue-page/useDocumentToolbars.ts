@@ -11,13 +11,16 @@ import {
 
 import type { DocumentToolbar } from "../doc/ProofDocument";
 
+/** What a document reports its toolbar through: a callback of its own, by its artifact id. */
+export type ToolbarSink = (artifactId: string) => (next: DocumentToolbar | undefined) => void;
+
 export interface DocumentToolbars {
   /** Which documents are drawn against their previous version. */
   readonly diffs: ReadonlySet<string>;
   /** Turns a document's diff on or off. */
   readonly showDiff: (artifactId: string, next: boolean) => void;
   /** The one callback a document reports its toolbar through, by artifact id. */
-  readonly toolbarSink: (artifactId: string) => (next: DocumentToolbar | undefined) => void;
+  readonly toolbarSink: ToolbarSink;
   /** The toolbar each open document published. */
   readonly toolbars: ReadonlyMap<string, DocumentToolbar>;
 }
@@ -33,20 +36,37 @@ const NO_TOOLBARS: DocumentToolbars = {
 
 const DocumentToolbarsContext = createContext<DocumentToolbars>(NO_TOOLBARS);
 
+/** The sink alone, in a context of its own whose value never changes: an editor publishes a
+ *  toolbar each time its connection, its unsent changes or its versions move, and a reader of
+ *  the sink - the body, which draws the whole outline - is not drawn again for any of them. */
+const ToolbarSinkContext = createContext<ToolbarSink>(NO_TOOLBARS.toolbarSink);
+
 /**
  * Holds one toolbar and one diff per document, by its artifact id, for one issue page
  * (dispatch://INFRA-1196 R16): every editor on the page reports its own toolbar through a
- * callback of its own, and the page's version control draws the toolbar of whichever document is
- * open. It stands in `slots/providers.tsx`, above the body, whose row editor reports here, and
- * the view row, whose version control reads it.
+ * callback of its own, for the page's version control to draw the toolbar of whichever document
+ * is open. It stands in `slots/providers.tsx`, above the body, whose row editor reports here
+ * through `useToolbarSink`, and above the view row, where part N's version control is to read
+ * the toolbars; nothing reads them yet.
  */
 export function DocumentToolbarsProvider({ children }: { children: ReactNode }): ReactNode {
-  return createElement(DocumentToolbarsContext.Provider, { value: useHeldToolbars() }, children);
+  const held = useHeldToolbars();
+  return createElement(
+    ToolbarSinkContext.Provider,
+    { value: held.toolbarSink },
+    createElement(DocumentToolbarsContext.Provider, { value: held }, children)
+  );
 }
 
 /** The page's toolbars and diffs, held by the nearest `DocumentToolbarsProvider`. */
 export function useDocumentToolbars(): DocumentToolbars {
   return useContext(DocumentToolbarsContext);
+}
+
+/** The nearest `DocumentToolbarsProvider`'s sink, which is the same function for the page's
+ *  whole life, so reading it draws nothing again when a toolbar changes. */
+export function useToolbarSink(): ToolbarSink {
+  return useContext(ToolbarSinkContext);
 }
 
 /**

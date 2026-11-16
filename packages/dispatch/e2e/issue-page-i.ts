@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { FOOT_HEIGHT_PROPERTY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
 import { gotoIssue, issuePage, openMenu, presetChooser, presetRow } from "./issue-page";
@@ -56,11 +57,6 @@ const SELECTORS = {
   stage: '[data-testid="issue-column"]',
   tree: '[role="tree"]',
 } as const;
-
-/** The custom property the page publishes the height of the box at its foot under, on the
- *  document element (`FOOT_HEIGHT_PROPERTY` of `identity-block.ts`). Unset while no box is
- *  drawn. */
-const FOOT_HEIGHT = "--issue-composer-height";
 
 /** A `"` inside an attribute value would end the selector's string, and no id, slug or kind the
  *  page draws holds one; a value that did would otherwise match nothing silently. */
@@ -274,16 +270,6 @@ export function keysListLines(page: Page, chord: string): Promise<(string | null
     );
 }
 
-/** Resolves once the page has drawn two frames, so a key that changed nothing is read after
- *  the render it would have caused. */
-export async function afterTwoFrames(page: Page): Promise<void> {
-  await page.evaluate(async () => {
-    const frame = Promise.withResolvers<void>();
-    requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
-    await frame.promise;
-  });
-}
-
 /** The chain of ancestors above `id`, outermost first, as the drawn levels give it. */
 export async function ancestorsOfRow(page: Page, id: string): Promise<string[]> {
   const chain: string[] = [];
@@ -364,7 +350,7 @@ export async function onScreen(scope: Locator): Promise<boolean> {
         rect.right <= window.innerWidth + 1
       );
     },
-    { footHeight: FOOT_HEIGHT, selectors: SELECTORS }
+    { footHeight: FOOT_HEIGHT_PROPERTY, selectors: SELECTORS }
   );
 }
 
@@ -476,14 +462,14 @@ export async function standInFootBox(page: Page, height: number): Promise<() => 
       document.documentElement.style.setProperty(footHeight, `${height}px`);
       return true;
     },
-    { footHeight: FOOT_HEIGHT, height, stage: SELECTORS.stage }
+    { footHeight: FOOT_HEIGHT_PROPERTY, height, stage: SELECTORS.stage }
   );
   expect(drawn, "the page draws no stage column to stand a box at the foot of").toBe(true);
   return async () => {
     await page.evaluate((footHeight) => {
       document.querySelector("[data-foot-stand-in]")?.remove();
       document.documentElement.style.removeProperty(footHeight);
-    }, FOOT_HEIGHT);
+    }, FOOT_HEIGHT_PROPERTY);
   };
 }
 

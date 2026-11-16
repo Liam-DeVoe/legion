@@ -127,9 +127,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
    *  answers with that row: the keys that move the reader are hers wherever she stands in it. */
   const at = (elements: readonly HTMLElement[]): number => {
     const active = document.activeElement;
-    return active === null
-      ? -1
-      : elements.findIndex((row) => row === active || row.contains(active));
+    return active === null ? -1 : elements.findIndex((row) => row.contains(active));
   };
   /** Which row holds the focus itself, or -1 when a control inside one holds it instead: the
    *  row is the reader's place in the tree, and a control in it - a chip, Keep, Change, the

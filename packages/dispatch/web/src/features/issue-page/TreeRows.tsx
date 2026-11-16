@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { CSSProperties, ReactNode } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
-import type { Actor, Artifact } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { documentOfNode } from "./issue-artifacts";
@@ -10,7 +10,7 @@ import type { TreeNode } from "./issue-tree";
 import { NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
-import { authorKind, CONTROL_LABELS } from "./page-words";
+import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 
@@ -135,17 +135,6 @@ export function TreeRows({
         );
       })}
     </>
-  );
-}
-
-/** Whether `actor` is the reader writing as themselves: a person signed in as `reader`, and not
- *  an agent acting for them, whose words are the agent's (R9). */
-function isReader(actor: Actor | undefined, reader: string | undefined): boolean {
-  return (
-    reader !== undefined &&
-    actor?.kind === "user" &&
-    actor.id === reader &&
-    (actor.act?.session ?? "") === ""
   );
 }
 

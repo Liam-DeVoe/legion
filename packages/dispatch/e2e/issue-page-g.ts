@@ -194,13 +194,14 @@ function cssValue(value: string): string {
 const BRANCHES_OPENED_AT_MOST = 200;
 
 /**
- * Opens every branch a fold left shut, as a reader does to read past one: G's body opens every
- * branch at load, and part I's outline folds to the frontier and draws a branch deeper than the
- * levels it draws - one below 1024 px, three from there up - as one `[data-branch-more]` line
- * counting its nodes. So a row that reads what a branch holds presses each fold control and each
- * such line's control, until neither is left, rather than asserting that the first drawing
- * carried it. It ends with the focus on no row: a press may leave it on the row it opened, and a
- * focused row draws its body, while the rows read the tree as it stands with no row focused.
+ * Opens every branch a fold left shut, as a reader does to read past one: G's rows were drawn
+ * with every branch open before part I's outline, which folds to the frontier and draws a
+ * branch deeper than the levels it draws - one below 1024 px, three from there up - as one
+ * `[data-branch-more]` line counting its nodes. So a row that reads what a branch holds presses
+ * each fold control and each such line's control, until neither is left, rather than asserting
+ * that the first drawing carried it. It ends with the focus on no row: a press may leave it on
+ * the row it opened, and a focused row draws its body, while the rows read the tree as it stands
+ * with no row focused.
  */
 export async function unfoldEveryBranch(page: Page): Promise<void> {
   const controls = nodeRows(page)

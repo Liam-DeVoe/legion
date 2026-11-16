@@ -129,9 +129,16 @@ function AddressProbe({ seen }: { seen: { path?: string } }): ReactNode {
   return null;
 }
 
+/** The tree alone, under the page's keymap. `reveal` is the chain down to the node an address
+ *  names, which the tree is then to put the focus on (`slots/body.tsx`); `redraw` draws the
+ *  same tree again, as a read answering does. */
 function renderTree(
   root: TreeNode,
-  { artifacts = [], decisions }: { artifacts?: Artifact[]; decisions?: IssueDecisions } = {}
+  {
+    artifacts = [],
+    decisions,
+    reveal,
+  }: { artifacts?: Artifact[]; decisions?: IssueDecisions; reveal?: readonly TreeNode[] } = {}
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -139,7 +146,7 @@ function renderTree(
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
   const seen: { path?: string } = {};
-  const view = render(
+  const draw = () => (
     <MemoryRouter>
       <AddressProbe seen={seen} />
       <QueryClientProvider client={client}>
@@ -151,11 +158,11 @@ function renderTree(
               context={new Set()}
               emptyLine="Nothing here."
               filtering={false}
-              focusReveal={false}
+              focusReveal={reveal !== undefined}
               holdsEscape={false}
               isClosed={false}
               onEditing={(artifactId) => edited.push(artifactId)}
-              reveal={undefined}
+              reveal={reveal}
               root={root}
               rootRow
             />
@@ -164,7 +171,8 @@ function renderTree(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { address: () => seen.path, edited, ...view };
+  const view = render(draw());
+  return { address: () => seen.path, edited, redraw: () => view.rerender(draw()), ...view };
 }
 
 /** What the page-body harness hands back from inside the providers: the Contents list's ask and
@@ -262,7 +270,7 @@ function rowsFor(container: HTMLElement, nodeId: string): HTMLElement[] {
 function focusedRow(container: HTMLElement): string | undefined {
   const active = document.activeElement;
   return [...container.querySelectorAll<HTMLElement>("[data-node-row]")]
-    .find((row) => row === active || row.contains(active))
+    .find((row) => row.contains(active))
     ?.getAttribute("data-node-id") as string | undefined;
 }
 
@@ -930,6 +938,38 @@ test("a focus taken off the opening's row while the row stays on the page ends t
   expect(document.activeElement).toBe(document.body);
 });
 
+// R19: an address that names a node puts the focus on it, and takes it back from the page itself
+// - where a document mounting beside the tree drops it - until the reader's first act. After
+// that the focus is the reader's: a second Escape or a press on blank space leaves it on the
+// page, and no tree drawn after takes it back (the efficiency reviewer's finding on `/children`
+// and `#b-` addresses, where it did on every render).
+test("an address's node takes the focus back until the reader acts, and not after", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const named = node({ id: "comment-2", text: "The second words.", type: "comment" });
+  const root = node({
+    children: [node({ id: "comment-1", text: "The first words.", type: "comment" }), named],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, { reveal: [root, named] });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+
+  // Before the reader acts: the focus dropped to the page is taken back.
+  await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+  view.redraw();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+
+  // A key the reader presses - Shift alone, which moves nothing - and then the focus on the page.
+  await user.keyboard("{Shift}");
+  expect(focusedRow(view.container)).toBe("comment-2");
+  await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+  view.redraw();
+  expect(document.activeElement, "a tree drawn after the reader acted took the focus back").toBe(
+    document.body
+  );
+});
+
 // Decision 63, R8: where no question waits on the reader the page opens on the outline's first
 // row, whose body opens with the focus (R7), and scrolls nothing - not even for a first row
 // taller than the window, which the page's one rule (`identity-block.ts`'s `bringOnScreen`)
@@ -1025,7 +1065,6 @@ test("an ask of the Contents pane is acted on once, across the tree being drawn 
   await tree.show(false);
   await tree.show(true);
   await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
-  expect(focusedRow(container)).not.toBe("comment-2");
 });
 
 // R14 of the root spec, decision 29: the Contents list asks the outline through the page's

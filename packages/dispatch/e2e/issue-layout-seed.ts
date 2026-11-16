@@ -58,7 +58,8 @@ import {
 import { ONE_PIXEL_PNG } from "./sends";
 
 /**
- * The whole issues `e2e/issue-layout.e2e.ts` reads, for the issue page dispatch://INFRA-1196
+ * The whole issues the browser rows of the source's `e2e/issue-layout.e2e.ts` read, and in this
+ * tree those of `e2e/issue-page-i.e2e.ts`, for the issue page dispatch://INFRA-1196
  * redesigns. A caller needs `resetDatabase()` and one of these calls in `beforeEach` and nothing
  * else: each seed makes its own project, component model, repository and sessions.
  *
@@ -282,13 +283,15 @@ export interface AdvancingIssueSeed extends WholeIssueSeed {
  * `seedWholeIssue`, with the issue under two priorities (dispatch://INFRA-2947 R3 and R4): one
  * it advances itself, which its priority row draws as a link with a remove beside it, and one
  * its parent advances, which the row draws as a link marked inherited and with no remove. That
- * is the whole priority row an issue can draw short of its cap, so it is what the page inventory
- * is recorded over (`record-page-inventory.e2e.ts`) and what c-nothing-lost reads the new page
- * against; both call this one seed, so the two read the same row.
+ * is the whole priority row an issue can draw short of its cap, so in the source it is what the
+ * page inventory is recorded over (`record-page-inventory.e2e.ts`) and what c-nothing-lost reads
+ * the new page against; both call this one seed there, so the two read the same row. No row of
+ * this tree calls it yet.
  *
  * It is a seed of its own rather than part of `seedWholeIssue`, because each relation makes the
- * page read the priorities on its first load, and every other row of `issue-layout.e2e.ts`
- * reads that issue with the requests and the properties it has without them.
+ * page read the priorities on its first load, and every other row of the source's
+ * `issue-layout.e2e.ts` reads that issue with the requests and the properties it has without
+ * them.
  */
 export async function seedWholeIssueAdvancing(): Promise<AdvancingIssueSeed> {
   const seeded = await seedWholeIssue();
@@ -388,8 +391,8 @@ export async function seedNoSummary(): Promise<PlainIssueSeed> {
   return await seedPlainIssue(false, "This spec carries no summary node");
 }
 
-/** A thread of three comments, the last of which answers the second, and three questions in
- *  three states (c-reply-nesting). */
+/** A thread of four comments - its head and three replies, each answering the one before it -
+ *  and three questions in three states (c-reply-nesting). */
 export interface ReplyNestingSeed {
   /** A question a person answered, which still takes a reply. */
   readonly answeredAsk: string;
@@ -473,7 +476,7 @@ export async function seedReplyNesting(): Promise<ReplyNestingSeed> {
   };
 }
 
-/** The unbroken run a requirement's own words can hold: one file path, 118 characters with no
+/** The unbroken run a requirement's own words can hold: one file path, 108 characters with no
  *  space in it, which is wider than the card that draws it at 390 px and at 1440 px alike. A
  *  person writes one whenever a requirement names a path, a key or an address. */
 export const UNBROKEN_PATH =
@@ -504,8 +507,8 @@ export async function seedUnbrokenWords(): Promise<PlainIssueSeed> {
 }
 
 /** The issue a reader opens to read that run in a child's own title, and the child that holds
- *  it. The children section draws `{key} · {title}`, so the run is the title's and not the
- *  key's. */
+ *  it. The child's row of the outline draws its title as its words and its key as its tag, so
+ *  the run is the title's and not the key's. */
 export interface ChildTitleSeed {
   /** The child whose title holds the run. */
   readonly childKey: string;

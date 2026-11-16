@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
+import { isViewer } from "../refs/actor";
 import { buildIssuePath } from "../refs/routes";
 import { useMediaQuery } from "../shell/useDialog";
 import { ChangeDraftsProvider } from "./DecisionActions";
@@ -459,21 +460,34 @@ export function IssueTree({
   // An address that names a node puts the focus on it (R19). The row is not on the page until
   // the read that holds it has answered, and the document the preset draws beside the tree
   // mounts later still and can leave the focus nowhere as it does, so this looks again on
-  // every tree the page draws and takes the focus whenever nothing else holds it. Once the
-  // reader - or anything else on the page - has the focus, it is theirs: the effect leaves it
-  // alone until another address names another node.
-  const taken = useRef<string | undefined>(undefined);
+  // every tree the page draws and takes the focus back whenever nothing holds it, until the
+  // reader's first act after it took it (`READER_ACTS`, which end `acts`). Whatever else holds
+  // the focus keeps it, and from the reader's first act the focus is theirs wherever they put
+  // it, nowhere included - a second Escape, a press on blank space: the effect takes it no
+  // more until another address names another node.
+  const taken = useRef<{ readonly acts: AbortController; readonly id: string } | undefined>(
+    undefined
+  );
+  useEffect(() => () => taken.current?.acts.abort(), []);
   const targetId = target?.id;
   useEffect(() => {
     if (targetId === undefined || !focusReveal) return;
+    const held = taken.current?.id === targetId ? taken.current : undefined;
     const loose = document.activeElement === null || document.activeElement === document.body;
-    if (taken.current === targetId && !loose) return;
+    if (held !== undefined && (held.acts.signal.aborted || !loose)) return;
     if (!rows.some((row) => row.kind === "node" && row.node.id === targetId)) return;
     const row = body.current?.querySelector<HTMLElement>(
       `[data-node-row][data-node-id="${CSS.escape(targetId)}"]`
     );
     if (row === null || row === undefined) return;
-    taken.current = targetId;
+    if (held === undefined) {
+      taken.current?.acts.abort();
+      const acts = new AbortController();
+      for (const type of READER_ACTS) {
+        window.addEventListener(type, () => acts.abort(), { capture: true, signal: acts.signal });
+      }
+      taken.current = { acts, id: targetId };
+    }
     // A row already inside the viewport is focused where it stands, so nothing jumps twice: the
     // row's own focus places it by the page's one rule (`bringOnScreen`) when it is not, and the
     // hold keeps it there while the rest of the page arrives.
@@ -592,9 +606,7 @@ export function IssueTree({
       reach(parent.id);
       return;
     }
-    const own = parent.children.filter(
-      (child) => reader !== undefined && child.author?.kind === "user" && child.author.id === reader
-    );
+    const own = parent.children.filter((child) => readerWrote(child, reader));
     const held = landedFrom.current;
     if (held?.landing !== landing) {
       landedFrom.current = { before: new Set(own.map((child) => child.id)), landing };
@@ -618,12 +630,7 @@ export function IssueTree({
       const parent = landingParent(now.root, landing.under);
       if (parent === undefined) return;
       const newest = parent.children
-        .filter(
-          (child) =>
-            now.reader !== undefined &&
-            child.author?.kind === "user" &&
-            child.author.id === now.reader
-        )
+        .filter((child) => readerWrote(child, now.reader))
         .reduce<TreeNode | undefined>(
           (last, child) =>
             last === undefined || (child.at ?? "") >= (last.at ?? "") ? child : last,
@@ -684,8 +691,8 @@ export function IssueTree({
         role="tree"
       >
         {/* A decision's Change and the words typed in it outlive its row's body, which closes
-            as the focus leaves the row and opens again as it comes back (G's ConversationRows
-            held them the same way): the drafts are the tree's, as the pins are. */}
+            as the focus leaves the row and opens again as it comes back: the drafts are the
+            tree's, as the pins are. */}
         <ChangeDraftsProvider>
           <TreeRows
             artifacts={artifacts}
@@ -755,6 +762,13 @@ function holdOnScreen(row: HTMLElement): AbortController {
   grown.observe(document.body);
   hold.signal.addEventListener("abort", () => grown.disconnect());
   return hold;
+}
+
+/** Whether the reader wrote `node`: a person signed in as `reader`, in any casing, as the
+ *  server matches a login (`isViewer`), whether they wrote it themselves or a session acting
+ *  for them did - a write from the line at the foot is theirs either way. */
+function readerWrote(node: TreeNode, reader: string | undefined): boolean {
+  return node.author !== undefined && isViewer(node.author, reader);
 }
 
 /** The node a write was made under, by the item the line wrote to; the tree's own root for a

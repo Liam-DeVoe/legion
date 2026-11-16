@@ -23,7 +23,8 @@ export function ProvidersSlot({
   // the outline sets and Details reads, held for one issue (`focused-node.tsx`); what the
   // Contents list asks of the outline, and its Focus branch, which the pane, the sheet and the
   // outline share (`outline-request.tsx`); and each open document's toolbar, which the body's
-  // row editor reports and the view row's version control reads (`useDocumentToolbars.ts`).
+  // row editor reports and part N's version control in the view row is to read: nothing reads
+  // it yet (`useDocumentToolbars.ts`).
   return (
     <NoTooltips>
       <OutlineWriterProvider issueKey={issue.key}>

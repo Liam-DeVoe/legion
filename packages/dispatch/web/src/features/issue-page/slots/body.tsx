@@ -13,7 +13,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
-import { useDocumentToolbars } from "../useDocumentToolbars";
+import { useToolbarSink } from "../useDocumentToolbars";
 import { useIssueTree } from "../useIssueTree";
 
 /** Filled by INFRA-1196 part G, "A node's row", then part I, "The outline". */
@@ -53,7 +53,9 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   );
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
-  const { toolbarSink } = useDocumentToolbars();
+  // The sink alone, which never changes: the toolbars it fills are no part of the outline, so
+  // each one an editor publishes while a row is edited draws nothing here again.
+  const toolbarSink = useToolbarSink();
   // The document a row of the outline is being edited in, so the body draws that document's one
   // editor for the row to take onto its own stage (`IssuePresetPanels`, `document-stage.tsx`).
   const [editing, setEditing] = useState<string | undefined>(undefined);
