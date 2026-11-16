@@ -1329,7 +1329,7 @@ type CheckPassStands struct {
 // PassStandsSubject is one head a `before_merge` check's pass must stand at, and its state:
 // PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
 // fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
-// PassStandsReasonPassAndFail where the check's CI job recorded a pass and a fail at that commit.
+// PassStandsReasonPassAndFail where a check CI proves holds a pass and a fail of CI at that commit.
 type PassStandsSubject struct {
 	Basis  CheckBasis `json:"basis"`
 	Answer string     `json:"answer" enum:"yes,no,unknown"`
