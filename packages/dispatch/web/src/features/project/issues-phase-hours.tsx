@@ -1,9 +1,8 @@
-import { createContext, type ReactNode, useContext, useId, useRef, useState } from "react";
+import { createContext, type ReactNode, useContext, useRef } from "react";
 import type { LegionBoardFacts } from "../../api/types";
-import { AnchoredPanel } from "../../components/AnchoredPanel";
+import { Tooltip, useTooltip } from "../../components/Tooltip";
 import {
   borderDefault,
-  card,
   focusVisibleRing,
   legionPhaseFill,
   surfaceMutedBg,
@@ -41,21 +40,17 @@ const fillOf = (phase: WorkPhase) => legionPhaseFill[phase];
 
 const hoursText = (hours: number) => `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
 
-const TOOLTIP_CLASS = `z-50 rounded-lg border p-2 text-xs font-normal shadow-lg ${card}`;
-
 /** What the tooltip says: one line per phase, in the daemon's order with Other last, with its
  *  colour, its name, its hours and its share of the row's total. */
 function PhaseHoursTooltip({
-  id,
   phases,
   total,
 }: {
-  id: string;
   phases: readonly (readonly [WorkPhase, number])[];
   total: number;
 }): ReactNode {
   return (
-    <table className="border-separate border-spacing-x-2 border-spacing-y-0.5" id={id}>
+    <table className="border-separate border-spacing-x-2 border-spacing-y-0.5">
       <tbody>
         {phases.map(([phase, hours]) => (
           <tr data-phase-hours-line={phase} key={phase}>
@@ -79,8 +74,7 @@ function PhaseHoursTooltip({
 export function PhaseHoursCell({ facts }: { facts: LegionBoardFacts | undefined }): ReactNode {
   const { mode, pageMax } = useContext(PhaseHoursContext);
   const anchorRef = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
-  const tooltipId = useId();
+  const tooltip = useTooltip();
   const { phases, total } = phaseHours(facts);
   if (total === 0) return null;
   const width = mode === "share" || pageMax === 0 ? 100 : (total / pageMax) * 100;
@@ -89,15 +83,11 @@ export function PhaseHoursCell({ facts }: { facts: LegionBoardFacts | undefined 
     // The cell is a button so the keyboard reaches it and a tap opens the tooltip where there
     // is no hover.
     <button
-      aria-describedby={open ? tooltipId : undefined}
+      {...tooltip.props}
       aria-label={`Time per phase, ${hoursText(total)}`}
       className={`flex w-full min-w-0 cursor-default items-center gap-2 rounded-sm outline-none focus-visible:ring-2 ${focusVisibleRing}`}
       data-phase-hours
-      onBlur={() => setOpen(false)}
-      onClick={() => setOpen(true)}
-      onFocus={() => setOpen(true)}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onClick={tooltip.show}
       ref={anchorRef}
       type="button"
     >
@@ -123,15 +113,9 @@ export function PhaseHoursCell({ facts }: { facts: LegionBoardFacts | undefined 
           ))}
         </span>
       </span>
-      {open ? (
-        <AnchoredPanel
-          anchorRef={anchorRef}
-          className={TOOLTIP_CLASS}
-          onDismiss={() => setOpen(false)}
-        >
-          <PhaseHoursTooltip id={tooltipId} phases={phases} total={total} />
-        </AnchoredPanel>
-      ) : null}
+      <Tooltip anchorRef={anchorRef} trigger={tooltip}>
+        <PhaseHoursTooltip phases={phases} total={total} />
+      </Tooltip>
     </button>
   );
 }

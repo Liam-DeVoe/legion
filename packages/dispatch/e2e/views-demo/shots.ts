@@ -26,6 +26,9 @@ const { values: flags } = parseArgs({
     // A real project with no Legion daemon in the fixtures (fixtures.ts --no-daemon-project).
     "no-daemon-project": { type: "string", default: "GTM" },
     only: { type: "string" },
+    // The done issue whose empty Work time cell done-work-time-empty-1440 shows: one with Legion
+    // facts and no measured work. The newest closed of them by default.
+    "empty-work-time": { type: "string" },
     // The report's file name in --out, `report-<mode>.json` by default.
     report: { type: "string" },
   },
@@ -362,6 +365,237 @@ async function checkOnFirstScreen(
   }
 }
 
+/** A change made elsewhere: another reader's write, which reaches this page only as the live
+ *  event the stub publishes for every write it takes. It goes round the page's own write store,
+ *  so the page holds it as it holds anyone else's. */
+async function changeElsewhere(
+  page: Page,
+  key: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  const status = await page.evaluate(
+    async ([issue, body]) =>
+      (
+        await fetch(`/api/v1/issues/${issue}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      ).status,
+    [key, patch] as const
+  );
+  if (status !== 200) throw new Error(`the stub answered ${status} to the change of ${key}`);
+}
+
+/** The keys of the first `count` rows the table draws, top down. */
+const firstRows = (page: Page, count = 3) =>
+  page
+    .locator("[data-issue-row]")
+    .evaluateAll(
+      (rows, n) => rows.slice(0, n).map((row) => row.getAttribute("data-issue-row") ?? ""),
+      count
+    );
+
+/** The keys of the first `count` cards a Board column draws, top down. */
+const firstCards = (page: Page, column: string, count = 3) =>
+  page
+    .locator(`[data-board-column="${column}"] [data-board-card]`)
+    .evaluateAll(
+      (cards, n) => cards.slice(0, n).map((card) => card.getAttribute("data-board-card") ?? ""),
+      count
+    );
+
+/** The count a Board column's header draws. */
+async function columnCount(page: Page, column: string): Promise<number> {
+  const header = await page
+    .locator(`[data-board-column="${column}"] [data-testid="board-column-header"]`)
+    .first()
+    .innerText();
+  return Number(/(\d+)\s*$/.exec(header)?.[1] ?? Number.NaN);
+}
+
+/** The "Show N changes" pill a held table or Board draws while it holds a change back. */
+const heldButton = (page: Page) => page.locator("[data-held-changes]");
+
+type Layout = "table" | "board";
+
+/** The header of the rows, and the first row or card, in a layout. */
+const HEADER: Record<Layout, string> = {
+  table: '[data-testid="issues-table-scroll"] thead',
+  board: '[data-testid="board-column-header"]',
+};
+const FIRST: Record<Layout, string> = {
+  table: "[data-issue-row]",
+  board: "[data-board-card]",
+};
+const LIST: Record<Layout, string> = {
+  table: '[data-testid="issues-table-scroll"]',
+  board: "[data-board-by]",
+};
+
+/** Where the header and the first row or card stand, in px from the window's top. */
+interface Tops {
+  header: number;
+  first: number;
+}
+
+async function topsOf(page: Page, layout: Layout): Promise<Tops> {
+  return page.evaluate(
+    ([header, first]) => {
+      const top = (selector: string) => {
+        const element = document.querySelector(selector);
+        return element === null ? Number.NaN : Math.round(element.getBoundingClientRect().top);
+      };
+      return { header: top(header), first: top(first) };
+    },
+    [HEADER[layout], FIRST[layout]] as const
+  );
+}
+
+/** Checks that the header and the first row or card stood still at every moment named: the
+ *  pill takes no room, so nothing the reader sees moves as it comes and goes. */
+function checkStill(name: string, layout: Layout, moments: [string, Tops][]): void {
+  const [, first] = moments[0] ?? ["", { header: Number.NaN, first: Number.NaN }];
+  const row = layout === "table" ? "row" : "card";
+  check(
+    moments.every(
+      ([, tops]) =>
+        Number.isFinite(tops.first) && tops.first === first.first && tops.header === first.header
+    ),
+    `${name}: the first ${row} stands at ${moments.map(([when, tops]) => `${tops.first} px ${when}`).join(", ")}; the header at ${moments.map(([, tops]) => tops.header).join(", ")}`
+  );
+}
+
+/** Checks where the pill stands: one pill, floating over the header of the rows (the table's
+ *  header or the Board's column headers), centred on the list, a small fraction of its width,
+ *  and none in the pager row. */
+async function checkPillPlace(page: Page, name: string, layout: Layout): Promise<void> {
+  const place = await page.evaluate(
+    ([headerAt, listAt]) => {
+      const pills = [...document.querySelectorAll<HTMLElement>("[data-held-changes]")];
+      const pill = pills[0];
+      const own = pill?.getBoundingClientRect();
+      const head = document.querySelector(headerAt)?.getBoundingClientRect();
+      const list = document.querySelector(listAt)?.getBoundingClientRect();
+      const pager = document.querySelector('select[aria-label$="per page"]')?.parentElement;
+      const round = (value: number | undefined) => Math.round(value ?? Number.NaN);
+      return {
+        count: pills.length,
+        top: round(own?.top),
+        bottom: round(own?.bottom),
+        width: round(own?.width),
+        centre: round(own === undefined ? undefined : (own.left + own.right) / 2),
+        headTop: round(head?.top),
+        headBottom: round(head?.bottom),
+        listWidth: round(list?.width),
+        listCentre: round(list === undefined ? undefined : (list.left + list.right) / 2),
+        inPager: pill !== undefined && pager?.contains(pill) === true,
+      };
+    },
+    [HEADER[layout], LIST[layout]] as const
+  );
+  check(
+    place.count === 1 &&
+      place.top < place.headBottom &&
+      place.bottom > place.headTop &&
+      Math.abs(place.centre - place.listCentre) <= 8 &&
+      place.width < place.listWidth / 3 &&
+      !place.inPager,
+    `${name}: the pill stands at ${place.top}-${place.bottom} px over the header at ${place.headTop}-${place.headBottom}, ${place.width} px wide, its centre at ${place.centre} of the list's ${place.listCentre} (${place.listWidth} px wide), ${place.inPager ? "in" : "not in"} the pager (${place.count} drawn)`
+  );
+}
+/** Checks that every open tooltip's panel stands wholly inside the window. */
+async function checkTooltipInWindow(page: Page, name: string): Promise<void> {
+  const boxes = await page.locator('[role="tooltip"]').evaluateAll((tips) =>
+    tips.map((tip) => {
+      const panel = (tip.parentElement ?? tip).getBoundingClientRect();
+      return {
+        left: Math.round(panel.left),
+        right: Math.round(panel.right),
+        top: Math.round(panel.top),
+        bottom: Math.round(panel.bottom),
+      };
+    })
+  );
+  const { width, height } = page.viewportSize() ?? { width: 0, height: 0 };
+  check(
+    boxes.length > 0 &&
+      boxes.every(
+        (box) => box.left >= 0 && box.top >= 0 && box.right <= width && box.bottom <= height
+      ),
+    `${name}: the tooltip stands inside the ${width} x ${height} window (${boxes.map((box) => `${box.left}-${box.right} x ${box.top}-${box.bottom}`).join("; ") || "none open"})`
+  );
+}
+
+const same = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((each, at) => each === b[at]);
+
+/** Open sorted by Priority, its first rows read, and its second row's priority set to P3
+ *  elsewhere: a change that takes that row off the first page. Gives the first rows before the
+ *  change, the changed key, and where the header and first row stood before the change and
+ *  while the pill shows. */
+async function holdOpenTable(
+  page: Page
+): Promise<{ before: string[]; moved: string; tops: [string, Tops][] }> {
+  await open(page, view("open", "&sort=priority"));
+  await page.mouse.move(1, 1);
+  const before = await firstRows(page);
+  const moved = before[1];
+  if (moved === undefined) throw new Error("Open drew fewer than two rows");
+  const unchanged = await topsOf(page, "table");
+  await changeElsewhere(page, moved, { priority: 3 });
+  await heldButton(page).waitFor({ timeout: 15_000 });
+  await page.waitForTimeout(800);
+  const shown = await topsOf(page, "table");
+  return {
+    before,
+    moved,
+    tops: [
+      ["before the change", unchanged],
+      ["while the pill shows", shown],
+    ],
+  };
+}
+
+/** Open's Board, the first Todo card moved to Backlog elsewhere. Gives Todo's first cards and
+ *  the Todo and Backlog counts before the change, the moved key, and where the column headers
+ *  and the first card stood before the change and while the pill shows. */
+async function holdOpenBoard(page: Page): Promise<{
+  before: string[];
+  counts: number[];
+  moved: string;
+  tops: [string, Tops][];
+}> {
+  await open(page, view("open", "&layout=board"), page.locator("[data-board-card]").first());
+  await page.mouse.move(1, 1);
+  const before = await firstCards(page, "todo");
+  const counts = [await columnCount(page, "todo"), await columnCount(page, "backlog")];
+  const moved = before[0];
+  if (moved === undefined) throw new Error("the Todo column draws no card");
+  const unchanged = await topsOf(page, "board");
+  await changeElsewhere(page, moved, { status: "backlog" });
+  await heldButton(page).waitFor({ timeout: 15_000 });
+  await page.waitForTimeout(800);
+  const shown = await topsOf(page, "board");
+  return {
+    before,
+    counts,
+    moved,
+    tops: [
+      ["before the change", unchanged],
+      ["while the pill shows", shown],
+    ],
+  };
+}
+
+/** Presses the pill, and gives where the header and the first row or card stand after it. */
+async function pressPill(page: Page, layout: Layout): Promise<Tops> {
+  await heldButton(page).click();
+  await page.mouse.move(1, 1);
+  await page.waitForTimeout(800);
+  return topsOf(page, layout);
+}
+
 /** The Legion columns under their names since the owner's reviews, and the names they had. */
 const LEGION_COLUMNS = [
   "Why it waits",
@@ -434,6 +668,50 @@ const afterShots: Shot[] = [
     viewport: DESKTOP,
     take: (page) => open(page, view("open", "&status=in_progress")),
   },
+  // Open sorted by Priority, held: another reader sets the second row to P3. Its Priority cell
+  // reads P3 in place, the first rows stay where the reader saw them, and a pill floating over
+  // the table's header offers "Show N changes" for the rows the change would take off the page
+  // and bring onto it. The pill takes no room: the header and the first row do not move.
+  {
+    name: "table-held-live-change-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      const { before, moved, tops } = await holdOpenTable(page);
+      const after = await firstRows(page);
+      const shown = await heldButton(page).innerText();
+      const priority = await page
+        .locator(`[data-issue-row="${moved}"]`)
+        .getByLabel(`Priority of ${moved}`)
+        .inputValue();
+      check(
+        same(after, before),
+        `the held table keeps its first rows ${after.join(", ")} after ${moved} is set to P3 elsewhere`
+      );
+      check(priority === "3", `${moved}'s Priority cell reads P${priority} in place`);
+      check(/^Show \d+ changes?$/.test(shown), `the table's pill reads "${shown}"`);
+      await checkPillPlace(page, "table-held-live-change-1440", "table");
+      checkStill("table-held-live-change-1440", "table", tops);
+    },
+  },
+  // The same table after the press on Show N changes: the changed row has left the first page,
+  // the pill has gone, and the header and the first row stood still throughout.
+  {
+    name: "table-held-shown-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      const { before, moved, tops } = await holdOpenTable(page);
+      const pressed = await pressPill(page, "table");
+      const after = await firstRows(page);
+      check(
+        (await heldButton(page).count()) === 0 &&
+          (await page.locator(`[data-issue-row="${moved}"]`).count()) === 0 &&
+          after[0] === before[0] &&
+          after[1] === before[2],
+        `Show changes takes ${moved} off the page: the first rows read ${after.join(", ")}, and the pill has gone`
+      );
+      checkStill("table-held-shown-1440", "table", [...tops, ["after the press", pressed]]);
+    },
+  },
   // An older link to the Legion queue's tab, which is gone: it opens Open narrowed to the issues
   // in the daemon's queue (`f.queue=Queued`), in queue order.
   {
@@ -467,7 +745,7 @@ const afterShots: Shot[] = [
     },
   },
   // Done with one week picked in the Closed column's date-range filter, the 3rd of November to
-  // the 9th, and the filter opened again to show it.
+  // the 9th, both days included, and the filter opened again to show it.
   {
     name: "done-closed-filter-1440",
     viewport: DESKTOP,
@@ -485,8 +763,20 @@ const afterShots: Shot[] = [
         page.url().includes("f.closed=2026-11-03..2026-11-09"),
         "the picked week writes f.closed=2026-11-03..2026-11-09"
       );
+      // The page runs in UTC, so the week's days are UTC days, the 9th whole.
+      const expected = await page.evaluate(async (key) => {
+        const rows: unknown[] = await (
+          await fetch(
+            `/api/v1/issues?project=${key}&status=done&closed_since=2026-11-03T00:00:00Z&closed_before=2026-11-10T00:00:00Z`
+          )
+        ).json();
+        return rows.length;
+      }, project);
       const count = await tabCount(page, "done");
-      check(count === 596, `the Done tab reads ${count} for the week`);
+      check(
+        count === expected,
+        `the Done tab reads ${count} for the week; the stub's rows closed from the 3rd through the 9th say ${expected}`
+      );
     },
   },
   // Done in Hours. Done scrolls sideways at 1440, and Time per phase stands on its first screen.
@@ -524,6 +814,114 @@ const afterShots: Shot[] = [
         scrolled === 0,
         `the table stands unscrolled under the tooltip (scrollLeft ${scrolled})`
       );
+      await checkTooltipInWindow(page, "done-time-per-phase-tooltip-1440");
+    },
+  },
+  // Work time's header reached with the keyboard: Tab from the filter of the column before it
+  // onto Work time's sort, which opens the header's tooltip, one sentence on how Dispatch
+  // measures it. The pointer stands off the page, so no hover opens it.
+  {
+    name: "done-work-time-tooltip-focus-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("done"));
+      await page.mouse.move(1, 1);
+      await page.getByRole("button", { name: "Filter Time per phase", exact: true }).focus();
+      await page.keyboard.press("Tab");
+      await page.waitForTimeout(500);
+      const focused = await page.evaluate(() => {
+        const active = document.activeElement;
+        const named = active?.getAttribute("aria-describedby");
+        const tip = named ? document.getElementById(named) : null;
+        return {
+          header: active?.closest("th")?.textContent?.trim() ?? "",
+          tip: tip?.getAttribute("role") === "tooltip" ? (tip.textContent?.trim() ?? "") : "",
+        };
+      });
+      check(
+        focused.header.startsWith("Work time") &&
+          /^[^.]+\.$/.test(focused.tip) &&
+          focused.tip.includes("Legion queue hours"),
+        `Tab onto Work time's header opens its tooltip: "${focused.tip}"`
+      );
+      await checkTooltipInWindow(page, "done-work-time-tooltip-focus-1440");
+    },
+  },
+  // A done issue with Legion facts and no measured work (the newest closed, or the one
+  // --empty-work-time names), among the issues closed on its day: its Work time cell is empty,
+  // not "0 m", beside rows that draw one.
+  {
+    name: "done-work-time-empty-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("done"));
+      const pick = await page.evaluate(
+        async ({ key, wanted }) => {
+          const board: {
+            issues: Record<string, { work_first_at?: string | null; work_hours: number }>;
+          } = await (await fetch(`/api/v1/projects/${key}/legion/board`)).json();
+          const done: { key: string; closed_at: string | null }[] = await (
+            await fetch(`/api/v1/issues?project=${key}&status=done`)
+          ).json();
+          const unmeasured = done
+            .flatMap((issue) => {
+              const facts = board.issues[issue.key];
+              return issue.closed_at !== null &&
+                facts !== undefined &&
+                facts.work_first_at == null &&
+                !(facts.work_hours > 0)
+                ? [{ key: issue.key, closed: issue.closed_at }]
+                : [];
+            })
+            .sort((a, b) => b.closed.localeCompare(a.closed));
+          const issue =
+            wanted === undefined ? unmeasured[0] : unmeasured.find((one) => one.key === wanted);
+          return issue === undefined
+            ? null
+            : { key: issue.key, day: issue.closed.slice(0, 10), unmeasured: unmeasured.length };
+        },
+        { key: project, wanted: flags["empty-work-time"] }
+      );
+      if (pick === null) throw new Error("no done issue has Legion facts and no measured work");
+      const row = page.locator(`[data-issue-row="${pick.key}"]`);
+      // One whole day: the page runs in UTC, and a range's end day is included.
+      await open(page, view("done", `&f.closed=${pick.day}..${pick.day}`));
+      // The table draws the rows near the screen only, so wheel it down, as a reader would,
+      // until the issue's row is drawn.
+      const table = await page.getByTestId("issues-table-scroll").boundingBox();
+      if (table === null) throw new Error("Done's table is not drawn");
+      for (let turn = 0; turn < 60 && (await row.count()) === 0; turn += 1) {
+        await page.mouse.move(table.x + table.width / 2, table.y + table.height / 2);
+        await page.mouse.wheel(0, 300);
+        await page.waitForTimeout(150);
+      }
+      await row.waitFor({ state: "attached", timeout: 10_000 });
+      await row.evaluate((drawn) => drawn.scrollIntoView({ block: "center" }));
+      await page.mouse.move(1, 1);
+      await page.waitForTimeout(500);
+      const cells = await page.getByTestId("issues-table-scroll").evaluate((box, key) => {
+        const header = [...box.querySelectorAll("thead th")].find((th) =>
+          th.textContent?.trim().startsWith("Work time")
+        );
+        if (header === undefined) return null;
+        const { left, right } = header.getBoundingClientRect();
+        const cellOf = (tr: Element) =>
+          [...tr.querySelectorAll("td")].find((td) => {
+            const middle = (td.getBoundingClientRect().left + td.getBoundingClientRect().right) / 2;
+            return middle > left && middle < right;
+          });
+        const rows = [...box.querySelectorAll("[data-issue-row]")];
+        const own = rows.find((tr) => tr.getAttribute("data-issue-row") === key);
+        return {
+          own: own === undefined ? null : (cellOf(own)?.textContent?.trim() ?? null),
+          measured: rows.filter((tr) => (cellOf(tr)?.textContent?.trim() ?? "") !== "").length,
+          rows: rows.length,
+        };
+      }, pick.key);
+      check(
+        cells !== null && cells.own === "",
+        `${pick.key}, one of ${pick.unmeasured} done issues with Legion facts and no measured work, draws an empty Work time cell (it reads "${cells?.own ?? "no cell"}"); ${cells?.measured ?? 0} of the ${cells?.rows ?? 0} rows drawn of the ${await tabCount(page, "done")} closed on ${pick.day} draw a Work time`
+      );
     },
   },
   {
@@ -548,9 +946,17 @@ const afterShots: Shot[] = [
     name: "legion-choice-board-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await page.addInitScript(() => {
-        window.localStorage.setItem("dispatch.project.issue-view:sami@theorem.dev", "legion");
+      // The choice is kept per signed-in login, read here from the stub's whoami on a page that
+      // keeps no choice of its own.
+      await page.goto(address(`/projects/${project}/settings`));
+      const login = await page.evaluate(async () => {
+        const me: { login: string } = await (await fetch("/api/v1/whoami")).json();
+        return me.login;
       });
+      await page.evaluate(
+        (key) => window.localStorage.setItem(key, "legion"),
+        `dispatch.project.issue-view:${login}`
+      );
       await open(page, issuesPath, page.locator("[data-board-card]").first());
       check(
         (await page.locator('[data-board-by="legion_phase"]').count()) === 1,
@@ -618,6 +1024,84 @@ const afterShots: Shot[] = [
       check(
         picks.includes("Status") && picks.includes("Legion phase"),
         `the Board's Group by menu offers ${picks.join(", ")}`
+      );
+    },
+  },
+  // Open's Board, held: another reader moves the first Todo card to Backlog. The card stays
+  // where the reader saw it, the column counts move at once, and a pill floating over the column
+  // headers offers "Show 1 change". The pill takes no room: the headers and the first card do
+  // not move.
+  {
+    name: "board-held-live-change-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      const { before, counts, moved, tops } = await holdOpenBoard(page);
+      const after = await firstCards(page, "todo");
+      const now = [await columnCount(page, "todo"), await columnCount(page, "backlog")];
+      const shown = await heldButton(page).innerText();
+      check(
+        same(after, before) &&
+          (await page
+            .locator(`[data-board-column="backlog"] [data-board-card="${moved}"]`)
+            .count()) === 0,
+        `the held Board keeps ${moved} first in Todo after it moves to Backlog elsewhere: Todo starts ${after.join(", ")}`
+      );
+      check(
+        now[0] === counts[0] - 1 && now[1] === counts[1] + 1,
+        `the column counts move at once: Todo ${counts[0]} to ${now[0]}, Backlog ${counts[1]} to ${now[1]}`
+      );
+      check(shown === "Show 1 change", `the Board's pill reads "${shown}"`);
+      await checkPillPlace(page, "board-held-live-change-1440", "board");
+      checkStill("board-held-live-change-1440", "board", tops);
+    },
+  },
+  // The same Board after the press on Show 1 change: the moved card has left Todo for Backlog,
+  // the pill has gone, and the headers and the first card stood still throughout.
+  {
+    name: "board-held-shown-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      const { before, moved, tops } = await holdOpenBoard(page);
+      const pressed = await pressPill(page, "board");
+      const after = await firstCards(page, "todo");
+      check(
+        (await heldButton(page).count()) === 0 &&
+          (await page
+            .locator(`[data-board-column="backlog"] [data-board-card="${moved}"]`)
+            .count()) === 1 &&
+          !after.includes(moved) &&
+          after[0] === before[1],
+        `Show change moves ${moved} to Backlog: Todo starts ${after.join(", ")}, and the pill has gone`
+      );
+      checkStill("board-held-shown-1440", "board", [...tops, ["after the press", pressed]]);
+    },
+  },
+  // The reader's own move: the first Todo card dragged onto Backlog moves at once, with no
+  // Show changes.
+  {
+    name: "board-own-drag-applies-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open", "&layout=board"), page.locator("[data-board-card]").first());
+      const card = page.locator('[data-board-column="todo"] [data-board-card]').first();
+      const key = await card.getAttribute("data-board-card");
+      const counts = [await columnCount(page, "todo"), await columnCount(page, "backlog")];
+      await drag(page, card, page.locator('[data-board-column="backlog"]').first());
+      await page.waitForTimeout(1_500);
+      const now = [await columnCount(page, "todo"), await columnCount(page, "backlog")];
+      const where = {
+        todo: await page.locator(`[data-board-column="todo"] [data-board-card="${key}"]`).count(),
+        backlog: await page
+          .locator(`[data-board-column="backlog"] [data-board-card="${key}"]`)
+          .count(),
+      };
+      check(
+        where.todo === 0 && where.backlog === 1 && (await heldButton(page).count()) === 0,
+        `the reader's own drag moves ${key} from Todo to Backlog at once, with no Show changes`
+      );
+      check(
+        now[0] === counts[0] - 1 && now[1] === counts[1] + 1,
+        `after the drag Todo reads ${now[0]} (was ${counts[0]}) and Backlog ${now[1]} (was ${counts[1]})`
       );
     },
   },
@@ -706,24 +1190,31 @@ const afterShots: Shot[] = [
     },
   },
   // Why it waits, ticked in the Columns menu, with its filter open: the daemon's reason for each
-  // card in the queue (Capacity shows only while a row waits for a slot), and None.
+  // card in the queue, and None. Capacity to go on stands only while a card waits for a slot,
+  // as the board says.
   {
     name: "filter-why-it-waits-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await open(page, view("open"));
+      const slotWaits = await page.evaluate(async (key) => {
+        const board: { columns: { cards: { waiting: { reason: string } | null }[] }[] } = await (
+          await fetch(`/api/v1/projects/${key}/legion/board`)
+        ).json();
+        return board.columns
+          .flatMap((column) => column.cards)
+          .filter((card) => card.waiting?.reason === "slot").length;
+      }, project);
       await showColumn(page, "Why it waits");
       await page.getByRole("button", { name: "Filter Why it waits", exact: true }).click();
       await page.waitForTimeout(500);
       const choices = await filterChoices(page, "Why it waits");
-      const gone = ["Its turn", "Its slot back", "Ready to start"];
+      const offered = (reason: string) => choices.some((each) => each.startsWith(`${reason}, `));
       check(
-        ["In the queue", "A blocker", "A person", "None"].every((reason) =>
-          choices.some((each) => each.startsWith(`${reason}, `))
-        ) &&
-          !gone.some((old) => choices.some((each) => each.startsWith(old))) &&
-          !choices.some((each) => /slot/i.test(each)),
-        `Why it waits filters by ${choices.join("; ")}`
+        ["Ready to start", "A blocker", "A person", "None"].every(offered) &&
+          offered("Capacity to go on") === slotWaits > 0 &&
+          !choices.some((each) => /queue|slot/i.test(each)),
+        `Why it waits filters by ${choices.join("; ")} (${slotWaits} cards wait for a slot)`
       );
     },
   },
@@ -897,6 +1388,10 @@ const fileShots: Shot[] = [
       check(
         (await page.locator(`[data-board-column="todo"] [data-board-card="${key}"]`).count()) === 0,
         `${key} has left the Todo column`
+      );
+      check(
+        (await heldButton(page).count()) === 0,
+        "the reader's own drag applies at once: no Show changes"
       );
     },
   },

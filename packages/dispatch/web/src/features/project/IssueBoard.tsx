@@ -47,6 +47,7 @@ import { buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import type { CardPlace } from "./board-hold";
 import {
   type IssueStatus,
   isIssueStatus,
@@ -58,7 +59,7 @@ import {
 } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
 import { LEGION_PHASES, phaseLabel } from "./issues-legion";
-import { type Item, workerName } from "./issues-table-model";
+import { type Item, workerName, workHoursOf } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -89,16 +90,20 @@ function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode 
   if (legion === undefined) return null;
   const roles = (legion.roles ?? []).map(workerName);
   const blockedBy = legion.blocked_by ?? legion.waiting?.blocked_by ?? [];
+  const workHours = workHoursOf(item);
+  // A measure the server has no value for is left out, never drawn as 0 or a dash.
   return (
     <>
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <Fact
-          hook="phase-time"
-          label="Time in Legion phase"
-          value={formatPhaseTime(legion.phase_since, nowMs)}
-        />
-        {item.facts === undefined ? null : (
-          <Fact hook="work-time" label="Work time" value={formatWorkTime(item.facts.work_hours)} />
+        {legion.phase_since === null ? null : (
+          <Fact
+            hook="phase-time"
+            label="Time in Legion phase"
+            value={formatPhaseTime(legion.phase_since, nowMs)}
+          />
+        )}
+        {workHours === undefined ? null : (
+          <Fact hook="work-time" label="Work time" value={formatWorkTime(workHours)} />
         )}
         {/* A card whose issue has no worker running leaves the fact out rather than say None:
             every queued card would carry it. */}
@@ -224,7 +229,7 @@ export type BoardBy = "status" | "legion_phase";
 const NONE = "none";
 
 /** The column a row is in on a Board of `by`. */
-const columnOf = (item: Item, by: BoardBy): string =>
+export const columnOf = (item: Item, by: BoardBy): string =>
   by === "status" ? item.issue.status : (item.card?.column ?? NONE);
 
 /** A column's name: a status's own, or a phase's. */
@@ -237,9 +242,12 @@ const columnName = (id: string, by: BoardBy) =>
       ? "None"
       : phaseLabel(id);
 
-/** One column: its title, its count, and its cards; the whole column is its drop target. */
+/** One column: its title, its count, and its cards; the whole column is its drop target. The
+ *  count is the column's rows as they stand now, which a Board holding the reader's place draws
+ *  at once while it holds the cards back. */
 function BoardColumn({
   by,
+  count,
   dropId,
   id,
   items,
@@ -247,6 +255,7 @@ function BoardColumn({
   userState,
 }: {
   by: BoardBy;
+  count: number;
   dropId: string;
   id: string;
   items: readonly Item[];
@@ -272,7 +281,7 @@ function BoardColumn({
           className={`flex items-center justify-between gap-2 text-sm font-semibold ${textPrimaryOnSurface}`}
         >
           {by === "status" ? <StatusPill>{columnName(id, by)}</StatusPill> : columnName(id, by)}
-          <Pill>{items.length}</Pill>
+          <Pill>{count}</Pill>
         </div>
       </header>
       {items.length === 0 ? (
@@ -370,14 +379,12 @@ const dropIdOf = (column: string, lane: string | undefined) =>
 function readDrop(
   overId: string,
   rows: readonly Item[],
-  by: BoardBy
+  placeOf: (item: Item) => { column: string; lane: PriorityLane }
 ): { column: string; key?: string; lane?: PriorityLane } | undefined {
   if (overId.startsWith("card:")) {
     const key = overId.slice("card:".length);
     const row = rows.find((item) => item.issue.key === key);
-    return row === undefined
-      ? undefined
-      : { column: columnOf(row, by), key, lane: issuePriority(row.issue.priority) };
+    return row === undefined ? undefined : { ...placeOf(row), key };
   }
   const match = /^(?:lane:([^|]+)\|)?column:(.+)$/.exec(overId);
   if (match === null || match[2] === undefined) return undefined;
@@ -403,9 +410,11 @@ function readDrop(
  */
 export function IssueBoard({
   by,
+  counted,
   hasLegion,
   lanes,
   listsDone,
+  placeOf,
   project,
   reorderRefusal,
   rows,
@@ -414,15 +423,21 @@ export function IssueBoard({
   userState,
 }: {
   by: BoardBy;
+  /** The rows the columns and lanes count: the view's rows as they stand now, where a Board
+   *  holding the reader's place draws other rows (`useHeldBoard`); `rows` where unset. */
+  counted?: readonly Item[];
   hasLegion: boolean;
   lanes: boolean;
   /** The view lists done issues: the Done rail opens into a column with their cards. */
   listsDone: boolean;
+  /** Where a drawn row stands while the Board holds the reader's place; where its fields put it
+   *  where unset. */
+  placeOf?: (item: Item) => CardPlace;
   project: string;
   /** Why a card cannot be reordered within its column under the view's sort; undefined while
    *  the view sorts by Queue, first first. */
   reorderRefusal: string | undefined;
-  /** The view's rows, in the view's sort. */
+  /** The rows the Board draws, in the view's sort. */
   rows: readonly Item[];
   showIcebox: boolean;
   statusPicks: readonly string[] | undefined;
@@ -431,10 +446,32 @@ export function IssueBoard({
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string>();
   const nowMs = Date.now();
-  const statuses = useMemo(
-    () => boardStatuses({ rows, showIcebox, statusPicks }),
-    [rows, showIcebox, statusPicks]
-  );
+  const countedRows = counted ?? rows;
+  // Where a drawn card stands: its held place, else where its fields put it.
+  const placeAt = (item: Item): { column: string; lane: PriorityLane } => {
+    const held = placeOf?.(item);
+    return {
+      column: held?.column ?? columnOf(item, by),
+      lane:
+        held === undefined || held.lane === undefined
+          ? issuePriority(item.issue.priority)
+          : held.lane,
+    };
+  };
+  const columnAt = (item: Item) => placeAt(item).column;
+  const laneAt = (item: Item) => placeAt(item).lane;
+  // The status columns: those the counted rows and the picked statuses name, and those a held
+  // card still stands in.
+  const statuses = useMemo(() => {
+    const named = boardStatuses({ rows: countedRows, showIcebox, statusPicks });
+    if (placeOf === undefined) return named;
+    const held = new Set(rows.map((item) => placeOf(item).column));
+    return issueStatuses.filter(
+      (status) =>
+        named.includes(status) ||
+        (held.has(status) && status !== "done" && (status !== "icebox" || showIcebox))
+    );
+  }, [countedRows, placeOf, rows, showIcebox, statusPicks]);
   const patch = useKeyedWrite({
     inline: true,
     label: ({ key }: { input: UpdateIssueInput; key: string }) => `${key} moved on the board`,
@@ -475,25 +512,22 @@ export function IssueBoard({
     if (over === null) return;
     const key = String(active.id);
     const row = rows.find((item) => item.issue.key === key);
-    const target = readDrop(String(over.id), rows, by);
+    const target = readDrop(String(over.id), rows, placeAt);
     if (row === undefined || target === undefined || target.key === key) return;
-    const from = columnOf(row, by);
+    const from = columnAt(row);
     // A drop into another lane takes that lane's priority, as today's lanes do.
     const lane = lanes ? target.lane : undefined;
     const priority =
       lane === undefined || lane === issuePriority(row.issue.priority) ? {} : { priority: lane };
     // Within its own column, and its own lane, a drop can only reorder.
     const reorders = target.column === from && Object.keys(priority).length === 0;
-    const sameLane = (item: Item) =>
-      !lanes || issuePriority(item.issue.priority) === issuePriority(row.issue.priority);
+    const sameLane = (item: Item) => !lanes || laneAt(item) === laneAt(row);
     // The card a reorder lands beside: the one it is dropped on, else the column's last.
     const beside =
       target.key !== undefined
         ? rows.find((item) => item.issue.key === target.key)
         : rows
-            .filter(
-              (item) => columnOf(item, by) === from && item.issue.key !== key && sameLane(item)
-            )
+            .filter((item) => columnAt(item) === from && item.issue.key !== key && sameLane(item))
             .at(-1);
     const refusal = (): string | undefined =>
       reorderRefusal ??
@@ -516,7 +550,7 @@ export function IssueBoard({
         setNotice(why);
         return;
       }
-      const column = rows.filter((item) => columnOf(item, by) === "queue" && sameLane(item));
+      const column = rows.filter((item) => columnAt(item) === "queue" && sameLane(item));
       const neighbour = target.key ?? column.at(-1)?.issue.key;
       if (neighbour === undefined || neighbour === key) return;
       const movingUp =
@@ -578,7 +612,8 @@ export function IssueBoard({
   const iceboxRail =
     by === "status" &&
     !statuses.includes("icebox") &&
-    (rows.some((item) => item.issue.status === "icebox") || (statusPicks ?? []).includes("icebox"));
+    (countedRows.some((item) => item.issue.status === "icebox") ||
+      (statusPicks ?? []).includes("icebox"));
   const order: readonly string[] =
     by === "legion_phase"
       ? LEGION_PHASES.map((phase) => phase.id)
@@ -587,13 +622,20 @@ export function IssueBoard({
             (a, b) => issueStatuses.indexOf(a) - issueStatuses.indexOf(b)
           )
         : statuses;
-  const drawRow = (from: readonly Item[], lane: string | undefined) => {
+  // The columns' counts are the counted rows', as they stand now; the cards are the drawn rows',
+  // where the Board places them.
+  const drawRow = (from: readonly Item[], counting: readonly Item[], lane: string | undefined) => {
     const columns = new Map<string, Item[]>();
     for (const item of from) {
-      const id = columnOf(item, by);
+      const id = columnAt(item);
       const list = columns.get(id) ?? [];
       list.push(item);
       columns.set(id, list);
+    }
+    const counts = new Map<string, number>();
+    for (const item of counting) {
+      const id = columnOf(item, by);
+      counts.set(id, (counts.get(id) ?? 0) + 1);
     }
     return (
       <div className="flex w-max items-stretch gap-4">
@@ -601,7 +643,7 @@ export function IssueBoard({
           id === "icebox" && iceboxRail ? (
             <Rail
               by={by}
-              count={(columns.get("icebox") ?? []).length}
+              count={counts.get("icebox") ?? 0}
               dropId={dropIdOf("icebox", lane)}
               id="icebox"
               key={id}
@@ -609,6 +651,7 @@ export function IssueBoard({
           ) : (
             <BoardColumn
               by={by}
+              count={counts.get(id) ?? 0}
               dropId={dropIdOf(id, lane)}
               id={id}
               items={columns.get(id) ?? []}
@@ -619,15 +662,11 @@ export function IssueBoard({
           )
         )}
         {by === "legion_phase" ? (
-          <Rail
-            by={by}
-            count={(columns.get(NONE) ?? []).length}
-            dropId={dropIdOf(NONE, lane)}
-            id={NONE}
-          />
+          <Rail by={by} count={counts.get(NONE) ?? 0} dropId={dropIdOf(NONE, lane)} id={NONE} />
         ) : listsDone ? (
           <BoardColumn
             by={by}
+            count={counts.get("done") ?? 0}
             dropId={dropIdOf("done", lane)}
             id="done"
             items={columns.get("done") ?? []}
@@ -661,17 +700,20 @@ export function IssueBoard({
         {lanes ? (
           <div className="flex flex-col gap-6" data-testid="board-lanes-container">
             {priorityLanes.map((lane) => {
-              const inLane = rows.filter((item) => issuePriority(item.issue.priority) === lane);
+              const inLane = rows.filter((item) => laneAt(item) === lane);
+              const countedInLane = countedRows.filter(
+                (item) => issuePriority(item.issue.priority) === lane
+              );
               return (
                 <section aria-label={`${laneLabel(lane)} lane`} key={String(lane)}>
                   <h2
                     className={`mb-2 flex items-center gap-2 text-xs font-semibold tracking-wide uppercase ${textSecondaryOnSurface}`}
                   >
                     {laneLabel(lane)}
-                    <Pill>{inLane.length}</Pill>
+                    <Pill>{countedInLane.length}</Pill>
                   </h2>
                   <div className="relative overflow-x-auto pb-3">
-                    {drawRow(inLane, String(lane))}
+                    {drawRow(inLane, countedInLane, String(lane))}
                   </div>
                 </section>
               );
@@ -681,7 +723,7 @@ export function IssueBoard({
           // `relative` is load-bearing: a card's `sr-only` text is absolutely placed, and with no
           // placed ancestor inside the scroll box it widens the whole page past the window.
           <div className="relative overflow-x-auto pb-3" data-testid="board-scroll-container">
-            {drawRow(rows, undefined)}
+            {drawRow(rows, countedRows, undefined)}
           </div>
         )}
       </DndContext>

@@ -26,6 +26,7 @@ export function AnchoredPanel({
   anchorRef,
   children,
   className,
+  flip = false,
   label,
   onDismiss,
   role,
@@ -34,6 +35,9 @@ export function AnchoredPanel({
   anchorRef: RefObject<HTMLElement | null>;
   children: ReactNode;
   className: string;
+  /** Where there is no room under the anchor, stand above it rather than over it: a tooltip,
+   *  which covers nothing the reader is pointing at. */
+  flip?: boolean;
   /** The panel's accessible name, for a panel that names itself. */
   label?: string;
   onDismiss: () => void;
@@ -65,15 +69,22 @@ export function AnchoredPanel({
         dismiss.current();
         return;
       }
-      const width = Math.min(panelRef.current?.offsetWidth || PANEL_WIDTH, window.innerWidth - 16);
+      // The window the reader sees: the document's own width and height, which leave out the
+      // scroll bars a window's `innerWidth` counts, so a panel is never drawn under one.
+      const viewWidth = document.documentElement.clientWidth || window.innerWidth;
+      const viewHeight = document.documentElement.clientHeight || window.innerHeight;
+      const width = Math.min(panelRef.current?.offsetWidth || PANEL_WIDTH, viewWidth - 16);
+      const height = panelRef.current?.offsetHeight ?? 200;
       const left = Math.max(
         8,
-        Math.min(align === "right" ? box.right - width : box.left, window.innerWidth - width - 8)
+        Math.min(align === "right" ? box.right - width : box.left, viewWidth - width - 8)
       );
-      const top = Math.max(
-        8,
-        Math.min(box.bottom + 4, window.innerHeight - (panelRef.current?.offsetHeight ?? 200) - 8)
-      );
+      const below = box.bottom + 4;
+      const above = box.top - 4 - height;
+      const top =
+        flip && below + height > viewHeight - 8 && above >= 8
+          ? above
+          : Math.max(8, Math.min(below, viewHeight - height - 8));
       setPosition((current) =>
         current.left === left && current.top === top ? current : { left, top }
       );

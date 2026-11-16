@@ -21,7 +21,7 @@ import {
   writeUrl,
 } from "./issues-table-model";
 import { embeddedGrammar } from "./issues-table-view";
-import { currentAddress, legacyOpenLayout } from "./issues-views";
+import { currentAddress, inWindow, legacyOpenLayout, readWindow } from "./issues-views";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -395,10 +395,12 @@ test("Open asks, Review rounds, Workers and Legion tree filter by what their cel
   expect(show("waited", "1h-1d")).toBe("1 hour to 1 day");
   expect(show("activity", "held_children")).toBe("Waiting on child issues");
   expect(show("activity", "held_idle")).toBe("Idle");
-  // Why it waits says what holds the card up, in this design's words.
-  expect(
-    ["ready", "slot", "blocked", "person", "none"].map((value) => show("waiting_reason", value))
-  ).toEqual(["In the queue", "Capacity", "A blocker", "A person", "None"]);
+  // Why it waits says what holds the card up, in this design's words, none of them "queue".
+  const waits = ["ready", "slot", "blocked", "person", "none"].map((value) =>
+    show("waiting_reason", value)
+  );
+  expect(waits).toEqual(["Ready to start", "Capacity to go on", "A blocker", "A person", "None"]);
+  expect(waits.some((word) => /queue/i.test(word ?? ""))).toBe(false);
 });
 
 test("a link that picked open asks by count keeps its rows", () => {
@@ -433,4 +435,25 @@ test("the kept issue-view choice opens Open's table, its Board, or its Board by 
   // A value this bundle does not know opens the table.
   expect(legacyOpenLayout("")).toEqual({ layout: "table" });
   expect(legacyOpenLayout("timeline")).toEqual({ layout: "table" });
+});
+
+// A picked Closed range is whole days of the reader's calendar, its end day included: 11/03 to
+// 11/09 lists what closed through the 9th, not up to its first moment.
+test("a Closed range of dates runs to the end of its last day, in the reader's time zone", () => {
+  const local = (day: number, hour = 0, minute = 0) =>
+    new Date(2026, 10, day, hour, minute).toISOString();
+  const value = "2026-11-03..2026-11-09";
+  expect(readWindow(value, Date.now())).toEqual({
+    from: new Date(2026, 10, 3).getTime(),
+    to: new Date(2026, 10, 10).getTime(),
+  });
+  expect(inWindow(local(3), value, Date.now())).toBe(true);
+  expect(inWindow(local(9, 12), value, Date.now())).toBe(true);
+  expect(inWindow(local(9, 23, 59), value, Date.now())).toBe(true);
+  expect(inWindow(local(10), value, Date.now())).toBe(false);
+  expect(inWindow(local(2, 23, 59), value, Date.now())).toBe(false);
+  // A one-day range is that whole day.
+  expect(inWindow(local(9, 18), "2026-11-09..2026-11-09", Date.now())).toBe(true);
+  // An exact moment is still that moment, its end left out.
+  expect(inWindow("2026-11-09T00:00:00Z", "..2026-11-09T00:00:00Z", Date.now())).toBe(false);
 });

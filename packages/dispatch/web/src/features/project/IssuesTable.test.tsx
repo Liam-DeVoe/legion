@@ -4,14 +4,14 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { Issue, IssueSummary } from "../../api/types";
 import { readLayout } from "../../components/table-storage";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { writesOf } from "../writes/write-store";
+import { plainWrite, writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import type { IssueListing } from "./issues-table-data";
 import { ISSUE_TABLE_COLUMNS, tableStorageKey } from "./issues-table-model";
@@ -1146,6 +1146,92 @@ function listedKeys(): string[] {
     .filter((row) => row.hasAttribute("data-issue-row"))
     .map((row) => row.getAttribute("data-issue-row") ?? "");
 }
+
+// The reader's place (The Spec, pages-work-for-each-reader-and-hold-their-place): an issue
+// another reader adds above the rows on screen does not push them down. The tab counts it at
+// once, and the pager offers it until the reader asks for it.
+test("a live insert above the first row on screen waits for Show changes", async () => {
+  const user = userEvent.setup();
+  const rows = [issue("CORE-2"), issue("CORE-3")];
+  const { client } = table(rows);
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  expect(listedKeys()).toEqual(["CORE-2", "CORE-3"]);
+  rows.unshift(issue("CORE-1"));
+  await client.invalidateQueries({ queryKey: ["issues"] });
+  const show = await screen.findByRole("button", { name: "Show 1 change" });
+  expect(listedKeys()).toEqual(["CORE-2", "CORE-3"]);
+  expect(screen.getByRole("tab", { name: "Open 3" })).toBeDefined();
+  await user.click(show);
+  expect(listedKeys()).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
+  expect(screen.queryByRole("button", { name: /^Show \d+ changes?$/ })).toBeNull();
+});
+
+test("a live change updates the cells of the rows on screen in place", async () => {
+  const rows = [issue("CORE-1"), issue("CORE-2", { title: "Old title" })];
+  const { client } = table(rows);
+  await screen.findByRole("row", { name: "CORE-2 Old title" });
+  rows[1] = issue("CORE-2", { title: "New title" });
+  await client.invalidateQueries({ queryKey: ["issues"] });
+  expect(await screen.findByRole("row", { name: "CORE-2 New title" })).toBeDefined();
+  expect(listedKeys()).toEqual(["CORE-1", "CORE-2"]);
+  expect(screen.queryByRole("button", { name: /^Show \d+ changes?$/ })).toBeNull();
+});
+
+// Only content that others add waits: the reader's own writes on this page - a bulk action, a
+// status or priority change, Start next, a move on the Board - are drawn at once. Every control
+// of the page writes as this does, one write per issue lined up on the issue.
+test("the reader's own bulk close takes its rows off the page at once", async () => {
+  const rows = [issue("CORE-1"), issue("CORE-2"), issue("CORE-3")];
+  const send = spyOn(api, "send").mockImplementation(async (request) => {
+    const key = request.path.split("/").at(-1) ?? "";
+    rows[rows.findIndex((row) => row.key === key)] = issue(key, { status: "done" });
+    return savedIssue(key) as never;
+  });
+  restores.push(() => send.mockRestore());
+  const { client } = table(rows);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const writes = writesOf(client);
+  await Promise.all(
+    ["CORE-1", "CORE-2"].map((key) =>
+      writes.run({
+        kind: plainWrite,
+        detail: null,
+        label: `${key} closed`,
+        presentation: "indicator",
+        request: issuePatchRequest(key, { status: "done" }),
+        target: `issue:${key}`,
+      })
+    )
+  );
+  // The caller reads the listing again once its writes have landed, as the table's actions do.
+  await client.invalidateQueries({ queryKey: ["issues"] });
+  await waitFor(() => expect(listedKeys()).toEqual(["CORE-3"]));
+  expect(screen.getByRole("tab", { name: "Open 1" })).toBeDefined();
+  expect(screen.queryByRole("button", { name: /^Show \d+ changes?$/ })).toBeNull();
+});
+
+// The Board holds the reader's place as the table's page does: a card another reader adds above
+// the cards of a column waits, the column counts it at once, and the control row offers it.
+test("a live insert on the Board waits for Show changes", async () => {
+  const user = userEvent.setup();
+  const rows = [issue("CORE-2"), issue("CORE-3")];
+  const { client } = table(rows, "?layout=board");
+  await screen.findByRole("article", { name: "CORE-2 Work CORE-2" });
+  const todo = () => screen.getByRole("region", { name: "Todo" });
+  const cards = () =>
+    [...todo().querySelectorAll("[data-board-card]")].map((card) =>
+      card.getAttribute("data-board-card")
+    );
+  expect(cards()).toEqual(["CORE-2", "CORE-3"]);
+  rows.unshift(issue("CORE-1"));
+  await client.invalidateQueries({ queryKey: ["issues"] });
+  const show = await screen.findByRole("button", { name: "Show 1 change" });
+  expect(cards()).toEqual(["CORE-2", "CORE-3"]);
+  expect(within(todo()).getByTestId("board-column-header").textContent).toContain("3");
+  await user.click(show);
+  expect(cards()).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
+  expect(screen.queryByRole("button", { name: /^Show \d+ changes?$/ })).toBeNull();
+});
 
 test("a scoped table lists the issues the server answers for the priority, over every project", async () => {
   const { listing } = table(

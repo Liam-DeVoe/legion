@@ -198,6 +198,15 @@ export function ageMs(since: string | null | undefined): number | undefined {
   return Number.isNaN(at) ? undefined : Date.now() - at;
 }
 
+/** The issue's work time in hours, or undefined where none was measured: an issue with no
+ *  Legion facts, or one whose facts hold no measured work (`work_first_at` null, which the
+ *  server answers with `work_hours` 0). A missing work time draws an empty cell, never 0. */
+export function workHoursOf(item: Pick<Item, "facts">): number | undefined {
+  const facts = item.facts;
+  if (facts === undefined) return undefined;
+  return facts.work_first_at == null && !(facts.work_hours > 0) ? undefined : facts.work_hours;
+}
+
 const HOUR_MS = 3_600_000;
 /** What a column that holds a duration filters by: four lengths, in their order, and None for
  *  a row with no duration. The address keeps the ids (`f.waited=under-1h`). */
@@ -460,9 +469,10 @@ export const COLUMNS: readonly ColumnSpec[] = [
     size: 148,
     min: 148,
     board: true,
-    filter: duration((item) =>
-      item.facts === undefined ? undefined : item.facts.work_hours * HOUR_MS
-    ),
+    filter: duration((item) => {
+      const hours = workHoursOf(item);
+      return hours === undefined ? undefined : hours * HOUR_MS;
+    }),
   },
   {
     id: "review_rounds",

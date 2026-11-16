@@ -32,13 +32,13 @@ function describe(value: string): string {
   return `${range[1] || "start"} to ${range[2] || "now"}`;
 }
 
-/** A `<from>..<to>` end as a date input holds it: the UTC date of a day or of a time. */
+/** A `<from>..<to>` end as a date input holds it: the date of a day, or the UTC date of a time. */
 const asDate = (end: string | undefined) => (end ?? "").slice(0, 10);
 
 /**
  * The date range filter of a column of moments (Closed): the last 1, 7, 28 or 90 days, all of
- * them, or a from and to date, `from` included and `to` excluded. It writes `f.<column>` as
- * `<N>d`, `<from>..<to>` or `all`.
+ * them, or a from and to date, both days included, as the reader's own calendar shows them
+ * (`readWindow`). It writes `f.<column>` as `<N>d`, `<from>..<to>` or `all`.
  */
 export function RangeFilter<TData>({
   column,
@@ -102,7 +102,7 @@ export function RangeFilter<TData>({
               close();
             }}
           >
-            <span className={`text-xs ${textMutedOnCanvas}`}>Or from and to (UTC)</span>
+            <span className={`text-xs ${textMutedOnCanvas}`}>Or from and to, both included</span>
             <span className="flex items-center gap-1">
               <input
                 aria-label={`${name} from`}

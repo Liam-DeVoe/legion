@@ -230,27 +230,33 @@ export interface ClosedWindow {
 
 const DAY_MS = 86_400_000;
 
-/** One end of a `<from>..<to>` window: a UTC date (`2026-11-03`), or an RFC 3339 time written in
- *  UTC with `Z`. */
-function readEnd(text: string): number | null | undefined {
+/**
+ * One end of a `<from>..<to>` window. A date (`2026-11-03`) is a whole day in the reader's time
+ * zone, as the date picker shows it, and both ends include their day: a `from` date starts at
+ * its day's first moment, and a `to` date runs to its day's end (the next day's first moment,
+ * which the window leaves out). An RFC 3339 time written in UTC with `Z` is that moment.
+ */
+function readEnd(text: string, end: "from" | "to"): number | null | undefined {
   if (text === "") return null;
-  const at = /^\d{4}-\d{2}-\d{2}$/.test(text)
-    ? Date.parse(`${text}T00:00:00Z`)
-    : /Z$/.test(text)
-      ? Date.parse(text)
-      : Number.NaN;
+  const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (date !== null) {
+    const [year, month, day] = [Number(date[1]), Number(date[2]), Number(date[3])];
+    const at = new Date(year, month - 1, day + (end === "to" ? 1 : 0)).getTime();
+    return Number.isNaN(at) ? undefined : at;
+  }
+  const at = /Z$/.test(text) ? Date.parse(text) : Number.NaN;
   return Number.isNaN(at) ? undefined : at;
 }
 
 /** The window `f.closed` names: `<N>d` is the last N times 24 hours up to now, `<from>..<to>` a
- *  range, and `all` (or a value this cannot read) no window at all. */
+ *  range of whole days or moments, and `all` (or a value this cannot read) no window at all. */
 export function readWindow(value: string, nowMs: number): ClosedWindow | undefined {
   const days = /^(\d+)d$/.exec(value);
   if (days !== null) return { from: nowMs - Number(days[1]) * DAY_MS, to: null };
   const range = /^(.*)\.\.(.*)$/.exec(value);
   if (range === null) return undefined;
-  const from = readEnd(range[1] ?? "");
-  const to = readEnd(range[2] ?? "");
+  const from = readEnd(range[1] ?? "", "from");
+  const to = readEnd(range[2] ?? "", "to");
   return from === undefined || to === undefined ? undefined : { from, to };
 }
 

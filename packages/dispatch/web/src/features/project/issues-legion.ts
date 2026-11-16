@@ -77,16 +77,17 @@ export function phaseHours(facts: LegionBoardFacts | undefined): {
 }
 
 /** What holds a card up, the Why it waits column's values in their order, in this design's
- *  words: it is in the queue and the daemon has not started it, it waits for the daemon's
- *  capacity, a blocker link holds it, or a person has not answered it. The daemon's rule
- *  (`CardWaiting`, `packages/envoy/internal/dispatch/legion/board_rules.go`) decides which; a
- *  card in the queue waits, and so does a root waiting on a person outside it. The values are
- *  the board route's `waiting.reason`. */
+ *  words: the daemon has not started it, it started and waits for capacity to go on, a blocker
+ *  link holds it, or a person has not answered it. No value says "queue": the Queue column's
+ *  In Legion queue is the one name of the queue. The daemon's rule (`CardWaiting`,
+ *  `packages/envoy/internal/dispatch/legion/board_rules.go`) decides which; a card in the queue
+ *  waits, and so does a root waiting on a person outside it. The values are the board route's
+ *  `waiting.reason`. */
 export const WAITING_REASONS = ["ready", "slot", "blocked", "person"] as const;
 export type WaitingReason = (typeof WAITING_REASONS)[number];
 const waitingLabels: Record<WaitingReason, string> = {
-  ready: "In the queue",
-  slot: "Capacity",
+  ready: "Ready to start",
+  slot: "Capacity to go on",
   blocked: "A blocker",
   person: "A person",
 };

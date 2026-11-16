@@ -49,6 +49,7 @@ import {
   type Item,
   matchesFilters,
   workerName,
+  workHoursOf,
 } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
@@ -83,10 +84,33 @@ declare module "@tanstack/react-table" {
     text?: boolean;
     /** Filter by a window of time (`RangeFilter`): for a column of moments. */
     range?: boolean;
+    /** How the column's value is computed, in one sentence its header's tooltip says. */
+    describe?: string;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
 }
+
+/**
+ * How each measure is computed, the one sentence its header's tooltip says: the server's rule,
+ * read from the code that computes it. Work time, Time per phase and Review rounds are the
+ * per-issue facts (`legion/metrics`: `computeWorkTime`, `issueParts`, `reviewRounds`); Time
+ * waiting and Time in Legion phase run from the board's `waiting.since` (`legion.CardWaiting`)
+ * and `phase_since` (`api/legion_board.go`) to now. A measure the server has no value for is an
+ * empty cell, never 0.
+ */
+const MEASURE_METHODS: Partial<Record<ColumnId, string>> = {
+  work_hours:
+    "Dispatch counts the hours from the first Legion worker event until the issue closes, or until now, without Backlog, Icebox and Legion queue hours.",
+  phase_hours:
+    "Dispatch divides the Work time by the Legion phase of each hour, without the hours that a parent issue waits for a child issue.",
+  review_rounds:
+    "Dispatch counts each start of the Reviewing phase, or each move to Needs review status for an issue with no recorded Legion phases.",
+  waited:
+    "Dispatch shows the time since Legion asked a person, when the issue waits on a person, or else since its Legion phase started.",
+  time_in_phase:
+    "Dispatch shows the time since Legion first recorded the issue in its current Legion phase.",
+};
 const inPicks: FilterFn<Item> = (row, id, value: string[] | string) =>
   matchesFilters(row.original, [{ id, value }]);
 
@@ -400,14 +424,16 @@ const renderings = (
   },
   work_hours: {
     header: "Work time",
-    accessorFn: (item) => item.facts?.work_hours,
-    sortingFn: emptyLast((item) => item.facts?.work_hours, byNumber),
-    cell: ({ row }) =>
-      row.original.facts === undefined ? null : (
+    accessorFn: workHoursOf,
+    sortingFn: emptyLast(workHoursOf, byNumber),
+    cell: ({ row }) => {
+      const hours = workHoursOf(row.original);
+      return hours === undefined ? null : (
         <span className={`text-xs tabular-nums ${textSecondaryOnCanvas}`}>
-          {formatWorkTime(row.original.facts.work_hours)}
+          {formatWorkTime(hours)}
         </span>
-      ),
+      );
+    },
   },
   review_rounds: {
     header: "Review rounds",
@@ -736,6 +762,9 @@ export function useIssueTableColumns(
           ...(picks?.order === undefined ? {} : { order: picks.order }),
           ...(show === undefined ? {} : { show }),
           ...(picks?.always === undefined ? {} : { always: picks.always }),
+          ...(MEASURE_METHODS[column.id] === undefined
+            ? {}
+            : { describe: MEASURE_METHODS[column.id] }),
         },
       };
     });

@@ -16,6 +16,7 @@ import { DataTable, type DataTableNames, useDataTable } from "../../components/D
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { Pager, type PagerOptions } from "../../components/Pager";
 import { QueryError } from "../../components/QueryError";
+import { type HeldChanges, ShowChanges } from "../../components/ShowChanges";
 import { useTableLayout } from "../../components/table-layout";
 import { readStore, writeStore } from "../../components/table-storage";
 import { copyAddress, useAddressParams, useAddressUpdate } from "../../lib/page-address";
@@ -31,6 +32,7 @@ import { setSelectedIssues } from "../search/bar-scope";
 import { useKeymap } from "../shell/keymap";
 import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useUserPreference } from "../shell/userPreference";
+import { useHeldBoard } from "./board-hold";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { type BoardBy, IssueBoard } from "./IssueBoard";
 import {
@@ -110,6 +112,7 @@ import {
   viewQueryKey,
   windowRead,
 } from "./issues-views";
+import { useOwnIssueWrites } from "./own-writes";
 import { RangeFilter } from "./RangeFilter";
 import { issueIsUnread } from "./UnreadDot";
 
@@ -119,6 +122,8 @@ const DONE_UNLOADED: ReadonlyMap<string, readonly string[]> = new Map([["status"
 const NONE: readonly string[] = [];
 const NO_VIEWS: readonly BuiltInView[] = [];
 const NO_SAVED: readonly SavedView[] = [];
+/** What a view still reading its rows holds back: nothing. */
+const NOTHING_HELD: HeldChanges = { count: 0, show: () => {} };
 /** An embedded table's own parameters that Clear filters leaves as they are (`<stateKey>.`). */
 const EMBEDDED_KEPT = ["sort", "group", "size"];
 /** The page's flags Clear filters takes off an embedded table as well, as main's does. */
@@ -668,7 +673,23 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     touch
   );
 
+  // A view with a Legion filter waits for the board: it never lists unfiltered rows under the
+  // view's name.
+  const legionFiltered =
+    hasLegion && filters.some((filter) => isBoardColumn(filter.id) || filter.id === "queue");
+  const loading =
+    (readsOpen && issues.isPending) ||
+    userState.isPending ||
+    (done !== undefined && doneIssues.isPending) ||
+    (legionFiltered && board.isPending);
+  // The issues the reader changed on this page, whose changes the held lists draw at once.
+  const own = useOwnIssueWrites();
   const model = useDataTable<Item>({
+    // The reader's place: once the view's rows have arrived, a change from elsewhere updates the
+    // rows on the page in place and holds back what it would add, remove or move (`Show N
+    // changes`); the reader's own changes are drawn at once.
+    hold: !loading,
+    own,
     rows: items,
     rowCount: doneTotal,
     columns,
@@ -959,10 +980,6 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
           },
         };
 
-  // A view with a Legion filter waits for the board: it never lists unfiltered rows under the
-  // view's name.
-  const legionFiltered =
-    hasLegion && filters.some((filter) => isBoardColumn(filter.id) || filter.id === "queue");
   const pageRows = table.getRowModel().rows;
   const pageMax = Math.max(0, ...pageRows.map((row) => phaseHours(row.original.facts).total));
   // TanStack hands back the same sorted model until the rows, the filters or the sort change.
@@ -972,6 +989,16 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     () => sortedModel.flatRows.filter((row) => !row.getIsGrouped()).map((row) => row.original),
     [sortedModel]
   );
+  // The Board holds the reader's place as the table's page does: until the reader changes the
+  // view, a filter, the grouping, the layout or the lanes, or asks for the changes.
+  const boardHold = useHeldBoard({
+    by: boardBy,
+    holdKey: `${params.toString()}\n${layoutChoice}\n${lanes}`,
+    holding: !loading && layoutChoice === "board",
+    lanes,
+    own,
+    rows: boardRows,
+  });
   // The statuses the view's Status filter picks, which the status Board draws as columns.
   const statusPicks = Array.isArray(statusValue) ? statusValue.map(String) : undefined;
   // The Board reorders a column only while the view shows it in Queue order, first first, which
@@ -995,11 +1022,6 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     [allItems]
   );
 
-  const loading =
-    (readsOpen && issues.isPending) ||
-    userState.isPending ||
-    (done !== undefined && doneIssues.isPending) ||
-    (legionFiltered && board.isPending);
   // The active tab counts the rows the table lists now, the reader's own changes (filters,
   // search, flags, chips) included, as a search narrows GitHub's Open count; a view the server
   // pages counts by the server's total. Every other tab keeps its own view's count.
@@ -1065,7 +1087,20 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       className={`${embedded ? "space-y-3" : "space-y-2"} sm:pb-24`}
       data-view={embedded ? undefined : builtIn.id}
     >
-      <div className={embedded ? "space-y-3" : "space-y-2"} ref={attachAbove}>
+      {/* `relative`: the box the Show changes pill floats under, over the rows' top edge. */}
+      <div className={`relative ${embedded ? "space-y-3" : "space-y-2"}`} ref={attachAbove}>
+        {/* What a change from elsewhere would add, remove or move, held back until the reader
+            asks: a pill over the top of the rows it holds, in the table as on the Board and in
+            a table another page draws. First, so it changes no sibling's spacing. */}
+        <ShowChanges
+          held={
+            loading
+              ? NOTHING_HELD
+              : layoutChoice === "board"
+                ? boardHold.held
+                : { count: model.heldChanges, show: model.showChanges }
+          }
+        />
         {tabs}
         {embedded ? (
           // Issues by status, as main draws them: a click shows only that status, a second
@@ -1168,12 +1203,14 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         <>
           <IssueBoard
             by={boardBy}
+            counted={boardRows}
             hasLegion={hasLegion}
             lanes={lanes}
             listsDone={done !== undefined}
+            placeOf={boardHold.placeOf}
             project={project}
             reorderRefusal={reorderRefusal}
-            rows={boardRows}
+            rows={boardHold.rows}
             showIcebox={showIcebox}
             statusPicks={statusPicks}
             userState={userState.data}
