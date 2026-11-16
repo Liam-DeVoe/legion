@@ -1831,6 +1831,13 @@ def race_impossible_tests(root) -> dict:
     return found
 
 
+# The race-impossible call's -timeout: the one place it is written, so the call this module
+# derives and check-ci-filters.test.sh's expected text of that call cannot disagree (the test
+# reads it from here). The reading it is sized from, and every other call's, is the table in the
+# comment on the envoy-go job (dispatch://INFRA-1075).
+RACE_IMPOSSIBLE_TIMEOUT = "16m"
+
+
 def race_impossible_script(packages) -> str:
     """envoy-go's plain run of the tests the detector makes impossible: one `go test` over every
     package of `packages` (race_impossible_tests), their tests anchored and sorted in one -run.
@@ -1852,12 +1859,11 @@ def race_impossible_script(packages) -> str:
     the call is not held to a guard that would cost a parse of every test file of every package
     it names.
 
-    -timeout 16m; the reading it is sized from, and every other call's, is the table in the
-    comment on the envoy-go job (dispatch://INFRA-1075)."""
+    -timeout RACE_IMPOSSIBLE_TIMEOUT, the constant above."""
     if not packages:
         return ""
     names = sorted(set().union(*packages.values()))
-    return (f"go test -json -count=1 -timeout 16m -run '^({'|'.join(names)})$' "
+    return (f"go test -json -count=1 -timeout {RACE_IMPOSSIBLE_TIMEOUT} -run '^({'|'.join(names)})$' "
             + " ".join(f"./{under}" for under in packages))
 
 

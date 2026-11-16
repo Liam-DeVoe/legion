@@ -2246,6 +2246,12 @@ except ValueError as refusal:
 ' "$1" "$2")
 }
 
+# The race-impossible call's -timeout as ci_job_reads.py writes it, read rather than repeated: these
+# cases are about the -run list the walk derives, and a limit copied here went stale twice when the
+# lane raised it (the test job of runs at 08eb0094 and at ca715109).
+impossible_timeout=$(cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts \
+  python3 -c 'import ci_job_reads as reads; print(reads.RACE_IMPOSSIBLE_TIMEOUT)')
+
 # race_tree: a lane of two packages, one of them a tree, holding every form the walk reads. Echoes
 # its root.
 race_tree() {
@@ -2340,14 +2346,14 @@ echo "case: the plain call's -run list is what the lane's packages hold"
 root=$(race_tree)
 out=$(derived "$root" "lane/a/... lane/b")
 check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones, over every package that has one" \
-  "$(is "$out" "go test -json -count=1 -timeout 11m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon|TestTheta)\$' ./lane/a ./lane/a/sub")"
+  "$(is "$out" "go test -json -count=1 -timeout $impossible_timeout -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon|TestTheta)\$' ./lane/a ./lane/a/sub")"
 check "passes over the testdata package" "$(is "$(contains "$out" 'TestIgnored')" false)"
 check "and leaves out a package with no such test" "$(is "$(contains "$out" './lane/b')" false)"
 
 echo "case: a package the lane names alone does not reach the packages under it"
 out=$(derived "$root" "lane/a")
 check "names the package alone" \
-  "$(is "$out" "go test -json -count=1 -timeout 11m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
+  "$(is "$out" "go test -json -count=1 -timeout $impossible_timeout -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
 
 echo "case: a raceEnabled no top-level function encloses"
 root="$work/race-unattributable"
