@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import { BrokerRefusedError } from "@legion/broker-client/token-client";
+import { BrokerRefusedError, BrokerTradeFailedError } from "@legion/broker-client/token-client";
 import {
   askgateState,
   bytesDigest,
@@ -26,6 +26,7 @@ import {
   DispatchClient,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
+  tokenNotChecked,
   writeOutcomeUnknown,
 } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
@@ -72,13 +73,41 @@ const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
 
-/** The broker's answer of its rate limit, which `ownIdentityResult` asks again after. */
-const TOO_MANY_REQUESTS = 429;
+/** The most `ownIdentityResult` waits in all for the broker and for Dispatch's check of the job's
+ *  token to let its call through (`notNow`): a job's step of many checks still ends, and the wait
+ *  of one call stays far below a job's timeout. */
+const NOT_NOW_WAIT_MS = 60_000;
 
-/** The most `ownIdentityResult` waits in all for the broker's rate limit to let its trade through:
- *  a job's step of many checks still ends, and the wait of one call stays far below a job's
- *  timeout. */
-const BROKER_RATE_LIMIT_WAIT_MS = 60_000;
+/** The wait `ownIdentityResult` takes where an answer that says "not now" names none. */
+const NOT_NOW_STEP_MS = 1_000;
+
+/**
+ * Why a call of `ownIdentityResult` was turned away before anything was stored, so it may be sent
+ * again, and how long to wait first; undefined for every other failure. Three answers say so:
+ * the broker's rate limit (its 429), the broker that could not answer the trade (a 5xx; a trade
+ * stores nothing), and Dispatch's check of the job's token, which answered before any handler ran
+ * (`tokenNotChecked`: its 429 of a spent bucket, its 503 for a broker that answered nothing). An
+ * answer of the write itself is never one: a refusal is final, and a write that may have stored
+ * is `writeOutcomeUnknown`'s.
+ */
+function notNow(error: unknown): { readonly why: string; readonly waitMs: number } | undefined {
+  if (error instanceof BrokerRefusedError && error.status === 429) {
+    return {
+      why: "the secrets broker's rate limit refused the trade",
+      waitMs: error.retryAfterMs ?? NOT_NOW_STEP_MS,
+    };
+  }
+  if (error instanceof BrokerTradeFailedError && error.status >= 500) {
+    return { why: "the secrets broker could not answer the trade", waitMs: NOT_NOW_STEP_MS };
+  }
+  if (tokenNotChecked(error)) {
+    return {
+      why: "Dispatch's check of the job's token turned the write away",
+      waitMs: error.retryAfterMs ?? NOT_NOW_STEP_MS,
+    };
+  }
+  return undefined;
+}
 
 /** Waits `ms` on a timer: how `ownIdentityResult` waits where its io names no pause. */
 function timerPause(ms: number): Promise<void> {
@@ -295,20 +324,20 @@ async function ownIdentityResult(
           parsed.tool
         );
       }
-      // The broker's rate limit refuses the trade before any work, and before the write leaves
-      // this process: one job writes a result for each of its checks, and meets it with no fault
-      // of its own. The trade is asked again after the answer's Retry-After, while the waits stay
-      // within BROKER_RATE_LIMIT_WAIT_MS.
-      if (error instanceof BrokerRefusedError && error.status === TOO_MANY_REQUESTS) {
-        const wait = error.retryAfterMs ?? 1_000;
-        if (waited + wait <= BROKER_RATE_LIMIT_WAIT_MS) {
-          waited += wait;
-          await pause(wait);
+      // One job writes a result for each of its checks, so it meets the broker's and Dispatch's
+      // limits of one address with no fault of its own: a call turned away before anything was
+      // stored is sent again after the answer's wait, while the waits stay within
+      // NOT_NOW_WAIT_MS.
+      const turnedAway = notNow(error);
+      if (turnedAway !== undefined) {
+        if (waited + turnedAway.waitMs <= NOT_NOW_WAIT_MS) {
+          waited += turnedAway.waitMs;
+          await pause(turnedAway.waitMs);
           continue;
         }
         return refuse(
           printableLine(
-            `the secrets broker's rate limit refused the trade after ${waited / 1_000} s of waits, and this command waits at most ${BROKER_RATE_LIMIT_WAIT_MS / 1_000} s: ${messageFor(error)}`
+            `${turnedAway.why} after ${waited / 1_000} s of waits, and this command waits at most ${NOT_NOW_WAIT_MS / 1_000} s: ${messageFor(error)}`
           ),
           REFUSED,
           parsed.tool

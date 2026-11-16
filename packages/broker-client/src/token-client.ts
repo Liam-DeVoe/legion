@@ -146,6 +146,22 @@ function retryAfterWait(value: string | null, now: number): number | null {
 }
 
 /**
+ * A trade that ended with no refusal of the broker's: no answer, a 5xx, or an answer that is not
+ * this grant's. `status` is the HTTP status of the answer, 0 for none. A 5xx says the broker
+ * could not answer now, and a trade stores nothing, so a caller may trade again.
+ */
+export class BrokerTradeFailedError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = "BrokerTradeFailedError";
+  }
+}
+
+/**
  * A person's sign-in that the issuer no longer honours: its refresh token was answered
  * `invalid_grant`, because the person revoked the grant at Google or it expired. It mirrors the
  * Go client's `ErrSignInEnded` (`packages/envoy/internal/brokerclient/device.go`), and like a
@@ -430,9 +446,13 @@ export class BrokerTokenClient {
     const status = statusOf(error);
     const message = messageOf(error);
     const said = status === 0 ? message : `HTTP ${status}: ${message}`;
-    return new Error(`trade ${this.#subject.describe()} at ${endpoint}: ${said}`, {
-      cause: error,
-    });
+    return new BrokerTradeFailedError(
+      `trade ${this.#subject.describe()} at ${endpoint}: ${said}`,
+      status,
+      {
+        cause: error,
+      }
+    );
   }
 
   /**

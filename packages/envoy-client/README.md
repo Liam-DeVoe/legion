@@ -635,7 +635,10 @@ definitive answer when its deadline ended it"); `last` is the cut or the timeout
 `DispatchWriteUnsettledError`, a gateway's answer with `mayHaveReachedDispatch`, Dispatch's own
 5xx, or a transport failure after an attempt that may have reached Dispatch, which is thrown as it
 is. A connection that was never opened (refused, a name that did not resolve, no route) reached
-nothing. A write Dispatch
+nothing, and so did a request Dispatch's check of its broker token turned away before any handler
+ran (`tokenNotChecked`: `429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`), which counts
+as no attempt that may have reached Dispatch. A refusal carries its `Retry-After` as
+`retryAfterMs`. A write Dispatch
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
@@ -872,9 +875,11 @@ stored result as JSON and exits 0. A write that landed with its answer lost prin
 `{"landed_without_answer":"<code>"}` and exits 0: the result is stored. A write that reached
 Dispatch with no answer that says whether it stored the result (`writeOutcomeUnknown`) prints
 `{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET`, and exits
-1: the result may be stored, and a second run is safe, because Dispatch keeps each result. A trade
-the broker's rate limit refuses (429) is asked again after its `Retry-After`, for at most 60 s of
-waits in all, after which the command prints that the rate limit refused the trade and exits 1. The
+1: the result may be stored, and a second run is safe, because Dispatch keeps each result. A call
+that the broker's rate limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check
+of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)
+turns away before anything is stored is asked again after the answer's `Retry-After`, or a second,
+for at most 60 s of waits in all, after which the command prints which turned it away and exits 1. The
 stored result names the run as its recorder and no person, so the job's log holds no person's
 address. It prints Dispatch's refusal as `<CODE>: <message>` and exits 1, such as
 `SPEC_FILES_REFUSED` with the first problem of spec files the graph logic refuses. A refusal of

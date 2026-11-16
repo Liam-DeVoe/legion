@@ -1742,8 +1742,11 @@ export const dispatchToolSpecs = [
       "not finish. The command prints the stored result as JSON, an in-toto statement of the " +
       "run. A write that reached Dispatch with no answer that says whether it stored the result " +
       'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
-      "second run is safe, because Dispatch keeps each result. A trade the broker's rate limit " +
-      "refuses (429) is asked again after its Retry-After, for at most 60 s of waits in all. " +
+      "second run is safe, because Dispatch keeps each result. A call that the broker's rate " +
+      "limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check of the job's " +
+      "token (429 BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +
+      "is stored is asked again after the answer's Retry-After, or a second, for at most 60 s of " +
+      "waits in all. " +
       "It reads DISPATCH_URL, AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY " +
       "(github-actions in a GitHub Actions job), AGENT_SECRETS_MACHINE_AUDIENCE, and the runner's " +
       "ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN, or " +

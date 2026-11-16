@@ -126,7 +126,9 @@ export class DispatchServiceError extends Error {
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    /** The wait the answer's `Retry-After` names, and null where it names none. */
+    readonly retryAfterMs: number | null = null
   ) {
     super(message);
   }
@@ -272,17 +274,45 @@ const NO_CONNECTION: Readonly<Partial<Record<string, true>>> = {
 };
 
 /**
+ * Dispatch's two answers of its check of a broker token that judged nothing, before any handler
+ * ran (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go): `429
+ * BROKER_TOKEN_RATE_LIMITED`, the address's bucket of checks is spent and nothing was asked of
+ * the broker, and `503 BROKER_UNAVAILABLE`, the broker answered nothing. A request answered so did
+ * nothing, so a write answered so stored nothing, though one of them is a 5xx.
+ */
+const TOKEN_NOT_CHECKED: Readonly<Partial<Record<string, number>>> = {
+  BROKER_TOKEN_RATE_LIMITED: 429,
+  BROKER_UNAVAILABLE: 503,
+};
+
+/** Whether status and code are one of {@link TOKEN_NOT_CHECKED}'s answers. */
+function tokenNotCheckedAnswer(status: number, code: string | undefined): boolean {
+  return code !== undefined && TOKEN_NOT_CHECKED[code] === status;
+}
+
+/** Whether `error` is Dispatch's answer that it judged no token, so the request did nothing
+ *  ({@link TOKEN_NOT_CHECKED}). */
+export function tokenNotChecked(error: unknown): error is DispatchServiceError {
+  return (
+    error instanceof DispatchServiceError &&
+    error.fromDispatch &&
+    tokenNotCheckedAnswer(error.status, error.code)
+  );
+}
+
+/**
  * Whether a write that failed with `error` may have stored what it sent while no answer says
  * whether it did: a `DispatchWriteUnsettledError`; a transport failure after an attempt that may
  * have reached Dispatch; a gateway's answer that may have come after the request reached Dispatch
- * (`mayHaveReachedDispatch`); or Dispatch's own 5xx, which can come after it committed. A refusal
- * Dispatch decided, a gateway's answer that never reached it, and a failure before any request of
- * the write went out (its credential, a refused connection) stored nothing.
+ * (`mayHaveReachedDispatch`); or Dispatch's own 5xx, which can come after it committed, but for
+ * its answer that it judged no token. A refusal Dispatch decided, a gateway's answer that never
+ * reached it, and a failure before any request of the write went out (its credential, a refused
+ * connection) stored nothing.
  */
 export function writeOutcomeUnknown(error: unknown): boolean {
   if (error instanceof DispatchWriteUnsettledError) return true;
   if (error instanceof DispatchGatewayError) return error.mayHaveReachedDispatch;
-  if (error instanceof DispatchServiceError) return error.status >= 500;
+  if (error instanceof DispatchServiceError) return error.status >= 500 && !tokenNotChecked(error);
   return typeof error === "object" && error !== null && UNANSWERED_WRITES.has(error);
 }
 
@@ -685,7 +715,7 @@ async function writeAnswer(response: Response, key: string): Promise<WriteAnswer
       headers: response.headers,
     }),
     again,
-    reached: status >= 500 || running,
+    reached: (status >= 500 && !tokenNotCheckedAnswer(status, shape.code)) || running,
     running,
     echoed,
     unjudged: !echoed && typeof shape.error === "string",
@@ -2332,7 +2362,7 @@ export class DispatchClient {
       const landedAlone =
         refusal instanceof DispatchGatewayError
           ? refusal.mayHaveReachedDispatch
-          : refusal.status >= 500;
+          : refusal.status >= 500 && !tokenNotChecked(refusal);
       if (!landedAlone) throw new DispatchWriteUnsettledError(refusal, attempts, undefined, keyed);
     }
     throw refusal;
@@ -2400,7 +2430,8 @@ export class DispatchClient {
           error.error,
           error.candidates,
           error.current,
-          error.mismatches
+          error.mismatches,
+          retryAfterMs(response) || null
         );
       }
       const quoted = excerpt(text, this.token);

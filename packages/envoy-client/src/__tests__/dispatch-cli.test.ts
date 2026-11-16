@@ -2239,6 +2239,120 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }
   });
 
+  /** The results writes Dispatch got so far, the one it answers now included. */
+  const posts = (): number => written.filter((seen) => seen.method === "POST").length;
+  /** Dispatch's two answers of its check of a broker token that judged nothing, before any
+   *  handler ran (`brokerTokenActor`): a spent bucket of checks, and a broker that answered
+   *  nothing. */
+  const tokenNotChecked = {
+    limited: () =>
+      Response.json(
+        {
+          code: "BROKER_TOKEN_RATE_LIMITED",
+          error: "too many access tokens checked from this address; try again in 200ms",
+        },
+        { status: 429, headers: { "Retry-After": "1" } }
+      ),
+    unavailable: () =>
+      Response.json(
+        {
+          code: "BROKER_UNAVAILABLE",
+          error: "the secrets broker cannot be reached; try again in a minute",
+        },
+        { status: 503 }
+      ),
+  };
+  /** The ways a call is turned away before anything is stored: Dispatch's check of the token
+   *  (its 429, and its 503 for a broker that answered nothing) and the broker's own 503 of the
+   *  trade. Each sets the stand-ins up to turn away `times` calls, then to answer as usual. */
+  const turnedAway: readonly (readonly [name: string, setUp: (times: number) => void])[] = [
+    [
+      "Dispatch's 429 of its token check",
+      (times) => {
+        dispatchAnswer = () =>
+          posts() <= times ? tokenNotChecked.limited() : Response.json(stored, { status: 201 });
+      },
+    ],
+    [
+      "Dispatch's 503 for a broker that answered nothing",
+      (times) => {
+        dispatchAnswer = () =>
+          posts() <= times ? tokenNotChecked.unavailable() : Response.json(stored, { status: 201 });
+      },
+    ],
+    [
+      "the broker's 503 of the trade",
+      (times) => {
+        const answer = brokerAnswer;
+        brokerAnswer = () =>
+          trades.length <= times ? new Response("unavailable", { status: 503 }) : answer();
+      },
+    ],
+  ];
+
+  // Dispatch's check of the job's token answers before any handler runs, so a write it turns away
+  // did nothing, and a trade the broker does not answer stores nothing: each is asked again after
+  // the answer's Retry-After, or a second, as the broker's rate limit is, and one result is stored.
+  test("a call Dispatch's token check or the broker turns away is asked again, and the result is stored", async () => {
+    const defaults = { brokerAnswer, dispatchAnswer };
+    for (const [name, setUp] of turnedAway) {
+      ({ brokerAnswer, dispatchAnswer } = defaults);
+      written.length = 0;
+      trades.length = 0;
+      forgetBrokerClients();
+      setUp(2);
+      const waits: number[] = [];
+      const { code, stdout, stderr } = await runJob(record, jobEnvironment(), async (ms) => {
+        waits.push(ms);
+      });
+      expect(
+        { code, stderr, waits, stored: code === 0 ? JSON.parse(stdout) : stdout },
+        name
+      ).toEqual({
+        code: 0,
+        stderr: "",
+        waits: [1000, 1000],
+        stored,
+      });
+      expect(posts(), name).toBe(name.startsWith("the broker") ? 1 : 3);
+    }
+  });
+
+  // Turned away for ever, the call ends inside the bound of 60 s of waits, with one line that says
+  // which turned it away, and no write_outcome_unknown: no write ran.
+  test("a call Dispatch's token check or the broker turns away for ever ends inside 60 s of waits with one line", async () => {
+    const defaults = { brokerAnswer, dispatchAnswer };
+    const lines: Record<string, string> = {
+      "Dispatch's 429 of its token check":
+        "Dispatch's check of the job's token turned the write away after 60 s of waits, and this command waits at most 60 s: BROKER_TOKEN_RATE_LIMITED: too many access tokens checked from this address; try again in 200ms",
+      "Dispatch's 503 for a broker that answered nothing":
+        "Dispatch's check of the job's token turned the write away after 60 s of waits, and this command waits at most 60 s: BROKER_UNAVAILABLE: the secrets broker cannot be reached; try again in a minute",
+      "the broker's 503 of the trade":
+        "the secrets broker could not answer the trade after 60 s of waits, and this command waits at most 60 s: trade this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint) at ",
+    };
+    for (const [name, setUp] of turnedAway) {
+      ({ brokerAnswer, dispatchAnswer } = defaults);
+      written.length = 0;
+      trades.length = 0;
+      forgetBrokerClients();
+      setUp(Number.POSITIVE_INFINITY);
+      const waits: number[] = [];
+      const { code, stdout, stderr } = await runJob(record, jobEnvironment(), async (ms) => {
+        waits.push(ms);
+      });
+      expect({ code, stderr, waits: waits.length, lines: stdout.split("\n").length }, name).toEqual(
+        {
+          code: 1,
+          stderr: "",
+          waits: 60,
+          lines: 2,
+        }
+      );
+      expect(stdout, name).toStartWith(lines[name] ?? "");
+      expect(stdout, name).not.toContain("write_outcome_unknown");
+    }
+  });
+
   // A job's log is read by its runner, which ends a line at \n and at \r, and reads a workflow
   // command from a line that starts with "::" once its leading white space is trimmed and from a
   // "##[" anywhere in a line. The call prints text it did not write: its arguments, its
