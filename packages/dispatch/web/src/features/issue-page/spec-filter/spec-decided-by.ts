@@ -259,7 +259,7 @@ export function firstSentenceOf(text: string): string {
 
 /** A leading label (decision 51): a first word of at most five characters, holding a digit and
  *  ending in `.`, which part F's `firstLineOf` reads with the same pattern. */
-const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
+export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
 /** A blank line, which ends a paragraph: no mark and no code span reaches past one. */
 const BLANK_LINE = /\n\s*\n/u;

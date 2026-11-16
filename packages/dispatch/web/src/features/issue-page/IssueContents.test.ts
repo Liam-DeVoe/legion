@@ -1,8 +1,12 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render } from "@testing-library/react";
+import { createElement } from "react";
 
+import { whoAmIQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { contentsEntries } from "./contents-entries";
-import { type ContentsEntry, contentsOf } from "./IssueContents";
+import { type ContentsEntry, ContentsList, contentsOf } from "./IssueContents";
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
 
@@ -165,5 +169,112 @@ test("the list holds as many entries as the view row's Conversation count", () =
     };
     walk(entries);
     expect(listed).toEqual(counts);
+  }
+});
+
+/** The words of a question the list draws five levels down. */
+const DEEP_QUESTION = "Configuration drift between hosts is the question.";
+
+/** A question five levels down, under a question at each level above it, holding a statement,
+ *  so its entry carries one mark. */
+const deep = node("CORE-1", "issue", [
+  [4, 3, 2, 1, 0].reduce(
+    (under, level) => node(`ask-${level}`, "ask", [under]),
+    node("ask-5", "ask", [node("spec#b-r1", "requirement")], { text: DEEP_QUESTION })
+  ),
+]);
+
+/** How wide the stubbed canvas draws each character of a run of words, at every size. */
+const CHARACTER = 8;
+
+/**
+ * The list drawn over `root` in a box `width` px wide. The two reads of the browser's layout
+ * that the list makes (`useOneLineBox`) and happy-dom does not answer are answered as a browser
+ * would: the list's own width, and its words measured on a canvas, `CHARACTER` px a character.
+ */
+function drawList(root: TreeNode, width: number): { container: HTMLElement; unmount: () => void } {
+  const canvas = spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((() => ({
+    font: "",
+    measureText: (text: string) => ({ width: text.length * CHARACTER }),
+  })) as unknown as HTMLCanvasElement["getContext"]);
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    return new DOMRect(0, 0, this.getAttribute("role") === "tree" ? width : 0, 0);
+  });
+  const restore = () => {
+    canvas.mockRestore();
+    box.mockRestore();
+  };
+  try {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+    const view = render(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(ContentsList, {
+          focusBranch: false,
+          nameOf: () => undefined,
+          onFocusBranch: () => {},
+          onGo: () => {},
+          root,
+        })
+      )
+    );
+    return {
+      container: view.container,
+      unmount: () => {
+        view.unmount();
+        restore();
+      },
+    };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// R3 and review finding 4590606141: where an entry's row leaves its line less room than the
+// line's first word, the line goes under the row's other parts, on a line of its own at the
+// entry's indent, cut at a word to that line's width, and the row grows to hold it. An entry
+// whose line fits beside its parts keeps its one row of 32 px.
+test("an entry whose row leaves its line no word draws the line under the row's other parts", () => {
+  // 275 px: the question five levels down starts 86 px in, and its twisty, bullet and mark with
+  // their gaps take 62 px of the 171 px inside its indent, which leaves its line 108 px beside
+  // them (the pixel for rounding kept), short of "Configuration…" (112 px). Under them it has the
+  // 171 px less that pixel, where "Configuration drift…" (160 px) fits and "Configuration drift
+  // between…" (224 px) does not.
+  const narrow = drawList(deep, 275);
+  try {
+    const row = narrow.container.querySelector<HTMLElement>('[data-contents-entry="ask-5"]');
+    const line = row?.querySelector<HTMLElement>("[data-contents-line]");
+    expect(line?.textContent).toBe("Configuration drift…");
+    expect(row).toHaveClass("min-h-8", "flex-wrap");
+    expect(row).not.toHaveClass("h-8");
+    expect(line).toHaveClass("order-last", "basis-full");
+    expect(line).not.toHaveClass("flex-1");
+    // The question at the top has room for its words beside its parts, in the same list.
+    const top = narrow.container.querySelector<HTMLElement>('[data-contents-entry="ask-0"]');
+    expect(top).toHaveClass("h-8");
+    expect(top).not.toHaveClass("flex-wrap");
+    expect(top?.querySelector("[data-contents-line]")).toHaveClass("flex-1");
+  } finally {
+    narrow.unmount();
+  }
+  // 600 px leaves the deep question's whole line room beside its parts: one row of 32 px.
+  const wide = drawList(deep, 600);
+  try {
+    const row = wide.container.querySelector<HTMLElement>('[data-contents-entry="ask-5"]');
+    const line = row?.querySelector<HTMLElement>("[data-contents-line]");
+    expect(line?.textContent).toBe(DEEP_QUESTION);
+    expect(row).toHaveClass("h-8");
+    expect(row).not.toHaveClass("flex-wrap");
+    expect(line).toHaveClass("flex-1");
+    expect(line).not.toHaveClass("basis-full");
+  } finally {
+    wide.unmount();
   }
 });

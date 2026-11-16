@@ -58,10 +58,11 @@ test("a one-line row cuts its first line at a word to the pixels it has, never i
 });
 
 /**
- * The parts beside the line take from it: the twisty and the bullet before it, the waiting dot
- * and the marks after it. Where they leave it less than its first word, it goes on a line of its
- * own under them, where only the waiting dot and the marks share its width - an entry that kept
- * it beside them would draw it 0 px wide, and hide the parts after it past its own edge.
+ * The parts beside the line take from it: what stands before it (`before`) and after it
+ * (`after`). Where they leave it less than its first word, it goes on a line of its own under
+ * them, which only `after` still takes from: an entry that kept it beside them would draw it
+ * 0 px wide, and hide the parts after it past its own edge. The Contents list passes every part
+ * of its row as `before`, so a line under the row has the row's whole width at its indent.
  */
 test("a one-line row's first line goes under its other words where they leave it no word", () => {
   const long = "Does the fold open to the frontier on a phone too?";

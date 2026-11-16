@@ -247,13 +247,17 @@ export function ContentsList({
                   box.widthOf(String(entry.marks[mark]), MARK_TEXT_REM, 600),
                 0
               );
+        // Every other part of the row counts before the line and none after it: where they
+        // leave the line no word, it stands under all of them on a line of its own (R3), as
+        // wide as the row inside its indent, and `oneLineCut` fits a line under the parts before
+        // it to `room` less the parts after it.
         const cut =
           box === undefined
             ? undefined
             : oneLineCut({
-                after,
-                before: indent + ROW.twisty + ROW.gap + ROW.dot + ROW.gap,
-                room: box.width - ROW.margins - ROW.paddingRight,
+                after: 0,
+                before: ROW.twisty + ROW.gap + ROW.dot + ROW.gap + after,
+                room: box.width - ROW.margins - ROW.paddingRight - indent,
                 text: words,
                 widthOf: (text) => box.widthOf(text, ROW_TEXT_REM, isCurrent ? 600 : undefined),
               });
@@ -348,12 +352,18 @@ export function ContentsList({
           const { node } = entry;
           const holds = entry.children.length > 0;
           const { indent, isCurrent, line, marks, unnamed } = drawn[at];
+          // A line that has less room beside the row's other parts than its first word stands
+          // under all of them, on a line of its own at the entry's indent, and the row grows to
+          // hold it (R3).
+          const under = line.under || line.wraps;
           return (
             <div
               aria-expanded={holds ? !folded.has(node.id) : undefined}
               aria-level={depth + 1}
               aria-selected={isCurrent}
-              className={`relative mx-1.5 flex h-8 cursor-pointer items-center gap-[7px] rounded-md pr-1.5 text-sm leading-8 whitespace-nowrap select-none ${focusVisibleRing} ${
+              className={`relative mx-1.5 flex ${
+                under ? "min-h-8 flex-wrap gap-x-[7px]" : "h-8 gap-[7px]"
+              } cursor-pointer items-center rounded-md pr-1.5 text-sm leading-8 whitespace-nowrap select-none ${focusVisibleRing} ${
                 isCurrent
                   ? `font-semibold shadow-[inset_2px_0_0_var(--color-page-ink)] ${pageMarkBg} ${pageInkText}`
                   : pageInkText
@@ -392,7 +402,7 @@ export function ContentsList({
                   <span aria-hidden="true">{folded.has(node.id) ? "▸" : "▾"}</span>
                 </button>
               ) : (
-                <span aria-hidden="true" className="w-3 shrink-0" />
+                <span aria-hidden="true" className="h-8 w-3 shrink-0" />
               )}
               <span
                 aria-hidden="true"
@@ -404,7 +414,9 @@ export function ContentsList({
                 {sentenceCase(NODE_TYPE_NAMES[node.type])}
               </span>
               <span
-                className={`min-w-0 flex-1 ${line.under || line.wraps ? "whitespace-normal break-words" : ""}`}
+                className={`min-w-0 ${
+                  under ? "order-last basis-full whitespace-normal break-words" : "flex-1"
+                }`}
                 data-contents-line=""
                 {...(unnamed ? pageChrome : authorText)}
               >

@@ -336,6 +336,37 @@ test("a bulleted summary draws its last item though it has no end mark", () => {
   }
 });
 
+// Review finding 4590606164 and decision 51: a leading label opens its sentence and ends none,
+// and a mark before a word in lower case ends an abbreviation, not a sentence, so each label
+// names the sentence its author wrote.
+test("a sentence is ended neither at a leading label nor before a word in lower case", () => {
+  const { lines, unmount } = bullets(
+    summaryNode(
+      "R1. The page draws one body. It matters to readers, e.g. tester and owner. Done when it ships."
+    )
+  );
+  try {
+    expect(lines).toEqual([
+      "R1. The page draws one body.",
+      "It matters to readers, e.g. tester and owner.",
+      "Done when it ships.",
+    ]);
+  } finally {
+    unmount();
+  }
+});
+
+// R1 and decision 51: a leading label and the words after it with no end hold no sentence end,
+// so the summary's first line is its one sentence, with the label in it and not the label alone.
+test("a summary of a leading label and words with no end draws its first line", () => {
+  const { lines, unmount } = bullets(summaryNode("R1. The page draws one body"));
+  try {
+    expect(lines).toEqual(["R1. The page draws one body"]);
+  } finally {
+    unmount();
+  }
+});
+
 // R1 and the tester's F20 (reading (b) of the plan): a sentence is a plain line and no link, so a
 // block it cites is drawn by the one name the page gives that block - the words of a chip of the
 // tree that names it - and never by its address or its block id.

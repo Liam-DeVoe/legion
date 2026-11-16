@@ -13,6 +13,7 @@ import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
 import { namedLine } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
+import { LEADING_LABEL } from "./spec-filter/spec-decided-by";
 
 /** Each sentence's label, in the order the summary holds them (R8). */
 const LABELS = [
@@ -132,12 +133,30 @@ export function IssueThreeThings({
 const BULLETS = 3;
 
 /** A sentence end: its mark, with whatever closing quote or bracket the writer put after it,
- *  where the words stop or a space follows. */
-const SENTENCE_END = /[.!?][)\]"'\u201d\u2019]*(?:\s|$)/u;
+ *  where the words stop, or where a space and a word that does not start in lower case follow:
+ *  a mark before a word in lower case ends an abbreviation (`e.g. tester`), not a sentence. */
+const SENTENCE_END = /[.!?][)\]"'\u201d\u2019]*(?=$|\s+[^\s\p{Ll}])/u;
 
-/** The space after a sentence end, which is where a run of words is split into its sentences:
- *  the end may carry a closing quote or bracket. */
-const SENTENCE_BREAK = /(?<=[.!?][)\]"'\u201d\u2019]*)\s+/u;
+/** How many characters of `words` its leading label takes: a first word that opens its
+ *  sentence and ends none (decision 51 of dispatch://INFRA-1196). */
+function labelLength(words: string): number {
+  return LEADING_LABEL.exec(words)?.[0].length ?? 0;
+}
+
+/** `words` split into its sentences, each to its sentence end with the leading label it opens
+ *  with, and the last to where the words stop whether or not it has an end. */
+function sentencesOf(words: string): string[] {
+  const sentences: string[] = [];
+  let rest = words;
+  while (rest !== "") {
+    const label = labelLength(rest);
+    const end = SENTENCE_END.exec(rest.slice(label));
+    const length = end === null ? rest.length : label + end.index + end[0].length;
+    sentences.push(rest.slice(0, length));
+    rest = rest.slice(length).trimStart();
+  }
+  return sentences;
+}
 
 /**
  * The sentences the head draws out of the summary's reading, and at most `BULLETS` of them
@@ -145,15 +164,16 @@ const SENTENCE_BREAK = /(?<=[.!?][)\]"'\u201d\u2019]*)\s+/u;
  *
  * The words are read in the runs they were written in: each paragraph and each heading one, and
  * each item of a bulleted or numbered list one, its own list inside it included. A paragraph's
- * or a heading's run is split at its sentence ends. A list item is a sentence of its own
- * whether or not its author ended it with a mark, because the item ends where the next one
- * starts, so a list's last item is drawn too. A run's words are the reading's own (`wordsOf`),
- * with each reference in them named in plain words (`namedLine`); nothing else is added,
- * reordered or reflowed.
+ * or a heading's run is split at its sentence ends (`sentencesOf`), of which a leading label and
+ * a mark before a word in lower case are none. A list item is a sentence of its own whether or
+ * not its author ended it with a mark, because the item ends where the next one starts, so a
+ * list's last item is drawn too. A run's words are the reading's own (`wordsOf`), with each
+ * reference in them named in plain words (`namedLine`); nothing else is added, reordered or
+ * reflowed.
  *
  * A summary whose runs hold no sentence end and no list item has no sentence to split out, so
  * its first line, by the one-line rule every place that draws one line for a node keeps
- * (`firstLineOf`, `drawnLine`), is its one sentence.
+ * (`firstLineOf`, `drawnLine`, read past its leading label), is its one sentence.
  */
 function summarySentences(
   tree: DisplayTree,
@@ -172,11 +192,12 @@ function summarySentences(
     for (const child of children) walk(child, list);
   };
   walk(tree, false);
-  if (!runs.some(({ item, words }) => item || SENTENCE_END.test(words))) {
-    const line = drawnLine(firstLineOf(runs.map(({ words }) => words).join(" ")));
+  if (!runs.some(({ item, words }) => item || SENTENCE_END.test(words.slice(labelLength(words))))) {
+    const whole = runs.map(({ words }) => words).join(" ");
+    const label = whole.slice(0, labelLength(whole));
+    const first = firstLineOf(whole.slice(label.length));
+    const line = drawnLine({ ...first, line: `${label} ${first.line}`.trim() });
     return line === "" ? [] : [line];
   }
-  return runs
-    .flatMap(({ item, words }) => (item ? [words] : words.split(SENTENCE_BREAK)))
-    .slice(0, BULLETS);
+  return runs.flatMap(({ item, words }) => (item ? [words] : sentencesOf(words))).slice(0, BULLETS);
 }
