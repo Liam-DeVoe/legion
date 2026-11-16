@@ -263,12 +263,22 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // line `---` is written `***`, the same rule: at the start of a document of its own, `---` opens
 // front matter, which it does not in the block.
 //
+// One text is cut otherwise: one whose fence stands one to three spaces in, with a line between
+// its fences that is not blank and does not carry those spaces. Its lines between the fences are
+// its content as they are written, with no indentation taken out. The text starts at the
+// directive, so the block's lines start at column 0: the parser takes out of each line no more
+// than the opening line's indentation, which is none, and a fence fewer than four columns in
+// closes the block. So a comment's typed block that ends on `  :::` says its lines as the comment
+// wrote them. The blank lines at the ends of that content and a first line `---` are read by the
+// same rules as above.
+//
 // The text is cut only where its last line is a fence and its first line, the cut lines and that
-// fence read back as one typed block (pmdoc.ParseRendering). The parse checks the shape alone;
-// nothing of the content comes from it. A text that opens like a typed block and fails that
-// check is answered as it stands: one with a line between its fences that does not carry the
-// fence's indentation, one that carries the `>` of a quote it stands in, or one whose fence does
-// not close it.
+// fence read back as one typed block (pmdoc.ParseRendering); a text whose lines are its content
+// as written is checked as it stands. The parse checks the shape alone; nothing of the content
+// comes from it. A text that opens like a typed block and fails that check is answered as it
+// stands: one with a line between its fences that does not carry the fence's indentation where
+// that indentation holds a tab or four spaces or more, one that carries the `>` of a quote it
+// stands in, or one whose fence does not close it.
 //
 // In the markdown a document stores, which gives every typed block its id, the cut reads back as
 // a rendering of the block's content does (blockContent), and it is the same bytes except in
@@ -294,10 +304,13 @@ func blockTextContent(whole string) string {
 	}
 	lines, cut := outdented(inner, indent)
 	if !cut {
-		return whole
+		if len(indent) > 3 || strings.Contains(indent, "\t") {
+			return whole
+		}
+		lines = inner
 	}
 	standing := whole
-	if indent != "" {
+	if cut && indent != "" {
 		standing = opening + "\n" + lines + closing[len(indent):]
 	}
 	tree, err := pmdoc.ParseRendering(standing)
