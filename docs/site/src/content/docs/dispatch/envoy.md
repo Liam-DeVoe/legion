@@ -710,6 +710,14 @@ which starts 2.15.1 on the same volume, and the listener's next start sets the c
 written by nats-server 2.10.29 opens on 2.15.1 with its stream, its messages and its consumers
 intact.
 
+**The listener and the Legion daemon need nats-server v2.11.12, v2.12.4, or v2.14.0 and later**,
+and refuse to start against any older server, naming its version and those releases. Every
+nats-server of 2.10, of 2.11 before v2.11.12 and of 2.12 before v2.12.4 can skip a message on a
+consumer that filters on a wildcard and a literal at the same token, and a session's consumer does
+(its inbox in both forms of its name), so on such a server a session would lose messages with no
+error. The 2.15.1 this file pins is past all of them; a machine still on an earlier file's 2.10
+moves to it as above.
+
 1. Write the machine's settings:
 
    ```sh
