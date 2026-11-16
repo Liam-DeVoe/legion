@@ -580,13 +580,14 @@ type AirlockSecret struct {
 	Slots   map[string]string // slot -> the real value that slot's placeholder stands for
 	Expires time.Time         // zero for a stored value, which no clock ends
 	Kind    string
-	// SlackChannels, when Limited, are the Slack channel ids the grant's credential may post to:
-	// the union of what the owner of each private project it names allowed, sorted, each once.
-	// Limited says the limit applies at all, so an empty list under Limited is a credential that
-	// may post nowhere, which is different from a secret nobody limits. The proxy holds a post to
-	// any other channel (airlockproxy's slackPostAllowed).
-	SlackChannels []string
-	Limited       bool
+	// Limited says a private project's limit applies to this secret: the grant's credential names
+	// a private project and the secret carries the project-channels tag. The proxy then checks
+	// every request that spends it (airlockproxy's slackPostAllowed). A flag, not a non-nil list:
+	// an empty Channels under Limited is a credential that may post nowhere.
+	Limited bool
+	// Channels, under Limited, are the Slack channel ids every private project the credential
+	// names allows: the intersection of their owners' lists, sorted, never nil.
+	Channels []string
 }
 
 // AirlockValues runs the full release checks of Values - the record chain, the policy
@@ -625,12 +626,12 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 		recheck = time.Now().Add(airlockProjectRecheck)
 	}
 	// The channels the grant's credential may post to, for a project-channels secret released to
-	// a credential that names a private project: the union of what each such project's owner
-	// allowed. Read once per release, from the answers projectFacts already holds.
-	channels, limited, err := m.channelLimit(ctx, checked)
-	if err != nil {
-		return nil, "", err
-	}
+	// a credential that names a private project (channelLimit). Such a secret is bounded to
+	// airlockProjectRecheck itself, since the channel list is Dispatch's and moves no policy
+	// version: the Slack bot token carries no dispatch-project tag, so the bound above would never
+	// reach it, and an owner's change would never reach a running proxy.
+	channels, limited := m.channelLimit(ctx, checked)
+	readAt := time.Now()
 	values := map[string]AirlockSecret{}
 	for _, released := range read {
 		expires := released.expires
@@ -639,7 +640,10 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 		}
 		value := AirlockSecret{Slots: released.split.values, Expires: expires, Kind: released.kind}
 		if limited && checked.set.Secrets[released.name].ProjectChannels == policy.ProjectChannelsSlack {
-			value.SlackChannels, value.Limited = channels, true
+			value.Limited, value.Channels = true, channels
+			if bound := readAt.Add(airlockProjectRecheck); value.Expires.IsZero() || value.Expires.After(bound) {
+				value.Expires = bound
+			}
 		}
 		values[released.name] = value
 	}

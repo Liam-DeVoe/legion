@@ -16,7 +16,7 @@ func TestTheAnswerTellsAnEmptyChannelListFromAMissingOne(t *testing.T) {
 	server := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		"NAMED": {Visibility: "private", Owner: "carol@example.com", SlackChannels: []string{"C0123456789", "G9876543210"}},
 		"EMPTY": {Visibility: "private", Owner: "carol@example.com"},
-		"OLD":   {Visibility: "private", Owner: "carol@example.com", NoSlackChannels: true},
+		"OLD":   {Visibility: "private", Owner: "carol@example.com", OmitSlackChannels: true},
 	}, nil)
 	client := projectaccess.New(server.URL, server.Account, nil)
 	for _, c := range []struct {

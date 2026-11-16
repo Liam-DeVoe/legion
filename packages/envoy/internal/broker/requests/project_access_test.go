@@ -46,11 +46,16 @@ func taggedSecret(name, owner, tier, project, value string) secrets.LocalSecret 
 // operator's own agent-tier secret of TEAM; GONE_KEY, tagged with a project Dispatch does not
 // hold.
 func projectSecrets() []secrets.LocalSecret {
+	slack := policytest.Secret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, "xoxb-real")
+	slack.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
 	return []secrets.LocalSecret{
 		taggedSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject, "priv-v1"),
 		taggedSecret("PRIV_HUMAN", policy.OwnerShared, policy.TierHuman, privProject, "priv-human-v1"),
 		taggedSecret("TEAM_TOKEN", fixtureOperator, policy.TierAgent, teamProject, "team-v1"),
 		taggedSecret("GONE_KEY", policy.OwnerShared, policy.TierAgent, goneProject, "gone-v1"),
+		// The Legion Slack bot token as #t-d-12 tags it: no project of its own, and a limit a
+		// private project's credential carries to the proxy (slack_channels_test.go).
+		slack,
 	}
 }
 

@@ -41,12 +41,12 @@ type Row struct {
 	Repositories []string
 	// SlackChannels are the Slack channel ids the project's owner named. A real Dispatch always
 	// carries the key, empty when the project names none, so this stand-in does too — unless
-	// NoSlackChannels, which is a Dispatch from before dispatch://INFRA-3862's #t-a-31 and
+	// OmitSlackChannels, which is a Dispatch from before dispatch://INFRA-3862's #t-a-31 and
 	// carries no such key at all.
 	SlackChannels []string
-	// NoSlackChannels makes this project's answer carry no slack_channels key, the shape a
+	// OmitSlackChannels makes this project's answer carry no slack_channels key, the shape a
 	// Dispatch from before #t-a-31 answers.
-	NoSlackChannels bool
+	OmitSlackChannels bool
 }
 
 // Server is the stand-in: URL is its base, Token the one bearer it takes, and Account that bearer
@@ -159,7 +159,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			"visible":      s.visible(row, person),
 			"repositories": repositories,
 		}
-		if !row.NoSlackChannels {
+		if !row.OmitSlackChannels {
 			channels := row.SlackChannels
 			if channels == nil {
 				channels = []string{}

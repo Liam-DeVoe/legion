@@ -11,8 +11,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
@@ -124,7 +126,9 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 	tagged := taggedProjects(set, names)
 	person, named := m.credentialProjects(e)
 	limited := anyChannelLimited(set, names)
-	if len(tagged) == 0 && !limited {
+	// A project-channels name read by a credential that names no project is unlimited, and so is
+	// decided without asking Dispatch anything, as an untagged name is.
+	if len(tagged) == 0 && (!limited || len(named) == 0) {
 		return projectFacts{}, nil
 	}
 	if m.Projects == nil {
@@ -168,40 +172,77 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 	return facts, nil
 }
 
-// ErrProjectChannelsUnknown is a release of a project-channels secret to a credential that names
-// a private project whose Dispatch answered no slack_channels key at all: a Dispatch from before
-// dispatch://INFRA-3862's #t-a-31. The broker refuses rather than read a missing key as "no
-// limit", so the two sides deploy in either order safely.
-var ErrProjectChannelsUnknown = errors.New("dispatch did not say which Slack channels the project allows")
+// ChannelsMissingMessage is the log line for a private project whose Dispatch answered no
+// slack_channels key at all, a Dispatch from before dispatch://INFRA-3862's #t-a-31: the broker
+// limits that project's credentials to no channel rather than read the missing key as no limit,
+// so Dispatch and the broker deploy in either order safely.
+const ChannelsMissingMessage = "a private project's access answer carries no slack_channels; its credentials post to no channel until Dispatch has dispatch://INFRA-3862's #t-a-31"
 
-// channelLimit is the channels a grant's credential may post to: the union of what the owner of
-// each private project it names allowed, sorted and each once, with limited true when any such
-// project was named at all. An empty list under limited is a credential that may post nowhere,
-// which is not the same as a credential nobody limits. A grant holding no project-channels name
-// asks Dispatch nothing here.
-func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) ([]string, bool, error) {
+// channelsMissingLogged is when each project's ChannelsMissingMessage was last written, so it is
+// written once per project per projectaccess.CacheTTL, not on every release.
+var channelsMissingLogged = struct {
+	sync.Mutex
+	at map[string]time.Time
+}{at: map[string]time.Time{}}
+
+// channelLimit is the channels a grant's credential may post to, and whether it is limited at
+// all. It is limited when the grant holds a project-channels name and one of the projects its
+// credential names is private (policy.Requester.ListsPrivate, read from the unfiltered list). The
+// channels are then those every such project's owner allowed: the intersection, sorted, never
+// nil, so content of any named project lands only where all of their owners allow. They are empty
+// when the person can no longer see one of those projects, when a project's answer carries no
+// slack_channels key, when Dispatch did not answer, and when the lists share no channel; they
+// are never unlimited. A grant holding no project-channels name, or a credential naming no
+// private project, is unlimited and asks Dispatch nothing here; the answers it reads otherwise
+// are the ones projectFacts already put in the client's cache.
+func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) ([]string, bool) {
 	names := make([]string, len(checked.granted))
 	for i, g := range checked.granted {
 		names[i] = g.name
 	}
 	if !anyChannelLimited(checked.set, names) || !checked.facts.requester(policy.Requester{}).ListsPrivate() {
-		return nil, false, nil
+		return nil, false
 	}
-	var channels []string
+	none := []string{}
+	var allowed []string
+	first := true
 	for _, project := range checked.facts.named {
 		if checked.facts.states[project] != policy.ProjectPrivate {
 			continue
 		}
+		if !slices.Contains(checked.facts.projects, project) {
+			return none, true
+		}
 		answer, err := m.Projects.Access(ctx, project, checked.facts.person)
 		if err != nil {
-			return nil, false, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
+			return none, true
 		}
 		if !answer.SlackChannelsPresent {
-			return nil, false, fmt.Errorf("%w: %s", ErrProjectChannelsUnknown, project)
+			logChannelsMissing(project)
+			return none, true
 		}
-		channels = append(channels, answer.SlackChannels...)
+		listed := slices.Compact(slices.Sorted(slices.Values(answer.SlackChannels)))
+		if first {
+			allowed, first = listed, false
+			continue
+		}
+		allowed = slices.DeleteFunc(allowed, func(channel string) bool { return !slices.Contains(listed, channel) })
 	}
-	return slices.Compact(slices.Sorted(slices.Values(channels))), true, nil
+	if allowed == nil {
+		return none, true
+	}
+	return allowed, true
+}
+
+// logChannelsMissing writes ChannelsMissingMessage for project once per projectaccess.CacheTTL.
+func logChannelsMissing(project string) {
+	channelsMissingLogged.Lock()
+	defer channelsMissingLogged.Unlock()
+	if at, ok := channelsMissingLogged.at[project]; ok && time.Since(at) < projectaccess.CacheTTL {
+		return
+	}
+	channelsMissingLogged.at[project] = time.Now()
+	slog.Warn(ChannelsMissingMessage, "project", project)
 }
 
 // projectNotNamed is the refusal of a granted name the session may no longer have for its
