@@ -702,10 +702,9 @@ export const DELIVERY_STATE_WORDS = freeze({
  * names the field by its wire token (`blocked_by issue CORE-9 not found`, R21). Each sentence is
  * cut where the issue it is about goes: that key is the server's detail and the reader's own
  * text, drawn between `before` and `after`. `BLOCKED_BY_INPUT` is three refusals, told apart by
- * the key it names: no issue, the issue itself, or none at all for a list over the limit;
- * `BLOCKED_BY_OUTSIDE_PROJECT` is one; and `DEPENDENCY_CYCLE` is two, the issue the list would
- * make wait on itself, or none for a chain longer than Dispatch follows
- * (`packages/envoy/internal/dispatch/api/issue_parent.go`).
+ * the key it names: no issue, the issue itself, or none at all for a list over the limit; and
+ * `DEPENDENCY_CYCLE` is two, the issue the list would make wait on itself, or none for a chain
+ * longer than Dispatch follows (`packages/envoy/internal/dispatch/api/issue_parent.go`).
  */
 export const BLOCKED_BY_REFUSALS = freeze({
   cycle: {
@@ -715,10 +714,6 @@ export const BLOCKED_BY_REFUSALS = freeze({
   },
   itself: { after: " is this issue, and an issue cannot wait on itself.", before: "" },
   not_found: { after: ".", before: "There is no issue " },
-  outside_project: {
-    after: " is in another project, and an issue can wait only on issues of its own project.",
-    before: "",
-  },
   too_deep: {
     after: "",
     before:
