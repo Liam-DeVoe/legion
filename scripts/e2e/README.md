@@ -5979,11 +5979,12 @@ Each item below names a function, then what it does.
 
 - `two_builds_identity`
 
-  sets `agent_token`, `signin_key`, `base_url` and `head_url`: one agent token good against either build, and one sign-in key, since a process with a key of its own is refused registration by the one already live
+  sets `agent_token` and `signin_key`: one agent token good against either build, and one sign-in key, since a process with a key of its own is refused registration by the one already live
 
-- `start_server NAME BINARY PORT [VAR=VALUE…]`
+- `start_server NAME BINARY [VAR=VALUE…]`
 
-  starts one build under `env -i` with the run's own environment and nothing else, taking any extra variable the proof needs — which is how only the search proof passes `DISPATCH_DEV_EMBEDDER=1`
+  starts one build under `env -i` with the run's own environment and nothing else, taking any extra variable the proof needs — which is how only the search proof passes `DISPATCH_DEV_EMBEDDER=1`.
+  The build serves on a socket held from the kernel's choice until it serves (`start_held`, `DISPATCH_LISTEN_FD`), and `start_server` sets `NAME_port` and `NAME_url` (`base_url`, `head_url`) once the port is held
 
 - `call METHOD PATH [BODY]`, `json_field FIELD`, `cleanup RC`
 

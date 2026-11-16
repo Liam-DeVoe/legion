@@ -434,7 +434,7 @@ func main() {
 	// convention (its BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0): resolve it from
 	// the real bound address before anything checks a request's audience against it. Every
 	// audience-consuming construct below (enr.Chain included) is built after this point, so none
-	// ever sees the stale placeholder. refusePortZeroPublicURLInProduction (the dev-vs-production
+	// ever sees the stale placeholder. refusePortZeroURLInProduction (the dev-vs-production
 	// gate) already refused this above, right after config.Load — before st.Migrate, any AWS
 	// call, and the boot's bind — so reaching here means it's safe to apply.
 	if u, urlErr := url.Parse(cfg.PublicURL); urlErr == nil && u.Port() == "0" {

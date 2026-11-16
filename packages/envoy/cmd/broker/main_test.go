@@ -1,7 +1,7 @@
 // packages/envoy/cmd/broker/main_test.go
 //
 // main() calls fatal on every failure, which calls os.Exit — so it cannot be driven directly by a
-// test. refusePortZeroPublicURLInProduction is main's own port-0 refusal outside a local run,
+// test. refusePortZeroURLInProduction is main's own port-0 refusal outside a local run,
 // extracted so this test can drive it without exiting the test process.
 package main
 
@@ -275,7 +275,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 }
 
 // TestMainRefusesPortZeroPublicURLInProduction drives the REAL compiled binary's main(), not
-// refusePortZeroPublicURLInProduction directly: the helper's own tests above prove only that it is
+// refusePortZeroURLInProduction directly: the helper's own tests above prove only that it is
 // correct, and with this guard's only call site moved to run after st.Migrate, the first Secrets
 // Manager read, and net.Listen, a misconfigured production boot would migrate the production
 // database and bind a socket before ever refusing. This builds cmd/broker once, execs it with
