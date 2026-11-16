@@ -187,9 +187,9 @@ func TestKeyAnswersAStaleSetAtOnceAndReadsItAgainBehind(t *testing.T) {
 
 // An issuer that accepts the connection and never answers holds no Key past FetchWait: the caller
 // gets ErrKeySet, the issuer unavailable, inside its own window, while the read goes on under
-// FetchTimeout. A key rotated in meanwhile gets the same answer for the rest of the MinRefresh
-// window, while the read is in flight and after it has failed, and never ErrNoKey, which would
-// call a token the issuer may well have signed a forgery.
+// FetchTimeout. A key rotated in meanwhile gets the same answer while the read is in flight and,
+// once it has failed, until RetrySpacing has passed, and never ErrNoKey, which would call a token
+// the issuer may well have signed a forgery.
 func TestKeyWaitsAtMostFetchWaitOnAnIssuerThatHangs(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
@@ -214,16 +214,39 @@ func TestKeyWaitsAtMostFetchWaitOnAnIssuerThatHangs(t *testing.T) {
 		}
 	}
 	if fetches := issuer.JWKSFetches(); fetches != 2 {
-		t.Errorf("key set read %d times, want 2: one read per MinRefresh window", fetches)
+		t.Errorf("key set read %d times, want 2: one read in flight, then none within RetrySpacing of its failure", fetches)
 	}
 }
 
-// A key rotated in while the key set answers 500 reaches no verdict on any call of the MinRefresh
-// window, not the first alone: each gets the failed read's ErrKeySet until a read succeeds.
+// A stale set that holds the key answers every Key while the issuer fails fast, and is read
+// again behind those answers no more than once per RetrySpacing, not once per Key: an outage
+// multiplies no reads (review K3).
+func TestKeyReadsAStaleSetAgainOncePerRetrySpacingWhileReadsFail(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key(the published key): %v", err)
+	}
+	keys.Lifetime = 0
+	issuer.FailKeys(http.StatusInternalServerError)
+	for call := 1; call <= 20; call++ {
+		if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+			t.Fatalf("call %d, a key the stale set holds while reads fail = %v, want the key", call, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Errorf("key set read %d times for 20 answers from a stale set, want 2: the first read and one failed refresh, the next held back for RetrySpacing (%s)", fetches, keys.RetrySpacing)
+	}
+}
+
+// A key rotated in while the key set answers 500 reaches no verdict on any call, not the first
+// alone: each gets the failed read's ErrKeySet. Once the issuer is back the next read comes
+// RetrySpacing after the failed one ended, not the minute of MinRefresh a read that succeeded
+// holds the next one back for, so the rotated key is found within Dispatch's retry window.
 func TestKeyAnswersARotationDuringAnOutageUnavailableUntilAReadSucceeds(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
-	keys.MinRefresh = 300 * time.Millisecond
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(the published key): %v", err)
 	}
@@ -235,17 +258,67 @@ func TestKeyAnswersARotationDuringAnOutageUnavailableUntilAReadSucceeds(t *testi
 			t.Fatalf("call %d with the key set answering 500 = %v, want ErrKeySet alone", call, err)
 		}
 	}
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Errorf("key set read %d times, want 2: a failed read holds the next one back", fetches)
+	}
 	issuer.FailKeys(0)
-	time.Sleep(keys.MinRefresh)
+	time.Sleep(keys.RetrySpacing + 200*time.Millisecond)
 	key, err := keys.Key(context.Background(), "rotated-in", testAlgorithm)
 	if err != nil {
-		t.Fatalf("Key(the rotated key) once the key set reads again: %v", err)
+		t.Fatalf("Key(the rotated key) once the key set reads again, past RetrySpacing and inside MinRefresh (%s): %v", keys.MinRefresh, err)
 	}
 	if !signs(t, issuer.Mint(t, rotated, issuer.Claims("system:serviceaccount:example-ns:example-worker", "broker")), key) {
 		t.Error("Key answered a key the rotated key's token does not verify against")
 	}
 	if _, err := keys.Key(context.Background(), "never-published", testAlgorithm); !errors.Is(err, ErrNoKey) {
 		t.Errorf("Key(a key id nobody publishes) after a good read = %v, want ErrNoKey", err)
+	}
+}
+
+// Callers racing on a key id the set does not hold while the key set cannot be read are each
+// answered that the issuer is unavailable, never ErrNoKey, which the verifier calls a forgery and
+// the listener answers 401: the miss is decided under one lock, so no caller acts on a look taken
+// before another caller started the read that is now in flight (review B6). The race is narrow,
+// so the test runs it in many rounds, each on a fresh cache that has read the set once.
+func TestKeyAnswersRacingCallersDuringARotationOutageUnavailable(t *testing.T) {
+	const rounds, callers = 25, 64
+	issuer := oidctest.New(t)
+	issuer.PublishKey(t, "exchange-key")
+	for round := range rounds {
+		keys, err := NewKeys(context.Background(), issuer.URL())
+		if err != nil {
+			t.Fatalf("round %d: NewKeys: %v", round, err)
+		}
+		issuer.FailKeys(0)
+		issuer.DelayKeys(0)
+		if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+			t.Fatalf("round %d: Key(the published key): %v", round, err)
+		}
+		before := issuer.JWKSFetches()
+		issuer.FailKeys(http.StatusInternalServerError)
+		// The read is slow enough that every caller arrives while it is in flight.
+		issuer.DelayKeys(50 * time.Millisecond)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make([]error, callers)
+		for i := range callers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, errs[i] = keys.Key(context.Background(), "rotated-in", testAlgorithm)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		for i, err := range errs {
+			if !errors.Is(err, ErrKeySet) || errors.Is(err, ErrNoKey) {
+				t.Errorf("round %d, caller %d of %d racing on a rotated key id while the key set answers 500 = %v, want ErrKeySet alone", round, i, callers, err)
+			}
+		}
+		if fetches := issuer.JWKSFetches() - before; fetches != 1 {
+			t.Errorf("round %d: key set read %d times for %d racing callers, want 1", round, fetches, callers)
+		}
 	}
 }
 
