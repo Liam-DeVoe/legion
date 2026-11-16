@@ -224,3 +224,62 @@ func writeReasoningPointer(ctx context.Context, tx pgx.Tx, write reasoningPointe
 	}
 	return fmt.Errorf("no pointer write %q", write.action)
 }
+
+// nodeStateWrite is one request's write of one node's state: the node the store keys by kind and
+// id, under the issue issue names, moved to state, signed by who and dated at. allowed is the
+// route's rule over the node as the store holds it, read once the issue's row is held; held is
+// false where the store holds no row of the node, which every read answers as live and project,
+// and stored carries those then. A rule that answers a refusal stores nothing.
+type nodeStateWrite struct {
+	issue    string
+	kind, id string
+	state    string
+	who      model.Actor
+	at       time.Time
+	allowed  func(stored graphstore.Node, held bool) error
+}
+
+// writeNodeState is the one write path of a node's state a request asks for - the state route and
+// the settle (node_state.go) - in the caller's transaction. It takes the issue's row `for no key
+// update` first, the owner row the lock order on api/inbox_read.go's markInboxReadThreads puts
+// before every other, as writeReasoningPointer does, so two writes of one node's state queue there
+// and the second reads what the first wrote. It reads the node's row, holds it to the route's rule,
+// and writes the node again as the store holds it but for its state: a plain node write, not one
+// that restates the node (graphstore.Node.Restates), dated and signed by the request and at
+// graphstore.NoEvent, as every write of these routes is. So graphstore.Write moves the row's state
+// and appends the one state tuple that says so, whose writer is who: the row and the log agree,
+// and every read of the node answers the new state at once. made_at and made_by stay the row's
+// own, the store's rule for a node written again, so the node's author is still the writer of its
+// first write. A write of the state the node holds moves nothing and appends nothing.
+//
+// It answers the node as the write leaves it and the state it held before. A node the store holds
+// no row of is the rule's to refuse: nothing here writes a node that is not there.
+func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graphstore.Node, string, error) {
+	var issueHeld bool
+	if err := tx.QueryRow(ctx, `select true from issues where key = $1`+ownerRowLock, write.issue).Scan(&issueHeld); err != nil {
+		return graphstore.Node{}, "", err
+	}
+	node, held, err := graphstore.ReadNode(ctx, tx, write.kind, write.id)
+	if err != nil {
+		return graphstore.Node{}, "", err
+	}
+	if !held {
+		node = graphstore.Node{Kind: write.kind, ID: write.id, State: graphstore.StateLive, Visibility: graphstore.VisibilityProject}
+	}
+	if err := write.allowed(node, held); err != nil {
+		return graphstore.Node{}, "", err
+	}
+	if !held {
+		return graphstore.Node{}, "", fmt.Errorf("the rule over %s %s let a node the store holds no row of be written", write.kind, write.id)
+	}
+	previous := node.State
+	if previous == write.state {
+		return node, previous, nil
+	}
+	node.State, node.Restates = write.state, false
+	node.MadeAt, node.MadeBy, node.SourceEvent = write.at, write.who, graphstore.NoEvent
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+		return graphstore.Node{}, "", err
+	}
+	return node, previous, nil
+}

@@ -1,6 +1,7 @@
 import type {
   AcceptedMessageDelivery,
   Actor,
+  ActorInput,
   Advised,
   Agent,
   ApprovalRequestResponse,
@@ -51,6 +52,7 @@ import type {
   IssueCoverage,
   IssueDetails,
   IssuePriority,
+  IssueProposed,
   IssueRead,
   IssueReferences,
   IssueRouteStatus,
@@ -68,6 +70,8 @@ import type {
   MessageReplyResult,
   MyRepliesResponse,
   NodeLenses,
+  NodeStateInput,
+  NodeStateWritten,
   OpenAsksResponse,
   PointerInput,
   PointerWritten,
@@ -1880,6 +1884,35 @@ export class DispatchClient {
    *  were invoked, and each chain of triggered lenses they stand in. */
   async lenses(on: string): Promise<NodeLenses> {
     return this.#json("GET", ["api", "v1", "lenses"], undefined, { on });
+  }
+
+  /** `POST /api/v1/issues/{key}/nodes/{id}/state`: the node state of the node `node` addresses,
+   *  sent whole as the one path segment `{id}` is. */
+  async writeNodeState(
+    issue: string,
+    node: string,
+    input: NodeStateInput
+  ): Promise<NodeStateWritten> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "nodes", node, "state"],
+      input
+    );
+  }
+
+  /** `POST /api/v1/issues/{key}/nodes/{id}/settle`: the settle of the proposed node `node`
+   *  addresses, sent whole as the one path segment `{id}` is. */
+  async settleNode(issue: string, node: string, input: ActorInput): Promise<NodeStateWritten> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "nodes", node, "settle"],
+      input
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/proposed`: the nodes under the issue at state proposed. */
+  async issueProposed(issue: string): Promise<IssueProposed> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "proposed"]);
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferences> {

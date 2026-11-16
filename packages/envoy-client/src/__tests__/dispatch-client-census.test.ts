@@ -145,6 +145,10 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       actor,
     }),
   lenses: (client) => client.lenses("dispatch://DSP-1/spec"),
+  writeNodeState: (client) =>
+    client.writeNodeState("DSP-1", "lens/lens-1", { state: "proposed", actor }),
+  settleNode: (client) => client.settleNode("DSP-1", "lens/lens-1", { actor }),
+  issueProposed: (client) => client.issueProposed("DSP-1"),
 };
 
 afterEach(forgetKeyedLayerMemory);

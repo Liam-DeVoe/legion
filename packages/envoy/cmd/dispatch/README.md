@@ -4044,13 +4044,13 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty-five of the twenty-six dispatch tools that write, of the forty-two tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
-  The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty-six of the twenty-eight dispatch tools that write, of the forty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The two it leaves out are `dispatch_review` and `dispatch_settle`, on purpose: each records a person's decision - a review an approval or a changes request in a person's name, a settle written by a person's credential that the person settled a proposal - and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   The catalogue is read whole: it takes no query and serves no page.
-  Twenty actions was under the count where a model's choice falls apart; dispatch://INFRA-1950 added the five writes of the reasoning nodes, which make twenty-five, and did not measure a model's choice against them.
+  Twenty actions was under the count where a model's choice falls apart; dispatch://INFRA-1950 added six writes of the reasoning nodes and their state, which make twenty-six, and did not measure a model's choice against them.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
-  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route is kept out on purpose.
+  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review routes and the settle are kept out on purpose.
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -4424,11 +4424,12 @@ Each item below names a path with its method and identity, then its purpose.
 
   What each requirement of the issue's spec lacks: `{issue, spec_artifact_id, has_plan, requirements, gaps}`.
 
-  A requirement is a `requirement` block of the spec, and `requirements` lists them in document order, each with its block reference, its words, and how many `check` and `plan_task` blocks name it in `serves`.
+  A requirement is a `requirement` block of the spec, and `requirements` lists them in document order, each with its block reference, its words, its block's node `state` (read from `graph_nodes` in one statement with the predicate bound, `live` where the store holds no row), and how many `check` and `plan_task` blocks name it in `serves`.
 
   A block counts when it is in any document of the issue or of any descendant issue, at any status; the descendants are one recursive `child_of` walk bounded by `refs.IssueDepthCap` (`refs.IssueDescendants`).
 
   `gaps` is one line per gap, `<block id> has no check` and `<block id> has no plan task`, the second only once the issue has a plan document, or the single line `the spec marks no requirements` for a spec that marks none.
+  A requirement at `proposed` is a question still open and raises neither gap, here or in an approval request's answer (`missingCheckGaps`); one at `settled` or `live` is counted as every requirement is.
 
   Nothing is ever refused for a gap.
 
@@ -4497,6 +4498,31 @@ Each item below names a path with its method and identity, then its purpose.
   The store holds each tuple to its type rule: a far end of the wrong type, a lens triggered by itself and a lens left with no kind are `400 INVALID_POINTER`, and a second `has_kind` or a retarget of a pre-mortem's kind away from `pre-mortem` is `409 POINTER_ALREADY_ASSERTED`, one body whatever hangs under the lens.
   A node or a far end the caller may not see under the issue, and a tuple to retract or retarget that the node does not hold, are `404 NOT_FOUND`; `part_of`, which moves through the node's parent route, or any other kind or action, is `400 POINTER_INPUT`.
   Answers `200 {node, kind, action, to, from}`, each end with its address, kind, state and visibility, and `from` null but for a retarget.
+
+- `/api/v1/issues/{key}/nodes/{id}/state` (POST; cookie, trusted header, or bearer)
+
+  Write the node state of the node `{id}` names, `{state, actor?}`; `{id}` is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole `dispatch://` address), percent-encoded as one path segment (`api/node_state.go`, `writeNodeStateRoute`).
+  The value is checked first (`graphstore.CheckAttributeValue`): a word that is none of `live`, `gone`, `proposed`, `settled` and `overtaken` is `400 INVALID_ATTRIBUTE_VALUE`, naming the attribute `state` and the word, and nothing is read or stored.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, in `FindNodeUnderIssue`'s words.
+  It writes `proposed` and `overtaken` on any node, `live` on any node that is not `gone`, and `gone` only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block.
+  `409 NODE_STATE_NOT_WRITABLE`, naming the node's kind, its state and the value asked for, refuses `settled` (the settle below writes it), `gone` on a block of a document or on an issue, a document, an ask, a comment or a message, and every value on a gone node: a gone node takes no state here, `live` or otherwise, because `proposed` or `overtaken` would bring it back as surely as `live`, and a block of a document a version dropped would then read as a present block no version holds.
+  The write appends one `state` tuple written by the caller, through `graphstore.Write` and at no event, so every read of the node answers the new state at once; a write of the state the node holds appends nothing.
+  Answers `200 {node: {address, kind, state, visibility}, previous}`, `previous` the state it held before.
+
+- `/api/v1/issues/{key}/nodes/{id}/settle` (POST; cookie, trusted header, or bearer)
+
+  Settle the proposed node `{id}` names, `{actor?}` (an empty body too): one `state` tuple at `settled`, written by the caller, at no event (`settleNode`).
+  A node the caller may not see under the issue is `404 NOT_FOUND`, the bytes a node nobody wrote answers but for the id; a node not at `proposed` is `409 NODE_NOT_PROPOSED`.
+  A person settles any proposal - a browser's cookie, or a token holding the `person` scope, whose settle is written as the person it acts for (`actingPerson`) - and any other caller only a proposal its own proving credential wrote, the node's `made_by` compared with it by `model.Actor.SameCredential`; any other caller is `403 SETTLE_NOT_PERMITTED`, naming the node.
+  A block's author is the writer of the version that first held the block, never whoever marked it proposed; the deployment's shared agent token proves no author, so it settles nothing.
+  Answers `200 {node: {address, kind, state, visibility}, previous}`.
+
+- `/api/v1/issues/{key}/proposed` (GET; cookie, trusted header, or bearer)
+
+  The nodes under the issue at node state `proposed` that the caller may see, `{issue, nodes}`, each `{node, excerpt}`: `node` the `GraphNode` every read answers (kind, address, state, visibility and the rest) and `excerpt` the words an edge at it shows, null where it has none (`listIssueProposed`).
+  A node under the issue is one whose standing issue is `{key}` (`refs.StandingIssueSQL`): the issue itself, its documents and their blocks, its asks, comments and messages and their blocks, and the lenses, findings, risks and constraints standing under one of those, in the order of their kind and their id.
+  The read takes the store's rows at `proposed` through the partial index `graph_nodes_proposed` (migration `20261116172615`), binds each row's own predicate, and answers each through its kind's loader (`refs.ExcerptedNodes`).
+  It takes no query; an issue Dispatch does not hold is `404 NOT_FOUND`.
 
 - `/api/v1/issues/{key}/artifacts` (GET, POST; cookie, trusted header, or bearer)
 

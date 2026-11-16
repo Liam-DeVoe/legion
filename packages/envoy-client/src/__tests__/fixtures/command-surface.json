@@ -1,5 +1,5 @@
 {
-  "commands": 42,
+  "commands": 45,
   "refusals": 29,
   "runs": [
     {
@@ -1462,6 +1462,29 @@
       ]
     },
     {
+      "tool": "dispatch_proposed",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/proposed",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "DSP-1 holds 1 proposed node you may see:",
+        "- block dispatch://DSP-1/spec#b-r-cache: The cache holds every read for a minute."
+      ]
+    },
+    {
       "tool": "dispatch_read",
       "call": "refusal: artifact beside a ref that names no document",
       "args": {
@@ -2040,6 +2063,78 @@
       "outcome": "result",
       "text": [
         "Sent message 01234567-0000-4000-8000-000000000001 to session 01234567-0000-4000-8000-000000000001; it reached that session as aside. dispatch read --message 01234567-0000-4000-8000-000000000001 reads the conversation back."
+      ]
+    },
+    {
+      "tool": "dispatch_settle",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "node": "dispatch://DSP-1/spec#b-r-cache"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/nodes/dispatch%3A%2F%2FDSP-1%2Fspec%23b-r-cache/settle",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Settled block dispatch://DSP-1/spec#b-r-cache: proposed -> settled"
+      ]
+    },
+    {
+      "tool": "dispatch_state",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "node": "dispatch://DSP-1/spec#b-r-cache",
+        "state": "proposed"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/nodes/dispatch%3A%2F%2FDSP-1%2Fspec%23b-r-cache/state",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "state": "proposed"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Wrote the state of block dispatch://DSP-1/spec#b-r-cache: live -> proposed"
       ]
     },
     {

@@ -94,46 +94,21 @@ func lensKindWords(t *testing.T, rig reasoningRig, id string) string {
 	return words
 }
 
-// writeLensState writes the state of the lens whose id is id through graphstore.Write, which
-// moves its row and appends its state tuple. It stands for alice's
-// POST /api/v1/issues/{key}/nodes/{id}/state, which the check names and T11
-// (dispatch://INFRA-1950/artifact/plan-md#b-t11) adds: once that route is in, the test writes the
-// state through it and this helper goes.
-func writeLensState(t *testing.T, rig reasoningRig, id, state string) {
-	t.Helper()
-	ctx := context.Background()
-	node, found, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindLens, id)
-	if err != nil || !found {
-		t.Fatalf("read the lens %s: found %t, %v", id, found, err)
-	}
-	node.State = state
-	tx, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the state write: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
-		t.Fatalf("write the lens %s %s: %v", id, state, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the state write: %v", err)
-	}
-}
-
 // TestTheLensReadAnswersEveryLensInInvocationOrder is c-lens-page
 // (dispatch://INFRA-1950/verification#c-lens-page): two people, alice's trade-off analysis on the
 // spec and bob's pre-mortem on it triggered by hers, and then alice's trade-off analysis written
-// proposed and back to live, so the lens invoked first is the lens whose row was written last.
-// One read of the spec holds both, in the order of their part_of tuples, each with its part_of to
-// the spec, its one has_kind with the kind's words, its author through authored_by, and the chain
-// from both ends: placement and trigger kept apart.
+// proposed and back to live through POST /api/v1/issues/{key}/nodes/{id}/state, so the lens
+// invoked first is the lens whose row was written last. One read of the spec holds both, in the
+// order of their part_of tuples, each with its part_of to the spec, its one has_kind with the
+// kind's words, its author through authored_by, and the chain from both ends: placement and
+// trigger kept apart.
 func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	tradeOff := rig.invoke(rig.spec, "trade-off", "alice", nil)
 	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "bob", map[string]any{"triggered_by": tradeOff.Address})
-	writeLensState(t, rig, tradeOff.ID, graphstore.StateProposed)
-	writeLensState(t, rig, tradeOff.ID, graphstore.StateLive)
+	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateProposed, "alice")
+	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateLive, "alice")
 
 	var placedFirst, placedSecond, rewritten int64
 	if err := rig.database.Pool.QueryRow(ctx, `

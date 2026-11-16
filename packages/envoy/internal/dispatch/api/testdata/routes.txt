@@ -112,6 +112,9 @@ POST /api/v1/issues/{key}/messages any
 GET /api/v1/issues/{key}/messages/{id} any
 POST /api/v1/issues/{key}/nodes/{id}/findings any
 POST /api/v1/issues/{key}/nodes/{id}/pointers any
+POST /api/v1/issues/{key}/nodes/{id}/settle any
+POST /api/v1/issues/{key}/nodes/{id}/state any
+GET /api/v1/issues/{key}/proposed any
 GET /api/v1/issues/{key}/references any
 GET /api/v1/issues/{key}/results any
 POST /api/v1/issues/{key}/results any

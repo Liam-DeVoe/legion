@@ -483,6 +483,9 @@ var indexPasses = map[string]string{
 	// One pointer tuple out of a node of an issue, appended, retracted or retargeted through the
 	// store's writer from the request alone: the tuple has no projection row either.
 	"api/reasoning_write.go#writeReasoningPointer": "the request's tuple, the node it goes out of and the far ends it names",
+	// One node's state, written or settled through the store's writer from the request and the
+	// node's own row: the state is a base attribute of the node, which no projection row holds.
+	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row and the issue it stands under",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.

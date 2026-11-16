@@ -1210,11 +1210,17 @@ var requiredGraphIndexes = []requiredGraphIndex{
 // stop the store's writers while it scans: `create index concurrently` in a migration of its own
 // that runs outside the runner's transaction (`-- pgmigrate:non-transactional`,
 // pgmigrate/nontransactional.go). graph_nodes_project is the read of one project's nodes by kind
-// (20261116015042 gave graph_nodes its project_key).
+// (20261116015042 gave graph_nodes its project_key), and graph_nodes_proposed the read of the
+// nodes at proposed under one issue (api/node_state.go, issueProposedQuery), which holds the few
+// rows at that state alone.
 var laterGraphNodesIndexes = []requiredGraphIndex{
 	{
 		name: "graph_nodes_project", table: "graph_nodes",
 		keys: "project_key, kind", predicate: "project_key is not null",
+	},
+	{
+		name: "graph_nodes_proposed", table: "graph_nodes",
+		keys: "kind, id", predicate: "state = 'proposed'",
 	},
 }
 

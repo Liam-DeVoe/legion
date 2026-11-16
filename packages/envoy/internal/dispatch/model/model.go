@@ -1435,11 +1435,16 @@ type IssueCoverage struct {
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
 // any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
-// parsing the sentence back.
+// parsing the sentence back. State is the node state the store holds for the requirement's block
+// (graphstore.NodeStates), live where it holds no row: a requirement at proposed is a question
+// still open, which raises no gap (dispatch://INFRA-1950/spec#b-r-proposed). A server of the
+// release before answers no State during a roll, so the OpenAPI document marks it optional
+// (`required:"false"`) and a reader takes a requirement that carries none as live.
 type RequirementCoverage struct {
 	BlockID   string   `json:"block_id"`
 	Ref       string   `json:"ref"`
 	Text      string   `json:"text"`
+	State     string   `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
 	Checks    int      `json:"checks"`
 	PlanTasks int      `json:"plan_tasks"`
 	Gaps      []string `json:"gaps"`

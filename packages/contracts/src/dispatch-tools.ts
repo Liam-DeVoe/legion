@@ -2569,4 +2569,62 @@ export const dispatchToolSpecs = [
     }),
     strict: true,
   },
+  {
+    name: "dispatch_state",
+    example: {
+      issue: "DSP-1",
+      node: "dispatch://DSP-1/spec#b-r-cache",
+      state: "proposed",
+    },
+    description:
+      "Write the state of one node of an issue. proposed marks it a question still open: a " +
+      "proposed requirement raises no coverage gap, and dispatch proposed lists the issue's " +
+      "proposed nodes. overtaken marks it outdated by later work, live puts it back, and gone " +
+      "takes a lens, a finding, a risk or a constraint out of every read; a block of a document " +
+      "is removed by editing its document. A state the node cannot take is refused with 409 " +
+      "NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the value: gone on a " +
+      "block of a document, an issue, a document, an ask, a comment or a message, and any state " +
+      "on a gone node. Settle a proposal with dispatch settle. The result names the node's " +
+      `state before and after. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+      node: z.string({ min: 1 }).describe(`The node whose state to write: ${NODE_UNDER_ISSUE}.`),
+      state: z
+        .enum(["proposed", "overtaken", "live", "gone"])
+        .describe(
+          "The node's new state: proposed, overtaken, live, or gone on a lens, a finding, a risk or a constraint alone."
+        ),
+    }),
+    strict: true,
+  },
+  {
+    name: "dispatch_settle",
+    example: { issue: "DSP-1", node: "dispatch://DSP-1/spec#b-r-cache" },
+    description:
+      "Settle one proposed node of an issue: its state becomes settled, written by you. A " +
+      "person settles any proposal. An agent settles only a proposal its own credential wrote " +
+      "(for a block of a document, the writer of the version that first held the block) and " +
+      "is refused with 403 SETTLE_NOT_PERMITTED otherwise; the deployment's shared agent token " +
+      "proves no author, so it settles nothing. A node that is not proposed is refused with 409 " +
+      "NODE_NOT_PROPOSED. dispatch proposed lists the issue's proposed nodes. " +
+      `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+      node: z.string({ min: 1 }).describe(`The proposed node to settle: ${NODE_UNDER_ISSUE}.`),
+    }),
+    strict: true,
+  },
+  {
+    name: "dispatch_proposed",
+    example: { issue: "DSP-1" },
+    description:
+      "List the nodes of an issue whose state is proposed and that you may see: the questions " +
+      "still open, which coverage counts as no gap. Each comes with its dispatch:// address, " +
+      "its kind and the words it is read by. Settle one with dispatch settle, or move it with " +
+      `dispatch state. ${ISSUE_REFERENCE}`,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+    }),
+    strict: true,
+  },
 ] as const satisfies readonly DispatchToolSpec[];

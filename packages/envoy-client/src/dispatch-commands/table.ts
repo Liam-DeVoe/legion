@@ -42,7 +42,10 @@ import {
   lensCommand,
   lensesCommand,
   pointerCommand,
+  proposedCommand,
   riskCommand,
+  settleCommand,
+  stateCommand,
 } from "./reasoning";
 import { reviewCommand } from "./reviews";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
@@ -120,4 +123,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_constraints: acting(constraintsCommand),
   dispatch_pointer: acting(pointerCommand),
   dispatch_lenses: acting(lensesCommand),
+  dispatch_state: acting(stateCommand),
+  dispatch_settle: acting(settleCommand),
+  dispatch_proposed: acting(proposedCommand),
 };

@@ -253,17 +253,24 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			}
 			edge.Block = &block.GraphNode
 		}
-		switch {
-		case node.BlockID != "":
-			// A block's stored excerpt is already cut to BlockExcerptRunes, the excerpt a
-			// document's mention shows.
-			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.text}
-		case node.text != "":
-			edge.Excerpt = &model.GraphExcerpt{Text: text.HeadRunes(node.text, excerptRunes)}
-		}
+		edge.Excerpt = excerptOf(node)
 		edges = append(edges, edge)
 	}
 	return edges, nil
+}
+
+// excerptOf is the excerpt an edge at node shows: a block's stored excerpt with its block id, the
+// head of any other node's own text, and nil for a node that has no text.
+func excerptOf(node resolvedNode) *model.GraphExcerpt {
+	switch {
+	case node.BlockID != "":
+		// A block's stored excerpt is already cut to BlockExcerptRunes, the excerpt a
+		// document's mention shows.
+		return &model.GraphExcerpt{BlockID: node.BlockID, Text: node.text}
+	case node.text != "":
+		return &model.GraphExcerpt{Text: text.HeadRunes(node.text, excerptRunes)}
+	}
+	return nil
 }
 
 // readEdgeRows reads the rows a query lists, as arms over graph_edges that its filters then
@@ -451,11 +458,7 @@ func Node(ctx context.Context, q Queryer, who model.Actor, kind, id string, byRe
 // target that names no node, and a node reserved for an author who is not who, is absent from
 // the answer, exactly as Node answers it not found.
 func Nodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[Target]model.GraphNode, error) {
-	rows := make([]edgeRow, len(targets))
-	for index, target := range targets {
-		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
-	}
-	resolved, err := resolveNodes(ctx, q, who, byRefKey, rows)
+	resolved, err := resolveTargets(ctx, q, who, byRefKey, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -464,6 +467,37 @@ func Nodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targe
 		nodes[Target{Kind: key[0], ID: key[1]}] = node.GraphNode
 	}
 	return nodes, nil
+}
+
+// ExcerptedNode is one node ExcerptedNodes resolves: the node, and the excerpt an edge at it
+// shows (excerptOf), nil for a node that has no text.
+type ExcerptedNode struct {
+	Node    model.GraphNode
+	Excerpt *model.GraphExcerpt
+}
+
+// ExcerptedNodes is Nodes with each node's excerpt beside it, cut as an edge at the node cuts it:
+// a read that lists nodes rather than edges - the proposed nodes of an issue - answers each one
+// with the words a reader recognises it by. What it answers and what it leaves out is Nodes'.
+func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[Target]ExcerptedNode, error) {
+	resolved, err := resolveTargets(ctx, q, who, byRefKey, targets)
+	if err != nil {
+		return nil, err
+	}
+	nodes := make(map[Target]ExcerptedNode, len(resolved))
+	for key, node := range resolved {
+		nodes[Target{Kind: key[0], ID: key[1]}] = ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)}
+	}
+	return nodes, nil
+}
+
+// resolveTargets resolves each target for who through its kind's loader, as Node resolves one.
+func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[[2]string]resolvedNode, error) {
+	rows := make([]edgeRow, len(targets))
+	for index, target := range targets {
+		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
+	}
+	return resolveNodes(ctx, q, who, byRefKey, rows)
 }
 
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored

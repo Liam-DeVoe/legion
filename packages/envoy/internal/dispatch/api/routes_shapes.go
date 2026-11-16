@@ -718,9 +718,19 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/nodes/{id}/pointers": {
 		Status: http.StatusOK, Response: pointerWritten{}, Request: pointerInput{},
 	},
-	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	// The node state of dispatch://INFRA-1950 (node_state.go): one write of a node's state, the
+	// settle of a proposed node, whose body is an actor alone and may be empty, and the proposed
+	// nodes of an issue, each a graph node with its excerpt.
+	"POST /api/v1/issues/{key}/nodes/{id}/state": {
+		Status: http.StatusOK, Response: nodeStateWritten{}, Request: nodeStateInput{},
+	},
+	"POST /api/v1/issues/{key}/nodes/{id}/settle": {
+		Status: http.StatusOK, Response: nodeStateWritten{}, Request: actorInput{}, OptionalRequest: true,
+	},
+	"GET /api/v1/issues/{key}/proposed": {Status: http.StatusOK, Response: issueProposed{}},
+	"GET /api/v1/handoffs/{id}":         {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":         {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks":  {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},

@@ -573,4 +573,31 @@ var DispatchTools = []DispatchTool{
 		},
 		Example: json.RawMessage("{\"on\":\"dispatch://DSP-1/spec\"}"),
 	},
+	{
+		Name:        "dispatch_state",
+		Description: "Write the state of one node of an issue. proposed marks it a question still open: a proposed requirement raises no coverage gap, and dispatch proposed lists the issue's proposed nodes. overtaken marks it outdated by later work, live puts it back, and gone takes a lens, a finding, a risk or a constraint out of every read; a block of a document is removed by editing its document. A state the node cannot take is refused with 409 NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the value: gone on a block of a document, an issue, a document, an ask, a comment or a message, and any state on a gone node. Settle a proposal with dispatch settle. The result names the node's state before and after. The write appends no event and notifies nobody: a reader finds what it wrote by reading it. A refused write stores nothing. An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
+		Arguments: []ToolField{
+			{Name: "issue", Kind: ToolFieldString, Required: true, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
+			{Name: "node", Kind: ToolFieldString, Required: true, Description: "The node whose state to write: the dispatch:// address of a node of the issue you may see: the issue itself (dispatch://KEY-1), a document (dispatch://KEY-1/spec) or one of its blocks (dispatch://KEY-1/spec#b-<id>), an ask, a comment or a message or one of their blocks, or a lens (dispatch://lens/<uuid>), a finding (dispatch://lens/<uuid>#b-<id>), a risk (dispatch://risk/<uuid>) or a constraint (dispatch://constraint/<uuid>) of the issue; any other node is 404 NOT_FOUND."},
+			{Name: "state", Kind: ToolFieldEnum, Required: true, Description: "The node's new state: proposed, overtaken, live, or gone on a lens, a finding, a risk or a constraint alone.", Values: []string{"proposed", "overtaken", "live", "gone"}},
+		},
+		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"node\":\"dispatch://DSP-1/spec#b-r-cache\",\"state\":\"proposed\"}"),
+	},
+	{
+		Name:        "dispatch_settle",
+		Description: "Settle one proposed node of an issue: its state becomes settled, written by you. A person settles any proposal. An agent settles only a proposal its own credential wrote (for a block of a document, the writer of the version that first held the block) and is refused with 403 SETTLE_NOT_PERMITTED otherwise; the deployment's shared agent token proves no author, so it settles nothing. A node that is not proposed is refused with 409 NODE_NOT_PROPOSED. dispatch proposed lists the issue's proposed nodes. The write appends no event and notifies nobody: a reader finds what it wrote by reading it. A refused write stores nothing. An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
+		Arguments: []ToolField{
+			{Name: "issue", Kind: ToolFieldString, Required: true, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
+			{Name: "node", Kind: ToolFieldString, Required: true, Description: "The proposed node to settle: the dispatch:// address of a node of the issue you may see: the issue itself (dispatch://KEY-1), a document (dispatch://KEY-1/spec) or one of its blocks (dispatch://KEY-1/spec#b-<id>), an ask, a comment or a message or one of their blocks, or a lens (dispatch://lens/<uuid>), a finding (dispatch://lens/<uuid>#b-<id>), a risk (dispatch://risk/<uuid>) or a constraint (dispatch://constraint/<uuid>) of the issue; any other node is 404 NOT_FOUND."},
+		},
+		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"node\":\"dispatch://DSP-1/spec#b-r-cache\"}"),
+	},
+	{
+		Name:        "dispatch_proposed",
+		Description: "List the nodes of an issue whose state is proposed and that you may see: the questions still open, which coverage counts as no gap. Each comes with its dispatch:// address, its kind and the words it is read by. Settle one with dispatch settle, or move it with dispatch state. An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
+		Arguments: []ToolField{
+			{Name: "issue", Kind: ToolFieldString, Required: true, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
+		},
+		Example: json.RawMessage("{\"issue\":\"DSP-1\"}"),
+	},
 }

@@ -470,6 +470,46 @@ function pointerBody() {
   };
 }
 
+/** `POST /api/v1/issues/{key}/nodes/{id}/state` and `/settle`: the example's requirement block
+ *  moved from `previous` to `state`. */
+function nodeStateBody(previous: string, state: string) {
+  return {
+    node: {
+      address: `dispatch://${ISSUE}/spec#b-r-cache`,
+      kind: "block",
+      state,
+      visibility: "project",
+    },
+    previous,
+  };
+}
+
+/** `GET /api/v1/issues/{key}/proposed`: one proposed requirement with its excerpt. */
+function proposedBody() {
+  return {
+    issue: ISSUE,
+    nodes: [
+      {
+        node: {
+          kind: "block",
+          id: `${ISSUE}/spec#r-cache`,
+          block_id: "r-cache",
+          ref: `dispatch://${ISSUE}/spec#b-r-cache`,
+          made_by: [],
+          made_at: null,
+          changed_by: [],
+          changed_at: null,
+          parent: null,
+          parent_version: null,
+          state: "proposed",
+          visibility: "project",
+        },
+        excerpt: { block_id: "r-cache", text: "The cache holds every read for a minute." },
+      },
+    ],
+  };
+}
+
 /** `GET /api/v1/lenses?on=`: the spec's trade-off analysis with its finding, the pre-mortem it
  *  triggered with one risk no check prevents yet, and the chain the two make. */
 function lensesBody() {
@@ -728,6 +768,13 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
       return response(findingBody("The cache doubles the write path's cost."), 201);
     }
     if (segments[4] === "nodes" && segments[6] === "pointers") return response(pointerBody());
+    if (segments[4] === "nodes" && segments[6] === "state") {
+      return response(nodeStateBody("live", "proposed"));
+    }
+    if (segments[4] === "nodes" && segments[6] === "settle") {
+      return response(nodeStateBody("proposed", "settled"));
+    }
+    if (rest === "proposed") return response(proposedBody());
   }
   if (segments[2] === "artifacts" && segments.length >= 4) {
     if (rest === "" && method === "GET") return response(artifactBody("spec.md"));

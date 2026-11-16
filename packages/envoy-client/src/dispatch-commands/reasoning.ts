@@ -1,12 +1,16 @@
 import type {
   ConstraintRead,
   IssueConstraints,
+  IssueProposed,
   LensFinding,
   LensInvoked,
   LensRead,
   NodeLenses,
+  NodeStateInput,
+  NodeStateWritten,
   PointerInput,
   PointerWritten,
+  ProposedNode,
   ReasoningAuthor,
   RiskWritten,
 } from "@legion/contracts";
@@ -318,5 +322,88 @@ export async function lensesCommand(context: CommandContext): Promise<DispatchTo
         stopped_at: chain.stopped_at,
       })),
     },
+  };
+}
+
+/** The line a write of a node's state answers: the node, the state it moved from and to. */
+function stateLine(verb: string, written: NodeStateWritten): string {
+  const { node, previous } = written;
+  if (previous === node.state) {
+    return `${node.kind} ${node.address} is already ${node.state}; nothing was written`;
+  }
+  return `${verb} ${node.kind} ${node.address}: ${previous} -> ${node.state}${reservedNote(node.visibility)}`;
+}
+
+/** `dispatch state`: one write of the state of a node of the issue. */
+export async function stateCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client, actor, issue } = context;
+  const issueKey = issue();
+  let written: NodeStateWritten;
+  try {
+    written = await client.writeNodeState(issueKey, stringArg(args, "node"), {
+      actor,
+      state: stringArg(args, "state") as NodeStateInput["state"],
+    });
+  } catch (error) {
+    throw refusalWithCode(error);
+  }
+  return {
+    text: stateLine("Wrote the state of", written),
+    details: {
+      issue: issueKey,
+      node: written.node.address,
+      state: written.node.state,
+      previous: written.previous,
+    },
+  };
+}
+
+/** `dispatch settle`: the settle of one proposed node of the issue. */
+export async function settleCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client, actor, issue } = context;
+  const issueKey = issue();
+  let written: NodeStateWritten;
+  try {
+    written = await client.settleNode(issueKey, stringArg(args, "node"), { actor });
+  } catch (error) {
+    throw refusalWithCode(error);
+  }
+  return {
+    text: stateLine("Settled", written),
+    details: {
+      issue: issueKey,
+      node: written.node.address,
+      state: written.node.state,
+      previous: written.previous,
+    },
+  };
+}
+
+/** `dispatch proposed`: the nodes of the issue at state proposed that the caller may see. */
+export async function proposedCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { client, issue } = context;
+  const issueKey = issue();
+  let read: IssueProposed;
+  try {
+    read = await client.issueProposed(issueKey);
+  } catch (error) {
+    throw refusalWithCode(error);
+  }
+  // The document renders a Go list as nullable, and Dispatch answers an empty one.
+  const nodes = read.nodes ?? [];
+  const address = (node: ProposedNode) => node.node.ref ?? `${node.node.kind}/${node.node.id}`;
+  const lines =
+    nodes.length === 0
+      ? [`${read.issue} holds no proposed node you may see.`]
+      : [
+          `${read.issue} holds ${nodes.length} proposed node${nodes.length === 1 ? "" : "s"} you may see:`,
+          ...nodes.map(
+            (node) =>
+              `- ${node.node.kind} ${address(node)}${node.excerpt === null ? "" : `: ${node.excerpt.text}`}`
+          ),
+        ];
+  return {
+    text: lines.join("\n"),
+    details: { issue: read.issue, proposed: nodes.map(address) },
   };
 }
