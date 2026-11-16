@@ -17,7 +17,9 @@ body: |-
     to stop. A NATS that does not answer at start is waited for, every 2 s, where the start exited
     after ten tries; so is a store or the listener state bucket whose open fails for want of NATS,
     and an OIDC issuer whose discovery fails at start, Google's for `ENVOY_OIDC_GOOGLE_AUDIENCE`
-    included, is retried in the background (1 s doubling to 30 s) where the start exited.
+    included, is retried in the background (1 s doubling to 30 s, with no limit on the reads) where
+    the start exited; each failed read logs one WARN, `listener API oidc discovery failed;
+    retrying`, naming the `issuer`, the wait before the next read (`retry_in`) and the error.
 time: 2026-10-28T10:25:02.402474641Z
 custom:
     Issue: pr2404
