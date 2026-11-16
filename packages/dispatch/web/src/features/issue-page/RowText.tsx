@@ -97,9 +97,10 @@ export function documentWord(route: DispatchReferenceRoute | undefined): string 
 
 /** The words a chip draws for the target `route` names, whose name the batched read gave as
  *  `name`: a whole document by the page's word for it (`documentWord`), and anything else, a
- *  block among them, by its first words (`chipWords`). */
+ *  block among them, by its first words (`chipWords`). A typed block's name is its stored
+ *  excerpt, which opens on the block's source line, so its source lines are left out first. */
 export function chipName(route: DispatchReferenceRoute | undefined, name: string): string {
-  return documentWord(route) ?? chipWords(name);
+  return documentWord(route) ?? chipWords(withoutDirectiveLines(name));
 }
 
 /** The names the batched read brought, with every reference but an issue's named as a tie's chip

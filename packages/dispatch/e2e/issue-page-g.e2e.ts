@@ -164,9 +164,14 @@ test("a node draws its kind at the right of its row and every node starts at one
     await page.keyboard.press("Escape");
 
     // A fold control folds its branch to one line with its count, and a second press unfolds it.
-    const parent = nodeRows(page)
+    // The row is named by its node's id: a locator that filters on `aria-expanded` would move to
+    // the next unfolded row once this one folds.
+    const unfolded = await nodeRows(page)
       .filter({ has: page.locator(':scope[aria-expanded="true"]') })
-      .first();
+      .first()
+      .getAttribute("data-node-id");
+    expect(unfolded, "no row holds an unfolded branch").not.toBeNull();
+    const parent = nodeRow(page, unfolded ?? "").first();
     await parent.locator("button[data-node-bullet]").click();
     await expect(parent).toHaveAttribute("aria-expanded", "false");
     await expect(parent.locator("[data-node-count]")).toHaveCount(1);
