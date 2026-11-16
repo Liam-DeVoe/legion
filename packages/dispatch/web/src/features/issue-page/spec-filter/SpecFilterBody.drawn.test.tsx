@@ -36,6 +36,7 @@ import { check, checkNode, result } from "../verification-filter/verification-fi
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
   answeredAsk,
+  artifact,
   askRead,
   coverageRead,
   decision,
@@ -113,10 +114,11 @@ beforeAll(async () => {
 /** The body over `tree`, with `made` as the issue's decisions read and `checks` as its results
  *  read. `decisions`, `results`, `coverage` and `blocks` (the spec's) each say how that read
  *  stands - answered, failed, or still out - and each is answered unless a case says so;
- *  `names` is what the page's batched reference read named. The page's provider of the
- *  Contents list's requests stands above the body, so `request` is taken as the page takes it;
- *  `redraw(false)` takes the body off the page and `redraw(true)` draws a new one under the same
- *  provider, as the view turned off and on again does. */
+ *  `verification`, where a case names it, gives the issue a Verification document whose blocks
+ *  read stands so; `names` is what the page's batched reference read named. The page's provider
+ *  of the Contents list's requests stands above the body, so `request` is taken as the page
+ *  takes it; `redraw(false)` takes the body off the page and `redraw(true)` draws a new one
+ *  under the same provider, as the view turned off and on again does. */
 function drawBody(
   tree: TreeNode,
   made: readonly Decision[] = [],
@@ -132,6 +134,7 @@ function drawBody(
     request,
     results = "answered",
     reveal,
+    verification,
   }: {
     blocks?: ReadState;
     checks?: readonly CheckBlock[];
@@ -144,13 +147,22 @@ function drawBody(
     request?: OutlineRequest;
     results?: ReadState;
     reveal?: string;
+    verification?: ReadState;
   } = {}
 ): {
+  client: QueryClient;
   read: Reads;
   redraw: (drawn: boolean) => void;
   view: RenderResult;
 } {
-  const issue = issueDetails();
+  const issue =
+    verification === undefined
+      ? issueDetails()
+      : {
+          ...issueDetails(),
+          artifacts: [...issueDetails().artifacts, artifact("artifact-ver", "verification-md")],
+          verification_artifact_id: "artifact-ver",
+        };
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -190,6 +202,21 @@ function drawBody(
     client.setQueryData(artifactBlocksQuery(issue.primary_artifact_id).queryKey, []);
     spies.blocks.mockResolvedValue([]);
   });
+  if (verification !== undefined) {
+    // The Verification document's blocks, which the page reads for the checks under each
+    // statement, stand as `verification` says, and every other document's as `blocks` says.
+    if (verification === "answered") {
+      client.setQueryData(artifactBlocksQuery("artifact-ver").queryKey, []);
+    }
+    spies.blocks.mockImplementation((id) => {
+      const state = id === "artifact-ver" ? verification : blocks;
+      return state === "answered"
+        ? Promise.resolve([])
+        : state === "failed"
+          ? Promise.reject(new Error("offline"))
+          : new Promise<never>(() => {});
+    });
+  }
   const read: Reads = {
     ...spies,
     mockRestore: () => {
@@ -231,7 +258,7 @@ function drawBody(
     </QueryClientProvider>
   );
   const view = render(page(true));
-  return { read, redraw: (drawn) => view.rerender(page(drawn)), view };
+  return { client, read, redraw: (drawn) => view.rerender(page(drawn)), view };
 }
 
 /** The text of every element matching `selector`, in the order they are drawn. */
@@ -1173,6 +1200,76 @@ test("a statement carries no mark until its results and coverage are read, and f
     await waitFor(() =>
       expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met")
     );
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R6 and R17: a statement's mark is how it stands at the commit the page names, and the checks
+// that say so come from the Verification document's blocks, which the page reads beside the
+// results and the coverage. While that read is out a statement that is Met would read Unknown,
+// and where it failed it would stay Unknown with nothing said; on a running build at 8caa4357,
+// with that read refused, LAY-2's Met and Not met statements all read Unknown with no error
+// line for over ten seconds (review 5928280634 on pull request 4234, the reviewer's finding a).
+test("a statement carries no mark while the Verification document's blocks are out, and a failed read says so with Retry", async () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const tree = issueTree([statement("r1")]);
+  const waiting = drawBody(tree, [], { checks: [passed], verification: "out" });
+  try {
+    const row = rowOf(waiting.view, "spec#b-r1");
+    expect(
+      row.hasAttribute("data-spec-mark"),
+      "a statement is marked before its checks are read"
+    ).toBe(false);
+  } finally {
+    waiting.view.unmount();
+    waiting.read.mockRestore();
+  }
+  const { read, view } = drawBody(tree, [], { checks: [passed], verification: "failed" });
+  try {
+    const alert = await waitFor(() => {
+      const shown = view.container.querySelector<HTMLElement>('[role="alert"]');
+      if (shown === null)
+        throw new Error("a failed read of the Verification document says nothing");
+      return shown;
+    });
+    expect(within(alert).getByRole("button", { name: "Retry" })).toBeDefined();
+    expect(rowOf(view, "spec#b-r1").hasAttribute("data-spec-mark")).toBe(false);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R6 and R17: a read the page holds an answer for and asks again keeps that answer while it is
+// out, and a second ask that fails changes nothing the page drew from the first. On a running
+// build at 8caa4357 an upload to LAY-2 made the page read its results and coverage again; with
+// both refused, the view drew "Could not load the statements." over the 13 statements it still
+// drew, and every mark went (review 5928280634 on pull request 4234, the reviewer's finding b).
+test("a read that fails again over the answer the page holds keeps every mark and says nothing failed", async () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const tree = issueTree([statement("r1", { children: [checkNode(passed)] })]);
+  const { client, read, view } = drawBody(tree, [], { checks: [passed] });
+  try {
+    await waitFor(() =>
+      expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met")
+    );
+    read.results.mockRejectedValue(new Error("offline"));
+    read.coverage.mockRejectedValue(new Error("offline"));
+    read.blocks.mockRejectedValue(new Error("offline"));
+    await act(async () => {
+      await client.invalidateQueries();
+    });
+    await waitFor(() =>
+      expect(client.getQueryState(issueResultsQuery(KEY).queryKey)?.status).toBe("error")
+    );
+    expect(
+      rowOf(view, "spec#b-r1").getAttribute("data-spec-mark"),
+      "a failed read again over the held results drops the statement's mark"
+    ).toBe("met");
+    expect(view.container.textContent).not.toContain(ANSWER_LINES.results_unreadable);
+    expect(view.container.textContent).not.toContain(ANSWER_LINES.statements_unreadable);
   } finally {
     view.unmount();
     read.mockRestore();
