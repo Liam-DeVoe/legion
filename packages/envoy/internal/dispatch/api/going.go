@@ -31,6 +31,13 @@ import (
 // (recordGoingRequest, appendGoingEvent), so no row stands without its node and no frame without
 // its value. The stream reads the rows, as it always did: they are the cache it reads at speed.
 //
+// A run is kept, its row, its frames and its node, until `envoy-dispatch erase --node
+// interaction:<uuid>` erases all three in one transaction (grapherase): a node of the store is
+// removed by erasure alone (dispatch://INFRA-1950/spec#b-r-interaction). Nothing here deletes a
+// run. During a roll, and after a rollback, a process of the release before still deletes a run
+// an hour old (contracts.GoingRequestTTL, which this build reads nowhere); the backfill states its
+// node gone (graphcensus's backfillGoneRuns).
+//
 // The window a run has belongs to the record: going_requests.ends_at, written by the POST. A pod
 // that dies mid-run stores no terminal frame, so a reader on another pod ends the stream itself
 // once the run is past that moment with nothing terminal stored (readGoingStream), and
@@ -59,11 +66,11 @@ var goingTerminalNames = []string{contracts.GoingEventEnd, contracts.GoingEventE
 // cannot spin, not because a third attempt is expected to be needed.
 const goingTerminalWrites = 3
 
-// errGoingRunGone is a frame of a run the record no longer holds: one nobody asked, or one the
-// sweep has deleted past contracts.GoingRequestTTL, whose node may still stand. It stores nothing.
-// It wraps pgx.ErrNoRows, which is what a frame the record stores none of answers its writer, so
-// an answer still writing reads its run as over either way; endGoingRun answers it rather than
-// trying another sequence, and the sweep passes over it.
+// errGoingRunGone is a frame of a run the record no longer holds: one nobody asked, one an erase
+// removed, or one a process of the release before deleted an hour old during a roll, whose node
+// may still stand. It stores nothing. It wraps pgx.ErrNoRows, which is what a frame the record
+// stores none of answers its writer, so an answer still writing reads its run as over either way;
+// endGoingRun answers it rather than trying another sequence, and the sweep passes over it.
 var errGoingRunGone = fmt.Errorf("the record holds no such run: %w", pgx.ErrNoRows)
 
 // goingRequest is one answer run as the record holds it: the question a reader asked, and the
@@ -151,8 +158,8 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 }
 
 // readGoingRequest is one run by id, pgx.ErrNoRows when the record holds none: a run that was
-// never asked, or one the sweep has deleted past contracts.GoingRequestTTL. What a run the
-// caller does not own answers is the caller's to decide, which is why the row carries its
+// never asked, one an erase removed, or one a process of the release before deleted. What a run
+// the caller does not own answers is the caller's to decide, which is why the row carries its
 // Author: model.Actor.SameCredential compares it with the reader's.
 func (s *server) readGoingRequest(ctx context.Context, id string) (goingRequest, error) {
 	return scanGoingRequest(s.deps.Store.Pool.QueryRow(ctx, `
@@ -189,8 +196,9 @@ const goingNodeLock = `select 1 from graph_nodes where kind = $1 and id = $2 for
 // and its JSON $3), whether the run has stored a terminal frame (the names $4), and the
 // transaction's now(), which the frame's going_events row takes as its created_at. It takes the
 // run's going_requests row `for key share`, the lock the frame's own row's foreign key would take,
-// so a TTL delete of the run waits for the frame rather than failing its insert; a run the record
-// no longer holds answers no row.
+// so a delete of the run - an erase's, or a process of the release before deleting it an hour old -
+// waits for the frame rather than failing its insert; a run the record no longer holds answers no
+// row.
 var goingNextFrame = `
 	select next.sequence,
 	       ` + graphstore.FrameValueSQL("next.sequence", "$2::text", "$3::jsonb") + `,
@@ -385,7 +393,7 @@ const goingRunStateOf = `
 // readGoingStream is what one poll of an open stream reads: the frames past after, and the run's
 // state, in one round trip (store.Pool.SendBatch), where a poll of a stream costs two. Either
 // statement failing is the whole read's failure, which ends the stream, and pgx.ErrNoRows is the
-// sweep having deleted the run under its reader.
+// run deleted under its reader, by an erase or by a process of the release before.
 //
 // The two statements take their own snapshots, each at its own moment, so a frame committed
 // between them is in one answer and not the other. Which order they run in therefore settles
@@ -441,20 +449,20 @@ func scanGoingEvent(row pgx.Row) (goingEvent, error) {
 }
 
 // sweepGoingRequests ends every run that is past its ends_at with no terminal frame stored, with
-// the deadline's error (contracts.GoingErrorAnswerDidNotArrive), and then deletes every run
-// older than contracts.GoingRequestTTL, its frames going with it (on delete cascade). Ending
-// those runs is what nothing else does: the pod that was answering one may have died, and
-// nobody may be reading it.
+// the deadline's error (contracts.GoingErrorAnswerDidNotArrive). Ending those runs is what
+// nothing else does: the pod that was answering one may have died, and nobody may be reading it.
+// It deletes no run: a run is kept, row, frames and node, until an erase removes it
+// (dispatch://INFRA-1950/spec#b-r-interaction), where the release before deleted every run past
+// contracts.GoingRequestTTL. That value is read nowhere in this build.
 //
 // Each overdue run is ended by endGoingRun, the path every other terminal write takes, so the
 // sweep holds no second copy of how a frame is written: the ids are read first, oldest deadline
 // first, then each run is ended in a transaction of its own. A run a reader or the answer itself
 // ended between the read and the write keeps that frame, which endGoingRun answers. A run deleted
-// between the read and the write - this pass's own delete below runs in another pod too - stores
-// nothing (errGoingRunGone) and is passed over, and any other failure of one run's ending is kept
-// and answered once the pass is done, so one run neither fails the pass nor costs the runs read
-// after it their ending, nor the pass its delete. The delete is why a reader that reconnects
-// within the hour still finds its answer, and nothing older is kept.
+// between the read and the write - by an erase, or during a roll by a process of the release
+// before, which still deletes a run an hour old - stores nothing (errGoingRunGone) and is passed
+// over, and any other failure of one run's ending is kept and answered once the pass is done, so
+// one run neither fails the pass nor costs the runs read after it their ending.
 func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
 	rows, err := pool.Query(ctx, `
 		select r.id::text
@@ -477,8 +485,5 @@ func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
 			failed = append(failed, err)
 		}
 	}
-	_, err = pool.Exec(ctx, `
-		delete from going_requests where created_at < now() - make_interval(secs => $1)
-	`, contracts.GoingRequestTTL.Seconds())
-	return errors.Join(append(failed, err)...)
+	return errors.Join(failed...)
 }

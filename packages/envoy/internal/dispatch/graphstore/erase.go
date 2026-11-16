@@ -30,9 +30,14 @@ import (
 // under and before anything else (grapherase's lockInStoreOrder), so these deletes take no row
 // lock the store's lock order does not already place. A tuple is appended once and never written
 // again, so no other writer's write meets a delete of one.
+//
+// A tuple into the node names it by the kind the graph addresses it by (AddressKind): a finding
+// of a lens is keyed here as a block, and a tuple into it - the part_of of a lens invoked on it -
+// names it lens_block, so the tuples into the node are read and deleted under either.
 func EraseNode(ctx context.Context, tx pgx.Tx, kind, id string, seqs []int64) error {
+	addressed := AddressKind(kind, id)
 	tag, err := tx.Exec(ctx, `delete from graph_tuples where seq = any($3::bigint[])
-		and ((from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2))`, kind, id, seqs)
+		and ((from_kind = $1 and from_id = $2) or (to_kind in ($1, $4) and to_id = $2))`, kind, id, seqs, addressed)
 	if err != nil {
 		return fmt.Errorf("delete the tuples of %s:%s: %w", kind, id, err)
 	}
@@ -40,7 +45,7 @@ func EraseNode(ctx context.Context, tx pgx.Tx, kind, id string, seqs []int64) er
 		return fmt.Errorf("the erase refuses %s:%s: it listed %d tuple(s) of the node and deleted %d, so the tuples moved while it ran; nothing was removed, and the erase can be run again",
 			kind, id, len(seqs), tag.RowsAffected())
 	}
-	left, err := tuplesLeft(ctx, tx, kind, id)
+	left, err := tuplesLeft(ctx, tx, kind, id, addressed)
 	if err != nil {
 		return err
 	}
@@ -55,13 +60,14 @@ func EraseNode(ctx context.Context, tx pgx.Tx, kind, id string, seqs []int64) er
 }
 
 // tuplesLeft is every tuple of either side of the node the delete by seq left, which is every
-// tuple another writer appended since the listing was read, by seq with the fact it states.
-func tuplesLeft(ctx context.Context, tx pgx.Tx, kind, id string) ([]string, error) {
+// tuple another writer appended since the listing was read, by seq with the fact it states. The
+// tuples into the node are read under addressed too, the kind the graph addresses it by.
+func tuplesLeft(ctx context.Context, tx pgx.Tx, kind, id, addressed string) ([]string, error) {
 	rows, err := tx.Query(ctx, `
 		select seq || ' (' || from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id || ')'
 		from graph_tuples
-		where (from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2)
-		order by seq`, kind, id)
+		where (from_kind = $1 and from_id = $2) or (to_kind in ($1, $3) and to_id = $2)
+		order by seq`, kind, id, addressed)
 	if err != nil {
 		return nil, fmt.Errorf("read the tuples left of %s:%s: %w", kind, id, err)
 	}

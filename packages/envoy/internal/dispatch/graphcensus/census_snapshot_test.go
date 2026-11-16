@@ -165,7 +165,9 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 // zero differences (R19): a total over the kinds is no such proof, because two empty sides of one
 // kind agree. The census of the agreeing store, which checked rows of every kind, passes. The
 // same report with any one kind's rows and nodes taken out, which still reads zero differences
-// and still holds rows of every other kind, must refuse and name that kind in its verdict.
+// and still holds rows of every other kind, must refuse and name that kind in its verdict, but for
+// a kind a deployment may hold none of (dispatch://INFRA-1950's runs, frames and the visibility
+// and state of its kinds), which must pass and say on its own line that it checked no row.
 func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	database := storetest.Open(t)
 	seedAgreeingStore(t, database)
@@ -173,17 +175,30 @@ func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	if report.Refused() {
 		t.Fatalf("the census of the agreeing store refuses, so taking a kind out of it would prove nothing")
 	}
+	optional := 0
 	for index, held := range report.Kinds {
 		emptied := *report
 		emptied.Kinds = append([]KindReport{}, report.Kinds...)
 		emptied.Kinds[index].Rows, emptied.Kinds[index].Nodes = 0, 0
 		var printed strings.Builder
 		emptied.Write(&printed)
+		if held.MayBeEmpty {
+			optional++
+			line := "census: store kind=" + held.Kind + " checked no row, so the census proves nothing of it; a deployment may hold none, so it refuses nothing\n"
+			if emptied.Refused() || !strings.Contains(printed.String(), line) || !strings.HasSuffix(printed.String(), "census: store ok\n") {
+				t.Errorf("a census that checked no %s row, a kind a deployment may hold none of, reads refused=%t, want a pass that prints %q:\n%s",
+					held.Kind, emptied.Refused(), line, printed.String())
+			}
+			continue
+		}
 		verdict := "census: store REFUSED (kind(s) " + held.Kind + " checked no row, so the census proves nothing of them)\n"
 		if !emptied.Refused() || emptied.Rows() == 0 || !strings.HasSuffix(printed.String(), verdict) {
 			t.Errorf("a census that checked no %s row but %d rows of the other kinds reads refused=%t, want a refusal ending %q:\n%s",
 				held.Kind, emptied.Rows(), emptied.Refused(), verdict, printed.String())
 		}
+	}
+	if optional != 8 {
+		t.Errorf("the census reads %d kinds a deployment may hold none of, want 8: the interaction, its frames, and the visibility and state of a run, a lens, a finding, a risk, a constraint and a lens kind", optional)
 	}
 }
 

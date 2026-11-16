@@ -102,8 +102,9 @@ export const GOING_RUN_MS = 30_000;
  *  Generated into Go as `contracts.GoingRunHeader`. */
 export const GOING_RUN_HEADER = "Dispatch-Going-Run";
 
-/** How long a run's rows are kept, so a reader that reconnects still finds its answer and a
- *  finished run is not kept for ever. Generated into Go as `contracts.GoingRequestTTL`. */
+/** The age past which a process of the release before still deletes a run during a roll. This
+ *  build reads it nowhere: a run is kept until `envoy-dispatch erase` erases it, since a node of
+ *  the store is removed by erasure alone. Generated into Go as `contracts.GoingRequestTTL`. */
 export const GOING_REQUEST_TTL_MS = 3_600_000;
 
 /** The next piece of the answer's text, as plain text whose every ASCII punctuation byte is

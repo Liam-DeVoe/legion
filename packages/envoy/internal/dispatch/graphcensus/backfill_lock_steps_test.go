@@ -18,8 +18,9 @@ import (
 )
 
 // TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of dispatch://INFRA-1149's
-// c-lock-order for the three batches backfill_fence_test.go does not prove: writeBlockRefBatch,
-// writeCommentBatch and writeRoleBatch, three of the store write call sites graphstore's
+// c-lock-order for the batches backfill_fence_test.go does not prove: writeBlockRefBatch,
+// writeCommentBatch, writeRoleBatch, writeSessionBatch, and the two writers of an older pod's runs,
+// writeRunFrames and writeGoneRun, store write call sites graphstore's
 // TestEveryStoreWriteCallSiteIsListed lists. graphstore's TestEveryStoreWriteTakesOneLockOrder
 // cannot run them, since this package imports graphstore.
 //
@@ -38,6 +39,8 @@ func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeCommentBatch takes no owner row, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
 	t.Run("writeRoleBatch takes no owner row, then its node rows ascending and the part_of tuple", requireTheRoleBatchLockOrder)
 	t.Run("writeSessionBatch takes no owner row, then its node rows ascending", requireTheSessionBatchLockOrder)
+	t.Run("writeRunFrames takes no owner row and no run row, then the run's interaction node row and the tuple append", requireTheRunFramesLockOrder)
+	t.Run("writeGoneRun takes no owner row, then the run's interaction node row, which it moves", requireTheGoneRunLockOrder)
 }
 
 // requireTheBlockRefBatchLockOrder holds writeBlockRefBatch to its steps. The batch is one of the

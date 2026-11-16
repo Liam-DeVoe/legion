@@ -388,11 +388,15 @@ const GoingModelCallMax = ${GOING_MODEL_CALL_MAX}
 // apart.
 const GoingWordsMax = ${GOING_WORDS_MAX}
 
-// GoingRunWindow is how long one run may take, measured from the POST that started it, and
-// GoingRequestTTL how long a run's rows are kept, so a reader that reconnects still finds its
-// answer. Generated from GOING_RUN_MS and GOING_REQUEST_TTL_MS in packages/contracts so the
-// server's windows and the page's account of them cannot drift apart.
+// GoingRunWindow is how long one run may take, measured from the POST that started it. Generated
+// from GOING_RUN_MS in packages/contracts so the server's window and the page's account of it
+// cannot drift apart.
 const GoingRunWindow = ${GOING_RUN_MS} * time.Millisecond
+
+// GoingRequestTTL is the age past which a process of the release before still deletes a run
+// during a roll. This build reads it nowhere: a run is kept until an erase removes it, since a
+// node of the store is removed by erasure alone. Generated from GOING_REQUEST_TTL_MS in
+// packages/contracts.
 const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
 
 // GoingRunHeader is the request header a write made for a run names the run in: its uuid. The

@@ -496,7 +496,14 @@ var indexPasses = map[string]string{
 	// input is that going_requests row's own content and the run's going_events rows, as the other
 	// backfill passes read each pre-store row's own, and a run whose node is already written it
 	// leaves alone rather than mending.
-	"graphcensus/interactions.go#WriteRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
+	"graphcensus/interactions.go#writeRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
+	// The backfill's passes over what a process of the release before writes of a run during a
+	// roll: the frames it appended with no value, whose input is each going_events row's own
+	// content, found by an anti-join with the run's frame values and stated from the row, never
+	// read back; and a run whose row it deleted, whose input is that the row is gone and the node
+	// as the store holds it, of which it moves the state alone, never mending a row from the store.
+	"graphcensus/backfill.go#writeRunFrames": "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
+	"graphcensus/backfill.go#writeGoneRun":   "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.

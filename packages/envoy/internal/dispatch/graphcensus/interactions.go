@@ -37,6 +37,22 @@ import (
 // It is the step the frame path (api's appendGoingEvent) takes for a run with no node, before it
 // takes the node's row.
 func WriteRun(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
+	written, err := writeRun(ctx, tx, id)
+	return written.held, err
+}
+
+// runWritten is what writeRun did for one run: whether the record holds the run, and the nodes
+// and tuples it stated of it, none where the store held its node already. The counts are the upper
+// bound the backfill's report states: an author's node another write already made moves nothing,
+// and its base attributes are stated only by the write that made it.
+type runWritten struct {
+	held          bool
+	nodes, tuples int64
+}
+
+// writeRun is WriteRun answering what it wrote, which the backfill's pass over the runs an older
+// pod recorded counts (backfillRuns).
+func writeRun(ctx context.Context, tx pgx.Tx, id string) (runWritten, error) {
 	var run graphstore.Interaction
 	var author []byte
 	err := tx.QueryRow(ctx, `
@@ -46,20 +62,20 @@ func WriteRun(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
 		for no key update
 	`, id).Scan(&run.ID, &author, &run.Project, &run.Words, &run.At, &run.EndsAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return runWritten{}, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read run %s: %w", id, err)
+		return runWritten{}, fmt.Errorf("read run %s: %w", id, err)
 	}
 	_, stored, err := graphstore.ReadNode(ctx, tx, graphstore.KindInteraction, run.ID)
 	if err != nil {
-		return false, err
+		return runWritten{}, err
 	}
 	if stored {
-		return true, nil
+		return runWritten{held: true}, nil
 	}
 	if err := json.Unmarshal(author, &run.Author); err != nil {
-		return false, fmt.Errorf("decode the author of run %s: %w", run.ID, err)
+		return runWritten{}, fmt.Errorf("decode the author of run %s: %w", run.ID, err)
 	}
 	nodes, tuples := graphstore.InteractionFacts(run)
 	rows, err := tx.Query(ctx, `
@@ -69,7 +85,7 @@ func WriteRun(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
 		order by e.sequence
 	`, run.ID)
 	if err != nil {
-		return false, fmt.Errorf("read the frames of run %s: %w", run.ID, err)
+		return runWritten{}, fmt.Errorf("read the frames of run %s: %w", run.ID, err)
 	}
 	frames, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
 		var value string
@@ -80,10 +96,18 @@ func WriteRun(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
 		return graphstore.FrameTuple(run.ID, value, at), nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("read the frames of run %s: %w", run.ID, err)
+		return runWritten{}, fmt.Errorf("read the frames of run %s: %w", run.ID, err)
 	}
 	if err := graphstore.Write(ctx, tx, nodes, append(tuples, frames...)); err != nil {
-		return false, fmt.Errorf("write the interaction node of run %s: %w", run.ID, err)
+		return runWritten{}, fmt.Errorf("write the interaction node of run %s: %w", run.ID, err)
 	}
-	return true, nil
+	written := runWritten{held: true, nodes: int64(len(nodes)), tuples: int64(len(tuples) + len(frames))}
+	for _, node := range nodes {
+		// The visibility and the state of each node it made, and its project where it names one.
+		written.tuples += 2
+		if node.Project != "" {
+			written.tuples++
+		}
+	}
+	return written, nil
 }

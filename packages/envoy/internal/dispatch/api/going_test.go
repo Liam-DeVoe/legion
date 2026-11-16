@@ -65,7 +65,7 @@ func (rig goingRig) frames(t *testing.T, requestID string) []string {
 }
 
 // age moves the run's created_at and its ends_at back by the two durations, so a test can hold a
-// run the deadline or the TTL has passed without waiting for either.
+// run its deadline has passed, or one hours old, without waiting for either.
 func (rig goingRig) age(t *testing.T, requestID string, created, ends time.Duration) {
 	t.Helper()
 	if _, err := rig.database.Pool.Exec(context.Background(), `
@@ -273,33 +273,57 @@ func TestTheGoingSweepEndsARunPastItsWindowOnce(t *testing.T) {
 	}
 }
 
-// A run is kept contracts.GoingRequestTTL, so a reader that reconnects still finds its answer;
-// the sweep deletes an older one, its frames going with it, and keeps a younger one.
-func TestTheGoingSweepDeletesARunPastItsTTL(t *testing.T) {
+// TestARunAndItsFramesAreKeptPastTheHour is c-run-kept: R4 keeps a run and its frames, where
+// main's sweep deletes them after one hour (contracts.GoingRequestTTL, which this build reads
+// nowhere). It records two runs of one person, appends one frame to each and ends neither, dates
+// the first two hours back, and sweeps once. The first run's row, its frame and its interaction
+// node all stand, the node at no state gone, and the run now holds a terminal frame, because the
+// sweep still ends each overdue run. The second run is not overdue and holds no terminal frame.
+func TestARunAndItsFramesAreKeptPastTheHour(t *testing.T) {
 	rig := newGoingRig(t)
 	ctx := context.Background()
-	old := rig.record(t, "asked an age ago")
-	if _, err := endGoingRun(ctx, rig.database.Pool, old.ID, going.End(1, 0)); err != nil {
-		t.Fatalf("end the old run: %v", err)
+	dated := rig.record(t, "asked two hours ago")
+	recent := rig.record(t, "asked just now")
+	for _, run := range []goingRequest{dated, recent} {
+		if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, going.Text("Half an ")); err != nil {
+			t.Fatalf("append a frame of run %s: %v", run.ID, err)
+		}
 	}
-	rig.age(t, old.ID, contracts.GoingRequestTTL+time.Minute, contracts.GoingRequestTTL)
-	young := rig.record(t, "asked just now")
+	if _, err := rig.database.Pool.Exec(ctx, `
+		update going_requests set created_at = now() - interval '2 hours', ends_at = now() - interval '2 hours'
+		where id = $1::uuid
+	`, dated.ID); err != nil {
+		t.Fatalf("date run %s two hours back: %v", dated.ID, err)
+	}
+	datedFrames, recentFrames := rig.frames(t, dated.ID), rig.frames(t, recent.ID)
+	if len(datedFrames) != 1 || len(recentFrames) != 1 {
+		t.Fatalf("the two runs hold %v and %v before the sweep, want one frame each", datedFrames, recentFrames)
+	}
 
 	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if _, err := rig.server.readGoingRequest(ctx, old.ID); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("the run past its TTL reads %v, want pgx.ErrNoRows", err)
+
+	if _, err := rig.server.readGoingRequest(ctx, dated.ID); err != nil {
+		t.Fatalf("run %s, dated two hours back, reads %v after the sweep: want its row kept", dated.ID, err)
 	}
-	var frames int
-	if err := rig.database.Pool.QueryRow(ctx, `select count(*) from going_events where request_id = $1::uuid`, old.ID).Scan(&frames); err != nil {
-		t.Fatalf("count the deleted run's frames: %v", err)
+	deadline := fmt.Sprintf(`2 %s {"code":%q}`, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
+	if frames := rig.frames(t, dated.ID); len(frames) != 2 || frames[0] != datedFrames[0] || frames[1] != deadline {
+		t.Fatalf("run %s holds %v after the sweep, want its own frame %s kept and the deadline's ending %s",
+			dated.ID, frames, datedFrames[0], deadline)
 	}
-	if frames != 0 {
-		t.Fatalf("the deleted run left %d frames, want none: they go with it", frames)
+	node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindInteraction, dated.ID)
+	if err != nil || !held || node.State == graphstore.StateGone {
+		t.Fatalf("the interaction node of run %s reads held %t at state %q (%v) after the sweep, want it standing and not gone",
+			dated.ID, held, node.State, err)
 	}
-	if _, err := rig.server.readGoingRequest(ctx, young.ID); err != nil {
-		t.Fatalf("the run inside its TTL: %v, want it kept", err)
+	requireFramesHeldAsValues(t, rig.database, dated.ID, 2)
+
+	if frames := rig.frames(t, recent.ID); !equalStrings(frames, recentFrames) {
+		t.Fatalf("run %s, not overdue, holds %v after the sweep, want its one frame %v and no ending", recent.ID, frames, recentFrames)
+	}
+	if _, state, err := rig.server.readGoingStream(ctx, recent.ID, 0); err != nil || state.Terminal != 0 {
+		t.Fatalf("run %s, not overdue, reads %+v (%v) after the sweep, want no terminal frame", recent.ID, state, err)
 	}
 }
 
@@ -323,19 +347,20 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 	}
 }
 
-// Another pod's TTL delete may remove a run between the sweep's read of the overdue ids and its
-// write of that run's ending, and the run's interaction node still stands then. The sweep ends
-// each run in a transaction of its own, so that write stores nothing - no frame value and no row
-// (errGoingRunGone) - and the pass goes on: the run read after it keeps its ending, and the pass
-// reaches its own delete. The delete here is held uncommitted until the sweep's write of that run
-// waits on the run's row, which the write takes before it reads the next sequence
-// (goingNextFrame), so the run is gone exactly between the read and the write. A frame of a run
-// nobody recorded stores nothing either, and writes no node for it.
+// Another pod's delete - an erase, or during a roll a process of the release before deleting a run
+// an hour old - may remove a run between the sweep's read of the overdue ids and its write of
+// that run's ending, and the run's interaction node still stands then. The sweep ends each run in
+// a transaction of its own, so that write stores nothing - no frame value and no row
+// (errGoingRunGone) - and the pass goes on: the run read after it keeps its ending, and a run two
+// hours old is ended and kept, as this build deletes no run. The delete here is held uncommitted
+// until the sweep's write of that run waits on the run's row, which the write takes before it
+// reads the next sequence (goingNextFrame), so the run is gone exactly between the read and the
+// write. A frame of a run nobody recorded stores nothing either, and writes no node for it.
 func TestAGoingTerminalWriteForAMissingRunFailsNoSweep(t *testing.T) {
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	stale := rig.record(t, "asked an age ago")
-	rig.age(t, stale.ID, contracts.GoingRequestTTL+time.Minute, contracts.GoingRequestTTL)
+	rig.age(t, stale.ID, 2*time.Hour+time.Minute, 2*time.Hour)
 	deleted := rig.record(t, "and this one, which is gone by the time it is ended")
 	rig.age(t, deleted.ID, 2*time.Minute, 2*time.Second)
 	overdue := rig.record(t, "who ends this one?")
@@ -384,8 +409,8 @@ func TestAGoingTerminalWriteForAMissingRunFailsNoSweep(t *testing.T) {
 	if _, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindInteraction, deleted.ID); err != nil || !held {
 		t.Fatalf("the deleted run's interaction node reads held %t (%v), want it standing: the delete removes the row alone", held, err)
 	}
-	if _, err := rig.server.readGoingRequest(ctx, stale.ID); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("the run past its TTL reads %v, want pgx.ErrNoRows: the pass reached its delete", err)
+	if frames := rig.frames(t, stale.ID); len(frames) != 1 || frames[0] != ending {
+		t.Fatalf("the run two hours old holds %v, want it kept and ended %s: this build deletes no run", frames, ending)
 	}
 
 	// A run nobody recorded: neither path stores a frame, and neither writes it a node.

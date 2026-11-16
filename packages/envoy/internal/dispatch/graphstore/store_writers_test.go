@@ -115,7 +115,15 @@ var storeWriteCallSites = []string{
 	// TestEveryStoreWriteTakesOneLockOrder proves of Write.
 	"api/going.go#appendGoingEvent",
 	"api/going.go#recordGoingRequest",
-	"graphcensus/interactions.go#WriteRun",
+	"graphcensus/interactions.go#writeRun",
+	// The backfill's passes over what a process of the release before writes of a run during a
+	// roll (graphcensus' TestTheBackfillMendsWhatAnOlderPodWroteOfARun): a frame it appended with
+	// no value, stated through Write after the run's interaction node row `for no key update`, the
+	// frame path's own first lock, and a run whose row it deleted, whose node is written gone
+	// through Write after that same row. Neither takes an owner row, as no run stands under one;
+	// the order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write.
+	"graphcensus/backfill.go#writeGoneRun",
+	"graphcensus/backfill.go#writeRunFrames",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and
