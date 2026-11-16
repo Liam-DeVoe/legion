@@ -141,22 +141,5 @@ func (s *server) listAgentArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), agentArtifactsSQL, session, agentArtifactsListMax)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	artifacts, err := collectArtifacts(rows)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := loadArtifactDetails(r.Context(), s.deps.Store.Pool, artifactPointers(artifacts)); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	reads := artifactReads(artifacts, reader)
-	reader.resolve()
-	WriteJSON(w, http.StatusOK, reads)
+	s.writeArtifactList(w, r, agentArtifactsSQL, session, agentArtifactsListMax)
 }

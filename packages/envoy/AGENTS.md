@@ -1710,6 +1710,8 @@ A `?to=` read lists a mention that one of the citing document's blocks holds fro
 one in a document the block index has not reached.
 Every head of stored text the server sends a reader to draw - that block excerpt, the 240-rune head of the other node's text beside an edge, an Inbox row's subject and an id prefix candidate's first line (`refs.FirstLine`) - is cut where no reference crosses the cut (`text.HeadRefs`, in `refs/heads.go`): a mention, an address, a dashboard URL, a bare key or a `#id` that would straddle the bound is left out whole, and so is one the head would read that the text does not write, such as `CORE-12` of `CORE-12x4` or an address the ellipsis would join.
 `refs/heads_test.go` holds every other cut of Dispatch text to the reason no reader draws it with its references.
+An excerpt a document stores keeps the cut the build that wrote it made: `IndexBlocks` writes a block's excerpt only when that block's text changed, and the reconciliation re-cuts a mention's excerpt only while its `excerpt_version` is null or behind its document's latest version (`driftedExcerptsQuery` and `MarkStaleExcerpts` in `refs/excerpts.go`), so an excerpt stored before `BlockExcerpt` keeps its old cut until that document's next version or an operator's `rebuild-refs`.
+The item excerpt and the first line are cut as they are read, so both are right at once.
 
 Each identified block of a document is a graph node too (and so is each block of a comment or message, below):
 kind `block`, id `<document ref_key>#<block id>` (`text.TargetID`), its reference the document's with `#b-` and the id as `text.EncodeBlockID` writes it (`refs.BlockRef`).

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -140,95 +139,13 @@ func TestAnAgentsConversationListsOnlyItsNewestFiles(t *testing.T) {
 	}
 }
 
-// A conversation's files are part of the conversation, so every kind of caller GET
-// /api/v1/agents/{session_id}/messages tells apart is answered by the list exactly as that read
-// answers: no credential, a person's browser, a person's own token with and without the person
-// scope, the deployment's shared token, and the broker's tokens for a person, for one project, for
-// a service with no person, and for a machine login. Both read `session` as every person route
-// does, so the broker's token for a person, which proved a session, naming another there is
-// refused both, 403 ACTOR_SESSION_MISMATCH.
+// A conversation's files are part of the conversation, so the list answers exactly the callers
+// GET /api/v1/agents/{session_id}/messages answers, each the same way
+// (expectSameCallersAsConversationRead).
 func TestAgentFileListAdmitsExactlyTheCallersTheConversationReadAdmits(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	seedListedFile(t, rig.database)
-	caller := newBrokerCaller(t)
-
-	broker := func(name string, says brokertoken.Introspection) string {
-		token := "a-broker-token-" + name
-		rig.broker.Says(token, says)
-		return token
-	}
-	personScoped := liveNamedToken(caller.jkt)
-	personScoped.ProjectScope, personScoped.Project = brokertoken.ProjectScopePerson, ""
-	brokerTokens := map[string]string{
-		"a broker token for a person":        broker("person", personScoped),
-		"a broker token for one project":     broker("project", liveNamedToken(caller.jkt)),
-		"a broker token for a service":       broker("service", serviceOnlyToken(caller.jkt)),
-		"a broker token for a machine login": broker("machine", machineLoginToken(caller.jkt)),
-	}
-	bearers := map[string]string{
-		"the deployment's shared token":             "agent-token",
-		"a person's token holding the person scope": personalTokenHolding(t, rig.database, model.ScopePerson),
-		"a person's token holding no scope":         personalTokenHolding(t, rig.database),
-	}
-
-	listed := listedFilesPath(listedSession)
-	conversation := "/api/v1/agents/" + listedSession + "/messages"
-	type answer struct {
-		status int
-		code   string
-	}
-	answerOf := func(response *httptest.ResponseRecorder) answer {
-		if response.Code == http.StatusOK {
-			return answer{status: http.StatusOK}
-		}
-		return answer{status: response.Code, code: decodeBody[refusalAnswer](t, response).Code}
-	}
-	plain := func(path string, set func(*http.Request)) answer {
-		request := httptest.NewRequest(http.MethodGet, path, nil)
-		set(request)
-		return answerOf(rig.serve(request))
-	}
-
-	answers := map[string][2]answer{}
-	answers["no credential"] = [2]answer{
-		plain(conversation, func(*http.Request) {}), plain(listed, func(*http.Request) {}),
-	}
-	browser := func(request *http.Request) { request.Header.Set("X-Dispatch-User", "alice") }
-	answers["a person's browser"] = [2]answer{plain(conversation, browser), plain(listed, browser)}
-	for name, token := range bearers {
-		bearer := func(request *http.Request) { request.Header.Set("Authorization", "Bearer "+token) }
-		answers[name] = [2]answer{plain(conversation, bearer), plain(listed, bearer)}
-	}
-	for name, token := range brokerTokens {
-		answers[name] = [2]answer{
-			answerOf(rig.serve(caller.presenting(t, http.MethodGet, conversation, token, nil))),
-			answerOf(rig.serve(caller.presenting(t, http.MethodGet, listed, token, nil))),
-		}
-	}
-	mismatched := "a broker token for a person, naming another session"
-	answers[mismatched] = [2]answer{
-		answerOf(rig.serve(caller.presenting(t, http.MethodGet, conversation+"?session=s-another",
-			brokerTokens["a broker token for a person"], nil))),
-		answerOf(rig.serve(caller.presenting(t, http.MethodGet, listed+"?session=s-another",
-			brokerTokens["a broker token for a person"], nil))),
-	}
-	if refused := (answer{status: http.StatusForbidden, code: "ACTOR_SESSION_MISMATCH"}); answers[mismatched][1] != refused {
-		t.Errorf("%s: the file list answers %+v, want %+v", mismatched, answers[mismatched][1], refused)
-	}
-
-	admitted := 0
-	for name, pair := range answers {
-		if pair[0] != pair[1] {
-			t.Errorf("%s: the conversation read answers %+v and the file list %+v, want the same", name, pair[0], pair[1])
-		}
-		if pair[0].status == http.StatusOK {
-			admitted++
-		}
-	}
-	// The comparison proves nothing if every caller is refused both reads, or admitted to both.
-	if admitted == 0 || admitted == len(answers) {
-		t.Fatalf("the conversation read admits %d of %d callers, want some admitted and some refused: %+v", admitted, len(answers), answers)
-	}
+	expectSameCallersAsConversationRead(t, rig, "the file list", listedSession, listedFilesPath(listedSession))
 }
 
 // A caller the conversation read refuses learns nothing of the conversation's files either: the
