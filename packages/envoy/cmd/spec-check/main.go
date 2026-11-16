@@ -3,8 +3,9 @@
 // approved spec and prints the approved text, and checks that no CI file of a repository runs that
 // comparison. It reads the directory as the Dispatch server's importer reads
 // .dispatch/architecture: notes.ReadSet takes each .md file directly in it, within the size
-// bound, and passes over every other entry. Every rule is specgraph's (Parse, Validate, Compare and
-// CIFilesThatCompare); the command states none of its own.
+// bound, and passes over every other entry. Every rule of the spec files is specgraph's (Parse,
+// Validate and Compare); the command states none of its own. The rule of guard is the command's
+// (cifiles.go), since it reads CI files and no spec file.
 //
 // Usage:
 //
@@ -70,18 +71,22 @@
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
 // <dir>/.github/scripts and <dir>/scripts, and names each line that runs the comparison
-// (specgraph.CIFilesThatCompare: each line as the shell reads it, and each run: value of a YAML
+// (ciFilesThatCompare: each literal word of a line, quoted or not, and each run: value of a YAML
 // file as YAML reads it) on standard error, "spec-check: <dir>/<path>:<line>: this line runs the
 // comparison of the files with the approved spec, which no CI job does (R2)", with "spec-check:
 // <dir>: <n> lines of CI files run the comparison" on standard output, exit 1. It exits 1 with
 // "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file, since an
 // instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>: no line
-// of <k> CI files runs the comparison". A step can run the comparison from a file it does not
-// read, such as a package script or a make target: compare's refusal covers that route when the
-// step passes the runner's environment on, and nothing covers it when the step does not.
+// of <k> CI files runs the comparison". It does not expand a brace, a glob, a variable or a
+// command substitution, and the reviewer of a change to the CI files reads those. A step can run
+// the comparison from a file it does not read, such as a package script or a make target:
+// compare's refusal covers that route when the step passes the runner's environment on, and
+// nothing covers it when the step does not.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
-// does not take, with one line naming the case, or the usage. Each entry of a directory that is
+// does not take, with one line naming the case, or the usage, and for a standard output that
+// does not take all of its text, its product, with the line "spec-check: <subcommand>: cannot
+// write standard output: <error>" on standard error. Each entry of a directory that is
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
 // Paths are printed absolute. Every line but the usage, the JSON of checks and the blocks of print
 // is written by runnerlog.Say with the prefix "spec-check: ", so no text a file name, a file or an
@@ -132,7 +137,8 @@ func main() {
 }
 
 // run runs the subcommand args name and answers its exit status, or 2 with the usage for no
-// subcommand or one it does not know.
+// subcommand or one it does not know. The subcommand writes its standard output through output,
+// so a write that stdout does not take in full is one line on stderr and exit 2.
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usage)
@@ -144,7 +150,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	return subcommand(args[1:], stdout, stderr)
+	out := &output{w: stdout}
+	code := subcommand(args[1:], out, stderr)
+	if out.err != nil {
+		say(stderr, "%s: cannot write standard output: %s", args[0], out.err)
+		return 2
+	}
+	return code
 }
 
 // say writes one line through runnerlog.Say with the command's prefix.

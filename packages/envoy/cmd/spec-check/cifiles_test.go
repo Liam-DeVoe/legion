@@ -1,4 +1,4 @@
-package specgraph
+package main
 
 import (
 	"io/fs"
@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// CIFilesThatCompare names each line of the CI files that runs the comparison of the files with
+// ciFilesThatCompare names each line of the CI files that runs the comparison of the files with
 // the approved spec (R2: "No CI job compares the files"). The clean fixture runs spec-check tree and
 // print, and says in a comment that no step compares the files: no line is named. The planted
 // fixture runs the comparison once from a job step, once from a composite action and once from a
@@ -30,8 +30,8 @@ func TestCIFilesThatCompare(t *testing.T) {
 		t.Run(row.fixture, func(t *testing.T) {
 			t.Parallel()
 			files := readCIFiles(t, filepath.Join("testdata", "ci-files", row.fixture))
-			if got := CIFilesThatCompare(files); !reflect.DeepEqual(got, row.want) {
-				t.Errorf("CIFilesThatCompare(%s) = %q, want %q", row.fixture, got, row.want)
+			if got := ciFilesThatCompare(files); !reflect.DeepEqual(got, row.want) {
+				t.Errorf("ciFilesThatCompare(%s) = %q, want %q", row.fixture, got, row.want)
 			}
 		})
 	}
@@ -78,8 +78,8 @@ func TestCIFilesThatCompareReadsEachLineAsTheShellDoes(t *testing.T) {
 			for path, content := range row.files {
 				files[path] = []byte(content)
 			}
-			if got := CIFilesThatCompare(files); !reflect.DeepEqual(got, row.want) {
-				t.Errorf("CIFilesThatCompare = %q, want %q", got, row.want)
+			if got := ciFilesThatCompare(files); !reflect.DeepEqual(got, row.want) {
+				t.Errorf("ciFilesThatCompare = %q, want %q", got, row.want)
 			}
 		})
 	}
@@ -151,10 +151,79 @@ func TestCIFilesThatCompareReadsARunValueAsYAMLAndTheShellReadIt(t *testing.T) {
 			for path, content := range row.files {
 				files[path] = []byte(content)
 			}
-			if got := CIFilesThatCompare(files); !reflect.DeepEqual(got, row.want) {
-				t.Errorf("CIFilesThatCompare = %q, want %q", got, row.want)
+			if got := ciFilesThatCompare(files); !reflect.DeepEqual(got, row.want) {
+				t.Errorf("ciFilesThatCompare = %q, want %q", got, row.want)
 			}
 		})
+	}
+}
+
+// Bash's literal quoting: $'…' is the text that its ANSI-C escapes decode to, and $"…" is the
+// quoted text, so spec-check $'compare' and spec-check $'com\x70are' run the comparison, as the
+// plain form does, behind env -u too. A literal that decodes to another word, or to compare with
+// more letters, runs no comparison.
+func TestCIFilesThatCompareReadsBashLiteralQuoting(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name string
+		line string
+		hit  bool
+	}{
+		{"the plain form", "spec-check compare --dir .dispatch/spec --approved a.json", true},
+		{"an ANSI-C quoted subcommand", "spec-check $'compare' --dir .dispatch/spec --approved a.json", true},
+		{"an ANSI-C quoted subcommand with a hex escape, behind env -u",
+			`env -u GITHUB_ACTIONS /usr/local/bin/spec-check $'com\x70are' --dir .dispatch/spec --approved a.json`, true},
+		{"an ANSI-C quoted command and subcommand with octal escapes", `$'spec\055check' $'\143ompare' --dir a`, true},
+		{"a locale-quoted subcommand", `spec-check $"compare" --dir .dispatch/spec`, true},
+		{"an ANSI-C quoted other subcommand", "spec-check $'tree' --dir .dispatch/spec", false},
+		{"an ANSI-C quoted word with a tab in it", `spec-check $'com\tpare' --dir a`, false},
+		{"an ANSI-C quoted word longer than compare", `spec-check $'compare\x64' --dir a`, false},
+		{"an escaped dollar before a quote", `spec-check \$'compare' --dir a`, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			var want []string
+			if row.hit {
+				want = []string{".github/workflows/a.yaml:4", "scripts/a.sh:1"}
+			}
+			files := map[string][]byte{
+				"scripts/a.sh":             []byte(row.line + "\n"),
+				".github/workflows/a.yaml": []byte(workflowSteps + "      - run: " + row.line + "\n"),
+			}
+			if got := ciFilesThatCompare(files); !reflect.DeepEqual(got, want) {
+				t.Errorf("ciFilesThatCompare(%q) = %q, want %q", row.line, got, want)
+			}
+		})
+	}
+}
+
+// shellWords reads $'…' as Bash decodes it: each escape that Bash's ANSI-C quoting names, an
+// unknown escape as its backslash and its letter, and a NUL as the end of the quoted text. Each
+// want but the last is what bash 5.2.21 prints for printf %s with the same text; the last is a
+// quote that the line does not close, which this reader reads to the end of the line.
+func TestShellWordsDecodesAnANSICQuoteAsBashDoes(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct{ in, want string }{
+		{`$'a\ab\bc'`, "a\ab\bc"},
+		{`$'\e\E'`, "\x1b\x1b"},
+		{`$'\f\n\r\t\v'`, "\f\n\r\t\v"},
+		{`$'\\\'\"\?'`, `\'"?`},
+		{`$'\101\7\1011\777'`, "A\x07A1\xff"},
+		{`$'ab\0cd'`, "ab"},
+		{`$'\x41\x4\x4G\xq'`, "A\x04\x04G\\xq"},
+		{`$'\u00e9\u20AC\U0001F600\uq'`, "é€😀\\uq"},
+		{`$'\cA\c?\ca'`, "\x01\x7f\x01"},
+		{`$'a\c\\x'`, "a\x1cx"},
+		{`$'\c'`, `\c`},
+		{`$'\q\''`, `\q'`},
+		{`a$'b'c`, "abc"},
+		{`$"compare"`, "compare"},
+		{`$'com\x70are'`, "compare"},
+		{`$'never closed`, "never closed"},
+	} {
+		if got := shellWords(row.in); got != row.want {
+			t.Errorf("shellWords(%q) = %q, want %q", row.in, got, row.want)
+		}
 	}
 }
 
