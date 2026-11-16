@@ -585,14 +585,26 @@ type Issue struct {
 	// Check is the issue's open production check, the work after its close (record.ProductionCheck):
 	// present only while the check is open, and absent once it closed or while none was opened.
 	Check *CheckView `json:"check,omitempty"`
-	// MemoryGroup is the memory group of the issue's tree (memorygroup.Group): `memory` for a
-	// tree whose roles run with the project's memory overlays and instructions, `none` for one
-	// that runs without them, and absent while nothing has drawn for the tree — a tree first
-	// opened before the setting existed, or one the draw never reached. MemoryDrawMode is the
-	// project's memory mode in force when that group was drawn (config.MemoryMode's words) and
-	// MemoryDrawnAt when it was drawn, both absent with the group. The draw is made once, on the
-	// tree's root record, when the tree's lifecycle row is first created, and every issue of the
-	// tree shows its root's: an issue's memory group is its tree's (contract 49).
+	// MergeWait is what the issue's review round waits on from GitHub, present only while it
+	// waits on GitHub's merge state for the pull request's head and absent for every other
+	// round (MergeWaitView).
+	MergeWait *MergeWaitView `json:"mergeWait,omitempty"`
+	// MemoryGroup is the memory group of the issue's tree, read off the assignment of the
+	// experiment named `memory`, whichever spelling declared it (config.Project.ExperimentsDeclared),
+	// and only where that row records a draw: `memory` for a tree whose roles run with the
+	// project's memory overlays and instructions, and `none` for one that runs without them —
+	// the control arm `none` as much as the empty arm an experiment at mode off draws, which the
+	// memory draw before contract 141 wrote as the word `none`. MemoryDrawMode is the mode in
+	// force at that draw (config.ExperimentMode's words) and MemoryDrawnAt the instant of it.
+	// All three are absent together for an issue no `memory` answer applies to — a tree first
+	// opened before the setting existed, or one the draw never reached — and for one whose only
+	// `memory` answer records no draw, which is a hand-over settling a unit at no arm: that tree
+	// answered none of the three before contract 141 and answers none of them now, so a reader
+	// counting the trees a group reached counts the same trees it did. The draw is made once, for
+	// the unit, and every issue of a tree shows its tree's: an issue's memory group is its tree's
+	// (contract 49). They are the one experiment's answer spelled out for the readers that knew
+	// it before any experiment was declared; Assignments below carries that row, and the settled
+	// row these three leave out.
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
@@ -631,6 +643,33 @@ type Issue struct {
 	// leaving the keys off, would read as a tree nobody measures at all.
 	TreeMovedAt *time.Time `json:"treeMovedAt,omitempty"`
 	QuietHours  *float64   `json:"quietHours,omitempty"`
+	// Assignments is every experiment answer that applies to the issue (record.Assignment): the
+	// arm its tree was drawn into for an experiment whose unit is the tree, and the arm the issue
+	// itself was drawn into for one whose unit is the issue, in the order the project's file
+	// declares the experiments (config.Project.ExperimentsDeclared): the `memory` block's
+	// experiment first, unless `experiments.memory` declares it instead, then the experiments
+	// `settings.projects.<KEY>.experiments` names, in its order, then any experiment the file no
+	// longer names, in the order of their names (contract 141). Absent for an issue no experiment
+	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
+	// the body the route serves a caller below 141 (stateFor, withoutAssignments).
+	Assignments []AssignmentView `json:"assignments,omitempty"`
+}
+
+// AssignmentView is one experiment's answer for an issue as the state shows it
+// (record.Assignment): the name the project declares the experiment under, the arm the draw gave
+// the unit, the mode in force at that draw and the instant of it.
+//
+// Variant and Mode ride the wire whatever they hold, the empty string included, and DrawnAt is
+// absent where the row holds none: a hand-over settles a child at no arm for an experiment the
+// tree it left held no row for, and that row — an empty variant, an empty mode and no instant —
+// is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
+// Carried, the record's mark of such a row, is no part of the view: what a reader of the state
+// measures is the arm the unit ran under, and a carried row names the arm as a drawn one does.
+type AssignmentView struct {
+	Experiment string     `json:"experiment"`
+	Variant    string     `json:"variant"`
+	Mode       string     `json:"mode"`
+	DrawnAt    *time.Time `json:"drawnAt,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -1092,6 +1131,10 @@ type SlotView struct {
 // looks for the field rather than repeating the string.
 const WaitingLineField = "waitingLine"
 
+// MergeWaitField is the name `mergeWait` carries on the wire, read from here by the tests that
+// look for the field rather than repeating the string.
+const MergeWaitField = "mergeWait"
+
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
 // and the length of that list at this read, beside the waiting line's own fields for a program
 // that acts on the line rather than reading the sentence Reason renders: which part the issue
@@ -1203,6 +1246,57 @@ type CheckWakeView struct {
 	Kind   string    `json:"kind"`
 	Detail string    `json:"detail"`
 	At     time.Time `json:"at"`
+}
+
+// MergeWaitView is what an issue's review round waits on from GitHub. It is present only while
+// the round waits on GitHub's merge state for the pull request's head, which is one rule the
+// daemon reads everywhere (classify.RoundWaitsOnMergeState, over the issue, its reviewer's row
+// and its open pull request): a reviewer's approval stands on the head the pull request is at,
+// and the merge state the record holds for that head is not one the issue may advance on. The
+// engine reads that same rule to decide whether to read GitHub for the round, so the object is
+// on the view exactly for the rounds the daemon is reading for.
+//
+// It stands for the round waiting for a first answer and for the stuck round alike — both wait on
+// GitHub's next answer about the same head — and ToldHead with ToldState say what the architect and
+// the reviewer were last told of for it. The reading it is here for is the approval that stands for
+// days while GitHub holds the head on a state the issue may not advance on: the merge state alone
+// is on the pull request's view, but not when it was read, nor what the round's own wait is.
+type MergeWaitView struct {
+	// WaitsOn is the head the round waits on, the pull request's current head: the head the
+	// approval stands on, and the head GitHub's answer is about.
+	WaitsOn string `json:"waitsOn"`
+	// MergeState is the merge state the record holds for that head
+	// (record.PullRequest.MergeState), in GitHub's own spelling — `blocked`, `behind`, `draft`,
+	// `dirty`, `unknown`. It is absent while the record holds no state for this head: beside no
+	// StateReadAt the record holds no read of this head, and beside a StateReadAt it holds a read
+	// whose answer carried no state (record.PullRequest.StateReadAt says when each is the case).
+	MergeState string `json:"mergeState,omitempty"`
+	// StateReadAt is record.PullRequest.StateReadAt, the moment GitHub's last answer about this
+	// head was in hand, a confirming answer included; that field's doc says who stamps it, what
+	// clears it and what its zero means. It is absent rather than zero when the record holds none,
+	// so a reader never takes a read at the zero instant for a time; absent beside a recorded
+	// MergeState, the record holds a state with no read time.
+	StateReadAt *time.Time `json:"stateReadAt,omitempty"`
+	// HeadUpdatedAt is the record's HeadUpdatedAt, the newest `updated_at` GitHub gave among the
+	// pull request's lifecycle observations: a reopen at the same head moves it, and a push whose
+	// event carried no clock does not raise it. Absent when it is zero.
+	HeadUpdatedAt *time.Time `json:"headUpdatedAt,omitempty"`
+	// CheckRuns counts the fence's runs stamped with the current head
+	// (record.PullRequest.CheckRuns, record.AttemptRun.Head): the runs a CI settlement has applied
+	// for this head. The listener settles a head only once every check it has seen there is
+	// terminal, so the count is 0 until CI on the head has settled, and 0 is no evidence of what
+	// GitHub holds: a head whose CI is still running, a head GitHub ran no check on, and a head
+	// whose runs all concluded with their settlement not yet arrived all read 0, so a reader reads
+	// the head's runs and their status on GitHub before acting on it. It is written whatever its
+	// value, so 0 is that reading and not a gap.
+	CheckRuns int `json:"checkRuns"`
+	// ToldHead and ToldState are the reviewer's record.ReviewDecision.ToldStuckHead and
+	// ToldStuckState, the marks workflow's tellStuckMergeState leaves once the architect and the
+	// reviewer have been told of this round. They name the head and state the reviewer's decision
+	// last records as told, whatever the record holds of the merge state and the read time now,
+	// and a later answer may have moved past them; they are empty when that decision records none.
+	ToldHead  string `json:"toldHead,omitempty"`
+	ToldState string `json:"toldState,omitempty"`
 }
 
 // PendingStatusWrite is a Dispatch-status effect the outbox has not finished, due now or backing off

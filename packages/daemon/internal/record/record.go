@@ -177,17 +177,6 @@ type Issue struct {
 	// write them: PutIssue keeps the stored values.
 	DeclaredSeq int64
 	DeclaredAt  time.Time
-	// MemoryGroup is the memory group of the issue's tree, `memory` or `none`, and "" exactly while
-	// nothing has drawn for it;
-	// MemoryDrawMode the project's memory mode in force when that group was drawn
-	// (config.MemoryMode's words); and MemoryDrawnAt when it was drawn, nil for a record with no
-	// draw: a tree first opened before the setting existed, or a root the draw never reached, which
-	// has no group and runs without memory. The draw is made once, when the tree's lifecycle row is
-	// first created, and only Store.DrawMemory and Store.CarryMemory write the three: PutIssue keeps
-	// the stored values, so a re-admission, a new generation and ClearTreeGeneration keep the draw.
-	MemoryGroup    string
-	MemoryDrawMode string
-	MemoryDrawnAt  *time.Time
 	// ReleasedForWaitAt is when the daemon took the issue's admission slot away because the issue
 	// waits on another issue — a Dispatch blocker of it that is not done, or an open child its own
 	// first phase waits for — and nil for every other record. It is the mark that stands an issue
@@ -205,8 +194,8 @@ type Issue struct {
 	// the issue is stamped at the moment it is first recorded.
 	//
 	// Only Store.MarkIssueMoved writes it, and it writes it forwards alone, so a fact delivered
-	// late moves nothing backwards. PutIssue keeps the stored value, as it does for handout_seq,
-	// the declared pair and the memory draw: a copy of the issue read before a movement would
+	// late moves nothing backwards. PutIssue keeps the stored value, as it does for handout_seq
+	// and the declared pair: a copy of the issue read before a movement would
 	// otherwise write that movement away, and every one of the write sites holds a copy read
 	// before its own fact.
 	MovedAt time.Time
@@ -229,6 +218,49 @@ type Issue struct {
 // every repository-dependent action of the issue works and mints for its owner.
 func (i Issue) Repository() (ghrepo.Repository, error) {
 	return ghrepo.Parse("the repository of "+i.Key, i.Repo)
+}
+
+// Assignment is what one unit ran one experiment under: the arm drawn for it, the mode in force
+// when it was drawn and the instant, recorded once for that unit and never changed
+// (Store.PutAssignments). It is the declared experiments' record, and the only one: the four
+// issues.memory_* columns the single hard-coded experiment was kept in are written by nothing
+// from this release on, are read by nothing this release's daemon runs but the back-fill of
+// 20261111045636_experiment_assignments, and by the copy by hand an operator runs on a roll
+// forward (docs/kubernetes.md), and Issue carries none of them. A project declares as many
+// experiments as it likes (config.Project.ExperimentsDeclared), so each answer is a row named by
+// its experiment rather than a column named after it.
+//
+// The unit the row belongs to is the issue it is keyed by, read as that issue's tree where Unit is
+// `tree` — the key is then the tree's root — and as that issue alone where Unit is `issue`.
+type Assignment struct {
+	// Experiment is the name the project declares the experiment under (config.Experiment.Name).
+	Experiment string
+	// Unit is what the draw covered, a config.ExperimentUnit word: `tree` or `issue`. It is taken
+	// as a string because internal/config imports this package itself (the design gate's steps are
+	// record.DesignStep), so an import of config here would close a cycle.
+	Unit string
+	// Variant is the arm drawn (config.Variant.Name), "" for no variant: an experiment at mode
+	// off, which draws for no unit, and the answer a hand-over settles a child at for an
+	// experiment the tree it left held no row for.
+	Variant string
+	// Mode is the experiment's mode when the draw was made (a config.ExperimentMode word), "" where
+	// a hand-over settled the row and the old tree held none, so no draw was ever made under any
+	// mode.
+	Mode string
+	// DrawnAt is when the draw was made, nil where a hand-over settled the row with no draw.
+	DrawnAt *time.Time
+	// Carried marks a row a hand-over wrote rather than a draw: the answer this unit took from the
+	// tree it left, whether that answer was an arm or no arm at all (Store.CarryAssignments).
+	Carried bool
+}
+
+// DeclaredExperiment is one experiment a hand-over settles a child at: the name the project
+// declares it under and the unit it covers, which together are the whole of what the settling
+// write records (Store.CarryAssignments). A settled row carries no arm, no mode and no instant
+// by construction, so there is no field here to pass one in.
+type DeclaredExperiment struct {
+	Experiment string
+	Unit       string
 }
 
 // HandedOff is an issue whose implementer recorded its handoff, with the commit the handoff
@@ -705,15 +737,50 @@ type PullRequest struct {
 	// nullable `mergeable` field: MergeabilityUnknown while GitHub is still computing it (never a
 	// transient conflict - GitHub reports no checks run on a mergeability GitHub has not computed
 	// yet, either), MergeabilityMergeable once GitHub can merge the head automatically, and
-	// MergeabilityConflicting once it cannot. "" means the read has never run.
+	// MergeabilityConflicting once it cannot. "" means the record holds none for this head
+	// (StateReadAt below says when that is).
 	Mergeability Mergeability
 	// MergeState is GitHub's own merge state for this head, read from `mergeable_state` on the
 	// same /pulls/{number} answer Mergeability is decoded from (daemon.readIssuePullRequest), in
-	// GitHub's lowercase spelling; "" means the read has never run. It is kept beside
+	// GitHub's lowercase spelling; "" means the record holds none for this head (StateReadAt below
+	// says when that is). It is kept beside
 	// Mergeability because the tri-state cannot tell a head GitHub holds on the repository's own
 	// required checks or reviews (MergeStateBlocked) from one GitHub would merge now
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
 	MergeState MergeState
+	// StateReadAt is the moment the daemon last got GitHub's answer about the merge state of the
+	// head this record stands at, taken from the reader's own clock when that answer was in hand.
+	// This is the one full account of the stamp; every other comment that needs part of it points
+	// here.
+	//
+	// Who stamps it: both readers of the pull request, the per-issue read (daemon's
+	// readIssuePullRequest) and the merge-state ladder (daemon's readMergeState), each through the
+	// mergeability fact (workflow's mergeability). An answer about a head the record has moved past
+	// is dropped with its time. A read that only confirms what is recorded moves the stamp exactly
+	// as one that changes something does: it is the age of the knowledge, not of the last change to
+	// it, and that is what tells a head read a minute ago from one nothing has read for a day. No
+	// webhook stamps it, and a fact with no read time behind it writes none and erases none.
+	//
+	// What clears it, always with MergeState and Mergeability: any fact that moves the head
+	// (classify's advance: a synchronize, a reopen or a close at another head), because the stamp
+	// would then be the time of a read about the head before; and a reopen at any head, which
+	// builds the record afresh (workflow's pullRequestOpened).
+	//
+	// What carries it: a replay of the head run moves it with MergeState and Mergeability
+	// (classify's replayRun and withJudgement), so a replay never pairs one read's state with
+	// another read's time. withJudgement decides on MergeState and not on the stamp: wherever the
+	// record holds no state, a replay puts in place of the record's pair the one the replayed run
+	// ends with, which is the anchor's pair as the run's steps leave it, a head step among them
+	// clearing it (advance). So a stamp held beside no state can go with no head move of the record
+	// and no reopen. A run anchored before migration 20261112070503 holds a state with no stamp,
+	// and a replay gives that pair back as it is.
+	//
+	// What the zero time means, after any of those: the record holds no read time for its head.
+	// Beside a recorded MergeState it is a state whose read time the record does not hold, a row
+	// written before migration 20261112070503 or a pair a replay gave back from an anchor that
+	// predates it; beside MergeState's "" the record holds no read of its head at all. Neither says
+	// when GitHub was last asked.
+	StateReadAt time.Time
 	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
 	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's
 	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
@@ -763,7 +830,8 @@ type Named struct {
 }
 
 // Judgement is the part of a pull request a head run replays: its head, its CI settlement, the
-// moves it has made, and GitHub's verdict on merging the head it stood at.
+// moves it has made, and GitHub's verdict on merging the head it stood at with the time that
+// verdict was read.
 //
 // The verdict is the anchor's alone to give back, and only to a record that holds none: a move no
 // push links yet takes the verdict with it (classify's advance), and the push that links the move
@@ -782,6 +850,10 @@ type Judgement struct {
 	Moves        []Move       `json:"moves,omitempty"`
 	Mergeability Mergeability `json:"mergeability,omitempty"`
 	MergeState   MergeState   `json:"mergeState,omitempty"`
+	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON. A run
+	// anchored before any read answered carries none, and so does one anchored before migration
+	// 20261112070503 (PullRequest.StateReadAt says what that means).
+	StateReadAt time.Time `json:"stateReadAt,omitzero"`
 }
 
 // Move is a move from the head Before to the head SHA, which a push with the same two heads makes.
@@ -865,9 +937,10 @@ func LetsImplementationMove(pr *PullRequest) bool {
 	return pr != nil && slices.Contains(implementationMoveStates, pr.State)
 }
 
-// Mergeability is GitHub's lazily computed verdict for whether a pull request's head can be
-// merged into its base without a conflict, decoded from GitHub's nullable `mergeable` field
-// (daemon.readIssuePullRequest). "" (the zero value) means the daemon has never read it.
+// Mergeability is GitHub's lazily computed verdict for whether a pull request's head can be merged
+// into its base without a conflict, decoded from GitHub's nullable `mergeable` field
+// (daemon.readIssuePullRequest). "" (the zero value) means the record holds no verdict for its
+// head; PullRequest.StateReadAt's doc says when that is.
 type Mergeability string
 
 const (
@@ -878,9 +951,10 @@ const (
 
 // MergeState is GitHub's merge state for a pull request's head, read from `mergeable_state` on
 // GitHub's /pulls/{number} answer (daemon.readIssuePullRequest). It is kept in GitHub's own
-// lowercase spelling rather than one of the daemon's: the state is GitHub's judgement, weighing
-// the repository's required checks and reviews, and the daemon only records what it read.
-// "" (the zero value) means the daemon has never read it, which no GitHub answer ever spells.
+// lowercase spelling rather than one of the daemon's: the state is GitHub's judgement, weighing the
+// repository's required checks and reviews, and the daemon only records what it read. "" (the zero
+// value) means the record holds no merge state for its head; PullRequest.StateReadAt's doc says
+// what that means beside a read time and beside none.
 type MergeState string
 
 // The eight states GitHub spells in `mergeable_state`: clean, which GitHub would merge now;
@@ -1611,31 +1685,37 @@ type Store interface {
 	// RestartCaughtUp sets issue's catch-up cursor back to 0, so its next catch-up reads from its
 	// last handout: a re-admission's new generation, whose old generation's events are not its own.
 	RestartCaughtUp(ctx context.Context, tx pgx.Tx, issue string) error
-	// DrawMemory records the memory group drawn for root's tree: the group (`memory` or `none`),
-	// the mode it was drawn under (a config.MemoryMode word, taken as a
-	// string because internal/config reads internal/store, whose own tests read this package, so
-	// an import of config here would close a cycle) and the time of the draw, written once and
-	// never again. It reports whether it wrote the row. Writing nothing is no error: a root that
-	// already carries a draw keeps it, whatever the project's mode says now, and a tree whose root
-	// has no issue record — an operator's spawn — records no draw at all.
+	// PutAssignments records rows, the answers drawn for issue, and reports how many rows it
+	// wrote. Each is written once: an experiment issue already holds a row for keeps that row
+	// whatever is passed for it now, so a later pass under another mode leaves a unit on the arm
+	// it has been running under, and nothing ever updates a row. Writing nothing is no error, and
+	// an issue the daemon holds no record of — an operator's spawn — takes no row at all.
+	PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error)
+	// CarryAssignments settles the assignments of key, a child handed over as a tree of its own,
+	// from the tree it left: every tree-unit assignment of from's root copied verbatim — its arm,
+	// its mode and the instant it was drawn — and then each experiment of settled, the experiments
+	// declared at the hand-over, written at no variant, no mode and no instant for the experiments
+	// the copy left unwritten. Every row is marked carried, and every write is the write-once one,
+	// so an experiment the old tree held a tree row for keeps the copy, one it held none for is
+	// settled at no variant and is never drawn for later, and a row key already holds stands. It
+	// reports how many rows it wrote.
 	//
-	// Nor is a root whose memory its hand-over settled: a child handed over out of a tree the
-	// daemon had opened takes that tree's answer, which CarryMemory wrote at the hand-over — the
-	// tree's draw where it had one, and no draw at all where it had none, a tree first opened
-	// before this release, which nothing draws for. The draw reads that written answer, not the
-	// old tree's state, so the order the two roots are promoted in changes nothing. A root out of
-	// a tree nothing ever opened takes no answer with it, so its own first open draws it like any
-	// other new tree.
-	DrawMemory(ctx context.Context, tx pgx.Tx, root, group, mode string, at time.Time) (bool, error)
-	// CarryMemory settles the memory of key, a child handed over as a tree of its own, from the
-	// tree it left: from's draw verbatim, the original draw time included, where that tree had one,
-	// and no draw at all where it had none, and either way DrawMemory writes nothing for key
-	// afterwards. project is the normalized runtime token tree_lifecycles is keyed by, whose row
-	// for from is the fact that the tree was opened at all: a tree with no row hands nothing over,
-	// and key's own first open draws it. It reports whether the hand-over settled key's memory,
-	// which is wider than whether a draw was copied, and writes nothing when key already carries a
-	// draw of its own or a hand-over settled it before.
-	CarryMemory(ctx context.Context, tx pgx.Tx, project, key, from string) (bool, error)
+	// An issue-unit row of the old root is left where it is: it is that one issue's own answer,
+	// shown to no other issue of the tree and read back under its own key alone, so the child
+	// ran in no arm of that experiment before the hand-over and is settled at none by it.
+	//
+	// project is the normalized runtime token tree_lifecycles is keyed by, whose row for from is
+	// the fact that the old tree was opened at all: a child out of a tree the daemon never opened
+	// carries nothing, and its own first draw answers for it.
+	CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []DeclaredExperiment) (int, error)
+	// AssignmentsFor is the assignments of each of issues, by issue and then experiment, in one
+	// read; an issue with no assignment has no entry, and an empty list reads nothing. It is the
+	// read of the one or two keys a launch asks for.
+	AssignmentsFor(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]Assignment, error)
+	// Assignments is every assignment the record holds for the issues of the Dispatch project,
+	// by issue and then experiment, in one read: what the state's projection asks, which shows
+	// every recorded issue of its own daemon's project its own.
+	Assignments(ctx context.Context, tx pgx.Tx, project string) (map[string][]Assignment, error)
 	Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error)
 	PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error
 	ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error
@@ -1867,7 +1947,9 @@ type QueuedSupervise struct {
 // it was last given work of (given_entry), the moment its agent last stepped (step_at,
 // turn_started_at), what its own session last reported it was doing (activity_at,
 // activity_background, activity_next_reminder_at), and the task it holds, nil for none, with the
-// task's generation, phase and confirmation.
+// task's delivery id, generation, phase and confirmation. The id is what says the task is the
+// daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a reader of a
+// run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and readyWorkerTask).
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string

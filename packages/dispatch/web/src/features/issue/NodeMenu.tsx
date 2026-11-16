@@ -317,7 +317,7 @@ function NodeMenuItem({
           <a
             className={`text-sm font-medium underline ${linkText} ${linkHoverText}`}
             download=""
-            href={artifactVersionUrl(artifact.id, latest.number)}
+            href={artifactVersionUrl(artifact.id, latest.number, { download: true })}
           >
             <span {...pageChrome}>{CONTROL_LABELS.download_version}</span>{" "}
             <span {...authorText}>{latest.number}</span>

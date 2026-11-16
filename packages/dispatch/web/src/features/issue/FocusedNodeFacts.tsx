@@ -18,6 +18,7 @@ import {
   duplicateText,
   failureGuidance,
   isSafeRetry,
+  queuedParts,
   rowAnsweredWithError,
   withGuidance,
 } from "../conversation/delivery";
@@ -275,7 +276,11 @@ function ItemControls({
               >
                 <span>
                   <AgentParts parts={[recipient]} /> ·{" "}
-                  {delivery.duplicate === true ? (
+                  {/* A queued attempt waits for a session that is not running, which is what
+                      the sender acts on, so it is read before a duplicate. */}
+                  {delivery.state === "queued" ? (
+                    <AgentParts parts={queuedParts(recipient)} />
+                  ) : delivery.duplicate === true ? (
                     duplicateText
                   ) : (
                     <span {...pageChrome}>{DELIVERY_STATE_WORDS[delivery.state]}</span>

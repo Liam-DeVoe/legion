@@ -292,8 +292,9 @@ const picture = {
 } satisfies Artifact;
 
 // The menu carries the Artifacts list (the Design's "Where each thing goes"): the spec first,
-// each item with the download of its latest version, and the spec opened at its own address -
-// `/spec` is the Spec filter - so choosing it opens the document in place of the outline.
+// each item with the download of its latest version - `?download=true`, which the server answers
+// under the file's own name - and the spec opened at its own address - `/spec` is the Spec
+// filter - so choosing it opens the document in place of the outline.
 test("each item downloads its latest version, and the spec opens at its own address", async () => {
   const user = userEvent.setup();
   const view = renderMenu(false, [background, spec]);
@@ -302,10 +303,10 @@ test("each item downloads its latest version, and the spec opens at its own addr
     expect(items[0]).toContain("spec.md");
     expect(
       screen.getByRole("link", { name: `${CONTROL_LABELS.download_version} 2` })
-    ).toHaveAttribute("href", "/api/v1/artifacts/artifact-spec/versions/2");
+    ).toHaveAttribute("href", "/api/v1/artifacts/artifact-spec/versions/2?download=true");
     expect(
       screen.getByRole("link", { name: `${CONTROL_LABELS.download_version} 1` })
-    ).toHaveAttribute("href", "/api/v1/artifacts/artifact-background/versions/1");
+    ).toHaveAttribute("href", "/api/v1/artifacts/artifact-background/versions/1?download=true");
     await user.click(screen.getByRole("button", { name: "spec.md" }));
     expect(screen.getByTestId("location").textContent).toBe("/issues/CORE-1/artifacts/spec-md");
   } finally {

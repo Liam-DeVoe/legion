@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 
 import { linkHoverText, linkText, pageHeaderControl, pageQuietText } from "../../../theme/classes";
 import { useMarginDrawer } from "../../margin/margin-slot";
+import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery } from "../../refs/reference-target";
 import { buildReferencePath, parseNodeReference, shortForm } from "../../refs/routes";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../../shell/useDialog";
@@ -106,7 +107,10 @@ export function NodeReferences({
   // the Details drawer, which opens shut.
   const reading = open && (drawer === undefined || drawer.open);
   const query = useQuery({ ...referencesQuery(addressed), enabled: reading });
-  const rows = referenceRows(query.data?.edges ?? []);
+  // An edge a newer build answers with, of a kind or to a node this page does not know, is left
+  // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
+  // the node kind's, which says it was only named.
+  const rows = referenceRows((query.data?.edges ?? []).filter(drawsEdge));
   if (addressed === undefined) {
     return null;
   }

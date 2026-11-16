@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { graphNodeFields } from "../../../__tests__/graph-fixture";
 import { api } from "../../../api/client";
-import type { GraphReferences } from "../../../api/types";
+import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { MarginSlotProvider } from "../../margin/margin-slot";
 import { NODE_REFERENCES_WORDS, NodeReferences } from "./NodeReferences";
 
@@ -80,8 +80,8 @@ const STATEMENT_ROW: Drawn = {
 
 /** The component inside the shell it is drawn in: Details is the margin's drawer, open or
  *  shut, and the panel is inside it (`features/margin/margin-slot.tsx`). */
-function draw(detailsOpen: boolean, drawn: Drawn = STATEMENT_ROW) {
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue(ANSWER);
+function draw(detailsOpen: boolean, drawn: Drawn = STATEMENT_ROW, answer = ANSWER) {
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(answer);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
@@ -188,4 +188,28 @@ test("a row the model gives no address draws no list", () => {
   });
   expect(screen.queryByRole("button", { name: NODE_REFERENCES_WORDS.what_references })).toBeNull();
   expect(getReferences.mock.calls).toHaveLength(0);
+});
+
+// During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
+// end, that this page does not know. The list leaves such an edge out, as the Referenced-by panel
+// does (`drawsEdge`), rather than draw it under the word a mention takes.
+test("an edge of a kind or to a node this page does not know is left out", async () => {
+  const [mention, check] = ANSWER.edges ?? [];
+  if (mention === undefined || check === undefined) throw new Error("the answer lost its edges");
+  draw(true, STATEMENT_ROW, {
+    ...ANSWER,
+    edges: [
+      mention,
+      { ...check, kind: "verifies" } as unknown as GraphEdge,
+      {
+        ...mention,
+        node: { id: "future-1", kind: "future", ref: "dispatch://LAY-2/future/future-1" },
+      } as unknown as GraphEdge,
+    ],
+  });
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+  await screen.findByRole("link", { name: "Thread 1 opens here." });
+  expect(screen.getAllByRole("listitem")).toHaveLength(1);
 });

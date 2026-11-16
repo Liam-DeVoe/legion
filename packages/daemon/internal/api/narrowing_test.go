@@ -232,16 +232,75 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	// Every narrowing says what it dropped, not only the mark's own: a caller below every
-	// contract in stateNarrowings is served one line per row that finds something of its own,
-	// each naming its own keys, and a caller at quietTimeContract, the row just before
-	// waitingOnIssueContract's, the line of the one row the first caller's body no longer
-	// reaches. Between them every row writes its line, and none writes it twice. One line for all
-	// of them, or a line that named the contract and nothing else, would leave a reader of the
-	// log to find out elsewhere what left the body.
+	// The newest narrowing is a row of the table like every other, so the caller below it is
+	// told what it lost: a caller one contract below the highest row stands below that row
+	// alone, so the log holds that row's line and nothing else. This subtest does not catch a
+	// strip applied beside the loop, because it reads both its expectation and its answer from
+	// stateNarrowings; the subtest below, which names the line as a literal, is what catches
+	// that.
+	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
+
+		if bytes.Contains(body, []byte(`"assignments"`)) {
+			t.Errorf("the body served to a pod below %d carries `assignments`, the field that contract added: %s",
+				assignmentsContract, body)
+		}
+		want := narrowingsExpected(assignmentsContract - 1)
+		if len(narrowings) != len(want) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+				len(narrowings), assignmentsContract-1, len(want), narrowings)
+		}
+		for i, line := range narrowings {
+			if line.Dropped != want[i] {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
+					i, assignmentsContract-1, line.Dropped, want[i])
+			}
+		}
+	})
+
+	// The assignments line is named here as a literal rather than read from stateNarrowings,
+	// because every other row of this file reads its expectation and its answer from that same
+	// table: take the row out, apply the strip beside the loop as an `if` of its own, and the
+	// expectation falls with the answer, so the body is still narrowed, no line is written and
+	// nothing fails. That is exactly the state R12 of dispatch://INFRA-3083 forbids. Measured
+	// on 83073e209f96, the commit that adds this subtest, with the row removed and that `if`
+	// restored: every other test of internal/api passed, the subtest above included, and this
+	// one alone failed.
+	t.Run("the assignments narrowing names its own keys in the log", func(t *testing.T) {
+		const dropped = "the issues' assignments"
+		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
+
+		for _, line := range narrowings {
+			if line.Dropped == dropped {
+				return
+			}
+		}
+		t.Fatalf("a caller at %d was served no line saying it dropped %q; the daemon wrote %+v",
+			assignmentsContract-1, dropped, narrowings)
+	})
+
+	// Every narrowing says what it dropped, not only the mark's own: a caller below every contract
+	// in stateNarrowings is served one line per row that finds something of its own, and a caller
+	// at quietTimeContract, the row just before waitingOnIssueContract's, the line of every row
+	// above it, the one row the first caller's body no longer reaches among them. One line for all
+	// of them, or a line that named the contract and nothing else, would leave a reader of the log
+	// to find out elsewhere what left the body. Three checks share the work. The table check
+	// guards the table: no two rows of stateNarrowings name the same keys, whichever callers would
+	// see them, so a line names one row. The per-caller check guards what one caller is told: no
+	// line twice. The last loop guards the sample: between the two callers every row writes its
+	// line.
 	t.Run("each narrowing names its own keys", func(t *testing.T) {
+		namedBy := map[string]int{}
+		for _, narrowing := range stateNarrowings {
+			if contract, named := namedBy[narrowing.dropped]; named {
+				t.Errorf("the rows of contracts %d and %d both drop %q: each row names its own keys",
+					contract, narrowing.contract, narrowing.dropped)
+			}
+			namedBy[narrowing.dropped] = narrowing.contract
+		}
 		dropped := map[string]bool{}
 		for _, contract := range []int{supervise.PodUpdateContract - 1, quietTimeContract} {
+			told := map[string]bool{}
 			_, narrowings := stateNarrowed(t, narrowingState(t), statePodAddr+":41000", podClaims(contract))
 			want := narrowingsExpected(contract)
 			if len(narrowings) != len(want) {
@@ -252,9 +311,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				if line.Dropped == "" {
 					t.Errorf("line %d of a caller at %d says nothing of what it dropped", i, contract)
 				}
-				if dropped[line.Dropped] {
-					t.Errorf("two narrowings report the same keys, %q: each arm names its own", line.Dropped)
+				if told[line.Dropped] {
+					t.Errorf("a caller at %d is told %q twice", contract, line.Dropped)
 				}
+				told[line.Dropped] = true
 				dropped[line.Dropped] = true
 				if line.Dropped != want[i] {
 					t.Errorf("the lines are out of the table's order: line %d of a caller at %d says %q, want %q",

@@ -52,7 +52,9 @@ const referencesSinceWait = time.Second
 // structural edges. Cross-project by design: no project filter. A block reference names a
 // block node carrying its whole current text; one pinned to a version of its document, or a
 // revision of its ask's parts or of its comment, also reads the block as that version or revision
-// recorded it (blockReferenceNode, itemBlockReferenceNode).
+// recorded it (blockReferenceNode, itemBlockReferenceNode). A ?kind= this build does not emit - a
+// newer build's, during a release - has no edges here, and the answer lists it in unknown_kinds
+// rather than refusing the read.
 //
 // A since read keeps only mentions whose event is at or below the safe horizon
 // (events.Horizon), at or below which every event is final. A poller passes the highest
@@ -78,7 +80,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	query, ref, err := parseReferencesQuery(r, s.deps.ServerURL)
+	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -106,7 +108,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		if node.Pin != nil && node.Pin.State == "removed" {
 			// The graph lists no link to a block no current version holds.
 			reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}}
+			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}, UnknownKinds: unknownKinds}
 			answer.Node.shape(reader)
 			reader.resolve()
 			WriteJSON(w, http.StatusOK, answer)
@@ -134,18 +136,23 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if query.Since != nil {
-		safe, err := s.sinceHorizon(r.Context())
+	// When this build knows none of the kinds the caller named, no edge is of them; refs.Edges
+	// with no Kinds would read every kind.
+	edges := []model.GraphEdge{}
+	if len(query.Kinds) > 0 || len(unknownKinds) == 0 {
+		if query.Since != nil {
+			safe, err := s.sinceHorizon(r.Context())
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			query.Through = &safe
+		}
+		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, query)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		query.Through = &safe
-	}
-	edges, err := refs.Edges(r.Context(), s.deps.Store.Pool, query)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
 	}
 	if query.Direction == "in" {
 		if err := s.documentMentionExcerpts(r.Context(), query, edges); err != nil {
@@ -154,7 +161,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges}
+	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
 	answer.Node.shape(reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
@@ -482,12 +489,13 @@ func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 // way graph_edges stores the node (refs.TargetOf): text.TargetID for the to side (ref_key for
 // artifacts; an ask's part and a comment's or message's block under its storage kind), the
 // item id for the from side (the caller swaps an artifact's ref_key for its uuid). The reference
-// itself is read by parseRequestRef, as the batched read reads each of its own.
-func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, error) {
+// itself is read by parseRequestRef, as the batched read reads each of its own. It returns apart
+// the ?kind= values that are no edge kind of this build.
+func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, []string, error) {
 	values := r.URL.Query()
 	to, from := strings.TrimSpace(values.Get("to")), strings.TrimSpace(values.Get("from"))
 	if (to == "") == (from == "") {
-		return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "exactly one of to or from is required")
+		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "exactly one of to or from is required")
 	}
 	raw, direction := to, "in"
 	if from != "" {
@@ -495,22 +503,20 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	}
 	ref, err := parseRequestRef(raw, serverURL)
 	if err != nil {
-		return refs.Query{}, text.Ref{}, err
+		return refs.Query{}, text.Ref{}, nil, err
 	}
 	// The node as graph_edges stores it: an ask's part and a comment's or message's block under
 	// its storage kind.
 	target, _ := refs.TargetOf(ref)
 	query := refs.Query{Direction: direction, Kind: target.Kind, ID: target.ID}
+	var unknownKinds []string
 	if kinds := strings.TrimSpace(values.Get("kind")); kinds != "" {
 		linkKinds := pmdoc.LinkKinds()
 		for _, kind := range strings.Split(kinds, ",") {
 			kind = strings.TrimSpace(kind)
 			if !slices.Contains(model.GraphEdgeKinds, kind) && !slices.Contains(linkKinds, kind) {
-				declared := "none"
-				if len(linkKinds) > 0 {
-					declared = strings.Join(linkKinds, ", ")
-				}
-				return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_KIND", "kind %q is not one of %s, nor a block[] attribute the block schema declares (%s)", kind, strings.Join(model.GraphEdgeKinds, ", "), declared)
+				unknownKinds = append(unknownKinds, kind)
+				continue
 			}
 			query.Kinds = append(query.Kinds, kind)
 		}
@@ -533,11 +539,11 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	if since := strings.TrimSpace(values.Get("since")); since != "" {
 		value, err := strconv.ParseInt(since, 10, 64)
 		if err != nil || value < 0 {
-			return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_SINCE", "since must be an event id")
+			return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_SINCE", "since must be an event id")
 		}
 		query.Since = &value
 	}
-	return query, ref, nil
+	return query, ref, unknownKinds, nil
 }
 
 // documentMentionExcerpts replaces the excerpt of every mention written by a document with the
