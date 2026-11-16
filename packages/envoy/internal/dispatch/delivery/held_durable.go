@@ -385,9 +385,11 @@ func (d *heldDurable) consumerInfo(call context.Context) (*natsgo.ConsumerInfo, 
 // ending it with bus.ErrRequestLostWithConnection as soon as that connection is lost before the
 // answer comes (bus.RequestOnConnection). nats.go fails no request its connection drops, so one
 // whose reply died with the old socket would otherwise wait out its whole deadline, and the
-// take-over with it, for an answer nothing will send. The caller sends such a request again at
-// once: the take-over's read of the durable (readDurable), and each step of finishTakeOver
-// (retryHeld).
+// take-over with it, for an answer nothing will send. The take-over's read of the durable
+// (readDurable) and each step of finishTakeOver (retryHeld) send such a request again at once.
+// lookupDurable sends it once, and its callers treat the error as any failed lookup: attempt goes
+// on to the take-over under the consumer lease, whose own read (readDurable) asks again, and check
+// changes nothing and looks again intakeHoldRenew later, at run's next check.
 func onConnection[T any](ctx context.Context, client *bus.Client, request func(context.Context) (T, error)) (T, error) {
 	return bus.RequestOnConnection(ctx, client, request)
 }

@@ -3571,8 +3571,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   keeping is chosen on the publish route alone, and the one sender that opts out of it, the Legion daemon's notice queue, publishes through that route.
 
 - The delivery ledger every pod of the machine shares (`internal/dedupe`, the `delivery.` keys of `envoy_listener`;
-  `cmd/listener/README.md`) holds an attempted record only while a forward is in flight and a failure clears it, and records a forward delivered only once the stream stored it
-  — so a publish that re-uses a `dedupe_key` after a failure is forwarded again, while one after a stored forward is skipped, whichever pod of the machine forwards it.
+  `cmd/listener/README.md`) holds an attempted record while a forward is in flight, and a failed forward clears it.
+  A delivery that reports a refusal or a give-up can keep its attempt instead (`dedupe.Ledger.Keep`: an unplaceable agent delivery's give-up, and a fan-out mode refusal of a session the fan-out delivers to itself).
+  The pod that kept the attempt holds the pair for 5 minutes (`dedupe.AttemptedAge`), so a redelivery to that pod inside that time is a `listener attempt-dedupe skip` and not a second report.
+  Another pod takes that attempt over once it is 35 s old, or sooner when a former lease holder kept it (the next item).
+  The ledger records a forward delivered only once the stream stored it
+  — so a publish that re-uses a `dedupe_key` after a failed forward is forwarded again, while one after a stored forward is skipped, whichever pod of the machine forwards it.
   The kept lane's drain takes its forward's attempt from that same ledger (`walkKeptRole`), so a copy the role's new holder already took, or one another pod of the machine is forwarding to it, is passed over rather than forwarded a second time.
   The route keeps a record of its own confirmations beside that ledger (`listenerDeps.confirmed`, the one a later send of the same key reads) and records each of them in the ledger too, so no lane forwards again what the route delivered.
   An agent delivery this listener cannot place clears its own ledger attempt before each NAK (`settleClear`, `unplaceableAgentDelivery`), because the redelivery that NAK asks for would otherwise find the attempt still there and be dropped as `listener attempt-dedupe skip` before it reached the session at all.
@@ -3591,6 +3595,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - Role ownership is durable in the `envoy_roles` JetStream KV bucket.
   Each role key records `holder_session_id`, `claimed_at` and `previous_session_id`, and, where the claimant named them, `client_instance_id`, the process that holds the claim, and `renewed_at`, the moment that process last answered for it.
   Both of those are optional, and a record carrying neither — one an earlier build wrote — is read rather than refused, at its `claimed_at` (`store.RoleClaim.LastAnsweredAt`, the one reading of a claim's renewal).
+  A claim the hand-back marked also records `handed_back` as `true` (`store.RoleClaim.HandedBack`), and a claim with no mark leaves the key out.
   A holder renews its claim by registering, so `renewed_at` is the holder's heartbeat and not the instant the role was taken (`store.Registry.RenewRoleClaims`, called from `/v1/interests/subscribe`);
   listener restart restores the claim from that record, but a message reaches the holder only while the holder's own record reads live (`session.Live`, judged from that record's last registration and from nothing else).
   Reaping stale interests never releases a role, and neither does a lookup, a role send, a role delivery nor a forward that failed:

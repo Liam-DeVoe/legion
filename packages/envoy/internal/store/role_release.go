@@ -340,21 +340,22 @@ func (r *Registry) ReleaseExpiredRoleClaim(ctx context.Context, role, sessionID 
 // this process's clock: a skew of seconds between the two, against a session TTL of minutes,
 // moves the window's end by that skew.
 //
-// The claim's own renewal is weighed by the caller and not here: the one caller
-// (ReapRoleClaims) skips a claim its holder still answers for before it reaches this call, over
-// this very claim value, so a claim that gets here is one no renewal keeps and no later instant
-// can make renewed again. sessionTTL is the other grant, and it is this call's own: the grace a
-// claim stored before the machine's service start keeps. A sessionTTL of zero grants no such
-// grace, and neither does a claim carrying the hand-back mark: the grace exists for a holder to
-// register again after a listener restart, and no registration renews a marked claim
-// (Registry.renewRoleClaim), so over such a claim the grace can do nothing but hold the role
-// past the bound the reaper's own rule states - one live window after the claim's last renewal
-// and up to one reap interval. That live window is untouched here, because it is the window a
-// holder an older client's hand-back marked wrongly claims the role again inside
-// (ReapRoleClaims).
+// The claim's own renewal is weighed by the caller and not here. ReapRoleClaims, the caller in
+// production, skips a claim its holder still answers for before it reaches this call, over this
+// very claim value, so a claim it hands on is one no renewal keeps and no later instant can make
+// renewed again. ReleaseExpiredRoleClaim, whose callers are tests, weighs no renewal: it reads the
+// claim and hands it on while sessionID still holds it. sessionTTL is the other grant, and it is
+// this call's own: the grace a claim stored before the machine's service start keeps. A
+// sessionTTL of zero grants no such grace, and neither does a claim carrying the hand-back mark:
+// the grace exists for a holder to register again after a listener restart, and no registration
+// renews a marked claim (Registry.renewRoleClaim), so over such a claim the grace can do nothing
+// but hold the role past the bound the reaper's own rule states - one live window after the
+// claim's last renewal and up to one reap interval. That live window is untouched here, because
+// it is the window a holder an older client's hand-back marked wrongly claims the role again
+// inside (ReapRoleClaims).
 //
-// The holder it releases from is the one the claim names, and it is the caller that decided the
-// claim may be taken from that holder (ReapRoleClaims): either the holder's session is gone, or
+// The holder it releases from is the one the claim names. In production the caller that decided
+// the claim may be taken from that holder is ReapRoleClaims: either the holder's session is gone, or
 // the claim carries the hand-back mark its own holder's release wrote, which is freed though
 // that session answers. A holder named beside the claim could only be that same session.
 //

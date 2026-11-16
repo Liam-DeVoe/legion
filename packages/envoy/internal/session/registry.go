@@ -936,11 +936,14 @@ func (r *SessionRegistry) cachedEntry(epoch uint64, sessionID string) (SessionEn
 	return cs.entry, revision, true
 }
 
-// readStored reads sessionID's registration from the bucket for a write, within ctx (bus.BoundedOn), and
+// readStored reads sessionID's registration from the bucket, within ctx (bus.BoundedOn), and
 // applies it to the cache as a delivered record is applied (kvwatch.Copy.Apply: Get answers only a
-// stored value, never a delete marker). revision is the one to write at, 0 when the bucket holds no
-// value. A value that does not decode is found false, as the cache, which evicts it, sees no
-// registration either, and the write replaces it at its revision.
+// stored value, never a delete marker). revision is the stored value's, 0 when the bucket holds no
+// value. write reads for a write and writes at that revision. Amend reads after write lost every
+// attempt: it drops the revision, only checks whether its change would leave the stored entry as
+// it is, and writes nothing. A value that does not decode is found false, as the cache, which
+// evicts it, sees no registration either: write replaces it at its revision, and Amend reports its
+// conflict.
 func (r *SessionRegistry) readStored(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string) (SessionEntry, uint64, bool, error) {
 	stored, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {

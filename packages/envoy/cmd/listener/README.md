@@ -44,8 +44,12 @@ The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV
 The age is sized by the `seen.` records beside the lease, not by the lease:
 every pod answers a lapsed session's `last_seen` out of that record alone, and the session registry would report it for the session TTL and its last-seen retention (`session.LastSeenMemory`, 2 hours) past the session's last registration write, so the bucket's age, which drops the record 20 minutes after that write, is what ends the answer.
 At the default 5 minute TTL those 20 minutes are the session TTL and the interest reaper's allowance (`store.InterestReapAllowance`, 15 minutes), so `/v1/interests/` can give the last heartbeat of every row that reaper still holds.
-Its value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
+Its value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, `former_boots` (below), and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
 a field this build does not know is kept across every rewrite.
+`former_boots` names the boots that held the lease before `holder` (`formerBoots`, `lease_record.go`):
+each entry holds `boot`, `stopped`, the server time that boot stopped holding the lease, and `released`, which is `true` when that boot released the record and is left out when a standby took the record after it expired.
+Each acquisition adds the boot of the record it replaces, and keeps only the boots that stopped less than 70 s before it (`leaseFormerBootAge`), at most the newest 16 (`leaseFormerBootsMax`).
+A renewal and a release leave the list as it stands.
 
 Beside the lease, a pod that stopped gracefully writes one key per hand-over it saw through:
 `handback.<durable>.<revision>` (`bus.ListenerHandBackPrefix`), the clean-hand-back mark, named for the revision of the lease record its own release wrote.
@@ -263,7 +267,7 @@ A probe contract that fits these answers:
 
 Every pod of a machine id reads and writes the same records, so a pod that takes over, or a standby answering `/v1`, answers as the active pod would:
 
-- **Delivery ledger** (`internal/dedupe`, `delivery.<durable>.<32 hex of sha256(dedupe key)>.<session>` in `envoy_listener`):
+- **Delivery ledger** (`internal/dedupe`, `delivery.<durable>.<32 hex of sha256(dedupe key)>.<session token>` in `envoy_listener`, where the session token is the session id itself when the id is 1 to 128 characters of ASCII letters, digits, `_` and `-`, and otherwise `=` and the first 32 hex of the id's sha256, `dedupe.SessionToken`):
   these ask it, and nothing else does — a role-lane forward, the kept lane's drain of a role's stored copies (`keptRoleForwardAttempt`), a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, which it reports `delivery_failed`, and the publish route's confirmation that the stream stored a forward it made.
   No session receives from a plain NATS subscription any more (main's #2603 removed that path), so no copy is read off the bus outside this listener and nothing asks the ledger for one.
   Before any of them, a pod records the pair attempted, and once it lands, delivered:
@@ -323,7 +327,7 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   a pod that stopped gracefully vouches for the lease record it released, and the pod that took that record reads the mark inside its settle hold ("Take-over" above).
   A mark nobody reads leaves the bucket with its 20 minute `MaxAge`.
 
-- **Last seen** (`seen.<session>` in `envoy_listener`):
+- **Last seen** (`seen.<session token>` in `envoy_listener`, the same session token as in the ledger key above):
   every session registration write records when the session was last seen, and every pod answers a lapsed session's `last_seen` out of that record alone, so two pods never answer one session differently - a pod that watched the session keeps no answer of its own.
   The registry would report it for the session TTL and 2 hours (`session.LastSeenMemory`) past the last write, but the bucket's `MaxAge` drops the record 20 minutes after that write, so the answer lasts 20 minutes past the last write, which is the session TTL and the interest reaper's allowance only at the default 5 minute TTL;
   with no record in the bucket - it was never written, its age removed it, or it could not be read within the request's budget - no pod answers one.
@@ -349,7 +353,7 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   A pod whose cache has not seen a registration reads the bucket before `/v1/messages/send` or `/v1/roles/set` answers that the session is unknown.
 
 One record is each pod's own, deliberately:
-the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) the stream stored a forward of through `/v1/messages/send` or `/v1/messages/publish` on this pod.
+the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) the stream stored a forward of through `/v1/messages/publish` on this pod.
 Only a forward the route itself made counts.
 The route's confirmation records its stored forward in the delivery ledger above too (`listenerDeps.confirm`), but a ledger record can also come from another pod, or from another lane's forward, refusal or give-up,
 so the ledger cannot show that this route forwarded the key to this holder, and the route reads its own record instead.

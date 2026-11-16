@@ -135,8 +135,9 @@ func (c *Client) deniedPublish(subject string, sentAt time.Time) error {
 
 // clearPublishDenials drops every recorded violation, because they were the previous session's:
 // the grant the server applies to the session a reconnect opened is its own, and a publish on it
-// is answered by it. Its caller holds c.mu, where it learns of the reconnect (onReconnect) or
-// installs the constructor's connection (install), where the record is still empty.
+// is answered by it. Its caller holds c.mu: countConnectionEvent, where it learns of the reconnect
+// on nats.go's callback goroutine (queueReconnect), before the event's work (onReconnect) is
+// queued, or install, where it installs the constructor's connection and the record is still empty.
 func (c *Client) clearPublishDenials() {
 	clear(c.deniedPublishes)
 }

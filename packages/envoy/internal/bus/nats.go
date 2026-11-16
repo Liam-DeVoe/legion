@@ -288,15 +288,15 @@ type Client struct {
 	// only the violation that landed last and left every other denied send to its acknowledgement
 	// timeout; and nats-server reports one violation per refused message, so a record of one
 	// violation per subject would leave every send but one of a subject a window sent twice to
-	// that same timeout. It belongs to the connection in Conn: a reconnect (onReconnect) clears it
-	// (clearPublishDenials), and install, which runs only from the constructor before any
-	// connection is the client's, finds it empty. A connection ensureConnWithContext dials after a
-	// close does not clear it, and need not: a send takes only a violation of its own subject
-	// recorded at or after its own send time (deniedPublish), so a violation the closed connection
-	// left can answer a send on the new one only when that send's clock was read before the
-	// replacement, and then it is a refusal of the same subject under the same credentials. A
-	// record retention has spent and anything past publishDenialDepth are dropped when the next
-	// one is recorded, and a read takes the violation it answers with out.
+	// that same timeout. It belongs to the connection in Conn: a reconnect clears it
+	// (clearPublishDenials, from countConnectionEvent under c.mu), and install, which runs only
+	// from the constructor before any connection is the client's, finds it empty. A connection
+	// ensureConnWithContext dials after a close does not clear it, and need not: a send takes only
+	// a violation of its own subject recorded at or after its own send time (deniedPublish), so a
+	// violation the closed connection left can answer a send on the new one only when that send's
+	// clock was read before the replacement, and then it is a refusal of the same subject under
+	// the same credentials. A record retention has spent and anything past publishDenialDepth are
+	// dropped when the next one is recorded, and a read takes the violation it answers with out.
 	deniedPublishes map[string][]publishViolation
 
 	// subscriptionsMu guards subscriptions and stopMode. It is held to read and write them, never

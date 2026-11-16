@@ -613,15 +613,16 @@ var roleLaneRefusalLines = roleForwardRefusalLines{
 	modeUnadvertised: "listener role holder does not advertise delivery mode",
 }
 
-// refusedRoleForwardOutcome is what a forward to a role's holder that beforeForward refused is
-// owed, for either path that makes one: the role lane (roleTopicDelivery) and the kept lane's
-// drain (keptRoleForwardAllowed). An echo of the holder's own message is skipped and a copy it
+// refusedRoleForwardOutcome is what a forward to a role's holder is owed when it is not made: when
+// beforeForward refused it, on either path that makes one, the role lane (roleTopicDelivery) and
+// the kept lane's drain (keptRoleForwardAllowed), and when the kept lane's ledger answers that the
+// holder already took the copy (keptRoleForwardAttempt, which passes a forwardRepeat verdict of its
+// own after it asked the ledger). An echo of the holder's own message is skipped and a copy it
 // already took is a dedupe, each counted and logged and neither reported to its sender; a payload
 // its delivery modes do not take, and one whose mode cannot be read, are failed, counted and
 // answered with the delivery_failed a stale holder is answered with. extra is what the path adds
 // to every line of its own, the drain's role among them. How the path settles its ledger attempt
-// is the path's own (deliveryOutcome.settle): the lane gives the attempt it holds up, where the
-// drain's judgement is made before any attempt is taken.
+// is the path's own (deliveryOutcome.settle).
 func refusedRoleForwardOutcome(verdict forwardVerdict, item contracts.Envelope, sessionID string, lines roleForwardRefusalLines, extra ...slog.Attr) deliveryOutcome {
 	outcome := deliveryOutcome{sessionID: sessionID}
 	line, level, attrs := "", slog.LevelWarn, extra
@@ -877,9 +878,14 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		}
 		// One resolution per recipient decides every outcome below: it reads the entry the
 		// judgement above returned for every verdict, its refusals among them, and makes no call
-		// of its own. The capture is the deployed stream's, which the session's consumer filter is
-		// judged on too (sessionConsumerFilter), so a topic only a newer build's subjects capture
-		// is one that consumer relays.
+		// of its own. The capture is the deployed stream's as this pod last read its subjects
+		// (DeployedStreamCaptures, no read of its own), where the session's consumer filter is
+		// judged on a fresh read (sessionConsumerFilter). So during a roll, until this pod's next
+		// read of the subjects (bus.streamSubjectsRefresh, a minute), a topic only a newer build's
+		// subjects capture can be judged here as one no consumer relays while the session's
+		// consumer does relay it: that resolution fails, the delivery is logged failed and, for a
+		// session whose entry was read, NAKed for a later try, so nothing is lost or delivered
+		// twice. The fresh read is kept for the judgements whose "not captured" loses a message.
 		err := session.Resolve(item, interest.SessionID, target, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 		relayed := err == nil
 		// A recipient whose own consumer relays this message is asked nothing: it is handed
