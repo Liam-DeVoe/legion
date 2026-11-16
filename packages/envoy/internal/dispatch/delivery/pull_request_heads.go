@@ -33,9 +33,15 @@ import (
 // read-through made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a
 // recorded result, and by the read of an issue's results for a `before_merge` result's commit, at
 // most once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
-// which takes every open row read longer than five minutes ago and every merged row the rule
-// this build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
-// ListStalePullRequestHeads).
+// which reads every pull request an event owes a read of (pull_request_reads_owed.go), creating
+// its row where none exists, and then takes every open row read longer than five minutes ago and
+// every merged row the rule this build judges by has not judged yet — one offer per rule version
+// (AttributionRuleVersion, ListStalePullRequestHeads).
+//
+// A row a read of GitHub wrote is marked (github_read_at), and only a marked row's time stops a
+// read of GitHub or wins against GitHub's answer (headReadCovers, upsertHeadRow): a release
+// before dispatch://INFRA-3992 wrote rows from an envelope's fields, and it writes them still
+// while it serves beside this build.
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it
@@ -63,6 +69,14 @@ type PullRequestHead struct {
 	URL                 string
 	EventAt             *time.Time
 	CheckedAt           *time.Time
+	// GitHubRead is whether HeadSHA, State and EventAt are GitHub's own answer to a read of the
+	// pull request, and EventAt is GitHub's updated_at: only headRow sets it, so the zero value
+	// is the careful one. A row a write of that kind stores is marked (github_read_at), and only a
+	// marked row's time stops a read of GitHub or wins against GitHub's answer (headReadCovers,
+	// upsertHeadRow). A release before dispatch://INFRA-3992 wrote a row's head, state and
+	// updated_at from a `pull_request` envelope, whose fields a caller sets, and it can still
+	// write one while it serves beside this build.
+	GitHubRead bool
 	// MergeCommitSHA is the commit GitHub made when this pull request merged. It is set only
 	// for a merged pull request, and only by a writer that read it; one that did not read it
 	// leaves it empty, which asks for nothing. It is written to no column of
@@ -87,13 +101,13 @@ func PullRequestHeadState(state string, merged bool) string {
 }
 
 // ErrHeadNotStored marks a failure that left a pull request's head row unwritten and that
-// making the same attempt again may get past: nothing else in Dispatch repairs a head row that
-// was never stored — the reconcile's passes read the rows that exist (ListStalePullRequestHeads),
-// so a row no write ever made is offered to nothing. The `pull_request` envelope's handler tests
-// for it and hands the envelope back for redelivery rather than acking it
+// making the same attempt again may get past. The `pull_request` envelope's handler tests for it
+// and hands the envelope back for redelivery rather than acking it
 // (Intake.handlePullRequestEnvelope, Intake.deliver), up to headWriteMaxDeliveries deliveries of
 // it, since both of the statements behind the write are `on conflict … do update` and a
-// redelivery writes the same pair.
+// redelivery writes the same pair. The reconcile's passes read the rows that exist, so past that
+// bound the envelope's pull request is owed a read the reconcile makes instead
+// (owePullRequestRead): a row no write ever made is offered to nothing else.
 //
 // It marks every failure on the way to that write that a later attempt may get past, because
 // they all end the same way: a read of Postgres (the repository's canonical name, the stored row
@@ -101,9 +115,9 @@ func PullRequestHeadState(state string, merged bool) string {
 // candidates name) and a read of GitHub that failed (a 5xx, a network failure, a rate limit).
 // A rate limit keeps its *githubapp.RateLimitError inside the mark, so Intake.deliver hands the
 // envelope back after the limit's own wait: while the limit stands githubapp.Client sends no
-// request at all, so the hand-back costs no GitHub call. The answers GitHub gives for good are
-// not marked: a pull request it does not know and a repository the App cannot read write no row
-// and are acknowledged (recordPullRequestHead).
+// request at all, so the hand-back costs no GitHub call. GitHub's refusals are not marked: a
+// pull request it does not know and a repository the App cannot read write no row, are owed a
+// read the reconcile makes, and are acknowledged (recordPullRequestHead).
 var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
 
 // markHeadNotStored marks err as ErrHeadNotStored, keeping err itself inside the mark.
@@ -114,9 +128,18 @@ func markHeadNotStored(err error) error {
 // UpsertPullRequestHead writes one pull request's head row. An event older than the one the row
 // already holds changes nothing: GitHub redelivers and the reconcile reads concurrently, so the
 // row keeps the newest `updated_at` either has seen rather than whichever write landed last.
-// Every writer carries one — the envelope its own, the reconcile and the read-through the
-// pull request's `updated_at` as GitHub answered it — so a write with no event time is only one
-// whose envelope carried none; it always applies, as does one landing on a row that has none.
+// Every writer of this build carries GitHub's own `updated_at` for the pull request, so a write
+// with no event time is one whose GitHub answer carried none; it always applies, as does one
+// landing on a row that has none.
+//
+// That rule trusts only a stored time a read of GitHub wrote (GitHubRead, the column
+// github_read_at). GitHub's answer applies over a row that holds no such mark, whatever time the
+// row holds: a release before dispatch://INFRA-3992 stored an envelope's updated_at, which a
+// caller sets, and a time an hour ahead would otherwise refuse every answer of GitHub's until
+// GitHub's own clock passed it — for a closed or merged pull request, never. That release still
+// writes rows while it serves beside this build, and its statement names no github_read_at, so a
+// write of its that changes a fact of a marked row takes the mark away (the trigger
+// pull_request_heads_unread_write, migration 20261116163242).
 //
 // Only a write that read every attribution source may replace the row's issue
 // (AttributionComplete); an incomplete one leaves issue_key and attribution_source exactly as
@@ -355,13 +378,19 @@ const headWriteRollback = 2 * time.Second
 // exactly as it was, which is the one way this statement writes nothing and reports no error.
 // Only an applied write can have moved the row's attribution, so that is what
 // UpsertPullRequestHead tests before it appends an event.
+//
+// github_read_at is the database's clock at this statement for a write of GitHub's answer, and
+// null for any other. It is taken in the statement (clock_timestamp), not handed in, so two
+// writes of one row never carry one value: the trigger that tells a write of the release before
+// from this build's own reads a value that did not change as a write that named none.
 func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
-			title, url, event_at, checked_at, attribution_rule
+			title, url, event_at, checked_at, attribution_rule, github_read_at
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14,
+			case when $15::boolean then clock_timestamp() end)
 		on conflict (repo, number) do update set
 			head_sha = excluded.head_sha,
 			head_ref = excluded.head_ref,
@@ -376,14 +405,16 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 			event_at = coalesce(excluded.event_at, pull_request_heads.event_at),
 			checked_at = coalesce(excluded.checked_at, pull_request_heads.checked_at),
 			attribution_rule = case when excluded.checked_at is null
-				then pull_request_heads.attribution_rule else excluded.attribution_rule end
+				then pull_request_heads.attribution_rule else excluded.attribution_rule end,
+			github_read_at = excluded.github_read_at
 		where excluded.event_at is null
 		   or pull_request_heads.event_at is null
 		   or excluded.event_at >= pull_request_heads.event_at
+		   or (excluded.github_read_at is not null and pull_request_heads.github_read_at is null)
 	`,
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
-		head.AttributionComplete, AttributionRuleVersion,
+		head.AttributionComplete, AttributionRuleVersion, head.GitHubRead,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
@@ -447,8 +478,8 @@ func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha strin
 // among the heads a `before_merge` check compares its results with: the pull request's number,
 // the commit its head is, and the two times Dispatch may have learned that head by. CheckedAt
 // is when Dispatch last read the pull request from GitHub and EventAt is the pull request's
-// own update time as its newest webhook event carried it; each is nil where no writer has
-// carried it. The reader shows the later of the two and names which it is
+// own update time on GitHub, as the read that wrote the head answered it; each is nil where no
+// writer has carried it. The reader shows the later of the two and names which it is
 // (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt).
 type AttributedHead struct {
 	Number    int
@@ -568,12 +599,12 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // into an integration branch has reached that branch and no other, so a result of it at a
 // commit that branch's history carries stands at that branch. The repository's default branch
 // answers nothing about the work until the integration branch itself lands. The merged row
-// last updated answers: event_at is the pull request's updated_at as its newest event carried
-// it, which is the time of the merge only until a later event of that pull request (an edit, a
-// label) moves it. The rows are ordered by event_at descending with the rows carrying none
-// last, since a row with no event time is one whose envelope reported none and says less than
-// any row that did, and by the pull request's own number descending where two share a time, so
-// the answer does not turn on whichever row the planner returned first.
+// last updated answers: event_at is the pull request's updated_at as GitHub answered the read
+// that wrote the row, which is the time of the merge only until a later change of that pull
+// request (an edit, a label) moves it. The rows are ordered by event_at descending with the rows
+// carrying none last, since a row with no update time says less than any row that has one, and
+// by the pull request's own number descending where two share a time, so the answer does not
+// turn on whichever row the planner returned first.
 //
 // The read is keyed by the issue and not by the result's commit because Legion merges with
 // squash: the commit that lands on the base branch is the one the squash makes, which is no
@@ -870,14 +901,17 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 // reached: the one builder both GitHub readers below write through, so the two cannot drift.
 // The rule that judged it is the write's own (UpsertPullRequestHead binds
 // AttributionRuleVersion). The list form of a pull request carries merged_at but not merged, so
-// a merge is read from whichever of the two GitHub sent.
+// a merge is read from whichever of the two GitHub sent. The row is marked a read of GitHub
+// (GitHubRead) where GitHub's answer carried its updated_at, since the mark says the row's time
+// is GitHub's own.
 func headRow(repoFull string, payload pullRequestPayload, attributed headAttributionResult, checkedAt *time.Time) PullRequestHead {
 	return PullRequestHead{
 		Repo: repoFull, Number: payload.Number, HeadSHA: payload.Head.SHA, HeadRef: payload.Head.Ref,
 		BaseRef: payload.Base.Ref, State: PullRequestHeadState(payload.State, payload.Merged || payload.MergedAt != nil),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload.Title, URL: payload.HTMLURL,
-		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, MergeCommitSHA: mergeCommitOf(payload),
+		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, GitHubRead: payload.UpdatedAt != nil,
+		MergeCommitSHA: mergeCommitOf(payload),
 	}
 }
 
@@ -938,33 +972,46 @@ func RefreshPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull string, number int, now time.Time,
 ) error {
+	_, err := refreshPullRequestHead(ctx, pool, client, broker, repoFull, number, now)
+	return err
+}
+
+// refreshPullRequestHead is RefreshPullRequestHead, answering too whether GitHub answered for
+// the pull request: false where it does not have it, or the App cannot read its repository, and
+// the row, where there is one, was stamped instead. The reconcile's read of a pull request an
+// event owes a read of needs the difference (readOwedPullRequests), since only an answer settles
+// such a read at once.
+func refreshPullRequestHead(
+	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
+	repoFull string, number int, now time.Time,
+) (answered bool, err error) {
 	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
 	if err != nil {
-		return err
+		return false, err
 	}
 	owner, repo, err := splitRepo(canonical)
 	if err != nil {
-		return err
+		return false, err
 	}
 	token, err := client.RepositoryToken(ctx, owner, repo)
 	if err != nil {
 		if repositoryUnreadable(err) {
-			return MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
+			return false, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
-		return fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
+		return false, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
 	}
 	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
 	if err != nil {
 		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
-			return MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
+			return false, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
-		return err
+		return false, err
 	}
 	attributed, err := attributePayload(ctx, pool, client, token, canonical, payload)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
+	return true, upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
 }
 
 // repositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
@@ -1057,10 +1104,11 @@ func ReadThroughCommitPulls(
 
 // recordPullRequestHead writes the head row of the pull request one `pull_request` envelope
 // names, whatever its action, author or repository, from GitHub's own answer about that pull
-// request, and answers the commit messages the attribution read, nil when it read none. It runs
-// before the merge-only guard in handlePullRequestEnvelope, so an `opened`, `synchronize`,
-// `reopened` or `edited` event — which the delivery timeline ignores — still moves the head a
-// check result is measured against.
+// request, and answers what it read of GitHub on the way (headRead): the pull request, the token
+// it was read with and the commit messages the attribution paged, or GitHub's lasting refusal,
+// all empty where the read was spared. It runs before the merge-only guard in
+// handlePullRequestEnvelope, so an `opened`, `synchronize`, `reopened` or `edited` event — which
+// the delivery timeline ignores — still moves the head a check result is measured against.
 //
 // The envelope says which pull request changed, and nothing it carries is written: the head,
 // the state, the branch, the title and the body all come from `GET
@@ -1075,17 +1123,22 @@ func ReadThroughCommitPulls(
 //
 // A pull request GitHub does not know (404 or 410) and a repository the App cannot read write
 // no row: there is no answer of GitHub's to write, and nothing an envelope says is one. Both
-// are acknowledged, since a redelivery gets the same answer. Every other failure is marked
-// ErrHeadNotStored (markHeadNotStored), so the envelope is handed back; a rate limit is handed
-// back after the limit's own wait (Intake.deliver). A name that is not `owner/repo` is
-// malformed in the envelope itself and is returned bare, since the same envelope delivered
-// again fails on it again.
+// are acknowledged, and both record that the pull request is owed a read
+// (owePullRequestRead): GitHub's answer to a read made a moment after its own webhook may not
+// know the pull request yet, so the reconcile reads it again, and settles the read once GitHub
+// answers for it or still refuses past owedReadRefusalFinalAfter. A record that could not be
+// written is marked ErrHeadNotStored, so the envelope stays the record and is handed back. Every
+// other failure is marked ErrHeadNotStored (markHeadNotStored), so the envelope is handed back;
+// a rate limit is handed back after the limit's own wait (Intake.deliver). A name that is not
+// `owner/repo` is malformed in the envelope itself and is returned bare, since the same envelope
+// delivered again fails on it again.
 //
 // The read is spared where GitHub has already answered for the event (headReadCovers): the
-// stored row is at least as new as the envelope by GitHub's own updated_at, and either strictly
-// newer or read well after that second. That is what makes the events of one pull request that
-// waited together — the replay of the stream's backlog on a first start, or a burst of events
-// a stopped process missed — cost one read of that pull request rather than one each.
+// stored row is GitHub's answer to a read, at least as new as the envelope by GitHub's own
+// updated_at, and either strictly newer or read well after that second. That is what makes the
+// events of one pull request that waited together — the replay of the stream's backlog on a
+// first start, or a burst of events a stopped process missed — cost one read of that pull
+// request rather than one each.
 //
 // The envelope's own `repo` comes from outside — the topic a publisher built — so it is
 // canonicalised before anything is read or written (refs.CanonicalRepo), and no row is ever
@@ -1112,18 +1165,18 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	token, err := in.github.RepositoryToken(ctx, owner, repo)
 	if err != nil {
 		if repositoryUnreadable(err) {
-			slog.Info("dispatch delivery: no head row for a pull request of a repository the App cannot read",
+			slog.Info("dispatch delivery: no head row for a pull request of a repository the App cannot read; the reconcile reads it again",
 				"repo", repoFull, "number", number, "error", err)
-			return headRead{refused: err}, nil
+			return in.oweRefusedRead(ctx, repoFull, number, err)
 		}
 		return headRead{}, markHeadNotStored(fmt.Errorf("mint installation token for %s PR #%d: %w", repoFull, number, err))
 	}
 	pull, err := fetchPullRequestPayload(ctx, in.github, token, owner, repo, number)
 	if err != nil {
 		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
-			slog.Info("dispatch delivery: no head row for a pull request GitHub does not answer for",
+			slog.Info("dispatch delivery: no head row for a pull request GitHub does not answer for; the reconcile reads it again",
 				"repo", repoFull, "number", number, "error", err)
-			return headRead{refused: err}, nil
+			return in.oweRefusedRead(ctx, repoFull, number, err)
 		}
 		return headRead{}, markHeadNotStored(err)
 	}
@@ -1141,6 +1194,17 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	read := headRead{pull: &pull, token: token, messages: attributed.messages}
 	return read, upsertHeadUnderCanonicalName(ctx, in.pool, in.events,
 		headRow(repoFull, pull, attributed, checkedAt), given)
+}
+
+// oweRefusedRead records that repoFull's pull request number is owed a read (owePullRequestRead)
+// after GitHub refused the intake's read with refused, and answers that refusal as what the
+// intake read. A record that could not be written is marked ErrHeadNotStored, so the envelope
+// stays the record and is handed back.
+func (in *Intake) oweRefusedRead(ctx context.Context, repoFull string, number int, refused error) (headRead, error) {
+	if err := owePullRequestRead(ctx, in.pool, repoFull, number); err != nil {
+		return headRead{}, markHeadNotStored(err)
+	}
+	return headRead{refused: refused}, nil
 }
 
 // headRead is what recordPullRequestHead learned from GitHub on the way to the head row, which
@@ -1162,15 +1226,19 @@ const headReadMargin = 5 * time.Second
 
 // headReadCovers reports whether the stored row of repoFull's pull request number already holds
 // GitHub's answer about the change an event of updatedAt reports, so that reading the pull
-// request again would teach nothing: GitHub's own updated_at on the row is at least the event's,
-// and either later — GitHub's answer reflects a later second, and so every change of that one —
-// or read headReadMargin past the event's second. A row with no updated_at or no read time
-// covers nothing, and neither does a missing row.
+// request again would teach nothing: the row is GitHub's answer to a read (github_read_at),
+// GitHub's own updated_at on it is at least the event's, and either later — GitHub's answer
+// reflects a later second, and so every change of that one — or read headReadMargin past the
+// event's second by a read that read every attribution source (checked_at). A row no read of
+// GitHub wrote covers nothing, whatever time it holds: a release before dispatch://INFRA-3992
+// stored an envelope's updated_at, which a caller sets, and one an hour ahead would otherwise
+// spare the read of every later event of that pull request. Neither does a row with no
+// updated_at, nor a missing row.
 func headReadCovers(ctx context.Context, pool *store.Pool, repoFull string, number int, updatedAt time.Time) (bool, error) {
 	var covered bool
 	err := pool.QueryRow(ctx, `
-		select event_at is not null and $3 <= event_at
-			and ($3 < event_at or (checked_at is not null and checked_at >= $3 + make_interval(secs => $4)))
+		select github_read_at is not null and event_at is not null and $3 <= event_at
+			and ($3 < event_at or (checked_at is not null and github_read_at >= $3 + make_interval(secs => $4)))
 		from pull_request_heads where repo = $1 and number = $2
 	`, repoFull, number, updatedAt, headReadMargin.Seconds()).Scan(&covered)
 	if errors.Is(err, pgx.ErrNoRows) {

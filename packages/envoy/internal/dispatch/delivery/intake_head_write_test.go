@@ -24,9 +24,10 @@ import (
 )
 
 // A pull-request envelope whose head row could not be stored at all is handed back for
-// redelivery. Nothing else repairs a row that was never stored: the reconcile's passes read the
-// rows that exist (ListStalePullRequestHeads), so an acknowledged envelope loses that pull
-// request's head for good, and with it every `before_merge` result measured against that head.
+// redelivery. The reconcile's passes over the stored rows read the rows that exist
+// (ListStalePullRequestHeads), so only the redelivery writes that head within seconds; the read
+// the envelope's pull request is owed once the delivery cap is spent waits for the reconcile's
+// next pass (owePullRequestRead).
 //
 // The write that cannot be made is the one UpsertPullRequestHead reports as ErrHeadNotStored,
 // which handlePullRequestEnvelope returns; here branch_commits is away, so the transaction that

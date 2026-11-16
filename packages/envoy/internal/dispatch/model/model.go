@@ -1220,9 +1220,9 @@ const (
 // BasisLearnedReadAt and BasisLearnedUpdatedAt say which time a basis learned from a pull
 // request carries: BasisLearnedReadAt is pull_request_heads.checked_at, when Dispatch last read
 // the pull request from GitHub, and BasisLearnedUpdatedAt is event_at, the pull request's own
-// update time as its newest webhook event carried it. The later of the two is the one shown, so
-// a head a webhook moved after the last complete read prints GitHub's own time and never an
-// older read time.
+// update time on GitHub as the read that wrote the head answered it. The later of the two is the
+// one shown, so a head a read wrote after the last complete read prints GitHub's own time and
+// never an older read time.
 const (
 	BasisLearnedReadAt    = "read_at"
 	BasisLearnedUpdatedAt = "updated_at"

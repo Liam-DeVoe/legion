@@ -15,6 +15,11 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
+// headAfterEventBound is how long after GitHub's `pull_request` event the results route may take
+// to compare a check with the head that event reports: v-head-no-settings of
+// dispatch://INFRA-3992 says "within 5 seconds of the event".
+const headAfterEventBound = 5 * time.Second
+
 // The pull request a `before_merge` check compares its results with is the one GitHub's own
 // event reports, in a deployment that holds no delivery settings (dispatch://INFRA-3992).
 //
@@ -110,6 +115,9 @@ func TestAPullRequestEventGivesTheResultsReadItsHeadWithNoDeliverySettings(t *te
 	if err != nil {
 		t.Fatalf("encode the pull request's payload: %v", err)
 	}
+	// The bound is v-head-no-settings' own: the results route compares a check with the head of
+	// an open pull request within 5 seconds of GitHub's event, measured from the publish.
+	published := time.Now()
 	if err := publisher.Publish(contracts.Envelope{
 		EventID: "example-tools-pr-7-opened", Source: "github", SourceEventID: "example-tools-pr-7-opened",
 		TraceID: "example-tools-pr-7-opened", Topic: contracts.GithubResourceSubject("example", "tools", "pr", "7"),
@@ -118,18 +126,19 @@ func TestAPullRequestEventGivesTheResultsReadItsHeadWithNoDeliverySettings(t *te
 		t.Fatalf("publish the pull request's opening: %v", err)
 	}
 
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := published.Add(headAfterEventBound)
 	read := readResults(t, handler, issue.Key)
 	for len(checkOf(t, read, "k1").ComparedWith) == 0 {
 		if time.Now().After(deadline) {
 			check := checkOf(t, read, "k1")
-			t.Fatalf("30 s after the pull request's event, check k1 compares with %+v for the reason %q and "+
+			t.Fatalf("%s after the pull request's event, check k1 compares with %+v for the reason %q and "+
 				"the delivery durable is %s; want the head of example/tools#7, which the event reported",
-				check.ComparedWith, check.ComparedNothing, durableState(publisher))
+				time.Since(published).Round(time.Millisecond), check.ComparedWith, check.ComparedNothing, durableState(publisher))
 		}
 		time.Sleep(100 * time.Millisecond)
 		read = readResults(t, handler, issue.Key)
 	}
+	t.Logf("the results route compared k1 with the event's head %s after the publish", time.Since(published).Round(time.Millisecond))
 	stands := standsAt(t, read, "k1", recorded.Result.ID,
 		"a result at the head of the pull request the event reported", model.CommitAtBasis, false)
 	if stands.Basis == nil || stands.Basis.PullRequest == nil || *stands.Basis.PullRequest != 7 {

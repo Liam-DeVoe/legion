@@ -11,6 +11,17 @@ body: |-
     a workflow run still wait for the settings. The first start of a Dispatch whose `delivery-events`
     durable never existed replays the 72 hours the stream keeps, at one read of each pull request it
     names, at most four at a time; a rate limit is waited out.
+
+    No event's head is lost when GitHub does not answer: an envelope the intake gives up on after
+    its 30 deliveries (a GitHub outage of about five minutes), and GitHub's 404 for a pull request
+    its own event names, record the pull request in the new table `pull_request_reads_owed`, and the
+    reconcile reads each one from GitHub every pass until GitHub answers, creating its head row. A
+    stored head row's time stops a read of GitHub, or wins against GitHub's answer, only where a
+    read of GitHub wrote it (the new column `pull_request_heads.github_read_at`): a row an earlier
+    release stored from an envelope, whose time a caller sets, no longer keeps its head and state
+    against GitHub, and a trigger takes the mark away from a row that release changes while it
+    serves beside this one. `delivery.AttributionRuleVersion` is 3, so the reconcile reads every
+    stored merged row from GitHub once more.
 time: 2026-11-16T13:50:24.000000000Z
 custom:
     Issue: pr4209

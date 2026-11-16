@@ -65,11 +65,15 @@ if (
 }
 const origin = new URL(dispatchUrl).origin;
 
-/** How long a head a bus event teaches Dispatch may take to settle, and how often the results are
- *  read again. The intake binds its durable at start, takes the envelope and writes the pull
- *  request's head row; nothing else is waited on, since every other answer is computed while the
- *  results are read. */
-const headWaitMs = 30_000;
+/** How long after a pull request's event, measured from its publish, the results route may take
+ *  to compare a check with the head that event reports: v-head-no-settings of
+ *  dispatch://INFRA-3992 says "within 5 seconds of the event". The intake binds its durable at
+ *  start, takes the envelope, reads the pull request from GitHub and writes its head row;
+ *  nothing else is waited on, since every other answer is computed while the results are read. */
+const headAfterEventMs = 5_000;
+/** How long a wait for the delivery reconcile may take: the server runs a pass every two seconds
+ *  (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL), and a pass reads GitHub for each row it takes. */
+const reconcileWaitMs = 30_000;
 const pollMs = 250;
 
 const person = "alice";
@@ -285,18 +289,18 @@ async function passStandsOf(key: string, blockID: string): Promise<string> {
   return roles.length === 0 ? pass.answer : `${pass.answer} (${roles.join(", ")})`;
 }
 
-/** Waits, bounded, for the commit of the result at `commit` to stand where `want` says, and
- *  answers what it last read. Where a commit stands is computed while the results are read, so
- *  this writes nothing and polls the read. */
+/** Waits, until the deadline `by` (milliseconds since the epoch), for the commit of the result at
+ *  `commit` to stand where `want` says, and answers what it last read. Where a commit stands is
+ *  computed while the results are read, so this writes nothing and polls the read. */
 async function awaitCommitStands(
   key: string,
   blockID: string,
   commit: string,
-  want: string
+  want: string,
+  by: number
 ): Promise<string> {
-  const deadline = Date.now() + headWaitMs;
   let seen = await commitStandsAt(key, blockID, commit);
-  while (seen !== want && Date.now() < deadline) {
+  while (seen !== want && Date.now() < by) {
     await Bun.sleep(pollMs);
     seen = await commitStandsAt(key, blockID, commit);
   }
@@ -313,12 +317,24 @@ async function record(key: string, input: Json): Promise<CheckResultRecorded> {
   })) as CheckResultRecorded;
 }
 
+/** One envelope the driver published: its subject, and the moment it was published, which the
+ *  5-second bound of v-head-no-settings is measured from (afterEvent). */
+interface Published {
+  subject: string;
+  at: number;
+}
+
+/** The deadline of an answer the event `published` decides: headAfterEventMs after its publish. */
+function afterEvent(published: Published): number {
+  return published.at + headAfterEventMs;
+}
+
 /** Publishes one normalized `pull_request` envelope, the shape Envoy relays and the shape
  *  Dispatch's intake reads: the envelope's `payload` is the flat string map, and its subject is
  *  `notifications.github.<owner>.<repo>.pr.<number>` with each segment's dots written `_`.
  *  The intake takes from it only which pull request changed and reads that pull request from
  *  GitHub, so the fake's answer is set first to what GitHub holds after the event. */
-async function publishPullRequest(payload: Record<string, string>): Promise<string> {
+async function publishPullRequest(payload: Record<string, string>): Promise<Published> {
   await seedRepositories({
     [payload.number]: {
       base_ref: payload.base_ref,
@@ -336,13 +352,14 @@ async function publishPullRequest(payload: Record<string, string>): Promise<stri
   const [owner, name] = repo.split("/");
   const subject = `notifications.github.${String(owner).replaceAll(".", "_")}.${String(name).replaceAll(".", "_")}.pr.${payload.number}`;
   const eventID = `verification-results-pr-${payload.number}-${payload.action}-${payload.head_sha.slice(0, 7)}`;
+  const at = Date.now();
   nats.publish(
     subject,
     codec.encode(
       JSON.stringify({
         dedupe_key: eventID,
         event_id: eventID,
-        issued_at: Date.now(),
+        issued_at: at,
         payload: JSON.stringify(payload),
         payload_summary: subject,
         source: "github",
@@ -353,7 +370,7 @@ async function publishPullRequest(payload: Record<string, string>): Promise<stri
     )
   );
   await nats.flush();
-  return subject;
+  return { at, subject };
 }
 
 /** One basis of a check, in the words a case compares with: the kind, the commit or the branch
@@ -530,12 +547,12 @@ async function storedHead(number: number): Promise<string> {
   return `${issue} by ${source} (${state} at ${String(head).slice(0, 12)}, rule ${rule})`;
 }
 
-/** Waits, bounded, for the stored row of `number` to read as `want`, and answers what it last
- *  read. The reconcile is the writer here, so this polls and writes nothing. */
-async function awaitStoredHead(number: number, want: string): Promise<string> {
-  const deadline = Date.now() + headWaitMs;
+/** Waits, until the deadline `by`, for the stored row of `number` to read as `want`, and answers
+ *  what it last read. The intake or the reconcile is the writer here, so this polls and writes
+ *  nothing. */
+async function awaitStoredHead(number: number, want: string, by: number): Promise<string> {
   let seen = await storedHead(number);
-  while (seen !== want && Date.now() < deadline) {
+  while (seen !== want && Date.now() < by) {
     await Bun.sleep(pollMs);
     seen = await storedHead(number);
   }
@@ -558,10 +575,10 @@ async function attributionMoves(key: string): Promise<string[]> {
     );
 }
 
-/** Waits, bounded, for one issue to carry `want` attribution events, and answers what it last
- *  read. */
+/** Waits, bounded by reconcileWaitMs, for one issue to carry `want` attribution events, and
+ *  answers what it last read: the reconcile's pass is what appends them. */
 async function awaitAttributionMoves(key: string, want: number): Promise<string[]> {
-  const deadline = Date.now() + headWaitMs;
+  const deadline = Date.now() + reconcileWaitMs;
   let seen = await attributionMoves(key);
   while (seen.length < want && Date.now() < deadline) {
     await Bun.sleep(pollMs);
@@ -832,7 +849,7 @@ A result stands while its commit is the pull request's head.
     updated_at: new Date(Date.now() - 60_000).toISOString(),
     url: `https://github.com/${repo}/pull/7`,
   });
-  note(`published the opened envelope on ${opened}`);
+  note(`published the opened envelope on ${opened.subject}`);
   await record(a4Issue, {
     check: "a4",
     commit: commits.headOne,
@@ -840,7 +857,7 @@ A result stands while its commit is the pull request's head.
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atFirstHead = await awaitCommitStands(a4Issue, "a4", commits.headOne, "at_basis");
+  const atFirstHead = await awaitCommitStands(a4Issue, "a4", commits.headOne, "at_basis", afterEvent(opened));
   note(`the commit of the result at ${commits.headOne.slice(0, 12)} stands ${atFirstHead}`);
   if (atFirstHead !== "at_basis") {
     return `the commit of the result at the first head stands ${atFirstHead}`;
@@ -864,8 +881,8 @@ A result stands while its commit is the pull request's head.
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/7`,
   });
-  note(`published the synchronize envelope on ${pushed}`);
-  const moved = await awaitCommitStands(a4Issue, "a4", commits.headOne, "other_commit");
+  note(`published the synchronize envelope on ${pushed.subject}`);
+  const moved = await awaitCommitStands(a4Issue, "a4", commits.headOne, "other_commit", afterEvent(pushed));
   note(`after the push the same result stands ${moved}, with no write of Dispatch's`);
   if (moved !== "other_commit") {
     return `the commit of the result at the first head stands ${moved} after the push`;
@@ -881,7 +898,7 @@ A result stands while its commit is the pull request's head.
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atNewHead = await awaitCommitStands(a4Issue, "a4", commits.headTwo, "at_basis");
+  const atNewHead = await awaitCommitStands(a4Issue, "a4", commits.headTwo, "at_basis", afterEvent(pushed));
   note(`the result at the new head ${commits.headTwo.slice(0, 12)} stands ${atNewHead}`);
   if (atNewHead !== "at_basis") return `the result at the new head stands ${atNewHead}`;
   const passAtNewHead = await passStandsOf(a4Issue, "a4");
@@ -919,7 +936,7 @@ A result stands while its commit is the head of a pull request of this repositor
     updated_at: new Date(Date.now() - 60_000).toISOString(),
     url: `https://github.com/${repo}/pull/9`,
   });
-  note(`published the fork's envelope on ${forked}`);
+  note(`published the fork's envelope on ${forked.subject}`);
   await record(forkIssue, {
     check: "fork",
     commit: commits.fork,
@@ -927,7 +944,7 @@ A result stands while its commit is the head of a pull request of this repositor
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atFork = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis");
+  const atFork = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis", afterEvent(forked));
   note(`the commit of the result at the fork's head ${commits.fork.slice(0, 12)} stands ${atFork}`);
   if (atFork === "at_basis") return "a fork's pull request was taken for a basis";
   const compared = await checkOf(forkIssue, "fork");
@@ -955,8 +972,8 @@ A result stands while its commit is the head of a pull request of this repositor
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/9`,
   });
-  note(`published the same pull request with its head in ${repo} on ${owned}`);
-  const atOwnHead = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis");
+  note(`published the same pull request with its head in ${repo} on ${owned.subject}`);
+  const atOwnHead = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis", afterEvent(owned));
   note(`the same result now stands ${atOwnHead}`);
   return atOwnHead === "at_basis"
     ? undefined
@@ -1176,8 +1193,9 @@ A default-branch result is compared with the default branch alone.
     { head: commits.comparedHeadA, number: 21, ref: `legion/${basesIssue}` },
     { head: commits.comparedHeadA2, number: 22, ref: `legion/${basesIssue}-follow-up` },
   ];
+  const openedPulls = new Map<number, Published>();
   for (const pull of openPulls) {
-    await publishPullRequest({
+    const published = await publishPullRequest({
       action: "opened",
       base_ref: "main",
       body: `Proves ${basesIssue}.`,
@@ -1192,6 +1210,7 @@ A default-branch result is compared with the default branch alone.
       updated_at: new Date(Date.now() - 60_000).toISOString(),
       url: `https://github.com/${repo}/pull/${pull.number}`,
     });
+    openedPulls.set(pull.number, published);
   }
   // The merged pull request's base branch is one the fake holds no commits for, as a repository
   // that deletes a branch on the merge leaves it: the compare read says that branch does not
@@ -1233,11 +1252,15 @@ A default-branch result is compared with the default branch alone.
       surface: "api",
     });
   }
+  // A2 is pull request #22's head, so its answer is due 5 s after #22's event.
+  const openedA2 = openedPulls.get(22);
+  if (openedA2 === undefined) return "pull request #22 was not published";
   const atOwnHead = await awaitCommitStands(
     basesIssue,
     "before",
     commits.comparedHeadA2,
-    "at_basis"
+    "at_basis",
+    afterEvent(openedA2)
   );
   if (atOwnHead !== "at_basis") return `the result at A2 stands ${atOwnHead} before any read`;
 
@@ -1354,7 +1377,7 @@ A default-branch result is compared with the default branch alone.
   // not a read of Dispatch's. Nothing reads GitHub between the two reads, since the new head is
   // a head Dispatch holds.
   const movedAt = new Date(Date.now() + 60_000).toISOString();
-  await publishPullRequest({
+  const movedEvent = await publishPullRequest({
     action: "synchronize",
     base_ref: "main",
     body: `Proves ${basesIssue}.`,
@@ -1373,7 +1396,8 @@ A default-branch result is compared with the default branch alone.
     basesIssue,
     "before",
     commits.comparedHeadA,
-    "other_commit"
+    "other_commit",
+    afterEvent(movedEvent)
   );
   if (movedTo !== "other_commit") return `after the event the result at A stands ${movedTo}`;
   const afterMove = await checkOf(basesIssue, "before");
@@ -1522,8 +1546,9 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
       want: `${linkedOverTitle} by external_link`,
     },
   ];
+  const publishedEnvelopes = new Map<number, Published>();
   for (const envelope of envelopes) {
-    await publishPullRequest({
+    const published = await publishPullRequest({
       action: "opened",
       base_ref: "main",
       body: envelope.body,
@@ -1538,10 +1563,13 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
       updated_at: new Date(Date.now() - 60_000).toISOString(),
       url: `https://github.com/${repo}/pull/${envelope.number}`,
     });
+    publishedEnvelopes.set(envelope.number, published);
   }
   for (const envelope of envelopes) {
-    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule 2)`;
-    const stored = await awaitStoredHead(envelope.number, wanted);
+    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule 3)`;
+    const published = publishedEnvelopes.get(envelope.number);
+    if (published === undefined) return `#${envelope.number} was not published`;
+    const stored = await awaitStoredHead(envelope.number, wanted, afterEvent(published));
     note(`#${envelope.number} on ${envelope.head_ref}, titled ${JSON.stringify(envelope.title)}`);
     note(`  is stored as ${stored}`);
     if (stored !== wanted) return `#${envelope.number} is stored as ${stored}, want ${wanted}`;
@@ -1622,8 +1650,8 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     note(`#${row.number} is stored ${row.state}, credited to ${parent} by title_body under rule 1`);
   }
   for (const row of stored) {
-    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule 2)`;
-    const seen = await awaitStoredHead(row.number, wanted);
+    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule 3)`;
+    const seen = await awaitStoredHead(row.number, wanted, Date.now() + reconcileWaitMs);
     note(`the reconcile re-judged #${row.number}: ${seen}`);
     if (seen !== wanted) return `#${row.number} reads ${seen} after the reconcile, want ${wanted}`;
   }
@@ -1648,7 +1676,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
 
   // An attribution that does not move appends no event: the same pull request at a new head,
   // credited to the child as before, is written and recorded nowhere.
-  await publishPullRequest({
+  const pushed = await publishPullRequest({
     action: "synchronize",
     base_ref: "main",
     body: `This carries part of ${parent}, and ${child} is the issue it closes.`,
@@ -1663,8 +1691,8 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/41`,
   });
-  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule 2)`;
-  const movedHead = await awaitStoredHead(41, wantedHead);
+  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule 3)`;
+  const movedHead = await awaitStoredHead(41, wantedHead, afterEvent(pushed));
   note(`#41 after the push is stored as ${movedHead}`);
   if (movedHead !== wantedHead) return `#41 after the push is stored as ${movedHead}`;
   const afterPush = await attributionMoves(child);

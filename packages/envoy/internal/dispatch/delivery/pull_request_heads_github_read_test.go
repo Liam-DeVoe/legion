@@ -1,0 +1,211 @@
+package delivery
+
+// Which stored time a read of GitHub may trust: only one that a read of GitHub wrote
+// (dispatch://INFRA-3992, R2: the head and the state of a pull request come from a read of
+// GitHub). A release before that change wrote a row's head, state and updated_at from a
+// `pull_request` envelope, whose fields a caller sets, and a rolling deploy runs that release
+// beside this one on one database, so it can still write such a row after the migration has run.
+// Such a row must stop no read of GitHub and win against none of GitHub's answers.
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+)
+
+// The red team's probe of cybermonklabs/legion#4209 at 4b2d1e83f85c, taken in unchanged but for
+// its layout. A stored row the release before wrote, at a stale open head, against GitHub's
+// answer that the pull request is closed at another head. The control is a row with an honest,
+// older time, which the event and the refresh both repair. The other row differs in its time
+// alone, an hour ahead: before the fix, the event read GitHub 0 times, the refresh read it once
+// and changed nothing, and the stale head stayed a basis.
+func TestRedTeamLegacyFutureRowVersusGitHub(t *testing.T) {
+	for _, legacyFuture := range []bool{false, true} {
+		name := "honest_old_row_control"
+		if legacyFuture {
+			name = "legacy_future_event_time"
+		}
+		t.Run(name, func(t *testing.T) {
+			fastPageRetries(t)
+			pool, ctx := deliveryTestPool(t)
+			issue := seedHeadIssue(t, ctx, pool, 98767)
+			fake := newFakeGitHub(t)
+			gh := serveGitHubPulls(t, fake, "acme/widgets")
+			client := fake.newTestClient()
+			intake := newIntake(nil, pool, nil, client, nil, nil)
+			now := time.Now().UTC().Truncate(time.Second)
+			eventAt := now.Add(-time.Minute)
+			if legacyFuture {
+				eventAt = now.Add(time.Hour)
+			}
+			const stale = "1111111111111111111111111111111111111111"
+			const actual = "2222222222222222222222222222222222222222"
+			branch, body := "legion/"+issue, "Dispatch: "+issue
+			err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+				Repo: "acme/widgets", Number: 98767, HeadSHA: stale,
+				HeadRef: branch, BaseRef: "main", State: "open", IssueKey: &issue,
+				AttributionSource: "branch", AttributionComplete: true,
+				EventAt: &eventAt, CheckedAt: &now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			gh.set("acme/widgets", 98767, "closed", actual, branch, body, now)
+			_, err = intake.handlePullRequestEnvelope(ctx, nil,
+				prEnvelope("acme/widgets", 98767, "closed", actual, branch, body, now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterEvent := readHead(t, ctx, pool, "acme/widgets", 98767)
+			eventReads := gh.reads.Load()
+			err = RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", 98767, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterRefresh := readHead(t, ctx, pool, "acme/widgets", 98767)
+			staleBasis, err := HeadAttributedTo(ctx, pool, issue, stale)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("after event: head=%s state=%s github_reads=%d; after refresh: head=%s state=%s total_github_reads=%d stale_head_is_basis=%v",
+				afterEvent.HeadSHA, afterEvent.State, eventReads, afterRefresh.HeadSHA,
+				afterRefresh.State, gh.reads.Load(), staleBasis)
+			if afterEvent.HeadSHA != actual || afterEvent.State != "closed" || afterRefresh.HeadSHA != actual || afterRefresh.State != "closed" || staleBasis {
+				t.Error("GitHub says closed at 2222, but a legacy row still makes the old open head a basis")
+			}
+		})
+	}
+}
+
+// releaseBeforeUpsertHeadRow is upsertHeadRow as the release before dispatch://INFRA-3992 runs
+// it, word for word (main at 5bd14c323bdf): it names no column it does not know, so it leaves
+// whatever else the row holds as it was, and it orders its own writes by the time it is handed.
+// That release handed it an envelope's updated_at, head and state.
+const releaseBeforeUpsertHeadRow = `
+		insert into pull_request_heads (
+			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
+			title, url, event_at, checked_at, attribution_rule
+		)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
+		on conflict (repo, number) do update set
+			head_sha = excluded.head_sha,
+			head_ref = excluded.head_ref,
+			base_ref = excluded.base_ref,
+			state = excluded.state,
+			issue_key = case when $13::boolean
+				then excluded.issue_key else pull_request_heads.issue_key end,
+			attribution_source = case when $13::boolean
+				then excluded.attribution_source else pull_request_heads.attribution_source end,
+			title = excluded.title,
+			url = excluded.url,
+			event_at = coalesce(excluded.event_at, pull_request_heads.event_at),
+			checked_at = coalesce(excluded.checked_at, pull_request_heads.checked_at),
+			attribution_rule = case when excluded.checked_at is null
+				then pull_request_heads.attribution_rule else excluded.attribution_rule end
+		where excluded.event_at is null
+		   or pull_request_heads.event_at is null
+		   or excluded.event_at >= pull_request_heads.event_at
+	`
+
+// releaseBeforeAttributionRule is the AttributionRuleVersion of the release before, the rule
+// its writes stamp.
+const releaseBeforeAttributionRule = 2
+
+// writeHeadAsTheReleaseBefore stores head with the release before's own statement, as that
+// release's envelope writer handed it: the envelope's head, state, branch, title and updated_at.
+func writeHeadAsTheReleaseBefore(t *testing.T, ctx context.Context, pool *store.Pool, head PullRequestHead) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, releaseBeforeUpsertHeadRow,
+		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
+		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
+		head.AttributionComplete, releaseBeforeAttributionRule,
+	); err != nil {
+		t.Fatalf("write the head of %s#%d as the release before does: %v", head.Repo, head.Number, err)
+	}
+}
+
+// A row the release before writes beside this build, after the migration has run, stops no read
+// of GitHub and wins against none of its answers. This build has read the pull request from
+// GitHub: open, at its real head. The release before then takes an envelope GitHub never sent —
+// a merge at another head, an hour ahead of GitHub's clock, naming no head repository — and
+// writes it as that release writes every envelope: its head, its state and its time, with the
+// issue the row held kept, since a payload that names no head repository is an incomplete
+// attribution that deletes nobody's issue. That makes the forged head a basis of the issue's
+// `before_merge` check, which is the release before's own defect and the state this build meets.
+//
+// From there GitHub's answer must win at the first read of it this build makes: a later event of
+// the pull request reads GitHub and writes its answer, though the stored time is later than
+// GitHub's; and with no event at all, the reconcile's next pass reads the merged row once and
+// writes GitHub's answer. Before the fix the event read nothing (headReadCovers took the forged
+// time for GitHub's), and the pass offered the row nothing (its attribution rule was the current
+// one) and would have refused GitHub's older time if it had.
+func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing.T) {
+	for _, repair := range []string{"a later event of GitHub", "the reconcile's next pass"} {
+		t.Run(repair, func(t *testing.T) {
+			fastPageRetries(t)
+			pool, ctx := deliveryTestPool(t)
+			issue := seedHeadIssue(t, ctx, pool, 98769)
+			fake := newFakeGitHub(t)
+			github := serveGitHubPulls(t, fake, "acme/widgets")
+			client := fake.newTestClient()
+			intake := newIntake(nil, pool, nil, client, nil, nil)
+			const (
+				real   = "6969696969696969696969696969696969696969"
+				forged = "6060606060606060606060606060606060606060"
+			)
+			branch, body := "legion/"+issue, "Dispatch: "+issue
+			opened := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+			github.set("acme/widgets", 98769, "open", real, branch, body, opened)
+			if _, err := intake.handlePullRequestEnvelope(ctx, nil, prEnvelope("acme/widgets", 98769, "opened", real, branch, body, opened)); err != nil {
+				t.Fatalf("handle GitHub's own opened envelope: %v", err)
+			}
+			if attributed, err := HeadAttributedTo(ctx, pool, issue, real); err != nil || !attributed {
+				t.Fatalf("HeadAttributedTo(%s, GitHub's head) after the opening = %v, %v; want true", issue, attributed, err)
+			}
+
+			ahead := opened.Add(time.Hour)
+			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{
+				Repo: "acme/widgets", Number: 98769, HeadSHA: forged, HeadRef: branch, BaseRef: "main",
+				State: "merged", AttributionSource: string(sourceNone), Title: "Change 98769",
+				URL: "https://github.com/acme/widgets/pull/98769", EventAt: &ahead,
+			})
+			// The precondition: the release before's write is the row B3 of the review names, the
+			// forged head a basis of the issue's check.
+			if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || !attributed {
+				t.Fatalf("HeadAttributedTo(%s, the forged head) after the release before's write = %v, %v; want true: the fixture is not the row under test", issue, attributed, err)
+			}
+
+			readsBefore := github.reads.Load()
+			switch repair {
+			case "a later event of GitHub":
+				labeled := opened.Add(time.Minute)
+				github.set("acme/widgets", 98769, "open", real, branch, body, labeled)
+				if _, err := intake.handlePullRequestEnvelope(ctx, nil, prEnvelope("acme/widgets", 98769, "labeled", real, branch, body, labeled)); err != nil {
+					t.Fatalf("handle GitHub's labeled envelope: %v", err)
+				}
+				if reads := github.reads.Load() - readsBefore; reads != 1 {
+					t.Errorf("the labeled event read the pull request from GitHub %d times, want once: a time the release before took from an envelope stopped the read", reads)
+				}
+			case "the reconcile's next pass":
+				NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+				if reads := github.reads.Load() - readsBefore; reads != 1 {
+					t.Errorf("the pass read the pull request from GitHub %d times, want once: the merged row the release before wrote was offered nothing", reads)
+				}
+			}
+
+			got := readHead(t, ctx, pool, "acme/widgets", 98769)
+			if got.HeadSHA != real || got.State != "open" {
+				t.Errorf("#98769 after %s = head %s, state %s; want GitHub's %s, open", repair, got.HeadSHA, got.State, real)
+			}
+			if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
+				t.Errorf("HeadAttributedTo(%s, the forged head) after %s = %v, %v; want false: a head GitHub never sent stands", issue, repair, attributed, err)
+			}
+			if attributed, err := HeadAttributedTo(ctx, pool, issue, real); err != nil || !attributed {
+				t.Errorf("HeadAttributedTo(%s, GitHub's head) after %s = %v, %v; want true", issue, repair, attributed, err)
+			}
+		})
+	}
+}

@@ -283,7 +283,7 @@ stage_head() {
     -v state="$5" -v issue="$2" -v title="$2 the ci-check acceptance run" <<'SQL'
 insert into pull_request_heads
   (repo, number, head_sha, state, issue_key, attribution_source, title, attribution_rule, checked_at)
-values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', 2, now())
+values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', 3, now())
 on conflict (repo, number) do update set
   head_sha = excluded.head_sha, state = excluded.state, issue_key = excluded.issue_key,
   title = excluded.title, attribution_rule = excluded.attribution_rule, checked_at = excluded.checked_at;

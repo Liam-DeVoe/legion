@@ -58,13 +58,18 @@ import (
 // has: the rule that took the first candidate outright, whatever repository its issue resolved
 // to. 1 held every candidate to the pull request's repository and ranked the title and the body
 // first. 2 is the order above, with the two links and the head branch over the title and the
-// body.
+// body. 3 is that order judged on GitHub's own answer about the pull request alone: under 2 the
+// `pull_request` envelope's writer attributed a row from the envelope's title, body and branch,
+// which a caller sets, and wrote its head and state from it too (dispatch://INFRA-3992), so every
+// merged row stored before 3 is read from GitHub once more. 0 is also what the trigger
+// pull_request_heads_unread_write gives a row a write of no GitHub read changed, so that row is
+// read once more too.
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
 // stored. Nothing else revisits one — an open row comes round every five minutes, but a merged
 // row is read again only by that arm — so a change made without raising it leaves every pull
 // request merged before it judged by the rule of its day for good.
-const AttributionRuleVersion = 2
+const AttributionRuleVersion = 3
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
