@@ -55,20 +55,20 @@
  *  wall-clock path behind `--shuffle`, which Playwright takes as the seed" and "a wall-clock
  *  path behind `--only-changed`, which Playwright takes as a git ref".
  *
- *    --list --shuffle e2e/claim.e2e.ts       listed 1,432 tests in 200 files, exit 0: the
+ *    --list --shuffle e2e/claim.e2e.ts       listed 1,451 tests in 202 files, exit 0: the
  *                                            default selection, the path taken as the seed and
  *                                            no file filtered
  *    --list --only-changed e2e/claim.e2e.ts  listed 0 tests in 0 files, exit 1, `--only-changed
  *                                            <path>` printing `Cannot detect changed files for
  *                                            --only-changed mode: git diff <path> --name-only`
  *
- *  Those 1,432 rows are what a listing that names no project holds, and not the whole suite:
+ *  Those 1,451 rows are what a listing that names no project holds, and not the whole suite:
  *  the three wall-clock projects carry `default: false` (`clockProjectNames`,
  *  `e2e/configurations.ts`) and stand outside it. Measured at this head against
- *  `e2e/playwright.config.ts`, `--list` alone lists `Total: 1432 tests in 200 files`, `--list`
+ *  `e2e/playwright.config.ts`, `--list` alone lists `Total: 1451 tests in 202 files`, `--list`
  *  naming `chromium-alone`, `firefox-alone` and `webkit-alone` lists `Total: 51 tests in 3
- *  files`, and `--list` naming all fifteen projects of the config lists `Total: 1483 tests in
- *  203 files`, which is the suite.
+ *  files`, and `--list` naming all fifteen projects of the config lists `Total: 1502 tests in
+ *  205 files`, which is the suite.
  *
  *  Together the two sets of readings settle every class. A REQUIRED-value option takes the next
  *  token whatever it looks like, a `--ui` included, which is why `--grep --ui` lists rows. An
