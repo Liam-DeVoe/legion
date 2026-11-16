@@ -30,9 +30,8 @@ var dropLabels = [dropReasons]string{"past_bounds", "hub_gave_up", "unopened", "
 // are counted and wait for the next line.
 const dropLogInterval = time.Minute
 
-// pastBoundsDetail is the first-drop detail of a drop past both bounds, which deliver records
-// without building a string.
-var pastBoundsDetail = "past both bounds of this replica"
+// pastBoundsDetail is the first-drop detail of a drop past both bounds.
+const pastBoundsDetail = "past both bounds of this replica"
 
 // drops counts the requests the service dropped unanswered. Each drop is an atomic add, and the
 // first detail since the last log line a compare-and-swap, so deliver can record one without
@@ -50,10 +49,18 @@ type drops struct {
 	logged   time.Time
 }
 
-// add counts one drop for reason, and keeps detail when it is the first since the last log line.
-func (d *drops) add(reason int, detail *string) {
+// add counts one drop for reason, and reports whether the drop's detail is wanted: whether none
+// waits for the next log line yet. A caller builds the detail, and gives it to note, only then, so
+// a flood of drops between two log lines builds one string rather than one a drop; two drops at
+// once can both be told yes, and the second's note then keeps nothing.
+func (d *drops) add(reason int) bool {
 	d.pending[reason].Add(1)
-	d.first.CompareAndSwap(nil, detail)
+	return d.first.Load() == nil
+}
+
+// note keeps detail as the first drop's since the last log line, unless one is kept already.
+func (d *drops) note(detail string) {
+	d.first.CompareAndSwap(nil, &detail)
 }
 
 // reportDropped moves the drops counted since the last report into broker_nats_callout_dropped_total

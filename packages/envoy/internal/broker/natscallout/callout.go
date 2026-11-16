@@ -350,7 +350,9 @@ func (s *Service) deliver(msg *nats.Msg) {
 	// Dropped: the hub refuses its client at its authorization timeout. Counted, and logged by the
 	// heartbeat (reportDropped), not here: a log line is a write, which can block, and past both
 	// bounds it would be a line a request.
-	s.answer.drops.add(dropPastBounds, &pastBoundsDetail)
+	if s.answer.drops.add(dropPastBounds) {
+		s.answer.drops.note(pastBoundsDetail)
+	}
 }
 
 // Close stops answering.
@@ -519,31 +521,29 @@ func (a *answerer) hubGaveUp(claims *jwt.AuthorizationRequestClaims, received ti
 //
 // So is a request the server has already given up on, without a decision or a broker call: nobody
 // waits for its answer. Whether it has is read from the server's own clock (hubClock), so no skew
-// between the server's clock and this broker's drops a request the server still waits for. The
-// expiry does not set the budget either: written in whole seconds, it can name a moment up to a
-// second before the server gives up, and would cut a budget of 1.5 s by as much.
+// between the server's clock and this broker's drops a request the server still waits for. A
+// request in the clear is refused under its own label and logged at error before that, whatever
+// else is true of it: the line is how an operator learns the hub lost its curve key, which a drop
+// would hide. The expiry does not set the budget either: written in whole seconds, it can name a
+// moment up to a second before the server gives up, and would cut a budget of 1.5 s by as much.
 func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	serverXKey := msg.Header.Get(serverXKeyHeader)
 	data := msg.Data
 	if serverXKey != "" {
 		opened, err := a.xkey.Open(data, serverXKey)
 		if err != nil {
-			detail := "did not open with the service's curve key: " + err.Error()
-			a.drops.add(dropUnopened, &detail)
+			if a.drops.add(dropUnopened) {
+				a.drops.note("did not open with the service's curve key: " + err.Error())
+			}
 			return
 		}
 		data = opened
 	}
 	claims, err := jwt.DecodeAuthorizationRequestClaims(string(data))
 	if err != nil {
-		detail := "no authorization request JWT: " + err.Error()
-		a.drops.add(dropUnreadable, &detail)
-		return
-	}
-	if a.hubGaveUp(claims, received) {
-		detail := fmt.Sprintf("the hub %s had given up on a request from %s, expiring at %s on its clock",
-			claims.Server.ID, claims.ClientInformation.Host, time.Unix(claims.Expires, 0).UTC().Format(time.RFC3339))
-		a.drops.add(dropHubGaveUp, &detail)
+		if a.drops.add(dropUnreadable) {
+			a.drops.note("no authorization request JWT: " + err.Error())
+		}
 		return
 	}
 	req := Request{
@@ -554,7 +554,8 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	kind := credentialKind(req)
 	var decision Decision
 	var refused *Refusal
-	if serverXKey == "" {
+	switch {
+	case serverXKey == "":
 		// The service always holds a curve key, and a hub configured with it seals every request,
 		// so a request in the clear means the hub's callout lost its xkey and every token and proof
 		// is crossing the wire unencrypted. Refused, and said loudly.
@@ -562,7 +563,13 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 		if a.deps.Log != nil {
 			a.deps.Log.Error("natscallout: an authorization request arrived in the clear; the hub's auth_callout names no xkey, so every token and proof crosses the wire unencrypted", "host", req.Host)
 		}
-	} else {
+	case a.hubGaveUp(claims, received):
+		if a.drops.add(dropHubGaveUp) {
+			a.drops.note(fmt.Sprintf("the hub %s had given up on a request from %s, expiring at %s on its clock",
+				claims.Server.ID, req.Host, time.Unix(claims.Expires, 0).UTC().Format(time.RFC3339)))
+		}
+		return
+	default:
 		decision, refused = settle(req)
 	}
 	user, refused := admit(req, decision, refused)

@@ -550,17 +550,26 @@ func TestCloseWaitsForTheRequestItWasDeliveringWhenItUnsubscribed(t *testing.T) 
 
 // A request the hub has already given up on is dropped without a decision, and the broker is never
 // asked about its token, whatever this broker's wall clock reads against the hub's: the drop reads
-// how long the hub has waited from the hub's own clock (hubClock), never from the broker's. So with
-// the broker three seconds ahead of the hub, or behind it, a live request is decided and admitted,
-// and a request held past its lifetime is dropped. The held one is held before it reaches the
-// subscription, as a replica whose delivery goroutine fell behind holds what it has not reached; an
-// earlier request from the same hub shows the replica the hub's clock, which is how it sees the
-// hold. The drop is counted under its reason, and logged.
+// how long the hub has waited from the hub's own clock (hubClock), never from the broker's. In each
+// row a live request is decided and admitted, and a request held past its lifetime is dropped. The
+// held one is held before it reaches the subscription, as a replica whose delivery goroutine fell
+// behind holds what it has not reached; an earlier request from the same hub shows the replica the
+// hub's clock, which is how it sees the hold. The drop is counted under its reason, and logged.
+//
+// Each row fails a drop that reads the broker's wall clock against the hub's expiry, each on one of
+// its two requests. Three seconds ahead, that drop reads the live request as given up on, refuses
+// it and fails the first step. Thirty seconds behind, it reads the request held seven seconds as
+// live, asks the broker about it and admits it. Three seconds behind would fail nothing: seven
+// seconds on the hub is past the expiry even read three seconds late, and a hold short enough to
+// read as live then is one the hub's clock reads inside the two seconds the drop allows
+// (hubWholeSeconds), within a second of either side by where the hub's seconds fall, so no hold
+// separates the two every run. Thirty seconds is inside the minute a connection proof's issue time
+// may be off this broker's clock (brokertoken.ProofClockSkew), so the live request's proof is
+// accepted.
 func TestARequestTheHubHasGivenUpOnIsDroppedWhateverTheBrokersClockReads(t *testing.T) {
 	for name, skew := range map[string]time.Duration{
-		"the broker 3 s ahead of the hub":  3 * time.Second,
-		"the broker 3 s behind the hub":    -3 * time.Second,
-		"the broker on the hub's own time": 0,
+		"the broker 3 s ahead of the hub": 3 * time.Second,
+		"the broker 30 s behind the hub":  -30 * time.Second,
 	} {
 		t.Run(name, func(t *testing.T) {
 			target, entered, release := holdDeliveries(t)

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -184,6 +185,41 @@ func TestRequestsAreEncryptedToTheServiceKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A request in the clear is refused under its own label and logged at error whatever else is true
+// of it, a request the hub has already given up on included: the label is how an operator learns
+// the hub's callout lost its curve key, which a drop would hide. A hub with no curve key sends two
+// requests; the second is held past its lifetime, after the first has shown the replica the hub's
+// clock, and both are refused as unsealed, none dropped.
+func TestAnUnsealedRequestIsRefusedEvenWhenTheHubHasGivenUpOnIt(t *testing.T) {
+	target, entered, release := holdDeliveries(t)
+	keys := testnats.NewCalloutKeys(t)
+	config := keys
+	config.XKeyPublic = ""
+	url := testnats.StartWithCallout(t, config)
+	first, late := newSession(t, "ses_first", 15*time.Minute), newSession(t, "ses_late", 15*time.Minute)
+	log := &logtest.Buffer{}
+	registry := metrics.New()
+	service := startService(t, url, keys, Deps{Introspect: introspector(first, late), Log: slog.New(slog.NewTextHandler(log, nil)), Metrics: NewMetrics(registry)}, Decide)
+
+	_, err := connectSession(t, url, first, nil)
+	require.ErrorIs(t, err, nats.ErrAuthorization)
+	target.Store(service)
+	refused := make(chan error, 1)
+	go func() {
+		_, err := connectSession(t, url, late, nil)
+		refused <- err
+	}()
+	<-entered
+	time.Sleep(7 * time.Second)
+	release()
+	require.ErrorIs(t, <-refused, nats.ErrAuthorization)
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "both requests refused as unsealed", func() bool {
+		return strings.Count(log.String(), "label="+labelUnsealed) == 2
+	})
+	require.Equal(t, 2, strings.Count(log.String(), "level=ERROR msg=\"natscallout: an authorization request arrived in the clear"), "each request in the clear was not logged at error:\n%s", log.String())
+	require.NotContains(t, scrape(t, registry), `reason="hub_gave_up"`, "the request in the clear was dropped")
 }
 
 // A session's own grant refuses it the authorization subject, and the guard that makes that so is

@@ -27,10 +27,17 @@ import (
 // another, and a restarted server comes back under a new ID with a reading of its own. A reading
 // is kept for hubReadingWindow, after which the next request replaces it: the bound assumes the
 // server's clock runs no slower than this replica's monotonic one, which a clock slewed by NTP
-// breaks by at most 500 ppm, 30 ms over the window. A server whose clock steps back while a
-// reading of it is kept reads as later than it is until the reading is replaced, and its requests
-// meanwhile can be dropped early; a step is an operator's act on a running hub, where skew is the
-// standing state the drop must not depend on.
+// breaks by at most 500 ppm, 30 ms over the window.
+//
+// A step of a server's clock breaks it outright, in either direction. Stepped back while a reading
+// of it is kept, the server reads as later than it is until the reading is replaced, a minute at
+// most, and the requests it sends meanwhile can be dropped early. Stepped forward, it writes later
+// issue times on the requests it sends after the step, and the first of those read replaces the
+// reading, so the requests it sent before the step, on its old clock, read as that step older:
+// those still on their way to an answer, at most one authorization timeout's worth, can be dropped
+// early. Either way the drops are counted under hub_gave_up and logged (drops). A step is an
+// operator's act on a running hub, where NTP slews rather than steps; skew is the standing state,
+// and the drop does not depend on it.
 type hubClock struct {
 	mu       sync.Mutex
 	readings map[string]hubReading
@@ -48,10 +55,16 @@ type hubReading struct {
 // that server replaces it, whatever it reads.
 const hubReadingWindow = time.Minute
 
-// hubWholeSeconds is what the drop allows for the server writing whole seconds: one for the issue
-// time of the reading, which can be up to a second earlier than the server's clock was, and one
-// for the request's expiry, which can name a moment up to a second before the server's timeout
-// on it ends. With both allowed, a request read as given up on is one the server has given up on.
+// hubWholeSeconds is how far past a request's expiry the server's clock must read before the
+// request is dropped. The server writes the expiry as the moment it built the request plus its
+// authorization timeout, truncated to a whole second (nats-server server/auth_callout.go:386-387),
+// so the timeout ends less than a second after the expiry: one second of the two. The second is a
+// margin for what the bound does not see, both of them milliseconds: the server starts its timer
+// only after it has encoded, sealed and sent the request (:462), and its clock can run slower than
+// this replica's by NTP's slew. The issue time's truncation needs nothing: it makes a reading earlier
+// than the server's clock was, which only lowers the bound. The margin is a whole second because a
+// request decided rather than dropped costs a broker call, and one dropped while the server still
+// waits costs a client its connection.
 const hubWholeSeconds = 2
 
 func newHubClock() *hubClock {
