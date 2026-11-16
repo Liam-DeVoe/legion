@@ -228,9 +228,27 @@ function natsServerKey(url: string): string {
   return `${scheme.toLowerCase()}://${userinfo}${host.toLowerCase()}:${port}${withoutTrailingSlashes(rest)}`;
 }
 
+/** Throws, naming `remedy`, unless `ENVOY_NATS_URL` names no servers or exactly the section's own
+ * (as a set, each compared by `natsServerKey`): a credential the file holds goes only to the
+ * servers written beside it, since `ENVOY_NATS_URL` is the only way to name others. */
+function requireFileServers(
+  section: EnvoyFileSettings,
+  namedNatsUrls: readonly string[],
+  filePath: string,
+  remedy: string
+): void {
+  if (namedNatsUrls.length === 0) return;
+  const servers = new Set((section.natsUrls ?? []).map(natsServerKey));
+  const named = new Set(namedNatsUrls.map(natsServerKey));
+  if (named.size !== servers.size || ![...named].every((server) => servers.has(server))) {
+    throw new Error(
+      `ENVOY_NATS_URL names other servers than ${filePath}'s envoy.natsUrls; set ${remedy} for them`
+    );
+  }
+}
+
 /** The NATS user's seed: `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED`, else the section's
- * `natsSeed`, which goes only with the section's own servers: `ENVOY_NATS_URL`, the only way to
- * name others, must name exactly them (as a set, each compared by `natsServerKey`). Throws naming
+ * `natsSeed`, which goes only with the section's own servers (`requireFileServers`). Throws naming
  * what could not be read or used. */
 function natsSeed(
   env: EnvoyEnvironment,
@@ -240,15 +258,7 @@ function natsSeed(
 ): NatsSeed | undefined {
   const fromEnvironment = natsSeedFromEnvironment(env);
   if (fromEnvironment !== undefined || section.natsSeed === undefined) return fromEnvironment;
-  if (namedNatsUrls.length > 0) {
-    const servers = new Set((section.natsUrls ?? []).map(natsServerKey));
-    const named = new Set(namedNatsUrls.map(natsServerKey));
-    if (named.size !== servers.size || ![...named].every((server) => servers.has(server))) {
-      throw new Error(
-        `ENVOY_NATS_URL names other servers than ${filePath}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`
-      );
-    }
-  }
+  requireFileServers(section, namedNatsUrls, filePath, "NATS_NKEY_SEED_FILE");
   return {
     value: fileValue(section.natsSeed, "envoy.natsSeed", filePath, env),
     source: `envoy.natsSeed in ${filePath}`,
@@ -260,7 +270,11 @@ function natsSeed(
  * use. A seed (`natsSeed`) is presented as it always was. Otherwise `NATS_AUTH`, else the
  * section's `natsAuth` (an empty variable counts as unset), says which: `broker` is the session's
  * broker token (`brokerNatsCredential`), refused naming the gap where this machine has no broker
- * route; `none` is no credential; any other value is refused, naming it. Unset is none, whatever
+ * route, and, as the file's, going only to the servers written beside it (`requireFileServers`):
+ * the token and the proof it signs would otherwise go to any server `ENVOY_NATS_URL` names, which
+ * could relay that proof to the hub it was meant for. `none` is no credential; any other value is
+ * refused, naming the setting and never its value, which may be a credential pasted into the wrong
+ * place. Unset is none, whatever
  * the machine's broker route says: that route reads only `AGENT_SECRETS_URL` and the machine's
  * identity, which the local stack, the compose stacks and the load test set while their hubs run
  * no auth service, and a broker token presented to such a hub loses the session its inbound
@@ -282,9 +296,7 @@ function natsCredential(
         ? undefined
         : { value: section.natsAuth, source: `envoy.natsAuth in ${filePath}` };
   if (auth !== undefined && auth.value !== "broker" && auth.value !== "none") {
-    throw new Error(
-      `${auth.source} is ${JSON.stringify(auth.value)}, which is neither broker nor none`
-    );
+    throw new Error(`${auth.source} is neither broker nor none`);
   }
   const seed = natsSeed(env, section, namedNatsUrls, filePath);
   if (seed !== undefined) {
@@ -298,6 +310,7 @@ function natsCredential(
   if (auth?.value !== "broker") return { kind: "none" };
   const route = brokerRouteConfigured(env);
   if (!route.traded) throw new Error(`${auth.source} is broker, but ${route.gap}`);
+  if (named === undefined) requireFileServers(section, namedNatsUrls, filePath, "NATS_AUTH=broker");
   return { kind: "broker", broker: brokerNatsCredential(env, session) };
 }
 

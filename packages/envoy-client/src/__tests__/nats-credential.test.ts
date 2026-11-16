@@ -162,11 +162,28 @@ describe("which credential a session connects to NATS with", () => {
 
   test("envoy.natsAuth broker resolves to it too, and NATS_AUTH overrides it", () => {
     const env = podEnvironment("http://broker.test");
-    const fromFile = resolved(env, { envoy: { natsAuth: "broker" } });
+    const file = { envoy: { natsUrls: ["nats://nats.internal.example:4222"], natsAuth: "broker" } };
+    const fromFile = resolved(env, file);
     expect("kind" in fromFile && fromFile.kind).toBe("broker");
-    expect(resolved({ ...env, NATS_AUTH: "none" }, { envoy: { natsAuth: "broker" } })).toEqual({
-      kind: "none",
-    });
+    expect(resolved({ ...env, NATS_AUTH: "none" }, file)).toEqual({ kind: "none" });
+  });
+
+  test("envoy.natsAuth broker goes only to the servers written beside it", () => {
+    // As a file's seed does: a session's token and the proof it signs would otherwise go to any
+    // server ENVOY_NATS_URL names, which could relay that proof to the hub it was meant for.
+    const env = podEnvironment("http://broker.test");
+    for (const natsUrls of [["nats://nats.elsewhere.example:4222"], undefined]) {
+      const fromFile = resolved(env, { envoy: { natsUrls, natsAuth: "broker" } });
+      expect("off" in fromFile && fromFile.off).toMatch(
+        /^ENVOY_NATS_URL names other servers than \/\S+\/envoy\.json's envoy\.natsUrls; set NATS_AUTH=broker for them$/
+      );
+    }
+    // The variable is the environment's own choice, for whatever servers it names.
+    const fromVariable = resolved(
+      { ...env, NATS_AUTH: "broker" },
+      { envoy: { natsUrls: ["nats://nats.elsewhere.example:4222"] } }
+    );
+    expect("kind" in fromVariable && fromVariable.kind).toBe("broker");
   });
 
   test("NATS_AUTH=none resolves to none", () => {
@@ -226,14 +243,15 @@ describe("which credential a session connects to NATS with", () => {
     });
   });
 
-  test("another value resolves inbound off naming the setting and its two values", () => {
+  test("another value resolves inbound off naming the setting and its two values, not the value", () => {
+    // A value is never echoed: a seed or token pasted into the wrong setting is a credential.
     const env = podEnvironment("http://broker.test");
-    expect(resolved({ ...env, NATS_AUTH: "seed" })).toEqual({
-      off: 'NATS_AUTH is "seed", which is neither broker nor none',
+    expect(resolved({ ...env, NATS_AUTH: "SUAPASTEDSEED" })).toEqual({
+      off: "NATS_AUTH is neither broker nor none",
     });
     const fromFile = resolved(env, { envoy: { natsAuth: "Broker" } });
     expect("off" in fromFile && fromFile.off).toMatch(
-      /^envoy\.natsAuth in \/\S+\/envoy\.json is "Broker", which is neither broker nor none$/
+      /^envoy\.natsAuth in \/\S+\/envoy\.json is neither broker nor none$/
     );
   });
 
@@ -549,6 +567,48 @@ describe("keepNatsCredential", () => {
     expect(fake.reconnects.length).toBe(reconnected);
     expect(broker.state.minted.length).toBe(traded);
   }, 15_000);
+
+  test("a token that lives one second is renewed before it lapses", async () => {
+    // The broker allows one-second tokens (BROKER_ACCESS_TOKEN_SECONDS=1): no floor on the wait
+    // may push the renewal past the token's own expiry.
+    const broker = stubBroker(1);
+    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    const lapses = credential.expiresAt().getTime();
+    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
+    const stop = keepNatsCredential(fake.connection, credential, () => {});
+    try {
+      const deadline = Date.now() + 3_000;
+      while (fake.reconnects.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+      expect(fake.reconnects[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(lapses);
+    } finally {
+      stop();
+    }
+  }, 10_000);
+
+  test("a renewal that lands no new token is warned about, never naming the token", async () => {
+    // The token client answers the token in hand through a transient exchange failure, so the
+    // connection keeps it, and the session is told its renewals are not landing.
+    const broker = stubBroker(2);
+    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    broker.state.down = true;
+    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
+    const warnings: string[] = [];
+    const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
+    try {
+      const deadline = Date.now() + 5_000;
+      while (warnings.length === 0 && Date.now() < deadline) await Bun.sleep(50);
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(warnings.join("\n")).toContain("landed no new token");
+      expect(warnings.join("\n")).not.toContain("session-access-");
+      expect(fake.reconnects).toEqual([]);
+    } finally {
+      stop();
+    }
+  }, 10_000);
 
   test("a closed connection ends the keeper", async () => {
     const broker = stubBroker(2);

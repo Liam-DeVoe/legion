@@ -19023,6 +19023,13 @@ console.log(JSON.stringify(args));
     expect(
       notifications.some((message) => message.includes("inbound messages are unavailable"))
     ).toBe(true);
+    // The notice names the dial's own failure, the cause a person can act on (a hub with no auth
+    // service under NATS_AUTH=broker says so and what to unset), not only the refusal it led to.
+    expect(
+      notifications.some((message) =>
+        message.includes("because its NATS connection failed: CONNECTION_REFUSED")
+      )
+    ).toBe(true);
     expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_retry")).toBe(false);
     const retry = intervals.at(-1);
     if (retry === undefined) throw new Error("retry interval was not registered");

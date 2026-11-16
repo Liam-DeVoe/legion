@@ -3663,7 +3663,16 @@ export default function envoyExtension(pi: PiApi): void {
     for (const other of leftSessions) forgetBrokerSession(other);
     leftSessions.clear();
     if (registration !== undefined) {
-      throw new RegistrationError(messageFor(registration.error), { cause: registration.error });
+      // A registration refused for want of the relay subject the failed dial would have opened
+      // names that dial's own failure too: it is the cause a person can act on (a hub with no auth
+      // service under NATS_AUTH=broker says so and what to unset), which the refusal alone hides.
+      const refused = messageFor(registration.error);
+      throw new RegistrationError(
+        inboundFailure === undefined
+          ? refused
+          : `${refused}, because its NATS connection failed: ${messageFor(inboundFailure)}`,
+        { cause: registration.error }
+      );
     }
     if (inboundFailure !== undefined) {
       throw new InboundError(messageFor(inboundFailure), decided, { cause: inboundFailure });

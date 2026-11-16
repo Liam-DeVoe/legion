@@ -140,7 +140,8 @@ export function brokerNatsCredential(
 /** The most the keeper renews ahead of a token's expiry: the token client's own window
  *  (`DEFAULT_RENEW_BEFORE_MS`, `@legion/broker-client/token-client`), inside which it trades. */
 const RENEW_AHEAD_MS = 5 * 60_000;
-/** The least the keeper waits between two renewals. */
+/** The least the keeper waits between two renewals, where the token in hand lives long enough for
+ *  it: the wait is never longer than half the token's remaining life. */
 const RENEW_FLOOR_MS = 1_000;
 /** The keeper's retry after a renewal that landed no new token: doubling from the first to the
  *  last. */
@@ -150,20 +151,25 @@ const RETRY_LAST_MS = 60_000;
 const WARN_AGAIN_MS = 30 * 60_000;
 
 /** How long after `now` the keeper renews a token that lapses at `expiry`: the token client's
- *  window ahead of it, or halfway there for a token that lives less than twice that window. */
+ *  window ahead of it, or halfway there for a token that lives less than twice that window; at
+ *  least `RENEW_FLOOR_MS`, unless that is past half the token's remaining life (the broker allows
+ *  one-second tokens), and at once for a token already lapsed. */
 function renewDelay(expiry: number, now: number): number {
   const remaining = expiry - now;
-  return Math.max(RENEW_FLOOR_MS, remaining - Math.min(RENEW_AHEAD_MS, remaining / 2));
+  if (remaining <= 0) return 0;
+  const ahead = remaining - Math.min(RENEW_AHEAD_MS, remaining / 2);
+  return Math.max(Math.min(RENEW_FLOOR_MS, remaining / 2), ahead);
 }
 
 /**
  * Holds `connection` to a token the auth service still admits: ahead of each token's expiry it
  * renews `credential` and, when that lands a new token, reconnects, so the CONNECT presents the
  * new token before the server drops the user the old one was admitted as. A renewal that fails, or
- * lands no new token, is retried at 2 s doubling to a minute, and `warn` is told once, naming why,
- * and again every 30 minutes while it lasts; the token is never named. The connection keeps
- * reconnecting on its own meanwhile (`ignoreAuthErrorAbort`), and the authenticator starts a trade
- * of its own at each CONNECT it cannot sign, so the first live token admits it again.
+ * lands no new token (the token client keeps the token in hand through a transient exchange
+ * failure), is retried at 2 s doubling to a minute, and `warn` is told once, naming why, and again
+ * every 30 minutes while it lasts; the token is never named. The connection keeps reconnecting on
+ * its own meanwhile (`ignoreAuthErrorAbort`), and the authenticator starts a trade of its own at
+ * each CONNECT it cannot sign, so the first live token admits it again.
  *
  * Returns the function that stops it; the connection closing stops it too.
  */
@@ -190,6 +196,15 @@ export function keepNatsCredential(
     retries += 1;
     schedule(Math.min(RETRY_FIRST_MS * 2 ** (retries - 1), RETRY_LAST_MS));
   };
+  /** Tells `warn` of `why`, once, and again every 30 minutes while renewals keep failing. */
+  const warnOnce = (why: string) => {
+    const now = Date.now();
+    if (warnedAt !== undefined && now - warnedAt < WARN_AGAIN_MS) return;
+    warnedAt = now;
+    warn(
+      `the NATS connection's broker token ${why}; it is tried again, and the connection reconnects once a token is live`
+    );
+  };
   const tick = async () => {
     timer = undefined;
     if (stopped || connection.isClosed()) return;
@@ -199,19 +214,16 @@ export function keepNatsCredential(
       if (stopped) return;
       if (credential.needsReconnect()) await connection.reconnect();
     } catch (error) {
-      const now = Date.now();
-      if (warnedAt === undefined || now - warnedAt >= WARN_AGAIN_MS) {
-        warnedAt = now;
-        warn(
-          `the NATS connection's broker token could not be renewed (${messageFor(error)}); it is tried again, and the connection reconnects once a token is live`
-        );
-      }
+      warnOnce(`could not be renewed (${messageFor(error)})`);
       retry();
       return;
     }
     if (credential.expiresAt().getTime() === before) {
       // The token client answered the token in hand: its trade failed in a way it keeps the
       // token through (a broker that is away, a busy one), so try again before it lapses.
+      warnOnce(
+        `renewal landed no new token, so the one in hand lapses at ${new Date(before).toISOString()}`
+      );
       retry();
       return;
     }
