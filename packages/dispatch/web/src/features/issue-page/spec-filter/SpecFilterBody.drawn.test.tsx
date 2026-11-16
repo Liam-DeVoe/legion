@@ -1497,7 +1497,8 @@ test("a statement or a cell a key moves the focus to is scrolled down from under
     issueTree([statement("r1"), statement("r2"), decisionNode("d1")]),
     [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r2"))] })]
   );
-  const scrolledBy = () => scrolls.mock.calls.map(([options]) => options);
+  // `scrollBy`'s first overload takes a number; the body calls the one that takes options.
+  const scrolledBy = (): unknown[] => scrolls.mock.calls.map((call): unknown => call[0]);
   try {
     act(() => rowOf(view, "spec#b-r1").focus());
     expect(scrolledBy(), "a statement clear of the heads was scrolled").toEqual([]);

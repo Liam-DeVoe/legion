@@ -51,8 +51,8 @@ export function artifact(id: string, slug: string, primary = false): Artifact {
 }
 
 /** The issue, with its spec and its decisions document, which is all the addressing rule reads
- *  of it. */
-export function issueDetails(): IssueDetails {
+ *  of it. Its `artifacts` is typed as present, so a case can add a document to the list. */
+export function issueDetails(): IssueDetails & { artifacts: Artifact[] } {
   return {
     advances: [],
     advances_revision: 0,
