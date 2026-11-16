@@ -986,8 +986,12 @@ def go_code_only(text: str) -> str:
 # over more than one line - so a test is its name and the `(` that opens its parameters, in
 # column 0, which a method (`func (s *suite) TestX(`) and a `func TestX` gofmt indents inside
 # another function are not. Both lanes below read this one pattern, so a shape one of them learns
-# the other has too.
-GO_TEST_FUNC = re.compile(r"^func ((?:Test|Fuzz|Example)(?:[^\Wa-z]\w*)?)\(", re.M)
+# the other has too. The rest of the name is any run of characters but a space and `(`, not
+# Python's `\w`: Python's Unicode tables are older than Go's (Python 3.12 has Unicode 15.0, Go 1.27
+# 17.0), so `func TestᲉ(` (U+1C89, Unicode 16.0), which go test runs, did not match. Only an
+# ASCII lower-case letter is refused after the prefix, so `Testé` is read as a test too; go runs no
+# such function, and the name is then a dead alternative of a -run.
+GO_TEST_FUNC = re.compile(r"^func ((?:Test|Fuzz|Example)(?:[^\sa-z(][^\s(]*)?)\(", re.M)
 # A file's build constraint. A step that passes no -tags does not compile a file that carries
 # one, so a test declared only there is a test that step can neither run nor name.
 GO_BUILD_LINE = re.compile(r"^//go:build +(.+?) *$", re.M)

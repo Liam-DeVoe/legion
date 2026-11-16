@@ -96,22 +96,33 @@ print(sum(1 for line in lines
   check "$file holds a go test line this reader reads" "$(is "$found" "1")"
 done
 
-# go test runs a test whose name is not ASCII (TestÉclair, Test日本): cmd/go asks only that the
-# rune after `Test` is not lower case. The listing reader keeps a line as a name by NAME, so an
-# ASCII-only NAME dropped such a test from what every step compiles and runs, and neither verdict
-# could see it run twice or not at all.
+# go test runs a test whose name is not ASCII (TestÉclair, Test日本, TestᲉ): cmd/go asks only that
+# the rune after `Test` is not lower case. The listing reader keeps a line as a name by NAME, so a
+# NAME that judged the name's characters dropped such a test from what every step compiles and
+# runs, and neither verdict could see it run twice or not at all. TestᲉ is U+1C89, a letter of
+# Unicode 16.0, which Python 3.12's own tables (Unicode 15.0) do not know, so `\w` dropped it too.
 echo "case: a listed name that is not ASCII is a name, and other output is not"
 names=$(py 'for line in sys.argv[1:]:
-    print(line, bool(ex.NAME.match(line)))' TestÉclair Test日本 FuzzÜber ExampleÅ 'TestÉclair passed' 'ok  pkg 0.1s')
-check "TestÉclair, Test日本, FuzzÜber and ExampleÅ are names; a sentence and a status line are not" "$(is "$names" \
+    print(line, bool(ex.NAME.match(line)))' TestÉclair Test日本 TestᲉ FuzzÜber ExampleÅ 'TestÉclair passed' 'ok  pkg 0.1s')
+check "TestÉclair, Test日本, TestᲉ, FuzzÜber and ExampleÅ are names; a sentence and a status line are not" "$(is "$names" \
   'TestÉclair True
 Test日本 True
+TestᲉ True
 FuzzÜber True
 ExampleÅ True
 TestÉclair passed False
 ok  pkg 0.1s False')"
+# Printed joined rather than as a list: a list's repr escapes U+1C89, which Python's own tables
+# call unprintable (`'Test\u1c89'`), for the same reason they did not call it a letter.
 check "a -skip of such names is read, not refused" \
-  "$(is "$(py 'print(ex.skip_names(sys.argv[1]))' '^(TestÉclair|Test日本)$')" "['TestÉclair', 'Test日本']")"
+  "$(is "$(py 'print(" ".join(ex.skip_names(sys.argv[1]) or ["refused"]))' '^(TestÉclair|Test日本|TestᲉ)$')" "TestÉclair Test日本 TestᲉ")"
+# A -skip name is the step's text, not go's output, so a character Go's regexp reads as an
+# operator makes it no name: read as one, `Test.*` would be subtracted as a test of that name while
+# go skipped every test it matches.
+for pattern in '^(Test.*)$' '^(Test[A-Z])$' '^(TestA+)$' '^(Test\d)$'; do
+  check "a -skip of $pattern is refused, not read as a name" \
+    "$(is "$(py 'print(ex.skip_names(sys.argv[1]))' "$pattern")" "None")"
+done
 
 # The one `-skip` line of this repository is daemon-go's race step, and the rule expands
 # packages/daemon now, so the space form below is reachable from a real step and the equals form

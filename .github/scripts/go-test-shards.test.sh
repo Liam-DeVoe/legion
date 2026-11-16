@@ -194,33 +194,38 @@ check "and so is TestEta" "$(contains "$err" '^go-test-shards.py: TestEta is in 
 check "and nothing else" "$(is "$(grep -c 'is in' <<<"$err")" 2)"
 
 echo "case: a test whose name is not ASCII is split and checked like any other"
-# go test runs TestÉclair and Test日本: cmd/go asks only that the rune after `Test` is not lower
-# case. A listing that kept ASCII names alone would leave both in no shard, and its proof, reading
-# the same listing, would pass while no leg ran them.
+# go test runs TestÉclair, Test日本 and TestᲉ: cmd/go asks only that the rune after `Test` is not
+# lower case. A listing that kept ASCII names alone would leave them in no shard, and its proof,
+# reading the same listing, would pass while no leg ran them. TestᲉ is U+1C89, a letter of Unicode
+# 16.0: the go that builds this module (Go 1.27, Unicode 17.0) compiles and runs it, while Python
+# 3.12's own tables (Unicode 15.0) do not know it, so a listing that read names with `\w` left it
+# out the same way.
 root_unicode=$(module unicode)
-tests "$root_unicode/names_test.go" TestAlpha TestBeta TestÉclair Test日本
+tests "$root_unicode/names_test.go" TestAlpha TestBeta TestÉclair Test日本 TestᲉ
 unicode_patterns=()
 for index in 0 1; do
   run_shards "$root_unicode" pattern "$index" 2 .
   check "shard $index exits 0" "$(is "$status" 0)"
   unicode_patterns+=("$out")
 done
-check "the two shards hold all four tests, each once" \
+check "the two shards hold all five tests, each once" \
   "$(is "$(union_of "${unicode_patterns[@]}" | paste -sd ' ')" \
-    "TestAlpha TestBeta TestÉclair Test日本")"
+    "TestAlpha TestBeta TestÉclair TestᲉ Test日本")"
 run_shards "$root_unicode" check . -- "${unicode_patterns[@]}"
 check "and the check passes them" "$(is "$status" 0)"
-check "counting all four" \
-  "$(contains "$err" '^go-test-shards.py: every one of the 4 tests of \. is in exactly one of the 2 shards$')"
+check "counting all five" \
+  "$(contains "$err" '^go-test-shards.py: every one of the 5 tests of \. is in exactly one of the 2 shards$')"
 
-echo "case: control - a test whose name is not ASCII, left out of every shard, fails the check by name"
-mapfile -t without_eclair < <(without 'TestÉclair' "${unicode_patterns[@]}")
-run_shards "$root_unicode" check . -- "${without_eclair[@]}"
-check "exits 1" "$(is "$status" 1)"
-check "prints nothing on standard output" "$(is "$out" "")"
-check "names the test and says no leg runs it" \
-  "$(contains "$err" '^go-test-shards.py: TestÉclair is in no shard: none of the 2 patterns selects it, so no leg runs it$')"
-check "names no other test" "$(is "$(grep -c 'is in' <<<"$err")" 1)"
+for left_out in 'TestÉclair' 'TestᲉ'; do
+  echo "case: control - $left_out, left out of every shard, fails the check by name"
+  mapfile -t without_one < <(without "$left_out" "${unicode_patterns[@]}")
+  run_shards "$root_unicode" check . -- "${without_one[@]}"
+  check "exits 1" "$(is "$status" 1)"
+  check "prints nothing on standard output" "$(is "$out" "")"
+  check "names the test and says no leg runs it" \
+    "$(contains "$err" "^go-test-shards.py: $left_out is in no shard: none of the 2 patterns selects it, so no leg runs it\$")"
+  check "names no other test" "$(is "$(grep -c 'is in' <<<"$err")" 1)"
+done
 
 echo "case: the build flags decide which tests exist"
 run_shards "$root" pattern 0 1 -tags shardtag .

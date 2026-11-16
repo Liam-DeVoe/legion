@@ -250,10 +250,11 @@ EXCEPTIONS = (
     ),
 )
 
-# `go test -list` prints one name per line, then a status line per package. The rest of a name
-# is any Go identifier's: Unicode letters, digits and `_` (`\w` on a str), since go test runs
-# `TestÉ`; an ASCII-only class would drop such a test from both verdicts.
-NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)\w*$")
+# `go test -list` prints one name per line, then a status line per package. After the prefix the
+# name is any run of non-space characters, not a character class: go printed it, so Go has already
+# decided it is a test, and Python's Unicode tables are older than Go's (Python 3.12 has Unicode
+# 15.0, Go 1.27 17.0), so `\w` dropped `TestᲉ` (U+1C89, Unicode 16.0) from both verdicts.
+NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)\S*$")
 STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 # A shell variable, as the steps write it: $pkg or ${pkg}.
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
@@ -284,7 +285,11 @@ VALUE_FLAGS = ("-run", "-skip", "-tags", "-timeout", "-count", "-parallel", "-cp
 # because `go test` runs the real `-skip` through Go's regexp: a Python `re` matched against a
 # listing would be a second engine, and two engines that agree on every pattern anyone wrote
 # down disagree on the one nobody tried, leaving this script wrong about what a step runs.
+# A name of the alternation is a test prefix and then no space and none of the characters Go's
+# regexp gives a meaning to (regexp.QuoteMeta's), so `^(Test.*)$` is refused rather than read as
+# one test named `Test.*`; no Unicode table decides it.
 SKIP_ALTERNATION = re.compile(r"^\^\(([^()|]+(?:\|[^()|]+)*)\)\$$")
+SKIP_NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)[^\s\\.+*?()|\[\]{}^$]*$")
 
 
 class Refused(Exception):
@@ -533,7 +538,7 @@ def skip_names(pattern: str) -> list[str] | None:
     if not match:
         return None
     names = match.group(1).split("|")
-    return names if all(NAME.match(name) for name in names) else None
+    return names if all(SKIP_NAME.match(name) for name in names) else None
 
 
 def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:

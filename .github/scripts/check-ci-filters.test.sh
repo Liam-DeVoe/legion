@@ -2346,6 +2346,25 @@ check "names every test of a !race file, sorted, TestMain aside, and the raceEna
 check "passes over the testdata package" "$(is "$(contains "$out" 'TestIgnored')" false)"
 check "and leaves out a package with no such test" "$(is "$(contains "$out" './lane/b')" false)"
 
+echo "case: a test of a !race file whose name is not ASCII is named"
+# go runs TestÉclair and TestᲉ (U+1C89, a letter of Unicode 16.0). Python 3.12's tables are
+# Unicode 15.0, so a walk that read names with Python's \w left TestᲉ out of the plain step's
+# -run, and the race build compiles no !race file: the test ran nowhere.
+cat > "$root/lane/a/sub/unicode_test.go" <<'GO'
+//go:build !race
+
+package sub
+
+import "testing"
+
+func TestᲉ(t *testing.T) {}
+
+func TestÉclair(t *testing.T) {}
+GO
+check "names both, sorted with the package's other test" \
+  "$(is "$(derived "$root" "lane/a/sub")" "go test -count=1 -timeout 10m -run '^(TestTheta|TestÉclair|TestᲉ)\$' ./lane/a/sub")"
+rm "$root/lane/a/sub/unicode_test.go"
+
 echo "case: a package the lane names alone does not reach the packages under it"
 out=$(derived "$root" "lane/a")
 check "names the package alone" \

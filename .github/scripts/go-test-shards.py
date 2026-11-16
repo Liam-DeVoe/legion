@@ -80,12 +80,15 @@ usage: go-test-shards.py pattern <index> <total> [<build flag>...] <package>
        go-test-shards.py check [<build flag>...] <package> -- <pattern>..."""
 
 # A name `-test.list` prints that `-run` can start: a top-level test, fuzz target or example.
-# Benchmarks, which it also prints, are left out (`-run` never starts one), and anything else on
-# the binary's standard output (a TestMain that prints) names no test. The rest of the name is
-# any Go identifier's: Unicode letters, digits and `_` (`\w` on a str), because go test runs
-# `TestÉ` - cmd/go checks only that the rune after `Test` is not lower case - and a name this
-# missed would be in no shard while the proof, blind to it too, passed.
-SPLIT = re.compile(r"^(Test|Fuzz|Example)\w*$")
+# Benchmarks, which it also prints, are left out (`-run` never starts one), and a line with a space
+# in it (a TestMain that prints a sentence) names no test. After the prefix the name is any run of
+# non-space characters, not a character class: the binary printed it, so Go has already decided it
+# is a test, and Python's own Unicode tables are older than Go's (Python 3.12 has Unicode 15.0, Go
+# 1.27 17.0), so `TestᲉ` (U+1C89, Unicode 16.0), which go test runs, failed `\w` and was in no
+# shard while the proof, reading the same listing, passed. A TestMain that prints one word starting
+# with Test is read as a test too; it then lists under every pattern, and the proof fails it by
+# name as a test in every shard.
+SPLIT = re.compile(r"^(Test|Fuzz|Example)\S*$")
 # Linux's MAX_ARG_STRLEN, 32 pages of 4 KiB: the longest single argument exec accepts, terminator
 # included. The pattern is one argument to go test and one to the test binary.
 MAX_ARGUMENT = 131072
