@@ -15,6 +15,7 @@
 // traded; 3, the broker refused the trade, its own words on standard error; 4, the trade was
 // answered and the introspection was not, its status and words on standard error.
 import { readFile } from "node:fs/promises";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { brokerTokenClient } from "../src/environment";
 
 const ACCOUNT_TOKEN_FILE_VAR = "AGENT_SECRETS_ACCOUNT_TOKEN_FILE";
@@ -46,7 +47,7 @@ try {
 } catch (error) {
   fail(3, error instanceof Error ? error.message : String(error));
 }
-const brokerUrl = (process.env.AGENT_SECRETS_URL ?? "").trim().replace(/\/+$/, "");
+const brokerUrl = withoutTrailingSlashes((process.env.AGENT_SECRETS_URL ?? "").trim());
 const answer = await fetch(`${brokerUrl}${INTROSPECT_PATH}`, {
   method: "POST",
   headers: {

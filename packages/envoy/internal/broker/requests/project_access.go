@@ -147,7 +147,9 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 	}
 	asking := tagged
 	if limited {
-		asking = slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(tagged), named...))))
+		asking = slices.Concat(tagged, named)
+		slices.Sort(asking)
+		asking = slices.Compact(asking)
 	}
 	answers, err := m.Projects.States(ctx, asking)
 	if err != nil {

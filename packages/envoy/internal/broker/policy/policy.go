@@ -470,7 +470,7 @@ func ParseRequesterShapes(raw string) (string, error) {
 // guard, and ParseRequesters refuses that tag for its comma.
 func SplitRequestersGuard(raw string) (rest string, guarded bool) {
 	fields := strings.Fields(raw)
-	kept := make([]string, 0, len(fields))
+	kept := fields[:0]
 	for _, field := range fields {
 		if field != RequestersRollbackGuard {
 			kept = append(kept, field)
