@@ -510,8 +510,8 @@ func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
 	}
 }
 
-// TestTheBoardAndTheMetricsPutAnIssueInTheSameTree: the view and the four metrics read one
-// tree-root rule (legion.TreeRoot), so no issue is a child on the board and a root on a card.
+// TestTheBoardAndTheMetricsPutAnIssueInTheSameTree: the board and the four metrics read one
+// tree-root rule (legion.TreeRoot), so no issue is a child on the board and a root in a report.
 // The chain here is 40 deep, longer than the depth cap the board's own walk once stopped at, and
 // it hangs under a tracking issue that carries no Legion work, which the metrics' population
 // holds and the daemon never reported.

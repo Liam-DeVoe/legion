@@ -478,9 +478,8 @@ export const deliverySettingsQuery = () =>
   });
 
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
- *  project is its own entry: the Issues page's view selector reads its own project's to decide
- *  whether it has a Legion view at all, and the pages that list every daemon read one entry per
- *  project (`useLegionDaemons`), since no route lists them. */
+ *  project is its own entry: the Settings page's Legion section reads one entry per project
+ *  (`useLegionDaemons`), since no route lists them. */
 export const legionDaemonQuery = (project: string) =>
   queryOptions({
     queryKey: ["legion-daemon", project],

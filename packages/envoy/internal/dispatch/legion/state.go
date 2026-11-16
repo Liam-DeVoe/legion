@@ -33,8 +33,8 @@ type State struct {
 	// alone is not it), the blockers each held issue waits on, and the slot cap its header shows.
 	Admission *Admission `json:"admission,omitempty"`
 	// Settings is the settings the daemon reports, which hold no secret, each value kept as the
-	// bytes the daemon sent: the view shows them and Dispatch models none of them, so a key added
-	// to legion.yaml is recorded the day a daemon sends it.
+	// bytes the daemon sent: the board carries them and Dispatch models none of them, so a key
+	// added to legion.yaml is recorded the day a daemon sends it.
 	Settings map[string]json.RawMessage `json:"settings,omitempty"`
 }
 
@@ -111,8 +111,8 @@ const (
 	// belong to the project, not to one issue.
 	FieldAdmission = "admission"
 	// FieldSettings is the settings the daemon reports, observed under AdmissionKey beside the
-	// admission block: they belong to the project's daemon, not to an issue, and the settings
-	// panel on the Legion view shows them.
+	// admission block: they belong to the project's daemon, not to an issue, and the board
+	// carries them (api/legion_board.go).
 	FieldSettings = "settings"
 	// ClaimFieldPrefix starts the field of one role's claim state: `claim.architect`,
 	// `claim.implementer`.

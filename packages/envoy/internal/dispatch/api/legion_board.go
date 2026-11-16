@@ -108,7 +108,7 @@ type legionBoardResponse struct {
 	Columns []legionBoardColumn `json:"columns"`
 	// Settings is the settings the daemon reports, which hold no secret: the daemon's own bytes,
 	// key by key, and {} until a read records them, so a project whose daemon has never answered
-	// still renders. The settings panel on the Legion view shows them.
+	// still has a board.
 	Settings   map[string]json.RawMessage `json:"settings"`
 	ComputedAt time.Time                  `json:"computed_at"`
 }
@@ -172,9 +172,9 @@ type legionBoardWait struct {
 
 // getLegionBoard answers GET /api/v1/projects/{key}/legion/board, the project its path names
 // (R2, R26: everything of one project under a path). A project that names no daemon is 404
-// LEGION_NOT_CONFIGURED, which is what shows no view; a project whose daemon has never answered
-// is answered the board with empty columns and the read's failure in its header; a project that
-// does not exist is 404 NOT_FOUND, and a malformed key 400 LEGION_SETTING_INPUT.
+// LEGION_NOT_CONFIGURED; a project whose daemon has never answered is answered the board with
+// empty columns and the read's failure in its header; a project that does not exist is 404
+// NOT_FOUND, and a malformed key 400 LEGION_SETTING_INPUT.
 func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

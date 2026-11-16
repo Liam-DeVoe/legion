@@ -20,9 +20,8 @@ import (
 // event by event, and the agent view one session's live conversation.
 
 // The four delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
-// three answer the Delivery and Pipeline pages' bodies for a window; the fourth is the Legion
-// board of one project (legion_board.go), which has no window: it shows what the daemon's state
-// says now.
+// three answer the Delivery and Pipeline pages' bodies; the fourth is the Legion board of one
+// project (legion_board.go), which has no window: it shows what the daemon's state says now.
 const (
 	deliveryLiveTimeline = "timeline"
 	deliveryLiveMeasures = "measures"
@@ -46,9 +45,8 @@ type DeliveryLiveWindow struct {
 
 // DeliveryLiveView is one view a page shows. A timeline or measures view names its Window and
 // Query, the query string the page would send to the GET route without from/to (search and every
-// facet); a pipeline view names its Window, or an At, which is the seven days ending on that day,
-// or neither, which is the seven days ending at the present, and no Query; a legion view names
-// its Project and nothing else, since the board has no window.
+// facet); a pipeline view names at most an At; a legion view names its Project and nothing else,
+// since the board has no window.
 type DeliveryLiveView struct {
 	Kind    string              `json:"kind"`
 	Window  *DeliveryLiveWindow `json:"window,omitempty"`

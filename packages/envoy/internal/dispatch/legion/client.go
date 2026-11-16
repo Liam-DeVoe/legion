@@ -3,13 +3,13 @@
 // A project's daemon is named by one row of legion_settings (store.go). Once a minute, from one
 // replica under the `legion-state` lease, the sampler (sampler.go) reads that daemon's
 // `GET /legion/v1/state`, records how the read went in legion_reads and every value that moved in
-// legion_observations, so the Legion view on the project Issues page and the four metrics on the
-// Delivery page read Dispatch's own tables rather than a daemon.
+// legion_observations, so the Legion board (api/legion_board.go) and the four metrics
+// (legion/metrics) read Dispatch's own tables rather than a daemon.
 //
 // Two bounds hold a read (the plan's D14, the spec's contract 6): RequestTimeout on the call and
 // ResponseLimit on the body, about nine times the 877,746 bytes the INFRA daemon's state measured.
-// A read over the cap is a failed read — the view says so and the last good observations stand —
-// never a parse of the first 8 MiB.
+// A read over the cap is a failed read — the board's header says so and the last good
+// observations stand — never a parse of the first 8 MiB.
 package legion
 
 import (
@@ -46,7 +46,7 @@ const ResponseLimit = 8 << 20
 // ErrUnavailable is every failed call to a daemon: it could not be reached, it answered something
 // other than 200, its answer was over the cap, or its answer was not the JSON the route serves.
 // One sentinel, because a reader of legion_reads acts the same way on all of them — the last good
-// observations stand and the view names the failure.
+// observations stand and the board's header names the failure.
 var ErrUnavailable = errors.New("the Legion daemon could not be read")
 
 // ErrResponseTooLarge is an answer over ResponseLimit, wrapped beside ErrUnavailable so a caller
@@ -87,7 +87,7 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-// callFailure is a failed call as legion_reads keeps it and the Legion view shows it: the
+// callFailure is a failed call as legion_reads keeps it and the board's header carries it: the
 // transport's own reason, without the address Dispatch called. net/http wraps a transport failure
 // in a *url.Error carrying the whole URL, and the dial under it in a *net.OpError carrying the
 // host and port it resolved to; the daemon's address belongs to the deployment, and every reader

@@ -138,7 +138,7 @@ func RecordRead(ctx context.Context, pool *store.Pool, project string, at time.T
 	return nil
 }
 
-// ReadRetention is how long legion_reads keeps a read of a daemon. The Legion view reads the
+// ReadRetention is how long legion_reads keeps a read of a daemon. The Legion board reads the
 // newest row of a project and nothing reads an older one, so the rest are a week of history for
 // whoever asks why a daemon stopped answering — the horizon delivery_changes keeps for the same
 // reason, a day, measured against a table that gains a row a minute per project rather than one

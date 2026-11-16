@@ -4,7 +4,7 @@ import "strings"
 
 // session_title.go holds the one reading of a Legion session's title. Both halves of the rule
 // that places an issue in a tree ask it — the project-wide read of the issues that carry phase
-// work (PhaseWorkKeys, which the Legion view and the metrics both stand on) and the metrics'
+// work (PhaseWorkKeys, which the Legion board and the metrics both stand on) and the metrics'
 // own window reads — so it lives here, beside the walk, rather than in either reader.
 
 // roles are Legion's six worker types, in the order the workflow runs them. The daemon's

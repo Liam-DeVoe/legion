@@ -520,8 +520,8 @@ func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
 }
 
 // TestAnAdmittedIssueHoldingASlotIsDesignAndOneHoldingNoneIsQueue: the daemon has one `admitted`
-// phase; the view's Design column is the part of it an issue holds a slot through, and the rest is
-// the waiting line, whose hours are on no bar.
+// phase; the board's Design column is the part of it an issue holds a slot through, and the rest
+// is the waiting line, whose hours are on no bar.
 func TestAnAdmittedIssueHoldingASlotIsDesignAndOneHoldingNoneIsQueue(t *testing.T) {
 	root := newIssue("INFRA-1").worked("architect", hour(0)).closedAt(hour(4)).
 		observeString(legion.FieldPhase, hour(0), "admitted").

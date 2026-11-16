@@ -179,7 +179,7 @@ func TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne(t *testing.T) {
 // read of the window covers. The metrics read the event log, the handoffs and the observations
 // of the issues the window could have finished and their trees (scopeKeys), and an open issue in
 // none of those carries no observation of its own; the daemon's `tree` for it is a fact of the
-// project all the same, and the Legion view reads it project-wide. Reading it for the window's
+// project all the same, and the Legion board reads it project-wide. Reading it for the window's
 // issues alone put one issue in two trees: the board's and the metrics'.
 func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach(t *testing.T) {
 	database := corpus(t)

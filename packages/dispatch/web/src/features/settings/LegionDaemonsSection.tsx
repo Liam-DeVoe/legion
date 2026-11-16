@@ -1,8 +1,8 @@
 // The Settings page's Legion section (dispatch://INFRA-1077): which project's state Dispatch
-// reads from which daemon. A project's daemon is what brings its Legion view at all - the Issues
-// page's selector reads that project's own (`legionDaemonQuery`, `features/project/
-// ProjectPage.tsx`) - so naming a daemon here is how a project gets one, and removing one stops
-// Dispatch reading it while everything already read stays.
+// reads from which daemon. Naming a project's daemon here is what makes Dispatch's sampler read
+// that daemon's `GET /legion/v1/state` once a minute and record what changed, and removing one
+// stops the reading while everything already read stays. No page draws what the sampler records:
+// the board it feeds (`GET /api/v1/projects/{key}/legion/board`) is for a later tree's view.
 //
 // No route lists every project's daemon, so the section reads each project's
 // `GET /api/v1/projects/{key}/legion/daemon` (`useLegionDaemons`), and a write changes the one
@@ -205,10 +205,10 @@ export function LegionDaemonsSection(): ReactNode {
         Legion
       </h2>
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        A project whose Legion daemon is named here has a Legion view on its Issues page, drawn from
-        what Dispatch read of that daemon. The address is the daemon&apos;s base URL, with no path:
-        Dispatch reads <code>/legion/v1/state</code> under it. Removing one stops the reading; what
-        was read stays.
+        Naming a project&apos;s Legion daemon here makes Dispatch read that daemon&apos;s state once
+        a minute and record what changed. No page shows that record yet. The address is the
+        daemon&apos;s base URL, with no path: Dispatch reads <code>/legion/v1/state</code> under it.
+        Removing one stops the reading; what was read stays.
         {human ? "" : " Sign in to name one."}
       </p>
 

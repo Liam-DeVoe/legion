@@ -19,11 +19,9 @@ export type DeliveryLiveWindow =
 
 /** One view a page shows. `query` is the query string the page would send to the matching GET route
  *  without `from`/`to` (search and every facet), so the live answer and the GET answer are one. A
- *  pipeline view names at most an `at`, the seven days ending on that day, or neither, the seven
- *  days ending at the present, and no query, since the Pipeline section follows none of the
- *  timeline's facets. A legion view names the project whose board it shows and nothing else: the
- *  board has no window, and `project` is all `GET /api/v1/projects/{key}/legion/board` reads.
- *  Its snapshot and deltas carry a `LegionBoardResponse`. */
+ *  legion view names the project whose board it shows and nothing else: the board has no window,
+ *  and `project` is all `GET /api/v1/projects/{key}/legion/board` reads. Its snapshot and deltas
+ *  carry a `LegionBoardResponse`. */
 export type DeliveryLiveView =
   | { readonly kind: "timeline"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "measures"; readonly window: DeliveryLiveWindow; readonly query: string }

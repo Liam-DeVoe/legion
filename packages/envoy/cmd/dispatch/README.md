@@ -1169,7 +1169,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
 
 - **Socket frames.**
   A new member is additive: the delivery socket (`/ws/delivery`) ignores a member a frame does not declare (`decodeSocketClientFrame`).
-  A new frame type or view kind degrades on build N, which answers that subscription `INVALID_FRAME`, and so does a member build N declares but refuses on a view of that kind, as a build before INFRA-1077 refuses a pipeline view's `window`:
+  A new frame type or view kind degrades on build N, which answers that subscription `INVALID_FRAME`, as a build before INFRA-1077 answers a `legion` view, and so does a member build N declares but refuses on a view of that kind:
   the page fails that one view and keeps the socket, whose other subscriptions build N goes on answering, and sends the view again on its next socket, which a rotation (4001) or build N's own shutdown close (1012) opens and which can reach a process that serves it (`web/src/api/live-socket.ts`).
   A subscribe frame's `resume` is the exception to the ignoring:
   it is the point the view restarts from, so a member the view's resume does not take is refused by name (`decodeLiveResume`) rather than dropped, which would restart the view somewhere else.
@@ -3673,23 +3673,16 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
 
   The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
-  No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page and the Delivery page's Legion section read each project's.
+  No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
   A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, and a project that does not exist `404 NOT_FOUND`.
   The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
-  `AGENTS.md` gives the rest, including why neither write emits an event.
+  `internal/dispatch/api/settings_legion.go` gives the rest, including why neither write emits an event.
 
-- `/api/v1/projects/{key}/legion/metrics?from=&to=&scope=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
-  The Delivery page's Legion section for this project over `[from, to)` (default the last 7 days) and `scope=all|roots|children`; a project with nothing measured answers an empty report.
-  Over the issues that closed in the window with Legion phase work: the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle, the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week.
-  CI wait is not measured, since the Legion daemon's state carries no CI verdict and no required-check mark: it is 0 on every bar, and its hours go to waiting on children or idle.
-  `400 INVALID_QUERY` for a malformed window, scope or project key, `404 NOT_FOUND` for a project that does not exist.
-
-- `/api/v1/legion/board?project=` (GET; cookie, trusted header, or bearer)
-
-  The Legion view on the Issues page for one project, the first naming a daemon when `project` is left out, from what the sampler recorded of that project's daemon.
+  The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
   Ten columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
-  `404 LEGION_NOT_CONFIGURED` when the project names no daemon.
+  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `404 NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 

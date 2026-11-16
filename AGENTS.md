@@ -610,12 +610,6 @@ Each item below names a task and where its code is, then notes on it.
 
   `state.go` owns the wire shape; `packages/contracts/src/legion-api.ts` mirrors it
 
-- Change a setting under a running daemon — `packages/daemon/internal/config/classes.go`, `live.go`, `packages/daemon/internal/settings/`
-
-  `classes.go` is the class table: every dotted `legion.yaml` path with what a change of it needs (`decision`, `rebuild`, `launch`, `fixed`) and the holder a change rebuilds, and `live.go` the one holder that resolves the file under the stored route overlay.
-  `PUT /legion/v1/operator/settings` (`internal/api/settings_route.go`) and the watcher on the directories holding the configuration (`internal/settings/watcher.go`) are its two arms.
-  `docs/deployment.md` "What a change of each `legion.yaml` key needs" is the operator's table, and `docs/kubernetes.md` "The settings route" the `settings_route` block that admits Dispatch's projected token
-
 - Change daemon state — `packages/daemon/internal/store/`
 
   Postgres migrations and the issue record
@@ -729,11 +723,12 @@ Each item below names a task and where its code is, then notes on it.
 
   React SPA and native Dispatch server; `bun run dispatch:local` runs it here, seeded and signed in
 
-- Where Legion's time goes, in Dispatch — `packages/envoy/internal/dispatch/legion/`, `packages/envoy/internal/dispatch/api/settings_legion.go`, `legion_board.go`, `legion_metrics.go`
+- Where Legion's time goes, in Dispatch — `packages/envoy/internal/dispatch/legion/`, `packages/envoy/internal/dispatch/api/settings_legion.go`, `legion_board.go`
 
   A project's Legion daemon is the one whose `GET /legion/v1/state` Dispatch reads once a minute, one replica at a time under a lease (`sampler.go`), recording what changed.
-  `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon` are that daemon, `PUT /api/v1/projects/{key}/legion/settings` the relay to it, and `GET /api/v1/projects/{key}/legion/metrics` and `GET /api/v1/legion/board` what the Delivery page's Legion section and the Issues page's Legion view read.
-  The web side is `packages/dispatch/web/src/features/legion/`
+  `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon` are that daemon, and `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view serve the project's board from what the sampler recorded.
+  `legion/metrics/` computes the four Legion delivery metrics from the same records (`Read`, then `Compute`), and no route serves them: the evals of dispatch://INFRA-2916 call that package.
+  The web side is the Settings page's Legion section, where a person names a project's daemon (`packages/dispatch/web/src/features/settings/LegionDaemonsSection.tsx`, `features/legion/useLegionDaemons.ts`); no page draws the board
 
 - Dispatch's document editor — `packages/proof-editor/`
 

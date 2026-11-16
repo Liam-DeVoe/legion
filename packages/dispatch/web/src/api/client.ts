@@ -379,11 +379,11 @@ export function isAgentListRefilling(error: unknown): boolean {
 }
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
-// source, an unconfigured credential broker or delivery timeline, a stored document
-// outside Proof's schema, or a stored history that cannot load is definitive and retrying it
-// changes nothing; any other failure (dropped connection, a read past its deadline, 5xx, a
-// document holding content this build cannot read yet) is worth a couple of automatic attempts
-// before surfacing a Retry affordance to the user.
+// source, an unconfigured credential broker or delivery timeline, a stored document outside
+// Proof's schema, or a stored history that cannot load is definitive and retrying it changes
+// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
+// holding content this build cannot read yet) is worth a couple of automatic attempts before
+// surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&

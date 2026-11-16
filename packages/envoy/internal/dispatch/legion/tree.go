@@ -1,10 +1,10 @@
 package legion
 
-// tree.go holds the one rule for an issue's tree root (dispatch://INFRA-1077). The Legion view and
-// the four metrics both place an issue in a tree — the view to tell a root from a child and to
-// count a root's unstarted children, the metrics to scope a filing and a root's wait on its
+// tree.go holds the one rule for an issue's tree root (dispatch://INFRA-1077). The Legion board
+// and the four metrics both place an issue in a tree — the board to tell a root from a child and
+// to count a root's unstarted children, the metrics to scope a filing and a root's wait on its
 // children — and one rule stated twice is two rules: a board that puts an issue in one tree while
-// the metrics put it in another is a view and a card that disagree about the same issue.
+// the metrics put it in another is a board and a metric that disagree about the same issue.
 
 // TreeNode is what the walk reads of one issue: the tree root the daemon named for it, the parent
 // Dispatch records, and whether the walk may climb through it from a child below.
@@ -45,7 +45,7 @@ func TreeRoot(key string, lookup func(key string) (TreeNode, bool)) string {
 
 // TreeChain is the walk TreeRoot makes, kept: the issue itself, then every issue the walk climbs
 // through, ending at the tree root, which is why TreeRoot is its last entry. A reader that must
-// place something on the nearest issue above another — the Legion view counts an unstarted child
+// place something on the nearest issue above another — the Legion board counts an unstarted child
 // on the nearest issue of its tree that carries a card — reads the chain rather than stating the
 // climb a second time.
 //

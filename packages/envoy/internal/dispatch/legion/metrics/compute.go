@@ -10,7 +10,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// Scope is which of a project's Legion issues an answer counts, the Legion section's own toggle.
+// Scope is which of a project's Legion issues an answer counts: all of them, the tree roots, or
+// the children.
 type Scope string
 
 const (

@@ -276,8 +276,8 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	return legionBoardCompute(board, now), nil
 }
 
-// readPipelineView is a Pipeline section's read: the delivery settings and the runs, jobs and
-// merges of the window its spec names.
+// readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
+// of the seven days ending on its at, or on the present for a view that names none.
 func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error

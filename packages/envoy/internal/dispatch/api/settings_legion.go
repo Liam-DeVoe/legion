@@ -128,10 +128,9 @@ func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, 
 }
 
 // legionProjectNamed is project once it is a project key and a project of that key exists. code
-// is the refusal a badly spelled key carries, which the routes that ask differ on: the metrics and
-// board routes' `INVALID_QUERY`, the code of every refusal of a malformed request they make, and
-// the daemon routes' `LEGION_SETTING_INPUT`. An unknown project is the 404 NOT_FOUND every unknown
-// row is.
+// is the refusal a badly spelled key carries: legionProject passes `LEGION_SETTING_INPUT`, which
+// the daemon routes and the board route answer alike. An unknown project is the 404 NOT_FOUND
+// every unknown row is.
 func (s *server) legionProjectNamed(w http.ResponseWriter, r *http.Request, project, code string) (string, bool) {
 	if !projectKeyPattern.MatchString(project) {
 		writeError(w, code, http.StatusBadRequest, projectKeyProblem("project", project))

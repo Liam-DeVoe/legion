@@ -18,12 +18,12 @@ func goldenStatePath() string {
 }
 
 // TestTheDecodeReadsTheStateDocumentTheDaemonWrote: the sampler's decode reads the daemon's own
-// golden, and every field the Legion view and the four metrics take from a read survives it — the
-// settings the settings panel shows, the admission block the view's header and queue draw, and
+// golden, and every field the Legion board and the four metrics take from a read survives it —
+// the settings the board carries, the admission block its header and queue are drawn from, and
 // each issue's phase and claims. Of the pull request the decode keeps nothing, though the golden
 // carries one: cybermonklabs/legion#2539 (main's contract 86) took the CI verdict out of the
 // daemon's state and deleted the record its required-check mark was read from, so metric 2's
-// CI-wait segment is not measured, the Legion card shows no CI verdict, and no reader is left
+// CI-wait segment is not measured, a board card carries no CI verdict, and no reader is left
 // for the pull request's state.
 func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	body, err := os.ReadFile(goldenStatePath())
@@ -43,14 +43,14 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 		t.Fatalf("settings = %d keys, want the daemon's own", len(state.Settings))
 	}
 	if state.Admission.Cap == nil || *state.Admission.Cap == 0 {
-		t.Errorf("admission.cap = 0: the view's header draws the slots in use against it")
+		t.Errorf("admission.cap = 0: the board's header counts the slots in use against it")
 	}
 	if len(state.Issues) == 0 {
 		t.Fatalf("the golden carries no issue, so this test proves nothing")
 	}
 
-	// The observations a read of this document writes: the two project rows the view's header
-	// and its settings panel read, a phase for each issue, and nothing of the pull request.
+	// The observations a read of this document writes: the two project rows the board's header
+	// and its settings are read from, a phase for each issue, and nothing of the pull request.
 	fields := map[string]int{}
 	for _, observation := range state.Observations() {
 		fields[observation.Field]++
