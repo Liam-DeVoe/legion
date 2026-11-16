@@ -1052,9 +1052,9 @@ func (s *Service) recoverConflict(ctx context.Context, cred Credential, in Enrol
 	defer tx.Rollback(ctx)
 	var existing Enrollment
 	var live bool
-	err = tx.QueryRow(ctx, `select id, thumbprint, lease_expires_at, enrollment_lease_live(lease_expires_at), projects from enrollments
+	err = tx.QueryRow(ctx, `select id, thumbprint, lease_expires_at, enrollment_lease_live(lease_expires_at) from enrollments
 		where launcher_credential_id=$1 and runtime_id=$2 and slot=$3 and revoked_at is null for update`, cred.ID, in.RuntimeID, in.Slot).
-		Scan(&existing.ID, &existing.Thumbprint, &existing.LeaseExpires, &live, &existing.Projects)
+		Scan(&existing.ID, &existing.Thumbprint, &existing.LeaseExpires, &live)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Enrollment{}, true, nil
 	}
@@ -1072,7 +1072,14 @@ func (s *Service) recoverConflict(ctx context.Context, cred Credential, in Enrol
 	}
 	// The same key back is a retry of the same enrollment, which names the same projects: a list
 	// is fixed for an enrollment's life, so a retry naming another one is a second enrollment of
-	// a live runtime, and refused as one rather than answered with a list it did not ask for.
+	// a live runtime, and refused as one rather than answered with a list it did not ask for. The
+	// list is read here, from the row the statement above already locks, and not in that
+	// statement: Dispatch's lock guard (dispatch/api's TestNoForUpdateOnOwnerTables) refuses a
+	// `for update` statement that spells an owner table's name, and the column shares its name
+	// with Dispatch's projects table.
+	if err := tx.QueryRow(ctx, `select projects from enrollments where id=$1`, existing.ID).Scan(&existing.Projects); err != nil {
+		return Enrollment{}, false, err
+	}
 	if !slices.Equal(existing.Projects, in.Projects) {
 		return Enrollment{}, false, fmt.Errorf("%w under the projects %q, not %q", ErrAlreadyEnrolled, oauthwire.JoinProjects(existing.Projects), oauthwire.JoinProjects(in.Projects))
 	}
