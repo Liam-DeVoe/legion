@@ -4,12 +4,12 @@ import type { ReactNode } from "react";
 import { api, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { UserState } from "../../api/types";
-import { QueryError } from "../../components/QueryError";
 import {
-  borderDefault,
   pageHeaderControl,
-  textMutedOnSurface,
-  textPrimaryOnSurface,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
 } from "../../theme/classes";
 import {
   type DeliveryOutcome,
@@ -29,6 +29,7 @@ import { useCommentActionQueue } from "../margin/useCommentActionQueue";
 import { AgentParts, useAgentText } from "../refs/AgentName";
 import { sessionOfAddress } from "../refs/routes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { DetailsErrorLine } from "./details-error";
 import type { FocusedNode } from "./focused-node";
 import { NodeReferences } from "./node-references/NodeReferences";
 import { useOutlineWriter } from "./outline-writer";
@@ -62,11 +63,11 @@ export function FocusedNodeFacts({
   const agentText = useAgentText();
   return (
     <section
-      className={`border-b pb-2 ${borderDefault}`}
+      className={`border-b pb-2 ${pageLineBorder}`}
       data-focused-node={node.id}
       data-testid="focused-node-facts"
     >
-      <h2 className={`text-sm font-semibold ${textPrimaryOnSurface}`} {...pageChrome}>
+      <h2 className={`text-sm font-semibold ${pageInkText}`} {...pageChrome}>
         {PROPERTY_LABELS.focused_node}
       </h2>
       <dl className="mt-1 flex min-w-0 flex-col gap-1 text-sm">
@@ -132,7 +133,7 @@ function ItemControls({
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
   });
   const retry = useKeyedWrite({
-    label: () => "Delivery to an agent again",
+    label: () => CONTROL_LABELS.retry_delivery,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
       void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] });
@@ -260,12 +261,12 @@ function ItemControls({
         </div>
       )}
       {deliveries.length === 0 ? null : (
-        <ul className={`flex flex-col gap-0.5 text-xs ${textMutedOnSurface}`} data-deliveries="">
+        <ul className={`flex flex-col gap-0.5 text-xs ${pageMutedText}`} data-deliveries="">
           {deliveries.map((delivery) => {
             const guidance = failureGuidance(delivery, "mention");
             const recipient =
               delivery.target === null
-                ? "agent"
+                ? CONTROL_LABELS.unnamed_recipient
                 : (() => {
                     const sessionId = sessionOfAddress(delivery.target);
                     return sessionId === undefined
@@ -311,7 +312,7 @@ function ItemControls({
       )}
       {actions.actionFailure?.id === item.id ? (
         <div {...authorText}>
-          <QueryError
+          <DetailsErrorLine
             message={actions.actionFailure.message}
             onRetry={actions.actionFailure.retryable ? actions.retryItem : undefined}
           />
@@ -334,7 +335,7 @@ function Fact({
 }): ReactNode {
   return (
     <div className="flex min-w-0 flex-wrap items-baseline gap-2">
-      <dt className={`font-medium ${textMutedOnSurface}`} {...pageChrome}>
+      <dt className={`font-medium ${pageQuietText}`} {...pageChrome}>
         {label}:
       </dt>
       <dd className="min-w-0 break-words" {...(chrome ? pageChrome : authorText)}>

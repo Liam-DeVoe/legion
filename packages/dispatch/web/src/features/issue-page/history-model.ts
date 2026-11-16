@@ -11,7 +11,9 @@ import type {
 import { compareTimestamps } from "../../lib/timestamps";
 import { activityDescription, dateKey, dayLabel } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
+import { sessionOfAddress } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
+import { CONTROL_LABELS, issueStatusWord } from "./page-words";
 
 /**
  * The issue's history, as the panel draws it (dispatch://INFRA-1196 R15, R20): every event that
@@ -54,6 +56,8 @@ export type HistoryEntry =
       readonly id: string;
       readonly at: string;
       readonly author: Actor;
+      /** `main`'s line of the event, in the page's words where it names a delivery's agent or
+       *  a status (`historyLine`). */
       readonly description: AgentPart[];
       readonly event: DispatchEvent;
       readonly seq: number;
@@ -201,7 +205,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     entries.push({
       at: event.created_at,
       author: event.actor,
-      description: activityDescription(event, previousStatus),
+      description: historyLine(event, previousStatus),
       event,
       id: `event:${event.id}`,
       kind: "event",
@@ -299,6 +303,70 @@ function threadEntry(
     replies,
     root,
     seq: seqOf.get(root.id) ?? 0,
+  };
+}
+
+/**
+ * The line of `event`, as today's Activity tab writes it (`activityDescription`), with what that
+ * line names by a token in the page's words (dispatch://INFRA-3948 D6, R22 of
+ * dispatch://INFRA-1196): a delivery's target by the agent it went to, never its address or
+ * `session:<id>`, and the status a reopened issue went into by its word.
+ */
+function historyLine(event: DispatchEvent, previousStatus: string | undefined): AgentPart[] {
+  const line = activityDescription(event, previousStatus);
+  switch (event.type) {
+    case "comment.delivery":
+      return withPart(
+        line,
+        event.payload.target,
+        recipient(event.payload.session_id, undefined, event.payload.target)
+      );
+    // Only a queued message's line names where it went.
+    case "message.delivery":
+      return event.payload.state === "queued"
+        ? withPart(
+            line,
+            event.payload.target ?? `session:${event.payload.session_id}`,
+            recipient(event.payload.session_id, event.payload.title, event.payload.target)
+          )
+        : line;
+    // The line names a status only for a reopen, which `activityDescription` tells by the
+    // status before it.
+    case "issue.updated":
+      return previousStatus === "done" && event.payload.status !== "done"
+        ? withPart(line, event.payload.status, issueStatusWord(event.payload.status))
+        : line;
+    default:
+      return line;
+  }
+}
+
+/** `line` with each reading of `token` in its text, the last of each part, drawn as `part`. */
+function withPart(line: AgentPart[], token: string | undefined, part: AgentPart): AgentPart[] {
+  if (token === undefined || token === "") return line;
+  return line.flatMap((piece) => {
+    if (typeof piece !== "string") return [piece];
+    const at = piece.lastIndexOf(token);
+    return at < 0
+      ? [piece]
+      : [piece.slice(0, at), part, piece.slice(at + token.length)].filter((one) => one !== "");
+  });
+}
+
+/** Who a delivery went to, as the page names an agent (`AgentName`): the session the attempt
+ *  reached, with the title the listener gave it, else the session its target names, else the
+ *  page's word for an agent nothing names, where the target is a role no session held. */
+function recipient(
+  sessionId: string | null,
+  title: string | undefined,
+  target: string | undefined
+): AgentPart {
+  const reached = sessionId === null || sessionId === "" ? undefined : sessionId;
+  const session = reached ?? (target === undefined ? undefined : sessionOfAddress(target));
+  if (session === undefined || session === "") return CONTROL_LABELS.unnamed_recipient;
+  return {
+    sessionId: session,
+    storedTitle: reached === undefined || title === undefined || title === "" ? undefined : title,
   };
 }
 

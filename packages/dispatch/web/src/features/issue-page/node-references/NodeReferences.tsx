@@ -2,16 +2,18 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { linkHoverText, linkText, pageHeaderControl, pageQuietText } from "../../../theme/classes";
+import { pageHeaderControl, pageInkText, pageQuietText } from "../../../theme/classes";
 import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery } from "../../refs/reference-target";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../../shell/useDialog";
+import { DetailsErrorLine } from "../details-error";
 import type { FocusedNode } from "../focused-node";
 import { useMarginDrawer } from "../margin-slot";
 import { shortDay } from "../node-time";
 import { authorText, pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
+import { ROW_LINK } from "../row-references";
 import { referenceRows } from "./references-list";
 
 const EDGE_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.edges;
@@ -95,18 +97,14 @@ export function NodeReferences({
             </p>
           ) : null}
           {query.isError ? (
-            <p className={`mt-1 flex flex-wrap items-baseline gap-2 text-xs ${pageQuietText}`}>
-              <span {...pageChrome}>{ANSWER_LINES.references_unreadable}</span>
-              <button
-                className={`font-medium underline ${linkText} ${linkHoverText}`}
-                disabled={query.isFetching}
-                onClick={() => void query.refetch()}
-                type="button"
-                {...pageChrome}
-              >
-                {CONTROL_LABELS.retry}
-              </button>
-            </p>
+            <div className="mt-1">
+              <DetailsErrorLine
+                error={query.error}
+                message={ANSWER_LINES.references_unreadable}
+                onRetry={() => void query.refetch()}
+                retrying={query.isFetching}
+              />
+            </div>
           ) : null}
           {query.isSuccess && rows.length === 0 ? (
             <p className={`mt-1 text-xs ${pageQuietText}`} {...pageChrome}>
@@ -138,7 +136,7 @@ export function NodeReferences({
                       </span>
                     ) : (
                       <Link
-                        className={`dispatch-inline-link min-w-0 flex-1 truncate underline ${linkText} ${linkHoverText}`}
+                        className={`dispatch-inline-link min-w-0 flex-1 truncate ${ROW_LINK} ${pageInkText}`}
                         onClick={() => {
                           // On a phone Details covers the outline the link focuses a row of.
                           if (phone) drawer?.setOpen(false);

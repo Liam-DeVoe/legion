@@ -12,10 +12,11 @@ import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import type { IssueDetails, UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import {
-  dangerText,
-  linkText,
-  newDividerLine,
+  pageHairBg,
   pageInkText,
+  pageKindTag,
+  pageLineBorder,
+  pageMarkBg,
   pageMutedText,
   pageQuietText,
   pageRowAct,
@@ -31,6 +32,8 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { CutWords } from "./CutWords";
+import { DetailsErrorLine } from "./details-error";
 import { HistoryHandoff } from "./HistoryHandoff";
 import {
   buildHistory,
@@ -41,10 +44,31 @@ import {
 import { useMarginDrawer } from "./margin-slot";
 import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { ROW_LINK } from "./row-references";
 
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;
+
+/** A day's line, the prototype's `.hdl`: 12 px on 18 px at weight 600 in the muted grey, 5 px
+ *  above and below, its words as written. Its count is at weight 500 in the quiet grey. */
+const DAY_LINE = `py-[5px] text-left text-xs leading-[18px] font-semibold ${pageMutedText}`;
+
+/** One entry, the prototype's `.hev`: 12 px on 18 px in the muted grey, 14 px from a 2 px rule
+ *  at its left in the page's line, the rule 4 px from the column's edge, 4 px above and 6 px
+ *  below. The prototype's rule is #EEEAE3, which no page token holds; `page-line` is #ECEAE7. */
+const ENTRY = `ml-1 border-l-2 pt-1 pb-1.5 pl-3.5 text-xs leading-[18px] ${pageLineBorder} ${pageMutedText}`;
+
+/** When an entry was made, which opens it (`.ht`), 6 px before what follows: the quiet grey, as
+ *  the prototype's #A8A29E reads 2.52:1 on the paper, under the 4.5:1 text needs. */
+const TIME = `mr-1.5 ${pageQuietText}`;
+
+/** Who made the entry (`.hev b`). */
+const AUTHOR = `font-semibold ${pageInkText}`;
+
+/** An agent's words (`.hb`): 14 px on 20 px in the issue's own colour, the prototype's
+ *  #44403C, 2 px under the entry's line. */
+const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageKindTag.issue}`;
 
 /**
  * The issue's history, a list in the panel (dispatch://INFRA-1196 R15, `history-model.ts`):
@@ -238,13 +262,16 @@ export function IssueHistory({
         {CONTROL_LABELS.history}
       </h2>
       {log.isPending ? (
-        <p className={`text-xs ${pageQuietText}`} {...authorText}>
-          Loading activity…
+        <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
+          {ANSWER_LINES.loading_history}
         </p>
       ) : log.isError ? (
-        <p className={`text-xs ${dangerText}`} {...authorText}>
-          Could not load the activity.
-        </p>
+        <DetailsErrorLine
+          error={log.error}
+          message={ANSWER_LINES.history_unreadable}
+          onRetry={() => void log.refetch()}
+          retrying={log.isFetching}
+        />
       ) : (
         <ViewportAnchor
           enabled={holdsPlace}
@@ -252,26 +279,22 @@ export function IssueHistory({
           rootRef={anchorRoot}
           scroller={scroller}
         >
-          <ol aria-label="Issue activity" className="flex min-w-0 flex-col gap-1" {...authorText}>
+          <ol
+            aria-label={CONTROL_LABELS.history_list}
+            className="flex min-w-0 flex-col gap-1"
+            {...authorText}
+          >
             {days.map((day) => {
               const open = day.today || opened.has(day.date);
               const count = day.entries.filter((entry) => entry.kind !== "unread").length;
               return (
-                <li
-                  className="flex min-w-0 flex-col gap-1"
-                  data-history-day={day.date}
-                  key={day.date}
-                >
+                <li className="flex min-w-0 flex-col" data-history-day={day.date} key={day.date}>
                   {day.today ? (
-                    <p
-                      className={`mt-1 text-xs font-semibold tracking-wide uppercase ${pageQuietText}`}
-                    >
-                      {day.label}
-                    </p>
+                    <p className={DAY_LINE}>{day.label}</p>
                   ) : (
                     <button
                       aria-expanded={open}
-                      className={`dispatch-inline-link mt-1 self-start text-xs font-semibold tracking-wide uppercase ${pageQuietText} ${pageRowAct}`}
+                      className={`dispatch-inline-link self-start ${DAY_LINE} ${pageRowAct}`}
                       onClick={() =>
                         setOpened((held) => {
                           const next = new Set(held);
@@ -281,11 +304,11 @@ export function IssueHistory({
                       }
                       type="button"
                     >
-                      {day.label} · {count}
+                      {day.label} <span className={`font-medium ${pageQuietText}`}>· {count}</span>
                     </button>
                   )}
                   {open ? (
-                    <ol className="flex min-w-0 flex-col gap-1">
+                    <ol className="flex min-w-0 flex-col">
                       {day.entries.map((entry) => (
                         <Entry
                           entry={entry}
@@ -310,9 +333,9 @@ export function IssueHistory({
           disabled={log.isFetchingNextPage}
           onClick={() => void log.fetchNextPage()}
           type="button"
-          {...authorText}
+          {...pageChrome}
         >
-          {log.isFetchingNextPage ? "Loading…" : "Load older"}
+          {log.isFetchingNextPage ? ANSWER_LINES.loading_older : CONTROL_LABELS.load_older}
         </button>
       ) : null}
     </section>
@@ -360,34 +383,35 @@ function Entry({
   if (entry.kind === "unread") {
     return (
       <li
-        aria-label="New since you last read"
-        className={`my-1 flex items-center gap-3 text-xs font-semibold tracking-wide uppercase ${linkText}`}
+        aria-label={CONTROL_LABELS.history_unread}
+        className={`my-1 flex items-center gap-3 text-xs leading-[18px] font-semibold ${pageInkText}`}
+        {...pageChrome}
       >
-        <span className={`h-px flex-1 ${newDividerLine}`} />
-        New since you last read
-        <span className={`h-px flex-1 ${newDividerLine}`} />
+        <span className={`h-px flex-1 ${pageHairBg}`} />
+        {CONTROL_LABELS.history_unread}
+        <span className={`h-px flex-1 ${pageHairBg}`} />
       </li>
     );
   }
+  // What a dated entry opens with (`.hev`): when, then who, then what they did.
   const head = (
-    <span className="flex max-w-full min-w-0 shrink-0 items-baseline gap-x-2 whitespace-nowrap">
-      <span className="min-w-0 truncate font-medium">
+    <>
+      <Timestamp at={entry.at} className={TIME} />
+      <span className={AUTHOR}>
         <AgentName actor={entry.author} inline />
-      </span>
-      <span aria-hidden="true">·</span>
-      <Timestamp at={entry.at} />
-    </span>
+      </span>{" "}
+    </>
   );
   if (entry.kind === "event") {
     const isPinned = pinned(entry.event.id);
     return (
       <li
-        className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs ${pageMutedText}`}
+        className={`${ENTRY} flex min-w-0 flex-wrap items-baseline gap-x-2`}
         data-event-seq={entry.seq}
         data-history-entry={entry.id}
       >
-        {head}
         <span className="min-w-40 flex-1 break-words">
+          {head}
           <ActivityLine description={entry.description} event={entry.event} issueKey={issueKey} />
         </span>
         <PinButton
@@ -405,14 +429,14 @@ function Entry({
   if (entry.kind === "uploads") {
     return (
       <li
-        className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs ${pageMutedText}`}
+        className={`${ENTRY} min-w-0 break-words`}
         data-event-seq={entry.seq}
         data-history-entry={entry.id}
         data-history-uploads={entry.files.length}
       >
         {head}
-        <span className="min-w-40 flex-1 break-words">
-          uploaded{" "}
+        <span {...pageChrome}>{CONTROL_LABELS.history_uploaded}</span>{" "}
+        <span>
           {entry.files.map((file, index) => (
             <span key={file.id}>
               {index === 0 ? null : ", "}
@@ -420,7 +444,7 @@ function Entry({
                 file.name
               ) : (
                 <Link
-                  className={`dispatch-inline-link underline ${linkText}`}
+                  className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
                   to={buildIssuePath({ key: issueKey, kind: "artifact", slug: file.slug })}
                 >
                   {file.name}
@@ -433,14 +457,10 @@ function Entry({
     );
   }
   return (
-    <li
-      className="flex min-w-0 flex-col gap-1"
-      data-event-seq={entry.seq}
-      data-history-entry={entry.id}
-    >
+    <li className="flex min-w-0 flex-col" data-event-seq={entry.seq} data-history-entry={entry.id}>
       <Turn issueKey={issueKey} marked={item === entry.root.id} turn={entry.root} />
       {entry.replies.length === 0 ? null : (
-        <ol className="ml-3 flex min-w-0 flex-col gap-1 border-l border-page-line pl-3">
+        <ol className="ml-3.5 flex min-w-0 flex-col">
           {entry.replies.map((reply) => (
             <li key={reply.id}>
               <Turn issueKey={issueKey} marked={item === reply.id} turn={reply} />
@@ -468,30 +488,31 @@ function Turn({
   return (
     <article
       aria-current={marked ? "true" : undefined}
-      className={`flex min-w-0 flex-col rounded-md text-sm ${marked ? "bg-page-mark" : ""}`}
+      className={`${ENTRY} flex min-w-0 flex-col ${marked ? `rounded-r-md ${pageMarkBg}` : ""}`}
       data-history-item={turn.id}
       data-history-kind={turn.kind}
     >
-      <p className={`flex min-w-0 items-baseline gap-x-2 text-xs ${pageMutedText}`}>
-        <span className="min-w-0 truncate font-medium">
-          <AgentName actor={turn.author} inline />
-        </span>
-        <span aria-hidden="true">·</span>
+      <p className="min-w-0 break-words">
         <Link
-          className={`dispatch-inline-link ${pageMutedText}`}
+          className={`dispatch-inline-link ${TIME} ${pageRowAct}`}
           data-history-time=""
           to={buildIssuePath({ id: turn.id, key: issueKey, kind: turn.kind })}
         >
           <Timestamp at={turn.at} />
         </Link>
+        <span className={AUTHOR}>
+          <AgentName actor={turn.author} inline />
+        </span>
       </p>
-      <div className={`min-w-0 break-words ${pageInkText}`}>
+      {/* Cut as the outline cuts an agent's words (ruling 1), and whole where the address
+          names this turn. Details is reached by Tab, so its controls keep their tab stops. */}
+      <CutWords className={WORDS} tabStops whole={marked}>
         <MarkdownBody
           markdown={turn.body}
           source={textSourceOf(turn.kind, turn.id)}
           tree={turn.bodyTree}
         />
-      </div>
+      </CutWords>
       {writer === undefined ? null : (
         <p>
           <button

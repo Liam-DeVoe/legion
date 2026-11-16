@@ -9,17 +9,25 @@ import type {
   IssueCollaboratorPerson,
   IssueCollaborators,
 } from "../../api/types";
-import { EmptyState } from "../../components/EmptyState";
-import { QueryError } from "../../components/QueryError";
 import {
-  borderDefault,
-  card,
-  textMutedOnSurface,
-  textPrimaryOnSurface,
-  textSecondaryOnSurface,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
 } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
+import { DetailsErrorLine } from "./details-error";
+import { PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
+
+/** The page's word for each Legion role's list, and for each way a collaborator worked the
+ *  issue: every token the contract declares has one. */
+const ROLE_WORDS: Readonly<Record<LegionRole, string>> = CONTROL_LABELS.collaborator_roles;
+const REASON_WORDS: Readonly<
+  Record<NonNullable<IssueCollaboratorPerson["reasons"]>[number], string>
+> = CONTROL_LABELS.collaborator_reasons;
 
 /** The three sections, in the order the reader meets them. Each holds the server's own
  *  order, which the contract states: the registry's agents first, by role in workflow order and
@@ -61,21 +69,25 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
 }
 
 function SectionHeading({ children }: { children: ReactNode }): ReactNode {
-  return <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>{children}</h2>;
+  return (
+    <h2 className={`text-sm font-semibold ${pageMutedText}`} {...pageChrome}>
+      {children}
+    </h2>
+  );
 }
 
-/** One collaborator's row: who, then the line that says how they worked the issue. `card` carries
- *  the colours and no border width, as every other card in this app pairs it with one.
- *  `data-collaborator` marks the row's own name, which a test selects instead of the row's shape,
- *  since the detail line can name another session (the one that replaced this row's). */
+/** One collaborator's row: who, then the line that says how they worked the issue, on the
+ *  page's paper inside its line. `data-collaborator` marks the row's own name, which a test
+ *  selects instead of the row's shape, since the detail line can name another session (the one
+ *  that replaced this row's). */
 function Row({ detail, name }: { detail: ReactNode; name: ReactNode }): ReactNode {
   return (
-    <li className={`min-w-0 rounded-lg border p-3 break-words ${borderDefault} ${card}`}>
-      <div className={`min-w-0 font-medium ${textPrimaryOnSurface}`} data-collaborator="">
+    <li className={`min-w-0 rounded-lg border p-3 break-words ${pageLineBorder} ${pagePaperBg}`}>
+      <div className={`min-w-0 font-medium ${pageInkText}`} data-collaborator="">
         {name}
       </div>
       <div
-        className={`mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurface}`}
+        className={`mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm ${pageMutedText}`}
       >
         {detail}
       </div>
@@ -83,8 +95,8 @@ function Row({ detail, name }: { detail: ReactNode; name: ReactNode }): ReactNod
   );
 }
 
-/** How a collaborator worked the issue - `assignee`, `claimed`, `posted`, `answered` - and when
- *  they last did. */
+/** How a collaborator worked the issue - `assignee`, `claimed`, `posted`, `answered` - in the
+ *  page's words, and when they last did. */
 function Worked({
   lastAt,
   reasons,
@@ -94,7 +106,11 @@ function Worked({
 }): ReactNode {
   return (
     <>
-      {(reasons ?? []).length === 0 ? null : <span>{(reasons ?? []).join(", ")}</span>}
+      {(reasons ?? []).length === 0 ? null : (
+        <span {...pageChrome}>
+          {(reasons ?? []).map((reason) => REASON_WORDS[reason]).join(", ")}
+        </span>
+      )}
       {lastAt === null ? null : <Timestamp at={lastAt} />}
     </>
   );
@@ -113,12 +129,16 @@ function Worked({
 export function IssueCollaboratorList({ issueKey }: { issueKey: string }): ReactNode {
   const query = useQuery(issueCollaboratorsQuery(issueKey));
   if (query.isPending) {
-    return <p className={textMutedOnSurface}>Loading collaborators…</p>;
+    return (
+      <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
+        {ANSWER_LINES.loading_collaborators}
+      </p>
+    );
   }
   if (query.isError) {
     return (
-      <QueryError
-        message="Couldn't load who worked this issue."
+      <DetailsErrorLine
+        message={ANSWER_LINES.collaborators_unreadable}
         onRetry={() => void query.refetch()}
         retrying={query.isFetching}
       />
@@ -133,32 +153,37 @@ export function IssueCollaboratorList({ issueKey }: { issueKey: string }): React
   const empty =
     (collaborators.agents ?? []).length === 0 && (collaborators.people ?? []).length === 0;
   return (
-    <section aria-label="Collaborators" className="min-w-0 space-y-6">
+    <section aria-label={PROPERTY_LABELS.collaborators} className="min-w-0 space-y-6">
       {unavailable ? (
-        <p className={`text-sm ${textMutedOnSurface}`} role="status">
-          Legion&apos;s record of this issue&apos;s agents could not be read.
+        <p className={`text-sm ${pageMutedText}`} role="status" {...pageChrome}>
+          {STATE_LINES.legion_record_unreadable}
         </p>
       ) : null}
       {empty && !unavailable ? (
-        <EmptyState label="Collaborators empty state" message="No one has worked this issue yet." />
+        <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
+          {EMPTY_STATE_LINES.no_collaborators}
+        </p>
       ) : null}
       {sections.legion.length === 0 ? null : (
-        <section aria-label="Legion agents" className="space-y-3">
-          <SectionHeading>Legion agents</SectionHeading>
+        <section aria-label={CONTROL_LABELS.collaborators_legion} className="space-y-3">
+          <SectionHeading>{CONTROL_LABELS.collaborators_legion}</SectionHeading>
           {sections.legion.map(({ agents, role }) => (
-            <section aria-label={role} className="space-y-2" key={role}>
-              <h3 className={`text-xs font-semibold uppercase ${textMutedOnSurface}`}>{role}</h3>
+            <section aria-label={ROLE_WORDS[role]} className="space-y-2" key={role}>
+              <h3 className={`text-xs font-semibold uppercase ${pageQuietText}`} {...pageChrome}>
+                {ROLE_WORDS[role]}
+              </h3>
               <ul className="space-y-2">
                 {agents.map((agent) => (
                   <Row
                     detail={
                       <>
                         <span>
-                          started <Timestamp at={agent.legion.started_at} />
+                          <span {...pageChrome}>{CONTROL_LABELS.collaborator_started}</span>{" "}
+                          <Timestamp at={agent.legion.started_at} />
                         </span>
                         {agent.legion.replaced_by === null ? null : (
                           <span data-replaced-by={agent.legion.replaced_by}>
-                            replaced by{" "}
+                            <span {...pageChrome}>{CONTROL_LABELS.collaborator_replaced_by}</span>{" "}
                             <AgentName
                               inline
                               sessionId={agent.legion.replaced_by}
@@ -183,8 +208,8 @@ export function IssueCollaboratorList({ issueKey }: { issueKey: string }): React
         </section>
       )}
       {sections.others.length === 0 ? null : (
-        <section aria-label="Other agents" className="space-y-2">
-          <SectionHeading>Other agents</SectionHeading>
+        <section aria-label={CONTROL_LABELS.collaborators_others} className="space-y-2">
+          <SectionHeading>{CONTROL_LABELS.collaborators_others}</SectionHeading>
           <ul className="space-y-2">
             {sections.others.map((agent) => (
               <Row
@@ -199,8 +224,8 @@ export function IssueCollaboratorList({ issueKey }: { issueKey: string }): React
         </section>
       )}
       {sections.people.length === 0 ? null : (
-        <section aria-label="People" className="space-y-2">
-          <SectionHeading>People</SectionHeading>
+        <section aria-label={CONTROL_LABELS.collaborators_people} className="space-y-2">
+          <SectionHeading>{CONTROL_LABELS.collaborators_people}</SectionHeading>
           <ul className="space-y-2">
             {sections.people.map((person) => (
               <Row

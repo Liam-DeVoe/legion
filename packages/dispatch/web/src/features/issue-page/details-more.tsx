@@ -5,11 +5,11 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import type { IssueDetails, UserState } from "../../api/types";
-import { QueryError } from "../../components/QueryError";
-import { pageInkText, pageRowBorder, textSecondaryOnSurface } from "../../theme/classes";
+import { pageInkText, pageRowBorder } from "../../theme/classes";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
+import { DetailsErrorLine } from "./details-error";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
@@ -18,7 +18,7 @@ import { IssueHistory } from "./IssueHistory";
 import { agentsOnlyItem, issueAddress } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, issueStatusWord } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS, issueStatusWord, STATE_LINES } from "./page-words";
 import { useIssueSubscribers } from "./useIssueSubscribers";
 
 /** What each of Details' three places for part M is handed: the issue as the details slot reads
@@ -60,7 +60,7 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
       <WideRow>
         <button
           aria-expanded={subscribersOpen}
-          className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${textSecondaryOnSurface}`}
+          className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${pageInkText}`}
           onClick={() => setSubscribersOpen((open) => !open)}
           type="button"
           {...pageChrome}
@@ -78,16 +78,16 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
           />
         ) : null}
         {subscribers.error ? (
-          <QueryError
+          <DetailsErrorLine
             error={subscribers.failure}
-            message="Subscribed agents unavailable — Envoy listener unreachable."
+            message={STATE_LINES.subscribers_unreadable}
             onRetry={subscribers.refetch}
             retrying={subscribers.fetching}
           />
         ) : null}
         {subscribers.unsubscribe.isError ? (
-          <QueryError
-            message="Could not unsubscribe this agent."
+          <DetailsErrorLine
+            message={ANSWER_LINES.unsubscribe_failed}
             onRetry={() => subscribers.unsubscribe.mutate(subscribers.unsubscribe.variables ?? "")}
             retrying={subscribers.unsubscribe.isPending}
           />
@@ -96,7 +96,7 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
       <WideRow row="collaborators">
         <button
           aria-expanded={collaboratorsOpen}
-          className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${textSecondaryOnSurface}`}
+          className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${pageInkText}`}
           onClick={() => setCollaboratorsOpen((open) => !open)}
           type="button"
           {...pageChrome}
@@ -199,7 +199,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     {
       id: "tab-activity",
       keys: "t v",
-      label: `Open the issue's ${CONTROL_LABELS.history.toLowerCase()} in ${CONTROL_LABELS.details}`,
+      label: CONTROL_LABELS.open_history,
       run: () => {
         navigate(buildIssuePath({ key: issue.key, kind: "activity" }));
         openDetails?.(true);
@@ -209,7 +209,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     {
       id: "tab-collaborators",
       keys: "t o",
-      label: `Open the issue's ${PROPERTY_LABELS.collaborators.toLowerCase()} in ${CONTROL_LABELS.details}`,
+      label: CONTROL_LABELS.open_collaborators,
       run: () => {
         navigate(buildIssuePath({ key: issue.key, kind: "collaborators" }));
         openDetails?.(true);

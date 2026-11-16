@@ -673,12 +673,12 @@ test("the history lists each handoff version, and opening one shows its fields a
     // An array field is indented JSON.
     await expect(field("files").locator("pre")).toContainText('"web/src/a.ts"');
     await expect(field("files").locator("pre")).toContainText('"web/src/b.ts"');
-    // The proof list is one row per entry.
+    // The proof list is one row per entry, each named by the page's word for it and counted.
     const proof = field("proof");
     await expect(proof).toHaveCount(2);
-    await expect(proof.nth(0)).toContainText("proof 1");
+    await expect(proof.nth(0)).toContainText(`${CONTROL_LABELS.handoff_fields.proof} 1`);
     await expect(proof.nth(0)).toContainText("browser suite green");
-    await expect(proof.nth(1)).toContainText("proof 2");
+    await expect(proof.nth(1)).toContainText(`${CONTROL_LABELS.handoff_fields.proof} 2`);
     await expect(proof.nth(1)).toContainText("lint clean");
     // Version 1 stays folded: its body is not on the page.
     await expect(v1.locator("[data-handoff-field]")).toHaveCount(0);
