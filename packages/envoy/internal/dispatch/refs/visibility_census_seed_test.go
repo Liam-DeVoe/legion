@@ -2,6 +2,7 @@ package refs_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -22,8 +23,9 @@ func init() { refs.SeedStoreThroughItsWriters = seedStoreThroughItsWriters }
 // role - and then runs the writer that states the store from such rows, graphcensus's backfill:
 // the person, the session, the role and the role's page are each a node that writer makes from
 // one of those rows, as it makes them for a database written before the store existed. Then it
-// writes what a person reasoning about that issue writes (seedReasoning). No kind is named here;
-// which kinds the store then holds is what the census reads from graph_nodes.
+// writes what a person reasoning about that issue writes (seedReasoning) and one run of the
+// command bar that person asked (seedRun). No kind is named here; which kinds the store then
+// holds is what the census reads from graph_nodes.
 func seedStoreThroughItsWriters(t *testing.T, ctx context.Context, database *store.Store) {
 	t.Helper()
 	for _, statement := range []string{
@@ -43,6 +45,34 @@ func seedStoreThroughItsWriters(t *testing.T, ctx context.Context, database *sto
 		t.Fatalf("state the store from those rows through its backfill: %v", err)
 	}
 	seedReasoning(t, ctx, database)
+	seedRun(t, ctx, database)
+}
+
+// seedRun records one run of the command bar alice asked, as a going_requests row, and states it
+// in the store through the writer that states a run from its row (graphcensus.WriteRun): the
+// interaction node, its words and its authored_by, in the shape the going POST writes them, since
+// both write graphstore.InteractionFacts through graphstore.Write. The POST's own writer is a
+// method of api's server, which imports this package, so this external test package takes the
+// store write it wraps, from the row as a release before this one leaves it.
+func seedRun(t *testing.T, ctx context.Context, database *store.Store) {
+	t.Helper()
+	var id string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into going_requests (author, project, words, ends_at)
+		values ('{"kind":"user","id":"alice"}', 'CENSUS', 'What did the census ask?', now() + interval '30 seconds')
+		returning id::text
+	`).Scan(&id); err != nil {
+		t.Fatalf("record a run of the command bar: %v", err)
+	}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		held, err := graphcensus.WriteRun(ctx, tx, id)
+		if err == nil && !held {
+			err = fmt.Errorf("the record holds no run %s", id)
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("state the run in the store through its writer: %v", err)
+	}
 }
 
 // seedReasoning writes, under the census issue, a pre-mortem lens with one finding and one risk,

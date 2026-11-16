@@ -187,7 +187,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
 	if s.deps.Answerer == nil {
-		if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
+		if _, err := endGoingRun(storing, s.deps.Store.Pool, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
 			slog.Warn("dispatch going: store the no-model-configured frame", "request", request.ID, "error", err)
 		}
 		return
@@ -196,10 +196,10 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	defer endAnswering()
 	emit := func(event going.Event) error {
 		if event.Terminal() {
-			_, err := s.endGoingRun(storing, request.ID, event)
+			_, err := endGoingRun(storing, s.deps.Store.Pool, request.ID, event)
 			return err
 		}
-		_, err := s.appendGoingEvent(storing, request.ID, event)
+		_, err := appendGoingEvent(storing, s.deps.Store.Pool, request.ID, event)
 		return err
 	}
 	err := s.deps.Answerer.Run(answering, going.Request{
@@ -357,7 +357,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case state.PastDeadline:
-			if _, err := s.endGoingRun(ctx, id, going.Fault(contracts.GoingErrorAnswerDidNotArrive)); err != nil {
+			if _, err := endGoingRun(ctx, s.deps.Store.Pool, id, going.Fault(contracts.GoingErrorAnswerDidNotArrive)); err != nil {
 				slog.Warn("dispatch going: end the run at its deadline", "request", id, "error", err)
 				return
 			}

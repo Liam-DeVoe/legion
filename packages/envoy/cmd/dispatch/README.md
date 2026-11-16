@@ -3369,6 +3369,12 @@ At that moment the running answer, a reader and the sweep may each try to end on
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
 So a reader sees exactly one ending, never two and never none.
 
+A run is a node of the store (dispatch://INFRA-1950), and its two tables are that node's projections.
+The `POST` writes, in its one transaction, an `interaction` node at the run's own uuid, addressed `dispatch://interaction/<uuid>`, reserved for its author, made by the whole credential that asked and carrying the run's `words`, its `ends_at` and its project, with its `authored_by` tuple and the author's own `person` or `session` node where that credential names one, and only then the `going_requests` row, whose `author` column is the node's `made_by`.
+Each frame is a transaction of its own: it takes the run's interaction node row `for no key update` first, so two frames of one run take sequences one after the other with no gap, appends one `frame` value tuple of the node holding the frame as the jsonb text `{"data": …, "name": …, "sequence": …}` (`graphstore.FrameValueSQL`), and then writes its `going_events` row; a row that conflicts rolls its value back with it.
+A run a pod of the release before recorded with no node gets its node from its row, with a `frame` value of every frame that pod stored, before this build writes its first frame of it (`graphcensus.WriteRun`).
+A read of the graph answers an interaction to the credential that asked it and to nobody else, with its words as its excerpt and under no issue, and a run whose author is nobody to nobody; its frames are read from the stream.
+
 ## Keyed writes
 
 Every `POST` and `PATCH` route takes an optional `Idempotency-Key` request header naming the intent behind the write, the same on every retry of it and new for every new one (the IETF `Idempotency-Key` draft; Google AIP-155).

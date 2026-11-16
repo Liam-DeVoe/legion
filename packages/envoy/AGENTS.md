@@ -1769,6 +1769,12 @@ Each node's visibility is `graphstore.VisibilityFor` of what it asked for and th
 a node written on the shared bearer states no `authored_by` and makes no node of the session its body claims.
 `envoy-dispatch census --store` owes a `person` or `session` node to the author of each such node that holds an asserted `authored_by` (`graphcensus`'s `reasoningAuthored`).
 
+A run of the command bar is an `interaction` node (dispatch://INFRA-1950), and `going_requests` and `going_events` are its projections (`api/going.go`).
+`recordGoingRequest` writes, in its one transaction and through `graphstore.InteractionFacts`, the node at the run's uuid, always `author` and made by the whole credential the `POST` proved, carrying `words`, `ends_at` and the run's project, with its `authored_by` and the author's node where `graphstore.AuthorOf` names one, and then the `going_requests` row, whose `author` is that `made_by`.
+`appendGoingEvent` is the one path of every frame - the answer's, its ending, a reader's at the deadline and the sweep's, through `endGoingRun` - each in a transaction of its own that takes the run's interaction node row `for no key update` first, then the run's row `for key share`, appends one `frame` value tuple (`graphstore.FrameTuple`, its text `graphstore.FrameValueSQL`), then writes the `going_events` row, and takes no revision fence;
+a run with no node, which a pod of the release before records, gets it first from its row through `graphcensus.WriteRun`, the backfill's writer for one run.
+The read registry holds `interaction` through `credentialAuthoredKind`, so a run reaches the credential that asked it alone, and its backlink count is the `changed_by_run` tuples into it.
+
 The pointer tuples of those kinds and a risk's place are held to one table of type rules (`graphstore`'s `pointerRules`, dispatch://INFRA-1950/spec#b-r-constraint-risk):
 
 | Tuple | From | To | Also |

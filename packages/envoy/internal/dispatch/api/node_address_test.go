@@ -28,7 +28,8 @@ import (
 // risk its author keeps to herself, each written through the one write path of those kinds
 // (writeReasoningNodes); each stands under the issue by the walk of its part_of up to the block
 // and its document. A second issue, of another project, holds nodes of its own, a lens on that
-// issue among them.
+// issue among them. A run of the command bar the reader asked is a node the reader reads and one
+// that stands under no issue, so no issue's route finds it.
 func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 	fixture := seedPrivateNode(t, true)
 	ctx := context.Background()
@@ -66,6 +67,15 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 			parentKind: graphstore.KindLens, parentID: lens, attributes: map[string]any{graphstore.AttributeHeading: "A risk she keeps."}},
 	)
 	writeReasoning(other.Key, reasoningNode{kind: graphstore.KindLens, id: otherLens, parentKind: graphstore.KindIssue, parentID: other.Key})
+	// A run of the command bar the reader asked, which the reader may read and which stands under
+	// no issue.
+	run, err := directServer(Deps{Store: fixture.database}).recordGoingRequest(ctx, reader, "PRIV", "What stands under this issue?")
+	if err != nil {
+		t.Fatalf("record the reader's run: %v", err)
+	}
+	if node, found, err := refs.Node(ctx, pool, reader, graphstore.KindInteraction, run.ID, true); err != nil || !found || node.IssueKey != nil {
+		t.Fatalf("the reader reads its run as %+v (found %t, %v), want it, under no issue", node, found, err)
+	}
 
 	for _, test := range []struct {
 		name, id   string
@@ -119,7 +129,8 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 		{"this issue's block under another", other.Key, fixture.first, reader},
 		{"a comment nobody wrote", fixture.issue, "comment/00000000-0000-4000-8000-000000000000", reader},
 		{"a block no version holds", fixture.issue, fixture.refKey + "#nosuchblock", reader},
-		{"a kind the registry does not resolve", fixture.issue, "interaction/00000000-0000-4000-8000-000000000000", reader},
+		{"a run of the command bar, which stands under no issue", fixture.issue, "interaction/" + run.ID, reader},
+		{"a run's dispatch address", fixture.issue, "dispatch://interaction/" + run.ID, reader},
 		{"a lens nobody invoked", fixture.issue, "lens/00000000-0000-4000-8000-000000000000", reader},
 		{"another issue's lens", fixture.issue, "lens/" + otherLens, reader},
 		{"this issue's lens under another", other.Key, "lens/" + lens, reader},

@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -20,6 +23,13 @@ import (
 // spreads across pods (conn_age.go: kube-proxy and the front door spread load per connection,
 // not per request). Every read and write of that record is here; the routes that call them are
 // their own.
+//
+// A run is an interaction node of the node and tuple store (dispatch://INFRA-1950/spec#b-r-interaction),
+// and its two tables are that node's projections: going_requests projects the node, its author
+// column the node's made_by, and each going_events row projects one frame value of it. Every
+// writer here writes the node or the value first and then the row, in one transaction
+// (recordGoingRequest, appendGoingEvent), so no row stands without its node and no frame without
+// its value. The stream reads the rows, as it always did: they are the cache it reads at speed.
 //
 // The window a run has belongs to the record: going_requests.ends_at, written by the POST. A pod
 // that dies mid-run stores no terminal frame, so a reader on another pod ends the stream itself
@@ -40,14 +50,21 @@ const goingEventColumns = `sequence, name, data`
 // the going_events_terminal index holds as literals.
 var goingTerminalNames = []string{contracts.GoingEventEnd, contracts.GoingEventError}
 
-// goingTerminalWrites bounds how many sequences one terminal write tries. A write takes the next
-// sequence and loses it only to a frame committed between its read of the last one and its own
-// insert: to another terminal write, which ends the attempt with that stored frame, or to a
-// frame of the run's own, after which the next sequence is free. The run writes its frames one
-// after another, so two such losses in a row would need the run to be writing faster than this
-// statement's round trip; the bound is there so a caller cannot spin, not because a third
-// attempt is expected to be needed.
+// goingTerminalWrites bounds how many sequences one terminal write tries. Every frame this build
+// writes of a run queues at the run's interaction node (appendGoingEvent), so a terminal write
+// loses its sequence only to a frame a pod of the release before wrote during a roll, which takes
+// no such lock: to a terminal frame, which ends the attempt with that stored frame, or to a frame
+// of the run's own, after which the next sequence is free. Two such losses in a row would need
+// that pod to be writing faster than this write's round trips; the bound is there so a caller
+// cannot spin, not because a third attempt is expected to be needed.
 const goingTerminalWrites = 3
+
+// errGoingRunGone is a frame of a run the record no longer holds: one nobody asked, or one the
+// sweep has deleted past contracts.GoingRequestTTL, whose node may still stand. It stores nothing.
+// It wraps pgx.ErrNoRows, which is what a frame the record stores none of answers its writer, so
+// an answer still writing reads its run as over either way; endGoingRun answers it rather than
+// trying another sequence, and the sweep passes over it.
+var errGoingRunGone = fmt.Errorf("the record holds no such run: %w", pgx.ErrNoRows)
 
 // goingRequest is one answer run as the record holds it: the question a reader asked, and the
 // window the run has to answer it in.
@@ -85,12 +102,25 @@ type goingRunState struct {
 // and answers the stored row. ends_at is created_at plus contracts.GoingRunWindow: both come
 // from one now(), the transaction's own, so the window is exactly that long.
 //
-// The insert is made in a transaction of the shared pool rather than as a bare statement, because
+// It writes, in its one transaction, the run's interaction node and then the going_requests row
+// that projects it (graphstore.InteractionFacts): the node at the run's own uuid, reserved for its
+// author, made by the whole credential the POST proved and carrying the run's words, its ends_at
+// and its project, with its authored_by tuple and its author's own person or session node and
+// alias tuples where graphstore.AuthorOf names somebody of that credential; then the row, whose
+// author column is the node's made_by, the same recorded actor in the same encoding. The uuid and
+// the two moments are read first, in one statement, so the node is written before the row whose
+// columns they are. createGoingRequest refuses an asker who proves nobody, so every run the POST
+// records has an author; a run whose author is nobody, which only a direct call with model.Actor{}
+// writes, gets a node nobody reads and no authored_by, as the stream reads such a row. The write
+// takes no owner row, as a run belongs to no issue and no document, and appends no event.
+//
+// The insert is made in a transaction of the shared pool rather than as bare statements, because
 // the POST that calls it is a keyed write: the commit step marks the request's Idempotency-Key
 // committed with the write itself, which is what answers a repeat after a crash KEY_COMMITTED
 // rather than recording the question a second time (keyed_write_guard_test.go).
 func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, project, words string) (goingRequest, error) {
-	stored, err := json.Marshal(author)
+	run := graphstore.Interaction{Author: author.Recorded(), Project: project, Words: words}
+	stored, err := json.Marshal(run.Author)
 	if err != nil {
 		return goingRequest{}, err
 	}
@@ -99,10 +129,18 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 		return goingRequest{}, err
 	}
 	defer tx.Rollback(ctx)
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now(), now() + make_interval(secs => $1)`,
+		contracts.GoingRunWindow.Seconds()).Scan(&run.ID, &run.At, &run.EndsAt); err != nil {
+		return goingRequest{}, err
+	}
+	nodes, tuples := graphstore.InteractionFacts(run)
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		return goingRequest{}, fmt.Errorf("write the interaction node of run %s: %w", run.ID, err)
+	}
 	request, err := scanGoingRequest(tx.QueryRow(ctx, `
-		insert into going_requests (author, project, words, ends_at)
-		values ($1::jsonb, $2::text, $3::text, now() + make_interval(secs => $4))
-		returning `+goingRequestColumns, stored, project, words, contracts.GoingRunWindow.Seconds()))
+		insert into going_requests (id, author, project, words, created_at, ends_at)
+		values ($1::uuid, $2::jsonb, $3::text, $4::text, $5, $6)
+		returning `+goingRequestColumns, run.ID, stored, project, words, run.At, run.EndsAt))
 	if err != nil {
 		return goingRequest{}, err
 	}
@@ -122,55 +160,143 @@ func (s *server) readGoingRequest(ctx context.Context, id string) (goingRequest,
 	`, id))
 }
 
-// appendGoingEvent stores event as the run's next frame and answers the sequence it took. The
-// sequence is read and written in the one statement, as a handoff's version is (handoffs.go), so
-// a frame never takes a sequence the record already holds. Only the process running the answer
-// appends a frame that does not end the stream, and it appends them one after another; a
-// terminal frame goes through endGoingRun, which the table settles. A frame the record stores
-// none of - the run is already ended, or the sequence went to another writer - is pgx.ErrNoRows,
-// which tells an answer still writing that its run is over.
-func (s *server) appendGoingEvent(ctx context.Context, requestID string, event going.Event) (int, error) {
+// goingNodeLock takes a run's interaction node row, $1 the kind and $2 the run's id, as the
+// first statement of every frame's transaction (lockGoingRun).
+const goingNodeLock = `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`
+
+// goingNextFrame reads what a frame of the run $1 takes, once the run's node is held: the next
+// sequence, the frame's value at that sequence (graphstore.FrameValueSQL over the frame's name $2
+// and its JSON $3), whether the run has stored a terminal frame (the names $4), and the
+// transaction's now(), which the frame's going_events row takes as its created_at. It takes the
+// run's going_requests row `for key share`, the lock the frame's own row's foreign key would take,
+// so a TTL delete of the run waits for the frame rather than failing its insert; a run the record
+// no longer holds answers no row.
+var goingNextFrame = `
+	select next.sequence,
+	       ` + graphstore.FrameValueSQL("next.sequence", "$2::text", "$3::jsonb") + `,
+	       next.ended,
+	       now()
+	from going_requests r
+	cross join lateral (
+		select coalesce(max(e.sequence), 0) + 1 as sequence,
+		       coalesce(bool_or(e.name = any($4::text[])), false) as ended
+		from going_events e
+		where e.request_id = r.id
+	) next
+	where r.id = $1::uuid
+	for key share of r`
+
+// goingFrameRow writes a frame's going_events row at the sequence goingNextFrame read. It does
+// nothing on a conflict: with the run's terminal frame (going_events_terminal), or with a frame at
+// that sequence, either of which a pod of the release before, which takes no node lock, may have
+// committed in between.
+const goingFrameRow = `
+	insert into going_events (request_id, sequence, name, data)
+	values ($1::uuid, $2, $3::text, $4::jsonb)
+	on conflict do nothing
+	returning sequence`
+
+// appendGoingEvent stores event as the run's next frame and answers the sequence it took. It is
+// the one path every frame of a run is written by: the answer's own frames, its ending and the
+// deadline's ending a reader or the sweep writes, which all three reach through endGoingRun.
+//
+// Each frame is a transaction of its own. It first takes the run's interaction node row
+// `for no key update` (lockGoingRun), so two frames of one run queue there and the second reads
+// the sequence the first took. It then takes the run's row and the next sequence,
+// coalesce(max(sequence), 0) + 1, in one statement (goingNextFrame), appends the frame as one
+// `frame` value tuple of the node holding that sequence, the frame's name and its data
+// (graphstore.FrameTuple), and then writes the going_events row (goingFrameRow). A row that
+// conflicts rolls the whole transaction back, the value with it, so no frame stands without its
+// row and no row without its frame. It takes no revision fence: that belongs to the block index
+// writer alone (dispatch://INFRA-1149's R29).
+//
+// A frame the record stores none of answers pgx.ErrNoRows, which tells an answer still writing
+// that its run is over: a run that has stored its terminal frame takes no other, a frame whose
+// row conflicts stores nothing, and a run the record no longer holds is errGoingRunGone, which
+// wraps it. Only the process running the answer appends a frame that does not end the stream; a
+// terminal frame goes through endGoingRun, which the table settles.
+//
+// The transaction is the frame's alone and none of a request's own work, so it takes no commit
+// step a keyed request's context carries (store.WithoutBeforeCommit): the answer's context is
+// derived from its POST's, and a frame that committed while that POST was still answering would
+// otherwise mark the POST's key, or be rolled back with a key a repeat had taken over.
+func appendGoingEvent(ctx context.Context, pool *store.Pool, requestID string, event going.Event) (int, error) {
+	parsed, err := uuid.Parse(requestID)
+	if err != nil {
+		return 0, errGoingRunGone
+	}
+	// The node is keyed by the uuid as Postgres writes it, whatever spelling of it a reader's
+	// path named.
+	requestID = parsed.String()
 	data, err := json.Marshal(event.Data)
 	if err != nil {
 		return 0, err
 	}
+	tx, err := pool.Begin(store.WithoutBeforeCommit(ctx))
+	if err != nil {
+		return 0, fmt.Errorf("begin a frame of run %s: %w", requestID, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockGoingRun(ctx, tx, requestID); err != nil {
+		return 0, err
+	}
 	var sequence int
-	err = s.deps.Store.Pool.QueryRow(ctx, goingAppendEvent, requestID, event.Name, data, goingTerminalNames).Scan(&sequence)
-	return sequence, err
+	var value string
+	var ended bool
+	var at time.Time
+	err = tx.QueryRow(ctx, goingNextFrame, requestID, event.Name, data, goingTerminalNames).Scan(&sequence, &value, &ended, &at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, errGoingRunGone
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the next frame of run %s: %w", requestID, err)
+	}
+	if ended {
+		return 0, pgx.ErrNoRows
+	}
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{graphstore.FrameTuple(requestID, value, at)}); err != nil {
+		return 0, fmt.Errorf("append frame %d of run %s: %w", sequence, requestID, err)
+	}
+	if err := tx.QueryRow(ctx, goingFrameRow, requestID, sequence, event.Name, data).Scan(&sequence); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return sequence, nil
 }
 
-// goingNextEvent inserts one frame at the run's next sequence, read and written in the one
-// statement, doing nothing where another writer took that sequence in between and returning no
-// row where it stored none.
-//
-// The having is what keeps a frame of a run the record no longer holds from being an error:
-// the TTL delete of another pod's sweep may remove a run between any reader of it and this
-// write, and the foreign key would then fail the statement - and, in the sweep's own batch,
-// every write queued after it, since that batch is one implicit transaction. A run that is
-// gone stores nothing instead, which is pgx.ErrNoRows to the caller: what an ended run already
-// answers, and what a writer with nothing left to write is owed.
-const goingNextEvent = `
-	insert into going_events (request_id, sequence, name, data)
-	select $1::uuid, coalesce(max(sequence), 0) + 1, $2::text, $3::jsonb
-	from going_events where request_id = $1::uuid
-	having exists (select 1 from going_requests where id = $1::uuid)`
+// lockGoingRun takes the interaction node row of the run requestID names `for no key update`,
+// the first lock of every frame's transaction. A run a pod of the release before recorded during
+// a roll has no node yet: its node is written first, from its going_requests row, by the
+// backfill's writer for one run (graphcensus.WriteRun), which also states a frame value of every
+// frame that pod stored, and then taken. A run the record does not hold is errGoingRunGone.
+func lockGoingRun(ctx context.Context, tx pgx.Tx, requestID string) error {
+	locked, err := lockGoingNode(ctx, tx, requestID)
+	if err != nil || locked {
+		return err
+	}
+	held, err := graphcensus.WriteRun(ctx, tx, requestID)
+	if err != nil {
+		return err
+	}
+	if !held {
+		return errGoingRunGone
+	}
+	if locked, err = lockGoingNode(ctx, tx, requestID); err != nil || locked {
+		return err
+	}
+	return fmt.Errorf("lock run %s: the store holds no interaction node of it once its writer wrote one", requestID)
+}
 
-// goingAppendEvent is that insert for a frame that does not end the stream: the condition added
-// here stores nothing once the run has a terminal frame, so an answer still writing when a
-// reader at the deadline or the sweep ended the run under it adds nothing after the frame a
-// reader stopped on. bool_or answers null over a run with no frames yet, which coalesce reads
-// as the run not having ended.
-const goingAppendEvent = goingNextEvent + `
-	and not coalesce(bool_or(name = any($4::text[])), false)
-	on conflict do nothing
-	returning sequence`
-
-// goingEndEvent is that insert for a terminal frame, which asks no more of the run than that it
-// still exists: what keeps a run to one ending is the going_events_terminal index, which this
-// conflicts with where the run is already ended, and not a read taken before the insert.
-const goingEndEvent = goingNextEvent + `
-	on conflict do nothing
-	returning sequence`
+// lockGoingNode runs goingNodeLock and answers whether it found the node's row to take.
+func lockGoingNode(ctx context.Context, tx pgx.Tx, requestID string) (bool, error) {
+	tag, err := tx.Exec(ctx, goingNodeLock, graphstore.KindInteraction, requestID)
+	if err != nil {
+		return false, fmt.Errorf("lock the interaction node of run %s: %w", requestID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
 
 // endGoingRun ends the run with event, a terminal frame, and answers the terminal frame the run
 // actually has: the one this call stored, or the one already stored when another writer ended
@@ -178,25 +304,21 @@ const goingEndEvent = goingNextEvent + `
 // writer that loses reports the stored frame rather than storing its own at the next sequence:
 // the answer, the reader at the deadline and the sweep then all say the same thing about one
 // run. event must be terminal (going.Event.Terminal); anything else would end no run and is
-// refused here rather than stored as a frame no reader stops on.
-func (s *server) endGoingRun(ctx context.Context, requestID string, event going.Event) (goingEvent, error) {
+// refused here rather than stored as a frame no reader stops on. A run the record no longer
+// holds is errGoingRunGone.
+func endGoingRun(ctx context.Context, pool *store.Pool, requestID string, event going.Event) (goingEvent, error) {
 	if !event.Terminal() {
 		return goingEvent{}, fmt.Errorf("end going run %s: %s is not a terminal event", requestID, event.Name)
 	}
-	data, err := json.Marshal(event.Data)
-	if err != nil {
-		return goingEvent{}, err
-	}
 	for range goingTerminalWrites {
-		var sequence int
-		err := s.deps.Store.Pool.QueryRow(ctx, goingEndEvent, requestID, event.Name, data).Scan(&sequence)
+		sequence, err := appendGoingEvent(ctx, pool, requestID, event)
 		if err == nil {
 			return goingEvent{Sequence: sequence, Event: event}, nil
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, errGoingRunGone) || !errors.Is(err, pgx.ErrNoRows) {
 			return goingEvent{}, err
 		}
-		stored, err := s.readGoingTerminalEvent(ctx, requestID)
+		stored, err := readGoingTerminalEvent(ctx, pool, requestID)
 		if err == nil {
 			return stored, nil
 		}
@@ -211,8 +333,8 @@ func (s *server) endGoingRun(ctx context.Context, requestID string, event going.
 
 // readGoingTerminalEvent is the one terminal frame a run stored, pgx.ErrNoRows while it has
 // stored none. The going_events_terminal index holds that there is at most one.
-func (s *server) readGoingTerminalEvent(ctx context.Context, requestID string) (goingEvent, error) {
-	return scanGoingEvent(s.deps.Store.Pool.QueryRow(ctx, `
+func readGoingTerminalEvent(ctx context.Context, pool *store.Pool, requestID string) (goingEvent, error) {
+	return scanGoingEvent(pool.QueryRow(ctx, `
 		select `+goingEventColumns+`
 		from going_events
 		where request_id = $1::uuid and name = any($2::text[])
@@ -304,28 +426,22 @@ func scanGoingEvent(row pgx.Row) (goingEvent, error) {
 // those runs is what nothing else does: the pod that was answering one may have died, and
 // nobody may be reading it.
 //
-// Each overdue run is ended by goingEndEvent, the statement every other terminal write uses, so
-// the sweep holds no second copy of how a frame takes its next sequence: the ids are read
-// first, then one queued write each, which is one round trip for the pass. A run a reader or
-// the answer itself ended between the read and the write keeps that frame, since the write does
-// nothing on a conflict; a run whose next sequence went to a frame of its own meanwhile stores
-// nothing here and is ended by the next pass, where endGoingRun, which has a reader waiting on
-// it, tries the sequence after it at once. A run deleted between the read and the write - this
-// pass's own delete below runs in another pod too - stores nothing either (goingNextEvent), so
-// one missing run neither fails the pass nor costs the runs queued behind it their ending. The
-// delete is why a reader that reconnects within the hour still finds its answer, and nothing
-// older is kept.
+// Each overdue run is ended by endGoingRun, the path every other terminal write takes, so the
+// sweep holds no second copy of how a frame is written: the ids are read first, oldest deadline
+// first, then each run is ended in a transaction of its own. A run a reader or the answer itself
+// ended between the read and the write keeps that frame, which endGoingRun answers. A run deleted
+// between the read and the write - this pass's own delete below runs in another pod too - stores
+// nothing (errGoingRunGone) and is passed over, and any other failure of one run's ending is kept
+// and answered once the pass is done, so one run neither fails the pass nor costs the runs read
+// after it their ending, nor the pass its delete. The delete is why a reader that reconnects
+// within the hour still finds its answer, and nothing older is kept.
 func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
-	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
-	data, err := json.Marshal(deadline.Data)
-	if err != nil {
-		return err
-	}
 	rows, err := pool.Query(ctx, `
 		select r.id::text
 		from going_requests r
 		where r.ends_at <= now()
 		  and not exists (select 1 from going_events e where e.request_id = r.id and e.name = any($1::text[]))
+		order by r.ends_at, r.id
 	`, goingTerminalNames)
 	if err != nil {
 		return err
@@ -334,17 +450,15 @@ func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
 	if err != nil {
 		return err
 	}
-	if len(overdue) > 0 {
-		batch := &pgx.Batch{}
-		for _, id := range overdue {
-			batch.Queue(goingEndEvent, id, deadline.Name, data)
-		}
-		if err := pool.SendBatch(ctx, batch).Close(); err != nil {
-			return err
+	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
+	var failed []error
+	for _, id := range overdue {
+		if _, err := endGoingRun(ctx, pool, id, deadline); err != nil && !errors.Is(err, errGoingRunGone) {
+			failed = append(failed, err)
 		}
 	}
 	_, err = pool.Exec(ctx, `
 		delete from going_requests where created_at < now() - make_interval(secs => $1)
 	`, contracts.GoingRequestTTL.Seconds())
-	return err
+	return errors.Join(append(failed, err)...)
 }

@@ -508,6 +508,19 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // the node whose pointer it moves before the rest of its write. The reasoning write
 // (writeReasoningNodes) takes its issue's owner row first, as invariant 1 says, and writes its
 // nodes in one graphstore.Write.
+//
+// A run of the command bar (api/going.go) owns no issue and no document, so none of its writes
+// takes an owner row. Its record (recordGoingRequest) writes the run's interaction node, its
+// author's node and their tuples in one graphstore.Write, and only then the going_requests row
+// that projects the node. A frame of a run takes the run's interaction graph_nodes row
+// `for no key update` first, in a transaction of its own (appendGoingEvent, which the answer, a
+// reader at the deadline and the sweep all write through), so two frames of one run queue at that
+// row and the second reads the sequence the first took. A run a pod of the release before
+// recorded with no node gets its node there first: graphcensus.WriteRun takes the run's
+// going_requests row `for no key update`, writes the node and its tuples in one graphstore.Write,
+// and the frame then takes the node's row. Then the frame takes the run's going_requests row
+// `for key share`, the lock the going_events foreign key takes, appends the frame value tuple and
+// writes the going_events row. No frame takes the revision fence.
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {

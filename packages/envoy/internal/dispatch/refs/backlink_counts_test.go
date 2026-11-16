@@ -331,11 +331,12 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		// a kind and the constraint that is its source, each named by a mention as any node is.
 		{"lens_kind", "pre-mortem"},
 		{"constraint", "5eed0000-1e45-4000-8000-000000000001"},
-		// A lens, a finding of it and a risk under it (writeBacklinkReasoning), each named by a
-		// mention as any node is.
+		// A lens, a finding of it and a risk under it (writeBacklinkReasoning), and a run of the
+		// command bar (its node is written below), each named by a mention as any node is.
 		{"lens", backlinkLens},
 		{"lens_block", backlinkFinding},
 		{"risk", backlinkRisk},
+		{"interaction", "22222222-2222-4222-8222-222222222222"},
 	} {
 		insertReference(t, tx, "comment", citingComment, target[0], target[1])
 	}
@@ -345,10 +346,10 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 	// build would leave it: the mention arm's from_kind filter is what keeps it out of a count.
 	insertReference(t, tx, "future", "x#y", "issue", "CORE-1")
 	// graph_tuples, the view's store class: an authored_by out of a lens to the person and out of
-	// an interaction to the session, which the view answers from the tuples alone. The lens is a
-	// kind this build resolves, so its edge counts on the person (authoredByReasoning); the
-	// interaction is not yet, so the view lists its edge and the count, like the list behind it,
-	// counts none of it (the oracle's source filter), until the commit that registers it.
+	// an interaction to the session, which the view answers from the tuples alone. Both are kinds
+	// this build resolves, so each edge counts on its author (authoredByReasoning). The interaction
+	// is written project-visible, as no run is, because the oracle reads the view with no
+	// predicate: a run reserved for its author would be in the view's count and in no reader's.
 	for _, authored := range []struct{ fromKind, fromID, toKind, toID string }{
 		{"lens", backlinkLens, "person", "person-backlink@example.com"},
 		{"interaction", "22222222-2222-4222-8222-222222222222", "session", "session-backlink"},
@@ -370,6 +371,18 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		values ('lens', $1, 'has_kind', 'lens_kind', 'pre-mortem', now(), '{"kind":"user","id":"alice"}', 0)
 	`, backlinkLens)
 	writeBacklinkReasoning(t, tx, specRef, specBlock, commentBlock)
+	// The changed_by_run of what a write made for that run changed: a lens, a finding of it and a
+	// risk under it, each answered from the tuples alone and counted on the run's node
+	// (changedByRun), the finding as the lens_block its own arm writes it as; and one out of the
+	// lens the store holds gone, which neither reading counts.
+	for _, changed := range []struct{ fromKind, fromID string }{
+		{"lens", backlinkLens}, {"block", backlinkFinding}, {"risk", backlinkRisk}, {"lens", backlinkGoneLens},
+	} {
+		execFixture(t, tx, "write the changed_by_run of "+changed.fromKind+" "+changed.fromID, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+			values ($1, $2, 'changed_by_run', 'interaction', '22222222-2222-4222-8222-222222222222', now(), '{"kind":"user","id":"alice"}', 0)
+		`, changed.fromKind, changed.fromID)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)

@@ -486,6 +486,17 @@ var indexPasses = map[string]string{
 	// One node's state, written or settled through the store's writer from the request and the
 	// node's own row: the state is a base attribute of the node, which no projection row holds.
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row and the issue it stands under",
+	// A run of the command bar: its interaction node, its author's node and their tuples, written
+	// from the POST alone before the going_requests row that projects them, and each frame's value,
+	// written from the frame its writer hands it before the going_events row that projects it.
+	// Neither reads a row of either side to decide what the other should say.
+	"api/going.go#recordGoingRequest": "the POST's question, its project and the credential it proved",
+	"api/going.go#appendGoingEvent":   "the frame its writer hands it and the run's last sequence",
+	// The backfill's writer for one run a pod of the release before recorded with no node: its
+	// input is that going_requests row's own content and the run's going_events rows, as the other
+	// backfill passes read each pre-store row's own, and a run whose node is already written it
+	// leaves alone rather than mending.
+	"graphcensus/interactions.go#WriteRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.

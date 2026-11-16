@@ -104,6 +104,18 @@ var storeWriteCallSites = []string{
 	// TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner row writeReasoningNodes
 	// takes first too.
 	"api/reasoning_write.go#writeNodeState",
+	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
+	// interaction node, its author's node and their tuples in one Write before the going_requests
+	// row, and each frame, in a transaction of its own, takes the run's interaction node row
+	// `for no key update`, then the run's row `for key share`, then appends the frame value through
+	// Write before the going_events row. api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds
+	// both to their steps. A frame of a run a pod of the release before recorded with no node
+	// writes that node first through the backfill's writer for one run, which takes the run's
+	// going_requests row `for no key update` and then writes in one Write; its order is the order
+	// TestEveryStoreWriteTakesOneLockOrder proves of Write.
+	"api/going.go#appendGoingEvent",
+	"api/going.go#recordGoingRequest",
+	"graphcensus/interactions.go#WriteRun",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and
