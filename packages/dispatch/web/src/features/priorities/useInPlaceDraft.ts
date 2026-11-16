@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's title and description are saved as
@@ -10,6 +10,10 @@ export interface InPlaceDraft {
   /** What the field shows: the reader's own text, or the server's when it changed under a
    *  reader who is not holding the field. */
   readonly draft: string;
+  /** The newest text this field sent that `value` has not reached and Dispatch has not refused:
+   *  what the server is about to hold, which a reading of the field shows in place of `value`
+   *  while the write is out. Undefined while no write is out. */
+  readonly sending: string | undefined;
   /** The reader typed `next`: it is kept, and saved once the typing rests. */
   readonly type: (next: string) => void;
   /** The reader is holding the field, so the server's text no longer replaces the draft. */
@@ -18,18 +22,46 @@ export interface InPlaceDraft {
   readonly leave: () => void;
 }
 
+/** One text this field sent, as an object of its own: a refusal takes back this send, never a
+ *  later send of the same text. */
+interface Sent {
+  readonly text: string;
+}
+
 /**
  * The draft of a field edited where it is read: no edit mode, no Save button. What the reader
- * types is kept here until it rests, then written once; leaving the field writes it at once,
- * unless the rest already wrote that text, so a rest and then a leave send one write however the
- * reader leaves. The reader's own text stands until `value` itself changes, so a refresh of the
- * row underneath never pulls a half-typed word out from under them and the round trip of their
- * own write never shows them the old text again. `InPlaceField` (one line) and
- * `PriorityDescription` (the shared text field) each draw their own element over it.
+ * types is kept here until it rests, then written once; leaving the field writes it at once.
+ * `InPlaceField` (one line) and `PriorityDescription` (the shared text field) each draw their
+ * own element over it.
+ *
+ * A write is a round trip: `value` is the old text until the answer lands and the row is read
+ * again. So the hook holds three things - the draft, whether the reader holds the field, and the
+ * texts it sent that `value` has not reached yet, oldest first (`out`), which is what the server
+ * is about to hold - and moves between them only these ways:
+ *
+ * - Typing: the draft is the reader's text, and the rest's timer starts again. Nothing is sent.
+ * - Sent and pending: a rest, or a leave, sends the draft and adds it to `out`, unless it is the
+ *   text the server is about to hold - the newest text out, or `value` while none is. A rest and
+ *   then a leave therefore send one write, and a reader who types back to the old text while a
+ *   write is out has that text written.
+ * - Refused: the send leaves `out`, wherever it stands in it. The draft stays the reader's, so
+ *   the next rest or leave sends it again.
+ * - `value` reaches a text in `out`: that send's answer is in, and so is every older one's, so
+ *   it and every send before it leave `out`. Once none is left, the draft becomes `value` unless
+ *   the reader holds the field: a refresh never pulls a half-typed word out from under them.
+ * - A stale read landing while a newer write is out: `value` reaches an older text in `out`, and
+ *   the newer sends stay. The draft stands, since it already holds the newer text, so the field
+ *   never shows the old text again and a leave sends nothing.
+ * - `value` moves to a text this field never sent - another writer's, or the server's own
+ *   reading of a text sent: `out` empties, since the server holds that text now, and the draft
+ *   becomes `value` unless the reader holds the field. A draft that differs from it is written,
+ *   even where it was sent before.
+ *
+ * A write that lands moves nothing here: its answer is `value` reaching its text.
  */
 export function useInPlaceDraft(
   value: string,
-  onSave: (next: string) => void,
+  onSave: (next: string) => Promise<unknown>,
   onDone?: () => void
 ): InPlaceDraft {
   const [draft, setDraft] = useState(value);
@@ -38,27 +70,23 @@ export function useInPlaceDraft(
   const latest = useRef({ draft, value, onSave });
   latest.current = { draft, value, onSave };
   const seen = useRef(value);
-  // The text this field last wrote, until `value` moves. A write is a round trip: `value` is
-  // the old text until the answer lands and the row is read again, so while it is out the text
-  // the server will hold is this one, and a draft is written only where it differs from it. A
-  // leave inside that trip then sends no second write of the same text, and a reader who types
-  // back to the old text before the answer lands has that text written, since the server is about
-  // to hold the other one. Once `value` moves the text is the server's again, and a draft that
-  // differs from it is written even when it matches what was written before: another writer may
-  // have changed it since.
-  const written = useRef<string | undefined>(undefined);
+  const out = useRef<readonly Sent[]>([]);
+  // The newest text out, as state as well: a reading of the field draws it, and a refusal that
+  // takes it back has to draw again.
+  const [sending, setSending] = useState<string | undefined>(undefined);
+  const record = useCallback((next: readonly Sent[]) => {
+    out.current = next;
+    setSending(next.at(-1)?.text);
+  }, []);
 
-  // The server's text wins when it changes under a reader who is not holding the field:
-  // another writer's rename, or this writer's own write coming back. The draft stands until
-  // then, because leaving the field sends a write and the write is a round trip: resetting
-  // the draft while it is in flight would show the reader their own text being undone, and
-  // then written again when the answer lands.
   useEffect(() => {
     if (value === seen.current) return;
     seen.current = value;
-    written.current = undefined;
-    if (!editing) setDraft(value);
-  }, [editing, value]);
+    const reached = out.current.findIndex((sent) => sent.text === value);
+    const left = reached === -1 ? [] : out.current.slice(reached + 1);
+    record(left);
+    if (!editing && left.length === 0) setDraft(value);
+  }, [editing, record, value]);
 
   const stop = () => {
     if (timer.current !== undefined) window.clearTimeout(timer.current);
@@ -67,9 +95,12 @@ export function useInPlaceDraft(
   const save = () => {
     stop();
     const { draft: typed, value: saved, onSave: write } = latest.current;
-    if (typed === (written.current ?? saved)) return;
-    written.current = typed;
-    write(typed);
+    if (typed === (out.current.at(-1)?.text ?? saved)) return;
+    const sent: Sent = { text: typed };
+    record([...out.current, sent]);
+    void write(typed).catch(() => {
+      if (out.current.includes(sent)) record(out.current.filter((entry) => entry !== sent));
+    });
   };
   // The timer is cleared through the ref the render that set it wrote to, so the unmount takes
   // no dependency on this render's own `stop`.
@@ -88,6 +119,7 @@ export function useInPlaceDraft(
       save();
       onDone?.();
     },
+    sending,
     type: (next: string) => {
       setDraft(next);
       stop();

@@ -34,8 +34,10 @@ export interface PriorityRowActions {
   /** The priority whose row is open, which shows its whole description and its work. */
   readonly openId: string | undefined;
   readonly onOpen: (item: PriorityItem) => void;
-  readonly onRename: (item: PriorityItem, title: string) => void;
-  readonly onDescribe: (item: PriorityItem, description: string) => void;
+  /** Each writes the row's title or description, answering with the write's promise, which the
+   *  field reads a refusal from (`useInPlaceDraft`). */
+  readonly onRename: (item: PriorityItem, title: string) => Promise<unknown>;
+  readonly onDescribe: (item: PriorityItem, description: string) => Promise<unknown>;
   /** The row the reader is dragging, and the two ends of that drag. */
   readonly dragging: string | undefined;
   readonly onDragStart: (id: string) => void;
@@ -111,7 +113,7 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
           // (`PlainText`'s `firstLine`), read once the engine has answered. It is markdown, so
           // its markers are not read out, and a reference in it reads as its target's name, as
           // every other one-line projection of stored text reads it.
-          <PlainText firstLine markdown={description}>
+          <PlainText firstLine markdown={description} surface="priority-description">
             {(summary) =>
               summary === undefined || summary === "" ? null : (
                 <p className={`truncate text-sm ${textSecondaryOnCanvas}`}>{summary}</p>

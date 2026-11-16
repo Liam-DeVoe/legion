@@ -30,7 +30,9 @@ export function InPlaceField({
   label: string;
   /** Told when the reader leaves the field, after what they wrote has been sent. */
   onDone?: () => void;
-  onSave: (next: string) => void;
+  /** Writes `next`, answering with the write's promise: a refusal is what lets the next rest or
+   *  leave send the same text again (`useInPlaceDraft`). */
+  onSave: (next: string) => Promise<unknown>;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
   options?: readonly string[];

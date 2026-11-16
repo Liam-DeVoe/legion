@@ -1,5 +1,5 @@
 import { expect, jest, test } from "bun:test";
-import { render, within } from "@testing-library/react";
+import { act, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { jump, realClock } from "../../__tests__/fake-clock";
@@ -23,6 +23,7 @@ function Field({ saves = [] }: { saves?: string[] }): ReactNode {
         onSave={(next) => {
           saves.push(next);
           setSent(next);
+          return Promise.resolve();
         }}
         value={value}
       />
@@ -69,7 +70,14 @@ test("a text written elsewhere replaces what a field the reader is not holding s
 function recordingField() {
   const saves: string[] = [];
   const view = render(
-    <InPlaceField label="Title" onSave={(next) => saves.push(next)} value="Old" />
+    <InPlaceField
+      label="Title"
+      onSave={(next) => {
+        saves.push(next);
+        return Promise.resolve();
+      }}
+      value="Old"
+    />
   );
   return { field: within(view.container).getByRole("textbox", { name: "Title" }), saves, view };
 }
@@ -194,6 +202,238 @@ test("a text written before the value moved is written again when the reader wri
     await user.type(field, "Old name one");
     await user.tab();
     expect(saves).toEqual(["Old name one", "Old name one"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+/**
+ * A field over a server the test answers by hand, from outside the field: a button would take
+ * the focus out of it, and most answers these rows are about land while the reader holds it.
+ * Every text the field sends is recorded in `saves`, in order, and stays out until the test
+ * refuses it (`refuse`) or a read brings a text back as `value` (`lands`) - a text the field
+ * sent, or another writer's. The rows below are the transitions `useInPlaceDraft` names, one
+ * row each.
+ */
+function heldServer() {
+  const saves: string[] = [];
+  const out: { readonly refuse: (refusal: Error) => void; readonly text: string }[] = [];
+  let read: (text: string) => void = () => {
+    throw new Error("the field has not rendered");
+  };
+  const ServerField = (): ReactNode => {
+    const [value, setValue] = useState("Old");
+    read = setValue;
+    return (
+      <InPlaceField
+        label="Title"
+        onSave={(next) => {
+          saves.push(next);
+          const write = Promise.withResolvers<void>();
+          out.push({ refuse: write.reject, text: next });
+          return write.promise;
+        }}
+        value={value}
+      />
+    );
+  };
+  const view = render(<ServerField />);
+  return {
+    field: within(view.container).getByRole<HTMLInputElement>("textbox", { name: "Title" }),
+    lands: (text: string) => act(() => read(text)),
+    /** Refuses the newest write of `text` still out. */
+    refuse: (text: string) =>
+      act(async () => {
+        const at = out.map((write) => write.text).lastIndexOf(text);
+        const [write] = at === -1 ? [] : out.splice(at, 1);
+        if (write === undefined) throw new Error(`no write of ${text} is out`);
+        write.refuse(new Error("refused"));
+      }),
+    saves,
+    view,
+  };
+}
+
+// Typing: the draft is the reader's text and nothing is sent, and each keystroke starts the
+// rest's wait again. The reader pauses for half the wait, types on, and pauses past the end of
+// the first wait: nothing is sent until the wait after the last keystroke is over.
+test("typing sends nothing until the typing rests", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { field, saves, view } = heldServer();
+  try {
+    await user.type(field, " new");
+    await jump(SAVE_AFTER_MS / 2);
+    expect(saves).toEqual([]);
+    await user.type(field, "er");
+    await jump(SAVE_AFTER_MS / 2 + 10);
+    expect(field.value).toBe("Old newer");
+    expect(saves).toEqual([]);
+    await jump(SAVE_AFTER_MS / 2);
+    expect(saves).toEqual(["Old newer"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// Sent and pending: a text the server is about to hold is not sent again - the newest text out,
+// or `value` while none is - and any other text is, the old one included.
+test("a text out, or the value while none is, is not sent again, and any other text is", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { field, saves, view } = heldServer();
+  try {
+    await user.click(field);
+    await user.tab();
+    expect(saves).toEqual([]);
+    await user.type(field, " new");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.tab();
+    expect(saves).toEqual(["Old new"]);
+    await user.type(field, "{Backspace}".repeat(" new".length));
+    await user.tab();
+    expect(saves).toEqual(["Old new", "Old"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// Refused: the send leaves what is out and the draft stays the reader's, so the next leave sends
+// it again, by Enter as by Tab.
+test("a refused write is sent again by the next Enter", async () => {
+  const user = userEvent.setup();
+  const { field, refuse, saves, view } = heldServer();
+  try {
+    await user.type(field, " new{Enter}");
+    expect(saves).toEqual(["Old new"]);
+    await refuse("Old new");
+    expect(field.value).toBe("Old new");
+    await user.type(field, "{Enter}");
+    expect(saves).toEqual(["Old new", "Old new"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a refused write is sent again by the next Tab", async () => {
+  const user = userEvent.setup();
+  const { field, refuse, saves, view } = heldServer();
+  try {
+    await user.type(field, " new");
+    await user.tab();
+    expect(saves).toEqual(["Old new"]);
+    await refuse("Old new");
+    await user.click(field);
+    await user.tab();
+    expect(saves).toEqual(["Old new", "Old new"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A refusal takes back that send alone, wherever it stands: a newer text still out is still what
+// the server is about to hold, and leaving sends nothing.
+test("a refused earlier write leaves a later one out", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { field, refuse, saves, view } = heldServer();
+  try {
+    await user.type(field, " A");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.type(field, "B");
+    await jump(SAVE_AFTER_MS + 1);
+    await refuse("Old A");
+    await user.tab();
+    expect(saves).toEqual(["Old A", "Old AB"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// `value` reaching a text out: that send's answer is in, and the sends after it are still out.
+// The read after the first of two writes lands while the reader still holds the field, and the
+// Enter after it sends nothing, since the second text is what the server is about to hold.
+test("the answer to an earlier write landing under the reader sends the later text once", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { field, lands, saves, view } = heldServer();
+  try {
+    await user.type(field, " A");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.type(field, "B");
+    await jump(SAVE_AFTER_MS + 1);
+    expect(saves).toEqual(["Old A", "Old AB"]);
+    await lands("Old A");
+    await user.keyboard("{Enter}");
+    expect(saves).toEqual(["Old A", "Old AB"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// Every send before the one `value` reached has its answer in too: the server holds the later
+// text, so a reader who types back to the earlier one is changing it, and that text is written.
+test("an answer to a later write takes every earlier write with it", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { field, lands, saves, view } = heldServer();
+  try {
+    await user.type(field, " A");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.type(field, "B");
+    await jump(SAVE_AFTER_MS + 1);
+    await lands("Old AB");
+    await user.keyboard("{Backspace}");
+    await user.tab();
+    expect(saves).toEqual(["Old A", "Old AB", "Old A"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// A stale read landing while a newer write is out: the reader has left the field, and the read
+// after their first write brings that text back. The field keeps the newer text it holds rather
+// than showing the old one, and leaving it again sends nothing.
+test("a stale read landing while a newer write is out leaves the newer text in the field", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { field, lands, saves, view } = heldServer();
+  try {
+    await user.type(field, " A");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.type(field, "B");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.tab();
+    await lands("Old A");
+    expect(field.value).toBe("Old AB");
+    await user.click(field);
+    await user.tab();
+    expect(saves).toEqual(["Old A", "Old AB"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// `value` moving to a text the field never sent: the server holds another writer's text now, so
+// nothing the field sent is still about to be held, and the reader's text is written again.
+test("another writer's text landing while a write is out has the reader's text written again", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { field, lands, saves, view } = heldServer();
+  try {
+    await user.type(field, " one");
+    await jump(SAVE_AFTER_MS + 1);
+    await lands("Written elsewhere");
+    expect(field.value).toBe("Old one");
+    await user.tab();
+    expect(saves).toEqual(["Old one", "Old one"]);
   } finally {
     realClock();
     view.unmount();

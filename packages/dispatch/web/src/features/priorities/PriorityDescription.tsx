@@ -9,7 +9,7 @@ import {
 } from "../../theme/classes";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { useInPlaceDraft } from "./useInPlaceDraft";
+import { type InPlaceDraft, useInPlaceDraft } from "./useInPlaceDraft";
 
 const NONE_WRITTEN = "No description is written.";
 
@@ -42,30 +42,21 @@ export function PriorityDescription({
    *  P3". The editor and the group around the rendered text carry it, and the button that
    *  opens the editor reads it after "Edit the": "Edit the description of P3". */
   label: string;
-  onSave: (next: string) => void;
+  /** Writes `next`, answering with the write's promise (`useInPlaceDraft`). */
+  onSave: (next: string) => Promise<unknown>;
   /** How tall the editor is; the field's own height when unset. */
   rows?: number;
 }): ReactNode {
   const [editing, setEditing] = useState(false);
-  // What this reader last wrote, over which text of the server's: the rendered block shows it
-  // until the server's own text changes, since the write is a round trip and the block must
-  // not show the old text meanwhile.
-  const [written, setWritten] = useState<{ readonly text: string; readonly over: string }>();
-  const shown = written?.over === description ? written.text : description;
+  // The draft is held here rather than in the editor, so it outlasts the editor: a text whose
+  // write is still out when the reader leaves, and a refused text they open the editor on again,
+  // are still theirs (`useInPlaceDraft`).
+  const edit = useInPlaceDraft(description, onSave, () => setEditing(false));
+  // The rendered block reads what Dispatch is about to hold: the reader's text while its write is
+  // out, and Dispatch's own once the write lands, or is refused.
+  const shown = edit.sending ?? description;
 
-  if (canWrite && editing)
-    return (
-      <DescriptionEditor
-        label={label}
-        onDone={() => setEditing(false)}
-        onSave={(next) => {
-          setWritten({ text: next, over: description });
-          onSave(next);
-        }}
-        rows={rows}
-        value={shown}
-      />
-    );
+  if (canWrite && editing) return <DescriptionEditor edit={edit} label={label} rows={rows} />;
   const body =
     shown.trim() === "" ? (
       <p className={textMutedOnCanvas}>
@@ -74,7 +65,7 @@ export function PriorityDescription({
     ) : (
       // No `source`: why a priority's description is no record is the reading list's
       // `priority-description` (`DISPATCH_READING_SURFACES`).
-      <MarkdownBody markdown={shown} />
+      <MarkdownBody markdown={shown} surface="priority-description" />
     );
   if (!canWrite) return body;
   return (
@@ -109,23 +100,18 @@ export function PriorityDescription({
 const DESCRIPTION_BOX = dispatchWritingBox("priority-description", "priority-description");
 
 /** The editor a click on the description opens: the shared text field with the reference picker
- *  in it (`DISPATCH_WRITING_BOXES`, `priority-description`), saved as it is written
- *  (`useInPlaceDraft`) and holding the focus from the moment it opens, with the caret at the end
- *  of the text. */
+ *  in it (`DISPATCH_WRITING_BOXES`, `priority-description`), over the draft its host holds, saved
+ *  as it is written (`useInPlaceDraft`) and holding the focus from the moment it opens, with the
+ *  caret at the end of the text. */
 function DescriptionEditor({
+  edit: { draft, hold, leave, type },
   label,
-  onDone,
-  onSave,
   rows = 8,
-  value,
 }: {
+  edit: InPlaceDraft;
   label: string;
-  onDone: () => void;
-  onSave: (next: string) => void;
   rows?: number;
-  value: string;
 }): ReactNode {
-  const { draft, hold, leave, type } = useInPlaceDraft(value, onSave, onDone);
   const field = useRef<MentionFieldHandle>(null);
   useEffect(() => {
     const node = field.current?.textarea() ?? null;
