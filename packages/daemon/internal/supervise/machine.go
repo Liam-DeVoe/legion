@@ -67,13 +67,19 @@ const (
 	StateRetired ClaimState = "retired"
 )
 
-// ClaimStates is every ClaimState, in the order declared above: the roster of the set, which
+// claimStates is every ClaimState, in the order declared above: the roster of the set, which
 // nothing in Go can read off the constants themselves. It is kept by hand, and
 // TestClaimStatesAndSuspendSourcesNameEveryConstant reads this package's constants of the type
-// from its source and fails while one of them is missing here. A project release's words for
-// how a claim ended are built from it (api.ReleasedClaimEnds).
-var ClaimStates = []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered,
+// from its source and fails while one of them is missing here.
+var claimStates = []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered,
 	StateReady, StateWorking, StateIdle, StateSuspended, StateFailed, StateRetired}
+
+// ClaimStates is every ClaimState, in the order declared above (claimStates). A project release's
+// words for how a claim ended are built from it (api.ReleasedClaimEnds). It is a copy, so no
+// caller changes the package's own roster.
+func ClaimStates() []ClaimState {
+	return slices.Clone(claimStates)
+}
 
 // SuspendSource is who suspended a claim. The daemon resumes a suspended claim by rule on the
 // triggers main had — its phase's start, a workflow delivery, the controller keeper
@@ -118,12 +124,18 @@ const (
 	SuspendedByProjectRelease SuspendSource = "project_release"
 )
 
-// SuspendSources is every SuspendSource, in the order declared above: the roster of the set,
-// kept by hand and held to the constants as ClaimStates is
-// (TestClaimStatesAndSuspendSourcesNameEveryConstant). A project release's words for how a claim
-// ended are built from it too (api.ReleasedClaimEnds).
-var SuspendSources = []SuspendSource{SuspendedByUnknown, SuspendedByOperator, SuspendedByDaemon, SuspendedByExit,
+// suspendSources is every SuspendSource, in the order declared above: the roster of the set, kept
+// by hand and held to the constants as claimStates is
+// (TestClaimStatesAndSuspendSourcesNameEveryConstant).
+var suspendSources = []SuspendSource{SuspendedByUnknown, SuspendedByOperator, SuspendedByDaemon, SuspendedByExit,
 	SuspendedByReleased, SuspendedByProjectRelease}
+
+// SuspendSources is every SuspendSource, in the order declared above (suspendSources). A project
+// release's words for how a claim ended are built from it too (api.ReleasedClaimEnds). It is a
+// copy, so no caller changes the package's own roster.
+func SuspendSources() []SuspendSource {
+	return slices.Clone(suspendSources)
+}
 
 // ByRule is whether the source is one the daemon itself recorded as a stop of its own — its own
 // suspend, or a root's exit: the sources a daemon rule resumes with no operator, and the only

@@ -191,13 +191,14 @@ var ReleasedClaimEnds = releasedClaimEnds()
 
 // releasedClaimEnds builds ReleasedClaimEnds.
 func releasedClaimEnds() []ReleasedClaimEnd {
-	ends := make([]ReleasedClaimEnd, 0, len(supervise.ClaimStates)+len(supervise.SuspendSources))
-	for _, state := range supervise.ClaimStates {
+	states, sources := supervise.ClaimStates(), supervise.SuspendSources()
+	ends := make([]ReleasedClaimEnd, 0, len(states)+len(sources))
+	for _, state := range states {
 		if state != supervise.StateSuspended {
 			ends = append(ends, ReleasedClaimEnd(state))
 		}
 	}
-	for _, source := range supervise.SuspendSources {
+	for _, source := range sources {
 		ends = append(ends, ReleasedClaimEnd(source))
 	}
 	return append(ends, ReleasedClaimUnrecorded)

@@ -16,7 +16,6 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -58,30 +58,10 @@ type releaseDeliveryRig struct {
 	sup       *supervisor
 	runner    *outbox
 	publisher *holderPublisher
-	clock     *releaseDeliveryClock
-}
-
-// releaseDeliveryClock is the rig's one clock: the outbox runs its rows by it, and the supervisor
-// stamps a claim's ready by it (supervise.Claim.LastReady), so the first-turn bound the outbox
-// counts from that ready is counted on the time the test moves.
-type releaseDeliveryClock struct {
-	stillClock
-	mu sync.Mutex
-	at time.Time
-}
-
-func (c *releaseDeliveryClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.at
-}
-
-// advance moves the clock on by d and answers the moment it reads then.
-func (c *releaseDeliveryClock) advance(d time.Duration) time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.at = c.at.Add(d)
-	return c.at
+	// clock is the rig's one clock: the outbox runs its rows by it, and the supervisor stamps a
+	// claim's ready by it (supervise.Claim.LastReady), so the first-turn bound the outbox counts
+	// from that ready is counted on the time the test moves.
+	clock *heldClock
 }
 
 // newReleaseDeliveryRig wires the rig and boots it over boot, the claims the boot read from the
@@ -92,9 +72,8 @@ func newReleaseDeliveryRig(t *testing.T, boot ...supervise.Claim) *releaseDelive
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
-	// The clock reads whole microseconds, as Postgres stores a row's due time.
 	rig := &releaseDeliveryRig{pool: pool, st: outboxTreeStore(t, pool), records: records, publisher: &holderPublisher{},
-		clock: &releaseDeliveryClock{at: time.Now().UTC().Truncate(time.Microsecond)}}
+		clock: microClock()}
 	rig.boot(t, boot...)
 	return rig
 }
@@ -182,7 +161,8 @@ func (r *releaseDeliveryRig) run(t *testing.T) {
 // runAfter moves the clock on by d and runs every row due then, as a lane runs each.
 func (r *releaseDeliveryRig) runAfter(t *testing.T, d time.Duration) {
 	t.Helper()
-	runDue(t, r.runner, r.clock.advance(d))
+	r.clock.advance(d)
+	runDue(t, r.runner, r.clock.Now())
 }
 
 // waits runs the row and requires that it waited: nothing was published or tried, and the row is
@@ -232,10 +212,7 @@ func TestADeliveryHeldThroughAProjectReleaseReachesItsClaimAfterItsStart(t *test
 
 			rig.waits(t, "before the boot's start of the claim has run")
 
-			rig.sup.deps.Conns.(*fake.Conns).Register(stored.Token, fake.NewConn())
-			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: stored.Token, Reason: "the boot starts a claim the project release stopped"}); err != nil {
-				t.Fatalf("start the claim: %v", err)
-			}
+			rig.start(t, machine, stored)
 			generation := machine.Claim().Generation
 			for _, step := range []struct {
 				state supervise.ClaimState
@@ -282,15 +259,21 @@ func TestADeliveryHeldThroughAProjectReleaseReachesItsClaimAfterItsStart(t *test
 	}
 }
 
-// comeUp starts held's claim as the boot's start does, a resume by rule, and brings its process up
-// to registered: launched, its shim connected and its agent registered, with no ready yet.
-func (r *releaseDeliveryRig) comeUp(t *testing.T, machine *supervise.Machine, held supervise.Claim) {
+// start starts held's claim as the boot's start does, a resume by rule, with a connection
+// registered for its process to come up on.
+func (r *releaseDeliveryRig) start(t *testing.T, machine *supervise.Machine, held supervise.Claim) {
 	t.Helper()
-	ctx := context.Background()
 	r.sup.deps.Conns.(*fake.Conns).Register(held.Token, fake.NewConn())
-	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: held.Token, Reason: "the boot starts a claim the project release stopped"}); err != nil {
+	if err := machine.Handle(context.Background(), supervise.RequestRuleResume{Claim: held.Token, Reason: "the boot starts a claim the project release stopped"}); err != nil {
 		t.Fatalf("start the claim: %v", err)
 	}
+}
+
+// comeUp starts held's claim as the boot's start does (start) and brings its process up to
+// registered: launched, its shim connected and its agent registered, with no ready yet.
+func (r *releaseDeliveryRig) comeUp(t *testing.T, machine *supervise.Machine, held supervise.Claim) {
+	t.Helper()
+	r.start(t, machine, held)
 	r.register(t, machine, held)
 }
 
@@ -336,7 +319,7 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(
 			rig.publisher.setAbsent(topic)
 			rig.comeUp(t, machine, stored)
 			rig.ready(t, machine, stored)
-			roleBy := machine.Claim().LastReady.Add(claimFirstTurnBound + roleTakenMargin)
+			roleBy := machine.Claim().LastReady.Add(config.ClaimFirstTurnBound + roleTakenMargin)
 			rig.enqueue(t, tc.payload(stored.Token))
 
 			rig.runAfter(t, 5*time.Second)
@@ -379,7 +362,6 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(
 func TestADeliveryHeldThroughAProjectReleaseWaitsForItsClaimAcrossARestart(t *testing.T) {
 	for _, tc := range releaseDeliveries {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
 			stored := stoppedByRelease(t, tc.role)
 			rig := newReleaseDeliveryRig(t)
 			rig.recordEndedRelease(t, rig.clock.Now(), stored)
@@ -390,10 +372,7 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForItsClaimAcrossARestart(t *te
 			rig.enqueue(t, tc.payload(stored.Token))
 
 			// The first boot's start of the claim: the claim is written launching.
-			rig.sup.deps.Conns.(*fake.Conns).Register(stored.Token, fake.NewConn())
-			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: stored.Token, Reason: "the boot starts a claim the project release stopped"}); err != nil {
-				t.Fatalf("start the claim: %v", err)
-			}
+			rig.start(t, machine, stored)
 			if got := machine.Claim().State; got != supervise.StateLaunching {
 				t.Fatalf("after the first boot's start the claim is %s, want it launching", got)
 			}
@@ -442,9 +421,8 @@ func TestADeliveryForAClaimThatHeldItsRoleSinceTheReleaseEndsAfterARestart(t *te
 			t.Run(tc.name+" for a claim that "+since.name, func(t *testing.T) {
 				held := stoppedByRelease(t, tc.role)
 				rig := newReleaseDeliveryRig(t)
-				endedAt := rig.clock.advance(-10 * time.Minute)
+				endedAt := rig.clock.Now().Add(-10 * time.Minute)
 				rig.recordEndedRelease(t, endedAt, held)
-				rig.clock.advance(10 * time.Minute)
 				held.State, held.SuspendedBy = since.state, ""
 				if since.turn > 0 {
 					held.LastTurnStart = endedAt.Add(since.turn)

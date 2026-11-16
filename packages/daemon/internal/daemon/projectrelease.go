@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -134,8 +135,13 @@ type projectReleaser struct {
 	defaultBound time.Duration
 	stopTimeout  time.Duration
 	reread, poll time.Duration
-	now          func() time.Time
-	log          *slog.Logger
+	// retry is the first wait before a write that failed is tried again (ask, writeFinish), and
+	// listPause the pause between two lists of the project (listAgain). Zero is
+	// projectReleaseRetry and projectReleaseListPause, which the daemon runs on, and a test
+	// shortens them (retryWait, listWait).
+	retry, listPause time.Duration
+	now              func() time.Time
+	log              *slog.Logger
 
 	mu  sync.Mutex
 	run *releaseRun
@@ -166,6 +172,24 @@ func newProjectReleaser(s *supervision, st *store.Store, w *workflowRuntime) *pr
 		}
 	}
 	return r
+}
+
+// retryWait is the first wait before a write that failed is tried again: retry where a test set
+// one, projectReleaseRetry otherwise, so no zero makes a try follow a failed one at once.
+func (r *projectReleaser) retryWait() time.Duration {
+	if r.retry > 0 {
+		return r.retry
+	}
+	return projectReleaseRetry
+}
+
+// listWait is the pause between two lists of listAgain: listPause where a test set one,
+// projectReleaseListPause otherwise, so no zero makes a list follow a failed one at once.
+func (r *projectReleaser) listWait() time.Duration {
+	if r.listPause > 0 {
+		return r.listPause
+	}
+	return projectReleaseListPause
 }
 
 // releaseRun is the release of this process, once its record committed.
@@ -419,7 +443,7 @@ func (r *projectReleaser) release(run *releaseRun) {
 	}
 	unlisted, err := r.takeUnlisted(ctx, run, sandboxes)
 	if err != nil {
-		r.fail(ctx, run, fmt.Sprintf("list the project's Sandboxes again, %d times %s apart: %v", projectReleaseListTries, projectReleaseListPause, err))
+		r.fail(ctx, run, fmt.Sprintf("list the project's Sandboxes again: %v", err))
 		return
 	}
 	if ctx.Err() != nil {
@@ -482,21 +506,23 @@ func (r *projectReleaser) takeUnlisted(ctx context.Context, run *releaseRun, lis
 }
 
 // listAgain is the project's Sandboxes as the API server lists them (ProjectSandboxesFromAPI). A
-// list that fails is tried again projectReleaseListPause later, up to projectReleaseListTries
-// tries in all, and the last try's error is answered; a release whose context ends meanwhile
-// answers that context's error.
+// list that fails is tried again listWait later, up to projectReleaseListTries tries in all, and
+// the last try's error is answered with how many tries were made and how far apart; a release
+// whose context ends meanwhile answers that context's error.
 func (r *projectReleaser) listAgain(ctx context.Context, run *releaseRun) ([]runtime.ProjectSandbox, error) {
+	pause := r.listWait()
 	for try := 1; ; try++ {
 		sandboxes, err := r.pods.ProjectSandboxesFromAPI(ctx)
-		if err == nil || try == projectReleaseListTries || ctx.Err() != nil {
+		if err == nil || ctx.Err() != nil {
 			return sandboxes, err
 		}
+		if try == projectReleaseListTries {
+			return nil, fmt.Errorf("after %d tries %s apart: %w", try, pause, err)
+		}
 		r.log.Warn("project release: list the project's Sandboxes again from the API server; trying the list once more",
-			"release", run.id, "try", try, "tries", projectReleaseListTries, "retryIn", projectReleaseListPause.String(), "error", err)
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(projectReleaseListPause):
+			"release", run.id, "try", try, "tries", projectReleaseListTries, "retryIn", pause.String(), "error", err)
+		if err := backoff.Sleep(ctx, pause); err != nil {
+			return nil, err
 		}
 	}
 }
@@ -714,7 +740,7 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 	if firstAsks {
 		asked, err := r.ask(ctx, run, pod)
 		if err != nil {
-			r.leave(ctx, run, pod, releaseAskUnwritten+": "+err.Error())
+			r.leave(ctx, run, pod, err.Error())
 			return
 		}
 		if asked {
@@ -724,14 +750,13 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 	last := r.read(ctx, pod.sandbox.Issue)
 	if !firstAsks && asks(last, r.issueViews(pod.sandbox.Issue)) {
 		asked, err := r.ask(ctx, run, pod)
-		if asked || err != nil {
-			r.noteRead(run, pod, last)
-		}
 		if err != nil {
-			r.leave(ctx, run, pod, releaseAskUnwritten+": "+err.Error())
+			r.noteRead(run, pod, last)
+			r.leave(ctx, run, pod, err.Error())
 			return
 		}
 		if asked {
+			r.noteRead(run, pod, last)
 			r.wait(ctx, run, pod)
 			last = r.read(ctx, pod.sandbox.Issue)
 		}
@@ -744,13 +769,13 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 
 // ask asks each running role of pod (askOnce) and answers whether any role was asked, which is
 // whether the pod waits for answers. A deployment with no outbox asks none, and neither does a pod
-// where no role runs. An ask whose rows could not be written is written again,
-// projectReleaseRetry after the first try and up to projectReleaseRetryMax apart, each try to the
-// roles running then, until the bound: one that could not be written at the try at the bound
-// reached no role, and its last error is answered, for which the pod is left (takePod). A release
+// where no role runs. An ask whose rows could not be written is written again, retryWait after
+// the first try and up to projectReleaseRetryMax apart, each try to the roles running then, until
+// the bound: one that could not be written at the try at the bound reached no role, and its last
+// error is answered after releaseAskUnwritten, the reason the pod is left for (takePod). A release
 // whose context ends meanwhile asks none.
 func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *releasePod) (bool, error) {
-	wait := projectReleaseRetry
+	wait := r.retryWait()
 	for {
 		asked, err := r.askOnce(ctx, run, pod)
 		if err == nil {
@@ -763,15 +788,13 @@ func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *release
 		if left <= 0 {
 			r.log.Error("project release: enqueue the ask to the pod's roles; it could not be written by the bound, so no role of the pod is asked and the release leaves the pod",
 				"release", run.id, "sandbox", pod.sandbox.Name, "error", err)
-			return false, err
+			return false, fmt.Errorf("%s: %w", releaseAskUnwritten, err)
 		}
 		pause := min(wait, left)
 		r.log.Warn("project release: enqueue the ask to the pod's roles; writing it again",
 			"release", run.id, "sandbox", pod.sandbox.Name, "retryIn", pause.String(), "error", err)
-		select {
-		case <-ctx.Done():
+		if backoff.Sleep(ctx, pause) != nil {
 			return false, nil
-		case <-time.After(pause):
 		}
 		wait = min(2*wait, projectReleaseRetryMax)
 	}
@@ -1336,13 +1359,13 @@ func (r *projectReleaser) finish(ctx context.Context, run *releaseRun) {
 // writeFinish records the release finished at at with result, its last. Once the mark is
 // finished nothing else writes the record (record), and a record left unfinished reads as a
 // release that goes on until the next boot, which then says that a boot ended it before it
-// finished. So a write that fails is made again, projectReleaseRetry after the first and up to
+// finished. So a write that fails is made again, retryWait after the first and up to
 // projectReleaseRetryMax apart, until one lands or ctx ends: ctx is the release goroutine's, which
 // lives as long as the releaser's own (r.ctx). The write is fenced on a record not yet finished
 // (store.FinishProjectRelease), and a refusal of that fence ends the tries too, since no try
 // changes it: a try made after one that landed with its answer lost meets it.
 func (r *projectReleaser) writeFinish(ctx context.Context, run *releaseRun, result json.RawMessage, at time.Time) {
-	wait := projectReleaseRetry
+	wait := r.retryWait()
 	for {
 		err := r.store.FinishProjectRelease(ctx, run.id, result, at)
 		switch {
@@ -1357,10 +1380,8 @@ func (r *projectReleaser) writeFinish(ctx context.Context, run *releaseRun, resu
 			return
 		}
 		r.log.Error("project release: record the release finished; writing it again", "release", run.id, "retryIn", wait.String(), "error", err)
-		select {
-		case <-ctx.Done():
+		if backoff.Sleep(ctx, wait) != nil {
 			return
-		case <-time.After(wait):
 		}
 		wait = min(2*wait, projectReleaseRetryMax)
 	}

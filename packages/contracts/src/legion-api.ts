@@ -1098,10 +1098,10 @@ export const LEGION_RELEASED_CLAIM_ENDS = [
  * process to read it at any read), `deleted_lost` (with the unpushed `commits` and whether the
  * working copy held a change at the last read), `deleted_read_refused` (with the shim's `refusal`,
  * or, when no role process ran at the last read, with what an earlier read found and that as its
- * `reason`) or `left` (with its `reason`); every other Sandbox `deleted` or `left`; `waiting`
- * until the release ends it. An issue pod's `reason` also says when its ask could not be written,
- * and several reasons are joined by `; `. `otherImage` marks an issue pod whose pod runs an image
- * other than the daemon's own. */
+ * `reason`) or `left` (with its `reason`, such as an ask to its roles that could not be written
+ * by the bound, so no role of it was asked); every other Sandbox `deleted` or `left`; `waiting`
+ * until the release ends it. Several reasons are joined by `; `. `otherImage` marks an issue pod
+ * whose pod runs an image other than the daemon's own. */
 const legionReleasedSandbox = z.object({
   name: nonEmptyString,
   kind: z.enum(["issue", "controller", "cache", "probe", "unknown"]),

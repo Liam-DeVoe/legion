@@ -330,7 +330,7 @@ func bootStartWait(detail string, held supervise.ClaimView, until time.Time) err
 	text := fmt.Sprintf("%s waits for %s's %s to hold its role again after the start the daemon's boot gives a claim the project release stopped",
 		detail, held.Issue, held.Role)
 	if until.IsZero() {
-		return wait.Errorf("%s", text)
+		return wait.New(text)
 	}
 	return wait.Until(until, text+", which its session takes by "+until.UTC().Format(time.RFC3339))
 }

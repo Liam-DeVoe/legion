@@ -119,6 +119,14 @@ const schemas: Record<string, z.ZodType> = {
       z.number().int().nonnegative()
     ),
   }),
+  // Nor this one: how long a session's claim boot waits for its first turn before it takes its
+  // role's Envoy name itself, written from the daemon's copy of it
+  // (`internal/config/claimbound.go`, ClaimFirstTurnBound), which counts when a claim the project
+  // release stopped holds its role again, so that `packages/pi-shared/src/legion-claim-core.test.ts`
+  // can hold the plugin's own DEFAULT_CLAIM_FIRST_TURN_BOUND_MS — the one source — to it.
+  "claim-first-turn-bound.json": z.strictObject({
+    claimFirstTurnBoundMs: z.number().int().nonnegative(),
+  }),
   // Nor this one: the closed set of words a claim can fail under
   // (`supervise.FailureCauses`), written by `internal/api`'s TestFailureCausesGolden so that
   // the Go roster and `LEGION_FAILURE_CAUSES` are held to each other here, by the case "the

@@ -40,31 +40,18 @@ func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerK
 	return events, states, timers
 }
 
-// packageSets parses the package's own source, its tests left out, and reads its sets from it
-// (sealedSet).
+// packageSets is what the compiler sees of this package, its tests left out (sealedSets), read
+// once per test binary (parsedPackageSets).
 func packageSets(t *testing.T) sealedSets {
 	t.Helper()
-	entries, err := os.ReadDir(".")
+	set, err := parsedPackageSets()
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := token.NewFileSet()
-	var parsed []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(files, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		parsed = append(parsed, file)
-	}
-	return sealedSet(t, files, parsed)
+	return set
 }
 
-// sealedSet is what the compiler sees of this package: every type that implements Event, and the
+// sealedSets is what the compiler sees of this package: every type that implements Event, and the
 // value of every ClaimState, TimerKind and SuspendSource constant. It is read as the compiler sees
 // it rather than as the source spells it — a type that inherits isEvent by embedding, or declares
 // it on a pointer receiver, is an event a scan of isEvent declarations would not see, and a state
@@ -77,31 +64,29 @@ type sealedSets struct {
 	sources []string
 }
 
-func sealedSet(t *testing.T, files *token.FileSet, parsed []*ast.File) sealedSets {
-	t.Helper()
-	set, err := checkedSealedSet(files, parsed)
+// parsedPackageSets parses the package's own source, its tests left out, and reads its sets from
+// it (readSealedSet), once per test binary: the type-check reads the standard library from
+// source, which is seconds, and several tests ask for the sets.
+var parsedPackageSets = sync.OnceValues(func() (sealedSets, error) {
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatal(err)
+		return sealedSets{}, err
 	}
-	return set
-}
-
-// checkedSealedSet type-checks this package once per test binary — the check reads the standard
-// library from source, which is seconds, and five tests ask for the sealed set.
-var checkedSealedSet = func() func(*token.FileSet, []*ast.File) (sealedSets, error) {
-	once := sync.OnceValues(func() (sealedSets, error) {
-		return sealedSets{}, errors.New("the sealed set was asked for before any file was parsed")
-	})
-	var files *token.FileSet
+	files := token.NewFileSet()
 	var parsed []*ast.File
-	return func(f *token.FileSet, p []*ast.File) (sealedSets, error) {
-		if files == nil {
-			files, parsed = f, p
-			once = sync.OnceValues(func() (sealedSets, error) { return readSealedSet(files, parsed) })
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
 		}
-		return once()
+		file, err := parser.ParseFile(files, name, nil, 0)
+		if err != nil {
+			return sealedSets{}, err
+		}
+		parsed = append(parsed, file)
 	}
-}()
+	return readSealedSet(files, parsed)
+})
 
 func readSealedSet(files *token.FileSet, parsed []*ast.File) (sealedSets, error) {
 	config := types.Config{Importer: importer.ForCompiler(files, "source", nil)}

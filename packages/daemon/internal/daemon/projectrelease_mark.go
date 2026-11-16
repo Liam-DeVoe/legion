@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -143,18 +144,10 @@ func projectReleaseRound(id int64) string {
 // so a row held for the whole bound stays at debug after its first line.
 var errProjectReleased error = routineWaitError{err: wait.New(api.ProjectReleaseHeldSentence)}
 
-const (
-	// claimFirstTurnBound is how long a Legion session's claim boot waits for the session's first
-	// turn before it takes its role's Envoy name itself: DEFAULT_CLAIM_FIRST_TURN_BOUND_MS of
-	// packages/pi-shared/src/claim-first-turn-bound.ts. The daemon has no other copy of it, and
-	// it copies no LEGION_CLAIM_FIRST_TURN_BOUND_MS into a role's environment (specs.go's
-	// stallLimitVariables does not hold the name), so a role process runs on that default.
-	claimFirstTurnBound = 30 * time.Second
-	// roleTakenMargin is how long past claimFirstTurnBound a session that stands ready is given to
-	// hold its role: the plugin arms the bound once the daemon has answered its ready, and its
-	// claim of the name then has to reach the Envoy listener.
-	roleTakenMargin = 15 * time.Second
-)
+// roleTakenMargin is how long past config.ClaimFirstTurnBound a session that stands ready is given
+// to hold its role: the plugin arms the bound once the daemon has answered its ready, and its
+// claim of the name then has to reach the Envoy listener.
+const roleTakenMargin = 15 * time.Second
 
 // releaseStoppedClaims is the claims this process's boot read that a project release stopped
 // and whose sessions do not hold their roles yet (dispatch://INFRA-3583 R8). The boot starts such
@@ -167,10 +160,10 @@ const (
 // Every boot builds the set again from the store (readReleaseStoppedClaims), so a claim an earlier
 // boot started is in it after a restart for as long as its session has not held its role. A claim
 // leaves the set once its session holds its role: it reports working
-// (workflowRuntime.claimDurableState), or it has stood ready or idle for claimFirstTurnBound and
-// roleTakenMargin (comingBack). It leaves it too once it fails, retires, or is suspended by any
-// source but the project release. A nil set holds no claim: an outbox or a runtime a test built by
-// hand reads every claim as one no release stopped.
+// (workflowRuntime.claimDurableState), or it has stood ready or idle for
+// config.ClaimFirstTurnBound and roleTakenMargin (comingBack). It leaves it too once it fails,
+// retires, or is suspended by any source but the project release. A nil set holds no claim: an
+// outbox or a runtime a test built by hand reads every claim as one no release stopped.
 type releaseStoppedClaims struct {
 	mu     sync.Mutex
 	tokens map[claim.Token]struct{}
@@ -234,10 +227,10 @@ func startedWithoutTurn(state supervise.ClaimState) bool {
 // comingBack is whether a delivery for held's claim waits for its session to hold its role: the
 // claim is in the set and started, and its session does not hold the role yet. One coming up
 // waits with no moment named (until is zero). One that stands ready or idle waits until
-// claimFirstTurnBound and roleTakenMargin after its ready (Claim.LastReady), read on now: its
-// session takes the role at its first turn, which the claim reports as working, or at that bound
-// (supervise.SaidReady), so from that moment the claim leaves the set and waits no longer. A claim
-// still stored suspended by the project release has had no start yet: it keeps its place and
+// config.ClaimFirstTurnBound and roleTakenMargin after its ready (Claim.LastReady), read on now:
+// its session takes the role at its first turn, which the claim reports as working, or at that
+// bound (supervise.SaidReady), so from that moment the claim leaves the set and waits no longer. A
+// claim still stored suspended by the project release has had no start yet: it keeps its place and
 // waits on no reading of this set (awaitsBootStart reads it). Any other claim — working, failed,
 // retired, or suspended by another source — leaves the set, so a later start of it is a start
 // like any other.
@@ -257,7 +250,7 @@ func (s *releaseStoppedClaims) comingBack(held supervise.ClaimView, now func() t
 	}
 	switch held.State {
 	case supervise.StateReady, supervise.StateIdle:
-		if until := held.LastReady.Add(claimFirstTurnBound + roleTakenMargin); now().Before(until) {
+		if until := held.LastReady.Add(config.ClaimFirstTurnBound + roleTakenMargin); now().Before(until) {
 			return until, true
 		}
 	default:

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A daemon whose runtime runs no pod — the tmux runtime, whose runtime implements none of
@@ -172,6 +173,37 @@ func (p *releasePods) ReleaseProjectController(_ context.Context, token claim.To
 	return p.releaseErr
 }
 
+// releaseRetry is the first wait before a failed write of a release runRelease runs is tried
+// again, and the pause between two of its lists of the project: short, so a test that fails a
+// write or a list waits milliseconds rather than the daemon's seconds.
+const releaseRetry = 10 * time.Millisecond
+
+// runRelease runs a project release of the project legion over sup's machines, pods and records,
+// whose finished channel it reads, with a bound of a second, and answers the result its finish
+// recorded. A claim that never settles costs the bound and then the stop timeout before its pod is
+// left (stopDeadline), so both are short.
+func runRelease(t *testing.T, records *releaseRecord, sup *supervisor, pods *releasePods) api.ProjectReleaseResult {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	r := &projectReleaser{ctx: ctx, project: "legion", mark: &projectRelease{}, store: records, machines: sup, pods: pods,
+		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
+		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
+	if _, started, err := r.Start(ctx, time.Second, false); err != nil || !started {
+		t.Fatalf("Start = started %v, %v; want the release started", started, err)
+	}
+	var result api.ProjectReleaseResult
+	select {
+	case raw := <-records.finished:
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("the release did not record its finish")
+	}
+	return result
+}
+
 // A claim of the stop set that failed or retired before the release came to its pod holds no
 // process, so the release does not wait for it to be stored suspended: the pod is deleted rather
 // than left once the wait for its stop runs out, and the claim's line says how it ended, which no
@@ -191,23 +223,7 @@ func TestProjectReleaseDeletesThePodOfAStoppedClaimThatFailedOrRetired(t *testin
 					Session: "ses_implementer", State: supervise.StateWorking}}}
 			pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
 				Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}}
-			// A claim that never settles costs the bound and then the stop timeout before its pod is
-			// left (stopDeadline), so both are short.
-			r := &projectReleaser{ctx: context.Background(), project: "legion", mark: &projectRelease{}, store: records, machines: sup,
-				pods: pods, defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
-				now: time.Now, log: quietLogger()}
-			if _, started, err := r.Start(context.Background(), time.Second, false); err != nil || !started {
-				t.Fatalf("Start = started %v, %v; want the release started", started, err)
-			}
-			var result api.ProjectReleaseResult
-			select {
-			case raw := <-records.finished:
-				if err := json.Unmarshal(raw, &result); err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(30 * time.Second):
-				t.Fatal("the release did not finish")
-			}
+			result := runRelease(t, records, sup, pods)
 			if len(result.Sandboxes) != 1 || result.Sandboxes[0].Outcome != api.ReleaseDeletedUnread {
 				t.Fatalf("the pod's line is %+v, want it deleted with no read", result.Sandboxes)
 			}
@@ -296,16 +312,16 @@ func controllerPods() *releasePods {
 }
 
 // releaseTheController runs a project release of the project legion over pods and records, whose
-// stop set is the controller's claim, and answers the result its finish recorded and the
-// supervisor. The claim is stored suspended by the project release already, so the release's stop
-// of it finds it settled with no process to stop, and the next boot would start it.
-func releaseTheController(t *testing.T, records *releaseRecord, pods *releasePods) (api.ProjectReleaseResult, *supervisor) {
+// stop set is the controller's claim, and answers the result its finish recorded as the result of
+// a response, which the rig's line helpers read (releaseLine, releaseClaimLine). The claim is
+// stored suspended by the project release already, so the release's stop of it finds it settled
+// with no process to stop, and the next boot would start it. records reads the claims as the
+// release's machines store them.
+func releaseTheController(t *testing.T, records *releaseRecord, pods *releasePods) api.ProjectReleaseResponse {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	controller := claim.ControllerToken("legion")
-	if _, _, err := sup.Create(ctx, supervise.Claim{Token: controller, Project: "legion", Role: claim.RoleController,
+	if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: controller, Project: "legion", Role: claim.RoleController,
 		Session: "ses_controller", State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByProjectRelease}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -313,34 +329,7 @@ func releaseTheController(t *testing.T, records *releaseRecord, pods *releasePod
 	records.finished = make(chan json.RawMessage, 1)
 	records.stop = []store.ProjectReleaseClaim{{Token: controller, Role: claim.RoleController, Session: "ses_controller",
 		State: supervise.StateSuspended}}
-	r := &projectReleaser{ctx: ctx, project: "legion", mark: &projectRelease{}, store: records, machines: sup, pods: pods,
-		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
-		now: time.Now, log: quietLogger()}
-	if _, started, err := r.Start(ctx, time.Second, false); err != nil || !started {
-		t.Fatalf("Start = started %v, %v; want the release started", started, err)
-	}
-	var result api.ProjectReleaseResult
-	select {
-	case raw := <-records.finished:
-		if err := json.Unmarshal(raw, &result); err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Minute):
-		t.Fatal("the release did not record its finish")
-	}
-	return result, sup
-}
-
-// releasedLine is the line of the Sandbox name in result.
-func releasedLine(t *testing.T, result api.ProjectReleaseResult, name string) api.ReleasedSandbox {
-	t.Helper()
-	for _, line := range result.Sandboxes {
-		if line.Name == name {
-			return line
-		}
-	}
-	t.Fatalf("the release names no Sandbox %s; it names %+v", name, result.Sandboxes)
-	return api.ReleasedSandbox{}
+	return api.ProjectReleaseResponse{Result: runRelease(t, records, sup, pods)}
 }
 
 // dispatch://INFRA-3583 R6: the release lists the project again from the API server once every
@@ -350,12 +339,12 @@ func releasedLine(t *testing.T, result api.ProjectReleaseResult, name string) ap
 func TestProjectReleaseListsTheProjectAgainAfterAListThatFailed(t *testing.T) {
 	pods := controllerPods()
 	pods.listFails = 1
-	result, _ := releaseTheController(t, &releaseRecord{}, pods)
-	if result.Failure != "" {
-		t.Fatalf("the release stopped short: %s", result.Failure)
+	release := releaseTheController(t, &releaseRecord{}, pods)
+	if release.Result.Failure != "" {
+		t.Fatalf("the release stopped short: %s", release.Result.Failure)
 	}
 	for _, name := range []string{releaseCache, releaseController} {
-		if line := releasedLine(t, result, name); line.Outcome != api.ReleaseDeleted {
+		if line := releaseLine(t, release, name); line.Outcome != api.ReleaseDeleted {
 			t.Errorf("the line of %s is %+v, want it deleted", name, line)
 		}
 	}
@@ -376,16 +365,17 @@ func TestProjectReleaseListsTheProjectAgainAfterAListThatFailed(t *testing.T) {
 func TestProjectReleaseHoldsTheClaimOfAControllerWhosePodItLeaves(t *testing.T) {
 	pods := controllerPods()
 	pods.releaseErr = errors.New("the volume guard refused the delete")
-	result, sup := releaseTheController(t, &releaseRecord{}, pods)
-	if line := releasedLine(t, result, releaseController); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "the volume guard refused the delete") {
+	records := &releaseRecord{}
+	release := releaseTheController(t, records, pods)
+	if line := releaseLine(t, release, releaseController); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "the volume guard refused the delete") {
 		t.Fatalf("the controller's line is %+v, want it left for the refused delete", line)
 	}
 	controller := claim.ControllerToken("legion")
-	if len(result.Claims) != 1 || result.Claims[0].Token != controller ||
-		result.Claims[0].Ended != api.ReleasedClaimEnd(supervise.SuspendedByOperator) || result.Claims[0].BootStarts {
-		t.Fatalf("the claim lines are %+v, want the controller's ended operator, which the next boot does not start", result.Claims)
+	if line := releaseClaimLine(t, release, controller); len(release.Result.Claims) != 1 ||
+		line.Ended != api.ReleasedClaimEnd(supervise.SuspendedByOperator) || line.BootStarts {
+		t.Fatalf("the claim lines are %+v, want the controller's ended operator, which the next boot does not start", release.Result.Claims)
 	}
-	stored, ok, err := (&releaseRecord{claims: sup.deps.Store.(*outboxClaimStore)}).ClaimByToken(context.Background(), controller)
+	stored, ok, err := records.ClaimByToken(context.Background(), controller)
 	if err != nil || !ok || stored.State != supervise.StateSuspended || stored.SuspendedBy != supervise.SuspendedByOperator {
 		t.Fatalf("the controller's claim is stored %s by %q (%t, %v), want suspended by an operator", stored.State, stored.SuspendedBy, ok, err)
 	}
@@ -399,22 +389,26 @@ func TestProjectReleaseHoldsTheClaimOfAControllerWhosePodItLeaves(t *testing.T) 
 func TestProjectReleaseWritesItsFinishAgainAfterAWriteThatFailed(t *testing.T) {
 	t.Run("a write the store refused", func(t *testing.T) {
 		records := &releaseRecord{finishFails: 1}
-		result, _ := releaseTheController(t, records, controllerPods())
+		release := releaseTheController(t, records, controllerPods())
 		if writes := records.finishWrites(); writes != 2 {
 			t.Fatalf("the finish was written %d times, want twice: the refused write and the one that landed", writes)
 		}
-		if len(result.Claims) != 1 || result.Claims[0].Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !result.Claims[0].BootStarts {
-			t.Fatalf("the finished record's claim lines are %+v, want the controller's ended project_release, which the next boot starts", result.Claims)
+		if line := releaseClaimLine(t, release, claim.ControllerToken("legion")); len(release.Result.Claims) != 1 ||
+			line.Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !line.BootStarts {
+			t.Fatalf("the finished record's claim lines are %+v, want the controller's ended project_release, which the next boot starts", release.Result.Claims)
 		}
-		if line := releasedLine(t, result, releaseController); line.Outcome != api.ReleaseDeleted {
+		if line := releaseLine(t, release, releaseController); line.Outcome != api.ReleaseDeleted {
 			t.Fatalf("the finished record's controller line is %+v, want it deleted", line)
 		}
 	})
 	t.Run("a write whose answer was lost", func(t *testing.T) {
 		records := &releaseRecord{loseFinishAnswer: true}
 		releaseTheController(t, records, controllerPods())
-		// A try after the refused one would come within the first two waits.
-		time.Sleep(3*projectReleaseRetry + time.Second)
+		testwait.Eventually(t, "the finish written again after the write whose answer was lost", func() bool {
+			return records.finishWrites() >= 2
+		})
+		// A try after the refused one would come the doubled wait, 2*releaseRetry, after it.
+		time.Sleep(10 * releaseRetry)
 		if writes := records.finishWrites(); writes != 2 {
 			t.Fatalf("the finish was written %d times, want twice: the one whose answer was lost and the one refused as finished", writes)
 		}
