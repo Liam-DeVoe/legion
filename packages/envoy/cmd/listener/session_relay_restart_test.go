@@ -55,6 +55,16 @@ func awaitCreateFailure(t *testing.T, failed <-chan struct{}) {
 	testwait.Receive(t, "the relay's restart to reach its create", failed)
 }
 
+// fireRelayRetry moves the relay's clock to the deadline of the retry the relay armed after a
+// failed call, once the relay has armed it. The relay's clock stands still (relayRig.relayClock),
+// so a relay waiting out its retry backoff restarts only when the test moves it there. what names
+// the retry, and what waits on it, for the failure of a relay that never arms one.
+func fireRelayRetry(t *testing.T, rig *relayRig, what string) {
+	t.Helper()
+	armed := rig.relayClock.AwaitArmed(t, what, 1)
+	rig.relayClock.Set(armed[0])
+}
+
 // requireNoConsumer fails the test unless sessionID has no consumer.
 func requireNoConsumer(t *testing.T, consumers *bus.SessionConsumers, sessionID string) {
 	t.Helper()
@@ -99,8 +109,9 @@ func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t 
 	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_create_failed_")
 	agent := contracts.AgentSubject(sessionID)
 
-	// The relay's first create and its first retry's (1 s on) fail; its second retry, 3 s on,
-	// creates.
+	// The relay's first create and its first retry's fail; its second retry creates. Each retry
+	// waits out the relay's backoff on its clock, relayRetryFirst and then twice that, and the
+	// test moves that clock to each retry's deadline once the relay has armed it.
 	failed := failCreates(t, rig, sessionID, 2)
 	// A new epoch restarts the relay at the ack floor: it reads the floor and deletes the consumer.
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
@@ -111,6 +122,9 @@ func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t 
 		item, _ := rig.storeEvent(t, agent)
 		missed = append(missed, item)
 	}
+	fireRelayRetry(t, rig, "the relay's first retry after its failed create, which alone brings the session frame 1 of 4")
+	awaitCreateFailure(t, failed)
+	fireRelayRetry(t, rig, "the relay's second retry after its first retry's create failed, which alone brings the session frame 1 of 4")
 	requireFrames(t, standIn.collect(t, 4), missed...)
 	standIn.none(t)
 	info, err := rig.consumers.Info(context.Background(), sessionID)
