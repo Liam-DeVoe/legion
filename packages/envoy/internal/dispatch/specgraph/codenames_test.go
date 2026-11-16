@@ -45,6 +45,12 @@ func TestCodeNames(t *testing.T) {
 		{text: "ReadSet and the pmdoc package, GitHub and JetStream", want: nil},
 		{text: "e.g. one message, i.e. the first, at 9 a.m. on example.com", want: nil},
 		{text: "gRPC on macOS, iOS, tvOS and the iPhone, at 5 kHz and 64 kB, through eBPF, vCPU and jQuery", want: nil},
+		// Each character that is no letter, no digit and no underscore ends a name, in each script
+		// of quotes and brackets; the bare word Test stays a plain word.
+		{text: "runs \u201cTestMessagesSurvive\u201d. Then \u00abTestB\u00bb, \u2018TestC\u2019, \u300cTestD\u300d and TestE\u2019s end", want: []string{"TestMessagesSurvive", "TestB", "TestC", "TestD", "TestE"}},
+		{text: "TestF\u2026 and TestG\u2014then", want: []string{"TestF", "TestG"}},
+		{text: "the \u201creadSet\u201d and \u201epmdoc.ReadSet\u201c names", want: []string{"readSet", "pmdoc.ReadSet"}},
+		{text: "\u201cTest\u201d results of \u201cGitHub\u201d", want: nil},
 		{text: "", want: nil},
 	} {
 		if got := CodeNames(row.text); !slices.Equal(got, row.want) {

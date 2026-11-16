@@ -3148,9 +3148,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `Parse` reads the four blocks, statements (`requirement`), checks (`check`), components (`component`) and terms (`term`), with `pmdoc.ParseTypedDirectiveOpen`, the one reader of a typed block's opening line, and refuses any attribute a block does not take;
   it does not call `pmdoc.Parse`, whose block schema lacks the attributes these files need.
   It refuses a file that is not UTF-8 or holds a NUL byte at its first such line (`bad-encoding`), as the architecture importer refuses such a file.
+  It refuses a claim of more than one sentence (`bad-field: a claim is one sentence`) and a heading that names code (`code-in-text`).
   `Print` writes a node as the block that `Parse` reads back as that node, and `Digest` names a node's content apart from its file and line.
   `Validate` finds each fault a program can find (`go doc ./internal/dispatch/specgraph Validate` lists the rules):
-  a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a check without its parts, a component purpose of more than one sentence, and a name of code in a text (`CodeNames`).
+  a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name among them (`CodeNames`).
+  A claim and a purpose are split into sentences as ste-lint splits a line: after `.`, `!` or `?` and any white space that Python's `\s` matches.
   `CodeNames` finds a name of code only in a shape that no plain word or product name has, such as a Go test's name, `readSet` or `pmdoc.ReadSet`;
   a word with a capital at the start of each part, such as `ReadSet`, and a bare package word, such as `pmdoc`, are left to the reviewer.
   `Changes` lists each statement that only one of two trees holds, or whose text, parent, relations or checks differ between them;
