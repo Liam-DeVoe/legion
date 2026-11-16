@@ -181,6 +181,8 @@ export const realStackReasons: Record<string, string> = {
     "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
   "issue-page-h.e2e.ts":
     "the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload",
+  "issue-page-m.e2e.ts":
+    "the history reads the issue's event log and its live stream, the people rows read the fake listener's subscriptions and Legion's record, and every row signs in for real with the new page turned on by that login's stored preference",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":

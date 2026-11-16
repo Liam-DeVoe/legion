@@ -1,6 +1,25 @@
-import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
+import { api } from "../../api/client";
+import { primarySpec } from "../../api/issue-cache";
 import type { IssueDetails, UserState } from "../../api/types";
+import { QueryError } from "../../components/QueryError";
+import { pageInkText, pageRowBorder, textSecondaryOnSurface } from "../../theme/classes";
+import { SubscribedAgents } from "../issue/SubscribedAgents";
+import { buildIssuePath, parseIssuePath } from "../refs/routes";
+import { useKeymap } from "../shell/keymap";
+import { DETAILS_ROW_ATTRIBUTE, type DetailsRow } from "./details-rows";
+import { FocusedNodeFacts } from "./FocusedNodeFacts";
+import { type FocusedNode, useFocusedNode } from "./focused-node";
+import { IssueCollaboratorList } from "./IssueCollaboratorList";
+import { IssueHistory } from "./IssueHistory";
+import { agentsOnlyItem, issueAddress } from "./issue-address";
+import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { CONTROL_LABELS, issueStatusWord } from "./page-words";
+import { useIssueSubscribers } from "./useIssueSubscribers";
 
 /** What each of Details' three places for part M is handed: the issue as the details slot reads
  *  it, and the reader's own state of every issue. */
@@ -9,20 +28,218 @@ export interface DetailsMoreProps {
   readonly state: UserState | undefined;
 }
 
-/** The people of the issue, under Opened by in Details' People section: its subscribers and its
- *  collaborators (dispatch://INFRA-1196 R13). Part M fills it; it draws nothing until then. */
-export function DetailsPeople(_props: DetailsMoreProps): ReactNode {
-  return null;
+/** The history in Details (`IssueHistory.tsx`), which `t v` puts the focus in. */
+const HISTORY = '[data-testid="issue-history"]';
+
+/** The collaborators' row in Details, whose own control `t o` puts the focus on. */
+const COLLABORATORS_CONTROL = `[${DETAILS_ROW_ATTRIBUTE}="collaborators"] button`;
+
+/** How many frames a key waits for Details to draw what its address opened before it gives up
+ *  on putting the focus there, as the view row's chords wait (`useIssueKeymap.ts`). */
+const DRAWING_FRAMES = 20;
+
+/**
+ * The people of the issue, under Opened by in Details' People section (dispatch://INFRA-1196
+ * R13, R19): the sessions subscribed to it, counted, each with Unsubscribe; and everyone who
+ * worked it, running or not, which the nine-tab page gave a tab of its own. The collaborators
+ * are read only once a reader opens their list, or once `/issues/<key>/collaborators` opens it,
+ * so the People section costs the page one request on any other address: the subscribers' count.
+ */
+export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
+  const { pathname } = useLocation();
+  const opensCollaborators = parseIssuePath(pathname)?.kind === "collaborators";
+  const subscribers = useIssueSubscribers(issue.key);
+  const [subscribersOpen, setSubscribersOpen] = useState(false);
+  const [collaboratorsOpen, setCollaboratorsOpen] = useState(opensCollaborators);
+  // The address opens the list; closing it again is the reader's, so this only ever opens.
+  useEffect(() => {
+    if (opensCollaborators) setCollaboratorsOpen(true);
+  }, [opensCollaborators]);
+  return (
+    <>
+      <WideRow>
+        <button
+          aria-expanded={subscribersOpen}
+          className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${textSecondaryOnSurface}`}
+          onClick={() => setSubscribersOpen((open) => !open)}
+          type="button"
+          {...pageChrome}
+        >
+          <span>
+            {subscribers.counted ? `${PROPERTY_LABELS.subscribers}:` : PROPERTY_LABELS.subscribers}
+          </span>
+          {subscribers.counted ? <span {...authorText}>{subscribers.rows.length}</span> : null}
+        </button>
+        {subscribersOpen ? (
+          <SubscribedAgents
+            onUnsubscribe={(sessionId) => subscribers.unsubscribe.mutate(sessionId)}
+            ownerLabel={issue.key}
+            subscribers={subscribers.rows}
+          />
+        ) : null}
+        {subscribers.error ? (
+          <QueryError
+            error={subscribers.failure}
+            message="Subscribed agents unavailable — Envoy listener unreachable."
+            onRetry={subscribers.refetch}
+            retrying={subscribers.fetching}
+          />
+        ) : null}
+        {subscribers.unsubscribe.isError ? (
+          <QueryError
+            message="Could not unsubscribe this agent."
+            onRetry={() => subscribers.unsubscribe.mutate(subscribers.unsubscribe.variables ?? "")}
+            retrying={subscribers.unsubscribe.isPending}
+          />
+        ) : null}
+      </WideRow>
+      <WideRow row="collaborators">
+        <button
+          aria-expanded={collaboratorsOpen}
+          className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${textSecondaryOnSurface}`}
+          onClick={() => setCollaboratorsOpen((open) => !open)}
+          type="button"
+          {...pageChrome}
+        >
+          <span>{PROPERTY_LABELS.collaborators}</span>
+        </button>
+        {collaboratorsOpen ? (
+          <div className="w-full" {...authorText}>
+            <IssueCollaboratorList issueKey={issue.key} />
+          </div>
+        ) : null}
+      </WideRow>
+    </>
+  );
 }
 
-/** The facts of the row the reader's focus is on, between Details' sections and Pinned
- *  (dispatch://INFRA-1196 R12). Part M fills it; it draws nothing until then. */
-export function DetailsFocusedNode(_props: DetailsMoreProps): ReactNode {
-  return null;
+/**
+ * The facts of the row the reader's focus is on, between Details' sections and Pinned
+ * (dispatch://INFRA-1196 R12, R14), with the controls today's cards had for it and what
+ * references it. Until the outline gives a row the focus, and whenever the reader is on no row,
+ * the focus is the issue, so the facts are the issue's own: its kind, its title and its status.
+ */
+export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNode {
+  const focusedNode = useFocusedNode();
+  const node: FocusedNode = focusedNode ?? {
+    id: issue.key,
+    state: issueStatusWord(issue.status),
+    title: issue.title,
+    type: "issue",
+  };
+  return <FocusedNodeFacts issueKey={issue.key} node={node} state={state} />;
 }
 
-/** The issue's history, under Pinned (dispatch://INFRA-1196 R15). Part M fills it; it draws
- *  nothing until then. */
-export function DetailsHistory(_props: DetailsMoreProps): ReactNode {
-  return null;
+/**
+ * The issue's history, under Pinned (dispatch://INFRA-1196 R15, R20), and the addresses and
+ * keys that open Details at it.
+ *
+ * `/issues/<key>/activity`, and the address of a comment or a message of a thread agents wrote
+ * among themselves, open Details at the history, that turn marked; `/issues/<key>/collaborators`
+ * opens Details at the People section, whose list `DetailsPeople` opens. Each address opens
+ * Details once per arrival at it, and the reader's own Close is the later word for as long as
+ * they stay there. This place is drawn outside every section Details can collapse, so it is
+ * mounted for the life of the panel and keeps that count. `t v` and `t o` open those two
+ * addresses and put the focus in what they open.
+ *
+ * The history's log is read only while Details is open or an address opens it, so a load that
+ * leaves Details shut costs no request for it (R21). The comments and messages an item's address
+ * is told by are the outline's own reads, under its keys.
+ */
+export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
+  const { hash, pathname, search } = useLocation();
+  const navigate = useNavigate();
+  const route = parseIssuePath(pathname);
+  const addressed =
+    route === undefined ? undefined : issueAddress(route, search, hash, primarySpec(issue)?.slug);
+  // An address naming a comment or a message, and opening no document.
+  const namesItem = addressed?.document === undefined && addressed?.target?.kind === "item";
+  const comments = useQuery({
+    enabled: namesItem,
+    queryFn: () => api.listComments(issue.key),
+    queryKey: ["comments", issue.key],
+  });
+  const messages = useQuery({
+    enabled: namesItem,
+    queryFn: () => api.listIssueMessages(issue.key),
+    queryKey: ["issue-messages", issue.key],
+  });
+  // A comment or message an agent wrote outside every thread a person wrote in is no row of the
+  // outline: it is an entry of the history, which Details opens at, with the entry marked.
+  const item = namesItem
+    ? agentsOnlyItem(addressed?.target, comments.data, messages.data)
+    : undefined;
+  const opensHistory = route?.kind === "activity" || item !== undefined;
+  const drawer = useMarginDrawer();
+  const openDetails = drawer?.setOpen;
+  const panelAddress =
+    route?.kind === "collaborators" || opensHistory ? `${pathname}${search}` : undefined;
+  const openedFor = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (panelAddress === undefined || openDetails === undefined) {
+      openedFor.current = panelAddress;
+      return;
+    }
+    if (openedFor.current === panelAddress) return;
+    openedFor.current = panelAddress;
+    openDetails(true);
+  }, [openDetails, panelAddress]);
+  useKeymap("issue", [
+    {
+      id: "tab-activity",
+      keys: "t v",
+      label: `Open the issue's ${CONTROL_LABELS.history.toLowerCase()} in ${CONTROL_LABELS.details}`,
+      run: () => {
+        navigate(buildIssuePath({ key: issue.key, kind: "activity" }));
+        openDetails?.(true);
+        requestAnimationFrame(() => reachInDetails(HISTORY));
+      },
+    },
+    {
+      id: "tab-collaborators",
+      keys: "t o",
+      label: `Open the issue's ${PROPERTY_LABELS.collaborators.toLowerCase()} in ${CONTROL_LABELS.details}`,
+      run: () => {
+        navigate(buildIssuePath({ key: issue.key, kind: "collaborators" }));
+        openDetails?.(true);
+        requestAnimationFrame(() => reachInDetails(COLLABORATORS_CONTROL));
+      },
+    },
+  ]);
+  if (drawer?.open !== true && !opensHistory) return null;
+  return <IssueHistory issue={issue} item={item} state={state} />;
+}
+
+/**
+ * Puts the focus on what `selector` names inside Details, once Details has drawn it: a key
+ * navigates and opens Details, and what that opens is on the page a frame or two later. A part
+ * inside a hidden element takes no focus, and a page that never draws it leaves the focus where
+ * it was.
+ */
+function reachInDetails(selector: string, left = DRAWING_FRAMES): void {
+  const found = document.querySelector<HTMLElement>(`aside[${DETAILS_ATTRIBUTE}] ${selector}`);
+  if (found === null || found.closest("[hidden]") !== null) {
+    if (left > 0) requestAnimationFrame(() => reachInDetails(selector, left - 1));
+    return;
+  }
+  found.focus({ preventScroll: true });
+  found.scrollIntoView({ block: "nearest" });
+}
+
+/** One row of Details that its own control names, as `IssueMargin.tsx`'s `Row wide` draws it
+ *  (the prototype's `.frow`); `row` names the row a control elsewhere opens Details at
+ *  (`details-rows.ts`). */
+function WideRow({ children, row }: { children: ReactNode; row?: DetailsRow }): ReactNode {
+  return (
+    <div
+      className={`grid min-w-0 grid-cols-1 gap-2.5 border-b py-2 text-sm leading-5 ${pageRowBorder}`}
+      {...(row === undefined ? {} : { [DETAILS_ROW_ATTRIBUTE]: row })}
+    >
+      <div
+        className={`flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 [overflow-wrap:break-word] ${pageInkText}`}
+      >
+        {children}
+      </div>
+    </div>
+  );
 }

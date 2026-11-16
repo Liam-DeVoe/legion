@@ -76,6 +76,17 @@ const MANIFEST_EDGE_KINDS = new Set(
   )
 );
 
+/** Whether a list of what references a node draws `edge`. During a release a newer Dispatch can
+ *  answer with an edge kind, or a node kind at the other end, that this page does not know; every
+ *  such list - this panel, and a focused row's in Details (`NodeReferences.tsx`) - leaves that
+ *  edge out rather than draw it under another edge's label. */
+export function drawsEdge(edge: GraphEdge): boolean {
+  return (
+    (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
+    Object.hasOwn(NODE_LABELS, edge.node.kind)
+  );
+}
+
 /** Beyond this the row clamps the excerpt and offers to expand it. The real clamp is CSS, so
  *  this is the text shape that makes a clamp likely rather than a measurement. */
 const CLAMP_LINES = 3;
@@ -252,14 +263,7 @@ export function ReferencedBy({
   toggle?: { id: string };
 }): ReactNode {
   const query = useQuery(referencesQuery(reference));
-  // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
-  // end, that this page does not know; the page leaves such an edge out rather than draw it under
-  // another edge's label.
-  const edges = query.data?.edges?.filter(
-    (edge) =>
-      (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
-      Object.hasOwn(NODE_LABELS, edge.node.kind)
-  );
+  const edges = query.data?.edges?.filter(drawsEdge);
   const groups = groupBySource(edges ?? []);
 
   return (

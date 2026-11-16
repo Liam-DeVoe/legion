@@ -31,7 +31,6 @@ import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { buildDispatchReference } from "../refs/routes";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
-import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
@@ -138,6 +137,8 @@ function stubIssueApi() {
     spyOn(api, "listRepoProjects").mockResolvedValue([]),
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
+    // Part M's People rows count the issue's subscribed agents on every load (`details-more.tsx`).
+    spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
   ];
   const pinReads = {
     asks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
@@ -1756,15 +1757,5 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
     unmount();
     putIssueState.mockRestore();
     restore();
-  }
-});
-
-// R9: part M fills the three places Details keeps for it (`details-more.tsx`); until then each
-// draws nothing.
-test("the three places of part M draw nothing", () => {
-  for (const Place of [DetailsPeople, DetailsFocusedNode, DetailsHistory]) {
-    const view = render(<Place issue={issue} state={undefined} />);
-    expect(view.container.innerHTML, `${Place.name} drew something`).toBe("");
-    view.unmount();
   }
 });
