@@ -2209,7 +2209,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets. */
+    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text, the dashboard path it opens at, and the node's state and visibility (author only on its author's own page, since a node reserved for its author is on no other). It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. The page answers 200 only where that person holds at least one node the reader may see, or the reader is that person; any other login answers exactly what a login nobody holds answers, 404 NOT_FOUND, so the answer tells nothing of whether a hidden node exists. */
     get: operations["getApiV1PeopleByLoginNodes"];
     put?: never;
     post?: never;
@@ -2674,7 +2674,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The typed document block schema as JSON. */
+    /** @description The typed document block schema this process installed, as JSON {version, nodes, marks, types}, and beside it, read from the store on each request: store_types, every type of the store that declares no block type, by name, with the attributes its attribute nodes hold; and lens_kinds, the lens catalogue by id, each kind with its address, its words and in sources the constraint holding its primary source (standard) and that source's reference. A type or a lens kind written after the process started is answered by its next request, and neither moves the version. */
     get: operations["getApiV1SchemaBlocks"];
     put?: never;
     post?: never;
@@ -3649,6 +3649,25 @@ export interface components {
     BlockReferences: {
       asks: number;
       comments: number;
+    };
+    BlockSchemaRead: {
+      lens_kinds: components["schemas"]["LensKindRead"][] | null;
+      /** @description elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block */
+      marks?: {
+        [key: string]: unknown;
+      }[];
+      /** @description elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block */
+      nodes?: {
+        [key: string]: unknown;
+      }[];
+      store_types: components["schemas"]["StoreTypeRead"][] | null;
+      /** @description elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block */
+      types:
+        | {
+            [key: string]: unknown;
+          }[]
+        | null;
+      version: number;
     };
     BlockTable: {
       rows: components["schemas"]["BlockTableRow"][] | null;
@@ -4758,7 +4777,9 @@ export interface components {
         | "comment"
         | "comment_block"
         | "component"
+        | "constraint"
         | "issue"
+        | "lens_kind"
         | "message"
         | "message_block"
         | "page"
@@ -4804,7 +4825,9 @@ export interface components {
         | "comment"
         | "comment_block"
         | "component"
+        | "constraint"
         | "issue"
+        | "lens_kind"
         | "message"
         | "message_block"
         | "page"
@@ -5331,6 +5354,18 @@ export interface components {
       merge_to_production: components["schemas"]["DeliverySpread"];
       opened_to_merge: components["schemas"]["DeliverySpread"];
       opened_to_production: components["schemas"]["DeliverySpread"];
+    };
+    LensKindRead: {
+      id: string;
+      ref: string;
+      sources: components["schemas"]["LensKindSourceRead"][] | null;
+      words: string;
+    };
+    LensKindSourceRead: {
+      id: string;
+      ref: string;
+      reference: string;
+      standard: string;
     };
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
@@ -6070,6 +6105,14 @@ export interface components {
     StateResponse: {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
+    };
+    StoreAttributeRead: {
+      kind: string;
+      name: string;
+    };
+    StoreTypeRead: {
+      attributes: components["schemas"]["StoreAttributeRead"][] | null;
+      name: string;
     };
     Subscriber: {
       /** Format: int64 */
@@ -13140,13 +13183,13 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand */
+      /** @description OK */
       200: {
         headers: {
           [name: string]: unknown;
         };
         content: {
-          "application/json": unknown;
+          "application/json": components["schemas"]["BlockSchemaRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13813,6 +13856,7 @@ export type BlockPath = components["schemas"]["BlockPath"];
 export type BlockPin = components["schemas"]["BlockPin"];
 export type BlockPinRead = components["schemas"]["BlockPinRead"];
 export type BlockReferences = components["schemas"]["BlockReferences"];
+export type BlockSchemaRead = components["schemas"]["BlockSchemaRead"];
 export type BlockTable = components["schemas"]["BlockTable"];
 export type BlockTableCell = components["schemas"]["BlockTableCell"];
 export type BlockTableRow = components["schemas"]["BlockTableRow"];
@@ -13986,6 +14030,8 @@ export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];
+export type LensKindRead = components["schemas"]["LensKindRead"];
+export type LensKindSourceRead = components["schemas"]["LensKindSourceRead"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
@@ -14078,6 +14124,8 @@ export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StateResponse = components["schemas"]["StateResponse"];
+export type StoreAttributeRead = components["schemas"]["StoreAttributeRead"];
+export type StoreTypeRead = components["schemas"]["StoreTypeRead"];
 export type Subscriber = components["schemas"]["Subscriber"];
 export type Suggestions = components["schemas"]["Suggestions"];
 export type SupersededApproval = components["schemas"]["SupersededApproval"];

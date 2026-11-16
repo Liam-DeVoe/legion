@@ -83,6 +83,15 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 	if entry, held := nodeRegistry[graphstore.KindLensKind]; held && entry.authorOnly {
 		t.Errorf("the registry flags %s, which is always project-visible", graphstore.KindLensKind)
 	}
+	// The kinds of that child registered so far, each as R1 has it: a constraint is flagged and
+	// compares the person a credential proves, and a lens kind of the catalogue is registered
+	// unflagged. Both are written by migration 20261116123354, which is where they register.
+	if entry, held := nodeRegistry[graphstore.KindConstraint]; !held || !entry.authorOnly || entry.visibility.compares != comparesPerson {
+		t.Errorf("the registry holds %s as %+v (held %t), want it flagged and comparing the person", graphstore.KindConstraint, entry, held)
+	}
+	if _, held := nodeRegistry[graphstore.KindLensKind]; !held {
+		t.Errorf("the registry holds no %s, which the catalogue's migration writes", graphstore.KindLensKind)
+	}
 
 	admitted := graphstore.AuthorOnlyKinds()
 	want := slices.Sorted(slices.Values(append(slices.Clone(flagged), personComparedTestKind, credentialComparedTestKind)))
@@ -138,6 +147,11 @@ func TestAKindComparesThePersonOrTheCredentialItsEntryStates(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	// The two test kinds are types of no migration, and the store writes a node only of a type it
+	// holds, so their types are seeded first.
+	if err := graphstoretest.SeedSupertags(ctx, tx, personComparedTestKind, credentialComparedTestKind); err != nil {
+		t.Fatalf("seed the test kinds' types: %v", err)
+	}
 	name := func(login string) *string { return &login }
 
 	aliceCookie := model.Actor{Kind: "user", ID: "alice"}

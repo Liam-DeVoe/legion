@@ -2995,6 +2995,12 @@ Both sides go in the one transaction, so `census --store` still reads zero diffe
 A node the store does not hold is exit 2, naming it.
 `e2e/acceptance/graph-erase.sh` erases a comment and then a block of a document, each by its digest, and searches every column of every table of the database for the erased bytes, with a control row planted in the same search, marking each hit as derived from the node or not: a derived hit after the erase fails it, and so does any change to the rows it planted for other nodes holding the same bytes.
 
+### Adding a lens kind
+
+`envoy-dispatch lens-kind-add --id <slug> --words <text> --source <text> --reference <text>` adds one lens kind with its source; the usage text is in the command (`lens_kind_add.go`).
+It writes, in one transaction through `graphstore.AddLensKind`, the `lens_kind` node `dispatch://lens_kind/<slug>` with its words, a `constraint` node holding the source and its reference, and the one `constrained_by` tuple between them, the shape the seed of migrations `20261116123354` and `20261116123355` writes.
+An id the catalogue holds is refused, exit 1, and nothing is written; every server answers the new kind on its next `GET /api/v1/schema/blocks` and takes it on a lens's `has_kind`, with no restart and no block schema version moved.
+
 ### The view over the store
 
 Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and a `node_kind is null` test on each of the four arms whose relations the store now writes.

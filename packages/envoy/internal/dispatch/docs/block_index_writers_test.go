@@ -542,6 +542,14 @@ var indexPasses = map[string]string{
 	// tuples left of the node to refuse a run whose set moved, and deletes the node its one
 	// caller names.
 	"graphstore/erase.go#EraseNode": "the node its caller names",
+	// The two seeds other packages' tests share (graphstoretest), which no deployment builds. Each
+	// writes rows the store's writers refuse - a node reserved for its author of a kind no read
+	// registry flags, the type of a kind only a test writes - from the nodes or the names its test
+	// hands it. SeedAuthorOnly reads the store's own row of each node only to know whether to
+	// insert it or move its visibility, never a projection, so neither mends one side from the
+	// other.
+	"graphstore/graphstoretest/graphstoretest.go#SeedAuthorOnly": "the nodes its test hands it, and whether the store holds each",
+	"graphstore/graphstoretest/graphstoretest.go#SeedSupertags":  "the type names its test hands it",
 	// A node write's two statements (writeNodes): the insert of the nodes the store lacks, which
 	// locks the ones it holds, and the move of the ones it holds. The move reads each row it
 	// moves, in the snapshot taken once the insert holds them all, to say which base attributes

@@ -233,6 +233,17 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "VISIBILITY_NOT_ADMITTED", http.StatusBadRequest, message)
 		return
 	}
+	// A node of a type the store holds no supertag row of (graphstore's checkSupertags): the
+	// refusal's own words name each type, and nothing of the write was stored.
+	if errors.Is(err, graphstore.ErrSupertagNotHeld) {
+		message := graphstore.ErrSupertagNotHeld.Error()
+		var notHeld *graphstore.SupertagNotHeldError
+		if errors.As(err, &notHeld) {
+			message = notHeld.Error()
+		}
+		writeError(w, "SUPERTAG_NOT_HELD", http.StatusConflict, message)
+		return
+	}
 	// A pointer tuple at a node its type rule does not allow (graphstore's pointerRules): the
 	// refusal's own words name the tuple kind, the far end's kind and the kinds the rule allows.
 	if errors.Is(err, graphstore.ErrInvalidPointer) {

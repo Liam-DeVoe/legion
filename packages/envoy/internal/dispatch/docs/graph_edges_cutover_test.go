@@ -1220,7 +1220,10 @@ const (
 // alice and changed by a run; a risk that a check block covers; and the target's r1, held to a
 // constraint. No writer of those kinds exists at this head, so the nodes are written as their
 // writers will write them, project-visible and live, in CORE. It answers the rows the view is to
-// answer of them, each dated by its tuple and carrying no source_seq.
+// answer of the class: those, each dated by its tuple and carrying no source_seq, and beside them
+// the one constrained_by tuple from each kind of the lens catalogue to its source, which every
+// migrated store holds (migrations 20261116123354 and 20261116123355), read from the store as
+// the seed wrote them, so a kind the seed adds or drops moves this expectation with it.
 func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 	t.Helper()
 	ctx := context.Background()
@@ -1283,6 +1286,29 @@ func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 		if !storeClass(row) {
 			t.Fatalf("the fixture states %s as of the class store, which the view's rule does not read it as", row)
 		}
+	}
+	seeded, err := database.Pool.Query(ctx, `
+		select from_id, to_id, at from graph_tuples
+		where from_kind = $1 and kind = $2 and to_kind = $3 and asserted
+		order by from_id`, graphstore.KindLensKind, graphstore.TupleConstrainedBy, graphstore.KindConstraint)
+	if err != nil {
+		t.Fatalf("read the lens catalogue's seeded sources: %v", err)
+	}
+	defer seeded.Close()
+	catalogue := 0
+	for seeded.Next() {
+		row := graphEdgeRow{fromKind: graphstore.KindLensKind, kind: graphstore.TupleConstrainedBy, toKind: graphstore.KindConstraint}
+		if err := seeded.Scan(&row.fromID, &row.toID, &row.createdAt); err != nil {
+			t.Fatalf("read a seeded source of the lens catalogue: %v", err)
+		}
+		rows = append(rows, row)
+		catalogue++
+	}
+	if err := seeded.Err(); err != nil {
+		t.Fatalf("read the lens catalogue's seeded sources: %v", err)
+	}
+	if catalogue == 0 {
+		t.Fatal("the migrated store holds no constrained_by tuple of the lens catalogue, which its migrations seed")
 	}
 	return rows
 }

@@ -143,6 +143,12 @@ var storeWriteCallSites = []string{
 	"graphstore/people.go#SessionRecorded",
 	// Retarget moves one pointer through Write, after the row of the node it moves it out of.
 	"graphstore/reasoning.go#Retarget",
+	// AddLensKind adds one kind to the lens catalogue through Write: the kind's constraint and
+	// lens_kind nodes in ascending (kind, id) and the constrained_by tuple between them, at the
+	// sentinel, under a transaction lock on the id and no owner row, since a catalogue node
+	// stands under no issue. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of
+	// Write; `envoy-dispatch lens-kind-add` is its one caller.
+	"graphstore/lens_catalogue.go#AddLensKind",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies",

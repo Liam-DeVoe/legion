@@ -155,6 +155,13 @@ func init() {
 		graphstore.KindSession: resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindRole:    resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindPage:    resolvedKind(loadStoreNodes, nodeVisibility{}),
+		// The kinds of dispatch://INFRA-1950 the store holds alone, each registered in the commit
+		// that first writes a node of it (migration 20261116123354 writes both). A lens kind is a
+		// node of the catalogue, always project-visible, so its entry takes no node reserved for its
+		// author; a constraint may be reserved for its author, and its predicate compares the person
+		// a credential proves.
+		graphstore.KindLensKind:   resolvedKind(loadLensKindNodes, nodeVisibility{}),
+		graphstore.KindConstraint: personAuthoredKind(loadConstraintNodes),
 		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
 		// writes one outside a migration, every one of them is project-visible and no read of
 		// the graph resolves one, but they are nodes of the store like any other, so the

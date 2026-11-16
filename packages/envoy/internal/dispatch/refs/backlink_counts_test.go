@@ -327,6 +327,10 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		{"message_block", removedMessageBlock},
 		{"ask_block", askPart},
 		{"ask_block", removedAskPart},
+		// The two kinds of the lens catalogue, which the seed holds (migration 20261116123354):
+		// a kind and the constraint that is its source, each named by a mention as any node is.
+		{"lens_kind", "pre-mortem"},
+		{"constraint", "5eed0000-1e45-4000-8000-000000000001"},
 	} {
 		insertReference(t, tx, "comment", citingComment, target[0], target[1])
 	}
@@ -353,6 +357,14 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 			values ($1, $2, 'authored_by', $3, $4, now(), '{"kind":"user","id":"alice"}', 0)
 		`, authored.fromKind, authored.fromID, authored.toKind, authored.toID)
 	}
+	// A has_kind out of the same lens to a kind of the catalogue, which the view answers from the
+	// tuples alone, as it answers the seed's constrained_by from each kind to its source: a lens
+	// kind's count holds no lens until the commit that registers the lens's own kind of node, and a
+	// constraint's count holds the lens kind whose source it is.
+	execFixture(t, tx, "write the lens's has_kind", `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+		values ('lens', '11111111-1111-4111-8111-111111111111', 'has_kind', 'lens_kind', 'pre-mortem', now(), '{"kind":"user","id":"alice"}', 0)
+	`)
 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)

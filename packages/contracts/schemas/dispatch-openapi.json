@@ -8865,7 +8865,7 @@
     },
     "/api/v1/people/{login}/nodes": {
       "get": {
-        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets.",
+        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text, the dashboard path it opens at, and the node's state and visibility (author only on its author's own page, since a node reserved for its author is on no other). It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. The page answers 200 only where that person holds at least one node the reader may see, or the reader is that person; any other login answers exactly what a login nobody holds answers, 404 NOT_FOUND, so the answer tells nothing of whether a hidden node exists.",
         "operationId": "getApiV1PeopleByLoginNodes",
         "parameters": [
           {
@@ -10860,7 +10860,7 @@
     },
     "/api/v1/schema/blocks": {
       "get": {
-        "description": "The typed document block schema as JSON.",
+        "description": "The typed document block schema this process installed, as JSON {version, nodes, marks, types}, and beside it, read from the store on each request: store_types, every type of the store that declares no block type, by name, with the attributes its attribute nodes hold; and lens_kinds, the lens catalogue by id, each kind with its address, its words and in sources the constraint holding its primary source (standard) and that source's reference. A type or a lens kind written after the process started is answered by its next request, and neither moves the version.",
         "operationId": "getApiV1SchemaBlocks",
         "parameters": [
           {
@@ -10884,9 +10884,13 @@
             }
           },
           "200": {
-            "description": "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
+            "description": "OK",
             "content": {
-              "application/json": {}
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlockSchemaRead"
+                }
+              }
             }
           }
         },
@@ -14767,6 +14771,65 @@
         "required": [
           "comments",
           "asks"
+        ],
+        "type": "object"
+      },
+      "BlockSchemaRead": {
+        "properties": {
+          "lens_kinds": {
+            "items": {
+              "$ref": "#/components/schemas/LensKindRead"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "marks": {
+            "description": "elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "nodes": {
+            "description": "elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "store_types": {
+            "items": {
+              "$ref": "#/components/schemas/StoreTypeRead"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "types": {
+            "description": "elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "types",
+          "store_types",
+          "lens_kinds"
         ],
         "type": "object"
       },
@@ -19758,7 +19821,9 @@
               "comment",
               "comment_block",
               "component",
+              "constraint",
               "issue",
+              "lens_kind",
               "message",
               "message_block",
               "page",
@@ -19906,7 +19971,9 @@
               "comment",
               "comment_block",
               "component",
+              "constraint",
               "issue",
+              "lens_kind",
               "message",
               "message_block",
               "page",
@@ -22425,6 +22492,58 @@
           "first_commit_to_production",
           "opened_to_production",
           "opened_to_merge"
+        ],
+        "type": "object"
+      },
+      "LensKindRead": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/LensKindSourceRead"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "words": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "ref",
+          "words",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "LensKindSourceRead": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "standard": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "ref",
+          "standard",
+          "reference"
         ],
         "type": "object"
       },
@@ -25442,6 +25561,42 @@
         },
         "required": [
           "state"
+        ],
+        "type": "object"
+      },
+      "StoreAttributeRead": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "StoreTypeRead": {
+        "properties": {
+          "attributes": {
+            "items": {
+              "$ref": "#/components/schemas/StoreAttributeRead"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "attributes"
         ],
         "type": "object"
       },

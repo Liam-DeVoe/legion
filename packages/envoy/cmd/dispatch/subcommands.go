@@ -60,6 +60,9 @@ var subcommands = []subcommand{
 	{"erase", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return erase(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
+	{"lens-kind-add", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return lensKindAdd(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
+	}},
 	{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)
 	}},

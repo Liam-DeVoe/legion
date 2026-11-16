@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -31,6 +34,9 @@ var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
 	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
+	// The lens_kind supertag and the attribute nodes of the types that declare no block type,
+	// each held to this file by requireStoreOnlyAttributesMatchTheirMigrations.
+	"../../internal/dispatch/store/migrations/20261116123354_lens_catalogue.up.sql",
 }
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
@@ -248,6 +254,10 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 // The file names an attribute as a document writes it, and its node is the one
 // schemanodes.StoreName names, `<type>/<store name>`, so ask's `state` is the node
 // ask/answer_state. Each type and attribute it fails on is recorded in drift.
+//
+// An attribute of a type that declares no block type - a lens's verdict, a constraint's standard -
+// is in no block schema, so the file declares it nowhere, and it is held instead to the type
+// migration that declares it (requireStoreOnlyAttributesMatchTheirMigrations).
 func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema, drift *schemaDrift) {
 	t.Helper()
 	nodes, err := graphstore.NodesOfKind(ctx, pool, schemanodes.KindAttribute)
@@ -292,12 +302,91 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 			drift.add(typ.Name)
 		}
 	}
-	for id := range held {
-		if _, declared := wanted[id]; !declared {
-			t.Errorf("the store holds attribute node %q, which %s declares nowhere", id, blockSchemaFile)
-			drift.add(id)
+	var storeOnly []graphstore.Node
+	for _, id := range slices.Sorted(maps.Keys(held)) {
+		if _, declared := wanted[id]; declared {
+			continue
+		}
+		ties, err := graphstore.CurrentOut(ctx, pool, schemanodes.KindAttribute, id, []string{schemanodes.TupleAttributeOf})
+		if err != nil {
+			t.Fatalf("read the type attribute node %q is tied to: %v", id, err)
+		}
+		if len(ties) == 1 && !slices.ContainsFunc(file.Types, func(typ pmdoc.BlockTypeSchema) bool { return typ.Name == ties[0].ToID }) {
+			storeOnly = append(storeOnly, held[id])
+			continue
+		}
+		t.Errorf("the store holds attribute node %q, which %s declares nowhere", id, blockSchemaFile)
+		drift.add(id)
+	}
+	requireStoreOnlyAttributesMatchTheirMigrations(t, ctx, pool, storeOnly)
+}
+
+// storeOnlyAttribute matches one attribute a type migration declares of a type with no block
+// type, as the values list of 20261116123354 writes it: the supertag, the attribute's name, its
+// kind and its position among that type's attributes.
+var storeOnlyAttribute = regexp.MustCompile(`\('([a-z_ ]+)', '([a-z_]+)', '([a-z\[\]]+)', ([0-9]+)\)`)
+
+// requireStoreOnlyAttributesMatchTheirMigrations holds the attribute nodes of the types that
+// declare no block type to the type migrations that declare them, field by field and in both
+// directions: each node is tied to the supertag its migration names it under and carries the
+// name, the store name (its own name, since none is a base attribute), the kind and the position
+// the migration gives it, and each attribute a migration declares is a node of the store. A node
+// no migration of typeMigrations declares fails, naming the node.
+func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, ctx context.Context, pool *store.Pool, nodes []graphstore.Node) {
+	t.Helper()
+	type declaration struct {
+		supertag, name, kind, migration string
+		position                        int
+	}
+	declared := map[string]declaration{}
+	for _, migration := range typeMigrations {
+		text, err := os.ReadFile(filepath.Clean(migration))
+		if err != nil {
+			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
+		}
+		for _, match := range storeOnlyAttribute.FindAllStringSubmatch(string(text), -1) {
+			position, err := strconv.Atoi(match[4])
+			if err != nil {
+				t.Fatalf("read the position of %s/%s in %s: %v", match[1], match[2], filepath.Base(migration), err)
+			}
+			declared[match[1]+"/"+match[2]] = declaration{
+				supertag: match[1], name: match[2], kind: match[3], migration: filepath.Base(migration), position: position,
+			}
 		}
 	}
+	if len(declared) == 0 {
+		t.Fatalf("no type migration declares an attribute of a type with no block type, so no node of one was held to its migration")
+	}
+	held := map[string]bool{}
+	for _, node := range nodes {
+		held[node.ID] = true
+		want, ok := declared[node.ID]
+		if !ok {
+			t.Errorf("the store holds attribute node %q of a type with no block type, which no type migration of typeMigrations declares", node.ID)
+			continue
+		}
+		ties, err := graphstore.CurrentOut(ctx, pool, schemanodes.KindAttribute, node.ID, []string{schemanodes.TupleAttributeOf})
+		if err != nil {
+			t.Fatalf("read the type attribute node %q is tied to: %v", node.ID, err)
+		}
+		if len(ties) != 1 || ties[0].ToKind != schemanodes.KindSupertag || ties[0].ToID != want.supertag {
+			t.Errorf("attribute node %q is tied to %v, want one %s tuple to supertag %q as %s declares it",
+				node.ID, ties, schemanodes.TupleAttributeOf, want.supertag, want.migration)
+		}
+		carried := node.Attributes
+		position, _ := carried["position"].(float64)
+		if carried["name"] != want.name || carried["store_name"] != want.name || carried["kind"] != want.kind ||
+			int(position) != want.position || len(carried) != 4 {
+			t.Errorf("attribute node %q carries %v, want name and store name %q, kind %q and position %d as %s declares it",
+				node.ID, carried, want.name, want.kind, want.position, want.migration)
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(declared)) {
+		if !held[id] {
+			t.Errorf("%s declares attribute %q of a type with no block type, which the store holds no node for", declared[id].migration, id)
+		}
+	}
+	t.Logf("the store holds %d attribute node(s) of the types with no block type, each as its type migration declares it", len(nodes))
 }
 
 // requireAttributeNodeCarries holds one attribute node of type typeName to what the file says

@@ -580,6 +580,15 @@ var backlinkArms = map[string][]backlinkArm{
 	"person": {authoredByReasoning},
 	"role":   {},
 	"page":   {},
+	// A kind of the lens catalogue is pointed at by the has_kind tuple of each lens of that kind,
+	// and a constraint by the constrained_by tuples of each requirement block held to it and of
+	// the lens kind whose source it is: the view answers each from the tuples alone, so each is an
+	// arm of the store alone, counted through the predicate of the kind its tuple comes from. A
+	// lens reaches the first count in the commit that registers it.
+	graphstore.KindLensKind: {{kind: graphstore.TupleHasKind, storedFrom: []string{graphstore.KindLens}}},
+	graphstore.KindConstraint: {
+		{kind: graphstore.TupleConstrainedBy, storedFrom: []string{BlockNodeKind, graphstore.KindLensKind}},
+	},
 	// No arm of the view whose edge kind is a literal targets a document's block: such a block
 	// is pointed at by mentions alone, a reply naming the block of an ask, a comment or a
 	// message instead. The entry is present and empty so a block is counted from its mention

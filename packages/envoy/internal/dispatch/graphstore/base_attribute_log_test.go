@@ -42,6 +42,7 @@ func init() { AdmitAuthorOnly(authorOnlyTestKind) }
 func TestABaseAttributeThatMovesIsStatedInTheLog(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
+	seedSupertags(t, ctx, database, authorOnlyTestKind)
 	at := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
 	node := Node{

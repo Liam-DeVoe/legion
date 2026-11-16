@@ -90,3 +90,18 @@ func SeedAuthorOnly(ctx context.Context, tx pgx.Tx, nodes ...graphstore.Node) er
 	}
 	return nil
 }
+
+// SeedSupertags writes a supertag node for each of names, in the caller's transaction: the type of
+// a kind of node only a test writes. The store's writers take a node only of a type the store
+// holds (graphstore.ErrSupertagNotHeld), and no migration seeds a type for a test's own kind, so a
+// test that writes one seeds its type here first. A name the store holds already is left as it is.
+func SeedSupertags(ctx context.Context, tx pgx.Tx, names ...string) error {
+	if _, err := tx.Exec(ctx, `
+		insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+		select 'supertag', named.id, 'supertag', 'project', 'live', '{}', now(), '{"kind": "system", "id": "graphstore-test"}', 0
+		from unnest($1::text[]) as named(id)
+		on conflict (kind, id) do nothing`, names); err != nil {
+		return fmt.Errorf("seed the supertags %v: %w", names, err)
+	}
+	return nil
+}

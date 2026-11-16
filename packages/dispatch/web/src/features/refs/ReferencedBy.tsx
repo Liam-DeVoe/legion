@@ -37,7 +37,11 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   comment: "Comment",
   comment_block: "Comment",
   component: "Component",
+  // A constraint and a kind of the lens catalogue read under the kind's own name until
+  // dispatch://INFRA-1196 gives them the words a person reads.
+  constraint: "constraint",
   issue: "Issue",
+  lens_kind: "lens_kind",
   message: "Message",
   message_block: "Message",
   // The page of a role, or of a session that claimed none: it reads as whose page it is,

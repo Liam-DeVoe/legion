@@ -26,6 +26,7 @@ import (
 func TestTheStoreRefusesAuthorOnAKindItDoesNotAdmit(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
+	seedSupertags(t, ctx, database, authorOnlyTestKind)
 	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
 	reserved := func(kind, id string) Node {
@@ -77,7 +78,8 @@ func TestTheStoreRefusesAuthorOnAKindItDoesNotAdmit(t *testing.T) {
 		{"a block of a document", reserved(blockKind, "CORE-1/spec#first"), blockKind},
 		{"a finding of a lens", reserved(blockKind, KindLens+"/33333333-3333-4111-8111-333333333333#first"), KindLensBlock},
 		{"a lens, which no registry here flags", reserved(KindLens, "44444444-4444-4111-8111-444444444444"), KindLens},
-		{"a lens kind", reserved(KindLensKind, LensKindPreMortem), KindLensKind},
+		// A kind the catalogue's seed does not hold, since the store holds the seeded ones.
+		{"a lens kind", reserved(KindLensKind, "graphstore-test-kind"), KindLensKind},
 	} {
 		for _, writer := range writers {
 			t.Run(writer.name+", "+refused.name, func(t *testing.T) {
