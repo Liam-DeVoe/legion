@@ -646,11 +646,14 @@ func TestOneTransactionOfTheGraphHoldsOneAnswer(t *testing.T) {
 // R13: a query "reads the graph at one transaction". R7: "A result counts only for the procedure
 // that ran it and for the subject that it read." The subject names its transaction of the graph, as
 // it names its deploy, and a result of a graph check counts only at that transaction: a result at
-// another one is of a subject that moved, whichever transaction is newer or was recorded last. A
-// subject that names no transaction judges no check of the graph (R10: "Only the checks that read
-// the subject count"). Each row: the row's check of the graph, its runs and a failing example that
-// the test at c2 caught, at subject c2 under deploy d2 and the row's transaction, where c2 differs
-// from c1 in the test of the program check G2; C taken out.
+// another one is of a subject that moved, whichever transaction is newer or was recorded last. R10:
+// "A check whose subject is production decides nothing for the head of a branch", and the graph is
+// production's data: a check of the graph has a state only at a subject that names a deploy, and
+// there it reads unknown when the subject names no transaction or one that no result read (R10:
+// "Unknown: every other case"). Each row: the row's check of the graph, its runs and a failing
+// example that the test at c2 caught, at subject c2 under deploy d2 (or at the head of the row's
+// branch) and the row's transaction, where c2 differs from c1 in the test of the program check G2;
+// C taken out.
 func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
 	t.Parallel()
 	g, g2 := checkStateGraph, checkStateGraphProgram
@@ -664,6 +667,7 @@ func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
 	for _, row := range []struct {
 		name       string
 		check      Check
+		branch     string // the branch of the subject, which then names no deploy; "" for deploy d2
 		tx         string // the transaction of the subject
 		runs       []Result
 		want       CheckState // ID "" is the row's check
@@ -685,7 +689,16 @@ func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
 		{name: "control: the test of c2 passes at tx1, then fails at tx2, the transaction of the subject", check: g2, tx: "tx2",
 			runs: []Result{run(g2, "tx1", "c2", OutcomePass, time.Hour), run(g2, "tx2", "c2", OutcomeFail, 2*time.Hour)},
 			want: CheckState{State: "false", Reason: "failed", From: "tx2"}, statements: "not_met"},
-		{name: "a subject that names no transaction judges no check of the graph", check: g, tx: "",
+		{name: "a failure at tx1, at a deploy that names no transaction", check: g, tx: "",
+			runs: []Result{run(g, "tx1", "", OutcomeFail, time.Hour)},
+			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
+		{name: "a pass at tx1, at a deploy that names no transaction", check: g, tx: "",
+			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)},
+			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
+		{name: "a pass that names no transaction, at a deploy that names none", check: g, tx: "",
+			runs: []Result{run(g, "", "", OutcomePass, time.Hour)},
+			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
+		{name: "the head of a branch that names a transaction judges no check of the graph", check: g, branch: "b", tx: "tx1",
 			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)}, absent: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -695,6 +708,9 @@ func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
 			s.Ties[row.check.ID] = s.Ties[s.check]
 			s.commit("c2", "c1", "packages/envoy/cmd/listener/restart_test.go")
 			s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: row.tx}
+			if row.branch != "" {
+				s.Subject = Point{Commit: "c2", Branch: row.branch, GraphTx: row.tx}
+			}
 			s.Results = append(append(s.Results, row.runs...), Result{Check: row.check.ID, Kind: ResultFailingExample, Outcome: OutcomeFail,
 				TestCommit: "c2", At: checkStateRun.Add(5 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
 			if row.absent {
