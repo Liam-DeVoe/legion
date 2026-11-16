@@ -169,7 +169,7 @@ func TestABranchHeadGitHubCannotReadIsUnknown(t *testing.T) {
 
 // TestTwoChecksOfOneIssueCompareWithOneListOfHeads: c2 is a second check the job proves, with no
 // result of its own. The job ran on pushes of two branches of the change, legion/ACME-1 and then
-// topic/acme-retry, and recorded c1's result on each. c2 compares with the heads of both, as c1
+// topic/ACME-1-retry, and recorded c1's result on each. c2 compares with the heads of both, as c1
 // does, in name order whichever result is newer, and GitHub is asked for each head once per read.
 func TestTwoChecksOfOneIssueCompareWithOneListOfHeads(t *testing.T) {
 	rig := newCIJobRig(t)
@@ -177,7 +177,7 @@ func TestTwoChecksOfOneIssueCompareWithOneListOfHeads(t *testing.T) {
 	if written := uploadVerification(t, rig.handler, rig.issue, twoProved); written.Code != http.StatusCreated {
 		t.Fatalf("write c1, k1 and c2: status=%d body=%s", written.Code, written.Body.String())
 	}
-	const retryRef, retryBranch = "refs/heads/topic/acme-retry", "topic/acme-retry"
+	const retryRef, retryBranch = "refs/heads/topic/ACME-1-retry", "topic/ACME-1-retry"
 	rig.github.setCheckRun(98, ciJobName, ciJobOtherCommit)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	rig.github.setBranch(retryBranch, ciJobBranchHead{sha: ciJobOtherCommit})

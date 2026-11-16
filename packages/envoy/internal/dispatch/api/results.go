@@ -71,6 +71,10 @@ const codeRefNotABranch = "REF_NOT_A_BRANCH"
 // one the check's issue resolves to.
 const codeRepositoryNotTheIssues = "REPOSITORY_NOT_THE_ISSUES"
 
+// codeBranchNotTheIssues refuses a CI job's result on an issue whose change the branch its run
+// pushed is not (refuseBranchOfAnotherIssue).
+const codeBranchNotTheIssues = "BRANCH_NOT_THE_ISSUES"
+
 // branchRefPrefix is what the ref of a branch push begins with.
 const branchRefPrefix = "refs/heads/"
 
@@ -214,6 +218,12 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	if err := s.refuseResultOfAnotherRecorder(r.Context(), pool, check, credential, run); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if credential != nil && credential.ResultsOnly {
+		if err := refuseBranchOfAnotherIssue(r.Context(), pool, issueKey, pushedBranch(*credential.CI)); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 
 	// The one repository the check's issue resolves to, read once for the two callers below:
@@ -824,6 +834,24 @@ func (s *server) refuseResultOfAnotherRecorder(ctx context.Context, q queryer, c
 		return errorf(http.StatusForbidden, codeRepositoryNotTheIssues,
 			"this token's run is of %s, and issue %s resolves to %s: a CI job records a result only for an issue of the repository it ran in",
 			credential.CI.Repository, check.IssueKey, resolves)
+	}
+	return nil
+}
+
+// refuseBranchOfAnotherIssue refuses a CI job's result on issueKey's route when the branch whose
+// push its run ran on does not belong to that issue (delivery.BranchOfIssue): a job's result
+// counts for an issue only on a branch of that issue's change, so a job of one issue's branch
+// never makes a pass stand for another's (403 BRANCH_NOT_THE_ISSUES). The branch is quoted, so
+// a name holding a line break prints on one line.
+func refuseBranchOfAnotherIssue(ctx context.Context, q refs.Queryer, issueKey, branch string) error {
+	belongs, err := delivery.BranchOfIssue(ctx, q, issueKey, branch)
+	if err != nil {
+		return err
+	}
+	if !belongs {
+		return errorf(http.StatusForbidden, codeBranchNotTheIssues,
+			"this token's run pushed branch %q, which is no branch of issue %s: a branch belongs to an issue when it is the head branch of a pull request of that issue, or when the first issue key its name holds is that issue's, as Dispatch attributes a pull request by its branch",
+			branch, issueKey)
 	}
 	return nil
 }

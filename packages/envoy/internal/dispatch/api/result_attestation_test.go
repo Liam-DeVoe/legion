@@ -297,7 +297,12 @@ func TestAJobsMatrixLegIsItsLegOnTheIssueRoute(t *testing.T) {
 	uploadDocument(t, rig.handler, "/api/v1/issues/"+key, "verification.md",
 		ciCheckBlock("m1", `negative_control="`+ciJobNegativeControl+`" ci_check="go-checks (linux)"`))
 	rig.github.setCheckRun(98, "go-checks (linux)", ciJobCommit)
-	token := rig.jobToken(func(answer *brokertoken.Introspection) { answer.CI.CheckRunID = "98" })
+	// The run pushed the new issue's own branch: a job's result counts only on a branch of its issue.
+	token := rig.jobToken(func(answer *brokertoken.Introspection) {
+		answer.CI.CheckRunID = "98"
+		answer.CI.Ref = "refs/heads/legion/" + key
+		answer.CI.WorkflowRef = ciJobRepository + "/.github/workflows/ci-results.yaml@refs/heads/legion/" + key
+	})
 	response := rig.post(t, key, token, jobResultOf("m1", "pass"))
 	result, _ := recordedWithStatement(t, "the job's result for m1", response)
 	if result.Attestation == nil {

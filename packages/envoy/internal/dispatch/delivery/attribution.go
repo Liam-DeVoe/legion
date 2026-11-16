@@ -196,6 +196,32 @@ func uniqueKeys(text string) []string {
 	return appendUnique([]string{}, issueKeyCandidate.FindAllString(text, -1)...)
 }
 
+// BranchOfIssue reports whether branch belongs to issueKey, which is what decides whether a CI
+// job's result of a push of that branch counts for that issue (api/results.go,
+// refuseBranchOfAnotherIssue; api/results_comparison.go, headBases). A branch belongs to an issue
+// when it is the head branch of an open or merged pull request attributed to that issue
+// (pull_request_heads), or when the attribution rule above gives the branch's name to the issue:
+// source 3, "a key in its head branch name, whatever its case", read as attributionInputsFrom
+// reads BranchKeys and joined to the issues Dispatch holds as attributionCandidates joins them,
+// the first such key in the name's order deciding. That is the part of the rule that needs only
+// the branch: the links, the title, the body and the commit messages are a pull request's.
+func BranchOfIssue(ctx context.Context, q refs.Queryer, issueKey, branch string) (bool, error) {
+	var belongs bool
+	if err := q.QueryRow(ctx, `
+		select exists (
+			select 1 from pull_request_heads
+			where issue_key = $1 and head_ref = $2 and state in ('open', 'merged')
+		) or coalesce((
+			select b.key = $1 from unnest($3::text[]) with ordinality b(key, n)
+			join issues i on i.key = b.key
+			order by b.n limit 1
+		), false)
+	`, issueKey, branch, uniqueKeys(strings.ToUpper(branch))).Scan(&belongs); err != nil {
+		return false, fmt.Errorf("read whether branch %q belongs to %s: %w", branch, issueKey, err)
+	}
+	return belongs, nil
+}
+
 func appendUnique(list []string, values ...string) []string {
 	for _, value := range values {
 		if !slices.Contains(list, value) {

@@ -388,7 +388,9 @@ Each item below names a task and where its code is, then notes on it.
     the commit is the run's (`403 COMMIT_NOT_THE_RUNS`) and the run a push of a branch (`403 REF_NOT_A_BRANCH`);
     the check is one CI proves whose `ci_check` is the name of the token's check run (`409 CHECK_NOT_THIS_JOBS`);
     GitHub names that check run at the run's commit (`githubapp.Client.CheckRun`, read through the project route's cache, `403 CHECK_RUN_NOT_THE_RUNS`, or `503 CHECK_RUN_UNREADABLE` where GitHub does not answer);
-    and the run's repository is the one the check's issue resolves to (`403 REPOSITORY_NOT_THE_ISSUES`).
+    the run's repository is the one the check's issue resolves to (`403 REPOSITORY_NOT_THE_ISSUES`);
+    and the branch the run pushed belongs to the issue the result is recorded on (`delivery.BranchOfIssue`, `403 BRANCH_NOT_THE_ISSUES`): the head branch of one of its pull requests, or a branch whose name gives it to the issue by the attribution rule's branch source.
+    The results read compares a check only with the heads of the branches that belong to its issue, whatever a stored row names.
     Its row takes role `ci`, the check run's name as its run, the check's surface and negative control, the token's session and commit, `observed` kept by the project route's rule (`cutObserved`, below), and `branch`, the run's ref without `refs/heads/` (`ciJobCheckResult`).
     It also stores `attestation`, the in-toto Statement v1 of the run, which `api/result_attestation.go` builds for both results routes (`attestedResult.statement`): predicate type `check-block-result/v1`, `check` the check's block reference, `procedure_digest` the row's `check_sha256`, `test.job` the check's `ci_check`, and the job, the leg, the run, the recorder and `recorded_at` as the project's route writes them.
     A role's row and a derived result carry none.
