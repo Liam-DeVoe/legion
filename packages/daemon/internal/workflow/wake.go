@@ -99,10 +99,11 @@ const (
 	wakeHeldForRelease = 15 * time.Minute
 )
 
-// WakeTask is the one task a woken role is given, the sentence its first turn reads before
-// anything else: which wake brought its pod back and what that wake was about. R6 asks for
-// exactly one such task or message per wake, and the outbox row that carries it is written in the
-// wake's own transaction, so a wake that commits has its task and one that does not has neither.
+// WakeTask is the one task a woken role is given: which wake brought its pod back and what that
+// wake was about. A message Envoy kept for the role can reach the woken session as a card before
+// this task does, so the role message sentence says so. R6 asks for exactly one such task or
+// message per wake, and the outbox row that carries it is written in the wake's own transaction,
+// so a wake that commits has its task and one that does not has neither.
 //
 // The texts of the two message wakes hold whether or not Envoy stored the message. The wake
 // report does not say whether it did, so each text says what happens to a message Envoy stored
@@ -117,8 +118,10 @@ func WakeTask(kind, detail string) string {
 	case pods.WakeRoleMessage:
 		return preamble + "The wake is a message somebody published to your role topic (" + detail +
 			") while your pod was gone. A message that Envoy kept for your role reaches this session, " +
-			"for one hour after Envoy kept it. A message that Envoy did not keep, such as one sent with " +
-			"keep: false, does not reach you, and its sender must send it again."
+			"for one hour after Envoy kept it. It comes as an Envoy card that shows kept_at, possibly " +
+			"before this task. When that hour ends before a session takes the message, Envoy drops it " +
+			"and tells its sender. A message that Envoy did not keep, such as one sent with keep: false, " +
+			"does not reach you, and its sender must send it again."
 	case pods.WakeAgentMessage:
 		return preamble + "The wake is a message somebody sent to your session (" + detail +
 			") while your pod was gone. A message that Envoy stored for your session reaches this session, " +

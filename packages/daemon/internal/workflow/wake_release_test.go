@@ -285,6 +285,7 @@ func TestAWokenRoleReadsATrueWakeText(t *testing.T) {
 		holds(t, task,
 			"The wake is a message somebody published to your role topic ("+token+") while your pod was gone.",
 			"A message that Envoy kept for your role reaches this session, for one hour after Envoy kept it.",
+			"When that hour ends before a session takes the message, Envoy drops it and tells its sender.",
 			"A message that Envoy did not keep, such as one sent with keep: false, does not reach you, and its sender must send it again.")
 	})
 

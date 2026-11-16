@@ -5,10 +5,10 @@ body: |-
   the claim released, for at most 15 minutes after the report, and then drops it with one
   warning. A wake after a cancelled release, whose start is already queued, takes nothing. The
   task of a role woken by a message says what reaches it when Envoy stored or kept the message,
-  and that a message Envoy did not store or keep must be sent again; it no longer says that
-  nothing kept the message. A role wake report of another project decodes to no fact and writes
-  no `processed_events` row. A waiting retry logs `an intake fact waits and is applied again
-  after its delay` at info.
+  and that a message Envoy did not store or keep must be sent again; the task of a role woken by
+  a message to its session no longer says that nothing kept the message. A role wake report of
+  another project decodes to no fact and writes no `processed_events` row. A waiting retry logs
+  `an intake fact waits and is applied again after its delay` at info.
 time: 2026-11-16T18:39:58Z
 custom:
     Issue: pr4194

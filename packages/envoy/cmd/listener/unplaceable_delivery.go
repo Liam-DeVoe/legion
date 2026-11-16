@@ -203,7 +203,7 @@ func noRecordAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMe
 // delivery, or metadata that does not parse - a report not stored is logged and the message is
 // acknowledged, since the stream sends it no more.
 func reportNoRecordWake(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
-	err := storeAgentWake(cfg.client, sessionID)
+	err := storeAgentWake(cfg.client, cfg.logger, sessionID)
 	if err == nil {
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
 			sessionID:    sessionID,
