@@ -83,14 +83,9 @@ func keptService(reader natscred.TokenReader) nats.Option {
 func keepAlongside(keeper natscred.Keeper) nats.Option {
 	return func(o *nats.Options) error {
 		ctx, cancel := context.WithCancel(context.Background())
-		started := false
 		connected, closed := o.ConnectedCB, o.ClosedCB
 		o.ConnectedCB = func(nc *nats.Conn) {
-			// nats.go runs its callbacks one at a time on one goroutine, so started needs no lock.
-			if !started {
-				started = true
-				go keeper.Keep(ctx, nc)
-			}
+			go keeper.Keep(ctx, nc)
 			if connected != nil {
 				connected(nc)
 			}

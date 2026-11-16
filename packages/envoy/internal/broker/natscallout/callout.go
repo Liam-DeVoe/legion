@@ -89,8 +89,8 @@ const pendingBytes = 64 << 20
 // only once the callout answers; the server gives up on its own at its authorization timeout,
 // nats-server's default of 2 s (server/const.go, AUTH_TIMEOUT), which the hub takes by naming
 // none. So the decision gets 1.5 s, and the dial, the request's trip here and the answer's trip
-// back get the other 0.5 s. A decision that runs past it is answered with a refusal naming the
-// step it was in, never with a late answer.
+// back get the other 0.5 s. A decision that runs past it is refused naming the step it was in,
+// whatever it decided, so no connection is admitted past its budget.
 //
 // It is a var so a test can raise it: at 2.5 s the same blocking stub makes a client fail its
 // connect, which is the control this budget exists for (deadline_test.go). A replica reads it once,
@@ -183,9 +183,10 @@ type replicaSettings struct {
 	maxWaiting, maxRefusing int
 }
 
-// livenessTick is how often the heartbeat tries to take a decision slot, and livenessBound how
-// old its last beat may be before the service reads as stalled. Vars so a test can make a stall
-// read stale in milliseconds (liveness_test.go).
+// livenessTick is how often the heartbeat tries to take a decision slot, and the counter and the
+// reporter run (countWhileRunning, reportWhileRunning); livenessBound how old the heartbeat's last
+// beat may be before the service reads as stalled. Vars so a test can make a stall read stale in
+// milliseconds (liveness_test.go).
 var (
 	livenessTick  = time.Second
 	livenessBound = 10 * time.Second
@@ -251,15 +252,15 @@ func Start(ctx context.Context, settings Settings, deps Deps) (*Service, error) 
 }
 
 func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (*Service, error) {
-	issuer, err := readSeed("BROKER_NATS_ISSUER_SEED_FILE", settings.IssuerSeedFile, nkeys.PrefixByteAccount)
+	issuer, err := config.ReadSeedFile("BROKER_NATS_ISSUER_SEED_FILE", settings.IssuerSeedFile, nkeys.PrefixByteAccount)
 	if err != nil {
 		return nil, err
 	}
-	xkey, err := readSeed("BROKER_NATS_XKEY_SEED_FILE", settings.XKeySeedFile, nkeys.PrefixByteCurve)
+	xkey, err := config.ReadSeedFile("BROKER_NATS_XKEY_SEED_FILE", settings.XKeySeedFile, nkeys.PrefixByteCurve)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := readSeed("BROKER_NATS_SEED_FILE", settings.SeedFile, nkeys.PrefixByteUser); err != nil {
+	if _, err := config.ReadSeedFile("BROKER_NATS_SEED_FILE", settings.SeedFile, nkeys.PrefixByteUser); err != nil {
 		return nil, err
 	}
 	// The service's own connection is the bus's: its seed by file, its reconnects, its silent-cut
@@ -416,9 +417,10 @@ func (s *Service) close() {
 	<-s.beaten
 	<-s.counted
 	// nats.go's count of the requests it dropped past the pending limits is read while the
-	// subscription still answers it: once the subscription has closed, Dropped answers
-	// ErrBadSubscription (nats.go v1.53.1, nats.go:5832), and what it dropped since the counter's
-	// last tick would never reach the metric.
+	// subscription still answers it, so what it dropped since the counter's last tick reaches the
+	// metric. What it drops during the drain itself is not counted: once the drain has ended the
+	// subscription answers Dropped with ErrBadSubscription (nats.go v1.53.1, nats.go:5832-5833).
+	// The hub logs each such client's authorization timeout.
 	s.countDrops()
 	if s.conn.IsConnected() {
 		reconnects := s.conn.Stats().Reconnects
@@ -480,10 +482,6 @@ func (s *Service) Ready(ctx context.Context) error {
 	}
 }
 
-// readSeed is config.ReadSeedFile, the one reader of the auth service's seeds, which the broker's
-// start also runs (config.loadNATSCallout).
-var readSeed = config.ReadSeedFile
-
 // answerer answers one authorization request.
 type answerer struct {
 	issuer, xkey nkeys.KeyPair
@@ -521,9 +519,9 @@ func (a *answerer) decideWithin(ctx context.Context) settle {
 		}
 		decision, err := a.decide(ctx, a.deps, a.services, req)
 		refused := asRefusal(err)
-		// A decision that ran past the deadline is refused, whatever it decided: the client is at
-		// or past the point its connect gives up, and admitting it there would hand the server a
-		// user for a connection that is no longer waiting.
+		// A decision that ran past the deadline is refused, whatever it decided: the budget is all
+		// of the client's two seconds that the dial and the two trips do not need (decideBudget),
+		// so admitting it there could hand the server a user for a connection no longer waiting.
 		if refused == nil && ctx.Err() != nil {
 			refused = budgetRefusal("the answer")
 		}
@@ -592,7 +590,7 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 		return
 	}
 	req := Request{
-		UserNkey: claims.UserNkey, ServerID: claims.Server.ID, ServerXKey: serverXKey,
+		UserNkey: claims.UserNkey, ServerID: claims.Server.ID,
 		Nonce: claims.ClientInformation.Nonce, Token: claims.ConnectOptions.Token, Sig: claims.ConnectOptions.SignedNonce,
 		User: claims.ConnectOptions.Username, Password: claims.ConnectOptions.Password, Host: claims.ClientInformation.Host,
 	}

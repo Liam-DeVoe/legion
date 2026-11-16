@@ -35,7 +35,9 @@ const pastBoundsDetail = "past both bounds of this replica"
 // answer to the counter: each drop is an atomic add, and each reason's first detail a
 // compare-and-swap, so a drop takes neither a lock nor a write. The counter (countDrops) moves them
 // into broker_nats_callout_dropped_total and into the service's dropped tally, which the reporter
-// logs as it logs refusals and failures (report). It holds nothing past the counter's next tick.
+// logs as it logs refusals and failures (report). Its counts move at the counter's next tick; a
+// detail noted after the counter took its reason's count waits for that reason's next count, and
+// is not logged if none comes before Close.
 type drops struct {
 	// pending counts each reason's drops since the counter last ran.
 	pending [dropReasons]atomic.Int64
@@ -48,8 +50,8 @@ type drops struct {
 
 // add counts one drop for reason, and reports whether the drop's detail is wanted: whether none
 // waits for the counter yet for that reason. A caller builds the detail, and gives it to note, only
-// then, so a flood of drops builds at most one string a reason a tick rather than one a drop; two
-// drops at once can both be told yes, and the second's note keeps nothing.
+// then, so a flood of drops builds one string a reason a tick rather than one a drop, save for
+// drops at once: each of them can be told yes, and only the first note is kept.
 func (d *drops) add(reason int) bool {
 	d.pending[reason].Add(1)
 	return d.first[reason].Load() == nil

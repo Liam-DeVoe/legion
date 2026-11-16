@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// logInterval is the least time between two log lines of one kind: the first event after a quiet
-// interval is logged at the reporter's next tick, and those that follow it inside the interval are
-// counted and wait for the next line.
+// logInterval is the least time between two log lines of one kind while the replica runs: the
+// first event after a quiet interval is logged at the reporter's next tick, and those that follow
+// it inside the interval are counted and wait for the next line. A closing replica's last line
+// comes whenever Close does (report's final).
 const logInterval = time.Minute
 
 // tally counts events by key between two log lines, and keeps the detail of each key's first. It

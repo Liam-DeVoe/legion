@@ -169,9 +169,9 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 	}
 }
 
-// A hub with no auth service sends no nonce, so the probe cannot sign a session's proof for it: it
-// says so, names the credentials such a hub does take, and exits 1, since the hub refused
-// nothing. The control is the probe printing brokerclient's error without that hint.
+// A hub that sends no nonce, as this plain one does, gives the probe nothing to sign a session's
+// proof over: it says so, names the credentials such a hub does take, and exits 1, since the hub
+// refused nothing. The control is the probe printing brokerclient's error without that hint.
 func TestNatsprobeNamesTheCredentialsAHubWithNoAuthServiceTakes(t *testing.T) {
 	_, url := testnats.Start(t)
 	stub := newBroker(t)

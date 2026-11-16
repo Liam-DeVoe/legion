@@ -149,8 +149,8 @@ func TestAWaitingRequestIsRefusedWhenItsBudgetIsSpent(t *testing.T) {
 }
 
 // A request whose wait for a slot spent its budget is refused naming the wait, not the step its
-// decision would have reached. One slot is held almost to its own deadline by a decision that
-// sleeps and then introspects; the request behind it gets the slot with tens of milliseconds left.
+// decision would have reached. The one slot is held by a decision that waits until the waiter's
+// refusal is counted, so the request behind it spends its whole budget waiting for the slot.
 // Started, its 200 ms introspection would be cancelled and named; it is refused naming the wait
 // instead, and the broker is never asked about its token.
 func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
@@ -637,7 +637,7 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 }
 
 // A request nats.go drops on arrival, past the subscription's pending limits (start), never reaches
-// deliver, and is counted all the same: the reporter reads the subscription's own count of them
+// deliver, and is counted all the same: the counter reads the subscription's own count of them
 // (Subscription.Dropped) into broker_nats_callout_dropped_total under pending_limit. Both bounds
 // are zero here, so the limit is one request; delivery of the first is held, and the two sent
 // behind it find the limit full.

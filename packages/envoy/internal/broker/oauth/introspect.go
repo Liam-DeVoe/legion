@@ -33,8 +33,8 @@ import (
 // A token whose HMAC is not the broker's is answered not live before anything is read: the
 // provider's own HMAC strategy (codeStrategy, built in New) checks it, as ValidateAccessToken ends
 // by doing (authelia strategy_hmac.go:125-141), with no prefix to trim since the broker's tokens
-// carry none (compose.NewOAuth2HMACStrategy). The auth service introspects every token a NATS
-// connection presents, so a forged one must cost the broker no database query.
+// carry none (compose.NewOAuth2HMACStrategy). The auth service introspects every session token a
+// NATS connection presents, so a forged one must cost the broker no database query.
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
 	if p.strategy.Enigma.Validate(ctx, token) != nil {
 		return oauthwire.Introspection{}, nil

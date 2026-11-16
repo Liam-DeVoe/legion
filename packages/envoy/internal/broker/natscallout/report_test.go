@@ -83,11 +83,9 @@ func TestTheDropMetricMovesWhileTheLogIsStalled(t *testing.T) {
 	withLiveness(t, 20*time.Millisecond, 10*time.Second)
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
-	log := &stalledLog{released: make(chan struct{})}
-	log.stalled.Store(true)
 	registry := metrics.New()
-	startService(t, url, keys, Deps{Log: slog.New(slog.NewTextHandler(log, nil)), Metrics: NewMetrics(registry)}, Decide)
-	t.Cleanup(func() { close(log.released) })
+	log := startWithStalledLog(t, url, keys, Deps{Metrics: NewMetrics(registry)})
+	log.stalled.Store(true)
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		go func() {

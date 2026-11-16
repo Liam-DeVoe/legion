@@ -385,11 +385,13 @@ const systemAccountPrefix = "$SYS"
 // client only the publish of $SYS.REQ.USER.AUTH, so a grant naming a system subject would hand a
 // connection a subscribe the server does not take away.
 func NamesSystemSubject(p Permissions) (string, bool) {
-	for _, entry := range slices.Concat(p.Publish, p.Subscribe) {
-		subject, _, _ := strings.Cut(strings.TrimSpace(entry), " ")
-		first, _, _ := strings.Cut(subject, ".")
-		if first == systemAccountPrefix || first == "*" || first == ">" {
-			return entry, true
+	for _, entries := range [...][]string{p.Publish, p.Subscribe} {
+		for _, entry := range entries {
+			subject, _, _ := strings.Cut(strings.TrimSpace(entry), " ")
+			first, _, _ := strings.Cut(subject, ".")
+			if first == systemAccountPrefix || first == "*" || first == ">" {
+				return entry, true
+			}
 		}
 	}
 	return "", false

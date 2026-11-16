@@ -47,9 +47,10 @@ type Deps struct {
 	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
-	// Log is where the service's reporter writes, at most once a minute for each kind, the
-	// refusals, failed answers and drops it counted, each kind's first with the connection's host,
-	// never its credential (reportWhileRunning). Nil logs nothing.
+	// Log is where the service's reporter writes the refusals, failed answers and drops it
+	// counted: a line for each kind at most once a minute and one more as the replica closes, each
+	// key's first with the connection's host, never its credential (reportWhileRunning). Nil logs
+	// nothing.
 	Log *slog.Logger
 	// Metrics is the registry the service's decisions are counted on (NewMetrics); nil counts
 	// nothing.
@@ -66,9 +67,8 @@ func (d Deps) now() time.Time {
 // Request is what the server asks about one connection, read from its authorization request.
 type Request struct {
 	// UserNkey is the user key the server made for this connection, which the answer's user
-	// must name; ServerID is the server, which the answer's audience must name; ServerXKey is
-	// the server's curve key, when it sealed the request.
-	UserNkey, ServerID, ServerXKey string
+	// must name; ServerID is the server, which the answer's audience must name.
+	UserNkey, ServerID string
 	// Nonce is the nonce the server sent this connection, which a session's proof signs.
 	Nonce string
 	// Token and Sig are the CONNECT's token and signature fields: a session's access token

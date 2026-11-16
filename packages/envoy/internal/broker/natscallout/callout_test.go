@@ -231,9 +231,9 @@ func TestAnUnsealedRequestIsRefusedEvenWhenTheHubHasGivenUpOnIt(t *testing.T) {
 }
 
 // A session's own grant refuses it the authorization subject, and the guard that makes that so is
-// the service's, at both of its places (decide and admit): the control is a stand-in holding the
-// service's keys that answers with a grant naming $SYS.>, past both, and the same subscribe is
-// served and receives the next client's request.
+// the service's, in admit: the control is a stand-in holding the service's keys that answers with
+// a grant naming $SYS.>, past it, and the same subscribe is served and receives the next client's
+// request.
 func TestASessionCannotSubscribeTheAuthSubject(t *testing.T) {
 	for _, row := range []struct {
 		name   string

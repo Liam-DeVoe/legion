@@ -6,9 +6,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A drop's detail is built only when it would be logged: add asks for it while no detail waits for
-// the next log line, and not once one does, so a flood of drops between two lines builds one
-// string rather than one a drop. Every drop is counted all the same.
+// A drop's detail is built only while none waits for the counter: add asks for it while no detail
+// of its reason is held, and not once one is, so a flood of drops builds one string a reason a
+// tick rather than one a drop. Every drop is counted all the same.
 func TestADropAsksForItsDetailOnlyWhenNoneWaitsToBeLogged(t *testing.T) {
 	d := &drops{}
 	require.True(t, d.add(dropHubGaveUp), "the first drop was not asked for its detail")

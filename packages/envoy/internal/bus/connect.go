@@ -80,16 +80,6 @@ func detectSilentCuts(o *nats.Options) error {
 // retries, in place of the second every other connection waits.
 const reconnectJitterImmediate = 50 * time.Millisecond
 
-// reconnectImmediately is the nats.Option WithImmediateReconnect adds to every connection of a
-// client: no wait between attempts, and a jitter small enough that the client is back before the
-// clients that wait on it are.
-func reconnectImmediately(o *nats.Options) error {
-	o.ReconnectWait = 0
-	o.ReconnectJitter = reconnectJitterImmediate
-	o.ReconnectJitterTLS = reconnectJitterImmediate
-	return nil
-}
-
 // allOf applies each option that is not nil, in order.
 func allOf(options ...nats.Option) nats.Option {
 	return func(o *nats.Options) error {

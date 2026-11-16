@@ -33,7 +33,7 @@ import (
 // daemonAccount is the service account the rig's service tokens name, listed as a daemon.
 const daemonAccount = "system:serviceaccount:example-ns:example-daemon"
 
-// lockedBuffer is the service's log, which its answering goroutines write while a test reads it.
+// lockedBuffer is the service's log, which its reporter writes while a test reads it.
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

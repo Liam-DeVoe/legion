@@ -62,7 +62,7 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 		settings = append(settings, detectSilentCuts)
 	}
 	if o.immediateReconnect {
-		settings = append(settings, reconnectImmediately)
+		settings = append(settings, nats.ReconnectWait(0), nats.ReconnectJitter(reconnectJitterImmediate, reconnectJitterImmediate))
 	}
 	if len(settings) == 1 {
 		return credential

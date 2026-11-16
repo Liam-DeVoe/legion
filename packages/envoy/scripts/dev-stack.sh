@@ -627,8 +627,9 @@ cat >"$FAKE_SECRETS_FILE" <<EOF
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
-# start_broker starts one broker logging to $1 and sets started_pid. Every broker of a run is the
-# same process on the same database, as two replicas of one deployment are.
+# start_broker starts one broker logging to $1 and sets started_pid. Every broker of a run is a
+# process of the same binary and settings on the same database, as two replicas of one deployment
+# are.
 started_pid=""
 start_broker() {
   : >"$1"
