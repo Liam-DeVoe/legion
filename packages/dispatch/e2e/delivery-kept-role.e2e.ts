@@ -12,13 +12,13 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * sjawhar/legion#2230. A role whose holder is gone because the Legion daemon released the role's
- * idle issue pod - its newest registry entry is `released`, and its issue still runs - is coming
- * back: the daemon resumes that session on the role's next wake. A person's message to it is kept
- * for that next holder: Dispatch publishes it on the role's topic through the listener's publish
- * route, which keeps it on the role's kept lane for an hour and wakes the role, and records the
- * attempt taken. The card says so, and offers no Retry. A role whose entry is not released keeps
- * the listener's no-holder failure, as it did before.
+ * cybermonklabs/legion#2230. A role whose holder is gone because the Legion daemon released the
+ * role's idle issue pod - its newest registry entry is `released`, and its issue still runs - is
+ * coming back: the daemon resumes that session on the role's next wake. A person's message to it
+ * is kept for that next holder: Dispatch publishes it on the role's topic through the listener's
+ * publish route, which keeps it on the role's kept lane for an hour and wakes the role, and
+ * records the attempt taken. The card says so, and offers no Retry. A role whose entry is not
+ * released keeps the listener's no-holder failure, as it did before.
  *
  * The sentence is spelt out here rather than imported from the SPA, so a change to the SPA's
  * wording fails a row here rather than passing with it.

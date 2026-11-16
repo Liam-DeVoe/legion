@@ -375,7 +375,7 @@ jobs:
       envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_infra_go }}
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
-      text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.text_checks }}
+      text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.text_checks }}
       # Seven slow suites, gated as the comment above `envoy_go` says.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.envoy_go_race_api || 'false' }}
@@ -2727,83 +2727,6 @@ jobs:
               - '.github/actions/architecture-check/check.sh'
               # That same step judges the notes at the action's default path.
               - '.dispatch/architecture/**'
-            # The text checks of the three Go modules, the Dispatch API's eight static source
-            # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
-            # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
-            # packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-            # which the three Go lanes leave out of their own runs, those checks' fifteen tests
-            # by name, and those two pins by name, which the daemon-go plain step skips.
-            # packages/envoy stays a wide
-            # root: file_copy_test.go walks every .go file under it (infra included), the API's
-            # guards and one_expression_guard_test.go walk every non-test .go file of the
-            # module, and the guard step compiles that package's whole test closure, which
-            # reaches testdata and goldens across the module.
-            # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
-            # the .go files the supervise pins type-check from source - internal/supervise and
-            # every package of this module it imports - the prompt below and the committed
-            # copies its text checks hold to the texts they copy, so the module's other files -
-            # its .sql, .json and .md - are no input of this job and no pattern here matches them.
-            text_checks:
-              - *ci_router
-              - '.github/workflows/ci-job-text-checks.yaml'
-              - *go_workspace
-              - 'packages/envoy/**'
-              - 'packages/daemon/**/*.go'
-              # The prompt design_approved_wake_test.go:33-39 holds the resume's wake to, the copy
-              # of the phrase it reads in place of importing internal/workflow (:23-24), and the
-              # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
-              - 'packages/daemon/internal/prompts/roles/architect-root.md'
-              - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
-              - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-              # The six copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
-              # reads to hold them to the texts themselves: the waiting line's four, the way
-              # back's (way_back_doc_test.go:45) and the troubleshooting page's refusal table's
-              # (troubleshooting_refusals_doc_test.go:36), each committed beside the package whose
-              # own check reads it. They are .txt files, which the module's `**/*.go` above does
-              # not match.
-              - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
-              - 'packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt'
-              - 'packages/daemon/cmd/legion/waiting_line_block_extract.txt'
-              - 'packages/daemon/internal/api/waiting_line_contract_extract.txt'
-              - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
-              - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
-              # The shipped texts the waiting line's four copies are held to, and the ban over
-              # them, every one read by waiting_line_texts_test.go:390; troubleshooting.md is also
-              # the page the refusal table's copy is held to. The way back's guide is
-              # docs/kubernetes.md, below.
-              - 'AGENTS.md'
-              - 'docs/site/src/content/docs/legion/concepts.md'
-              - 'docs/site/src/content/docs/legion/running-legion.md'
-              - 'docs/site/src/content/docs/legion/troubleshooting.md'
-              - 'packages/contracts/src/legion-api.ts'
-              - 'packages/pi-legion/AGENTS.md'
-              - 'packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml'
-              - 'packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml'
-              - 'packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml'
-              - 'skills/legion-architect/references/acceptance.md'
-              - 'skills/legion-controller/references/admission.md'
-              - 'skills/legion-controller/references/wakes.md'
-              # The third page production_check_rule_test.go:30 holds to the production check's
-              # rule, beside AGENTS.md and concepts.md above.
-              - 'scripts/e2e/README.md'
-              # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
-              # and packages/daemon/internal/daemon hold their committed extracts to
-              # (internal/textcheck/claims_doc_test.go:36,43, reclaim_doc_test.go:44,167 and
-              # way_back_doc_test.go:68).
-              - 'docs/kubernetes.md'
-              # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
-              # holds the architect's prompt to (:33-39).
-              - 'skills/legion-architect/SKILL.md'
-              - 'skills/legion-architect/references/design-gate.md'
-              - 'skills/legion-architect/references/wake-routing.md'
-              # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the guard step
-              # compiles with the rest of that package.
-              - 'packages/contracts/fixtures/live/**'
-              # internal/dispatch/api/openapi_test.go:189-190, whose
-              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document
-              # at run time, through a path built relative to the test binary; the guard step
-              # compiles it with the rest of that package.
-              - 'packages/contracts/schemas/dispatch-openapi.json'
             # `go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
             # when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
             # not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
@@ -4399,6 +4322,83 @@ jobs:
               - '!**/*_test.go'
               # END generated
 
+            # The text checks of the three Go modules, the Dispatch API's eight static source
+            # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
+            # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
+            # packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
+            # which the three Go lanes leave out of their own runs, those checks' fifteen tests
+            # by name, and those two pins by name, which the daemon-go plain step skips.
+            # packages/envoy stays a wide
+            # root: file_copy_test.go walks every .go file under it (infra included), the API's
+            # guards and one_expression_guard_test.go walk every non-test .go file of the
+            # module, and the guard step compiles that package's whole test closure, which
+            # reaches testdata and goldens across the module.
+            # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
+            # the .go files the supervise pins type-check from source - internal/supervise and
+            # every package of this module it imports - the prompt below and the committed
+            # copies its text checks hold to the texts they copy, so the module's other files -
+            # its .sql, .json and .md - are no input of this job and no pattern here matches them.
+            text_checks:
+              - *ci_router
+              - '.github/workflows/ci-job-text-checks.yaml'
+              - *go_workspace
+              - 'packages/envoy/**'
+              - 'packages/daemon/**/*.go'
+              # The prompt design_approved_wake_test.go:33-39 holds the resume's wake to, the copy
+              # of the phrase it reads in place of importing internal/workflow (:23-24), and the
+              # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
+              - 'packages/daemon/internal/prompts/roles/architect-root.md'
+              - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
+              - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
+              # The six copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
+              # reads to hold them to the texts themselves: the waiting line's four, the way
+              # back's (way_back_doc_test.go:45) and the troubleshooting page's refusal table's
+              # (troubleshooting_refusals_doc_test.go:36), each committed beside the package whose
+              # own check reads it. They are .txt files, which the module's `**/*.go` above does
+              # not match.
+              - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
+              - 'packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt'
+              - 'packages/daemon/cmd/legion/waiting_line_block_extract.txt'
+              - 'packages/daemon/internal/api/waiting_line_contract_extract.txt'
+              - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
+              - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
+              # The shipped texts the waiting line's four copies are held to, and the ban over
+              # them, every one read by waiting_line_texts_test.go:390; troubleshooting.md is also
+              # the page the refusal table's copy is held to. The way back's guide is
+              # docs/kubernetes.md, below.
+              - 'AGENTS.md'
+              - 'docs/site/src/content/docs/legion/concepts.md'
+              - 'docs/site/src/content/docs/legion/running-legion.md'
+              - 'docs/site/src/content/docs/legion/troubleshooting.md'
+              - 'packages/contracts/src/legion-api.ts'
+              - 'packages/pi-legion/AGENTS.md'
+              - 'packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml'
+              - 'packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml'
+              - 'packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml'
+              - 'skills/legion-architect/references/acceptance.md'
+              - 'skills/legion-controller/references/admission.md'
+              - 'skills/legion-controller/references/wakes.md'
+              # The third page production_check_rule_test.go:30 holds to the production check's
+              # rule, beside AGENTS.md and concepts.md above.
+              - 'scripts/e2e/README.md'
+              # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
+              # and packages/daemon/internal/daemon hold their committed extracts to
+              # (internal/textcheck/claims_doc_test.go:36,43, reclaim_doc_test.go:44,167 and
+              # way_back_doc_test.go:68).
+              - 'docs/kubernetes.md'
+              # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
+              # holds the architect's prompt to (:33-39).
+              - 'skills/legion-architect/SKILL.md'
+              - 'skills/legion-architect/references/design-gate.md'
+              - 'skills/legion-architect/references/wake-routing.md'
+              # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the guard step
+              # compiles with the rest of that package.
+              - 'packages/contracts/fixtures/live/**'
+              # internal/dispatch/api/openapi_test.go:189-190, whose
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document
+              # at run time, through a path built relative to the test binary; the guard step
+              # compiles it with the rest of that package.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
       # filter_verdicts above is one object over the three steps, the shape .github/scripts/ci-ok.jq
       # reads. A GitHub expression can build no object from three, so jq merges them here. A
       # name more than one step holds is a group written out again, which

@@ -111,6 +111,8 @@ export const realStackReasons: Record<string, string> = {
   "deep-links.e2e.ts": "document landings need the live room and server-settled anchored marks",
   "delivery-groups.e2e.ts": "grouping and the window's counts are the server's aggregation",
   "delivery-live.e2e.ts": "`sql` writes delivered as live frames",
+  "delivery-kept-role.e2e.ts":
+    "a kept attempt is what Dispatch stores from the fake Envoy's answer to its publish on a released role's topic, read back on a message and a mention; the registry read that decides it and the no-holder failure of a role not released are the server's",
   "delivery-queued.e2e.ts":
     "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; the refusal of an unknown session is the server's",
   "delivery.e2e.ts":

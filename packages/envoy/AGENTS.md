@@ -4978,14 +4978,20 @@ A role publish is the one of the three that is held back by the keep: it is hand
 It hands off only when all hold:
 
 - the source is not `envoy` (the broker's wake sends and the listener's own exceptions are not questions), and the send or publish body does not carry `"handoff": false`, which every publish the daemon makes carries (`notify.HTTPPublisher`), so a notice to a stopped agent is refused and held as before;
+
 - the Legion agent registry names the target: the session addressed, or for a role publish the role token's newest session (a role that is not a Legion workflow role's token never is);
+
+- that entry is not `released`: the daemon released that session's idle issue pod and resumes the same session on the wake the message raises, so the message is that session's wake, stored for it (a send) or kept for its role (a role publish), and never answered in its name (`legionagents.Entry.Released`).
+
 - for a role publish, that newest entry is `finished`: the role's issue has left the workflow — closed or done, parked, or its tree retired or lingering past its close — so no next holder of that role is coming (`legionagents.Entry.Finished`, written by the daemon's mirror from the issue's state it records and rewritten whenever that state changes).
   A role whose issue is still in the workflow hands off nothing: the gap between two phase workers of one issue and a pod being replaced both leave a role unclaimed while the registry still names the worker that stopped, so the message is kept on the role's kept lane for the next holder and answered `202 kept unclaimed` (INFRA-514), exactly as before the hand-off existed.
   A send addressed to a session id is handed off whether its issue is finished or not: that session has stopped, and the message is for it rather than for a role another session will take;
+
 - that session's project last said it answers: `project.<legion_project>` holds `answering: true`.
   Only the flag the project last stated counts, never the record's age: a daemon that stated `answering: true` and then stopped still gets its agents' messages, which JetStream holds until it reads them, and it answers or forwards them when it returns (spec v21, section 2.12 of dispatch://INFRA-204's plan).
   A project that stated `answering: false`, or never stated anything, keeps the refusal it had before hand-off.
   The record expires through nothing, so an operator who decommissions a daemon states `answering: false` once (`PUT /v1/legion/projects/<legion_project>`, or a boot with no `answers:` configuration, which states it);
+
 - `envoy_sessions` reports the session gone: it holds no record of it, or one past the gone horizon (`liveSessionEntry(..., notGone)`, read through this listener's cache to the bucket).
   A session that is live, and one past the live window but still inside the gone horizon, is not handed off:
   the first is answering now, perhaps on another listener, and the second is unresponsive and not gone (dispatch://INFRA-392) - it keeps its role claims and its stored messages and may answer in a moment, so the message stays the agent's rather than being answered in its name from a conversation it has moved past.
