@@ -118,12 +118,12 @@ func heldDeps(t *testing.T, tokens map[string]platformToken, exchange map[string
 	return deps
 }
 
-// requireRefused requires err to be a refusal of a service whose reason begins reason.
-func requireRefused(t *testing.T, err error, reason string) {
+// requireRefused requires err to be a refusal under label whose reason begins reason.
+func requireRefused(t *testing.T, err error, label, reason string) {
 	t.Helper()
 	var refused *Refusal
 	require.True(t, errors.As(err, &refused), "the connection was not refused: %v", err)
-	require.Equal(t, credentialService, refused.Kind)
+	require.Equal(t, label, refused.Label)
 	require.True(t, strings.HasPrefix(refused.Reason, reason), "%q does not begin %q", refused.Reason, reason)
 }
 
@@ -237,7 +237,7 @@ func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 	began = time.Now()
 	_, err = Decide(t.Context(), deps, services, serviceRequest("slow-daemon-token"))
 	took = time.Since(began)
-	requireRefused(t, err, "project access not yet known: SLOW")
+	requireRefused(t, err, labelProjectNotKnown, "project access not yet known: SLOW")
 	require.Less(t, took, 100*time.Millisecond, "the SLOW daemon's refusal took %s: it waited on Dispatch", took)
 }
 
@@ -281,7 +281,7 @@ func TestAnAccountWithNoExchangeEntryIsRefused(t *testing.T) {
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}}, dispatch, services)
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("slow-daemon-token"))
-	requireRefused(t, err, "account has no exchange entry: "+slowDaemonAccount)
+	requireRefused(t, err, labelNoExchangeEntry, "account has no exchange entry: "+slowDaemonAccount)
 }
 
 // A project the exchange list gives an account and Dispatch holds no answer for, because it holds
@@ -294,7 +294,7 @@ func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB", "GONE"}}, dispatch, services)
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
-	requireRefused(t, err, "project not found: GONE")
+	requireRefused(t, err, labelProjectNotFound, "project not found: GONE")
 }
 
 // The connection is held to what the token exchange holds the account's token to: the person its
@@ -323,7 +323,7 @@ func TestAProjectItsPersonCannotSeeRefusesTheConnection(t *testing.T) {
 	require.Equal(t, want, decision.Grant)
 
 	_, err = Decide(t.Context(), deps, services, serviceRequest("unseen-token"))
-	requireRefused(t, err, "project not visible to the account's person: PRIV2")
+	requireRefused(t, err, labelProjectNotVisible, "project not visible to the account's person: PRIV2")
 }
 
 // An exchange entry that names no project (the shared public-session account's form) gives the
@@ -336,7 +336,7 @@ func TestAnEntryNamingNoProjectIsRefusedByName(t *testing.T) {
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, slowDaemonAccount: nil}, dispatch, services)
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("empty-token"))
-	requireRefused(t, err, "account's exchange entry names no project to hold it to: "+slowDaemonAccount)
+	requireRefused(t, err, labelNotHeldToProjects, "account's exchange entry names no project to hold it to: "+slowDaemonAccount)
 }
 
 // Through the auth service, Dispatch's grant may write the private-projects bucket and a

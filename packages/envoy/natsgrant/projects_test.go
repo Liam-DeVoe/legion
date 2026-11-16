@@ -431,6 +431,27 @@ func TestWithinProjectsReadsAScopeAsASet(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
+// A deny list only narrows, so the grant held to a scope keeps the deny lists it was handed, entry
+// for entry: dropping one would let through what the grant's holder meant to refuse. The allow
+// lists are held as without them, and the deny lists handed in are not changed.
+func TestWithinProjectsKeepsTheDenyListsItIsHanded(t *testing.T) {
+	without, err := natsgrant.WithinProjects(natsgrant.Daemon(), pubScope)
+	require.NoError(t, err)
+
+	grant := natsgrant.Daemon()
+	grant.PublishDeny = []string{"notifications.dispatch.>", "$JS.API.CONSUMER.DELETE.>"}
+	grant.SubscribeDeny = []string{"notifications.dispatch.issue.PRIV.>"}
+	got, err := natsgrant.WithinProjects(grant, pubScope)
+	require.NoError(t, err)
+	require.Equal(t, without.Publish, got.Publish)
+	require.Equal(t, without.Subscribe, got.Subscribe)
+	require.Equal(t, []string{"notifications.dispatch.>", "$JS.API.CONSUMER.DELETE.>"}, got.PublishDeny)
+	require.Equal(t, []string{"notifications.dispatch.issue.PRIV.>"}, got.SubscribeDeny)
+
+	got.PublishDeny[0] = "changed"
+	require.Equal(t, "notifications.dispatch.>", grant.PublishDeny[0], "the result shares no deny list with the grant handed in")
+}
+
 // Narrowing a grant changes no other holder's: the grant handed in keeps every entry, and the
 // daemon's static grant is still, element for element, what the hub rendered before this package
 // (the merge-base fixture), so a deployment that never runs WithinProjects keeps today's daemon

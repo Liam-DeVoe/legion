@@ -220,6 +220,10 @@ func TestConnectionsSurviveTheAuthServiceStoppingUntilTheirUserExpires(t *testin
 	defer pub.Close()
 	receives := func(payload string) {
 		t.Helper()
+		// A round trip on nc first: after a reconnect nats.go has written the subscription again,
+		// but the server reads nc's socket and pub's on goroutines of their own, so without it the
+		// publish can reach the server before the subscription does and go to no one.
+		require.NoError(t, nc.Flush())
 		require.NoError(t, pub.Publish(bus.DeliverSubject(a.id), []byte(payload)))
 		require.NoError(t, pub.Flush())
 		msg, err := own.NextMsg(5 * time.Second)
