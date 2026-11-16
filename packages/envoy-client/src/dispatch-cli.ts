@@ -17,10 +17,11 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { defined } from "./dispatch-commands/context";
-import type { ActiveDispatchConfig } from "./dispatch-config";
+import { specCheckResultCommand } from "./dispatch-commands/issues";
+import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
+import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -179,6 +180,55 @@ export function fitOutput(
 }
 
 /**
+ * `dispatch result --project`, a CI job's record of its result of a check of the spec files. The
+ * job writes with its own identity alone (`ownIdentityDispatch`): no host, no session, no
+ * envoy.json, no AskGate and no listener, since a job has none of them, and no bearer or
+ * person's sign-in, since the result must carry the identity the broker authenticated. The
+ * call's own argument check runs first, as for every command, so a refused call sends nothing.
+ * It prints the stored result as JSON and exits 0, or prints Dispatch's refusal as
+ * `<CODE>: <message>` and exits 1. No token reaches what it prints: the broker's and Dispatch's
+ * words name none, and the runner's endpoint is named by its variable.
+ */
+async function ownIdentityResult(
+  parsed: Extract<ParsedCommand, { readonly kind: "call" }>,
+  env: Readonly<Record<string, string>>,
+  io: DispatchCliIo,
+  print: (text: string) => void,
+  refuse: (text: string, code: number, tool?: string) => number
+): Promise<number> {
+  const resolution = ownIdentityDispatch(env);
+  const checked = await checkDispatchCall({
+    tool: parsed.tool,
+    args: parsed.args,
+    cwd: io.cwd,
+    env,
+    serverUrls: resolution.enabled ? dispatchServerUrls(resolution) : [],
+  });
+  if (checked.problems.length > 0) {
+    return refuse(new ToolInputError(parsed.tool, checked.problems).message, USAGE, parsed.tool);
+  }
+  if (parsed.dryRun) {
+    print(JSON.stringify(parsed.args, null, 2));
+    return OK;
+  }
+  if (!resolution.enabled) {
+    return refuse(`dispatch: ${resolution.error ?? resolution.notice}`, USAGE, parsed.tool);
+  }
+  const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch);
+  try {
+    print((await specCheckResultCommand(client, checked.args)).text);
+    return OK;
+  } catch (error) {
+    // A write that landed with its answer lost is done: its one line says to read it back.
+    if (error instanceof DispatchWriteLandedError) {
+      print(messageFor(error));
+      return OK;
+    }
+    return refuse(messageFor(error), REFUSED, parsed.tool);
+  }
+}
+
+/**
  * One `dispatch` command: parses `argv` into a Dispatch tool's arguments, runs that tool once as
  * the host session the environment names, and prints what the model reads. The host plugin sets
  * `DISPATCH_HOST`, `ENVOY_CONFIG_FILE` (the envoy.json it chose) and the session's id in the
@@ -195,6 +245,9 @@ export function fitOutput(
  * Code's rule. Recomputing the file from a shell's other variables would follow ones a launcher or
  * an outer session left there. Memory a long-lived host kept across calls lives in the session's
  * state directory.
+ *
+ * The one call that runs as no session is a CI job's `dispatch result --project`
+ * (`ownIdentityResult`), which reads none of the above.
  */
 export async function runDispatchCli(
   argv: readonly string[],
@@ -259,6 +312,9 @@ export async function runDispatchCli(
           USAGE,
           parsed.tool
         );
+  }
+  if (parsed.tool === "dispatch_result" && parsed.args["project"] !== undefined) {
+    return await ownIdentityResult(parsed, env, io, print, refuse);
   }
 
   const hostName =

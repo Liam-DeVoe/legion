@@ -109,6 +109,61 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
+/** What a CI job sends to record its result of one check of the spec files: what it ran and what
+ *  it saw, and nothing about who the job is, which Dispatch reads from the job's credential. */
+export interface SpecCheckResultInput {
+  readonly commit: string;
+  readonly check: string;
+  readonly verdict: string;
+  readonly observed?: string | undefined;
+}
+
+/** One result a CI job stored for a check of the spec files, as Dispatch serves it: its place in
+ *  Dispatch's record order and an in-toto statement of the run. */
+export interface SpecCheckResult {
+  readonly id: string;
+  readonly seq: number;
+  readonly kind: string;
+  readonly attestation: {
+    readonly _type: string;
+    readonly subject:
+      | readonly { readonly name: string; readonly digest: Readonly<Record<string, string>> }[]
+      | null;
+    readonly predicateType: string;
+    readonly predicate: {
+      readonly project: string;
+      readonly check: string;
+      readonly procedure_digest: string;
+      readonly test: { readonly runner: string; readonly selector: string; readonly job: string };
+      readonly verdict: string;
+      readonly observed: string;
+      readonly job: string;
+      readonly leg: string;
+      readonly run: {
+        readonly repository: string;
+        readonly workflow_ref: string;
+        readonly ref: string;
+        readonly event_name: string;
+        readonly run_id: string;
+        readonly attempt: number;
+        readonly check_run_id: string;
+        readonly runner_environment: string;
+      };
+      readonly recorder: {
+        readonly session: string;
+        readonly principal: string;
+        readonly person: string;
+      };
+      readonly recorded_at: string;
+    };
+  };
+}
+
+/** `GET /api/v1/projects/{key}/results`'s answer. */
+export interface SpecCheckResults {
+  readonly results: readonly SpecCheckResult[] | null;
+}
+
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
   /**
@@ -1444,6 +1499,34 @@ export class DispatchClient {
     input: CheckResultRetractionInput
   ): Promise<CheckResultRetraction> {
     return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
+  }
+
+  /**
+   * Records one CI job's result of one check of `project`'s spec files, and answers the stored
+   * result. The body is built from the four members the route takes, so nothing else a caller's
+   * object carries reaches the wire: Dispatch takes who wrote the result from the credential.
+   * JSON leaves out an `observed` that is undefined.
+   */
+  async recordSpecCheckResult(
+    project: string,
+    input: SpecCheckResultInput
+  ): Promise<SpecCheckResult> {
+    const { commit, check, verdict, observed } = input;
+    const body = { commit, check, verdict, observed };
+    return this.#json("POST", ["api", "v1", "projects", project, "results"], body);
+  }
+
+  /** Every result CI jobs stored for checks of `project`'s spec files at `commit`, of `check`
+   *  alone when it is given, newest first in Dispatch's record order. */
+  async specCheckResults(
+    project: string,
+    commit: string,
+    check?: string
+  ): Promise<SpecCheckResults> {
+    return this.#json("GET", ["api", "v1", "projects", project, "results"], undefined, {
+      commit,
+      check,
+    });
   }
 
   async editAsk(id: string, input: EditAskInput): Promise<AskWithTrees> {
