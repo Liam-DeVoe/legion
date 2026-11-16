@@ -3,9 +3,7 @@ package specgraph
 import (
 	"bytes"
 	"cmp"
-	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"regexp"
 	"slices"
@@ -22,7 +20,7 @@ var compareCall = regexp.MustCompile(`spec-check\S*\s+compare\b`)
 
 // CIFilesThatCompare is "<path>:<line>" for each line of files that runs the comparison of the
 // spec files with the approved spec, sorted by path, then by line, each line once. No CI job
-// compares the files (R2): Dispatch makes the comparison at each push. It reads each file two
+// compares the files, and R2 gives that comparison at each push to Dispatch. It reads each file two
 // ways:
 //
 //   - As the shell reads its lines: a line that names the command spec-check and, in the next
@@ -31,19 +29,22 @@ var compareCall = regexp.MustCompile(`spec-check\S*\s+compare\b`)
 //     goes on in the next line, and the line named is the one that names spec-check. A comment
 //     that names the command is named too: the text does not say that it is a comment.
 //   - A file whose name ends in .yml or .yaml, as YAML reads it: the value of each run: key, in
-//     every document, through an alias, read as the shell reads it. A plain, quoted or folded
-//     value over two lines is one line, named at the line where the value starts; a literal block
-//     keeps its lines, each named at its own line. A file that YAML cannot read is read as text
-//     alone, since GitHub runs no step of a workflow or an action that it cannot read.
+//     each document up to the first one that YAML cannot read, through an alias, read as the shell
+//     reads it. A plain, quoted or folded value over two lines is one line, named at the line where
+//     the value starts; a literal block keeps its lines, each named at its own line. From the first
+//     document that YAML cannot read, the file is read as text alone, since GitHub runs no step of
+//     a workflow or an action that it cannot read.
 //
 // The keys are the repository paths of the files that spec-check guard reads: every file under
 // .github/workflows/, .github/actions/, .github/scripts/ and scripts/, which hold the workflows
 // and their actions, and some of the scripts that their steps run. A step can also run the
 // comparison from a file that is not there, such as a package script, a make target, a script in
 // another directory or a link to one, or through a variable. This reader does not see those
-// routes, and no list of directories closes them. spec-check compare closes them: it refuses to
-// run in a CI job (GITHUB_ACTIONS=true or CI=true). A Go program that calls Compare is outside
-// both; Dispatch itself calls Compare (R2), so no rule can refuse every Go caller.
+// routes, and no list of directories closes them. spec-check compare covers each of them that
+// passes the runner's environment on: it refuses to run when GITHUB_ACTIONS is true. A route that
+// drops that environment, such as sudo or a container, reaches the comparison past that refusal,
+// and only a line this reader reads names it. A Go program that calls Compare is outside both, and
+// the Dispatch server is to call Compare (R2), so no rule can refuse every Go caller.
 func CIFilesThatCompare(files map[string][]byte) []string {
 	type hit struct {
 		path string
@@ -133,7 +134,8 @@ func shellWords(line string) string {
 
 // runValueHits is the line, from 1, of each run: value of the YAML documents of content that runs
 // the comparison as the shell reads it: the line where the value starts, or for a literal block
-// the line of the block that runs it. It is nil for content that YAML cannot read.
+// the line of the block that runs it. It reads the documents up to the first one that YAML cannot
+// read, and keeps the lines of the documents before it.
 func runValueHits(content []byte) []int {
 	var lines []int
 	var walk func(n *yaml.Node)
@@ -165,10 +167,9 @@ func runValueHits(content []byte) []int {
 	for {
 		var doc yaml.Node
 		if err := dec.Decode(&doc); err != nil {
-			if errors.Is(err, io.EOF) {
-				return lines
-			}
-			return nil
+			// The end of content, or a document that YAML cannot read, ends the reading, since the
+			// decoder cannot go on past such a document. The lines of the documents before it stay.
+			return lines
 		}
 		walk(&doc)
 	}

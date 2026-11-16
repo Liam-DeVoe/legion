@@ -24,10 +24,10 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
 
 - **The blocks.**
   A statement is a `requirement` block, a check a `check` block, and the files also hold `component` and `term` blocks.
-  The command refuses a spec file that is not UTF-8 or holds a NUL byte, an attribute that a block does not take, a line that opens no block, a block with no closing line, a block inside a block, and text outside a block other than headings and blank lines.
+  The command refuses a spec file that is not UTF-8 or holds a NUL byte, an attribute that a block does not take, a line that opens no block, a block with no closing line, a block inside a block, text outside a block other than headings and blank lines, a heading that names code, and a claim of more than one line or more than one sentence.
 
 - **Every rule of `specgraph.Validate`.**
-  These rules include ids (one id on two nodes, an id that is not lower-case words joined by hyphens), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a check without its parts, a component purpose of more than one sentence, and a name of code in a text.
+  These rules include ids (one id on two nodes, an id that is not lower-case words joined by hyphens), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name included.
   `go doc ./internal/dispatch/specgraph Validate` in `packages/envoy` lists each rule.
 
 ## What it does not check
@@ -80,6 +80,8 @@ Each line that the command prints about the directory or an entry of it names th
 - **Exit 1: the tree is refused.**
   The log holds one line for each problem, `spec-check: <directory>/<file>:<line>: <node>: <rule>: <detail>`, which names the file, the line and the id of the node.
   Then it holds the line `spec-check: <directory>: <counts>; the tree is refused`.
+  A spec file that is larger than 1 MiB gives the line `spec-check: file too large: <directory>/<file> is <n> bytes (limit 1048576)` in place of the problem lines.
+  In that case, each count is 0, because the command parses no spec file.
 
 - **Exit 2: the command did not judge the tree.**
   The directory does not exist or holds no spec file (without `allow-empty: true`), or the directory or a spec file in it cannot be read.
@@ -124,6 +126,7 @@ A caller that needs `GOPROXY`, `GOPRIVATE` or `GONOSUMDB` sets them as environme
 The build also sets `GOWORK=off`, because the root `go.work` of this repository is above the action.
 It sets `GOTOOLCHAIN=local` and an empty `GOFLAGS`, and it unsets `GOOS` and `GOARCH`.
 So a Go flag or a target platform of the caller's job does not change the build.
+The script `.github/scripts/build-envoy-command.sh` of this repository makes this build, and the build of the [architecture-note check](../architecture-check/README.md#the-go-toolchain) too, so the two actions build with the same settings.
 
 ## The cache
 

@@ -92,8 +92,9 @@ const workflowSteps = "jobs:\n  spec:\n    steps:\n"
 // that ends in two backslashes ends there. A run: value of a workflow or of an action as YAML reads
 // it: a plain, quoted or folded scalar over two lines is one line, named where the value starts; a
 // literal block keeps its lines, each named at its own line; an alias reads its anchor's value. A
-// comment that names the command is still named, a line is named once, and a YAML file that does
-// not parse is read as text (GitHub runs no step of it).
+// comment that names the command is still named, and a line is named once. A YAML file that does
+// not parse is read as text (GitHub runs no step of it), and the documents before the first one
+// that YAML cannot read keep their run: values.
 func TestCIFilesThatCompareReadsARunValueAsYAMLAndTheShellReadIt(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -137,6 +138,9 @@ func TestCIFilesThatCompareReadsARunValueAsYAMLAndTheShellReadIt(t *testing.T) {
 		{"a YAML file that does not parse is read as text",
 			map[string]string{".github/workflows/a.yaml": "on: [pull_request\n  run: spec-check compare --dir .dispatch/spec\n"},
 			[]string{".github/workflows/a.yaml:2"}},
+		{"a run value over two lines in a document before one that YAML cannot read",
+			map[string]string{".github/workflows/a.yaml": workflowSteps + "      - run: spec-check\n          compare --dir .dispatch/spec\n---\non: [pull_request\n"},
+			[]string{".github/workflows/a.yaml:4"}},
 		{"a value under another key is not a step",
 			map[string]string{".github/workflows/a.yaml": workflowSteps + "      - name: >-\n          spec-check\n          compare\n        run: spec-check tree --dir .dispatch/spec\n"},
 			nil},
