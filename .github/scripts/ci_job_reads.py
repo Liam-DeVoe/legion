@@ -1769,13 +1769,13 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
+ACTIONLINT_STEP = "Check every workflow file with actionlint"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
 TOOL_COPY_STEP = "Fill the copy of every tool asset the package does not hold"
 # The steps of the tool-fallback job the reads below cite. The job is one long drive of
 # .github/scripts/ci-tools-proof.sh, so each file it reads is read at a step with a name.
-ACTIONLINT_STEP = "Check every workflow file with actionlint"
 TOOL_BLOB_STEP = "Check the package holds the blob of every mirrored row"
 TOOL_ROWS_STEP = "Print every row beside the two call sites that read its digest"
 TOOL_NOWHERE_STEP = "Check all eight installs with nowhere to go failed, and failed in their own time"
@@ -1803,8 +1803,8 @@ SESSIONS_STEP = "Test the session message-wait script"
 # `.github/scripts/*`, stood for all of them on the job's own filter, so a change to any one
 # script ran every harness - and, while the daemon's Go suite was in the same job, 1,083 s
 # (median) of Go tests with them (dispatch://INFRA-1413). The job's filter now names what these
-# gates name, through the anchors ci.yaml holds each of these lists under, so a change to a
-# harness or its subject selects the job and exactly that step's gate is true in it.
+# gates name, through the anchors .github/ci-filters.yaml holds each of these lists under, so a
+# change to a harness or its subject selects the job and exactly that step's gate is true in it.
 #
 # Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
 # so each of those gates reads it and a change to it runs them all; scripts/sessions-import-pods.test.sh
@@ -1827,7 +1827,7 @@ def harness(filter, step, harness_script, subjects, lib=True):
 
 # The private-name port harness, a job of its own since dispatch://INFRA-1413: it is the one
 # harness of this repository that builds a binary of this head, so the filter that selects it
-# has to name that build's whole closure (LEGION_BUILD, ci.yaml's legion_command). While the
+# has to name that build's whole closure (LEGION_BUILD, ci-filters.yaml's legion_command). While the
 # step was the test job's, that closure was on the `test` filter and a change to any package of
 # the daemon ran thirty-odd shell harnesses and the Bun suites of scripts/ beside it; a gate on
 # the step inside that job was no cure either, since the gate's own filter would be the closure
@@ -2035,8 +2035,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2273 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2719 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2274 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2720 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:51-52)"),
@@ -3107,8 +3107,9 @@ GATES = [
         # Rule 17 computes each gate filter's generated block from two sets: the repository's Go
         # test files and the ones each gate reads. A test file added or deleted anywhere changes
         # what that rule writes, so the change that adds one has to start this job - otherwise
-        # ci.yaml goes stale on a pull request this check never ran on, and the next pull
-        # request that does start it goes red for a commit of its own that changed nothing here.
+        # .github/ci-filters.yaml goes stale on a pull request this check never ran on, and the
+        # next pull request that does start it goes red for a commit of its own that changed
+        # nothing here.
         ("**/*_test.go", "rule 17 of check-ci-filters.sh writes each filter's exclusions out of the repository's Go "
                          "test files, so one added or deleted changes this check's own answer"),
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")

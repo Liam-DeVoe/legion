@@ -20,13 +20,6 @@ build runs in, whose go.mod files move the versions it compiles; and this file, 
 job reads its own definition. The ci-filters job (.github/scripts/check-ci-filters.sh)
 recomputes those sets and fails naming each file a filter misses.
 
-The filters are declared in three steps of this job, this one and the two below.
-Actions hands each `filters` input to the action as one environment variable, and
-Linux caps one of those at 131,072 bytes, which the whole block in one step passed:
-the comments above the second and third steps say what that cost and how the sets
-were chosen. A group filters of two steps name is written out in both, since a YAML
-anchor reaches no further than the string it is in.
-
 dorny/paths-filter v4.0.3's `some-with-excludes` quantifier matches a change to a filter
 when one of its patterns without `!` matches and none of its `!` patterns does.
 worker_image's drop what the .dockerignore keeps out of the
@@ -70,11 +63,11 @@ matches), where a `!` pattern would match every file outside it.
 that gate an image build (worker_image, envoy_smoke) under this quantifier, and only as
 flat lists of globs, so those two name no anchor standing for a list. The one anchor
 they do name, ci_router, is on the glob itself, which leaves their lists flat.
-The first keys of this step are no job's gate: each is a group many filters share,
-written once and named by every filter that needs it through its anchor, which
-dorny/paths-filter flattens into the list that names it.
 
 ## Why the filters are one file, and the steps they stood in
+
+The text below is what the changes job's steps carried until the filters became one file, kept
+as it stood, so its present tense describes that layout.
 
 The second of the three filter strings. Actions hands a step's input to the action as one
 environment variable, and Linux caps one of those at MAX_ARG_STRLEN, 131,072 bytes: the
@@ -118,12 +111,6 @@ one of those at 131,072 bytes (the comments above the second and third steps say
 that cost here); rule 19 of .github/scripts/check-ci-filters.sh refuses an output naming
 a step that does not declare its filter, so an output and its step cannot drift.
 
-ci-ok-report.sh both already have it. The verdicts of the three filter steps are in it,
-as one object: the merge is the `verdicts` step below, since a GitHub expression can
-build no object out of three. On a dispatched run that step is skipped with the three
-it reads and this is `{}`, which is right - the label holds nothing back there, and the
-outputs above are all 'true'.
-
 The groups the filters below share. Each is the first step's list pattern for
 pattern, written again because a YAML anchor reaches no further than the string it
 is in and each step's is a string of its own; the comment above each one there says
@@ -144,7 +131,7 @@ written again because a YAML anchor reaches no further than the string it is in.
 
 ci.yaml, which every gate filter below names through this anchor: every job's `if:`
 is in this file, so every job reads it - which is why ci_job_reads.py declares
-CI_SELF on every gate. Each gate filter also names the ci-job-<job id>.yaml file
+CI_SELF on every gate. Each gate filter also names the `ci-job-<job id>.yaml` file
 holding its own job's steps, so a change to one of those files selects that job
 alone. This entry stays beside them because a change to ci.yaml does reach every
 job: dropping it would make each job's `if:` test a second output of changes, which
@@ -207,9 +194,9 @@ The list is the one the test job's filter used to name through this anchor while
 it gated nothing of its own; it is now the daemon-go job's own filter, so a change
 a Go test cannot see no longer runs 1,083 s of them (dispatch://INFRA-1413).
 
-## daemon_go_tests: pi-legion's agents: internal/prompts/roles_test.go:261 stats agents/<name>.md.
+## daemon_go_tests: pi-legion's agents: internal/prompts/roles_test.go:261 stats `agents/<name>.md`.
 
-pi-legion's agents: internal/prompts/roles_test.go:261 stats agents/<name>.md.
+pi-legion's agents: internal/prompts/roles_test.go:261 stats `agents/<name>.md`.
 With its manifest, which the Stage 1 proof below reads, they are the files of
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
@@ -253,7 +240,7 @@ must run both jobs.
 
 Its src/broker-credential.ts imports @legion/broker-client (brokerTokenClient from its
 /environment module, chooseSignIn from /signins and isFinalRefusal from /token-client), whose exports
-map every entry to ./src/<module>.ts, so a build compiles that package's seven
+map every entry to `./src/<module>.ts`, so a build compiles that package's seven
 sources with envoy-client's. check-ci-filters.test.sh holds a hand-written list of
 such pairs to this pattern, and ci_job_reads.py's envoy_client_dep is the one
 place that declares the pair, which check-ci-filters.sh then holds to the filter.
@@ -284,6 +271,9 @@ src/dispatch-api.generated.ts and compares, and reads no Go at all
 a change to it is judged by envoy-go-checks' `openapi --check`, whose filter
 (envoy_go_checks) selects both that Go and this document, so either one alone
 starts the job.
+
+## guide_layout_files: The five guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
+
 The five guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
 spawns and the test itself: the guide-layout step's filter below is them, and the
 test job's filter names them too, since a job's `if:` tests one changes output and
@@ -395,9 +385,9 @@ The dashboard's and the proof editor's fast checks (dispatch-ui): what their lin
 typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
 Dispatch server: the job runs neither.
 
-## dispatch_ui: The one markdown fixture table, read at web/src/__tests__/pmdoc-fixtures.ts:48
+## dispatch_ui: The one markdown fixture table, read at `web/src/__tests__/pmdoc-fixtures.ts:48`
 
-The one markdown fixture table, read at web/src/__tests__/pmdoc-fixtures.ts:48,
+The one markdown fixture table, read at `web/src/__tests__/pmdoc-fixtures.ts:48`,
 whose path is the new URL at :44, by the three suites this job runs over it:
 features/refs/fixture-table-readings.test.ts,
 markdown-engine.test.ts and markdown-surfaces.test.tsx. The dispatch-browser job
@@ -409,7 +399,7 @@ runs no unit test.
 The dashboard's tsc program compiles @legion/envoy-client's sources, and its e2e
 helpers' test/fake-dispatch with them, through the workspace's "bun" export
 condition, so check-ts-filters.sh holds this filter to both. The two suites that
-import it, e2e/__tests__/delivery-live-probe.test.ts:6-9 and
+import it, `e2e/__tests__/delivery-live-probe.test.ts:6-9` and
 local-instance-support.test.ts:2-5, run in this job's test step and in no other,
 so that read is this gate's (ci_job_reads.py's dispatch_ui).
 
@@ -440,7 +430,7 @@ set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
 
 The workflow that holds every browser step, which this job reads as its own
 definition - the place every other job of this file gives to its own
-ci-job-<id>.yaml, so a change to it selects this job alone. An unlabelled pull
+`ci-job-<id>.yaml`, so a change to it selects this job alone. An unlabelled pull
 request runs the pull-request lane, the two projects a change is held to; a pull
 request carrying `full-ci`, the merge group and a dispatch run the full lane,
 every project and the two-process job, which is the lane the nightly
@@ -459,9 +449,8 @@ back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
 the script the merge job runs to take each leg's newest attempt, and the script
 that makes the merge job's two reads of its own run, which reads this run's own
 attempt's jobs and says a refused blob download was a refused read. Beside them,
-the twelve bodies the shard, the alone, the visual and the merge jobs carried
-inline until this file grew too large for GitHub to start it
-(dispatch://INFRA-2507): the shard job's wait for the file store it starts, its
+the twelve scripts that hold the bodies of the shard, the alone, the visual and the
+merge jobs' steps: the shard job's wait for the file store it starts, its
 browser step and the record of what that run left behind, the alone job's
 browser step and its own record step, whose text differs from the shard job's
 because no file store runs on that machine, the visual job's run against the
@@ -490,7 +479,7 @@ two.
 
 The one markdown fixture table: the browser row each of the seven parity families
 whose shapes the corpus holds keeps reads it at
-web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44. This
+`web/src/__tests__/pmdoc-fixtures.ts:48`, whose path is the new URL at :44. This
 entry declares that read explicitly and selects nothing on its own: the
 `*dispatch_server` anchor this filter takes above already matches it through its
 own 'packages/envoy/internal/dispatch/pmdoc/**', as it does the block schema
@@ -809,24 +798,20 @@ tarball, and packages/proof-editor/proof-sdk-*.tgz, the file itself. Beside it:
 two files that hold the job: ci.yaml, which carries its `if:`, and the called
 file its steps live in.
 
-## envoy_client: The Envoy client's job (envoy-client). It moved from the second
+## envoy_client: The Envoy client's job (envoy-client)
 
-The Envoy client's job (envoy-client). It moved from the second step to the first
-when the listed blocks of dispatch_ui and dispatch_browser grew that string past
-rule 18's margin, and from the first to this one when main's new test files grew the
-first step's generated blocks past it in turn: it names only groups this step writes
-out.
+The Envoy client's job (envoy-client).
 
-## envoy_client: src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
+## envoy_client: `src/__tests__/dispatch-execute.test.ts` holds goBlankPattern to this list, which
 
-src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
+`src/__tests__/dispatch-execute.test.ts` holds goBlankPattern to this list, which
 the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
 an edit of the list alone must start both jobs, or the side it disagrees with
 stays green.
 
-## envoy_client: src/__tests__/dispatch-who-waits.test.ts's `no text states the old rule` reads
+## envoy_client: `src/__tests__/dispatch-who-waits.test.ts`'s `no text states the old rule` reads
 
-src/__tests__/dispatch-who-waits.test.ts's `no text states the old rule` reads
+`src/__tests__/dispatch-who-waits.test.ts`'s `no text states the old rule` reads
 every text file git lists under these roots (OLD_RULE_ROOTS) and every AGENTS.md,
 the root's and the nested ones among them, so a text there that states the
 replaced rule must start this job. The recordings under packages/dispatch/e2e
@@ -939,13 +924,14 @@ when a review is submitted or edited, the two events this workflow does not run 
 job's check run too; its header says why it runs on nothing else.
 The docs site's build on a push to main, and its GitHub Pages
 deploy, are docs-pages.yaml's, a workflow of its own whose header says why. Its paths are held
-to the docs filter below.
+to the docs filter of .github/ci-filters.yaml.
 
-A new job joins the router in eight places: a filter in `changes` that names every file the job
-reads, an output of `changes` for that filter, the job's `needs: changes` and an `if:` on that
+A new job joins the router in eight places: a filter in .github/ci-filters.yaml that names every
+file the job reads, with the `*ci_filters_data` line beside its `*ci_router`, an output of
+`changes` for that filter, the job's `needs: changes` and an `if:` on that
 output carrying the term that skips it on a re-run attempt of a merge-group run (the comment
 above `changes` says why every job needs its own), the job's steps in a reusable workflow of
-its own, .github/workflows/ci-job-<id>.yaml, which the job here calls with `uses:` and hands
+its own, `.github/workflows/ci-job-<id>.yaml`, which the job here calls with `uses:` and hands
 `ci-ok-changes: ${{ toJSON(needs.changes) }}` in its `with:`, under a `permissions:` block of
 its own (a calling job that declares none hands the called workflow the default GITHUB_TOKEN
 permissions rather than this file's block, and the report step's ci-ok needs `checks: write`),
@@ -1002,7 +988,7 @@ ci-caches.yaml's browsers job, the only writer of that entry, is gone with the r
 not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
 stand in for the install each of their cases is a reading of. A seventh family,
-architecture-check-<os>-<arch>-go<version>-<hash>, is the composite action
+`architecture-check-<os>-<arch>-go<version>-<hash>`, is the composite action
 .github/actions/architecture-check's own, which envoy-go-checks runs: the action restores it
 and saves it itself, from $RUNNER_TEMP/architecture-check and not from the Go caches above,
 keyed on the Go version its own setup-go installed and on the SHA-256 of packages/envoy/go.sum
@@ -1214,9 +1200,9 @@ filters nothing.
 
 On a pull request this job reads the changed files from the API and the filters from
 .github/ci-filters.yaml, which dorny/paths-filter reads off the disk: so a pull
-request checks .github out, and nothing else.
+request checks out that one file, and nothing else.
 
-## Why the filter step is skipped on a dispatched run, and why its filters input is a plain scalar
+## Why the filter step is skipped on a dispatched run
 
 A dispatched run selects every job through the outputs above, so there is nothing to
 filter, and paths-filter has no diff base on workflow_dispatch: a step that failed here
@@ -1312,7 +1298,7 @@ and was not cancelled: it lost its runner. The log is written when the runner fi
 and a runner the service stops hearing from never finalises, while a job that was cancelled
 keeps its log. What outlives the log is the check run's annotation, which the service
 writes:
-  gh api repos/<owner>/<repo>/check-runs/<job id>/annotations
+  gh api `repos/<owner>/<repo>/check-runs/<job id>/annotations`
 On 2026-11-10 that answered, for this job: "The hosted runner lost communication with the
 server. Anything in your workflow that terminates the runner process, starves it for
 CPU/Memory, or blocks its network access can cause this error."
@@ -1366,7 +1352,8 @@ it is the fault proxy's own 504 for github.com after the probe, the refusal that
 install to its second source. The `ci-tools:` line the install wrote would say it too, and
 no step can read it: a composite action writes that line to the job's log, which no later
 step reads.
-The tool-fallback job's comment about the Actions cache holds here too: the wrapper passes
+What .github/ci-notes/ci-job-tool-fallback.md#the-steps-of-ciyamls-tool-fallback-job-in-a-file-of-their-own
+says of the Actions cache holds here too: the wrapper passes
 no-cache for every job whose id starts with `tool-fallback`, so no call of it in this job
 can be served by the cache either, on any event and any ref.
 The npm half takes ~/.bun/bin away before its install all the same, so no Bun the healthy

@@ -2,8 +2,9 @@ name: CI job tool-fallback-arm
 
 # The steps of ci.yaml's `tool-fallback-arm` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own. The
-# comment above that job says what the arm64 half proves and why it needs the `changes` job alone.
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# .github/ci-notes/ci.md#the-arm64-half-of-the-tool-fallback-proof, which that job's `# why:` line
+# names, says what the arm64 half proves and why it needs the `changes` job alone.
 #
 # The split is for the filters. The tool_fallback filter names this file beside ci.yaml and the
 # tool-fallback job's own file, so a change to these steps selects this job alone, where a change
@@ -55,8 +56,9 @@ jobs:
     # This job is therefore the control of the change INFRA-2621 makes to the tool-fallback job:
     # a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs
     # drive no such ladder, must not move.
-    # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason the
-    # tool-fallback job's comment gives (.github/workflows/ci-job-tool-fallback.yaml). Neither
+    # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason
+    # .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
+    # gives. Neither
     # of them carries `continue-on-error`, so a held install here is loud by itself: the bound
     # fails the job at about 11.5 minutes, the steps after it are skipped, and the job uploads
     # its log. This job's own 16-minute limit reaches that install first only when the steps
@@ -71,9 +73,9 @@ jobs:
 
       # The same reading as the tool-fallback job's, over both halves of this one, and for the
       # same reason: this is the only job of this repository that installs a tool on arm64, so
-      # nothing else says what one of those runners had (dispatch://INFRA-2605). The comment on
-      # that job's own pair (.github/workflows/ci-job-tool-fallback.yaml) says what the series
-      # shows and what it cannot.
+      # nothing else says what one of those runners had (dispatch://INFRA-2605). What the series
+      # shows and what it cannot is in the notes on that job's own pair,
+      # .github/ci-notes/ci-job-tool-fallback.md#what-the-machine-watch-records-and-what-it-cannot-show.
       - name: Start the machine watch over both halves
         run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
 

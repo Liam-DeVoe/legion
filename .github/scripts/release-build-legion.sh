@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # The release archives of the Go `legion`: one per target .github/go-release-targets.json lists,
 # each holding that target's static binary and its THIRD_PARTY_NOTICES, packed into
-# assets/<target>.tar.gz for the publish job to upload.
+# assets/legion-<os>-<arch>.tar.gz for the publish job to upload.
 #
 # Who runs it, and what it takes:
 #
 #   .github/scripts/release-build-legion.sh
 #
-# No arguments. It reads four variables of the step's environment: $VERSION, the version this run
+# No arguments. It reads five variables of the step's environment: $VERSION, the version this run
 # releases, and $PI_LEGION_VERSION and $PI_ENVOY_VERSION, the plugin pair this binary links, which
 # the step's `env:` carries from the version and plugin_versions steps, and $GITHUB_SHA and
 # $GITHUB_WORKSPACE, which the runner sets. It reads .github/go-release-targets.json and writes

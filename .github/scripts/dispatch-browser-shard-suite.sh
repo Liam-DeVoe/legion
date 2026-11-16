@@ -17,13 +17,13 @@
 # has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
 #
 # All three are arguments rather than keys of the step's `env:`, for the reason the shard job's
-# head gives: a step `env:` carrying an expression drops that job out of check-ci-filters.sh's
-# reduction of what a go command compiles.
+# head gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job out
+# of check-ci-filters.sh's reduction of what a go command compiles.
 #
 # The step keeps its own `timeout-minutes` and its working directory, packages/dispatch, which
 # is the root the Playwright config path and the reporter path below are read from.
 #
-# Run from packages/dispatch: .github/scripts/dispatch-browser-shard-suite.sh 1 full 100
+# Run from packages/dispatch: ../../.github/scripts/dispatch-browser-shard-suite.sh 1 full 100
 # CI runs it in dispatch-browser.yaml's shard job, at the step "Browser-test dispatch dashboard
 # (shard ${{ matrix.shard }} of 4)".
 set -euo pipefail
@@ -149,11 +149,11 @@ esac
 # root (lib/cli/testActions.js:204-211).
 #
 # The suite's own status is carried in a file, not in `$?` and not in `${PIPESTATUS[0]}`:
-# the run is piped into `tee`, so `$?` after the pipeline is `tee`'s and a failing
-# suite would leave this step green, and PIPESTATUS is bash's where this step's shell
-# is `sh -e {0}` (the job's head says why it must stay that). Each side of a pipeline
-# is its own subshell, so a variable set in the left-hand one does not survive it; the
-# `||` is what keeps `sh -e` from ending the subshell before the status is written.
+# the run is piped into `tee`, and without the `||` a failing suite would end this script
+# at once under `set -e` and pipefail, before the row count and the sampler's readings
+# below are written. The `||` writes the status and lets the pipeline succeed. Each side
+# of a pipeline is its own subshell, so a variable set in the left-hand one does not
+# survive it, which is why the status goes into a file; the script exits on it at the end.
 rm -f "$RUNNER_TEMP/suite-status"
 { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=$shard/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"

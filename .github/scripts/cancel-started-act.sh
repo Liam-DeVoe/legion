@@ -5,15 +5,16 @@
 # force-cancel call per line. A call that fails leaves a warning and not a red job: the run it
 # names may have completed between the list and the call.
 #
-# Who runs it: the one step of .github/workflows/ci.yaml's cancel-started job, whose comment says
-# what that act is for and the rules the job follows. It takes no argument and reads three
-# variables that step's own `env:` map sets: GH_TOKEN, the run's own token, for `gh`; and
-# HEAD_BRANCH and RUN_ID, this run's queue branch and id, which merge-group-cancels.sh reads
-# beside the RUNS this script exports. That job checks out with `sparse-checkout: .github`, so
-# this script and the one it runs are both in the checkout when the step runs.
+# Who runs it: the second of the two steps of .github/workflows/ci.yaml's cancel-started job,
+# after its checkout. The job's `# why:` line names the notes section that says what that act is
+# for and the rules the job follows. It takes no argument and reads three variables that step's
+# own `env:` map sets: GH_TOKEN, the run's own token, for `gh`; and HEAD_BRANCH and RUN_ID, this
+# run's queue branch and id, which merge-group-cancels.sh reads beside the RUNS this script
+# exports. That job checks out with `sparse-checkout: .github`, so this script and the one it runs
+# are both in the checkout when the step runs.
 #
 # Run from the repository root: .github/scripts/cancel-started-act.sh
-# CI runs it in ci.yaml's cancel-started job, at its one step.
+# CI runs it in ci.yaml's cancel-started job, at its second step, after the checkout.
 set -euo pipefail
 
 # The `--limit` is 100 because the queue builds up to 20 groups at once and this pull

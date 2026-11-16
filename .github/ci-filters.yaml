@@ -4,8 +4,8 @@
 # the action reads the file off the disk against GITHUB_WORKSPACE. It takes the input as a path
 # only when the text holds no newline and no colon (the action's `isPathInput`), so the value
 # there stays a plain scalar: a block scalar or a quoted path with a colon in it would be read as
-# inline YAML and the step would fail. On a pull request that job checks .github out for this
-# file alone, paths-filter reading the changed-file list from the API and the filters from the
+# inline YAML and the step would fail. On a pull request that job checks out this file and no
+# other, paths-filter reading the changed-file list from the API and the filters from the
 # tree; on a merge group it has the whole clone, which the git diff of base_sha..head_sha needs.
 #
 # Why the data is a file and not the workflow's own text. Actions hands a step's input to the
@@ -19,6 +19,7 @@
 # and no such cap reaches a path. One document also means one set of anchors, so a group the steps' filters
 # shared is written once here, where each was written out again in every step that named it - a
 # YAML anchor reaches no further than the string it is in.
+# why: .github/ci-notes/ci.md#why-the-filters-are-one-file-and-the-steps-they-stood-in
 #
 # The first keys are no job's gate: each is a group many filters share, written once and named by
 # every filter that needs it through its anchor, which dorny/paths-filter flattens into the list
@@ -30,6 +31,8 @@
 #
 # A comment block of three lines or more that stood beside a filter is in
 # .github/ci-notes/ci.md, under the heading the `# why:` line in its place names.
+# A block that only listed which files a job reads was deleted, since the filter beneath it is
+# that record.
 
 # why: .github/ci-notes/ci.md#ci_router-ciyaml-which-every-gate-filter-below-names-through
 ci_router:
@@ -593,6 +596,7 @@ contracts:
   # src/*.test.ts import @legion/test-fixtures.
   - 'packages/test-fixtures/src/**'
   # why: .github/ci-notes/ci.md#contracts-bun-run-checkapi-renders-schemasdispatch-openapijson-into
+# why: .github/ci-notes/ci.md#guide_layout_files-the-five-guides-scriptssemantic-line-breaksguidestestts-reads-the-checker-it
 guide_layout_files: &guide_layout_files
   - 'scripts/semantic-line-breaks.guides.test.ts'
   # The checker the test spawns (its :9 and :16).
@@ -2460,7 +2464,7 @@ proof_sdk_offline:
   - *ci_filters_data
   - '.github/workflows/ci-job-proof-sdk-offline.yaml'
 
-# why: .github/ci-notes/ci.md#envoy_client-the-envoy-clients-job-envoy-client-it-moved-from-the-second
+# why: .github/ci-notes/ci.md#envoy_client-the-envoy-clients-job-envoy-client
 envoy_client:
   - *ci_router
   - *ci_filters_data

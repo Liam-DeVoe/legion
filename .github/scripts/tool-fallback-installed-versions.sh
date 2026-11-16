@@ -5,7 +5,7 @@
 # since the probe, which is the half a version and a digest cannot say.
 #
 # Who runs it: the step "Check every tool is the version its row pins" of
-# .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job, whose comment says what each of
+# .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job; the comments below say what each of
 # those readings answers for. Its one argument is the docker provider plugin's tarball, which the
 # install-docker-plugin step hands back as `steps.docker-plugin.outputs.tarball`: a step's output
 # is a workflow expression, which no script can read, so the step passes it. That job checks this

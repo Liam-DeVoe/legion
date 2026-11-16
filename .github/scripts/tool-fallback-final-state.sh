@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# What this runner holds after the sixteen corrupted payloads: every tool is the pinned bytes its
-# row names, the jj on the PATH is held to that row's own digest, and neither the bun nor the bunx
-# a refusal took away is back, so not one of those payloads was installed.
+# What this runner holds after the sixteen corrupted payloads: crane, changie and jj each answer
+# the version its row pins, the jj on the PATH is held to that row's own digest, and neither the
+# bun nor the bunx a refusal took away is back, so not one of those payloads was installed.
 #
 # Who runs it: the step "Print what every tool answers now" of
 # .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job, whose comment says what each

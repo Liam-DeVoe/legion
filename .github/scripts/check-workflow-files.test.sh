@@ -162,6 +162,54 @@ check "exits 1" "$(is "$status" 1)"
 check "names both keys and the line of the second" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY' is the key 'http_proxy' of line 4 again")"
 
+echo "case: a mapping an alias repeats, holding http_proxy and HTTP_PROXY, is reported once"
+root=$(fixture folded-aliased)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env: &proxy
+  http_proxy: http://proxy.invalid:3128
+  HTTP_PROXY: http://proxy.invalid:3128
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env: *proxy
+    steps:
+      - run: echo build
+  test:
+    runs-on: ubuntu-latest
+    env: *proxy
+    steps:
+      - run: echo test
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the anchored mapping's second key" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY' is the key 'http_proxy' of line 4 again")"
+check "reports it once, not once per alias" "$(is "$(errors "$out")" 1)"
+
+echo "case: a mapping holding an alias of itself ends, and passes"
+# The alias makes the composed nodes a cycle, which the key walk would follow for ever if it did
+# not visit each node once. The file is valid YAML with no folded key and no call, so it passes.
+root=$(fixture recursive-alias)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+jobs: &jobs
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+  again: *jobs
+YAML
+set +e
+out=$(cd "$root" && timeout 60 "./.github/scripts/check-workflow-files.sh" 2>&1)
+status=$?
+set -e
+check "exits 0 within 60 seconds" "$(is "$status" 0)"
+check "says what it read" \
+  "$(contains "$out" '^all 1 workflow files under .github/workflows are within 64,000 bytes')"
+
 echo "case: a workflow file that is not valid YAML"
 root=$(fixture bad-yaml)
 printf 'name: "CI\non: push\n' > "$root/.github/workflows/ci.yaml"

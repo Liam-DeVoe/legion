@@ -15,13 +15,13 @@
 # has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
 #
 # Both are arguments rather than keys of the step's `env:`, for the reason the alone job's head
-# gives: a step `env:` carrying an expression drops that job out of check-ci-filters.sh's
-# reduction of what a go command compiles.
+# gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job out of
+# check-ci-filters.sh's reduction of what a go command compiles.
 #
 # The step keeps its own `timeout-minutes` and its working directory, packages/dispatch, which
 # is the root the Playwright config path and the reporter path below are read from.
 #
-# Run from packages/dispatch: .github/scripts/dispatch-browser-alone-suite.sh webkit-alone 100
+# Run from packages/dispatch: ../../.github/scripts/dispatch-browser-alone-suite.sh webkit-alone 100
 # CI runs it in dispatch-browser.yaml's alone job, at the step "Browser-test dispatch dashboard
 # (${{ matrix.project }})".
 set -euo pipefail
@@ -90,13 +90,12 @@ export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone-$project.zip"
 # job reports against the merged report's own count. No `--shard`: these projects are
 # not sharded, which is the whole reason they have a job.
 #
-# `./e2e/failure-reporter.ts` beside them, named here for the reason the shard job's
-# own browser step gives: a `--reporter` on the command line replaces the config's
-# list, so a leg that did not name it would record no row and keep its run directory
-# whether it passed or failed.
+# `./e2e/failure-reporter.ts` beside them, named here for the reason dispatch-browser-shard-suite.sh
+# gives: a `--reporter` on the command line replaces the config's list, so a leg that did not
+# name it would record no row and keep its run directory whether it passed or failed.
 #
 # The suite's own status is carried in a file rather than in `$?` or in PIPESTATUS,
-# for the reason the shard job's own browser step gives at length.
+# for the reason dispatch-browser-shard-suite.sh gives at length.
 rm -f "$RUNNER_TEMP/suite-status"
 { bunx playwright test --config e2e/playwright.config.ts --project="$project" --workers=1 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"

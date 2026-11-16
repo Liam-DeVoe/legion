@@ -771,14 +771,15 @@ Each item below names a task and where its code is, then notes on it.
 - Add or change a CI job — `.github/workflows/ci.yaml`, `.github/workflows/ci-job-<job id>.yaml`
 
   A job of `ci.yaml` holds its steps in a reusable workflow of its own, `.github/workflows/ci-job-<job id>.yaml`, which the job calls with `uses:` and hands `ci-ok-changes: ${{ toJSON(needs.changes) }}` in its `with:`, under a `permissions:` block of its own.
-  What decides whether those steps run stays in the router: the job's filter in `changes`, its `needs: changes` and its `if:`.
+  What decides whether those steps run stays in the router: the job's filter in `.github/ci-filters.yaml`, its `needs: changes` and its `if:`.
   Eight jobs are not in that shape: `changes`, `pr-title`, `cancel-started` and `ci-ok` hold their own steps, and `docs`, `dispatch-browser`, `worker-image` and `browser-image` call `docs-site.yaml`, `dispatch-browser.yaml`, `worker-image.yaml` and `browser-image.yaml` instead.
-  The `changes` job declares its filters in more than one `dorny/paths-filter` step (`filter`, `filter2` and `filter3`), because one `filters` input over 131,072 bytes is a string the kernel refuses to pass the action, which a run measured; a new filter goes in a step with room under rule 18 of `check-ci-filters.sh`, which refuses a step near that limit and names it, and its `changes` output names that step, which rule 19 holds.
+  The `changes` job's filters are in `.github/ci-filters.yaml`, which its one `dorny/paths-filter` step, `filter`, reads by path; a filter that names `*ci_router` also names `*ci_filters_data` beneath it, so a change to that file selects the job as a change to `ci.yaml` does.
+  Each `changes` output that hands on a filter's verdict reads `steps.filter.outputs.<name>`, and rule 19 of `check-ci-filters.sh` holds `<name>` to a filter of that file.
   Most of each filter's `!` patterns are generated: `.github/scripts/check-ci-filters.sh write` writes, into a marked block of each filter, the patterns that keep it off the Go test files its job does not run, and the check refuses a block that is not what it computes.
   Those blocks name Go test files one by one, so a change that adds, deletes or renames a `_test.go` file anywhere a Go job reads runs that command too and commits what it writes, whatever else the change touches:
   a pull request that adds one and leaves the blocks alone is refused by `ci-filters`, naming the file and each filter whose block lacks it (run 42532845737 is such a refusal, of three filters over one new migration test).
   A pull request is judged on the merge of its head and the base, so another pull request's new test file reddens this check on a head that never changed, and the cure is the same command after a forward merge, in the same commit that resolves it.
-  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split
+  The eight places a new job joins the router are in `.github/ci-notes/ci.md`, in the section the first `# why:` line of `ci.yaml` names, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split
 
 - Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
 
@@ -838,7 +839,8 @@ Each item below names a task and where its code is, then notes on it.
 - **A workflow file holds the structure of its jobs, and nothing else**
   — a file of `.github/workflows/` names its jobs, their triggers, their conditions, their runners and what they call.
   The path-filter data is in `.github/ci-filters.yaml`, which `dorny/paths-filter` reads by path, in one step of `ci.yaml`'s `changes` job.
-  A `run:` body of more than 10 lines is a script under `.github/scripts/`, run by its path, with each budget comment on the line it sizes.
+  A `run:` body of more than 10 lines is a script under `.github/scripts/`, run by its path, with each budget comment on the line it sizes, but for two kinds of job.
+  A body stays inline where its job makes no checkout, as `dequeued.yaml`'s step does under `pull_request_target`, and where its job holds a credential of a release workflow, as `release.yaml`'s publish job does, because `.github/scripts/check-release-credentials.sh` refuses a credentialed job that runs a script under a `scripts/` directory, `.github/scripts/` among them.
   A derivation or a history goes in `.github/ci-notes/<the workflow file's name without its suffix>.md`, and the step it belongs to keeps one comment line, `# why: .github/ci-notes/<file>.md#<the section's anchor>`, that names it; a value's own arithmetic stays on its line in the workflow file.
   `.github/scripts/check-workflow-files.sh` holds every file of that directory to 64,000 bytes, and refuses one GitHub's own parser would not read (invalid YAML, or two keys of one mapping that are equal when upper-cased) and one that calls more than 45 unique reusable workflows.
   The number is 64,000 because GitHub starts no run at all for a workflow file above its cap of 500 KB and signals that only as a run with no jobs in it, so the limit a reader is held to is a readable file rather than a parser's limit.

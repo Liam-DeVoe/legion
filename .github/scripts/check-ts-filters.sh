@@ -118,7 +118,8 @@
 # unknown. Any other word, or more than one, fails naming both.
 #
 # Why ci.yaml's lint job and not ci-filters: the ci-filters job has no Bun and no node_modules -
-# its steps are the checkout, actions/setup-go, check-ci-filters.sh and the ci-ok report - so
+# its steps are the checkout, actions/setup-go, check-ci-filters.sh, check-workflow-files.sh,
+# the actionlint step and the ci-ok report - so
 # `bunx tsc` there would install Bun and the dependency tree first, while lint already runs
 # `bun install --frozen-lockfile` for the Biome pass; lint is gated by no `changes` output, so a
 # change anywhere starts it, which is what a check of every filter needs; and the cost is small
@@ -155,8 +156,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
-import yaml
 
 import ci_filter_coverage as engine
 import workflow_paths as wp
@@ -270,7 +269,7 @@ def read_workflow() -> tuple:
     is absent or refuses the open ends the run here, with the engine's annotation saying which."""
     try:
         filters, quantifiers, lines = engine.changes_filters(
-            yaml.safe_load((engine.REPO / engine.WORKFLOW).read_text()), problems)
+            engine.load_repository_yaml(engine.REPO / engine.WORKFLOW) or {}, problems)
     except engine.RepositoryInputError as exc:
         print(engine.annotation_line(exc.annotation()), file=sys.stderr)
         raise SystemExit(1) from exc

@@ -25,7 +25,7 @@ set -euo pipefail
 # that rewrote the first two alone would publish a plugin naming two versions. The
 # committed .claude-plugin manifest declares none, which is what keeps a checkout from
 # pinning every install at one string, and this job's tree is discarded, as with the
-# rewrites below.
+# rewrite of the job's "Point the manifest at the publishing repository" step.
 for manifest in packages/claude-envoy/package.json \
   packages/claude-envoy/.claude-plugin/plugin.json \
   packages/claude-envoy/.omp-plugin/plugin.json; do

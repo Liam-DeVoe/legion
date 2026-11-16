@@ -12,9 +12,10 @@
 # a refused download being why no blob arrived for any leg. <token> is the run's own
 # `${{ github.token }}`, which this script exports as GH_TOKEN for the read of this run's jobs.
 #
-# Both are arguments rather than keys of the step's `env:`, for the reason the shard job's head
-# gives: a step `env:` carrying an expression drops that job out of check-ci-filters.sh's
-# reduction of what a go command compiles.
+# The conclusion is an argument rather than a key of the step's `env:`, for the reason the shard
+# job's head gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job
+# out of check-ci-filters.sh's reduction of what a go command compiles. GH_TOKEN is in that set,
+# so that reason does not hold for the token, which is an argument beside it all the same.
 #
 # It reads $RUNNER_TEMP/selected-blobs, which holds one blob report and one row count per leg,
 # and $RUNNER_TEMP/report.json, the merged report; it writes $RUNNER_TEMP/jobs.json, which
@@ -95,8 +96,10 @@ export GH_TOKEN="$2"
 # here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
 # multiprocess jobs on the pull-request lane - and owes nothing. A leg that failed
 # before it could upload is in the list and still owes its blob.
+# A read that fails leaves the list empty, and the check below says so: `|| true` keeps
+# pipefail and `set -e` from ending the script on jq's status first.
 legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |
-  sort)
+  sort) || true
 if [ -z "$legs" ]; then
   echo "::error::this run's jobs hold no shard or alone leg, so there is nothing to" \
     "hold the merged report against"

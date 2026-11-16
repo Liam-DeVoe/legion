@@ -133,8 +133,7 @@ images:
   # .github/workflows/workflow-files.yaml. rhysd publishes it, and it is the one image of this
   # file a step runs as a command rather than a service, a base or a builder. It carries the
   # shellcheck actionlint hands each inline `run:` body, 0.11.0 in this image, so the shellcheck
-  # version CI runs moves only when this row does. The row lands one push before those steps, so
-  # that the ci-images job of its own run has copied the image by the time a step pulls it.
+  # version CI runs moves only when this row does.
   - upstream: docker.io/rhysd/actionlint:1.7.12
     tag: actionlint-1.7.12-b1934ee5
     digest: sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667

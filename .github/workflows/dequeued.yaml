@@ -5,7 +5,8 @@ name: CI (dequeued pull request)
 # while that group's ci.yaml merge-group run, which nothing cancels, keeps its runners to the end
 # and decides nothing. That runner time is what this workflow takes back, for the one case
 # ci.yaml's own cancel act cannot see: that act cancels the older groups of the pull request a
-# new group of it replaced (the comment above ci.yaml's `cancel-started` says what it does), and
+# new group of it replaced (.github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top
+# says what it does), and
 # a pull request that left the queue builds no new group.
 #
 # Why pull_request_target. `dequeued` is an activity type of that event alone, and GitHub runs the

@@ -177,7 +177,7 @@ jobs:
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
-      # Seven slow suites, gated as the comment above `envoy_go` says.
+      # Seven slow suites, gated as .github/ci-notes/ci.md#the-nine-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
       envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
@@ -192,7 +192,7 @@ jobs:
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
       # so it comes back on every push that selects it, as the two suites above do.
       airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.airlock_lean }}
-      # A slow suite, gated as the comment above `envoy_go` says.
+      # A slow suite, gated as .github/ci-notes/ci.md#the-nine-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
@@ -214,10 +214,10 @@ jobs:
       - if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: .github
-          fetch-depth: 1
+          sparse-checkout: .github/ci-filters.yaml
+          sparse-checkout-cone-mode: false
           persist-credentials: false
-      # why: .github/ci-notes/ci.md#why-the-filter-step-is-skipped-on-a-dispatched-run-and-why-its-filters-input-is-a-plain-scalar
+      # why: .github/ci-notes/ci.md#why-the-filter-step-is-skipped-on-a-dispatched-run
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name != 'workflow_dispatch'

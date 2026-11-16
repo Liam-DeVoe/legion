@@ -40,8 +40,8 @@ for class in stubbed real-stack; do
     awk '{ d[NR] = $1 } END { if (NR == 0) { print 0, 0, 0 } else {
       print NR, d[int((NR + 1) / 2)], d[NR < 2 ? 1 : int((NR * 95 + 99) / 100)] } }')
   # Word splitting is what reads the three figures, so `$stats` is deliberately
-  # unquoted; `set --` is the one way to do that without an array, which this step's
-  # `bash -e {0}` would take but `sh` would not.
+  # unquoted; `set --` is the one way to do that without an array, which this script's
+  # `#!/usr/bin/env bash` would take but `sh` would not.
   # shellcheck disable=SC2086
   set -- $stats
   echo "| $class | $1 | $2 | $3 |" >> "$GITHUB_STEP_SUMMARY"

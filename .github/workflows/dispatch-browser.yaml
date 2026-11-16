@@ -82,7 +82,7 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 540 + 219 = 759 s, 12 min 39 s, rounded up to the 13 minutes below. That is a backstop
+    # 540 + 219 = 759 s, 12 min 39 s, rounded up to the 13 minutes below.
     timeout-minutes: 13
     strategy:
       fail-fast: false
@@ -170,7 +170,7 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-alone-jobs-measured-steps-and-its-budget
-    # 180 + 137 = 317 s, 5 min 17 s, rounded up to the 6 minutes below. It is a backstop above
+    # 180 + 137 = 317 s, 5 min 17 s, rounded up to the 6 minutes below.
     timeout-minutes: 6
     strategy:
       fail-fast: false
@@ -240,6 +240,7 @@ jobs:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
     # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. With budgets on the steps, the
+    # `if: failure()` upload below still runs, which a cancelled job skips.
     timeout-minutes: 13
     services:
       postgres:
@@ -307,7 +308,7 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
-  # rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
+  # 4 + 4 min plus 135 s = 11 min.
   embedder:
     runs-on: ubuntu-24.04
     timeout-minutes: 11
@@ -347,10 +348,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
-        # The e2e helpers the specs import read some of contracts' values from its built dist/,
-        # through Playwright's own Node resolution (the shard job's step of the same name), which
-        # takes the entries Dispatch imports alone. `bun run e2e:embedder` below makes the same
-        # build again (packages/dispatch's build:contracts).
+        # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-job-builds-contracts
         run: bun run build:dispatch
         working-directory: packages/contracts
       - name: Build the Dispatch server for the embedder lane
@@ -376,7 +374,7 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
-  # job budget is that step's 240 s plus the same 314 s: 554 s -> 10 min.
+  # 240 + 314 = 554 s -> 10 min.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
@@ -447,7 +445,7 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
-    # one-command steps measure. 180 + 37 = 217 s, which is 3 min 37 s, so 4 min. The job's
+    # 180 + 37 = 217 s, which is 3 min 37 s, so 4 min.
     timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

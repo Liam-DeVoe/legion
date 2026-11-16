@@ -13,12 +13,12 @@
 # the visual job's own step "Read the connections the visual stack's Postgres must allow" reads
 # outside this step's budget and hands on as `${{ steps.connections.outputs.connections }}`; it
 # becomes DISPATCH_E2E_PG_CONNECTIONS below. It is an argument rather than a key of the step's
-# `env:`, for the reason the shard job's head gives: a step `env:` carrying an expression drops
-# that job out of check-ci-filters.sh's reduction of what a go command compiles. The step keeps
-# its own `timeout-minutes` and its working directory, packages/dispatch, which is where
-# e2e/visual-run.sh is run from below.
+# `env:`, for the reason the shard job's head gives: a step `env:` key outside
+# ci_filter_coverage.py's ENV_ALLOWED drops that job out of check-ci-filters.sh's reduction of
+# what a go command compiles. The step keeps its own `timeout-minutes` and its working
+# directory, packages/dispatch, which is where e2e/visual-run.sh is run from below.
 #
-# Run from packages/dispatch: .github/scripts/dispatch-browser-visual-suite.sh 100
+# Run from packages/dispatch: ../../.github/scripts/dispatch-browser-visual-suite.sh 100
 # CI runs it in dispatch-browser.yaml's visual job, at the step "Browser-test dispatch dashboard
 # against its baselines".
 set -euo pipefail

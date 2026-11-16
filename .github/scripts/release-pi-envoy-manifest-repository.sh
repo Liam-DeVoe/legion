@@ -22,12 +22,13 @@ set -euo pipefail
 # docs, "Generating provenance statements", Prerequisites; the registry answers E422
 # "Error verifying sigstore provenance bundle: Failed to validate repository
 # information"). The publish job hands npm this job's tarball exactly as packed and
-# never repacks it, so the field has to be right here, before the pack below.
+# never repacks it, so the field has to be right here, before the job's "Pack extension" step.
 #
 # The committed manifest is left alone: it holds today's repository, which is true
 # today, and this step writes whichever repository the job runs in, so moving the
 # repository to another owner or name needs no commit. Nothing restores it, as with the
-# rewrites above: this job's tree is discarded.
+# rewrites of the job's "Set release version" and "Point extensions at the packed bundle"
+# steps: this job's tree is discarded.
 url=$(.github/scripts/repo-paths.sh repository_url)
 jq --arg u "$url" '.repository.url = $u' \
   packages/pi-envoy/package.json > tmp.json \

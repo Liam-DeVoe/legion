@@ -7,15 +7,15 @@
 #
 #   .github/scripts/dispatch-browser-verdict.sh <binaries> <shard> <alone> <multiprocess> <visual>
 #
-# The five are the results of the jobs this one needs, in that order: the merge job's
+# The five are the results of five of the six jobs the merge job needs, in that order:
 # `${{ needs.binaries.result }}`, `${{ needs.shard.result }}`, `${{ needs.alone.result }}`,
-# `${{ needs.multiprocess.result }}` and `${{ needs.visual.result }}`. Each is `success`,
-# `skipped`, `failure` or `cancelled`, and the last two are what this script fails on, by job
-# name.
+# `${{ needs.multiprocess.result }}` and `${{ needs.visual.result }}`; the sixth, embedder, is
+# not passed. Each is `success`, `skipped`, `failure` or `cancelled`, and the last two are what
+# this script fails on, by job name.
 #
 # They are arguments rather than keys of the step's `env:`, for the reason the shard job's head
-# gives: a step `env:` carrying an expression drops that job out of check-ci-filters.sh's
-# reduction of what a go command compiles.
+# gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job out of
+# check-ci-filters.sh's reduction of what a go command compiles.
 #
 # It reads $RUNNER_TEMP/report.json, the report the merge step wrote, for the failed rows of the
 # run. The third of the job's failures, a leg that owed a blob report and uploaded none, is

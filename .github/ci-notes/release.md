@@ -4,7 +4,8 @@ The derivations and the history of `.github/workflows/release.yaml`, which point
 Each `# why:` line of that workflow names the section below that holds the derivation or the
 record its step, its job or its key rests on, and the sections stand in the order their comment
 blocks stood in the workflow file. A value's own arithmetic stays beside the value, and a comment
-inside a `run:` body stays beside its command, in the workflow file.
+inside a `run:` body stays beside its command, in the workflow file, or in the script its step
+runs.
 
 ## Why the workflow level permissions block is empty, and the three stages a release waits for
 
@@ -153,7 +154,7 @@ plugin pair" refuses to release this legion unless npm then carries exactly this
 CGO_ENABLED=0: a static binary, as the worker image builds it, so a linux archive runs on any
 distribution. One archive per target .github/go-release-targets.json lists (the pull
 request's notices check reads the same list), each holding one top-level directory,
-legion-<os>-<arch>, with `legion` and THIRD_PARTY_NOTICES in it: mise's github backend
+`legion-<os>-<arch>`, with `legion` and THIRD_PARTY_NOTICES in it: mise's github backend
 strips that one directory, leaving the binary. THIRD_PARTY_NOTICES is the license of every
 Go module that target's binary compiles in (scripts/go-third-party-notices.sh, run with the
 build's own GOOS, GOARCH and CGO_ENABLED), and fails the build when one cannot be determined.
@@ -238,7 +239,7 @@ byte, runs the private-name check over the build and packs it into the tar
 
 package.json's "files" decides what is packed, not git, so the build's two directories go
 in even though .gitignore names them. The pack runs the package's prepack and postpack
-(packages/claude-envoy/scripts/pack-skills.sh): skills/<name> is a link into the
+(packages/claude-envoy/scripts/pack-skills.sh): `skills/<name>` is a link into the
 repository's skills/, which bun packs as nothing at all, so the prepack replaces each
 link with the skill's files and the postpack puts the links back.
 
@@ -352,7 +353,7 @@ exactly, so a downloaded asset is checked against a run of this workflow on main
 against SHA256SUMS, which sits in the same mutable release. `--repo` alone accepts an
 archive any workflow of this repository attested, so the check pins the signer as
 docs/kubernetes.md ("Pin by digest, never by tag") does:
-  gh attestation verify legion-<os>-<arch>.tar.gz --repo cybermonklabs/legion \
+  gh attestation verify `legion-<os>-<arch>.tar.gz` --repo cybermonklabs/legion \
     --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/release.yaml@refs/heads/main \
     --source-ref refs/heads/main --deny-self-hosted-runners
 and adds `--source-digest <the legion-v<version> tag's commit>` to pin the commit as well.
@@ -370,7 +371,7 @@ job's outputs, which worker_image_release names the worker image on.
 The worker image, built from this run's commit with the plugin pair legion_build decided (empty
 off main, where legion_build skips and the Dockerfile links none) and labelled with the legion
 version legion_build decided (`legion_version`; empty when legion_build skips or has nothing to
-release, which leaves the label sha-<short>). This first call of worker-image.yaml builds and
+release, which leaves the label `sha-<short>`). This first call of worker-image.yaml builds and
 pushes the image's sha- tag only (`skip_attest`): worker_image_attest attests it and
 worker_image_release tags it with that version and names it on the legion release once publish
 released it.

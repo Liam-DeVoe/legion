@@ -23,15 +23,15 @@
 #      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the
 #      composed nodes instead;
 #   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
-#      workflow file, counting every tree of nested calls, and ci.yaml calls 42 today, so 45 leaves
-#      room for a few more calls and none for a surprise.
+#      workflow file, counting every tree of nested calls, and ci.yaml calls 43 today, so 45 leaves
+#      room for two more calls and none for a surprise.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # two faults.
 #
 # Scope: every file whose parent directory is .github/workflows and whose suffix is .yaml or .yml.
-# Any other file of that directory is passed over. Files are discovered by walking the tree, not by
-# asking git, so an unsnapshotted change cannot read green locally.
+# Any other file of that directory is passed over. Files are discovered by listing that directory,
+# not by asking git, so an unsnapshotted change cannot read green locally.
 #
 # Run from anywhere: .github/scripts/check-workflow-files.sh
 # CI runs it in ci.yaml's ci-filters job and in .github/workflows/workflow-files.yaml, and its tests
@@ -46,7 +46,6 @@ from pathlib import Path
 
 import yaml
 
-SKIP_DIRS = {".git", ".jj", "node_modules", ".venv", "vendor"}
 WORKFLOWS = Path(".github/workflows")
 SUFFIXES = {".yaml", ".yml"}
 # The limit this check holds, and the cap GitHub holds. Every refusal names both: a reader who has
@@ -58,31 +57,16 @@ CALL_LIMIT = 45
 GITHUB_CALL_CAP = 50
 
 
-def walk() -> list[Path]:
-    found = []
-    stack = [Path(".")]
-    while stack:
-        for entry in sorted(stack.pop().iterdir()):
-            if entry.is_symlink() and entry.is_dir():
-                continue
-            if entry.is_dir():
-                if entry.name not in SKIP_DIRS:
-                    stack.append(entry)
-            else:
-                found.append(entry)
-    return found
-
-
 def one_line(text: object) -> str:
     """A parser's message on one line: an annotation is one line, and a traceback is noise to the
     reader who has to fix the file."""
     return " ".join(str(text).split())
 
 
-targets = sorted(
-    path
-    for path in walk()
-    if path.parent == WORKFLOWS and path.suffix in SUFFIXES
+targets = (
+    sorted(path for path in WORKFLOWS.iterdir() if not path.is_dir() and path.suffix in SUFFIXES)
+    if WORKFLOWS.is_dir()
+    else []
 )
 
 problems: list[str] = []
@@ -116,10 +100,15 @@ def mapping_get(node: object, key: str) -> object:
 
 def check_folded_keys(path: Path, root: object) -> None:
     """Every mapping reachable from the document, sequences included: two keys equal after
-    upper-casing are two keys GitHub's parser reads as one, and it refuses the file."""
+    upper-casing are two keys GitHub's parser reads as one, and it refuses the file. Each node is
+    visited once, so a mapping an alias repeats is reported once and a recursive alias ends."""
     stack = [root]
+    seen: set[int] = set()
     while stack:
         node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
         if isinstance(node, yaml.MappingNode):
             first_seen: dict[str, yaml.ScalarNode] = {}
             for name, value in node.value:

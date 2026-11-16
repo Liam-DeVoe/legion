@@ -3,8 +3,8 @@
 The derivations and the history of `.github/workflows/dispatch-browser.yaml`, which points into
 this file. Each `# why:` line of that workflow names the section below that holds the derivation
 or the record its step, its job or its key rests on, and the sections stand in the order their
-comment blocks stood in the workflow file. A value's own arithmetic stays beside the value, in
-the workflow file.
+comment blocks stood in the workflow file. A job budget's own arithmetic stays beside the
+budget, in the workflow file.
 
 ## The suite, its two lanes and the budget rule every job follows
 
@@ -189,6 +189,7 @@ logs that shell - and each one must stay POSIX. A script a step calls carries it
 
 The stacks' PostgreSQL binaries and this run's worker count are set on the browser step's
 own command line, where they have always been, rather than in an `env:`.
+That command line is in .github/scripts/dispatch-browser-shard-suite.sh, which the browser step runs.
 DISPATCH_E2E_FILE_STORE_ENDPOINT and DISPATCH_E2E_FILE_STORE_BUCKET are in
 ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step below is read under this file's own `env:` and
@@ -398,6 +399,8 @@ writes them into the environment every worker inherits, and `globalTeardown` sto
 (e2e/global-setup.ts, e2e/harness-pool.ts). The contracts step above is what
 Playwright's own Node runner needs, for the reason that step gives.
 
+The browser step's body, its command, flags and sampler included, is .github/scripts/dispatch-browser-shard-suite.sh.
+
 `--workers 4` below is how many stacks this leg starts, one per Playwright worker, each
 a harness, a bucket and a Postgres of its own, that last one an initdb and a pg_ctl out
 of DISPATCH_E2E_PG_BIN (e2e/harness-postgres.ts), this image's PostgreSQL 18
@@ -595,6 +598,8 @@ writes them into the environment every worker inherits, and `globalTeardown` sto
 (e2e/global-setup.ts, e2e/harness-pool.ts). The contracts step above is what
 Playwright's own Node runner needs, for the reason that step gives.
 
+The browser step's body, its command, flags and sampler included, is .github/scripts/dispatch-browser-alone-suite.sh.
+
 One stack here, not four: it is one per Playwright worker, and this leg runs one
 worker, which the command below says in `--workers=1` rather than leaning on the
 configuration's own default of the same number (`workers: 1`,
@@ -786,6 +791,13 @@ budget is those two plus that job's measured 135 s maximum for every step withou
 rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
 their own, as this file's head requires.
 
+## Why the embedder job builds contracts
+
+The e2e helpers the specs import read some of contracts' values from its built dist/,
+through Playwright's own Node resolution (the shard job's step of the same name), which
+takes the entries Dispatch imports alone. `bun run e2e:embedder` below makes the same
+build again (packages/dispatch's build:contracts).
+
 ## Why the embedder job's server build carries the lane in its name
 
 run-server.sh builds it too, inside the harness's boot wait; built here, the server
@@ -798,7 +810,7 @@ the multiprocess job above has a step that builds the same binary.
 The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
 set compared against a committed baseline, in light and in dark, at a desktop width and two
 of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
-number of PNGs under packages/dispatch/e2e/__screenshots__.
+number of PNGs under `packages/dispatch/e2e/__screenshots__`.
 
 The full lane only. A snapshot difference holds the merge queue, which is the point: a palette
 or a layout regression is refused at the merge rather than found the next morning, and the
@@ -819,6 +831,7 @@ address and so be no secure context, so only the Playwright command goes into th
 (packages/dispatch/e2e/visual-run.sh's head says both). Every variable this job's run needs
 is exported on the command line rather than set in an `env:`, which keeps it to the same
 shape as the shard job's browser step.
+The browser step's body, those exports included, is .github/scripts/dispatch-browser-visual-suite.sh.
 
 It writes no blob report. The merge job's row accounting reads legs out of the job names with
 a capture that knows `shard (N)` and `alone (P)` alone, and it fails the run when the merged
@@ -1022,6 +1035,7 @@ HTML report is for a person; the list reporter prints the run's result into this
 own log. It reads the selected directory the step above wrote, which holds one attempt
 per leg. The three output paths are exported here rather than in an `env:` block, for
 the reason the shard job's head gives.
+The step's body, those exports included, is .github/scripts/dispatch-browser-merge-reports.sh.
 
 ## Why each reading goes to the step summary and to the log
 

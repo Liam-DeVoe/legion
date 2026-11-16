@@ -6,6 +6,8 @@ derivation or the record its step, its job or its key rests on, and the sections
 order their comment blocks stood in the workflow file. A value's own arithmetic stays beside the
 value, and a comment inside a `run:` body stays beside its command, in the script that body is
 now in.
+In the text moved here, "this file", "above" and "below" refer to the workflow,
+`.github/workflows/ci-job-tool-fallback.yaml`.
 
 ## The steps of ci.yaml's tool-fallback job, in a file of their own
 
