@@ -400,6 +400,9 @@ Each item below names a task and where its code is, then notes on it.
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
   `GET /api/v1/issues/{key}/coverage` answers what each `requirement` block of the issue's spec lacks, counting the `check` and `plan_task` blocks of the issue and of its descendants;
   the same lines end `dispatch read --issue` and the answer to an approval request.
+  A check's and a requirement's `text` is its words with every link and `dispatch://` reference dropped (`blockWords`), which is what the pull-request body line reads.
+  A caller that sent `Dispatch-Trees: 1` is given the block's whole content beside it as `text_tree`, links and references kept: the block's own children rendered as a document of their own (`blockContent`) and read for display as a decision's section is, through the request's one tree reader.
+  `GET /api/v1/reference-targets` answers the same for every member that names a block, a plan task among them, whose `name` is the stored excerpt and so holds the directive line and stops at 480 runes: the block's whole text is read from the block index, one statement per kind of block (`refs.BlockTexts`), a typed block's is cut to its own content (`blockTextContent`), and no document is loaded; the read's ETag hashes each tree.
   Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
 
 - **Load test**: `loadtest/`
@@ -2584,7 +2587,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   — both always notify, like `child.status`.
   Issue-detail `children` rows are one recursive-CTE query (`issueChildrenStatement`, read by `scanIssueChildren`; the issue read queues it in its first batch and nothing else reads it, so there is no loader of its own):
   each direct child carries `subtree_done` / `subtree_total` (the child itself included, every status;
-  done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
+  done = `status='done'`), `active_at` (the subtree's newest `updated_at`), its own `external_links`, `needs` (the keys it waits on, sorted — the elements of the issue read's own `blocked_by` — from one lateral over `issue_links` keyed by the child's own key; left out when it waits on nothing) and `claim` (`model.IssueClaim`: who holds the child and since when, the `claimed_by` / `claimed_at` of the child's own row, which the statement already reads, so it costs no join; left out when nobody holds it), still ordered by key.
 
 - Every issue has a nullable `assignee`: the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
   Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
