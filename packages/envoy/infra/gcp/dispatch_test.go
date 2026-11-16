@@ -780,6 +780,11 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed in an allowed namespace", "allowedNamespaces[1]", func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{"envoy", lower} }},
 		{"a seed inside the agent secrets URL", "agentSecretsUrl", func(a *gcp.DispatchArgs) { a.AgentSecretsUrl = "https://" + lower + ".internal.example" }},
 		{"a seed inside the agent secrets audience", "agentSecretsAudience", func(a *gcp.DispatchArgs) { a.AgentSecretsAudience = "https://" + lower + ".internal.example" }},
+		{"a seed inside the NATS audience", "natsAudience", func(a *gcp.DispatchArgs) {
+			setNatsAudience(a)
+			a.NatsAudience = "https://" + lower + ".internal.example"
+		}},
+		{"a seed as the listener audience", "listenerAudience", func(a *gcp.DispatchArgs) { a.ListenerAudience = seed }},
 		{"a seed as the OIDC audience", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = seed }},
 		{"a seed inside the OIDC issuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, "https://"+lower+".internal.example"

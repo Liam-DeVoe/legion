@@ -3,6 +3,7 @@ package gcp
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 
@@ -25,10 +26,39 @@ import (
 // workloads that dial the NATS hub through it name. With natsInCluster none of the four renders.
 const dispatchSOCKS5Port = 1055
 
-// agentSecretsTokenSeconds is the lifetime of the projected ServiceAccount token envoy-dispatch
-// presents to the secrets broker. The broker refuses a token living longer than an hour from its
-// issue, so the kubelet mints it for exactly that and rewrites it before it expires.
-const agentSecretsTokenSeconds = 3600
+// serviceTokenSeconds is the lifetime of each projected ServiceAccount token the app and the
+// listener present: envoy-dispatch's to the secrets broker and to its listener, and both pods' to
+// the auth service. The broker and the auth service refuse a token living longer than an hour from
+// its issue, so the kubelet mints each for exactly that and rewrites it at 80% of that life, 48
+// minutes, ahead of the 50 minutes at which the bus moves to a later token
+// (natscred.ServiceRenewBefore).
+const serviceTokenSeconds = 3600
+
+// Where the pods' credentials are mounted, each volume named for its one file. Both Envoy
+// containers mount their NATS credential at dispatchCredentialMount: the seed, the one file of its
+// SecretProviderClass, which NATS_NKEY_SEED_FILE names, or, with natsAudience, the projected token
+// of their ServiceAccount for it, which NATS_SERVICE_TOKEN_FILE names. The app's token for its
+// listener is another projected token, for listenerAudience, in a volume of its own, which
+// ENVOY_ACCOUNT_TOKEN_FILE names.
+const (
+	dispatchCredentialMount    = "/var/run/secrets/envoy"
+	dispatchNatsSeedName       = "nats-seed"
+	dispatchNatsSeedFile       = dispatchCredentialMount + "/" + dispatchNatsSeedName
+	dispatchNatsTokenName      = "nats-token"
+	dispatchNatsTokenFile      = dispatchCredentialMount + "/" + dispatchNatsTokenName
+	dispatchListenerTokenMount = "/var/run/secrets/envoy-listener"
+	dispatchListenerTokenName  = "listener-account-token"
+	dispatchListenerTokenFile  = dispatchListenerTokenMount + "/" + dispatchListenerTokenName
+)
+
+// projectedTokenVolume is a volume holding one file, name, the pod's own ServiceAccount token for
+// audience, which the kubelet mints for serviceTokenSeconds and rewrites in place before it
+// expires, so nothing stores the token and no rotation restarts a pod.
+func projectedTokenVolume(name, audience string) corev1.VolumeArgs {
+	return corev1.VolumeArgs{Name: pulumi.String(name), Projected: &corev1.ProjectedVolumeSourceArgs{Sources: corev1.VolumeProjectionArray{
+		corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(audience), ExpirationSeconds: pulumi.Int(serviceTokenSeconds), Path: pulumi.String(name)}},
+	}}}
+}
 
 // clusterLocal is the in-cluster DNS name of Service name in namespace: what one pod calls
 // another workload's Service at.
@@ -281,20 +311,27 @@ func refuseDispatchSeedInSecret(value pulumi.StringInput, dispatch, input string
 // tightly (1 to bus.MaxReplicas, and at least 1) before anything registers, which is why every
 // refusal that is not socks5Proxy's is natsUrl's.
 // The listener serves on every address of its pod, and its API refuses to start on a non-loopback
-// listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
-// the bearer in Secret listenerSecret.
-func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1.EnvVarArray, error) {
+// listen host without a bearer or an OIDC pair (packages/envoy/cmd/listener/apiauth.go), so the
+// environment names the bearer in Secret listenerSecret, or, with listenerAudience, the pair it
+// verifies the app's own token with: issuer, this cluster's, and listenerAudience. With
+// natsAudience the listener's NATS credential is the projected token core's Env names, and no
+// seed.
+func dispatchListenerEnv(s dispatchSettings, listenerSecret, url, issuer string) (corev1.EnvVarArray, error) {
 	if s.natsInCluster && bus.LocalNATSURL(url) {
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
 	}
-	env, err := (core.ListenerConfig{
+	config := core.ListenerConfig{
 		MachineID:      s.hostname,
 		Port:           core.DefaultListenerPort,
 		ListenHost:     "0.0.0.0",
 		SOCKS5Proxy:    s.socks5Proxy(),
 		NATSReplicas:   s.natsReplicas,
 		StreamMaxBytes: s.streamMaxBytes,
-	}).Env([]string{url})
+	}
+	if s.natsAudience != "" {
+		config.ServiceTokenFile = dispatchNatsTokenFile
+	}
+	env, err := config.Env([]string{url})
 	if err != nil {
 		var input *core.InputError
 		if errors.As(err, &input) && input.Input == "socks5Proxy" {
@@ -303,9 +340,13 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1
 		return nil, core.InputErrorf("natsUrl", "%s", strings.ReplaceAll(err.Error(), "natsUrls[0]", "natsUrl"))
 	}
 	values := envVars(env)
-	values = append(values, valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
-	values = append(values, secretEnv("ENVOY_API_TOKEN", listenerSecret, "ENVOY_API_TOKEN"))
-	return values, nil
+	if s.natsAudience == "" {
+		values = append(values, valueEnv("NATS_NKEY_SEED_FILE", dispatchNatsSeedFile))
+	}
+	if s.listenerAudience == "" {
+		return append(values, secretEnv("ENVOY_API_TOKEN", listenerSecret, "ENVOY_API_TOKEN")), nil
+	}
+	return append(values, valueEnv("ENVOY_OIDC_ISSUER", issuer), valueEnv("ENVOY_OIDC_AUDIENCE", s.listenerAudience)), nil
 }
 
 // envVars is env, core.ListenerConfig's NAME=value rendering, as a container's environment, in
@@ -370,13 +411,17 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}
 	// The listener's Deployment, Service and bearer share one name. The bearer is a Secret of its
 	// own: the listener's pod names this one and never the component's dispatch Secret, which
-	// holds DATABASE_URL and DISPATCH_SIGNING_KEY.
+	// holds DATABASE_URL and DISPATCH_SIGNING_KEY. With listenerAudience the app presents its own
+	// token and no bearer exists, so neither does the Secret.
 	listenerName := s.hostname + "-listener"
-	listenerSecret, err := corev1.NewSecret(ctx, listenerName, &corev1.SecretArgs{
-		Metadata: metadata(listenerName), StringData: pulumi.StringMap{"ENVOY_API_TOKEN": database.listenerToken.Result},
-	}, child...)
-	if err != nil {
-		return err
+	var listenerSecret *corev1.Secret
+	if database.listenerToken != nil {
+		listenerSecret, err = corev1.NewSecret(ctx, listenerName, &corev1.SecretArgs{
+			Metadata: metadata(listenerName), StringData: pulumi.StringMap{"ENVOY_API_TOKEN": database.listenerToken.Result},
+		}, child...)
+		if err != nil {
+			return err
+		}
 	}
 	// One of the three SecretProviderClasses, which differ in nothing else: the CSI driver reads
 	// the Secret Manager secret the consumer's Input names, at its latest version, and mounts it
@@ -394,9 +439,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		}, child...)
 		return err
 	}
+	// With natsAudience the pods present their projected token instead, and read no seed.
 	seedName := s.hostname + "-nats-seed"
-	if err := secretClass(seedName, args.NatsSeedSecret, "natsSeedSecret", "nats-seed"); err != nil {
-		return err
+	if s.natsAudience == "" {
+		if err := secretClass(seedName, args.NatsSeedSecret, "natsSeedSecret", dispatchNatsSeedName); err != nil {
+			return err
+		}
 	}
 
 	azureKeyClassName := s.hostname + "-azure-embed-key"
@@ -424,15 +472,21 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 
 	// natsURL is the one NATS URL once checked: every container reads this output rather than the
 	// raw input, so envoy-dispatch's NATS_URLS is never an unchecked copy beside the listener's
-	// checked environment.
+	// checked environment. The issuer reaches no refusal, so the check renders without it.
 	natsURL := args.NatsUrl.ToStringOutput().ApplyT(func(url string) (string, error) {
-		if _, err := dispatchListenerEnv(s, listenerName, url); err != nil {
+		if _, err := dispatchListenerEnv(s, listenerName, url, ""); err != nil {
 			return "", fmt.Errorf("%s: %w", dispatch, err)
 		}
 		return url, nil
 	}).(pulumi.StringOutput)
-	listenerEnv := natsURL.ApplyT(func(url string) (corev1.EnvVarArray, error) {
-		env, err := dispatchListenerEnv(s, listenerName, url)
+	// With listenerAudience the listener verifies the app's own token against this cluster's
+	// issuer, which mints it; without it no issuer reaches the listener.
+	listenerIssuer := pulumi.String("").ToStringOutput()
+	if s.listenerAudience != "" {
+		listenerIssuer = cloud.issuer
+	}
+	listenerEnv := pulumi.All(natsURL, listenerIssuer).ApplyT(func(values []any) (corev1.EnvVarArray, error) {
+		env, err := dispatchListenerEnv(s, listenerName, values[0].(string), values[1].(string))
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", dispatch, err)
 		}
@@ -514,8 +568,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		}, child...)
 	}
 
-	seedMount := corev1.VolumeMountArray{corev1.VolumeMountArgs{Name: pulumi.String("nats-seed"), MountPath: pulumi.String("/var/run/secrets/envoy"), ReadOnly: pulumi.Bool(true)}}
-	seedVolume := corev1.VolumeArray{corev1.VolumeArgs{Name: pulumi.String("nats-seed"), Csi: &corev1.CSIVolumeSourceArgs{Driver: pulumi.String("secrets-store-gke.csi.k8s.io"), ReadOnly: pulumi.Bool(true), VolumeAttributes: pulumi.StringMap{"secretProviderClass": pulumi.String(seedName)}}}}
+	// natsMount and natsVolume are the NATS credential both Envoy containers mount at
+	// dispatchCredentialMount: the seed through its SecretProviderClass, or, with natsAudience,
+	// the pods' projected token for it, which NATS_SERVICE_TOKEN_FILE names.
+	credential := corev1.VolumeArgs{Name: pulumi.String(dispatchNatsSeedName), Csi: &corev1.CSIVolumeSourceArgs{Driver: pulumi.String("secrets-store-gke.csi.k8s.io"), ReadOnly: pulumi.Bool(true), VolumeAttributes: pulumi.StringMap{"secretProviderClass": pulumi.String(seedName)}}}
+	if s.natsAudience != "" {
+		credential = projectedTokenVolume(dispatchNatsTokenName, s.natsAudience)
+	}
+	natsMount := corev1.VolumeMountArray{corev1.VolumeMountArgs{Name: credential.Name, MountPath: pulumi.String(dispatchCredentialMount), ReadOnly: pulumi.Bool(true)}}
+	natsVolume := corev1.VolumeArray{credential}
 
 	podPeer := func(app string) networkingv1.NetworkPolicyPeerArgs {
 		return labelPeer(map[string]string{"app": app})
@@ -593,35 +654,43 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	frontDoor := pulumi.DependsOn(frontDoorResources)
 	// Both also mount the NATS seed, which the pod can read only once its principal holds
 	// roles/secretmanager.secretAccessor on the secret, so each waits for that grant too rather
-	// than racing IAM on the first deployment.
-	seedGrant := pulumi.DependsOn([]pulumi.Resource{database.seedAccessor})
+	// than racing IAM on the first deployment. A projected token needs no grant.
+	var seedGrants []pulumi.Resource
+	if database.seedAccessor != nil {
+		seedGrants = append(seedGrants, database.seedAccessor)
+	}
+	seedGrant := pulumi.DependsOn(seedGrants)
+	listenerChecksums := map[string]*corev1.Secret{}
+	if listenerSecret != nil {
+		listenerChecksums[listenerName] = listenerSecret
+	}
 
 	// The listener runs under the app's ServiceAccount, which is what mounts the NATS seed through
-	// Workload Identity, with listenerReplicas pods. Above one it needs an envoy image whose
-	// listener holds a delivery lease: there a standby pod is Ready and serves /v1 and the webhooks
-	// while only the lease holder delivers, a SIGTERM hands the lease over in about a second, and a
-	// killed holder's lease is taken over in about six. Readiness is /healthz, which answers within
-	// 5 s, so the probe allows 6; startup and liveness only ask that the listener answers
-	// (answersProbe). The pre-stop wait keeps a stopping pod answering /v1 while its removal from
-	// the Service propagates, and the 40 s grace period covers those 5 s and the listener's own
-	// stop of 28 s, with the margin listenerGraceMargin names. That 28 s is three hard deadlines
-	// the listener sets itself and holds as constants, stopHTTPGrace, stopLaneGrace and
-	// stopClientDrain, summed as stopBudget (packages/envoy/cmd/listener/main.go), whose own test
-	// holds this pod's golden to that sum and that margin. They cannot overrun, so the margin
+	// Workload Identity or presents its projected token, with listenerReplicas pods. Above one it
+	// needs an envoy image whose listener holds a delivery lease: there a standby pod is Ready and
+	// serves /v1 and the webhooks while only the lease holder delivers, a SIGTERM hands the lease
+	// over in about a second, and a killed holder's lease is taken over in about six. Readiness is
+	// /healthz, which answers within 5 s, so the probe allows 6; startup and liveness only ask that
+	// the listener answers (answersProbe). The pre-stop wait keeps a stopping pod answering /v1
+	// while its removal from the Service propagates, and the 40 s grace period covers those 5 s and
+	// the listener's own stop of 28 s, with the margin listenerGraceMargin names. That 28 s is three
+	// hard deadlines the listener sets itself and holds as constants, stopHTTPGrace, stopLaneGrace
+	// and stopClientDrain, summed as stopBudget (packages/envoy/cmd/listener/main.go), whose own
+	// test holds this pod's golden to that sum and that margin. They cannot overrun, so the margin
 	// covers the kubelet's own latency between the pre-stop hook's return and SIGTERM, the
 	// container's teardown and a late tick on a loaded node, and not a listener that runs over.
 	// This pod and the clustered hub's listener pod run the same binary at the same budget, and
 	// what holds the two graces equal is
 	// TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace, which reads both.
-	if _, err := deployment(listenerName, s.listenerReplicas, s.disruption.listenerPDBMinAvailable, map[string]*corev1.Secret{listenerName: listenerSecret}, corev1.PodSpecArgs{
+	if _, err := deployment(listenerName, s.listenerReplicas, s.disruption.listenerPDBMinAvailable, listenerChecksums, corev1.PodSpecArgs{
 		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
-				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: seedMount,
+				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: natsMount,
 				Lifecycle: sleepPreStop(5), StartupProbe: answersProbe(core.DefaultListenerPort, 5, 60), LivenessProbe: answersProbe(core.DefaultListenerPort, 10, 3), ReadinessProbe: readyProbe(core.DefaultListenerPort, 5, 6, 2),
 			},
 		},
-		Volumes: seedVolume,
+		Volumes: natsVolume,
 	}, frontDoor, seedGrant); err != nil {
 		return err
 	}
@@ -662,8 +731,14 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
 	}
+	// The NATS credential keeps the seed's place in the list: its file, or, with natsAudience,
+	// the projected token's, so a deployment without natsAudience renders what it always rendered.
+	natsCredential := valueEnv("NATS_NKEY_SEED_FILE", dispatchNatsSeedFile)
+	if s.natsAudience != "" {
+		natsCredential = valueEnv("NATS_SERVICE_TOKEN_FILE", dispatchNatsTokenFile)
+	}
 	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()), valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
-		corev1.EnvVarArgs{Name: pulumi.String("NATS_URLS"), Value: natsURL}, valueEnv("ENVOY_ALLOW_REMOTE_NATS", "1"), valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
+		corev1.EnvVarArgs{Name: pulumi.String("NATS_URLS"), Value: natsURL}, valueEnv("ENVOY_ALLOW_REMOTE_NATS", "1"), natsCredential)
 	// The proxy renders only in the SOCKS5 mode, and each JetStream number only when it is set,
 	// in the proxy's place in the list, so a deployment that sets neither renders byte for byte
 	// what it always rendered, which gcp/testdata/dispatch-*.golden hold. The listener's own copies
@@ -677,10 +752,21 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if s.streamMaxBytes > 0 {
 		appEnv = append(appEnv, valueEnv("ENVOY_STREAM_MAX_BYTES", strconv.Itoa(s.streamMaxBytes)))
 	}
-	appEnv = append(appEnv, valueEnv("ENVOY_URL", listenerURL), secretEnv("ENVOY_TOKEN", listenerName, "ENVOY_API_TOKEN"))
-	appMounts := append(corev1.VolumeMountArray{}, seedMount...)
-	appVolumes := append(corev1.VolumeArray{}, seedVolume...)
-	appGrants := []pulumi.Resource{database.seedAccessor}
+	appMounts := append(corev1.VolumeMountArray{}, natsMount...)
+	appVolumes := append(corev1.VolumeArray{}, natsVolume...)
+	appGrants := append([]pulumi.Resource{}, seedGrants...)
+	if s.listenerAudience == "" {
+		appEnv = append(appEnv, valueEnv("ENVOY_URL", listenerURL), secretEnv("ENVOY_TOKEN", listenerName, "ENVOY_API_TOKEN"))
+	} else {
+		// The app calls its listener as its own ServiceAccount, which the listener verifies with
+		// its OIDC pair (dispatchListenerEnv): the kubelet mints the token for listenerAudience
+		// into a projected volume mounted read-only into envoy-dispatch alone, and
+		// ENVOY_ACCOUNT_TOKEN_FILE, in ENVOY_TOKEN's place, names the file Dispatch reads at call
+		// time. No bearer is shared, and Dispatch refuses ENVOY_TOKEN beside it.
+		appEnv = append(appEnv, valueEnv("ENVOY_URL", listenerURL), valueEnv("ENVOY_ACCOUNT_TOKEN_FILE", dispatchListenerTokenFile))
+		appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String(dispatchListenerTokenName), MountPath: pulumi.String(dispatchListenerTokenMount), ReadOnly: pulumi.Bool(true)})
+		appVolumes = append(appVolumes, projectedTokenVolume(dispatchListenerTokenName, s.listenerAudience))
+	}
 	if s.agentSecretsURL != "" {
 		// Dispatch presents its own ServiceAccount's token to the broker, which reads the caller
 		// from BROKER_API_ACCOUNTS. The kubelet mints it for the broker's audience into a projected
@@ -689,9 +775,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		// Dispatch reads at call time. No secret is stored for it, so nothing waits on a grant.
 		appEnv = append(appEnv, valueEnv("DISPATCH_AGENT_SECRETS_URL", s.agentSecretsURL), valueEnv("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", "/var/run/secrets/dispatch/agent-secrets-account-token"))
 		appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String("agent-secrets-account-token"), MountPath: pulumi.String("/var/run/secrets/dispatch"), ReadOnly: pulumi.Bool(true)})
-		appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("agent-secrets-account-token"), Projected: &corev1.ProjectedVolumeSourceArgs{Sources: corev1.VolumeProjectionArray{
-			corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(s.agentSecretsAudience), ExpirationSeconds: pulumi.Int(agentSecretsTokenSeconds), Path: pulumi.String("agent-secrets-account-token")}},
-		}}})
+		appVolumes = append(appVolumes, projectedTokenVolume("agent-secrets-account-token", s.agentSecretsAudience))
 	}
 	if s.oidcAudience != "" {
 		// Dispatch verifies a caller's projected ServiceAccount token itself, which is how the
@@ -815,8 +899,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		Volumes: appVolumes,
 	}
 	// envoy-dispatch reads the dispatch Secret and ENVOY_TOKEN from the listener's, so a change to
-	// either rolls the app.
-	appChecksums := map[string]*corev1.Secret{dispatchSecretName: dispatchSecret, listenerName: listenerSecret}
+	// either rolls the app; with listenerAudience there is no listener Secret to read.
+	appChecksums := map[string]*corev1.Secret{dispatchSecretName: dispatchSecret}
+	maps.Copy(appChecksums, listenerChecksums)
 	if _, err := deployment(s.hostname, s.replicas, s.disruption.appPDBMinAvailable, appChecksums, appPod, pulumi.DependsOn(appGrants)); err != nil {
 		return err
 	}

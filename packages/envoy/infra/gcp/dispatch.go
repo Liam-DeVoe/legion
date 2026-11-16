@@ -170,6 +170,24 @@ type DispatchArgs struct {
 
 	NatsUrl        pulumi.StringInput `pulumi:"natsUrl,optional"`
 	NatsSeedSecret pulumi.StringInput `pulumi:"natsSeedSecret,optional"`
+	// NatsAudience moves the app's and the listener's NATS connections behind the auth service
+	// (dispatch://INFRA-840): each pod presents a projected token of the ServiceAccount
+	// <hostname> for this audience, read afresh at each connect from the file
+	// NATS_SERVICE_TOKEN_FILE names, in place of the seed. It is the broker's
+	// BROKER_NATS_K8S_AUDIENCE, whose BROKER_NATS_SERVICES lists that account as Dispatch of
+	// machine id <hostname>: the one grant the two connections share, as they share the seed
+	// today (natsgrant.Dispatch). Set, natsSeedSecret is refused, since a connection presents
+	// one identity, and nothing of the seed is mounted, classed or granted; unset, natsSeedSecret
+	// is required.
+	NatsAudience string `pulumi:"natsAudience,optional"`
+	// ListenerAudience moves the app's calls to its listener onto the app's own identity: the app
+	// presents a projected token of <hostname> for this audience on every call, read at call time
+	// from the file ENVOY_ACCOUNT_TOKEN_FILE names, and the listener verifies it with
+	// ENVOY_OIDC_ISSUER, this cluster's own issuer, and ENVOY_OIDC_AUDIENCE, this audience. No
+	// shared bearer exists then: the app carries no ENVOY_TOKEN, the listener no ENVOY_API_TOKEN,
+	// and neither the Secret <hostname>-listener nor its generated token is registered. Unset,
+	// the two share that generated bearer, as before.
+	ListenerAudience string `pulumi:"listenerAudience,optional"`
 
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
@@ -408,6 +426,8 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"frontDoorToolsImage", args.FrontDoorToolsImage},
 		{"signInClientId", args.SignInClientId},
 		{"signInDomain", args.SignInDomain},
+		{"natsAudience", args.NatsAudience},
+		{"listenerAudience", args.ListenerAudience},
 		{"agentSecretsUrl", args.AgentSecretsUrl},
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
@@ -521,6 +541,7 @@ type dispatchSettings struct {
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
+	natsAudience, listenerAudience              string
 	oidcAudience, oidcIssuer                    string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
@@ -827,6 +848,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"cloudSqlProxyImage", args.CloudSqlProxyImage != ""},
 		{"natsUrl", args.NatsUrl != nil},
 		{"natsSeedSecret", args.NatsSeedSecret != nil},
+		{"natsAudience", args.NatsAudience != ""},
+		{"listenerAudience", args.ListenerAudience != ""},
 		{"agentSecretsUrl", args.AgentSecretsUrl != ""},
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
@@ -1093,8 +1116,20 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if args.NatsUrl == nil {
 		return dispatchSettings{}, errors.New("natsUrl is required")
 	}
-	if args.NatsSeedSecret == nil {
-		return dispatchSettings{}, errors.New("natsSeedSecret is required")
+	// The pods connect to NATS as one identity: the seed, or, behind the auth service, their
+	// projected token for natsAudience, which the bus refuses beside a seed when it starts.
+	if args.NatsAudience != "" {
+		if err := core.CheckEnvValue("natsAudience", "a projected ServiceAccount token's audience", args.NatsAudience); err != nil {
+			return dispatchSettings{}, err
+		}
+		if args.NatsSeedSecret != nil {
+			return dispatchSettings{}, core.InputErrorf("natsSeedSecret", "natsSeedSecret is set beside natsAudience: the app and the listener connect to NATS as one identity, which natsAudience makes their projected ServiceAccount token, so unset natsSeedSecret")
+		}
+	} else if args.NatsSeedSecret == nil {
+		return dispatchSettings{}, core.InputErrorf("natsSeedSecret", "natsSeedSecret is required unless natsAudience is set")
+	}
+	if err := core.CheckEnvValue("listenerAudience", "ENVOY_OIDC_AUDIENCE", args.ListenerAudience); err != nil {
+		return dispatchSettings{}, err
 	}
 	if args.AgentSecretsAudience != "" && args.AgentSecretsUrl == "" {
 		return dispatchSettings{}, errors.New("agentSecretsUrl is required when agentSecretsAudience is set")
@@ -1182,6 +1217,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.signIn.domain = args.SignInDomain
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = args.AgentSecretsAudience
+	s.natsAudience = args.NatsAudience
+	s.listenerAudience = args.ListenerAudience
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
 	s.appClientID = args.AppClientId

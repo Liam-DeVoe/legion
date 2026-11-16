@@ -1092,6 +1092,49 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: the listener received Authorization %q, want none", got)
 			}
 		},
+		"ENVOY_ACCOUNT_TOKEN_FILE": func(t *testing.T) {
+			// The bearer the Envoy listener receives when a signed-in human's GET /api/v1/agents
+			// reads its sessions: Dispatch's own projected ServiceAccount token, as the file holds
+			// it when the call is made. The boot never reads the file, so a path that holds nothing
+			// yet boots, and the token written there afterwards is what the call presents.
+			path := filepath.Join(t.TempDir(), "listener-account-token")
+			authorization := make(chan string, 1)
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				authorization <- r.Header.Get("Authorization")
+				_, _ = w.Write([]byte("[]"))
+			}))
+			defer listener.Close()
+			boot := resolveWith(t, map[string]string{"ENVOY_URL": listener.URL, "ENVOY_ACCOUNT_TOKEN_FILE": " " + path + " "})
+			if boot.EnvoyAccountTokenFile != path {
+				t.Errorf("EnvoyAccountTokenFile = %q, want the trimmed path %q, which a boot does not read", boot.EnvoyAccountTokenFile, path)
+			}
+			// A fresh value per run, so the assertion holds no credential-shaped literal.
+			token := rand.Text()
+			if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/agents", nil), "alice")
+			response := httptest.NewRecorder()
+			routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET /api/v1/agents: %d %s", response.Code, response.Body.String())
+			}
+			select {
+			case got := <-authorization:
+				if got != "Bearer "+token {
+					t.Errorf("ENVOY_ACCOUNT_TOKEN_FILE: the listener received Authorization %q, want the token the file holds", got)
+				}
+			default:
+				t.Fatal("GET /api/v1/agents answered without calling the listener")
+			}
+			// Dispatch calls its listener as one identity, so the shared bearer beside it refuses
+			// the start, naming both.
+			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": path, "ENVOY_TOKEN": "listener-token"}, "ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_TOKEN are both set")
+			// Blank is unset: no account, and the shared bearer, when set, is presented as before.
+			if boot := resolveWith(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": " ", "ENVOY_TOKEN": "listener-token"}); boot.EnvoyAccountTokenFile != "" || boot.EnvoyToken != "listener-token" {
+				t.Errorf("blank: EnvoyAccountTokenFile = %q, EnvoyToken = %q, want no account and the shared bearer", boot.EnvoyAccountTokenFile, boot.EnvoyToken)
+			}
+		},
 		"DISPATCH_REPO_PROJECTS": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": " acme/widgets=WID "}); boot.RepoProjects != "acme/widgets=WID" {
 				t.Errorf("RepoProjects = %q", boot.RepoProjects)

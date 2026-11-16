@@ -200,6 +200,11 @@ type DepsInput struct {
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected Kubernetes
+	// ServiceAccount token (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), which the listener client
+	// presents on every call in EnvoyToken's place, reading the file for each call
+	// (envoy.WithAccount); empty presents none.
+	EnvoyAccountTokenFile string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
 	EnvoyTimeout time.Duration
@@ -282,6 +287,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
+		if input.EnvoyAccountTokenFile != "" {
+			options = append(options, envoy.WithAccount(brokertoken.NewAccountToken(input.EnvoyAccountTokenFile)))
+		}
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
 		}

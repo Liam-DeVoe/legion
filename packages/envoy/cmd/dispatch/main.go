@@ -217,8 +217,13 @@ type bootConfig struct {
 	SigningKey auth.SigningKeys
 	// InsecureCookie (DISPATCH_INSECURE_COOKIE set to anything) drops Secure from every cookie.
 	InsecureCookie bool
-	// EnvoyToken is ENVOY_TOKEN, the bearer every Envoy listener call sends.
+	// EnvoyToken is ENVOY_TOKEN, the shared bearer every Envoy listener call sends.
 	EnvoyToken string
+	// EnvoyAccountTokenFile is ENVOY_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
+	// Kubernetes ServiceAccount token, which every Envoy listener call presents in EnvoyToken's
+	// place (resolveBootConfig refuses the two together). The file is read by the listener client
+	// on each call, never here: a projected token rotates.
+	EnvoyAccountTokenFile string
 	// RoleHolderWindows are the session windows a role route's holder is judged by
 	// (ENVOY_SESSION_LIVE_WINDOW and ENVOY_SESSION_GONE_HORIZON, roleHolderWindows): what the
 	// outbox's reader of the role and session buckets carries (roles.NewBuckets).
@@ -1196,6 +1201,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		DevSignInSharedKey: env.get("DISPATCH_DEV_SIGNIN_SHARED_KEY"),
 		InsecureCookie:     env.get("DISPATCH_INSECURE_COOKIE") != "",
 		EnvoyToken:         env.get("ENVOY_TOKEN"),
+		// Dispatch's own token, by the path alone: the listener client reads the file on each
+		// call, so a path that holds nothing yet still boots.
+		EnvoyAccountTokenFile: strings.TrimSpace(env.get("ENVOY_ACCOUNT_TOKEN_FILE")),
+	}
+	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyToken != "" {
+		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_TOKEN are both set; Dispatch calls its Envoy listener as one identity, so set one: ENVOY_ACCOUNT_TOKEN_FILE, its own service-account token, replaces the shared bearer")
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
@@ -1677,6 +1688,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
+	built.EnvoyAccountTokenFile = boot.EnvoyAccountTokenFile
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile

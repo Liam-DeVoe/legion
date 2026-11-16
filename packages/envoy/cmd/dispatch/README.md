@@ -64,6 +64,14 @@ Each item below names a variable, then its purpose.
   The auth service answers with Dispatch's grant for the account its `BROKER_NATS_SERVICES` entry lists, and that user expires with the token, so the connection moves to a later token ten minutes before the one it presented lapses.
   Either set beside any other NATS credential variable refuses startup naming both.
 
+- `ENVOY_ACCOUNT_TOKEN_FILE`
+
+  Dispatch's own projected Kubernetes ServiceAccount token, which every call to the Envoy listener at `ENVOY_URL` presents as its bearer in place of the shared `ENVOY_TOKEN`.
+  The listener admits it through its `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` pair: the issuer of the cluster that minted the token, and the audience the token is projected for.
+  Dispatch reads the file for the call it makes, never at startup, and reuses what it read for at most 30 seconds (`brokertoken.AccountTokenCacheTTL`), so the token the kubelet rewrites in place reaches the next calls with no restart, and a path that holds nothing yet still boots.
+  A call whose token cannot be read sends nothing: it fails as an unavailable listener does (`envoy.ErrUnavailable`), naming the file, and is never sent without a bearer for the listener to refuse.
+  Set beside `ENVOY_TOKEN`, it refuses startup naming both, since Dispatch calls its listener as one identity.
+
 - `DISPATCH_TEST_HOOKS`
 
   Set to `1` to mount test-only routes: `POST /api/v1/live/_test/disconnect` closes every open live socket with 1012 (restart), and `POST /api/v1/live/_test/rotate` closes every one with 4001 (`max age`);

@@ -34,7 +34,11 @@ type dispatchCluster struct {
 
 // dispatchDatabase is what the component's database resources give the rest of it: the Cloud SQL
 // instance, the generated secrets, and the pods' principal with the grants it holds. clusterOnly
-// registers none of them, so that mode builds no dispatchDatabase at all.
+// registers none of them, so that mode builds no dispatchDatabase at all. listenerToken, the
+// bearer the app and its listener share, is nil with listenerAudience, where the app presents its
+// own token and no bearer is shared; seedAccessor, the grant that lets the pods' principal read
+// the NATS seed, is nil with natsAudience, where the pods present their projected token and
+// mount no seed.
 type dispatchDatabase struct {
 	instance *sql.DatabaseInstance
 	password *random.RandomPassword
@@ -222,11 +226,15 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		return nil, err
 	}
 	// The listener binds 0.0.0.0 in a pod of its own, where its API refuses to start without a
-	// bearer, and its credential is its own, never a key of the Secret holding the database URL
-	// and the signing key.
-	listenerToken, err := random.NewRandomPassword(ctx, s.hostname+"-listener-token", &random.RandomPasswordArgs{Length: pulumi.Int(48), Special: pulumi.Bool(false)}, child)
-	if err != nil {
-		return nil, err
+	// bearer or an OIDC pair, and its credential is its own, never a key of the Secret holding the
+	// database URL and the signing key. With listenerAudience the app presents its own token,
+	// which the listener verifies, so no bearer is generated at all.
+	var listenerToken *random.RandomPassword
+	if s.listenerAudience == "" {
+		listenerToken, err = random.NewRandomPassword(ctx, s.hostname+"-listener-token", &random.RandomPasswordArgs{Length: pulumi.Int(48), Special: pulumi.Bool(false)}, child)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// deletionProtection also keeps the database itself: PREVENT refuses its delete, which an
 	// instance replacement would otherwise make first.
@@ -258,9 +266,14 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		}
 		return fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/subject/ns/%s/sa/%s", parts[0], parts[1], s.namespace, s.hostname), nil
 	}).(pulumi.StringOutput)
-	seedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn([]pulumi.Resource{cluster}))
-	if err != nil {
-		return nil, err
+	// With natsAudience the pods present their projected token to the auth service and read no
+	// seed, so there is no secret to grant.
+	var seedAccessor *secretmanager.SecretIamMember
+	if s.natsAudience == "" {
+		seedAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn([]pulumi.Resource{cluster}))
+		if err != nil {
+			return nil, err
+		}
 	}
 	var azureKeyAccessor *secretmanager.SecretIamMember
 	if s.azure.key {

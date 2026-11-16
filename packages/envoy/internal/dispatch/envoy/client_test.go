@@ -6,11 +6,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
 // LEGION-271. A send whose answer misses the client's window is the one failure a retry is safe
@@ -178,6 +183,94 @@ func TestSessionsSendsEnvoyToken(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("sessions = %#v, want no sessions", sessions)
+	}
+}
+
+// With an account (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), every call to the listener - a read,
+// a send and an unsubscribe alike - presents that account's own token as its bearer, read afresh
+// for each call, so the token the kubelet rewrote in place is the next call's and no restart is
+// needed. A token the client cannot read sends no request at all: the call is ErrUnavailable
+// naming the file, never an unauthenticated call for the listener to refuse, never ErrUnreachable
+// (asking again repeats it) and, for a send that wrote nothing, never a receipt timeout.
+func TestEnvoyClientPresentsTheAccountToken(t *testing.T) {
+	var mu sync.Mutex
+	var received []string
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		received = append(received, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/sessions":
+			_, _ = w.Write([]byte(`[]`))
+		case "/v1/messages/send":
+			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
+		case "/v1/interests/unsubscribe":
+			_, _ = w.Write([]byte(`{"removed":["notifications.dispatch.issue.T-1"]}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer listener.Close()
+	requests := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(received)
+	}
+
+	path := filepath.Join(t.TempDir(), "listener-account-token")
+	rotate := func(token string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The file holds a token before the client is built, so a client that read it then rather
+	// than for each call would present that first token every time. A zero TTL opens the file on
+	// every read, as the cache does once its copy lapses, so each rewrite below is the next
+	// call's token.
+	rotate("account-token-1")
+	client := New(listener.URL, WithAccount(&brokertoken.AccountToken{Path: path}))
+	ctx := context.Background()
+	send := SendInput{TargetSession: "s1", Message: "hello", IdempotencyKey: "m1:steer"}
+
+	if _, err := client.Sessions(ctx); err != nil {
+		t.Fatalf("sessions: %v", err)
+	}
+	rotate("account-token-2")
+	if _, err := client.Send(ctx, send); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	rotate("account-token-3")
+	if _, err := client.Unsubscribe(ctx, "s1", []string{"notifications.dispatch.issue.T-1"}); err != nil {
+		t.Fatalf("unsubscribe: %v", err)
+	}
+	want := []string{
+		"GET /v1/sessions Bearer account-token-1",
+		"POST /v1/messages/send Bearer account-token-2",
+		"POST /v1/interests/unsubscribe Bearer account-token-3",
+	}
+	if got := requests(); !slices.Equal(got, want) {
+		t.Fatalf("the listener received %q, want each call to present the account's token as the file held it then: %q", got, want)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := client.Sessions(ctx)
+	_, sendErr := client.Send(ctx, send)
+	_, unsubscribeErr := client.Unsubscribe(ctx, "s1", []string{"notifications.dispatch.issue.T-1"})
+	for call, err := range map[string]error{"sessions": readErr, "send": sendErr, "unsubscribe": unsubscribeErr} {
+		var unread *brokertoken.AccountTokenError
+		if !errors.Is(err, ErrUnavailable) || !errors.As(err, &unread) || !strings.Contains(err.Error(), path) {
+			t.Errorf("%s with the token file gone: err = %v, want ErrUnavailable naming %s", call, err, path)
+		}
+		if errors.Is(err, ErrUnreachable) || errors.Is(err, ErrReceiptTimeout) {
+			t.Errorf("%s with the token file gone: err = %v, want neither ErrUnreachable nor ErrReceiptTimeout: nothing was sent, and asking again repeats it", call, err)
+		}
+	}
+	if got := requests(); len(got) != len(want) {
+		t.Fatalf("the listener received %q after the token file went, want no request: a call without the account's token is only refused", got[len(want):])
 	}
 }
 

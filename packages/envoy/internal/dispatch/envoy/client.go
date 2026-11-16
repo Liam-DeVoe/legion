@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -250,6 +251,7 @@ type SendResult struct {
 type Client struct {
 	baseURL    string
 	apiToken   string
+	account    brokertoken.Account
 	httpClient *http.Client
 }
 
@@ -272,6 +274,18 @@ func WithToken(token string) Option {
 	return func(c *Client) { c.apiToken = token }
 }
 
+// WithAccount sets the account whose own token every listener call presents as its bearer
+// (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE, a projected Kubernetes ServiceAccount token the
+// listener verifies through its ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair), in place of
+// WithToken's shared bearer. The token is read for each call, never once here: a projected token
+// rotates, and the kubelet rewrites the file in place. A call whose token cannot be read sends no
+// request, since one without it would only be refused: it is ErrUnavailable carrying the
+// account's own error (a *brokertoken.AccountTokenError names the file), and never ErrUnreachable,
+// since asking again repeats it.
+func WithAccount(account brokertoken.Account) Option {
+	return func(c *Client) { c.account = account }
+}
+
 // New returns a client for an Envoy listener's HTTP control API.
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{
@@ -286,10 +300,22 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-func (c *Client) authorize(request *http.Request) {
-	if c.apiToken != "" {
-		request.Header.Set("Authorization", "Bearer "+c.apiToken)
+// authorize sets the bearer request presents: the account's token as it reads now, else the
+// shared token, else none. It fails only when the account's token cannot be read, and then the
+// caller sends nothing.
+func (c *Client) authorize(request *http.Request) error {
+	bearer := c.apiToken
+	if c.account != nil {
+		token, err := c.account.Read()
+		if err != nil {
+			return fmt.Errorf("%w: %s %s: read the listener account token: %w", ErrUnavailable, request.Method, request.URL.Path, err)
+		}
+		bearer = token
 	}
+	if bearer != "" {
+		request.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	return nil
 }
 
 // Sessions returns every session the listener holds a registration for, live and unresponsive
@@ -402,7 +428,9 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 		return nil, fmt.Errorf("%w: build POST /v1/interests/unsubscribe request: %v", ErrUnavailable, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	c.authorize(request)
+	if err := c.authorize(request); err != nil {
+		return nil, err
+	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, unreachable(fmt.Errorf("%w: POST /v1/interests/unsubscribe: %v", ErrUnavailable, err))
@@ -662,7 +690,9 @@ func (c *Client) get(ctx context.Context, route, query string) (*http.Response, 
 	if err != nil {
 		return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
 	}
-	c.authorize(request)
+	if err := c.authorize(request); err != nil {
+		return nil, err
+	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
@@ -729,7 +759,9 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		return SendResult{}, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	c.authorize(request)
+	if err := c.authorize(request); err != nil {
+		return SendResult{}, err
+	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return SendResult{}, sendTransportError(err, written.Load())
