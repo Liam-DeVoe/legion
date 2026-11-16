@@ -126,7 +126,12 @@ type ActivityReport struct {
 // in its phase), the controller keeper's retry of a retired controller (daemon's
 // controllerKeeper.keep, RequestRetry) and the workflow's start of a retired worker's phase
 // (daemon's outbox.supervise, RequestRetry) — and that session's next turn reads what the stop
-// ended (dispatch://INFRA-3276 R3).
+// ended (dispatch://INFRA-3276 R3). endDisplaced and endFromOutside are the two causes of a process
+// found gone through no fault of its own (displaced), and they say who ended it: endDisplaced an
+// act of the daemon's own (runtime.Observation.Displaced: its replacement of the pod, or its
+// take-over of another runtime's process), and endFromOutside an end that something outside the
+// pod made (runtime.PodEndNotOurs, endedFromOutside), which the daemon did not make and so never
+// tells as a replacement.
 //
 // The cause is read into an agent's prompt as it stands (RelaunchSentence), so every word of it
 // that is not the daemon's own — the runtime's account of a death, the failure sentence that can
@@ -138,6 +143,7 @@ const (
 	endRetired     = "the daemon retired it after its prompts came to nothing"
 	endStalePlugin = "it ran an older plugin and was started again on the current one"
 	endDisplaced   = "its pod was replaced"
+	endFromOutside = "its pod was ended from outside it"
 	endRepointed   = "its address changed"
 	endStopped     = "its claim was stopped"
 )

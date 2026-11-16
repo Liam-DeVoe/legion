@@ -2996,7 +2996,7 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// made, and one the runtime read neither way, are charged exactly as they were before
 		// the reading existed.
 		if observation.Displaced {
-			return m.displaced(ctx, observation)
+			return m.displaced(ctx, observation, endDisplaced)
 		}
 		if observation.PodEnd == runtime.PodEndNotOurs {
 			return m.endedFromOutside(ctx, observation)

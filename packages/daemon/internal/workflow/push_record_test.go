@@ -117,9 +117,10 @@ func TestAPushOfAnIssueWithNoPullRequestIsRecordedAndAsksForACopyOnCommit(t *tes
 // send; a copy asked for any other would discard the copy in flight as overtaken and bundle the
 // workspace again for nothing. A webhook GitHub delivers again under an event id of its own gets
 // past the fact's own dedupe, as does the per-issue read's rebuild of a push whose webhook was
-// applied, and both are recorded later than the first; so are a late webhook of a push behind the
-// newest and the branch's deletion, neither of which moves the record either. The push after them
-// moves it, and asks for its copy.
+// applied, and both are recorded later than the first; so is a late webhook of a push behind the
+// newest, which does not move the record either. The branch's deletion, a push to no commit
+// (record.NoCommit), is not recorded at all: the push handler records nothing for it (push). The
+// push after them moves the record, and asks for its copy.
 func TestAPushTheRecordAlreadyHoldsAsksForNoCopy(t *testing.T) {
 	rig := newPushRecordRig(t)
 	push := func(id, before, after string) {
@@ -137,7 +138,7 @@ func TestAPushTheRecordAlreadyHoldsAsksForNoCopy(t *testing.T) {
 	push("push-webhook:c1..c2-redelivered", "c1", "c2")
 	push("pull-request-read:c1..c2", "c1", "c2")
 	push("push-webhook:c0..c1-late", "c0", "c1")
-	push("push-webhook:c2..deleted", "c2", "0000000000000000000000000000000000000000")
+	push("push-webhook:c2..deleted", "c2", record.NoCommit)
 	if !slices.Equal(rig.asked, []string{"LEGION-208", "LEGION-208"}) {
 		t.Fatalf("pushes the record already held asked for copies of %v, want none beyond the two the pushes that moved it asked for", rig.asked)
 	}

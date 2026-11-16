@@ -212,6 +212,29 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 // share.
 func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relaunch() }
 
+// inRelaunchRecordTurn is whether the turn the claim is in is the turn of the daemon's own
+// delivery of a relaunch's record (Delivery.Relaunch): the claim holds that delivery, and this
+// turn's start confirmed it. A start dates its turn before it writes the confirmation — beginTurn
+// sets Claim.LastTurnStart and then confirm sets ConfirmedAt, and the askFirst branch of
+// sendPending does the same in that order — so a delivery this turn confirmed was confirmed no
+// earlier than the turn began, and one an earlier turn confirmed, still held while its prompt's
+// result is to come, was confirmed before it. Both times are the claim's and persisted, unlike the
+// turn's delivery the machine keeps in memory (Machine.turnsDelivery), so a daemon restarted in
+// the middle of the turn answers as the daemon before it would have.
+//
+// The record's turn and its retirement end neither the run of pod ends from outside the pod
+// (Budgets.PodEndsNotOurs) nor the deaths (Budgets.Deaths) that a turn's end and a task's
+// retirement end (turnEnded, retirePending): the record is the daemon's own act, given a claim
+// holding nothing at every relaunch's ready (queueRelaunch), and no work of the claim's, so a
+// turn completed on it is no evidence that the claim's work gets through. Read as such evidence,
+// it would end both at each relaunch after a message's turn the cluster ended or the process
+// died in, and a claim whose messages keep ending its pod or killing its process would never
+// reach the limit.
+func (m *Machine) inRelaunchRecordTurn() bool {
+	p := m.claim.Pending
+	return p != nil && p.Relaunch() && !p.ConfirmedAt.IsZero() && !p.ConfirmedAt.Before(m.claim.LastTurnStart)
+}
+
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own
 // that carries the sentence of its untold record alone (RelaunchSentence), so the next prompted
 // turn of the new process reads what the last one ended at once, whatever the role: a root

@@ -1011,10 +1011,14 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	}
 	// The deaths and the run of pod ends from outside the pod that found the ready agent at this
 	// task were counted against it, so they end with it, in the same write (chargeDeath,
-	// endedFromOutside, workOutstanding). The run of a start's ends (Budgets.StartEndsNotOurs) is
-	// the start's and not the task's: a task that ends while the agent starts leaves that start
-	// exactly as it was, so only the agent's ready ends that run (ready).
-	retired.Budgets.Deaths, retired.Budgets.PodEndsNotOurs = 0, 0
+	// endedFromOutside, workOutstanding). The daemon's own relaunch record is no task of the
+	// claim's, so its retirement ends neither the run nor the deaths (inRelaunchRecordTurn, which
+	// says why). The run of a start's ends (Budgets.StartEndsNotOurs) is the start's and not the
+	// task's: a task that ends while the agent starts leaves that start exactly as it was, so only
+	// the agent's ready ends that run (ready).
+	if !p.Relaunch() {
+		retired.Budgets.Deaths, retired.Budgets.PodEndsNotOurs = 0, 0
+	}
 	err := m.write(ctx, func(ctx context.Context) error {
 		return m.deps.Store.RetireDelivery(ctx, retired, p.ID)
 	})
