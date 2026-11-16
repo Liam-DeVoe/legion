@@ -2733,7 +2733,7 @@ func (s *outboxClaimStore) PutClaimStep(_ context.Context, token claim.Token, st
 
 // HoldSession holds each session for the first claim that records it, as the store's
 // claim_sessions table does.
-func (s *outboxClaimStore) HoldSession(_ context.Context, token claim.Token, session string) (claim.Token, error) {
+func (s *outboxClaimStore) HoldSession(_ context.Context, _ string, token claim.Token, session string) (claim.Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if holder, held := s.holds[session]; held {

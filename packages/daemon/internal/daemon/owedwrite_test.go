@@ -125,8 +125,8 @@ func (s *switchStore) PutClaimStep(ctx context.Context, token claim.Token, step 
 	return s.now().PutClaimStep(ctx, token, step)
 }
 
-func (s *switchStore) HoldSession(ctx context.Context, token claim.Token, session string) (claim.Token, error) {
-	return s.now().HoldSession(ctx, token, session)
+func (s *switchStore) HoldSession(ctx context.Context, project string, token claim.Token, session string) (claim.Token, error) {
+	return s.now().HoldSession(ctx, project, token, session)
 }
 
 // detachedWrites is the real store as the rig hands it out: every call Machine.write bounds runs

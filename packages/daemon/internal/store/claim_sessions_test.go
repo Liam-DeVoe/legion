@@ -14,16 +14,19 @@ import (
 // migrate through everything before it whatever lands beside it.
 const claimSessionsVersion = 20261116144907
 
-// Each session id is held for the first claim that records it (dispatch://INFRA-840, plan E's
-// t-e-54), and nothing that happens to that claim after frees it: two claims racing for one new id
-// are answered one holder, the hold outlives the claim's retirement and its row, and an id two
-// claims recorded before the table existed is held for neither and named for an operator to settle.
+// Each session id is held for the first claim of its project that records it (dispatch://INFRA-840,
+// plan E's t-e-54), and nothing that happens to that claim after frees it: two claims racing for
+// one new id are answered one holder, the hold outlives the claim's retirement and its row, and an
+// id two claims recorded before the table existed is held for neither and named for an operator to
+// settle. A hold is its project's, as a daemon serves one project: another project's claim of the
+// same id is another daemon's, whose pods the broker keeps apart (exchange.PodLaunchPrincipal).
 //
-// The control: a conflict that hands the id to its latest caller (`on conflict (session) do
-// update set claim = excluded.claim`) answers the second claim as the holder, and the first row
+// The control: a conflict that hands the id to its latest caller (`on conflict (project, session)
+// do update set claim = excluded.claim`) answers the second claim as the holder, and the first row
 // fails naming it (the pull request records the run).
 func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 	const first, second = claim.Token("legion-LEGION-209-implementer"), claim.Token("legion-LEGION-209-tester")
+	const project = "legion"
 
 	t.Run("the first claim to record an id holds it, and its own is answered again", func(t *testing.T) {
 		ctx := context.Background()
@@ -31,10 +34,14 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 		for _, ask := range []struct {
 			token, want claim.Token
 		}{{first, first}, {second, first}, {first, first}} {
-			holder, err := store.HoldSession(ctx, ask.token, "ses_new")
+			holder, err := store.HoldSession(ctx, project, ask.token, "ses_new")
 			if err != nil || holder != ask.want {
 				t.Fatalf("%s holding ses_new answers %q, %v; want %s, the first claim that recorded it", ask.token, holder, err, ask.want)
 			}
+		}
+		const elsewhere = claim.Token("other-OTHER-1-implementer")
+		if holder, err := store.HoldSession(ctx, "other", elsewhere, "ses_new"); err != nil || holder != elsewhere {
+			t.Fatalf("another project's claim holding ses_new answers %q, %v; want %s: a hold is its own project's", holder, err, elsewhere)
 		}
 	})
 
@@ -52,7 +59,7 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 				go func() {
 					defer wg.Done()
 					<-start
-					holders[i], errs[i] = store.HoldSession(ctx, token, session)
+					holders[i], errs[i] = store.HoldSession(ctx, project, token, session)
 				}()
 			}
 			close(start)
@@ -74,20 +81,20 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 		if err := store.PutClaim(ctx, retired); err != nil {
 			t.Fatalf("put the claim: %v", err)
 		}
-		if holder, err := store.HoldSession(ctx, first, "ses_retired"); err != nil || holder != first {
+		if holder, err := store.HoldSession(ctx, project, first, "ses_retired"); err != nil || holder != first {
 			t.Fatalf("the claim holding its session answers %q, %v", holder, err)
 		}
 		retired.State, retired.Locator, retired.CapabilityHash = supervise.StateRetired, nil, nil
 		if err := store.PutClaim(ctx, retired); err != nil {
 			t.Fatalf("write the retirement: %v", err)
 		}
-		if holder, err := store.HoldSession(ctx, second, "ses_retired"); err != nil || holder != first {
+		if holder, err := store.HoldSession(ctx, project, second, "ses_retired"); err != nil || holder != first {
 			t.Fatalf("another claim holding the retired claim's session answers %q, %v; want %s", holder, err, first)
 		}
 		if _, err := store.Pool().Exec(ctx, `delete from claims where token = $1`, string(first)); err != nil {
 			t.Fatalf("delete the claim's row: %v", err)
 		}
-		if holder, err := store.HoldSession(ctx, second, "ses_retired"); err != nil || holder != first {
+		if holder, err := store.HoldSession(ctx, project, second, "ses_retired"); err != nil || holder != first {
 			t.Fatalf("another claim holding a deleted claim's session answers %q, %v; want %s", holder, err, first)
 		}
 	})
@@ -97,15 +104,16 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 		store := emptyStore(t)
 		migrateThrough(t, store, claimSessionsVersion-1)
 		for _, row := range []struct {
-			token, session, abandoned string
+			token, project, session, abandoned string
 		}{
-			{"legion-LEGION-301-implementer", "ses_own", ""},
-			{"legion-LEGION-301-tester", "ses_shared", ""},
-			{"legion-LEGION-302-implementer", "ses_shared", ""},
-			{"legion-LEGION-303-implementer", "", "ses_abandoned"},
-			{"legion-LEGION-304-implementer", "ses_taken", ""},
-			{"legion-LEGION-305-implementer", "", "ses_taken"},
-			{"legion-LEGION-306-implementer", "", ""},
+			{"legion-LEGION-301-implementer", "legion", "ses_own", ""},
+			{"legion-LEGION-301-tester", "legion", "ses_shared", ""},
+			{"legion-LEGION-302-implementer", "legion", "ses_shared", ""},
+			{"legion-LEGION-303-implementer", "legion", "", "ses_abandoned"},
+			{"legion-LEGION-304-implementer", "legion", "ses_taken", ""},
+			{"legion-LEGION-305-implementer", "legion", "", "ses_taken"},
+			{"legion-LEGION-306-implementer", "legion", "", ""},
+			{"other-OTHER-301-implementer", "other", "ses_own", ""},
 		} {
 			var abandoned any
 			if row.abandoned != "" {
@@ -114,8 +122,8 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 			if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation,
 				session, session_file, state, failure, launch_failures, prompt_failures, prompt_retires, uncertain_streak,
 				abandoned_session)
-				values ($1, 'legion', 'LEGION-301', 'LEGION-301', 'implementer', 1, $2, '', 'retired', '', 0, 0, 0, 0, $3::jsonb)`,
-				row.token, row.session, abandoned); err != nil {
+				values ($1, $2, 'LEGION-301', 'LEGION-301', 'implementer', 1, $3, '', 'retired', '', 0, 0, 0, 0, $4::jsonb)`,
+				row.token, row.project, row.session, abandoned); err != nil {
 				t.Fatalf("record %s before the migration: %v", row.token, err)
 			}
 		}
@@ -125,7 +133,7 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 		}
 
 		held := map[string]string{}
-		rows, err := store.Pool().Query(ctx, `select session, claim from claim_sessions`)
+		rows, err := store.Pool().Query(ctx, `select project || '/' || session, claim from claim_sessions`)
 		if err != nil {
 			t.Fatalf("read the holds: %v", err)
 		}
@@ -140,10 +148,11 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 			t.Fatalf("read the holds: %v", err)
 		}
 		want := map[string]string{
-			"ses_own":       "legion-LEGION-301-implementer",
-			"ses_shared":    "",
-			"ses_abandoned": "legion-LEGION-303-implementer",
-			"ses_taken":     "",
+			"legion/ses_own":       "legion-LEGION-301-implementer",
+			"legion/ses_shared":    "",
+			"legion/ses_abandoned": "legion-LEGION-303-implementer",
+			"legion/ses_taken":     "",
+			"other/ses_own":        "other-OTHER-301-implementer",
 		}
 		if len(held) != len(want) {
 			t.Errorf("the migration holds %v, want %v", held, want)
@@ -155,12 +164,12 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 		}
 
 		for _, token := range []claim.Token{"legion-LEGION-301-tester", "legion-LEGION-302-implementer"} {
-			if holder, err := store.HoldSession(ctx, token, "ses_shared"); err != nil || holder != "" {
+			if holder, err := store.HoldSession(ctx, "legion", token, "ses_shared"); err != nil || holder != "" {
 				t.Errorf("%s holding the id two claims record answers %q, %v; want the empty holder no claim matches", token, holder, err)
 			}
 		}
 
-		none, err := store.SessionsHeldForNone(ctx)
+		none, err := store.SessionsHeldForNone(ctx, "legion")
 		if err != nil {
 			t.Fatalf("read the sessions held for none: %v", err)
 		}

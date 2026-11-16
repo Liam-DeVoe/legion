@@ -69,7 +69,7 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 		}
 	}
 	// What the migration leaves of the rows recording one id, and of the one recording its own.
-	if _, err := st.Pool().Exec(ctx, `insert into claim_sessions (session, claim) values ($1, ''), ('ses_own', $2)`, twice, string(own)); err != nil {
+	if _, err := st.Pool().Exec(ctx, `insert into claim_sessions (project, session, claim) values ($1, $2, ''), ($1, 'ses_own', $3)`, project, twice, string(own)); err != nil {
 		t.Fatalf("record the holds: %v", err)
 	}
 	st.Close()
@@ -110,7 +110,7 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 	}
 	line := lines[0]
 	claims, _ := line["claims"].([]any)
-	settle := "update claim_sessions set claim = '<token>' where session = 'ses_twice''; update claim_sessions set claim = ''x''; --'"
+	settle := "update claim_sessions set claim = '<token>' where project = '" + project + "' and session = 'ses_twice''; update claim_sessions set claim = ''x''; --'"
 	if line["level"] != "ERROR" || line["session"] != twice || len(claims) != 3 ||
 		claims[0] != string(first) || claims[1] != string(second) || claims[2] != string(busy) || line["settle"] != settle {
 		t.Errorf("the boot logged %v, want an error naming %q, %s, %s and %s, and the statement that settles it, %q", line, twice, first, second, busy, settle)

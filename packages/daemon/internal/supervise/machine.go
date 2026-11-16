@@ -654,11 +654,12 @@ type Store interface {
 	// write would erase every step recorded since that machine read its claim. It answers
 	// whether the store holds the claim at all.
 	PutClaimStep(ctx context.Context, token claim.Token, step StepRecord) (bool, error)
-	// HoldSession records session as token's claim's when no claim has recorded it, and answers
-	// the claim that holds it: token itself when it recorded the session before or none had, and
-	// another claim when that one recorded it first. A hold is never released, whatever becomes of
-	// the claim holding it (holdSession).
-	HoldSession(ctx context.Context, token claim.Token, session string) (claim.Token, error)
+	// HoldSession records session as token's claim's within project when no claim of the project
+	// has recorded it, and answers the claim that holds it: token itself when it recorded the
+	// session before or none had, another claim when that one recorded it first, and the empty
+	// token for an id held for no claim. A hold is never released, whatever becomes of the claim
+	// holding it (holdSession).
+	HoldSession(ctx context.Context, project string, token claim.Token, session string) (claim.Token, error)
 }
 
 // Specs builds the part of a launch the claim does not carry — the pane's environment, its

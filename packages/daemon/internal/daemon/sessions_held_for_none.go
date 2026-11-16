@@ -35,14 +35,14 @@ import (
 // The settle statement is a statement an operator runs, and a session id is the agent's own
 // text, so the id is written into it as a SQL literal (sqlLiteral), never as it came.
 func (s *supervision) suspendSessionsHeldForNone(ctx context.Context) error {
-	held, err := s.supervisor.store.SessionsHeldForNone(ctx)
+	held, err := s.supervisor.store.SessionsHeldForNone(ctx, s.plan.project)
 	if err != nil {
 		return fmt.Errorf("read the session ids held for no claim: %w", err)
 	}
 	for _, h := range held {
 		s.log.Error("supervise: a session id recorded by more than one claim is held for none of them; each of them this daemon supervises is suspended until an operator records the rightful holder and resumes it",
 			"session", h.Session, "claims", h.Claims,
-			"settle", "update claim_sessions set claim = '<token>' where session = "+sqlLiteral(h.Session))
+			"settle", "update claim_sessions set claim = '<token>' where project = "+sqlLiteral(s.plan.project)+" and session = "+sqlLiteral(h.Session))
 		for _, token := range h.Claims {
 			m, ok := s.supervisor.Machine(token)
 			if !ok {

@@ -158,7 +158,7 @@ func (s *memoryClaims) PutClaimStep(_ context.Context, token legionclaim.Token, 
 
 // HoldSession holds each session for the first claim that records it, as the store's
 // claim_sessions table does.
-func (s *memoryClaims) HoldSession(_ context.Context, token legionclaim.Token, session string) (legionclaim.Token, error) {
+func (s *memoryClaims) HoldSession(_ context.Context, _ string, token legionclaim.Token, session string) (legionclaim.Token, error) {
 	s.rowsMu.Lock()
 	defer s.rowsMu.Unlock()
 	if holder, held := s.holds[session]; held {

@@ -105,7 +105,7 @@ func (m *Machine) holdSession(ctx context.Context, session string) error {
 	} else {
 		if err := m.write(ctx, func(ctx context.Context) error {
 			var err error
-			holder, err = m.deps.Store.HoldSession(ctx, m.claim.Token, session)
+			holder, err = m.deps.Store.HoldSession(ctx, m.claim.Project, m.claim.Token, session)
 			return err
 		}); err != nil {
 			return fmt.Errorf("hold session %s for %s: %w", session, m.claim.Token, err)

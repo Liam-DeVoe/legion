@@ -168,7 +168,7 @@ func newMemStore() *memStore {
 
 // HoldSession is the store's: the first claim to record a session holds it, and the answer about
 // it never changes after.
-func (s *memStore) HoldSession(_ context.Context, token claim.Token, session string) (claim.Token, error) {
+func (s *memStore) HoldSession(_ context.Context, _ string, token claim.Token, session string) (claim.Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.failures["HoldSession"]; err != nil {
