@@ -171,7 +171,12 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   project's secrets belong to it is the project owner's call. A key in lower case, two keys, and
   the word `none` are refused before anything is written. Only a broker that can ask Dispatch
   whether a project is private serves a secret carrying the tag: any other refuses it
-  `project-unchecked`, which the create prints with its reason and exits 1 for.
+  `project-unchecked`, which the create prints with its reason and exits 1 for. Beside `--project`
+  or `--project-channels`, the CLI also writes `rollback-guard:project-tags` into the secret's
+  `requesters` tag, after its list, so that a broker from before the project tags refuses the
+  secret rather than serve it to every session; `--requesters none` keeps it, it goes with the
+  last of the two tags, and `show` prints `rollback_guard: yes` and the list without it
+  ([Rolling back past the project tags](/legion/broker/operate/#rolling-back-past-the-project-tags)).
 - **`--project-channels slack`** is optional, and `slack` is its one value. It marks a Slack bot
   token, such as `LEGION_SLACK_BOT_TOKEN`, whose use a private project's owner limits. A session or
   pod whose credential names a private Dispatch project spends such a secret only through the
@@ -326,10 +331,10 @@ lists the calls each form makes.
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND          SHAPE  PROJECT  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -      -        -          -              yes    -        -
-DEMO_GITHUB_APP    ada@example.com  agent  github-app    -      -        -          -              yes    -        -
-DEMO_LOGIN         ada@example.com  human  google-login  -      -        1h         -              yes    -        -
+NAME               OWNER            TIER   KIND          SHAPE  PROJECT  PROJECT_CHANNELS  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -      -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP    ada@example.com  agent  github-app    -      -        -                 -          -              yes    -        -
+DEMO_LOGIN         ada@example.com  human  google-login  -      -        -                 1h         -              yes    -        -
 Every row is a secret in AWS Secrets Manager account 111122223333 in us-east-1.
 ```
 
@@ -353,6 +358,8 @@ scopes: -
 admin: -
 shape: -
 project: -
+project_channels: -
+rollback_guard: -
 max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
@@ -540,10 +547,10 @@ that moment is both), and the **earliest** it can be purged:
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND  SHAPE  PROJECT  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -      -        -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
-DEMO_EMPTY_KEY     ada@example.com  human  -     -      -        -          -              yes    -                     -
-DEMO_SHARED_KEY    shared           human  -     -      -        -          -              yes    -                     -
+NAME               OWNER            TIER   KIND  SHAPE  PROJECT  PROJECT_CHANNELS  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -      -        -                 -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
+DEMO_EMPTY_KEY     ada@example.com  human  -     -      -        -                 -          -              yes    -                     -
+DEMO_SHARED_KEY    shared           human  -     -      -        -                 -          -              yes    -                     -
 EARLIEST_PURGE is the deletion plus Secrets Manager's 7-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.
 ```
 

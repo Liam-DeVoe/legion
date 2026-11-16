@@ -326,8 +326,11 @@ marked with tags or annotations:
   another case, white space, an empty tag and the word `none` are refused `project-malformed`,
   and a broker that cannot ask Dispatch whether a project is private (no
   `BROKER_PROJECT_ACCESS_URL`) refuses every tagged secret `project-unchecked`, since it could not
-  tell a private project's secret from a public one's. The tag is not called `project`, which AWS
-  accounts commonly use for cost allocation. Whoever may write the store's prefix may set it, and
+  tell a private project's secret from a public one's. A key that differs from `dispatch-project`
+  or `project-channels` only in case or in its separators (`Dispatch-Project`, `dispatch_project`)
+  is refused `project-tag-misspelled`: read as written, it would leave the secret with no project
+  tag. The tag is not called `project`, which AWS accounts commonly use for cost allocation, and a
+  `project` key is read as no tag at all. Whoever may write the store's prefix may set the tag, and
   can already read every value there; which secrets belong to a project is its owner's call. Set
   it with `agent-secrets secret create|retag --project PRIV`, and remove it with `--project none`.
 - **`project-channels`** is optional, and its one value is `slack`. It marks a Slack bot token,
@@ -342,6 +345,14 @@ marked with tags or annotations:
 - **`mint-service-account`** is written by `agent-secrets secret` beside every kind, with the value
   `kind-secret`, and this broker never reads it. It makes the brokers before kinds, from
   legion-envoy-v13.19.0 on, refuse a kind secret rather than serve its stored key.
+- **`rollback-guard:project-tags`** is no tag of its own but an entry `agent-secrets secret`
+  writes into the `requesters` tag, after the list it holds, beside a `dispatch-project` or
+  `project-channels` tag, and takes out with the last of the two. This broker takes the entry out
+  before it reads the list, so it changes nothing here, and `secret show` prints the list without
+  it and a `rollback_guard: yes` line. A broker from before the project tags reads it as a service
+  no deployment registers and refuses the secret `requesters-malformed`, rather than serve it by
+  owner and tier to every session
+  ([Rolling back past the project tags](/legion/broker/operate/#rolling-back-past-the-project-tags)).
 
 In Secret Manager these fields are annotations rather than labels because a label's value cannot
 hold an email (`@` and `.` are outside its alphabet), and the broker compares the owner with a
@@ -473,7 +484,8 @@ whose `requesters` are not its one person owner, or that lists a service where i
 tag on any other kind (`scopes-kind`), a `dispatch-project` tag that is no project key
 (`project-malformed`), any `dispatch-project` tag on a broker that cannot ask Dispatch about
 projects (`project-unchecked`), a `project-channels` tag set to anything but `slack`
-(`project-channels-malformed`), a malformed
+(`project-channels-malformed`), a tag key that differs from `dispatch-project` or
+`project-channels` only in case or in its separators (`project-tag-misspelled`), a malformed
 `max-grant`, a name that is not in the form above, a secret encrypted with any key but the
 agent-secrets key, the AWS-managed key included, a secret with no current value (created without
 one, so none of its versions carries the `AWSCURRENT` label), or a kind secret whose stored value
@@ -484,11 +496,12 @@ refused `UNKNOWN_SECRET` before anyone is asked to approve it, and a live grant 
 nothing until the broker serves the secret again.
 
 The policy's **version** is the SHA-256 of every served secret's name, owner, tier, source, max
-grant, `requesters` list, `scopes` list, `admin` mark, shape and project, recorded on every
-request. A kind secret's source names its kind, so a kind change moves the version too, and so
-does any change to a list or to the project tag. A secret with no list and no project writes the
-same bytes into the digest that it always did. Whether a project is private is Dispatch's, not
-the version's, so a grant of a tagged secret is checked again on every release.
+grant, `requesters` list, `scopes` list, `admin` mark, shape, project and project channels,
+recorded on every request. A kind secret's source names its kind, so a kind change moves the
+version too, and so does any change to a list or to a project tag. A secret with no list and no
+project tag writes the same bytes into the digest that it always did, and the rollback guard,
+which is not part of the list the digest reads, moves nothing. Whether a project is private is
+Dispatch's, not the version's, so a grant of a tagged secret is checked again on every release.
 
 ### A private project's secrets
 
@@ -503,7 +516,8 @@ names that project** and whose person may still see it:
   session naming none enrols as before. The list is fixed for the session's life: start a new
   session to name another, and `agent-secrets self` prints it as a `projects:` line.
 - A **pod** names no list of its own: its project is the one its operator's entry in
-  `BROKER_EXCHANGE_ACCOUNTS` maps its service account to, for that entry's person.
+  `BROKER_EXCHANGE_ACCOUNTS` maps its service account to, for that entry's person. A machine's own
+  session likewise names the one `BROKER_VM_EXCHANGE_ACCOUNTS` maps its fleet's Google account to.
 
 Every other credential is denied the secret `project-not-named`: a session naming another project
 or none, a person on the project's access list whose session does not name it, and a pod whose
@@ -519,8 +533,8 @@ leaves the access list, the grant ends for good, and making the project public a
 bring it back. The airlock is held to the same rule: a connection of such a grant is refused, and
 a pod holding its values asks the broker again within ten minutes. While Dispatch cannot be
 reached, a tagged secret is neither granted nor released (`503 PROJECT_ACCESS_UNAVAILABLE`) and
-its grants stay live; a secret with no tag is served as before, and a deployment that tags nothing
-asks Dispatch nothing at all.
+its grants stay live; a secret with no tag is served as before. A broker with no
+`BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing about projects.
 
 A secret tagged `project-channels` is limited by the projects the credential names, whatever
 project the secret itself belongs to. A credential that names a private project, whether or not
@@ -533,10 +547,18 @@ listed none, when its projects share none, when its person can no longer see one
 Dispatch's answer carries no list. A pod holding the secret reads the owners' lists again within
 ten minutes.
 
-A request of a private project, by its secrets, its session's projects or the issue its reason
-names, is the project's own: a person who may not see the project does not find it in any list,
-cannot open its page, and cannot decide it ([Approve a request](/legion/broker/guides/approve-a-request/)).
-The model judge leaves every such secret to a person ([the model judge](#the-model-judge)).
+A request of a private project is the project's own: one for a secret of the project, one from a
+credential that names the project (the list above), or one whose reason names one of the
+project's issues. A person who may not see the project does not find it in any list, cannot open
+its page, and cannot decide it ([Approve a request](/legion/broker/guides/approve-a-request/)). To
+tell, a broker with `BROKER_PROJECT_ACCESS_URL` asks Dispatch, for the person reading, about each
+project a request touches, the project of each issue key its reason names included, even in a
+deployment that tags nothing: the reason `INFRA-12: rotate the deploy key` costs one read of
+`INFRA` for that person, kept 30 seconds, and `SHA-256` in a reason reads as a key too. While
+Dispatch cannot answer, that request alone is left out of the pending and grant lists, with a line
+in the broker's log naming its record; its page answers 503 and shows only its record id, and an
+approval of it decides nothing. Every other request is listed and decided as before. The model
+judge leaves every private project's request to a person ([the model judge](#the-model-judge)).
 
 ## Requests and grants
 
@@ -941,10 +963,12 @@ at the first that fails, asking the model nothing:
 4. the secret is not an administrator's (the `admin` tag), of which a person approves every
    release, whatever seconds a rules entry gives the judge;
 5. the name is not withheld for that session;
-6. the secret belongs to no private project: a `dispatch-project` tag naming a private project,
-   or a key Dispatch holds no project for, leaves the request to a person, since the judge's own
-   token names no person and so sees no private project. An untagged secret makes no call to
-   Dispatch here;
+6. the request is no private project's: a `dispatch-project` tag naming a private project or a key
+   Dispatch holds no project for, or a credential that names a private project (a session's list,
+   or the project a pod's or a machine's exchange entry maps it to), leaves the request to a person,
+   since the judge's own token names no person and so sees no private project. A request whose
+   secret carries no tag and whose credential names no project makes no call to Dispatch here, and
+   neither does any request on a broker with no `BROKER_PROJECT_ACCESS_URL`;
 7. the request's signed reason names a Dispatch issue key, and Dispatch shows that issue at a
    status that is not `done`.
 
