@@ -382,7 +382,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		}, child...)
 		return err
 	}
-	nats, err := newDispatchNATSCredential(ctx, comp, dispatch, args, s, cloud, database.principal, secretClass)
+	nats, err := newDispatchNATSCredential(ctx, dispatchNATSCredentialInputs{
+		comp: comp, dispatch: dispatch, args: args, settings: s,
+		cluster: cloud, principal: database.principal, secretClass: secretClass,
+	})
 	if err != nil {
 		return err
 	}

@@ -58,6 +58,20 @@ type dispatchNATSCredential struct {
 	grants []pulumi.Resource
 }
 
+// dispatchNATSCredentialInputs is what newDispatchNATSCredential prepares the credential from.
+type dispatchNATSCredentialInputs struct {
+	// comp parents the seed's grant, and dispatch names the component in a refusal of its seed.
+	comp     *Dispatch
+	dispatch string
+	args     *DispatchArgs
+	settings dispatchSettings
+	// cluster is what the seed's grant waits for, and principal the member it grants.
+	cluster   *dispatchCluster
+	principal pulumi.StringOutput
+	// secretClass registers a SecretProviderClass of one Secret Manager secret (the seed's here).
+	secretClass func(name string, secret pulumi.StringInput, input, file string) error
+}
+
 // newDispatchNATSCredential prepares the pods' NATS credential. Without natsAudience it is the
 // seed: a SecretProviderClass of natsSeedSecret (secretClass), mounted through the CSI driver,
 // which a pod can read only once its principal holds roles/secretmanager.secretAccessor on the
@@ -65,7 +79,8 @@ type dispatchNATSCredential struct {
 // on the first deployment; the grant waits for the cluster, whose pool the principal lives in.
 // With natsAudience it is the pods' projected token for that audience, which needs no class and no
 // grant. A deployment without natsAudience renders what it always rendered.
-func newDispatchNATSCredential(ctx *pulumi.Context, comp *Dispatch, dispatch string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster, principal pulumi.StringOutput, secretClass func(name string, secret pulumi.StringInput, input, file string) error) (dispatchNATSCredential, error) {
+func newDispatchNATSCredential(ctx *pulumi.Context, in dispatchNATSCredentialInputs) (dispatchNATSCredential, error) {
+	s := in.settings
 	if s.natsAudience != "" {
 		return dispatchNATSCredential{
 			serviceTokenFile: dispatchNatsTokenFile,
@@ -74,12 +89,12 @@ func newDispatchNATSCredential(ctx *pulumi.Context, comp *Dispatch, dispatch str
 			mount:            credentialMount(dispatchNatsTokenName),
 		}, nil
 	}
-	grant, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, pulumi.Parent(comp), pulumi.DependsOn([]pulumi.Resource{cloud.cluster}))
+	grant, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(in.args.NatsSeedSecret, in.dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: in.principal}, pulumi.Parent(in.comp), pulumi.DependsOn([]pulumi.Resource{in.cluster.cluster}))
 	if err != nil {
 		return dispatchNATSCredential{}, err
 	}
 	seedName := s.hostname + "-nats-seed"
-	if err := secretClass(seedName, args.NatsSeedSecret, "natsSeedSecret", dispatchNatsSeedName); err != nil {
+	if err := in.secretClass(seedName, in.args.NatsSeedSecret, "natsSeedSecret", dispatchNatsSeedName); err != nil {
 		return dispatchNATSCredential{}, err
 	}
 	return dispatchNATSCredential{
