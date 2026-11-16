@@ -52,10 +52,10 @@ var eventRateQuery = fmt.Sprintf(`select type, count(*) / %d.0 as per_day
 	from events where created_at > %s group by type order by 2 desc`, sizingWindowDays, sizingWindow)
 
 // blockIndexBacklogQuery is what the block-index reconciliation still owes documents: how many
-// hold no indexed version (document_block_versions.version null), and when the oldest of those
-// debts was incurred. The server's own tick reads the same two figures and logs them
-// (docs.ReconcileBlockIndex); this is the read for somebody holding the database and not the
-// log.
+// hold no indexed version (document_block_versions.version null) or hold the backfill's mark
+// (store_owed_at), and when the oldest of those debts was incurred. The server's own tick reads
+// the same two figures and logs them (docs.ReconcileBlockIndex); this is the read for somebody
+// holding the database and not the log.
 //
 // Nothing dates a debt, so the rows are dated by the write that owed them, which is what
 // refs.OwedBlockIndexDebts derives; the tick's own read of the same backlog derives it from
@@ -98,8 +98,9 @@ func (b BlockIndexBacklog) Age() time.Duration {
 // migration alters a relation that already held rows. graph_nodes, graph_tuples and
 // graph_erasures are created by 20261109013400 and written by 20261109051232, so no existing
 // row is rewritten for them; document_blocks, block_refs and comments are altered by
-// 20261109022248, and server_build_announcements by 20261115051200, and a table that large is a
-// migration that needs another shape, which is what the limit refuses.
+// 20261109022248, server_build_announcements by 20261115051200 and document_block_versions by
+// 20261116221539, and a table that large is a migration that needs another shape, which is what
+// the limit refuses.
 var branchTables = []struct {
 	name    string
 	altered bool
@@ -109,6 +110,7 @@ var branchTables = []struct {
 	{"graph_erasures", false},
 	{"block_refs", true},
 	{"comments", true},
+	{"document_block_versions", true},
 	{"document_blocks", true},
 	{"server_build_announcements", true},
 }

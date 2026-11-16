@@ -522,8 +522,13 @@ var indexPasses = map[string]string{
 	// document it is in, its own source_seq - is what it writes into the store, and the
 	// store holds nothing about those rows for it to read. That is what makes it a writer
 	// and no repair: it never reads one side of a projection to decide what to put in the
-	// other, and a row whose node is already written it leaves alone rather than mending.
-	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content",
+	// other, and a row whose node is already written it leaves alone rather than mending. The
+	// block batch also marks the document each row is in owed this release's block index
+	// (store_owed_at), which is the row's own document and no reading of either side; and
+	// markStaleDocuments marks each document another release indexed after the store last
+	// stated it, read off the two versions the document's own row records (store_version below
+	// version). That pass writes neither a projected table nor the store, so it is no entry here.
+	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content and the document it is in",
 	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	"graphcensus/backfill.go#writeCommentBatch":  "each pre-store comments row's own content",
 	// The backfill of the roles. A role, its page and the page's part_of it have no projection
@@ -583,10 +588,16 @@ var indexPasses = map[string]string{
 	// The record of a fallback pass splices in the same arms for each copy the pass published:
 	// the copy's delivered_to and the session its topic names.
 	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
-	// The block index reads the version's render, and of each decision the author its node's
+	// A version's index pass reads its render, and of each decision the author its node's
 	// decided_by tuple holds, which markdown never carries (refs.DecisionFacts): that tuple is
-	// the one record of who decided, read to restate the same tie, never to mend a row.
-	"refs/blocks.go#IndexBlocks":                "the version's render, and each decision's stored decided_by",
+	// the one record of who decided, read to restate the same tie, never to mend a row. Where
+	// another release indexed the document after the store last stated its blocks (refs'
+	// standsAtVersion), the rows it compares the render with no longer hold the blocks and
+	// links that release dropped, so it also reads what the store still asserts of the document
+	// (heldDocumentBlocks); what it states of those - gone, retracted - is decided by the render
+	// that does not hold them, as reconcileBlockParents reads the parents the store asserts to
+	// state the render's.
+	"refs/blocks.go#IndexBlocks":                "the version's render, each decision's stored decided_by, and where another release indexed the document since the store stated it, what the store still asserts against that render",
 	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
 	"refs/blocks.go#replaceBlockRefs":           "the version's render, and each decision's stored decided_by",
 	// The typed-node pass: the decision and reading nodes of the version, their values and their
