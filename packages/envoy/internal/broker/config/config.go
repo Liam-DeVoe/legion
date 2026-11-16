@@ -490,12 +490,38 @@ type Config struct {
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
-	// pending request expires undecided. Unset, the broker sends nothing.
+	// pending request expires undecided. Unset, the broker sends nothing. Needs
+	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the credential it calls the listener with.
 	EnvoyURL string
-	// BROKER_ENVOY_TOKEN, BROKER_ENVOY_TOKEN_FILE: the bearer token for BROKER_ENVOY_URL, given
-	// directly or as a file whose trimmed contents win over the variable; read only when
-	// BROKER_ENVOY_URL is set.
-	EnvoyToken string
+	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE: the broker's own projected Kubernetes ServiceAccount
+	// token, read afresh at each call (brokertoken.AccountToken), which the broker presents to
+	// BROKER_ENVOY_URL as its bearer: the listener admits it as the account it names, as it
+	// admits every caller's platform token, so no bearer is shared. Required with
+	// BROKER_ENVOY_URL, and read only then.
+	EnvoyAccountTokenFile string
+	// BROKER_NATS_URLS, BROKER_NATS_SEED_FILE, BROKER_NATS_ISSUER_SEED_FILE,
+	// BROKER_NATS_XKEY_SEED_FILE, BROKER_NATS_SERVICES, BROKER_NATS_K8S_AUDIENCE,
+	// BROKER_NATS_GOOGLE_AUDIENCE: the NATS auth service the broker runs
+	// (internal/broker/natscallout), which the Envoy hub sends the authorization of every
+	// connection its configuration lists no static user for, and which answers each with a NATS
+	// user of that connection's own. BROKER_NATS_URLS is the hub's servers, comma separated;
+	// BROKER_NATS_SEED_FILE the service's own NATS user seed, a user the hub lists as an auth
+	// user; BROKER_NATS_ISSUER_SEED_FILE the account seed the hub names as its auth_callout
+	// issuer, which signs every user the service admits; BROKER_NATS_XKEY_SEED_FILE the curve
+	// seed the hub seals each request to. Each file is read at start and refused unless it holds
+	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
+	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
+	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
+	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
+	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
+	// start (natscallout.ParseServices). BROKER_NATS_K8S_AUDIENCE is the audience a service's
+	// projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it
+	// needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must
+	// carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a service entry whose kind of token has
+	// no audience is refused at start naming it. A session presents its broker access token and
+	// needs neither. All unset, the broker runs no auth service; any set needs the URLs and the
+	// three seed files.
+	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
 	// serving is not counted against it: a lease that ran out then stays live until a broker serves
@@ -657,7 +683,24 @@ var removedVars = []struct{ name, reason string }{
 	{"BROKER_MAX_GRANT_SECONDS", noGrantCap},
 	{"BROKER_MINT_TARGETS", noMintTargets},
 	{"BROKER_SIGNIN_CLIENT_SECRET", "the broker reads its sign-in client's secret only from the file BROKER_SIGNIN_CLIENT_SECRET_FILE names, so the secret is never in its environment"},
+	{"BROKER_ENVOY_TOKEN", noSharedEnvoyBearer},
+	{"BROKER_ENVOY_TOKEN_FILE", noSharedEnvoyBearer},
 }
+
+// NATSCallout is the NATS auth service's settings: Config.NATS documents each.
+type NATSCallout struct {
+	URLs                                   []string
+	SeedFile, IssuerSeedFile, XKeySeedFile string
+	// Services is BROKER_NATS_SERVICES as given, which natscallout.ParseServices reads at start.
+	Services                    string
+	K8sAudience, GoogleAudience string
+}
+
+// Enabled reports whether the broker runs the auth service.
+func (n NATSCallout) Enabled() bool { return len(n.URLs) > 0 }
+
+// noSharedEnvoyBearer is why BROKER_ENVOY_TOKEN and BROKER_ENVOY_TOKEN_FILE are gone.
+const noSharedEnvoyBearer = "set BROKER_ENVOY_ACCOUNT_TOKEN_FILE to the broker's own projected ServiceAccount token instead: the listener admits the account it names, and a bearer the broker shared with every other caller of the listener is no longer read"
 
 // serviceAccountPattern is a Kubernetes service account's subject, the one a pod's projected token
 // carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
@@ -1641,9 +1684,12 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
 	}
 	if cfg.EnvoyURL != "" {
-		if cfg.EnvoyToken, err = secretValue(getenv, "BROKER_ENVOY_TOKEN"); err != nil {
-			return Config{}, err
+		if cfg.EnvoyAccountTokenFile = strings.TrimSpace(getenv("BROKER_ENVOY_ACCOUNT_TOKEN_FILE")); cfg.EnvoyAccountTokenFile == "" {
+			return Config{}, errors.New("BROKER_ENVOY_URL needs BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the broker's own projected ServiceAccount token, which it presents to the listener")
 		}
+	}
+	if cfg.NATS, err = loadNATSCallout(getenv, cfg.K8sOIDCIssuer); err != nil {
+		return Config{}, err
 	}
 	var sessionSeconds int
 	ints := []struct {

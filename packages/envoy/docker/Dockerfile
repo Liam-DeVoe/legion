@@ -117,6 +117,12 @@ COPY packages/envoy/going ./going
 COPY packages/envoy/migrationid ./migrationid
 # roleholder: the no-holder reasons envoy-listener's role publish refusal names.
 COPY packages/envoy/roleholder ./roleholder
+# natscred: the NATS credential a bus connection presents, a service's platform token among
+# them, which internal/bus compiles into every binary below.
+COPY packages/envoy/natscred ./natscred
+# natsgrant: the one NATS grant table, which envoy-broker's NATS auth service answers each
+# connection from.
+COPY packages/envoy/natsgrant ./natsgrant
 # The Go contracts file is generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go

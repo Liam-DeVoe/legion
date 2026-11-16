@@ -480,6 +480,8 @@ jobs:
               - 'packages/envoy/migrationid/*'
               # natsgrant's testdata too: the daemon's race-tested packages compile it.
               - 'packages/envoy/natsgrant/**'
+              # internal/bus presents a service's NATS credential through natscred.
+              - 'packages/envoy/natscred/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
               # daemon's notify path reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -508,8 +510,12 @@ jobs:
               # The relayed shapes routes_shapes.go names (internal/dispatch/api).
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/**'
+              # natscred's token client, which internal/bus compiles in.
+              - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
+              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -677,8 +683,11 @@ jobs:
               - 'packages/envoy/going/testdata/**'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/**'
+              - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
+              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
@@ -718,10 +727,13 @@ jobs:
               # The relayed shapes routes_shapes.go names.
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/**'
+              - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/dispatch/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/bus/bustest/*'
+              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
@@ -985,6 +997,9 @@ jobs:
               - 'packages/envoy/internal/broker/store/*'
               - 'packages/envoy/internal/broker/store/migrations/**'
               - 'packages/envoy/internal/broker/wake/*'
+              # The NATS auth service cmd/broker runs.
+              - 'packages/envoy/internal/broker/natscallout/*'
+              - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/ratelimit/*'
               # The screenshots build packages/dispatch's web app, which aliases contracts' and the
@@ -1391,6 +1406,8 @@ jobs:
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
               - 'packages/envoy/internal/broker/wake/*'
+              - 'packages/envoy/internal/broker/natscallout/*'
+              - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/ratelimit/*'
@@ -1849,6 +1866,13 @@ jobs:
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
               - 'packages/envoy/internal/broker/wake/*'
+              - 'packages/envoy/internal/broker/natscallout/*'
+              # The auth service's grants and its own connection to the hub.
+              - 'packages/envoy/natsgrant/**'
+              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/broker/wire/*'
               # agent-secrets trades through the client, whose own tests replay the wire corpus.
               - 'packages/envoy/internal/brokerclient/**'
@@ -1946,6 +1970,7 @@ jobs:
               - 'packages/daemon/go.mod'
               - 'packages/daemon/go.sum'
               - 'packages/envoy/natsgrant/**'
+              - 'packages/envoy/natscred/*'
               # envoy-infra's host live tests and its plugin build, in packages/envoy/infra's own
               # workspace; the live tests compile internal/pulumitest, which holds the version
               # they pin the docker provider at, under infra/internal. The plugin build's step is
@@ -2073,6 +2098,7 @@ jobs:
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/loadtest/**'
               - 'packages/envoy/migrationid/**'
+              - 'packages/envoy/natscred/**'
               - 'packages/envoy/natsgrant/**'
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
