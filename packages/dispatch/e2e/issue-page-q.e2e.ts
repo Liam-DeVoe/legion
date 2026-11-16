@@ -1,10 +1,11 @@
+import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
   CONTROL_LABELS,
   DECISIONS_WORDS,
   NODE_STATE_WORDS,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
-import { getArtifact, getAsk, listComments } from "./api";
+import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { OPEN_QUESTION_BLOCK_ID } from "./issue-layout-seed-text";
 import { gotoIssue, phase } from "./issue-page";
@@ -12,15 +13,32 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectRowGroups,
+  expectRowLayouts,
   focusRow,
   nodeRow,
   PHONE,
   parentOfRow,
+  rowGroups,
+  rowLayouts,
   rowOf,
   unfoldEveryBranch,
 } from "./issue-page-g";
-import { openPreset } from "./issue-page-i";
-import { decisionsFoot, decisionsPartsDrawn, primarySlug, reviewFlag } from "./issue-page-q";
+import { focusedNodeId, focusInside, onScreen, openPreset } from "./issue-page-i";
+import {
+  computedBorderWidth,
+  controlLook,
+  decisionStatementNames,
+  decisionsBody,
+  decisionsFoot,
+  decisionsPart,
+  decisionsPartsDrawn,
+  decisionsRows,
+  decisionsWordsWithSource,
+  primarySlug,
+  reviewFlag,
+  seedDecisionsLayout,
+} from "./issue-page-q";
 import { expect, test } from "./test";
 
 /**
@@ -28,19 +46,42 @@ import { expect, test } from "./test";
  * the Decisions view - the open questions, the decisions that wait for the reader's review with
  * Keep and Change, the reader's own decisions, and the agents' other decisions folded at the
  * foot - read on the real stack. Each row turns the new page on for its reader through D's
- * `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts`, and reads the page
- * through D's `e2e/issue-page.ts`, G's `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and this
- * part's `e2e/issue-page-q.ts`.
+ * `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts` or this part's
+ * `e2e/issue-page-q.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
+ * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and this part's `e2e/issue-page-q.ts`.
  *
- * The rows come from the checkpoint's `e2e/issue-layout.e2e.ts`, each under the title its check
- * names (`verification.md` of dispatch://INFRA-3937, c-groups).
+ * Five rows, each under the title its check names (`verification.md` of dispatch://INFRA-3937):
+ *
+ * - **c-groups**, three rows that come from the checkpoint's `e2e/issue-layout.e2e.ts`: "the
+ *   Decisions filter draws its four parts and quotes the person's answer"; "only a decision
+ *   that changed a statement waits for review", whose words draw no source (the tester's F20);
+ *   and "a change sent on a decision is drawn on it, and the decision leaves the review list"
+ *   (the tester's F6), read again at 390 px and from an address that names the change.
+ * - **c-keep**, "the Decisions view draws Keep and Change on each decision that waits, and Keep
+ *   moves it": the two controls before any focus and their colours, Keep, `Shift+C`, `Shift+K`,
+ *   and where a load and `t d` leave the focus (the tester's F23).
+ * - **c-layout**, "under Decisions a row draws the outline's layout, short names and the
+ *   six-line cut": G's layout and group readings on every row of the view, each statement named
+ *   within 32 characters, the cut of a long answered question, and the view's width.
+ *
+ * Each row's first reading waits out the page's load under a message of its own, before G's
+ * `expectIssuePageDrawn`: on a build whose slot draws nothing, every row fails on what the view
+ * does not draw rather than on the page's frame (plan t6 and t11).
  */
+
+/** The decisions' violet (`--color-page-decision`) and the page's paper (`--color-page-paper`),
+ *  as computed: Keep is the violet with words of paper, Change paper with violet words and a
+ *  violet border (the prototype's `.dbtn`). */
+const VIOLET = "rgb(124, 58, 237)";
+const PAPER = "rgb(255, 255, 255)";
 
 // c-decisions. Clause by clause, at 1440 px and at 390 px. What waits on dispatch://INFRA-1150
 // and is not read here: an agent decision's author (`decided_by`), its level of uncertainty and
 // its reason, the reading under an agent's decision, and the `shaped` tuple itself (today's tie
 // is a decision block's link to a spec block). What waits on dispatch://INFRA-1253: the
 // unconverted issue, `?view=decisions`, and "the page makes no request to /decisions".
+// SLOW(>=2s): the whole issue seeded with three more writes, the view loaded and read at two
+// widths with a focus and the foot's unfolding waited on each time, then the outline loaded.
 test("the Decisions filter draws its four parts and quotes the person's answer", async ({
   browser,
 }) => {
@@ -70,10 +111,10 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
       const at = `at ${size.width} px`;
       await page.setViewportSize(size);
       await openPreset(page, seeded.key, "decisions");
-      await expectIssuePageDrawn(page);
       // Four parts under their own headings, in this order: the open question first, the two
       // decisions waiting for review newest first, the reader's own decisions newest first -
-      // the one kept, the question declined, the two answered - and the foot, folded.
+      // the one kept, the question declined, the two answered - and the foot, folded. This is
+      // the row's first reading, so a page whose view draws nothing fails here.
       await expect.poll(parts, { message: `the four parts ${at}` }).toEqual([
         { count: "1", heading: headings.open_questions, part: "open_questions", rows: [open] },
         { count: "2", heading: headings.review, part: "review", rows: [D(5), D(0)] },
@@ -85,6 +126,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
         },
         { count: "3", heading: headings.agents, part: "agents", rows: [] },
       ]);
+      await expectIssuePageDrawn(page);
       // No other sentence stands over them or between them.
       expect(
         await page.evaluate(() => {
@@ -202,6 +244,8 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
 
 // c-review-list (R35). What waits on dispatch://INFRA-1150: the `shaped` tuple itself; today's
 // tie is a decision block's link to a block of the spec.
+// SLOW(>=2s): a seeded issue whose view is loaded and read at two widths with the foot's
+// unfolding waited on each time, then the outline loaded with two rows focused.
 test("only a decision that changed a statement waits for review @phone", async ({ browser }) => {
   test.setTimeout(150_000);
   await phase(browser, seedReviewList, async (page, seeded) => {
@@ -212,11 +256,12 @@ test("only a decision that changed a statement waits for review @phone", async (
       const at = `at ${size.width} px`;
       await page.setViewportSize(size);
       await openPreset(page, seeded.key, "decisions");
-      await expectIssuePageDrawn(page);
-      // The review list holds the two a tie names a statement for, newest first.
+      // The review list holds the two a tie names a statement for, newest first. This is the
+      // row's first reading, so a page whose view draws nothing fails here.
       await expect
         .poll(() => partRows("review"), { message: `the review list ${at}` })
         .toEqual([id(seeded.tiedNewer), id(seeded.tiedOlder)]);
+      await expectIssuePageDrawn(page);
       // Each with its Keep and Change controls, with no focus on it.
       for (const block of [seeded.tiedNewer, seeded.tiedOlder]) {
         await expect(
@@ -241,6 +286,15 @@ test("only a decision that changed a statement waits for review @phone", async (
           `${block} draws a Keep or a Change ${at}`
         ).toHaveCount(0);
       }
+      // No row's words draw the source they were written in: the seed writes each decision as
+      // "Shapes dispatch://<key>/spec#b-…", and the excerpt of the statement it names opens with
+      // its `:::requirement{#…}` fence, but a reference is drawn as plain words (the tester's
+      // F20).
+      await expect
+        .poll(() => decisionsWordsWithSource(page), {
+          message: `a decision's words draw their source ${at}`,
+        })
+        .toEqual([]);
     }
     // The other two are drawn in the outline under the issue, with no Keep or Change control,
     // the focus on them included.
@@ -263,8 +317,13 @@ test("only a decision that changed a statement waits for review @phone", async (
 // The tester's F6, under R7 and R35: a Change sent on a decision is a comment anchored to the
 // decision's words. Once it is sent the decision says a change was asked for, leaves the review
 // list for the reader's own decisions, takes no Keep and no Change, and draws the change under
-// its words with a link to it; the Decisions control's flag drops by one; and with no filter on
-// the decision says the same and the change hangs under it.
+// its words with a link to it; the Decisions control's flag drops by one. At 390 px a new load
+// draws the decision the same way. An address that names the change opens the view on the
+// change's own row, first and in no part, with the focus on it. With no filter on the decision
+// says the same and the change hangs under it.
+// SLOW(>=2s): a seeded issue whose view is loaded and a Change sent and waited on until the
+// server's reads redraw the list, then three more loads: at 390 px, at the change's address,
+// and the outline.
 test("a change sent on a decision is drawn on it, and the decision leaves the review list", async ({
   browser,
 }) => {
@@ -276,9 +335,13 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     const partRows = async (part: string) =>
       (await decisionsPartsDrawn(page)).find((one) => one.part === part)?.rows ?? [];
 
+    await page.setViewportSize(DESKTOP);
     await openPreset(page, seeded.key, "decisions");
+    // The row's first reading, so a page whose view draws nothing fails here.
+    await expect
+      .poll(() => partRows("review"), { message: "the review list before the Change" })
+      .toEqual([changed, id(seeded.tiedOlder)]);
     await expectIssuePageDrawn(page);
-    await expect.poll(() => partRows("review")).toEqual([changed, id(seeded.tiedOlder)]);
     await expect(reviewFlag(page)).toHaveText("2");
 
     const row = nodeRow(page, changed).first();
@@ -311,6 +374,45 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     );
     // The flag moves: one decision fewer waits for the reader's review.
     await expect(reviewFlag(page), "the flag did not move").toHaveText("1");
+    const commentId = comment?.id ?? "";
+
+    // At 390 px, from a new load and with no second Change, the decision stands with the
+    // reader's own, says so, takes no Keep and no Change, and draws the change under its words.
+    // The flag is not read here: the view row draws it from 1280 px up alone.
+    await page.setViewportSize(PHONE);
+    await openPreset(page, seeded.key, "decisions");
+    await expect
+      .poll(() => partRows("yours"), {
+        message: "the changed decision is not among the reader's own at 390 px",
+      })
+      .toEqual([changed]);
+    expect(rowOf(await drawnRows(page), changed), "the changed decision at 390 px").toMatchObject({
+      state: "change_requested",
+      stateWord: NODE_STATE_WORDS.decision.change_requested,
+    });
+    await expect(row.locator("button[data-row-action]")).toHaveCount(0);
+    await expect(row.locator("[data-decision-change] [data-change-words]")).toHaveText(words);
+    await expect(row.locator("[data-decision-change] [data-change-by]")).toHaveText("alice");
+    await expect(row.locator("[data-decision-change] [data-change-link]")).toHaveAttribute(
+      "href",
+      `/issues/${seeded.key}/comments/${commentId}`
+    );
+
+    // An address that names the change under the view, which is the view's own address with
+    // `?comment=` beside it (`issue-address.ts`): the comment is neither a question nor a
+    // decision, so its row stands first in the list, in no part, and takes the focus.
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, `${presetPath(seeded.key, "decisions")}?comment=${commentId}`);
+    await expect
+      .poll(async () => (await decisionsRows(page))[0], {
+        message: "an address naming the change does not draw its row first, in no part",
+      })
+      .toMatchObject({ id: commentId, part: null });
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "an address naming the change focuses no row of the view",
+      })
+      .toBe(commentId);
 
     // With no filter on, the decision says the same and the change hangs under it.
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -327,5 +429,259 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     const outlined = await focusRow(page, changed);
     await expect(outlined.locator("button[data-row-action]")).toHaveCount(0);
     await expect(reviewFlag(page)).toHaveText("1");
+  });
+});
+
+// c-keep (R6, R7 and R35 of dispatch://INFRA-1196, and its keyboard): Keep and Change stand on
+// each decision that waits for the reader's review before any focus, in the decisions' violet,
+// and on no other row. Keep moves the decision to the reader's own as kept by her, the server
+// holds the Keep, and the focus goes on to the next decision that waits, where `Shift+C` opens
+// Change with the caret in its field. A direct load leaves the focus on the list's first row
+// (the tester's F23); `Shift+K` keeps the last decision that waits and the review part goes;
+// and `t c` then `t d` leave the focus on a row of the list, on screen.
+// SLOW(>=2s): a seeded issue whose view is loaded twice, with a Keep and a Shift+K each waited
+// on until the server's answer redraws the list, and two chords each waited on until it moves.
+test("the Decisions view draws Keep and Change on each decision that waits, and Keep moves it @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  // Each project at its own width: `chromium` the desktop's and `iphone` the phone's. The
+  // `iphone` project's own viewport is 390 by 664 and `phase` opens every page at 1440 by 900,
+  // so the row sets the size the check names.
+  const size = test.info().project.name === "iphone" ? PHONE : DESKTOP;
+  const at = `at ${size.width} px`;
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
+    const newer = id(seeded.tiedNewer);
+    const older = id(seeded.tiedOlder);
+    const review = decisionsPart(page, "review");
+    const partRows = async (part: string) =>
+      (await decisionsPartsDrawn(page)).find((one) => one.part === part)?.rows ?? [];
+
+    await page.setViewportSize(size);
+    await openPreset(page, seeded.key, "decisions");
+    // Keep on both decisions that wait while neither has the focus: the stage puts it on the
+    // list's first row, an open question. Both facts in one reading, so it fails on a view that
+    // draws nothing and on a view that draws Keep only on the focused row. This is the row's
+    // first reading.
+    await expect
+      .poll(
+        async () => ({
+          keeps: await review.locator('button[data-row-action="keep"]').count(),
+          reviewFocused: await focusInside(review),
+        }),
+        { message: "a decision of the review part draws no Keep before it has the focus" }
+      )
+      .toEqual({ keeps: 2, reviewFocused: false });
+    await expectIssuePageDrawn(page);
+
+    // Each row of the review part draws Keep and then Change, and no other row draws either.
+    const rows = await decisionsRows(page);
+    expect(
+      rows.filter((row) => row.part === "review"),
+      `the review part's Keep and Change ${at}`
+    ).toEqual([
+      { actions: ["keep", "change"], id: newer, part: "review" },
+      { actions: ["keep", "change"], id: older, part: "review" },
+    ]);
+    expect(
+      rows.filter((row) => row.part !== "review" && row.actions.length > 0).map((row) => row.id),
+      `a row outside the review part draws Keep or Change ${at}`
+    ).toEqual([]);
+
+    // Keep is the violet with words of paper; Change is paper with violet words and a violet
+    // border 1.5 px wide, read on each of its four sides. The width is compared with what the
+    // browser computes for a border written 1.5px wide, which it rounds down to whole device
+    // pixels: 1px at the desktop's device scale of 1, 1.33333px at the phone's 3.
+    const border = await computedBorderWidth(page, "1.5px");
+    for (const decision of [newer, older]) {
+      const row = nodeRow(page, decision).first();
+      expect(
+        await controlLook(row.locator('button[data-row-action="keep"]')),
+        `${decision}'s Keep ${at}`
+      ).toMatchObject({ background: VIOLET, color: PAPER });
+      expect(
+        await controlLook(row.locator('button[data-row-action="change"]')),
+        `${decision}'s Change ${at}`
+      ).toEqual({
+        background: PAPER,
+        borderColors: [VIOLET, VIOLET, VIOLET, VIOLET],
+        borderWidths: [border, border, border, border],
+        color: VIOLET,
+      });
+    }
+
+    // Keep on the newer decision: it stands with the reader's own, kept by her, the server
+    // holds her Keep, and the focus goes on to the older one, the next that waits.
+    await nodeRow(page, newer).first().locator('button[data-row-action="keep"]').click();
+    await expect
+      .poll(() => partRows("yours"), {
+        message: `Keep did not move the decision to the reader's own ${at}`,
+      })
+      .toEqual([newer]);
+    expect(rowOf(await drawnRows(page), newer), `the kept decision ${at}`).toMatchObject({
+      state: "kept",
+      stateWord: `${NODE_STATE_WORDS.decision.kept} alice`,
+    });
+    const kept = ((await getIssueDecisions(seeded.key)).decisions ?? []).find(
+      (decision) => decision.block_id === seeded.tiedNewer
+    )?.kept;
+    expect(kept?.kept_by, "the server holds no Keep by alice of the newer decision").toBe("alice");
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: `Keep did not leave the focus on the next decision that waits ${at}`,
+      })
+      .toBe(older);
+    // There `Shift+C` opens Change with the caret in its field.
+    await page.keyboard.press("Shift+C");
+    await expect(
+      nodeRow(page, older).first().getByLabel(CONTROL_LABELS.your_change),
+      `Shift+C did not put the caret in ${CONTROL_LABELS.your_change} ${at}`
+    ).toBeFocused();
+
+    // A direct load of the view leaves the focus on the list's first row (the tester's F23).
+    await openPreset(page, seeded.key, "decisions");
+    await expect
+      .poll(
+        async () => {
+          const first = (await decisionsRows(page))[0]?.id ?? null;
+          const focused = await focusedNodeId(page);
+          return { first, focused, onFirst: first !== null && focused === first };
+        },
+        { message: "a direct load of the Decisions view leaves the focus off the list" }
+      )
+      .toMatchObject({ onFirst: true });
+    // `Shift+K` on the older decision keeps it, and with nothing left to review the part goes.
+    await focusRow(page, older);
+    await page.keyboard.press("Shift+K");
+    await expect
+      .poll(() => review.count(), {
+        message: `Shift+K did not keep the last decision that waits ${at}`,
+      })
+      .toBe(0);
+
+    // `t c` turns the view off, and `t d` turns it on again with the focus on a row of its list,
+    // on screen.
+    await page.keyboard.press("t");
+    await page.keyboard.press("c");
+    await expect(page, `t c did not turn the Decisions view off ${at}`).toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "conversation")}$`)
+    );
+    await page.keyboard.press("t");
+    await page.keyboard.press("d");
+    await expect(page, `t d did not turn the Decisions view on ${at}`).toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "decisions")}$`)
+    );
+    await expect
+      .poll(
+        async () => {
+          const focused = await focusedNodeId(page);
+          if (focused === null) return { inList: false, onScreen: false };
+          const row = nodeRow(page, focused).and(decisionsBody(page).locator("[data-node-row]"));
+          return { inList: (await row.count()) === 1, onScreen: await onScreen(row) };
+        },
+        { message: "t d does not put the focus on a row of the list" }
+      )
+      .toEqual({ inList: true, onScreen: true });
+  });
+});
+
+// c-layout (R1, R4, R5 and R8 of dispatch://INFRA-1196 under the view, rulings 1, 4 and 5): the
+// checkpoint's c-row walk of the Decisions view. Every row the view draws, the foot's included,
+// reads G's layout and groups: one left edge, the kind's tag after the first line, the group's
+// place, no "Author unknown" in a group, the links' colours. A statement on an "informs" line
+// is named within 32 characters and by no address, which G's group reading, of chips alone,
+// does not see. At 1440 px a long question a person answered is cut at six lines and a long one
+// that waits on the reader is drawn whole, in a list 960 px wide; at 390 px nothing is wider
+// than the screen.
+// SLOW(>=2s): the whole issue seeded with two long questions, then the view loaded and every
+// row read off the page's layout at two widths, with the foot's unfolding and the cut waited on.
+test("under Decisions a row draws the outline's layout, short names and the six-line cut @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  // The `iphone` project is the phone half of the pair, so it reads 390 px alone: the desktop
+  // is `chromium`'s to read, and 1440 px in a phone's context is a layout no reader has.
+  const sizes = test.info().project.name === "iphone" ? [PHONE] : [DESKTOP, PHONE];
+  await phase(browser, seedDecisionsLayout, async (page, seeded) => {
+    const addresses = new RegExp(`dispatch://|${seeded.key} \\S+( block)?$|-md\\b`, "u");
+    for (const size of sizes) {
+      const where = `Decisions at ${size.width} px`;
+      await page.setViewportSize(size);
+      await openPreset(page, seeded.key, "decisions");
+      // The row's first reading, before anything is pressed.
+      await expect
+        .poll(() => decisionsBody(page).locator("[data-node-row]").count(), {
+          message: `${where} draws no row`,
+        })
+        .toBeGreaterThan(0);
+      await expectIssuePageDrawn(page);
+      // The seed's agents wrote two decisions that shape no statement and one that was
+      // replaced, so the view draws its foot; its rows are rows of the view and read with the
+      // rest. The press takes the focus off every row, so no row's body is open below.
+      await decisionsFoot(page).click();
+      await expect(decisionsFoot(page), `${where} does not unfold its foot`).toHaveAttribute(
+        "aria-expanded",
+        "true"
+      );
+      // The two long questions are drawn, and the names of the statements the decisions shaped,
+      // which come from the page's batched read of names, are in.
+      for (const question of [seeded.answered, seeded.waiting]) {
+        await expect(nodeRow(page, question), `${where} draws no row for ${question}`).toHaveCount(
+          1
+        );
+      }
+      await expect
+        .poll(() => decisionStatementNames(page), { message: `${where} names no statement` })
+        .not.toEqual([]);
+
+      expectRowLayouts(await rowLayouts(page), where, false, size.width);
+      expectRowGroups(await rowGroups(page), where, size.width, addresses);
+      const names = await decisionStatementNames(page);
+      expect(
+        names.filter((name) => name.length > 32),
+        `${where} names a statement by more than 32 characters`
+      ).toEqual([]);
+      expect(
+        names.filter((name) => addresses.test(name)),
+        `${where} names a statement by an address`
+      ).toEqual([]);
+
+      if (size.width === DESKTOP.width) {
+        // Ruling 1 on a question: the long one a person answered is cut, with more than 20
+        // words held back, and the long one that waits on the reader is drawn whole.
+        const cutOf = async (question: string) =>
+          (await rowLayouts(page)).find((row) => row.id === question);
+        await expect
+          .poll(async () => (await cutOf(seeded.answered))?.more ?? null, {
+            message: `${where} does not cut the long answered question`,
+          })
+          .toMatch(/^more · [\d,]+ words$/u);
+        const hidden = Number(
+          /^more · ([\d,]+) words$/u
+            .exec((await cutOf(seeded.answered))?.more ?? "")?.[1]
+            ?.replace(/,/gu, "")
+        );
+        expect(
+          hidden,
+          `${where} holds back 20 words or fewer of the answered question`
+        ).toBeGreaterThan(20);
+        expect(
+          await cutOf(seeded.waiting),
+          `${where} cuts the long question that waits on the reader`
+        ).toMatchObject({ more: null, wordsHidden: 0 });
+        const width = (await decisionsBody(page).boundingBox())?.width ?? 0;
+        expect(
+          Math.abs(width - 960),
+          `${where}: the list is ${width} px wide, not 960`
+        ).toBeLessThanOrEqual(1);
+      } else {
+        const widths = await page.evaluate(() => ({
+          client: document.documentElement.clientWidth,
+          scroll: document.documentElement.scrollWidth,
+        }));
+        expect(widths.scroll, `${where} draws wider than the screen`).toBe(widths.client);
+      }
+    }
   });
 });

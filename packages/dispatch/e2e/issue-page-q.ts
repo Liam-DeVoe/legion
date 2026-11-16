@@ -1,7 +1,10 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { getIssue } from "./api";
+import { answerAsk, createAsk, getAsk, getIssue } from "./api";
+import { seedWholeIssue } from "./issue-layout-seed";
+import { asPlanner } from "./issue-layout-seed-support";
 import { issuePage, presetRow } from "./issue-page";
+import { longWords, READER } from "./issue-page-g";
 
 /**
  * How part Q's rows read the Decisions view of the new issue page (dispatch://INFRA-1196 part Q,
@@ -18,12 +21,19 @@ import { issuePage, presetRow } from "./issue-page";
  *   its heading `[data-decisions-heading]` and count `[data-decisions-count]`, its rows the
  *   outline's own `[data-node-row]`; another person's entry stands in `yours` with their name.
  *   The foot's control is the `button` in `[data-decisions-foot]`.
+ * - **Keep and Change** `button[data-row-action="keep" | "change"]` on each row of the review
+ *   part, drawn with no focus on the row.
+ * - **A decision's "informs" line**, each statement it shaped a link in
+ *   `[data-decision-statement]`, named by the words the page's chips name it by.
  * - **The Decisions control's flag** `[data-preset-flag="to_review"]` in D's view row, whose
  *   number is how many decisions wait for the reader's review.
+ *
+ * `seedDecisionsLayout` is c-layout's seed: the whole issue and two long questions.
  */
 
 /** The selectors the readers pass into the browser. */
 const SELECTORS = {
+  body: "[data-issue-page] [data-decisions-body]",
   issuePage: "[data-issue-page]",
 } as const;
 
@@ -51,6 +61,110 @@ export function decisionsPartsDrawn(page: Page): Promise<DrawnPart[]> {
   }, SELECTORS.issuePage);
 }
 
+/** The Decisions view's list, which holds every row and part the view draws. */
+export function decisionsBody(page: Page): Locator {
+  return issuePage(page).locator("[data-decisions-body]");
+}
+
+/** One part of the Decisions view, by its `data-decisions-part`. */
+export function decisionsPart(page: Page, part: string): Locator {
+  return decisionsBody(page).locator(`[data-decisions-part="${part}"]`);
+}
+
+/** One row of the Decisions view: its node, the part it stands in - null for the row of a node
+ *  an address names, which stands in none - and the Keep and Change controls it draws. */
+export interface ListRow {
+  readonly actions: readonly string[];
+  readonly id: string;
+  readonly part: string | null;
+}
+
+/** Every row of the Decisions view, in the order it is drawn. */
+export function decisionsRows(page: Page): Promise<ListRow[]> {
+  return page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.body} [data-node-row]`)].map((row) => ({
+        actions: [...row.querySelectorAll("button[data-row-action]")].map(
+          (control) => control.getAttribute("data-row-action") ?? ""
+        ),
+        id: row.getAttribute("data-node-id") ?? "",
+        part: row.closest("[data-decisions-part]")?.getAttribute("data-decisions-part") ?? null,
+      })),
+    SELECTORS
+  );
+}
+
+/** The words of each row of the Decisions view that draw the source they were written in: a
+ *  typed block's `:::` fence or a `dispatch://` address, where the page names a reference by
+ *  plain words (the tester's F20). */
+export function decisionsWordsWithSource(page: Page): Promise<string[]> {
+  return page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.body} [data-node-words]`)]
+        .map((words) => (words.textContent ?? "").replace(/\s+/gu, " ").trim())
+        .filter((words) => words.includes(":::") || words.includes("dispatch://")),
+    SELECTORS
+  );
+}
+
+/** The words each decision of the Decisions view names a statement it shaped by, on its
+ *  "informs" line, in the order they are drawn. */
+export function decisionStatementNames(page: Page): Promise<string[]> {
+  return page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.body} [data-decision-statement] a`)].map((link) =>
+        (link.textContent ?? "").replace(/\s+/gu, " ").trim()
+      ),
+    SELECTORS
+  );
+}
+
+/** How one control is drawn, as computed: its fill, its words' colour, and each side of its
+ *  border, top, right, bottom and left. */
+export interface ControlLook {
+  readonly background: string;
+  readonly borderColors: readonly string[];
+  readonly borderWidths: readonly string[];
+  readonly color: string;
+}
+
+/** How `control` is drawn, as computed. */
+export function controlLook(control: Locator): Promise<ControlLook> {
+  return control.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      background: style.backgroundColor,
+      borderColors: [
+        style.borderTopColor,
+        style.borderRightColor,
+        style.borderBottomColor,
+        style.borderLeftColor,
+      ],
+      borderWidths: [
+        style.borderTopWidth,
+        style.borderRightWidth,
+        style.borderBottomWidth,
+        style.borderLeftWidth,
+      ],
+      color: style.color,
+    };
+  });
+}
+
+/** What the browser computes for a border written `width` wide. Chromium rounds a border's
+ *  width down to whole device pixels before it is read (1.5px reads 1px at a device scale of 1),
+ *  so a control's computed border is compared with this and not with the width as written. */
+export function computedBorderWidth(page: Page, width: string): Promise<string> {
+  return page.evaluate((written) => {
+    const probe = document.createElement("i");
+    probe.style.border = `${written} solid`;
+    document.body.append(probe);
+    const computed = getComputedStyle(probe).borderTopWidth;
+    probe.remove();
+    return computed;
+  }, width);
+}
+
 /** The control at the Decisions view's foot, which unfolds the agents' untied decisions. */
 export function decisionsFoot(page: Page): Locator {
   return issuePage(page).locator("[data-decisions-foot] button");
@@ -67,4 +181,41 @@ export async function primarySlug(key: string): Promise<string> {
   const primary = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
   expect(primary, `${key} carries no primary document`).toBeDefined();
   return primary?.slug ?? "";
+}
+
+/** What `seedDecisionsLayout` wrote beside the whole issue. */
+export interface DecisionsLayoutSeed {
+  /** A question of 160 words alice answered, which the view cuts at six lines. */
+  readonly answered: string;
+  readonly key: string;
+  /** A question of 160 words that waits on alice, which the view draws whole. */
+  readonly waiting: string;
+}
+
+/** `seedWholeIssue` and the checkpoint's two long questions of its c-row row, each asked by the
+ *  planner: one answered by alice in a short line of her own, and one that waits on her. */
+export async function seedDecisionsLayout(): Promise<DecisionsLayoutSeed> {
+  const seeded = await seedWholeIssue();
+  const answered = await createAsk(
+    seeded.key,
+    { question: longWords("asked", 160), urgency: "high" },
+    asPlanner
+  );
+  await answerAsk(answered.id, {
+    expected_edited_at: null,
+    selected: [],
+    text: "The first of the two.",
+  });
+  const waiting = await createAsk(
+    seeded.key,
+    { question: longWords("waits", 160), urgency: "high" },
+    asPlanner
+  );
+  // The view draws a question whole only where it waits on the reader, so the seed proves it
+  // does before a row reads the cut.
+  expect(
+    (await getAsk(waiting.id)).ask.waiting_on_person,
+    "the seeded open question does not wait on the reader"
+  ).toBe(READER);
+  return { answered: answered.id, key: seeded.key, waiting: waiting.id };
 }
