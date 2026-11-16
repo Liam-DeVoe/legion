@@ -2022,6 +2022,9 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its last case reads this file's own go test line, the wrapper one"),
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its last case reads this file's own go test line, the GODEBUG one"),
     ]),
+    harness("go_test_shards_test", "Test the go test shard split", f"{SCRIPTS}/go-test-shards.test.sh", [
+        (f"{SCRIPTS}/go-test-shards.py", "the script under test"),
+    ]),
 ]
 
 # What every harness step above reads, for the test job's own gate: the job runs each of them, so
