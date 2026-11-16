@@ -320,16 +320,19 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 # lib/loopback-dsn.sh for run_database_url, the helper a proof that writes a PostgreSQL server
-# reads its caller's DSN with, and lib/port-file.sh for read_port_file, which this proof's own
-# await_port_file waits with. Neither file reads a variable of this shell. This proof sources no
-# rig: its await_port_file and keep_port, written for the pid map below, are its own, and
-# lib/rig.sh defines both of those names and a start_held that calls its own await_port_file, so
-# sourcing it for that one DSN helper would leave which await_port_file runs to the order of the
-# two files.
+# reads its caller's DSN with, lib/port-file.sh for read_port_file, which this proof's own
+# await_port_file waits with, and lib/held-front.sh for the proxies' command and readiness
+# (held_front_argv, held_front_answers). None of the three reads a variable of this shell. This
+# proof sources no rig: its await_port_file and keep_port, written for the pid map below, are its
+# own, and lib/rig.sh defines both of those names and a start_held that calls its own
+# await_port_file, so sourcing it for that one DSN helper would leave which await_port_file runs
+# to the order of the two files.
 # shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
 . "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$repo_root/scripts/e2e/lib/port-file.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/held-front.sh
+. "$repo_root/scripts/e2e/lib/held-front.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs before the builds, the services and the `create database` further
@@ -682,22 +685,18 @@ start_listener() {
 start_listener shared
 start_listener dispatch
 
-# proxy_ready PORT: a connection to PORT reads natsd's INFO line within 2 s, so the proxy there
-# accepts and forwards (a kept port with no proxy accepts the connection and sends nothing).
-proxy_ready() {
-  local word=""
-  (exec 3<>"/dev/tcp/127.0.0.1/$1" && read -r -t 2 -N 4 word <&3 && [[ "$word" == INFO ]]) 2>/dev/null
-}
-# start_proxy LABEL: socat forwarding to natsd from the socket the keeper keep-LABEL holds
-# (ACCEPT-FD; held-port.py names the descriptor PROXY_LISTEN_FD, which socat does not read), one
-# fork per connection, in a process group of its own (setsid and held-port.py exec in place), so
-# one SIGKILL to the group cuts every connection through it and the keeper keeps the port.
+# start_proxy LABEL: the held front (lib/held-front.sh) forwarding to natsd from the socket the
+# keeper keep-LABEL holds, one fork per connection, in a process group of its own (setsid, and
+# held-port.py exec in place), so one SIGKILL to the group cuts every connection through it and the
+# keeper keeps the port. It is ready once a connection through it reads natsd's INFO line within
+# 2 s (a kept port with no proxy accepts the connection and sends nothing).
 start_proxy() {
   local label=$1 group
-  (isolated_exec "" -- setsid python3 "$held_port" exec --from "$work/ports/keep-$label.sock" --fd-env PROXY_LISTEN_FD -- \
-    socat "ACCEPT-FD:3,fork" "TCP:127.0.0.1:${nats_port}") >>"$work/logs/$label.log" 2>&1 &
+  local -a front
+  held_front_argv front "$work/ports/keep-$label.sock" "$nats_port"
+  (isolated_exec "" -- setsid "${front[@]}") >>"$work/logs/$label.log" 2>&1 &
   pid[$label]=$!
-  await "$label" "$work/logs/$label.log" 10 proxy_ready "${proxy_port[$label]}"
+  await "$label" "$work/logs/$label.log" 10 held_front_answers "${proxy_port[$label]}" INFO
   read -r _ _ _ _ group _ <"/proc/${pid[$label]}/stat"
   [[ "$group" == "${pid[$label]}" ]] || fail "$label (pid ${pid[$label]}) is not in a process group of its own"
 }

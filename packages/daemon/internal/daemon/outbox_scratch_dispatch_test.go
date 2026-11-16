@@ -318,8 +318,10 @@ type scratchDispatchOptions struct {
 
 // scratchDispatch is a real Dispatch server a test builds and runs: its binary, its own database,
 // the port it serves on (kept across a restart, since whatever the test pointed at the server
-// names it), and the running process. stop and start take it down and bring it back on the same
-// port and database; the test's end stops it and drops the database.
+// names it), the socket the test holds on that port, and the running process. stop and start take
+// it down and bring it back on the same port, which the test holds between them, and the same
+// database; stopRefusing also lets the port go, so it refuses connections until the next start.
+// The test's end stops it and drops the database.
 type scratchDispatch struct {
 	t        *testing.T
 	binary   string
@@ -331,10 +333,15 @@ type scratchDispatch struct {
 	home     string
 	log      io.Writer
 	port     int
-	base     string
-	command  *exec.Cmd
-	exited   chan error
-	output   *syncBuffer
+	// socket is the listening socket on port that every start hands Dispatch (DISPATCH_LISTEN_FD).
+	// The test holds it from the choice of the port until the test ends, so no other program can
+	// take the port before Dispatch serves it or while it is stopped. It is nil only from
+	// stopRefusing until the next start.
+	socket  *os.File
+	base    string
+	command *exec.Cmd
+	exited  chan error
+	output  *syncBuffer
 }
 
 // startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
@@ -376,15 +383,17 @@ func (d *scratchDispatch) start() {
 	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-10*time.Second).Before(deadline) {
 		deadline = testDeadline.Add(-10 * time.Second)
 	}
-	// Dispatch serves on a socket held here (DISPATCH_LISTEN_FD), so no other process can take the
-	// port before Dispatch serves it: the first start on a port the kernel chose (heldSocket), a
-	// restart on the port it served before (holdPortAgain).
-	var held *os.File
-	if d.port == 0 {
-		held, d.port = heldSocket(t)
-		d.base = fmt.Sprintf("http://127.0.0.1:%d", d.port)
-	} else {
-		held = d.holdPortAgain(deadline)
+	// Dispatch serves on a socket the test holds (DISPATCH_LISTEN_FD), so no other process can take
+	// the port before Dispatch serves it: the first start holds a port the kernel chose
+	// (heldSocket), and a restart is handed the same socket again. Only a restart after
+	// stopRefusing takes the port again (holdPortAgain).
+	if d.socket == nil {
+		if d.port == 0 {
+			d.socket, d.port = heldSocket(t)
+			d.base = fmt.Sprintf("http://127.0.0.1:%d", d.port)
+		} else {
+			d.socket = d.holdPortAgain(deadline)
+		}
 	}
 	command := exec.Command(d.binary)
 	command.Dir = d.dir
@@ -415,18 +424,16 @@ func (d *scratchDispatch) start() {
 		"DISPATCH_WEB_DIST="+d.webDist,
 		"HOME="+d.home,
 	)
-	command.ExtraFiles = []*os.File{held}
+	command.ExtraFiles = []*os.File{d.socket}
 	output := &syncBuffer{}
 	command.Stdout = output
 	if d.log != nil {
 		command.Stdout = io.MultiWriter(output, d.log)
 	}
 	command.Stderr = command.Stdout
-	// From here Dispatch's is the only copy of the socket, so a Dispatch that exits releases the
-	// port and nothing of the test's answers on it.
-	err := command.Start()
-	_ = held.Close()
-	if err != nil {
+	// The test keeps its own copy of the socket, so a Dispatch that exits leaves the port held: a
+	// connection to it waits unanswered until the next start serves it.
+	if err := command.Start(); err != nil {
 		t.Fatalf("start scratch Dispatch: %v", err)
 	}
 	exited := make(chan error, 1)
@@ -453,11 +460,12 @@ func (d *scratchDispatch) start() {
 	}
 }
 
-// holdPortAgain takes the socket of the port the server served on before its stop (takeSocket), as
-// heldSocket takes one of a port the kernel chooses. From the stop until here the port is any
-// process's, so a run that finds it still held by another process (EADDRINUSE) binds it again
-// until deadline. Every other failure of takeSocket, such as the descriptor the listener could not
-// give, is this run's own and fails the test at once: binding again would never clear it.
+// holdPortAgain takes the socket of the port the server served on before stopRefusing let it go
+// (takeSocket), as heldSocket takes one of a port the kernel chooses, and closes it when the test
+// ends. From stopRefusing until here the port has no listener, so any process may have bound it:
+// a run that finds it held by another process (EADDRINUSE) binds it again until deadline. Every
+// other failure of takeSocket, such as the descriptor the listener could not give, is this run's
+// own and fails the test at once: binding again would never clear it.
 func (d *scratchDispatch) holdPortAgain(deadline time.Time) *os.File {
 	d.t.Helper()
 	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(d.port))
@@ -478,6 +486,7 @@ func (d *scratchDispatch) holdPortAgain(deadline time.Time) *os.File {
 	}) {
 		d.t.Fatalf("scratch Dispatch's port %d was still taken at the deadline: %v", d.port, last)
 	}
+	d.t.Cleanup(func() { _ = held.Close() })
 	return held
 }
 
@@ -499,6 +508,19 @@ func (d *scratchDispatch) stop() {
 		_ = command.Process.Kill()
 		<-d.exited
 		d.t.Error("scratch Dispatch did not stop after SIGINT")
+	}
+}
+
+// stopRefusing is stop, and then closes the socket the test holds, so the port refuses every
+// connection, as a stopped Dispatch's port does outside a test. A10 of handoff_records_live_test.go
+// proves what a client sees then: a refused connection. A port that refuses has no listener, so any
+// program can bind it until the next start takes it again (holdPortAgain). That is the one window
+// in which the scratch Dispatch's port is not held, and only this stop opens it.
+func (d *scratchDispatch) stopRefusing() {
+	d.stop()
+	if d.socket != nil {
+		_ = d.socket.Close()
+		d.socket = nil
 	}
 }
 

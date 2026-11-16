@@ -549,7 +549,7 @@ func (r *handoffRecordsLive) a10Up() {
 func (r *handoffRecordsLive) a10Down() {
 	t := r.t
 	planner := r.claimants[r.token(r.a10, claim.RolePlanner)]
-	r.dispatch.stop()
+	r.dispatch.stopRefusing()
 	r.note("stopped the Dispatch process (SIGINT); %s refuses connections", r.dispatch.base)
 	file := r.bodyFile("a10-retry", r.smallBody(r.a10, "plan", "written once Dispatch answers"))
 	out, code := r.cli(planner.session, "handoff-write", "--issue", r.a10, "--phase", "plan", "--body-file", file)

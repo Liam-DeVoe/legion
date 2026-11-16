@@ -176,9 +176,24 @@ report_port() {
   printf '%s\n' "${_match##*[!0-9]}"
 }
 
-# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
-port_answers() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+# start_reported NAME PORT_VAR PATTERN -- COMMAND... starts COMMAND as the service NAME
+# (start_process), a server that binds a port the kernel chooses and names it in its own log, and
+# assigns PORT_VAR the port: the digits right after the first match of PATTERN (report_port), waited
+# for while NAME lives. It is how a run starts a server that takes no socket (R2 of
+# dispatch://INFRA-4043): the e2e harness's fakes bind port 0 with FAKE_ENVOY_PORT and
+# FAKE_GITHUB_PORT unset and log `fake envoy listener on 127.0.0.1:<port>`, and natsd -p -1 logs
+# 'Listening for client connections on 127.0.0.1:<port>'. The locals' names are ones no caller passes.
+start_reported() {
+  local _name=$1 _port_var=$2 _pattern=$3 _pid_var _reported
+  shift 3
+  [ "${1:-}" = -- ] || fail "start_reported $_name: the command comes after --"
+  shift
+  start_process "$_name" "$@"
+  _pid_var=${_name}_pid
+  await_start "$_name" "${!_pid_var}" 60 "$_name to name its port" \
+    report_port "$evidence/logs/$_name.log" "$_pattern"
+  _reported=$(report_port "$evidence/logs/$_name.log" "$_pattern")
+  printf -v "$_port_var" '%s' "$_reported"
 }
 
 # listening_holders PORT prints, one per line in order, the pid of every process holding the one

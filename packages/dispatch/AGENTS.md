@@ -1969,12 +1969,15 @@ socket, and they name that installation's directory. That provider runs
 `initdb` is the cost that grows with the stacks. Both keep the stack's data
 under the run's own temporary directory, one `worker-<i>` directory per stack
 beside that stack's `worker-<i>/log`, which `e2e/harness-pool.ts` makes and
-removes. Neither hands its server a port that was free a moment before, which
-another program could take before the server binds it: the binaries provider's
-server listens on a unix socket in the stack's own directory and on no TCP
-port, and the image provider publishes the loopback port Docker chooses and
-reads it back with `docker port`. A unix socket and a loopback address are what
-the server's dev sign-in requires of its database. With one worker and
+removes. Neither gives its server a TCP port, so no other program can take a
+port between its choice and the server's bind: each server listens on no TCP
+port and serves on a unix socket alone, in a directory of mode 0700 that the
+run's user owns, made in the run's directory or in `/tmp` when the socket's
+path there would pass the 107 bytes a unix socket path may hold. The image
+provider mounts that directory into its container and runs the container as
+the run's user. Only that user and root can reach the socket, so each server
+trusts every connection. A unix socket is what the server's dev sign-in
+requires of its database, beside a loopback address. With one worker and
 `DATABASE_URL` set, the run uses that database as stack 0's and starts no
 Postgres, exactly as it always has.
 

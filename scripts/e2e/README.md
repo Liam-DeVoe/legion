@@ -9,6 +9,8 @@ standalone helpers they run, and the files they source, which `shellcheck` follo
 
 - [`lib/rig.sh`](#librigsh)
 
+- [`lib/held-front.sh`](#libheld-frontsh)
+
 - [`lib/workflow.sh`](#libworkflowsh)
 
 - [`lib/github-apps.sh`](#libgithub-appssh)
@@ -3895,15 +3897,9 @@ Each item below names an input and its default, then what it means.
 
 - `DISPATCH_BIN` — unset
 
-  a prebuilt `envoy-dispatch` to run; unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
+  a prebuilt `envoy-dispatch` to run, which must serve on an inherited socket (`DISPATCH_LISTEN_FD`, legion-envoy-v18.5.0 and later); unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
 
-- `CLAIMANT_E2E_DISPATCH_PORT` — `19051`
-
-  the server's port; refused when something already answers on it
-
-- `CLAIMANT_E2E_ENVOY_PORT` — `19053`
-
-  the fake Envoy listener's port; refused the same way
+No port is chosen before its server binds it: the server serves on a socket [`lib/held-port.py`](#libheld-portpy) holds from the kernel's choice until it serves (`lib/rig.sh`'s `start_held`), and NATS and the fake Envoy listener each bind a port the kernel picks and name it in their logs (`start_reported`).
 
 The script drops every inherited `DISPATCH_*`, `ENVOY_*` and `NATS_*` variable (and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`) before it starts anything, so a Legion pane's real listener, Dispatch and NATS credentials reach none of it.
 It starts a NATS of its own (`internal/testnats/cmd/natsd`, JetStream on, on a port the kernel picks), the harness's fake Envoy listener (`packages/dispatch/e2e/fake-envoy.ts`, where the three sessions are registered live and P and C advertise `steer`, a mention's default mode), and the server with NATS on, dev sign-in, an insecure cookie and an agent token minted for the run, in an environment holding nothing else.
@@ -4010,7 +4006,7 @@ Each item below names an input and its default, then what it means.
 
 - `DISPATCH_BIN` — unset
 
-  a prebuilt `envoy-dispatch` to run; unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
+  a prebuilt `envoy-dispatch` to run, which must serve on an inherited socket (`DISPATCH_LISTEN_FD`, legion-envoy-v18.5.0 and later); unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
 
 - `VERIFICATION_RESULTS_E2E_DISPATCH_CLI` — unset
 
@@ -4019,17 +4015,7 @@ Each item below names an input and its default, then what it means.
   The script makes the path absolute, because `dash-refused` runs the command in another directory.
   A negative control names the command of another tree here, with no change to the checkout
 
-- `VERIFICATION_RESULTS_E2E_DISPATCH_PORT` — `19061`
-
-  the server's port; refused when something already answers on it
-
-- `VERIFICATION_RESULTS_E2E_ENVOY_PORT` — `19063`
-
-  the fake Envoy listener's port; refused the same way
-
-- `VERIFICATION_RESULTS_E2E_GITHUB_PORT` — `19065`
-
-  the fake GitHub's port; refused the same way, and the three must differ
+No port is chosen before its server binds it: the server serves on a socket [`lib/held-port.py`](#libheld-portpy) holds from the kernel's choice until it serves (`lib/rig.sh`'s `start_held`), and NATS, the fake Envoy listener and the fake GitHub each bind a port the kernel picks and name it in their logs (`start_reported`).
 
 The script drops every inherited `DISPATCH_*`, `ENVOY_*`, `NATS_*` and `FAKE_*` variable (and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`) before it starts anything, so a Legion pane's real listener, Dispatch and NATS credentials reach none of it.
 It starts a NATS of its own (`internal/testnats/cmd/natsd`, JetStream on, on a port the kernel picks), the harness's fake Envoy listener (`packages/dispatch/e2e/fake-envoy.ts`), the harness's fake GitHub (`packages/dispatch/e2e/fake-github.ts`, which the server reads as `DISPATCH_GITHUB_API_BASE`), and the server with NATS on, dev sign-in, an insecure cookie, an agent token minted for the run and a throwaway RSA App key, in an environment holding nothing else.
@@ -5041,7 +5027,7 @@ natsd binds the client and monitor ports the kernel chooses (`-p -1 -m -1`), and
 Every other server restarts in a window, and a configuration names its port before it first starts:
 the sessions' `envoy.json` names listener `shared` and a proxy, and Dispatch's environment names listener `dispatch` and its proxy.
 So each serves on a copy of a socket a keeper (`held-port.py keep`, one per server, its socket under `ports/`) holds for the whole run:
-each listener through `ENVOY_LISTEN_FD`, Dispatch through `DISPATCH_LISTEN_FD`, and each proxy as `socat ACCEPT-FD:3,fork` (the helper hands the socket over as descriptor 3).
+each listener through `ENVOY_LISTEN_FD`, Dispatch through `DISPATCH_LISTEN_FD`, and each proxy through the held front of [`lib/held-front.sh`](#libheld-frontsh), `socat ACCEPT-FD:3,fork` (the helper hands the socket over as descriptor 3).
 A restart serves the same port, and nothing else can take it while the server is down.
 A kept port with no server still listens: the kernel queues a connection and nothing answers it.
 A client of a server a window has stopped therefore waits rather than being refused, and the script polls every kept port with a timeout (`curl --max-time`, and for a proxy a read of natsd's `INFO` line within 2 s).
@@ -5282,7 +5268,7 @@ A port a person sets explicitly is used as given, and an occupied one fails with
 
 ## lib/port-file.sh
 
-The wait for the port file [`lib/held-port.py`](#libheld-portpy) writes, which `lib/rig.sh`'s `start_held` and `keep_port`, `envoy-session-delivery.sh`, and `packages/envoy/scripts/search-smoke.sh` and `searchbench.sh` share.
+The wait for the port file [`lib/held-port.py`](#libheld-portpy) writes, which `lib/rig.sh`'s `start_held` and `keep_port`, `envoy-session-delivery.sh`, and `packages/envoy/scripts/search-smoke.sh`, `searchbench.sh` and `e2e-refill.sh` share.
 Sourced, never run; it needs nothing of its caller's.
 
 ```sh
@@ -5293,6 +5279,35 @@ read_port_file "$work/dispatch.port" "$server_pid" port || waited=$?
 `read_port_file FILE PID VAR` polls FILE every tenth of a second while PID lives and assigns VAR the port it names.
 It prints nothing, so each caller words its own failure:
 it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 after `port_file_seconds` (30).
+
+## lib/held-front.sh
+
+The held front of a server that takes no socket and must serve one port across its restarts: natsd, which binds a port the kernel chooses each time it starts (`-p -1`).
+A keeper ([`lib/held-port.py`](#libheld-portpy) `keep`) holds one loopback port for the whole run, every client is given that port, and the front serves it by forwarding each connection to the server's own port.
+When the server stops, the caller stops its front too, and starts a new one on the kept socket once the server serves on its new port, so every client keeps its URL and no port is free between its choice and its bind.
+A front left running would forward to the port the server released, which another program can bind in the meantime.
+Between two fronts the kept port still listens: the kernel queues a connection until the next front accepts it, so a client sees a hang rather than a refusal, and every poll of a kept port carries a timeout.
+[`envoy-session-delivery.sh`](#envoy-session-deliverysh) fronts natsd this way for each proxy it cuts, and `envoy-session-states.sh` and `packages/envoy/scripts/e2e-refill.sh` front natsd itself, which they stop and start again under a running listener.
+Sourced, never run; it needs nothing of its caller's, and `python3` and `socat` 1.8.0 or later (for `ACCEPT-FD`) on the PATH the front runs with.
+
+```sh
+. "$root/scripts/e2e/lib/held-front.sh"
+held_front_argv front "$work/nats_keeper.sock" "$natsd_port"
+start_process nats_front "${front[@]}"
+until_true 30 "the NATS front" held_front_answers "$nats_port" INFO
+```
+
+Each item below names a function, then what it does.
+
+- `held_front_argv VAR KEEPER_SOCKET PORT`
+
+  sets the array VAR to the front's command: `held-port.py exec --from KEEPER_SOCKET`, which takes a copy of the kept socket as descriptor 3 and executes `socat ACCEPT-FD:3,fork TCP:127.0.0.1:PORT` in place.
+  Stopped with its process group, the front cuts every connection through it, and the keeper keeps the port
+
+- `held_front_answers PORT WORD`
+
+  succeeds when a connection to `127.0.0.1:PORT` reads WORD, the first bytes the server behind the front sends (natsd's `INFO`), within 2 s.
+  A kept port with no front accepts the connection and sends nothing, so this is the poll that waits for a front
 
 ## lib/built-from.sh
 
@@ -5878,11 +5893,10 @@ Each item below names a function, then what it does.
   the digits right after the first match of the extended regex PATTERN in LOG (`'Listening for client connections on [^ ]*:'` for `nats-server -p -1`).
   It fails while no line matches, so it is also the poll that waits for one
 
-- `port_answers PORT`
+- `start_reported NAME PORT_VAR PATTERN -- CMD…`
 
-  succeeds when something accepts a connection on `127.0.0.1:PORT`, through bash's own `/dev/tcp`.
-  It is how a proof refuses a port of its own that is already answering, before it starts anything.
-  It asks a different question from `listening_holders` below, which reads who holds a socket that is already listening
+  starts CMD as the service NAME (`start_process`), a server that takes no socket, binds a port the kernel chooses and names it in its own log, and sets PORT_VAR to the port `report_port` reads there with PATTERN, waited for while NAME lives.
+  The e2e harness's fakes are such servers when `FAKE_ENVOY_PORT` and `FAKE_GITHUB_PORT` are unset: each logs `fake envoy listener on 127.0.0.1:<port>` or `fake github listener on 127.0.0.1:<port>`
 
 - `listening_holders PORT`
 
@@ -5944,7 +5958,8 @@ Each proof keeps its own header, its own ports, its own seed and its own cases.
 ```
 
 It sources [`lib/rig.sh`](#librigsh) itself, so a proof sources this file alone and gets both.
-Before it does, the caller sets what `lib/rig.sh` asks of it — `root`, `evidence` (empty; `two_builds_build` sets it to the work directory) and `timeout_hook` — defines `note` and `fail`, keeps `check` and `started`, which `cleanup` reads, and sets its three ports.
+Before it does, the caller sets what `lib/rig.sh` asks of it — `root`, `evidence` (empty; `two_builds_build` sets it to the work directory) and `timeout_hook` — defines `note` and `fail`, and keeps `check` and `started`, which `cleanup` reads.
+No port is the caller's to choose: each build serves on a socket held from the kernel's choice until it serves (`start_held`), so a base build must take `DISPATCH_LISTEN_FD` (legion-envoy-v18.5.0 and later), and the fake Envoy binds a port the kernel picks and names it (`start_reported`).
 
 Each item below names a function, then what it does.
 

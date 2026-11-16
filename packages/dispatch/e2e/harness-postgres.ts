@@ -15,12 +15,14 @@
  *    no Docker socket, and they name that installation's directory.
  *
  *  Both keep the stack's data under the run's own temporary directory, which the pool makes and
- *  removes (`e2e/harness-pool.ts`), and neither hands the server a port number that was free a
- *  moment before, since another program could take it before the server binds it: the binaries
- *  provider serves on a unix socket in the stack's own directory and listens on no TCP port, and
- *  the image provider lets Docker choose the loopback port it publishes and reads it back
- *  (`docker port`). The server's dev sign-in refuses a `DATABASE_URL` whose host is neither
- *  loopback nor a unix socket (`e2e/run-server.sh`), and each is one of those.
+ *  removes (`e2e/harness-pool.ts`), and neither gives the server a TCP port, so no other program
+ *  can take a port between its choice and the server's bind: each server listens on no TCP port
+ *  (`listen_addresses` empty) and serves on a unix socket alone, in a directory of mode 0700 that
+ *  this process's user owns (`socketDirectory`). The image provider mounts that directory into
+ *  its container at the image's socket directory and runs the container as this process's user,
+ *  so the socket the server makes there is that user's too. The server's dev sign-in refuses a
+ *  `DATABASE_URL` whose host is neither loopback nor a unix socket (`e2e/run-server.sh`), and a
+ *  unix socket is one.
  *
  *  The binaries provider runs `initdb` once per run and copies the data directory it made per
  *  stack, because `initdb` is the cost that grows with the stacks: measured in an issue pod, from
@@ -32,7 +34,7 @@
  *  measured with them applied cost 5.7-6.2 s at 2 stacks and 7.7-8.7 s at 4 — more than it saves,
  *  since the 1.0 s of migrations it takes out of a stack's boot runs in every stack at once. */
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -164,7 +166,7 @@ export interface StackDatabase {
   /** The `DATABASE_URL` this stack's servers and psql use. */
   readonly url: string;
   /** Where it serves, which the harness logs and no other stack shares: the directory of its
-   *  unix socket, or the loopback address Docker published. */
+   *  unix socket. */
   readonly address: string;
   stop(): Promise<void>;
 }
@@ -218,19 +220,47 @@ async function ready(url: string, what: string, signal?: AbortSignal): Promise<v
   }
 }
 
-/** Starts the cluster in `data`, with its log in `dir` and its one socket a unix socket there: it
- *  listens on no TCP port (`listen_addresses` empty), so it takes no port of the machine, and its
- *  `DATABASE_URL` is `socketUrl(dir, …)`. Returns or throws with no postmaster of `data` left
- *  running. */
+/** Postgres's socket file in its socket directory, for the port every stack's server keeps, 5432. */
+const socketFile = ".s.PGSQL.5432";
+/** The longest unix socket path the kernel takes: Linux's `sun_path` holds 108 bytes with the
+ *  terminating zero (docs/testing.md, "Unix sockets in Go tests"), and libpq refuses a longer
+ *  one. */
+const socketPathLimit = 107;
+/** The directory a long `TMPDIR` falls back to, as each module's `internal/testtmp` does. */
+const shortTemporaryDirectory = "/tmp";
+
+/** A fresh directory of mode 0700, which this process's user owns (`mkdtemp`), for one server's
+ *  unix socket: in `dir`, the run's own directory, when `longest`, the longest path the caller
+ *  puts in it, written relative to it, still fits `socketPathLimit` there, and else in /tmp, as
+ *  on a machine whose `TMPDIR` is long. Only this process's user and root can reach a socket
+ *  under it, which is why each server trusts every connection. The caller removes it. */
+function socketDirectory(dir: string, name: string, longest: string): string {
+  for (const base of [dir, shortTemporaryDirectory]) {
+    // mkdtemp appends six characters to the prefix it is given.
+    if (Buffer.byteLength(join(base, `${name}-XXXXXX`, longest)) <= socketPathLimit) {
+      return mkdtempSync(join(base, `${name}-`));
+    }
+  }
+  throw new Error(
+    `The Dispatch e2e harness cannot start: no directory holds a unix socket path of ` +
+      `${socketPathLimit} bytes or less for ${name}, neither ${dir} nor ${shortTemporaryDirectory}.`
+  );
+}
+
+/** Starts the cluster in `data`, with its log in `dir` and its one socket a unix socket in
+ *  `sockets`: it listens on no TCP port (`listen_addresses` empty), so it takes no port of the
+ *  machine, and its `DATABASE_URL` is `socketUrl(sockets, …)`. Returns or throws with no
+ *  postmaster of `data` left running. */
 async function startCluster(
   bin: string,
   data: string,
   dir: string,
+  sockets: string,
   what: string,
   env: NodeJS.ProcessEnv
 ): Promise<void> {
   const started = await serverSettings(env);
-  const options = ["-c listen_addresses=''", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
+  const options = ["-c listen_addresses=''", `-k ${sockets}`, ...started.map((s) => `-c ${s}`)];
   try {
     await execFileAsync(join(bin, "pg_ctl"), [
       "-D",
@@ -258,9 +288,9 @@ async function startCluster(
   }
 }
 
-/** The `DATABASE_URL` of `database` on the cluster whose unix socket is in `dir`. */
-function socketUrl(dir: string, database: string): string {
-  return `postgres://postgres@/${database}?host=${encodeURIComponent(dir)}&sslmode=disable`;
+/** The `DATABASE_URL` of `database` on the cluster whose unix socket is in `sockets`. */
+function socketUrl(sockets: string, database: string): string {
+  return `postgres://postgres@/${database}?host=${encodeURIComponent(sockets)}&sslmode=disable`;
 }
 
 function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): StackPostgres {
@@ -289,16 +319,26 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
       "-E",
       "UTF8",
     ]);
-    await startCluster(bin, data, templateDir, "the stacks' Postgres template", env);
+    const sockets = socketDirectory(dir, "pg-template", socketFile);
+    await startCluster(bin, data, templateDir, sockets, "the stacks' Postgres template", env).catch(
+      (error: unknown) => {
+        rmSync(sockets, { recursive: true, force: true });
+        throw error;
+      }
+    );
     try {
-      const admin = socketUrl(templateDir, "postgres");
+      const admin = socketUrl(sockets, "postgres");
       await ready(admin, "the stacks' Postgres template", signal);
       await sqlAt(admin, [`create database ${databaseName}`], signal);
-      await sqlAt(socketUrl(templateDir, databaseName), ["create extension vector"], signal);
+      await sqlAt(socketUrl(sockets, databaseName), ["create extension vector"], signal);
     } finally {
       // Whatever happened above: the postmaster is up from `startCluster` on, and a throw that
       // left it running would leave it serving while the pool removes the data directory under it.
-      await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
+      try {
+        await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
+      } finally {
+        rmSync(sockets, { recursive: true, force: true });
+      }
     }
     return data;
   };
@@ -313,11 +353,21 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
         // `cp -a` keeps the 0700 a data directory's server refuses to start without.
         await execFileAsync("cp", ["-a", await template, data]);
         const what = `stack ${index}'s Postgres`;
-        await startCluster(bin, data, stackDir, what, env);
+        const sockets = socketDirectory(dir, `pg-${index}`, socketFile);
         const stop = async (): Promise<void> => {
-          await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
+          try {
+            await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
+          } finally {
+            rmSync(sockets, { recursive: true, force: true });
+          }
         };
-        const url = socketUrl(stackDir, databaseName);
+        try {
+          await startCluster(bin, data, stackDir, sockets, what, env);
+        } catch (error) {
+          rmSync(sockets, { recursive: true, force: true });
+          throw error;
+        }
+        const url = socketUrl(sockets, databaseName);
         try {
           await ready(url, what, signal);
         } catch (error) {
@@ -329,7 +379,7 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
           await stop().catch(() => {});
           throw error;
         }
-        return { address: stackDir, url, stop };
+        return { address: sockets, url, stop };
       }),
   };
 }
@@ -346,7 +396,20 @@ async function containerLog(container: string): Promise<string> {
   }
 }
 
-function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): StackPostgres {
+function imageProvider(
+  image: string,
+  dir: string,
+  run: string,
+  env: NodeJS.ProcessEnv
+): StackPostgres {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (uid === undefined || gid === undefined) {
+    throw new Error(
+      `The Dispatch e2e harness cannot start: ${pgImageVariable} runs each container as this ` +
+        "process's user, and this platform names no user id."
+    );
+  }
   return {
     name: `the Postgres image ${image}`,
     start: (index, signal) =>
@@ -354,22 +417,39 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
         const what = `stack ${index}'s Postgres`;
         const started = await serverSettings(env);
         const container = `dispatch-e2e-pg-${run}-${index}`;
+        // The image's entrypoint makes its socket directory mode 3775 (`chmod 03775
+        // /var/run/postgresql` in docker-library/postgres's docker-entrypoint.sh), and through a
+        // bind mount that is the host directory's own mode. So the mount is a child of the 0700
+        // directory `socketDirectory` makes, which keeps every other user out whatever mode the
+        // child is given.
+        const own = socketDirectory(dir, `pg-${index}`, join("s", socketFile));
+        const sockets = join(own, "s");
+        mkdirSync(sockets, { mode: 0o700 });
+        const removeSockets = (): void => rmSync(own, { recursive: true, force: true });
         const remove = async (): Promise<void> => {
           await execFileAsync("docker", ["rm", "--force", "--volumes", container]).catch(() => {});
+          removeSockets();
         };
-        let address: string;
         try {
           await execFileAsync("docker", [
             "run",
             "--detach",
             "--name",
             container,
-            // No host port: Docker chooses one and binds it as it publishes, so no port is free
-            // between its choice and the bind, and `docker port` below reads it back.
-            "--publish",
-            "127.0.0.1::5432",
-            // Trust, as the binaries provider's initdb: the cluster is the stack's own and dies
-            // with its container, and Docker publishes it on the loopback address alone.
+            // No port is published: the server listens on no TCP port (`listen_addresses` empty,
+            // the last setting below) and serves on its unix socket alone, which the mount puts
+            // in `sockets`. Docker's allocator would choose a published port, not the kernel,
+            // and it fails the run when another program holds the ten ports after its last
+            // choice. The container runs as this process's user, so the socket is that user's
+            // and so is everything the run removes; the entrypoint takes an unknown user
+            // (its nss_wrapper), and the data directory under the image's 1777 volume.
+            "--user",
+            `${uid}:${gid}`,
+            "--volume",
+            `${sockets}:/var/run/postgresql`,
+            // Trust, as the binaries provider's initdb: only this process's user and root can
+            // reach the socket (`socketDirectory`), and the cluster is the stack's own and dies
+            // with its container.
             "--env",
             "POSTGRES_HOST_AUTH_METHOD=trust",
             "--env",
@@ -385,13 +465,9 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
             // (docker-library/postgres#1259).
             image,
             ...started.flatMap((setting) => ["-c", setting]),
+            "-c",
+            "listen_addresses=",
           ]);
-          const { stdout } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
-          const published = /^127\.0\.0\.1:\d+$/m.exec(stdout)?.[0];
-          if (published === undefined) {
-            throw new Error(`docker port named no loopback port for it: ${stdout.trim()}`);
-          }
-          address = published;
         } catch (error) {
           const said = await containerLog(container);
           await remove();
@@ -400,7 +476,7 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
               `${error instanceof Error ? error.message : String(error)}; the container said: ${said}`
           );
         }
-        const url = `postgres://postgres@${address}/${databaseName}?sslmode=disable`;
+        const url = socketUrl(sockets, databaseName);
         try {
           await ready(url, what, signal);
           // The image carries the extension; the database the image made still has to install it,
@@ -411,16 +487,20 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
           const said = await containerLog(container);
           await remove();
           throw new Error(
-            `The Dispatch e2e harness cannot start: ${what} came up from ${image} on ${address} ` +
+            `The Dispatch e2e harness cannot start: ${what} came up from ${image} in ${sockets} ` +
               `and then ${error instanceof Error ? error.message : String(error)}; ` +
               `the container said: ${said}`
           );
         }
         return {
-          address,
+          address: sockets,
           url,
           stop: async () => {
-            await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
+            try {
+              await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
+            } finally {
+              removeSockets();
+            }
           },
         };
       }),
@@ -446,7 +526,7 @@ export function stackPostgres(options: {
         "from its initdb and pg_ctl."
     );
   }
-  if (image !== "") return imageProvider(image, options.run, env);
+  if (image !== "") return imageProvider(image, options.dir, options.run, env);
   if (bin !== "") return binariesProvider(options.dir, bin, env);
   return undefined;
 }
