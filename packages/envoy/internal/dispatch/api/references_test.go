@@ -452,6 +452,40 @@ func TestReferencesExcerptsCutNoReferenceInHalf(t *testing.T) {
 	}
 }
 
+// A text that opens with a reference longer than the 240-rune bound is cut to nothing, since the
+// reference is left out whole, and an edge to it carries no excerpt rather than an empty one a
+// reader would draw as an empty paragraph.
+func TestReferencesLeaveOutAnExcerptTheCutLeavesEmpty(t *testing.T) {
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "LEGION")
+	createReferenceAPIProject(t, handler, "ACME")
+	legion := createReferenceAPIIssue(t, handler, "LEGION")
+	acme := createReferenceAPIIssue(t, handler, "ACME")
+	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
+		"question": "https://example.com/" + strings.Repeat("x", 300) + " - yes or no?",
+		"options":  []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if askResponse.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", askResponse.Code, askResponse.Body.String())
+	}
+	askRef := "dispatch://" + legion.Key + "/ask/" + decodeBody[model.Ask](t, askResponse).ID
+	messageResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+acme.Key+"/messages", map[string]any{
+		"body": "Decided in " + askRef + ".", "actor": sessionActor(),
+	})
+	if messageResponse.Code != http.StatusCreated {
+		t.Fatalf("create message: status=%d body=%s", messageResponse.Code, messageResponse.Body.String())
+	}
+	messageRef := "dispatch://" + acme.Key + "/message/" + decodeBody[model.Message](t, messageResponse).ID
+
+	outgoing := graphEdges(t, handler, url.Values{"from": {messageRef}})
+	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.Ref != askRef {
+		t.Fatalf("outgoing edges = %#v; want one mention of the ask", outgoing.Edges)
+	}
+	if excerpt := outgoing.Edges[0].Excerpt; excerpt != nil {
+		t.Fatalf("the ask's excerpt = %#v; want none, the cut left nothing to show", excerpt)
+	}
+}
+
 // awaitSinceRead reads again until holds accepts the answer, because a since read answers only
 // the edges at or below the event log's safe horizon, and any transaction holding a transaction
 // id on the Postgres instance holds that horizon back: in this package, storetest's own

@@ -1,6 +1,9 @@
 package text
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestHeadRefsNeverSplitsAReference holds HeadRefs to its rule: a reference that crosses the cut
 // moves the cut back to its start, and so does one the head would read that the text does not
@@ -41,6 +44,15 @@ func TestHeadRefsNeverSplitsAReference(t *testing.T) {
 		{"a multibyte mention", "界 [@计划者](dispatch://agent/s1) 界", 5, "", "界"},
 		{"a reference on the line after another", "First line.\nShip CORE-1234 today", 19, "", "First line.\nShip"},
 		{"a text opening with a reference past the bound", "dispatch://CORE-1/artifact/notes is long", 10, "…", "…"},
+		{"an excerpt opening with a reference past the bound", "https://example.com/" + strings.Repeat("x", 300), 240, "", ""},
+		{"a cut that moves to the start of its line", "First line.\nCORE-1234 today", 15, "", "First line."},
+		{"an address the ellipsis would join across a line break", "Read dispatch://CORE-1\nCORE-1234 today", 27, "…", "Read…"},
+		{"an address the ellipsis would join across a blank line", "Read dispatch://CORE-1\n\nCORE-1234 today", 28, "…", "Read…"},
+		{"a cut that moves to the start of a line after a blank one", "First line.\n\nCORE-1234 today", 16, "…", "First line.…"},
+		{"a cut in the words of a link that wrap", "See [the spec for\nthis part](dispatch://CORE-1/spec) now", 20, "", "See"},
+		{"a cut in the address of a link whose words wrap", "See [the spec for\nthis part](dispatch://CORE-1/spec) now", 35, "", "See"},
+		{"a blank line ends a link's words", "See [the spec\n\nfor](dispatch://CORE-1/spec) now", 17, "", "See [the spec\n\nfo"},
+		{"a line of spaces ends a link's words", "See [the spec\n  \nfor](dispatch://CORE-1/spec) now", 19, "", "See [the spec\n  \nfo"},
 	} {
 		if got := HeadRefs(row.value, row.limit, row.ellipsis); got != row.want {
 			t.Errorf("%s: HeadRefs(%q, %d, %q) = %q, want %q", row.name, row.value, row.limit, row.ellipsis, got, row.want)

@@ -138,9 +138,12 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 		// is a route this reader writes; for a kind added to text.IsParty alone partyTarget
 		// answers "", which checkMentionRoute refuses rather than let it pass for a person.
 		if located.Kind == "person" {
-			// The same person named twice is one person, as a repeated target is one party.
-			// A handful of logins is a short list, so it is searched rather than indexed.
-			if !slices.Contains(parties.people, located.ID) {
+			// The same person named twice is one person, as a repeated target is one party. The
+			// repeat is found in the set the targets are, under a `person:` key no route is
+			// written as, since a body may name any number of people.
+			key := "person:" + located.ID
+			if _, repeated := seen[key]; !repeated {
+				seen[key] = struct{}{}
 				parties.people = append(parties.people, located.ID)
 			}
 			continue

@@ -184,9 +184,9 @@ func TestCommentBodyPersonDoesNotCountTowardTheCap(t *testing.T) {
 // Each refusal keyed on the party set, with the code and the reason it has always answered, and
 // with nothing written and nothing sent. The first of them is the one the dashboard never asks
 // for: the composer's send carries `delivery` only while the draft's own words name a party
-// (`draftParties(body).named`, web/src/features/conversation/send-request.ts:255-266), so a typed
-// `/btw` with no mention reaches the server as the reader's own first word, and the server's side
-// of that - `delivery requires mentions`, comment_create.go:164-167 - stands here.
+// (`draftParties(body).named` in `attempt`, web/src/features/conversation/send-request.ts), so a
+// typed `/btw` with no mention reaches the server as the reader's own first word, and the
+// server's side of that - `delivery requires mentions` in validateCommentMentions - stands here.
 func TestCommentPartySetRefusals(t *testing.T) {
 	listener, sends := partyListener(t)
 	defer listener.Close()
