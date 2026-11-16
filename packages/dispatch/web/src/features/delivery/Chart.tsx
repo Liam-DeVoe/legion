@@ -38,8 +38,8 @@ import { type SpreadBarDay, SpreadBars } from "./SpreadBars";
 import { UtcRangeFields } from "./UtcRangeFields";
 
 /** A chart's range: the custom member of the page's own `WindowChoice` (`lib/window.ts`), since
- *  a chart draws a range of two exact ends and a comparison names two exact ends, never a rolling
- *  preset. `liveWindow` turns one into the window a page reads it with. */
+ *  a chart draws the range its answer resolved and a comparison names two exact ends, never a
+ *  rolling preset. `liveWindow` turns one into the window a page reads it with. */
 export type ChartRange = Extract<WindowChoice, { kind: "custom" }>;
 
 /** A run of per-day numbers, as `Sparkbars` takes them; `label` heads its table column. */
@@ -117,51 +117,19 @@ export interface DeliverySectionProps {
   readonly window: WindowChoice;
 }
 
-/** What one row of a chart's table is, where it is not a UTC day: the heading of the table's
- *  first column, the caption's own words for the run the series draw ("<label> by <over>"), and
- *  how a compare range's rows pair with the window's. The Legion section's cards draw a measure
- *  over the window by issue, by worker type and by UTC week; every other chart on the page draws
- *  one per UTC day. */
-export interface ChartRows {
-  readonly header: string;
-  readonly over: string;
-  /** How the table pairs a compare range's row with the window's, which is what its change
-   *  column is the change between. Every chart says which it is:
-   *
-   *    - `"position"`: row *i* of each range is the *i*-th of its own run, which is what a run
-   *      of days or of UTC weeks is — two ranges of one length cover the same number of them,
-   *      and the pairs are the two ranges' first days, second days, and so on.
-   *    - `"name"`: a row pairs with the compare range's row of the same name, and a name only
-   *      one range holds is a row with nothing on the other side. A run whose rows are issues or
-   *      worker types is this: row *i* of two ranges is two different issues, so a change
-   *      between them would be the change between two unrelated numbers.
-   */
-  readonly pair: "position" | "name";
-}
-
-/** What a run of per-day bars is: the rows every chart has unless it names its own. */
-const UTC_DAYS: ChartRows = { header: "Day", over: "UTC day", pair: "position" };
-
 export interface ChartProps {
   /** What the chart draws, in the reader's words: it names both controls and heads the table. */
   readonly label: string;
-  /** The range the series cover, as the page read them. The compare control offers the range
-   *  just before it, of its length, as a read of its own, so this is a range the server takes:
-   *  never an answer's window where the server answered one wider than it was asked (the eval
-   *  routes answer the whole UTC days a range touches, a day past the server's 84-day cap for the
-   *  84 days before the present). */
+  /** The range the series cover, as the answer resolved it. */
   readonly range: ChartRange;
   /** The series drawn, in order; the table holds every number all of them draw. */
   readonly series: readonly ChartSeries[];
   /** The comparison, from the page that reads its range; omitted where none is read. */
   readonly compare?: ChartCompare;
-  /** What one row of its table is, where it is not a UTC day. */
-  readonly rows?: ChartRows;
 }
 
-/** What a day with nothing measured reads as: never a zero. The Legion section's figures read
- *  the same. */
-export const NOTHING = "\u2014";
+/** What a day with nothing measured reads as: never a zero. */
+const NOTHING = "\u2014";
 
 /** What a number whose read is still out reads as, as the measures panel's numbers do. */
 export const PENDING = "\u2026";
@@ -180,8 +148,7 @@ const fieldClass = `rounded border px-1.5 py-0.5 text-xs ${surfaceMutedBg} ${bor
 const noteClass = `text-[11px] ${textMutedOnSurface}`;
 
 /** The range immediately before `range`, of the same length: what a comparison starts from. It
- *  is as long as `range`, which a page holds inside the server's cap (`ChartProps.range`), so it is
- *  inside the cap too. */
+ *  is as long as a range the server already answered, so it is inside the server's cap too. */
 export function precedingRange(range: ChartRange): ChartRange {
   const from = Date.parse(range.from);
   const to = Date.parse(range.to);
@@ -311,36 +278,16 @@ interface ChartPair {
   readonly row: ChartRow | undefined;
 }
 
-/** The table's lines: every row of the window, each against the compare range's row it pairs
- *  with, and then every row of the compare range that paired with none. `compared` is null where
- *  nothing is compared, which is one line per window row.
- *
- *  `pair` is the chart's own rule (`ChartRows`): by position for a run of days or weeks, where
- *  the *i*-th row of each range is the *i*-th of its own run, and by name for a run the rows
- *  name — the issues, the worker types — where the *i*-th rows of two ranges are two different
- *  things and a change between them would be no change at all. */
-function pairedRows(
-  table: ChartTable,
-  compared: ChartTable | null,
-  pair: "position" | "name"
-): ChartPair[] {
+/** The table's lines: every day of the window, each against the compare range's day in the same
+ *  position of its own run, since two ranges of one length cover the same number of days and the
+ *  pairs are the two ranges' first days, second days, and so on. `compared` is null where nothing
+ *  is compared, which is one line per window row. */
+function pairedRows(table: ChartTable, compared: ChartTable | null): ChartPair[] {
   if (compared === null) return table.rows.map((row) => ({ before: undefined, row }));
-  if (pair === "position") {
-    return Array.from(
-      { length: Math.max(table.rows.length, compared.rows.length) },
-      (_, index) => ({
-        before: compared.rows[index],
-        row: table.rows[index],
-      })
-    );
-  }
-  const before = new Map(compared.rows.map((row) => [row.day, row]));
-  const paired: ChartPair[] = table.rows.map((row) => ({ before: before.get(row.day), row }));
-  const named = new Set(table.rows.map((row) => row.day));
-  for (const row of compared.rows) {
-    if (!named.has(row.day)) paired.push({ before: row, row: undefined });
-  }
-  return paired;
+  return Array.from({ length: Math.max(table.rows.length, compared.rows.length) }, (_, index) => ({
+    before: compared.rows[index],
+    row: table.rows[index],
+  }));
 }
 
 /** A number as the table reads it: nothing measured where there is none, and an ellipsis where
@@ -442,18 +389,15 @@ function Graph({
   );
 }
 
-/** Every number the graph draws, in a table: one row a day (or whatever `naming` says a row is),
- *  one column each number, and with a comparison the two ranges side by side with the change
- *  between them. */
+/** Every number the graph draws, in a table: one row a day, one column each number, and with a
+ *  comparison the two ranges side by side with the change between them. */
 function NumberTable({
   against,
   label,
-  naming,
   series,
 }: {
   against: Comparison | null;
   label: string;
-  naming: ChartRows;
   series: readonly ChartSeries[];
 }): ReactNode {
   // Every number the series draw, and every number the compare range's draw, built once per run
@@ -467,15 +411,15 @@ function NumberTable({
     [comparedSeries]
   );
   const comparing = against !== null;
-  const notes = [`${label} by ${naming.over}`];
+  const notes = [`${label} by UTC day`];
   if (against !== null) notes.push(`compared with ${rangeLabel(against.range)}`);
   for (const one of series) {
     if (one.target !== undefined) notes.push(`${one.label} target ${one.format(one.target)}`);
   }
-  notes.push(`${NOTHING} is a ${naming.header.toLowerCase()} with nothing measured`);
+  notes.push(`${NOTHING} is a day with nothing measured`);
   const rows = useMemo(
-    () => pairedRows(table, comparing ? (compared ?? emptyTable) : null, naming.pair),
-    [comparing, compared, naming.pair, table]
+    () => pairedRows(table, comparing ? (compared ?? emptyTable) : null),
+    [comparing, compared, table]
   );
   return (
     <div className={`max-h-48 overflow-auto rounded border ${borderDefault}`}>
@@ -483,9 +427,9 @@ function NumberTable({
         <caption className={`px-2 py-1 text-left ${noteClass}`}>{`${notes.join(". ")}.`}</caption>
         <thead className={`sticky top-0 ${surfaceBg} ${textMutedOnSurface}`}>
           <tr>
-            <th className="px-2 py-1 text-left font-normal">{naming.header}</th>
+            <th className="px-2 py-1 text-left font-normal">Day</th>
             {against === null ? null : (
-              <th className="px-2 py-1 text-left font-normal">{`Compare ${naming.header.toLowerCase()}`}</th>
+              <th className="px-2 py-1 text-left font-normal">Compare day</th>
             )}
             {table.columns.map((column) => (
               <Fragment key={column.header}>
@@ -618,7 +562,7 @@ function CompareControl({
 
 /** One chart: its series as bars or as the table of every number they draw, under the two
  *  controls every chart of a measure over a range has. */
-export function Chart({ compare, label, range, rows = UTC_DAYS, series }: ChartProps): ReactNode {
+export function Chart({ compare, label, range, series }: ChartProps): ReactNode {
   const [mode, setMode] = useState<ChartMode>("graph");
   const against: Comparison | null =
     compare === undefined || compare.range === null
@@ -629,7 +573,7 @@ export function Chart({ compare, label, range, rows = UTC_DAYS, series }: ChartP
       {mode === "graph" ? (
         <Graph against={against} range={range} series={series} />
       ) : (
-        <NumberTable against={against} label={label} naming={rows} series={series} />
+        <NumberTable against={against} label={label} series={series} />
       )}
       <div className="flex flex-wrap items-center gap-1.5">
         <SegmentedToggle label={`${label} view`} onChange={setMode} options={MODES} value={mode} />

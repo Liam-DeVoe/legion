@@ -247,10 +247,10 @@ type splitWeek struct {
 	fold  SplittingFold
 }
 
-// weeks is legion-splitting over the window in its cut week by week, as the Delivery page's Legion
-// card draws it from the eval read's per-day counts (weekOf in LegionSection.tsx): the window's
-// parts grouped by the UTC Monday their day's week begins on (mondayOf), each group folded
-// (FoldSplitting), oldest first, a week kept where it holds a filing or a finished issue.
+// weeks is legion-splitting over the window in its cut week by week, the UTC weeks metric 4 has
+// always counted by: the window's parts grouped by the UTC Monday their day's week begins on
+// (mondayOf), each group folded (FoldSplitting), oldest first, a week kept where it holds a
+// filing or a finished issue.
 func (w window) weeks() []splitWeek {
 	byWeek := map[time.Time][]measures.DayPart{}
 	for _, part := range w.splittingParts {

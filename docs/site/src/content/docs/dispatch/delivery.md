@@ -8,8 +8,7 @@ sidebar:
 The **Delivery** page shows how work reaches production. A timeline of every merge, deploy and
 failed run sits under a panel of delivery measures. Both read the facts Dispatch stores from
 GitHub, and both follow the same window and filters. A **Pipeline** section of the same page
-shows how long each step of CI and the deploy takes, day by day, and a **Legion** section above
-them shows where Legion's time goes, from an issue to its merge. Until the deploy repository and
+shows how long each step of CI and the deploy takes, day by day. Until the deploy repository and
 its workflows are set in **Settings → Delivery timeline**, the Delivery page shows that form
 instead.
 
@@ -20,9 +19,9 @@ instead.
 The page opens on the last 28 days. **Window**, in the page header, sets it: the last 7, 14, 28 or
 84 days, or a custom range of whole days in UTC, both ends included. A preset rolls, so a link to
 the last 7 days always shows the latest 7; a custom range keeps its dates. The page reads at most
-84 days, and refuses a longer custom range, saying so. The Legion and Pipeline sections count
-whole UTC days: a preset there is that many days ending with today, today included. Changing the
-window clears a dragged stretch.
+84 days, and refuses a longer custom range, saying so. The Pipeline section counts whole UTC
+days: a preset there is that many days ending with today, today included. Changing the window
+clears a dragged stretch.
 
 The window, the search box and every filter (Repository, Parent agent, Session, Dispatch issue,
 Priority, Component, Author, rework, and whether a pull request has deployed) are written into the

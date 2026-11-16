@@ -3,7 +3,6 @@ package evals
 import (
 	"fmt"
 	"maps"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -313,62 +312,5 @@ func TestTheZeroLegionDayIsTheBuildersDayWithNoInput(t *testing.T) {
 	}
 	if got := r.count(t, `select count(*) from eval_days`); got != 0 {
 		t.Errorf("the refused write left %d rows, want none", got)
-	}
-}
-
-// TestTheLegionNamesAreTheGoNames: each set LegionNames' enum tags state, which the generated
-// contract carries to the Delivery page's Legion section, is the set the Go code holds: the
-// catalogue's Legion evals, legion-phase-time's bars and legion-splitting's classes of filing
-// (each eval's series in the all cut, in the catalogue's order), the five segments in the
-// precedence's order, the suffix of each cut but every issue's, and the columns every Legion issue
-// row carries. A name renamed in Go fails here until its tag carries it, and the contract
-// regenerated from the tag then fails the section's compile.
-func TestTheLegionNamesAreTheGoNames(t *testing.T) {
-	var slugs, roles, classes, segments, suffixes []string
-	for _, entry := range catalogue {
-		if entry.definition.Kind == KindLegion {
-			slugs = append(slugs, entry.definition.Slug)
-		}
-	}
-	for _, series := range entryOf(t, SlugLegionPhaseTime).series {
-		if base, cut := metrics.SplitCutSeries(series.Series); cut == metrics.ScopeAll {
-			roles = append(roles, base)
-		}
-	}
-	for _, series := range entryOf(t, SlugLegionSplitting).series {
-		base, cut := metrics.SplitCutSeries(series.Series)
-		if class, filing := strings.CutPrefix(base, metrics.FilingSeriesPrefix); filing && cut == metrics.ScopeAll {
-			classes = append(classes, class)
-		}
-	}
-	for segment := range (metrics.Segments{}).ByName() {
-		segments = append(segments, string(segment))
-	}
-	for _, cut := range metrics.Cuts {
-		if cut != metrics.ScopeAll {
-			suffixes = append(suffixes, strings.TrimPrefix(metrics.CutSeries("series", cut), "series"))
-		}
-	}
-	columns := slices.Sorted(maps.Keys(legionfacts.ItemRows([]legionfacts.Row{{Issue: "INFRA-1"}}, nil)[0].Columns))
-	names := reflect.TypeFor[LegionNames]()
-	for _, set := range []struct {
-		field string
-		want  []string
-	}{
-		{"Slug", slugs}, {"Role", roles}, {"Class", classes}, {"Segment", segments}, {"CutSuffix", suffixes}, {"Column", columns},
-	} {
-		field, found := names.FieldByName(set.field)
-		if !found {
-			t.Fatalf("LegionNames holds no field %s", set.field)
-		}
-		tag, tagged := field.Tag.Lookup("enum")
-		if !tagged {
-			t.Fatalf("LegionNames.%s carries no enum tag", set.field)
-		}
-		if got := strings.Split(tag, ","); len(set.want) == 0 || !slices.Equal(got, set.want) {
-			t.Errorf("LegionNames.%s's enum is %v, want the Go names %v", set.field, got, set.want)
-			continue
-		}
-		t.Logf("LegionNames.%s: %s", set.field, tag)
 	}
 }

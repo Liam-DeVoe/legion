@@ -5418,46 +5418,6 @@ export interface components {
       /** Format: date-time */
       since: null | string;
     };
-    LegionEvalNames: {
-      /** @enum {string} */
-      class: "in_tree_at_design" | "in_tree_later" | "out_of_tree" | "by_the_controller";
-      /** @enum {string} */
-      column:
-        | "children"
-        | "closed_at"
-        | "implementing_after_first_review"
-        | "merged_at"
-        | "opened_at"
-        | "parked_hours"
-        | "queued_hours"
-        | "repo"
-        | "review_rounds"
-        | "root_key"
-        | "sent_back"
-        | "slot_hours"
-        | "slot_wait_hours"
-        | "started_at"
-        | "testing_after_first_review"
-        | "tree_depth"
-        | "waiting_reason"
-        | "work_first_at"
-        | "work_hours"
-        | "work_last_at";
-      /** @enum {string} */
-      cut_suffix: ":roots" | ":children";
-      /** @enum {string} */
-      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger" | "no_role";
-      /** @enum {string} */
-      segment: "waiting_on_person" | "in_a_turn" | "ci_wait" | "waiting_on_children" | "idle";
-      /** @enum {string} */
-      slug:
-        | "legion-work-time"
-        | "legion-phase-time"
-        | "legion-idle-time"
-        | "legion-slot-wait"
-        | "legion-rework"
-        | "legion-splitting";
-    };
     LegionSetting: {
       created_by: components["schemas"]["Actor"];
       project: string;
@@ -14221,7 +14181,6 @@ export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
 export type LegionBoardWaiting = components["schemas"]["LegionBoardWaiting"];
-export type LegionEvalNames = components["schemas"]["LegionEvalNames"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
 export type LegionSettingsRelayInput = components["schemas"]["LegionSettingsRelayInput"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];

@@ -185,7 +185,7 @@ export const realStackReasons: Record<string, string> = {
   "legion-facts.e2e.ts":
     "the facts consumer recomputes one issue's stored row from an event the row writes, and the server's `issue_facts` change row wakes the open Legion view over `/ws/live`; the card's work time is the number the server stored",
   "legion.e2e.ts":
-    "every metric and every column is the server's aggregation over the daemon's recorded observations; the settings rows write a setting and read the daemon's own verdict back; a card moves between columns on a live `/ws/live` frame with no reload",
+    "every column is the server's aggregation over the daemon's recorded observations; the settings rows write a setting and read the daemon's own verdict back; a card moves between columns on a live `/ws/live` frame with no reload",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",

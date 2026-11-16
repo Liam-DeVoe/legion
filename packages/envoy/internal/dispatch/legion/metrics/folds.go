@@ -12,8 +12,7 @@ import (
 // <Measure>Day) turns the facts of the issues that finished on one UTC day, and the filings of
 // that day, into the day's parts, and one exported fold (the functions named Fold<Measure>) turns
 // any set of those parts into the answer, reading no database. The refresher stores the parts as
-// eval_days rows (evals/legion_days.go) and the eval routes fold a window's rows, which is what
-// the Delivery page's Legion section reads.
+// eval_days rows (evals/legion_days.go) and the eval routes fold a window's rows.
 //
 // A part folds the per-issue values IssueFacts holds (factsOf), which issue_facts stores: each
 // finished issue's work time, its part of each of the seven bars, its idle hours in each role,

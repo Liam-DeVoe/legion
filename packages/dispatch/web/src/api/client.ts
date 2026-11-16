@@ -1653,25 +1653,6 @@ export class DispatchApiClient {
     }
   }
 
-  /** The evals of the projects `project` names, repeated, each with its current definition, each
-   *  listed series' statistics over `[from, to)` and over the compare range, and the verdict of its
-   *  target (the shape of `GET /api/v1/projects/{key}/evals`), and of every project where it names
-   *  none: no project is picked for the caller. */
-  listEvals(query: Query<"/api/v1/evals", "get">) {
-    return this.read("/api/v1/evals", {}, query);
-  }
-
-  /** The rows behind an eval's numbers, every row `{row_key, row_kind, cols, measured_at, source,
-   *  href, links, range}` whatever its kind: its readings, its day rows and the rows a computed
-   *  eval counts. `sort` ranks pr-ci's jobs (`median`, `failures`). */
-  listProjectEvalItems(
-    project: string,
-    slug: string,
-    query: Query<"/api/v1/projects/{key}/evals/{slug}/items", "get">
-  ) {
-    return this.read("/api/v1/projects/{key}/evals/{slug}/items", { key: project, slug }, query);
-  }
-
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.
    *  A session another group holds is `409 SESSION_IN_GROUP`; a name another group has, or that is
    *  the title of a session outside the group, is `409` as well, the message naming which. */

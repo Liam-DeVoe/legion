@@ -6,7 +6,3 @@ body: |-
   delivery `DeliveryTargets` is a `DeliveryTarget`, `{value, inclusive}`, or null where its eval's
   target is off; every `DeliveryKpiStatus` field is nullable; and `DeliveryPipelineResponse`
   carries `status`, a `DeliveryPipelineStatus` of its two lead-time cards' verdicts.
-  `LegionEvalNames`, a schema no route answers, carries the Legion evals' names as enums, and
-  `LegionEvalSlug`, `LegionBarRole`, `LegionFilingClass`, `LegionSegment`, `LegionCutSuffix` and
-  `LegionIssueColumn` are read off it: the slugs, the seven bars, the four classes of filing, the
-  five segments, the two cut suffixes and the columns of a Legion eval's issue rows.

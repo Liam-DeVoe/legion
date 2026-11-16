@@ -8,7 +8,7 @@
 //
 //   - Legion (-legion): legiontest's Legion history, at least the asked number of finished issues,
 //     with phase, slot and claim observations that start partway through it (LegionSpec), and the
-//     project's legion_settings row, which the Delivery page's Legion section draws a project by.
+//     project's legion_settings row, which names the project's daemon.
 //     It answers the two day-aligned windows k6 reads (Windows): one that starts before the
 //     project's first observation and one that starts after it.
 //   - Base (-base): the same history into a database of the base head 02a7b3c6, for k14's

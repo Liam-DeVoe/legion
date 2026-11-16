@@ -1,9 +1,8 @@
 // The per-type data the OpenAPI emitter reads: the schema names that differ from their Go type's,
-// the sets of names the document declares though no route answers them, what each
-// json.RawMessage field's bytes carry, the schema fragments written out where no Go type names
-// them, and the multipart body the upload routes take. They stand apart from openapi.go so that
-// file is the reflection and the operation building alone, and so a reader looking for "what
-// does this field hold" finds the tables without reading the walk.
+// what each json.RawMessage field's bytes carry, the schema fragments written out where no Go
+// type names them, and the multipart body the upload routes take. They stand apart from
+// openapi.go so that file is the reflection and the operation building alone, and so a reader
+// looking for "what does this field hold" finds the tables without reading the walk.
 package api
 
 import (
@@ -134,17 +133,7 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(evals.DayPoint{}):     "EvalDayPoint",
 	reflect.TypeOf(evals.Verdict{}):      "EvalVerdict",
 	reflect.TypeOf(evals.Judge{}):        "EvalJudge",
-	// The Legion evals' names a client types its reads against (openAPINamedSets).
-	reflect.TypeOf(evals.LegionNames{}): "LegionEvalNames",
 }
-
-// openAPINamedSets are the Go types the document declares beside the routes' bodies, which no
-// route answers: each holds sets of names a client reads off an answer whose own field carries any
-// string (an eval's slug, a series' name, an items row's column), every set stated by one field's
-// `enum` tag, so a client types its names against the generated schema and a name Go renames
-// fails the client's compile. evals.LegionNames is the Legion evals' slugs, bars, classes of
-// filing, segments, cut suffixes and issue columns, which the Delivery page's Legion section reads.
-var openAPINamedSets = []any{evals.LegionNames{}}
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an
 // unqualified name, so two packages cannot collide and a renamed type fails to compile here

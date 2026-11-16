@@ -44,7 +44,6 @@ import type {
   IssueDetails,
   LegionBoardColumn,
   LegionBoardResponse,
-  LegionEvalNames,
   Message,
   MyReplyRow,
   MyReplySession,
@@ -1940,34 +1939,6 @@ export type LegionSettingSources = Readonly<Record<string, LegionSettingSource>>
  *  `awaiting_merge`), `awaiting_person` and `held`. Every answer carries all ten, in this order.
  *  Read off the generated column, whose `id` the Go field's `enum` narrows (`legionBoardColumn`). */
 export type LegionBoardColumnID = LegionBoardColumn["id"];
-
-// The Legion evals' names, which their answers carry as plain strings (an eval's slug, a series'
-// name, a statistic's name, an items row's column). Each is read off the generated
-// `LegionEvalNames`, a schema no route answers whose fields' `enum` tags state each set Go holds
-// (`evals.LegionNames`), so a name renamed in Go fails every reader's compile here.
-
-/** A Legion eval of the seeded catalogue, by slug (`evals.SlugLegion*`). */
-export type LegionEvalSlug = LegionEvalNames["slug"];
-
-/** The bar of metric 2 an hour falls on, legion-phase-time's series before its cut: one of
- *  Legion's six worker types, or the seventh bar for the phases no role works (`metrics.bars`). */
-export type LegionBarRole = LegionEvalNames["role"];
-
-/** What a filing of metric 4 is, legion-splitting's series `filed:<class>` before its cut: filed
- *  by a Legion session of the filer's own tree at design or after it, filed out of that tree, or
- *  filed by the project's controller (`metrics.classes`, in the order the card lists them). */
-export type LegionFilingClass = LegionEvalNames["class"];
-
-/** One of a bar's five segments, in the precedence the server books an hour by: a statistic of
- *  every legion-phase-time series (`metrics.Segment`). */
-export type LegionSegment = LegionEvalNames["segment"];
-
-/** What a Legion series' name ends in for the roots of their trees and for the rest, the two cuts
- *  beside every issue's (`metrics.CutSeries`). */
-export type LegionCutSuffix = LegionEvalNames["cut_suffix"];
-
-/** A column every issue row of a Legion eval's items carries (`legionfacts.ItemRows`). */
-export type LegionIssueColumn = LegionEvalNames["column"];
 
 /** A window by preset, whose end stays at the present, or by the exact `from`/`to` of a custom range. */
 export type DeliveryLiveWindow =

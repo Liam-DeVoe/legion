@@ -26,7 +26,6 @@ import type { ChartRange } from "./Chart";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 import { DrillDown } from "./DrillDown";
 import { FacetPanel } from "./FacetPanel";
-import { LegionSection } from "./LegionSection";
 import {
   buildColorScale,
   COLOR_COUNT_KEYS,
@@ -284,15 +283,14 @@ function OwnColourPicker({
   );
 }
 
-/** `/delivery`: the three sections INFRA-1077's spec gives the page, in its order and under one
- *  window control - Legion (issue to merge), Pipeline (CI and deploy) and Delivery (merge to
- *  production) - the last being successful production deploys, pipeline failures, and merged PRs
- *  labelled by agent session, Dispatch issue, priority, and architectural component, as the
- *  prototype's timeline view shows them. `/pipeline` is `#pipeline` here (`app.tsx`). Until the
- *  timeline's configuration is set, Dispatch refuses the page's live view with
- *  `DELIVERY_NOT_CONFIGURED` and the page shows the settings form in the Pipeline and Delivery
- *  sections' place; once a save configures it, Dispatch answers the same subscription with the
- *  timeline. */
+/** `/delivery`: the two sections INFRA-1077's spec gives the page, in its order and under one
+ *  window control - Pipeline (CI and deploy) and Delivery (merge to production), the second being
+ *  successful production deploys, pipeline failures, and merged PRs labelled by agent session,
+ *  Dispatch issue, priority, and architectural component, as the prototype's timeline view shows
+ *  them. `/pipeline` is `#pipeline` here (`app.tsx`). Until the timeline's configuration is set,
+ *  Dispatch refuses the page's live view with `DELIVERY_NOT_CONFIGURED` and the page shows the
+ *  settings form in the two sections' place; once a save configures it, Dispatch answers the same
+ *  subscription with the timeline. */
 export function DeliveryPage(): ReactNode {
   useDocumentTitle("Delivery · Dispatch");
   // The section the address names, brought into view: a client-side navigation scrolls nowhere of
@@ -360,11 +358,11 @@ export function DeliveryPage(): ReactNode {
   if (query.dataUpdatedAt > 0) answeredAtRef.current = query.dataUpdatedAt;
   const answeredAt = answeredAtRef.current;
   // The freshness that answer carried, kept the same way: a window change starts a query of its
-  // own, and a read that fails leaves `query.data` undefined while the Legion and Pipeline
-  // sections go on drawing their own answers. A row that vanished there would read as "no source
-  // has a verdict" rather than "this read failed", so the last verdict stays on screen, ageing
-  // from `answeredAt`, until a read answers a new one. Null until the first answer, which is
-  // every source unknown and nothing to say.
+  // own, and a read that fails leaves `query.data` undefined while the Pipeline section goes on
+  // drawing its own answer. A row that vanished there would read as "no source has a verdict"
+  // rather than "this read failed", so the last verdict stays on screen, ageing from
+  // `answeredAt`, until a read answers a new one. Null until the first answer, which is every
+  // source unknown and nothing to say.
   const freshnessRef = useRef<DeliveryFreshness | null>(null);
   if (data !== undefined) freshnessRef.current = data.freshness;
   const freshness = freshnessRef.current;
@@ -469,14 +467,10 @@ export function DeliveryPage(): ReactNode {
       {/* One freshness row for the whole page, at its head: the Pipeline and Delivery sections
           read the same reconcile pass, the same Dispatch tables and the same event intake, so
           one row names every source both of them draw from (INFRA-1077). Two rows would be two
-          regions a reader, and a screen reader, could not tell apart. The Legion section is not
-          in it: its numbers come from the sampler's own reads of each project's daemon
-          (`legion_reads`), which this row reports no source of. It is the freshness the page was
-          last answered (`freshness`), so a read that fails leaves it on screen beside the
-          sections that still draw. */}
+          regions a reader, and a screen reader, could not tell apart. It is the freshness the
+          page was last answered (`freshness`), so a read that fails leaves it on screen beside
+          the section that still draws. */}
       {freshness === null ? null : <SourceFreshness freshness={freshness} readAtMs={answeredAt} />}
-
-      <LegionSection compare={compareRange} onCompare={setCompareRange} window={state.window} />
 
       {notConfigured ? (
         <section aria-labelledby="delivery-setup-heading" className="max-w-4xl">

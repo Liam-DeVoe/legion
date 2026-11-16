@@ -195,15 +195,15 @@ async function answered(body: DeliveryTimelineWithMeasures): Promise<FakeLiveSoc
   return socket;
 }
 
-test("the page's three sections render in the spec's order under one window control", async () => {
+test("the page's two sections render in the spec's order under one window control", async () => {
   renderPage();
   await openSocket();
   expect(
-    await screen.findByRole("heading", { level: 2, name: "Legion: issue to merge" })
+    await screen.findByRole("heading", { level: 2, name: "Pipeline: CI and deploy" })
   ).toBeDefined();
   expect(
     screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)
-  ).toEqual(["Legion: issue to merge", "Pipeline: CI and deploy", "Delivery: merge to production"]);
+  ).toEqual(["Pipeline: CI and deploy", "Delivery: merge to production"]);
   expect(screen.getAllByLabelText("Window")).toHaveLength(1);
 });
 
@@ -524,10 +524,10 @@ test("while a facet pick waits for its snapshot, the header and freshness keep t
   serve(socket, snapshotFrame(picked.sub, { ...emptyTimeline, prs: [listedPR] }));
 });
 
-// The row is the page's one source row, and the page's other two sections read answers of their
-// own: a timeline read that fails leaves them drawing, so a row that went with it would read as
+// The row is the page's one source row, and the page's Pipeline section reads an answer of its
+// own: a timeline read that fails leaves it drawing, so a row that went with it would read as
 // "no source has a verdict" rather than "this read failed" (INFRA-1077, review round 2).
-test("a timeline read that fails leaves the freshness row on screen beside the sections that still draw", async () => {
+test("a timeline read that fails leaves the freshness row on screen beside the section that still draws", async () => {
   const user = userEvent.setup();
   renderPage("/delivery?mode=list&window=7d");
   const socket = await openSocket();
@@ -550,8 +550,8 @@ test("a timeline read that fails leaves the freshness row on screen beside the s
   serve(socket, errorFrame(moved.sub, "INTERNAL", "database unavailable"));
   expect(await screen.findByText("Couldn't load the delivery timeline.")).toBeDefined();
 
-  // The Legion section still draws, and the row still says when each source was last checked.
-  expect(screen.getByRole("heading", { level: 2, name: "Legion: issue to merge" })).toBeDefined();
+  // The Pipeline section still draws, and the row still says when each source was last checked.
+  expect(screen.getByRole("heading", { level: 2, name: "Pipeline: CI and deploy" })).toBeDefined();
   const row = screen.getByRole("region", { name: "Source freshness" });
   expect(row.querySelector('[data-source="dispatch"]')?.textContent).toMatch(
     /^Dispatch \d+ s ago$/

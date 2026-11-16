@@ -68,16 +68,14 @@ const shellHandlers: RequestHandler[] = [
   // which is what a page with no `api.listProjects` spy drew before, and every row that asserts on
   // project content spies that method above MSW.
   http.get("/api/v1/projects", () => Response.json([])),
-  // Three pages read every project's Legion setting with no `enabled` guard, so the read happens
-  // wherever one of them is drawn: the Delivery page's Legion section (`LegionSection`'s
-  // `legionSettingsQuery` read in `features/delivery/LegionSection.tsx`), the Issues page's view
-  // selector, which asks whether this project has a Legion view (`ProjectPage`'s, in
+  // Two pages read every project's Legion setting with no `enabled` guard, so the read happens
+  // wherever one of them is drawn: the Issues page's view selector, which asks whether this
+  // project has a Legion view (`ProjectPage`'s `legionSettingsQuery` read, in
   // `features/project/ProjectPage.tsx`), and the Settings page's daemon section
   // (`LegionDaemonsSection`'s, in `features/settings/LegionDaemonsSection.tsx`). An empty list is
   // a deployment where no project names a daemon, not a failure (`legionSettingsQuery`'s own doc),
-  // and that is what those pages drew before MSW: no view button, no Legion section, an empty
-  // daemon list. Every row that asserts on a setting spies `api.listLegionSettings` above MSW and
-  // never reaches this.
+  // and that is what those pages drew before MSW: no view button and an empty daemon list. Every
+  // row that asserts on a setting spies `api.listLegionSettings` above MSW and never reaches this.
   http.get("/api/v1/settings/legion", () => Response.json([])),
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),

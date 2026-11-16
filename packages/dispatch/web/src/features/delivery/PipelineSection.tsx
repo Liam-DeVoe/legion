@@ -75,7 +75,7 @@ const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg
 /** The Delivery page's `#pipeline` section: how long PR checks, the staging end-to-end gate and
  *  the two deploys take, and how often each ends in success, over the page's own window. The
  *  window and the comparison are the page's, so one window control and one compare range serve
- *  this section, the Legion section and the delivery timeline alike. */
+ *  this section and the delivery timeline alike. */
 export const PipelineSection = memo(function PipelineSection({
   compare,
   onCompare,

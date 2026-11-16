@@ -95,8 +95,8 @@ export function ProjectPage(): ReactNode {
     enabled: projectKey !== undefined,
   });
   const hasSource = (sources.data?.length ?? 0) > 0;
-  // Which projects name a Legion daemon: one deployment-wide read, shared with the Delivery
-  // page's Legion section. A project that names none has no Legion view at all, so a stored
+  // Which projects name a Legion daemon: one deployment-wide read, shared with the Settings
+  // page's daemon section. A project that names none has no Legion view at all, so a stored
   // preference naming it falls back to the list.
   const legionSettings = useQuery(legionSettingsQuery());
   const hasLegion =

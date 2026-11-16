@@ -8,8 +8,8 @@ import (
 
 // TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline: the spec's "Parked and pre-work hours
 // in phase time" ends "So the bars of an issue add up to its work time, and the two cards agree",
-// and the whole of metric 2 rests on it — a reader of the Legion section sees the seven bars and
-// the work time beside each other.
+// and the whole of metric 2 rests on it — a reader of legion-phase-time reads the seven bars
+// beside legion-work-time's work time.
 //
 // dispatch://INFRA-979's corpus cannot check that invariant on the observed timeline. Every one of
 // its 289 finished issues carries a single trailing `done` mark, so every timeline the A2

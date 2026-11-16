@@ -416,9 +416,9 @@ func compareFolds(check *legionCheck, parts map[string][]measures.DayPart, cut m
 		split = &metrics.SplittingFold{}
 	}
 	check.exact("issues finished", split.Finished, report.Finished)
-	// The card draws legion-splitting by the UTC week (weekOf in LegionSection.tsx), adding up the
-	// per-day counts the eval read answers: the base head's report did the same grouping, so each
-	// of its weeks is the fold of the window's parts of that week's days.
+	// The base head's report counted legion-splitting by the UTC week, the week metric 4 has always
+	// counted by, where the eval read answers it by the day: each of the report's weeks is the fold
+	// of the window's parts of that week's days.
 	weeks := splittingWeeks(parts[SlugLegionSplitting], cut)
 	check.exact("weeks", len(weeks), len(report.Splitting.Weeks))
 	for index, week := range report.Splitting.Weeks {

@@ -147,12 +147,11 @@ async function waitForFrame(
   return frame;
 }
 
-/** The Delivery page opens three subscriptions since INFRA-1077 folded the Pipeline page into it
- *  and gave it a Legion section, and whichever answers first is no longer the timeline's. A spec
- *  that means the timeline says so (isTimelineSnapshot): the Pipeline section's own view answers
- *  a row this page never shows — a pull request entering its window moves its lead times — so a
- *  spec reading the first snapshot would watch the wrong view and read its frames as the
- *  timeline's. */
+/** The Delivery page opens more than one subscription since INFRA-1077 folded the Pipeline page
+ *  into it, and whichever answers first is no longer the timeline's. A spec that means the
+ *  timeline says so (isTimelineSnapshot): the Pipeline section's own view answers a row this page
+ *  never shows — a pull request entering its window moves its lead times — so a spec reading the
+ *  first snapshot would watch the wrong view and read its frames as the timeline's. */
 function isTimelineSnapshot(frame: LiveFrame): boolean {
   return frame.type === "snapshot" && isLiveRecord(frame.body) && "prs" in frame.body;
 }
