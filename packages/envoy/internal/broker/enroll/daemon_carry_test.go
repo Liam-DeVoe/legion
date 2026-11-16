@@ -132,7 +132,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: carryPodAccount, Project: "legion", Person: "ada@example.com"}}, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: carryPodAccount, Project: "LEGION", Person: "ada@example.com"}}, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 			if got := carryPrincipalOf(t, svc, enr.ID); got != row.wantCarry {
 				t.Fatalf("the enrolment's grants follow %q, want %q", got, row.wantCarry)
 			}
-			claims, err := set.Pod(map[string]any{"sub": carryPodAccount, "kubernetes.io": map[string]any{"pod": map[string]any{"uid": uid}}}, session)
+			claims, err := set.Pod(map[string]any{"sub": carryPodAccount, "kubernetes.io": map[string]any{"pod": map[string]any{"uid": uid}}}, session, nil)
 			if err != nil {
 				t.Fatalf("the exchange's reading of the pod's token: %v", err)
 			}
