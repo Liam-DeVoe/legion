@@ -15,6 +15,7 @@ import {
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
 import {
+  createComment,
   createIssue,
   createProject,
   getArtifact,
@@ -1059,6 +1060,106 @@ function contradictions(truth: ServedReading, held: ServedReading): string[] {
   }
   return found;
 }
+
+// The root reviewer's High finding on pull request #4221 (review 5926082656, at
+// `slots/view-verification.tsx`). The slot counted its document's blocks read as answered by a
+// latch of its own, set from that read's `isSuccess` and empty each time the stage mounts the
+// slot again. So once a background refetch of that read failed, a reader who came back to the
+// view found it drawing nothing for as long as the refetch kept failing, though the blocks it had
+// read were still held. A read the view has had an answer from stays answered while it holds
+// that answer, across a failed refetch and across the view turned off and on (part V's R1 and
+// departure 6). The outline mounted within the page's 30 s stale time asks nothing again, so a
+// comment posted in the Verification document is what refreshes its reads, as it does for a
+// reader (`api/event-refresh.ts`).
+// SLOW(>=2s): a whole seeded issue loaded and settled, then its blocks read refused three times
+// with the page's retry waits between them while the outline is drawn, and the view turned off and
+// on by its keys.
+test("the Verification view keeps its rows when its document's blocks read fails after it answered", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const [{ slug: specSlug }, { slug: verificationSlug }] = await Promise.all([
+      getArtifact(seeded.specArtifactId),
+      getArtifact(seeded.verificationArtifactId),
+    ]);
+    // Check i serves statement i, for 1 to 6 (`seedWholeIssue`).
+    const served = seeded.checks.all.map((check, at) => ({
+      check: blockNodeId(verificationSlug, check),
+      statement: blockNodeId(specSlug, requirementBlockId(at + 1)),
+    }));
+    const ids = served.map((one) => one.statement);
+
+    // The view once every read has answered: each of the six statements draws the one check
+    // that serves it.
+    await openPreset(page, seeded.key, "verification");
+    await expect
+      .poll(
+        async () => {
+          const now = await readServed(page, ids);
+          return served.every((one) => now.statements[one.statement]?.checks.join() === one.check);
+        },
+        { message: "the settled view draws a statement without the check that serves it" }
+      )
+      .toBe(true);
+    const truth = await readServed(page, ids);
+    const cards = await verificationCardBoxes(page).count();
+
+    // From here on the Verification document's blocks read is refused, as many times as the page
+    // asks it.
+    const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
+    let refusals = 0;
+    const refuse = async (route: Route) => {
+      await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
+      refusals += 1;
+    };
+    await page.route(blocksRoute, refuse);
+
+    // The view off, from a row of it: the outline takes its place.
+    await verificationCard(page, ids[0] ?? "").focus();
+    await page.keyboard.press("t");
+    await page.keyboard.press("k");
+    await expect(page, "t k from a row of the view does not turn it off").toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "conversation")}$`)
+    );
+    await expect(verificationBody(page), "t k from a row of the view leaves it drawn").toHaveCount(
+      0
+    );
+    await expectIssuePageDrawn(page);
+
+    // The comment's event refreshes the document's reads, and the page asks its blocks again and
+    // twice more after the first refusal (`queryRetry`), which fails the read with its blocks held.
+    await createComment(seeded.key, {
+      anchor: { artifact: verificationSlug, quote: "How the issue page is proved." },
+      body: "Read this before the checks.",
+    });
+    await expect
+      .poll(() => refusals, {
+        message: "the page does not ask the Verification document's blocks again, three times",
+      })
+      .toBeGreaterThanOrEqual(3);
+    await nextFrames(page);
+
+    // The view on again, from the page: it draws every card it drew, and each statement the check
+    // that serves it.
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("k");
+    await expect(page, "t k from the page does not turn the view on again").toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "verification")}$`)
+    );
+    await expect(
+      verificationCardBoxes(page),
+      "the view drew nothing once its blocks read failed after it had answered"
+    ).toHaveCount(cards);
+    await expect
+      .poll(() => readServed(page, ids), {
+        message: "a statement draws otherwise once the blocks read failed after the view answered",
+      })
+      .toEqual(truth);
+    await page.unroute(blocksRoute, refuse);
+  });
+});
 
 // The reviewer's High finding on pull request #4221 (review 5923997554, at
 // `slots/view-verification.tsx:34`), pinned by INFRA-3936's tester. A check learns the statements
