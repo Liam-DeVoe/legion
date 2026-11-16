@@ -19,8 +19,9 @@ var (
 
 // Two more shapes of a symbol, lowerCamel and packageSymbol. A plain word or a product name of one
 // of these shapes, such as mmHg, ownCloud or works.Then, is refused as code too. A word with a
-// capital at the start of each part, such as ReadSet, and a bare package word, such as pmdoc, are
-// no sign, since product names such as GitHub and JetStream, and plain words, have those shapes.
+// capital at the start of each part, such as ReadSet, unless it has the form of a Go test's name,
+// and a bare package word, such as pmdoc, are no sign, since product names such as GitHub and
+// JetStream, and plain words, have those shapes.
 var (
 	// lowerCamel is a name in lower camel case, such as readSet: a small letter and one or more
 	// small letters or digits, then a capital letter and a small letter. A brand or a unit with one

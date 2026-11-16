@@ -14,11 +14,12 @@
 // the form of a Go test's name, as in TestFlight. Of the words of such a shape, only the product
 // names that CodeNames lists, such as Node.js, pass. The writer says such a word in other words,
 // such as "input and output" or "the client and the server". CodeNames reads no shape for a word
-// with a capital at the start of each part, such as ReadSet, or for a bare package word, such as
-// pmdoc, since product names such as GitHub and JetStream, and plain words, have those shapes; and
-// Validate splits a purpose into sentences only where ste-lint splits a line. So those words, and a
-// sentence that ends in a closing quote, a closing parenthesis or an ellipsis, or that has no space
-// after its stop, are for the reviewer of R25, who judges what no program decides (R49).
+// with a capital at the start of each part, such as ReadSet, unless it has the form of a Go test's
+// name, or for a bare package word, such as pmdoc, since product names such as GitHub and
+// JetStream, and plain words, have those shapes; and Validate splits a purpose into sentences only
+// where ste-lint splits a line. So those words, and a sentence that ends in a closing quote, a
+// closing parenthesis or an ellipsis, or that has no space after its stop, are for the reviewer of
+// R25, who judges what no program decides (R49).
 //
 // The package is logic over bytes and values: it reaches no store, no route and no database
 // (TestSpecgraphReachesNoStore), so the spec-check command, Dispatch's importer and the pilot can
