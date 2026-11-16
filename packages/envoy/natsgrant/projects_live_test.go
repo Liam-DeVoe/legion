@@ -60,12 +60,25 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	for i := range largestRepositories {
 		largest.Repositories = append(largest.Repositories, fmt.Sprintf("example-owner/repository-%02d", i))
 	}
+	// The repositories whose consumer names would pass nats-server's 255-byte limit if written out
+	// whole: the deep review's 100-byte name of underscores, the longest owner and name GitHub
+	// serves with every byte escaped, under the longest project key, and two long names that share
+	// their readable head, which must get two consumers rather than one moved between filters.
+	reviewers := "acme/repo" + strings.Repeat("_", 96)
+	longestOwner, longestName := "a"+strings.Repeat("_", 38), strings.Repeat("._", 50)
+	shared := "acme/" + strings.Repeat("_", 95)
+	longNames := natsgrant.Scope{
+		Projects:     []string{"PUB", "ABCDEFGHIJ"},
+		Repositories: []string{reviewers, longestOwner + "/" + longestName, shared + "a", shared + "b"},
+		Identity:     "legion-daemon-long-names",
+	}
 	grants := map[string]natsgrant.Permissions{
 		"today-pub":     natsgrant.Daemon(),
 		"today-priv":    natsgrant.Daemon(),
 		"narrowed-pub":  within(t, pubScope),
 		"narrowed-priv": within(t, privScope),
 		"largest":       within(t, largest),
+		"long-names":    within(t, longNames),
 		// What WithinProjects never answers: a grant with no publish entry, which the server
 		// reads as a user who may publish to every subject.
 		"empty-publish": {Subscribe: []string{natsgrant.InboxPrefix("empty-publish") + ".>"}},
@@ -100,6 +113,10 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	publish(contracts.GithubSubject("acme", "mixedcase", "pr.1"), "PUB-mixed-case-repository")
 	publish("notifications.github.acme.secret.pr.1", "PRIV-repository")
 	publish(privIssue, "PRIV-secret-1", "PRIV-secret-2", "PRIV-secret-3", "PRIV-secret-4", "PRIV-secret-5")
+	for _, repository := range longNames.Repositories {
+		owner, name, _ := strings.Cut(repository, "/")
+		publish(contracts.GithubSubject(owner, name, "pr.1"), "LONG "+repository)
+	}
 
 	// The control: today's grant receives every reply on the server.
 	todayPub := connectAs(t, url, "today-pub")
@@ -303,6 +320,36 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	require.NoError(t, err)
 	last := fmt.Sprintf("repository-%02d", largestRepositories-1)
 	openConsumer(ctx, t, largestJS, natsgrant.GitHubConsumerName("INFRA", "example-owner/"+last), "notifications.github.example-owner."+last+".>")
+
+	// The long names: each consumer the grant holds opens on the hub's image (err_code 10102 when
+	// a name passes 255 bytes) and pulls its own repository's event, and the two that share a
+	// readable head stay two consumers, each on its own filter.
+	longConn := connectAs(t, url, "long-names", natsgo.CustomInboxPrefix(natsgrant.InboxPrefix(longNames.Identity)))
+	longJS, err := jetstream.New(longConn.conn)
+	require.NoError(t, err)
+	for _, row := range []struct{ project, repository string }{
+		{"PUB", reviewers},
+		{"ABCDEFGHIJ", longestOwner + "/" + longestName},
+		{"PUB", shared + "a"},
+		{"PUB", shared + "b"},
+	} {
+		name := natsgrant.GitHubConsumerName(row.project, row.repository)
+		consumer := openConsumer(ctx, t, longJS, name, natsgrant.GitHubFilter(row.repository))
+		batch, err := consumer.Fetch(2, jetstream.FetchMaxWait(2*time.Second))
+		require.NoError(t, err, name)
+		var bodies []string
+		for msg := range batch.Messages() {
+			bodies = append(bodies, string(msg.Data()))
+			require.NoError(t, msg.DoubleAck(ctx))
+		}
+		require.Equal(t, []string{"LONG " + row.repository}, bodies, "%s (%d bytes)", name, len(name))
+		t.Logf("long name: %d-byte consumer for a %d-byte repository opened and pulled its event", len(name), len(row.repository))
+	}
+	for _, repository := range []string{shared + "a", shared + "b"} {
+		info, err := longJS.Consumer(ctx, bus.Stream, natsgrant.GitHubConsumerName("PUB", repository))
+		require.NoError(t, err, repository)
+		require.Equal(t, natsgrant.GitHubFilter(repository), info.CachedInfo().Config.FilterSubject, "the consumer of %q kept its own filter", repository)
+	}
 	for _, name := range []string{"today-pub", "narrowed-pub", "largest"} {
 		grant := grants[name]
 		t.Logf("auth response for %s: %d bytes, %d publish and %d subscribe entries", name, answers.size(name), len(grant.Publish), len(grant.Subscribe))

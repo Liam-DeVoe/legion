@@ -1,6 +1,8 @@
 package natsgrant
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"slices"
@@ -46,14 +48,46 @@ func InboxPrefix(identity string) string {
 
 // GitHubConsumerName is the name of the durable consumer through which a Legion daemon of project
 // hears repository's GitHub events: legion-go-<project>-github- and repository ("owner/name") in
-// lower case, spelled as InboxPrefix spells an identity, so two repositories never share a
-// consumer and the name is one token whatever the repository holds. It lower-cases first because
-// the daemon keeps a repository in GitHub's spelling (Acme/Widgets) and Dispatch, whose list the
-// grant is built from, in lower case, and both must name one consumer. t-c-10's daemon is to name
-// its consumer with it and WithinProjects grants it, so the two cannot drift apart.
+// lower case, spelled as InboxPrefix spells an identity, so the name is one token whatever the
+// repository holds. It lower-cases first because the daemon keeps a repository in GitHub's
+// spelling (Acme/Widgets) and Dispatch, whose list the grant is built from, in lower case, and
+// both must name one consumer. t-c-10's daemon is to name its consumer with it and WithinProjects
+// grants it, so the two cannot drift apart.
+//
+// The name fits nats-server's limit for every repository GitHub serves. Where the spelled name
+// would pass maxConsumerNameLen (an owner and name of escaped bytes, '_' and '.', reach 446 bytes
+// under the longest project key), it is the longest head of that spelling that leaves room, cut
+// between escapes, then "_z" and the first 32 hex digits of the SHA-256 of the lower-cased
+// repository. The mapping stays one-to-one: two names that fit differ as their repositories do,
+// "_z" never appears in a name that fits (its '_' opens only an escape of two hex digits), and
+// two long names differ in their digests.
 func GitHubConsumerName(project, repository string) string {
-	return token(daemonConsumerPrefix+project+"-github-", strings.ToLower(repository))
+	repository = strings.ToLower(repository)
+	name := token(daemonConsumerPrefix+project+"-github-", repository)
+	if len(name) <= maxConsumerNameLen {
+		return name
+	}
+	head := name[:maxConsumerNameLen-len(digestMark)-2*digestBytes]
+	// An escape is '_' and two digits, and '_' opens nothing else, so a '_' in the last two bytes
+	// begins an escape the cut split.
+	if cut := strings.LastIndexByte(head, '_'); cut >= len(head)-2 {
+		head = head[:cut]
+	}
+	digest := sha256.Sum256([]byte(repository))
+	return head + digestMark + hex.EncodeToString(digest[:digestBytes])
 }
+
+// maxConsumerNameLen is the longest durable consumer name nats-server takes, JSMaxNameLen
+// (server/jetstream_api.go:418-420): a longer one is refused with err_code 10102
+// (server/consumer.go:1256-1261).
+const maxConsumerNameLen = 255
+
+// digestMark opens the digest of a GitHub consumer name whose spelling would not fit, and
+// digestBytes is how much of the SHA-256 it carries, written as twice as many hex digits.
+const (
+	digestMark  = "_z"
+	digestBytes = 16
+)
 
 // GitHubPrefix is what every subject Envoy's listener publishes repository's GitHub events under
 // begins with: notifications.github.<owner>.<name>, each segment spelled by
@@ -76,7 +110,7 @@ func GitHubFilter(repository string) string {
 // and its two lowercase hex digits: '_' always opens an escape, so distinct values give distinct
 // tokens, and the result holds no '.', wildcard, whitespace or control character.
 func token(prefix, s string) string {
-	const hex = "0123456789abcdef"
+	const digits = "0123456789abcdef"
 	var out strings.Builder
 	out.Grow(len(prefix) + 3*len(s))
 	out.WriteString(prefix)
@@ -86,8 +120,8 @@ func token(prefix, s string) string {
 			out.WriteByte(c)
 		} else {
 			out.WriteByte('_')
-			out.WriteByte(hex[c>>4])
-			out.WriteByte(hex[c&15])
+			out.WriteByte(digits[c>>4])
+			out.WriteByte(digits[c&15])
 		}
 	}
 	return out.String()
