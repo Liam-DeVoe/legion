@@ -435,11 +435,13 @@ func TestAClaimsHeldNamesStopAtTheCap(t *testing.T) {
 	}
 }
 
-// statementTracer counts every statement a pool sends and holds each back by delay before it goes,
-// which gives a loopback Postgres the round trip of one across a network.
+// statementTracer counts every statement a pool sends and every row its statements answer, and
+// holds each statement back by delay before it goes, which gives a loopback Postgres the round trip
+// of one across a network.
 type statementTracer struct {
 	delay time.Duration
 	sent  atomic.Int64
+	rows  atomic.Int64
 }
 
 func (s *statementTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
@@ -448,7 +450,11 @@ func (s *statementTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pg
 	return ctx
 }
 
-func (*statementTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (s *statementTracer) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if data.CommandTag.Select() {
+		s.rows.Add(data.CommandTag.RowsAffected())
+	}
+}
 
 // tracedStore is a second Store on store's database whose pool sends every statement through tracer.
 func tracedStore(t *testing.T, store *Store, tracer pgx.QueryTracer) *Store {
@@ -489,8 +495,16 @@ const productionClaims = 7508
 // of a database reached across a network. The time bound is a third of the budget, so a loaded
 // runner has room; the statement bound is what does not depend on the runner.
 //
-// The control (the pull request records the run): HoldRecordedSessions as a statement per name,
-// which sends 33,786 inserts and, at a millisecond each, takes past the bound.
+// Nor may it grow with the rows the table has gathered (review N2): a claim may hold up to
+// supervise.MaxHeldNamesPerClaim names, most of them of sessions it no longer records, and nothing
+// deletes a hold. So the steady step is measured again with half a million rows no claim records
+// any more, as 245 claims at the cap would hold, and the rows it reads stay within twice the
+// claims and the names they record. Every name is found through the primary key, so the step's
+// cost follows the names the claims record, whatever the table holds.
+//
+// The controls (the pull request records each run): HoldRecordedSessions as a statement per name,
+// which sends 33,786 inserts and, at a millisecond each, takes past the bound; and SessionConflicts
+// reading the project's whole table, which reads every stale row.
 func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 	const (
 		statementBound = 10
@@ -545,6 +559,33 @@ func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("a steady boot step on the database as LEGION_TEST_PG_DSN reaches it, with no added delay: %v", time.Since(started))
+
+	// Half a million rows of sessions no claim records any more.
+	const stale = 500_000
+	if _, err := store.Pool().Exec(ctx, `insert into claim_sessions (project, kind, name, claim)
+		select 'legion', 'session', 'stale_' || n, 'legion-LEGION-' || (n % $2::int + 1) || '-implementer'
+		from generate_series(1, $1::int) as n`, stale, productionClaims); err != nil {
+		t.Fatalf("record %d stale holds: %v", stale, err)
+	}
+	if _, err := store.Pool().Exec(ctx, `analyze claim_sessions`); err != nil {
+		t.Fatal(err)
+	}
+	tracer.sent.Store(0)
+	tracer.rows.Store(0)
+	started = time.Now()
+	if again, err := traced.HoldRecordedSessions(ctx, "legion"); err != nil || again != 0 {
+		t.Fatalf("the steady hold over the stale rows held %d names, %v; want none", again, err)
+	}
+	if conflicts, err := traced.SessionConflicts(ctx, "legion"); err != nil || len(conflicts) != 0 {
+		t.Fatalf("the conflict read over the stale rows answered %+v, %v; want none", conflicts, err)
+	}
+	staleTook, staleSent, staleRows := time.Since(started), tracer.sent.Load(), tracer.rows.Load()
+	rowBound := int64(2 * (productionClaims*2 + names))
+	t.Logf("with %d more rows no claim records: a steady boot step %d statements, %d rows read, in %v", stale, staleSent, staleRows, staleTook)
+	if staleSent > statementBound || staleRows > rowBound || staleTook > timeBound {
+		t.Errorf("with %d stale rows the steady boot step sent %d statements and read %d rows in %v; want at most %d statements and %d rows, within %v: its cost follows the names claims record, not the table's rows",
+			stale, staleSent, staleRows, staleTook, statementBound, rowBound, timeBound)
+	}
 
 	if firstSent > statementBound || steadySent > statementBound {
 		t.Errorf("the boot step sent %d statements at the first hold and %d at a steady boot; want at most %d each, whatever the project's size",

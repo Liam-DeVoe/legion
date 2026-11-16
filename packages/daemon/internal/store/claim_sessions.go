@@ -200,7 +200,13 @@ func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, 
 // daemon from before the hold let a claim record. A name no row holds is not one, since
 // HoldRecordedSessions holds it first. The daemon logs each at boot and suspends the claims whose
 // current session records it, for an operator to settle by hand (the claim_sessions migration gives
-// the steps). It is two reads, whatever the project's size.
+// the steps).
+//
+// It is two reads whatever the project's size, and the second reads only the rows of names the
+// claims record now, through the primary key, never the whole table: a claim may hold up to
+// supervise.MaxHeldNamesPerClaim names, most of them of sessions it no longer records, so the
+// table can hold far more rows than the claims name, and the boot's cost must follow what the
+// claims record, about 4.5 names a claim, not what the table has gathered (review N2 of #4220).
 func (s *Store) SessionConflicts(ctx context.Context, project string) ([]SessionConflict, error) {
 	var conflicts []SessionConflict
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -208,7 +214,14 @@ func (s *Store) SessionConflicts(ctx context.Context, project string) ([]Session
 		if err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `select kind, name, claim from claim_sessions where project = $1`, project)
+		recorded := sortedHolds(current, abandoned)
+		kinds, names := make([]string, len(recorded)), make([]string, len(recorded))
+		for i, h := range recorded {
+			kinds[i], names[i] = string(h.Kind), h.Name
+		}
+		rows, err := tx.Query(ctx, `select h.kind, h.name, h.claim
+			from unnest($2::text[], $3::text[]) as r(kind, name)
+			join claim_sessions h on h.project = $1 and h.kind = r.kind and h.name = r.name`, project, kinds, names)
 		if err != nil {
 			return err
 		}
@@ -229,7 +242,7 @@ func (s *Store) SessionConflicts(ctx context.Context, project string) ([]Session
 			}
 			return out
 		}
-		for _, h := range sortedHolds(current, abandoned) {
+		for _, h := range recorded {
 			holder, held := holders[h]
 			if !held {
 				continue
