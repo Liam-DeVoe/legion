@@ -25,6 +25,14 @@
 # this pod's own test database and never a deployment's: it refuses a DATABASE_URL whose host is
 # not loopback, and the one node it deletes is the ask this run made.
 #
+# Under e2e/acceptance/with-harness.sh, which exports DISPATCH_E2E_PORT, FAKE_ENVOY_PORT and
+# DATABASE_URL and none of the other inputs, the driver is its own caller, so the check that runs
+# it (dispatch://INFRA-3882/artifact/verification-md#b-c-a-node-projects) is one command: it
+# addresses the harness's server with the agent bearer the harness pins (`e2e-token`), signs in
+# `alice`, whom the harness seeds, creates a project of its own, adds an agent session of its own
+# to the fake Envoy's session list and puts the list back when it ends, and builds
+# `envoy-dispatch` from this checkout where PATH holds none.
+#
 # The node writers' own grep, where a reader wants one: `graphstore\.(WriteUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
 # with api/comment_create.go as its control. `graphstore.Caused` is left out on purpose: it names
 # every deferred write of the store, a block index's and a follow's among them, so it cannot tell a
@@ -48,8 +56,22 @@ USAGE
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+harness=""
+# shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own; this one is the caller's
+if [[ -z "${DISPATCH_URL:-}" && -n "${DISPATCH_E2E_PORT:-}" && -n "${FAKE_ENVOY_PORT:-}" ]]; then
+  harness=1
+  DISPATCH_URL="http://127.0.0.1:$DISPATCH_E2E_PORT"
+  DISPATCH_TOKEN=e2e-token
+  DEV_SIGNIN_LOGIN=alice
+  PROJECT="NODE$(printf '%05d' "$((RANDOM % 100000))" | tr 0-9 A-J)"
+  AGENT_SESSION="node-projects-agent-$$"
+fi
+readonly harness
 require_env DISPATCH_URL PROJECT AGENT_SESSION DEV_SIGNIN_LOGIN DATABASE_URL
-require_commands curl jq psql envoy-dispatch
+require_commands curl jq psql
+command -v envoy-dispatch >/dev/null || [[ -n "$harness" ]] || require_commands envoy-dispatch
 read_bearer
 
 readonly base="${DISPATCH_URL%/}"
@@ -76,12 +98,18 @@ work="$(mktemp -d)"
 readonly work
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 key=""
+fixture_saved=""
 cleanup() {
   local code=$?
   if [[ -n "$key" ]]; then
     send PATCH "/api/v1/issues/$key" \
       "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
     [[ "$status" == 200 ]] || printf 'node-projects.sh: could not close %s: HTTP %s\n' "$key" "$status" >&2
+  fi
+  if [[ -n "$fixture_saved" ]]; then
+    curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
+      --data-binary "@$work/sessions.json" "http://127.0.0.1:$FAKE_ENVOY_PORT/__fixture/sessions" ||
+      printf 'node-projects.sh: could not put the fake Envoy session list back\n' >&2
   fi
   rm -rf "$work"
   exit "$code"
@@ -107,6 +135,37 @@ printf '%s\n' -H "@$work/auth" >"$work/auth.args"
 printf '%s\n' -b "$work/jar" -H "Origin: $origin" >"$work/person.args"
 
 actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
+
+# Under the harness the driver makes what its inputs would otherwise name (the header says what).
+if [[ -n "$harness" ]]; then
+  if ! command -v envoy-dispatch >/dev/null; then
+    require_commands go
+    mkdir "$work/bin"
+    go -C "$script_dir/../../../envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch 2>"$work/build" ||
+      fail setup "build envoy-dispatch from this checkout" "$(tail -n 5 "$work/build")"
+    # shellcheck disable=SC2031 # this shell's own PATH, which every command after it reads
+    PATH="$work/bin:$PATH"
+    pass setup "built envoy-dispatch from this checkout"
+  fi
+  curl -sS -o /dev/null -c "$work/jar" "$base/auth/_dev/signin?login=$(q "$person")" 2>"$work/curl" ||
+    fail setup "sign $person in" "$(<"$work/curl")"
+  send POST /api/v1/projects "$(jq -cn --arg k "$project" --arg p "$person" --argjson a "$(actor)" \
+    '{key: $k, name: "Node projects", default_assignee: $p, actor: $a}')"
+  want_status 201 setup "create project $project"
+  curl -sS -o "$work/sessions.json" "http://127.0.0.1:$FAKE_ENVOY_PORT/v1/sessions" 2>"$work/curl" ||
+    fail setup "read the fake Envoy's sessions" "$(<"$work/curl")"
+  jq -e 'type == "array"' "$work/sessions.json" >/dev/null ||
+    fail setup "read the fake Envoy's sessions" "$(head -c 300 "$work/sessions.json")"
+  jq -c --arg s "$AGENT_SESSION" \
+    '[.[] | {session_id, title, dir, machine_id, host, roles, capabilities}]
+     + [{session_id: $s, title: "Node projects agent", machine_id: "acceptance", roles: [],
+         capabilities: ["aside", "btw", "steer"]}]' "$work/sessions.json" >"$work/fixture.json"
+  fixture_saved=1
+  curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
+    --data-binary "@$work/fixture.json" "http://127.0.0.1:$FAKE_ENVOY_PORT/__fixture/sessions" 2>"$work/curl" ||
+    fail setup "add $AGENT_SESSION to the fake Envoy's sessions" "$(<"$work/curl")"
+  pass setup "made project $project and agent session $AGENT_SESSION on the harness"
+fi
 
 # node_names_project SECTION KIND ID: the node KIND/ID is in the project, and its `project` value
 # tuple says so.
