@@ -24,18 +24,15 @@
 //   the call falls through to the next route whose pattern matches it, or to the 404.
 // The stand-in is a fresh process per call, so the count of calls a route has answered outlives it
 // in fixtures.json, as the route's `answered`, written back with the body keep's own
-// read-modify-write. That write happens where this call changed what the file holds — a body edit,
-// or an `answered` that is read back: a route carrying `spends`, one whose `replies` follow no
-// other route, or one another route's `replies` follow — and never for the calls of a plain route
-// or of a route whose `replies` follow another's, since nothing reads that count. Each call holds
-// an exclusive flock(2) on <run>/fixtures.lock from its read of fixtures.json to that write, so no
-// two `gh` processes of one turn answer from the same read: two calls of one counted route take a
-// reply each and count twice, and a call beside the re-run never writes back the re-run's count as
-// it stood before the re-run. Bun has no file lock, so flock(1) of util-linux takes the lock on
-// this process's own descriptor of the file, which it shares as its stdin; the lock is the open
-// file's, so it outlasts that child and ends when this process closes the descriptor or exits. The
-// write itself is atomic: a sibling temporary file in the run directory, renamed over
-// fixtures.json, so a reader that takes no lock never parses a half-written file.
+// read-modify-write on every call a route answers. Each call holds an exclusive flock(2) on
+// <run>/fixtures.lock from its read of fixtures.json to that write, so no two `gh` processes of
+// one turn answer from the same read: two calls of one route take a reply each and count twice,
+// and a call beside the re-run never writes back the re-run's count as it stood before the
+// re-run. Bun has no file lock, so flock(1) of util-linux takes the lock on this process's own
+// descriptor of the file, which it shares as its stdin; the lock is the open file's, so it
+// outlasts that child and ends when this process closes the descriptor or exits. The write itself
+// is atomic: a sibling temporary file in the run directory, renamed over fixtures.json, so a
+// reader that takes no lock never parses a half-written file.
 // A fixtures.json that Fixtures does not parse — a route with no `match`, or a `follows` that names
 // no route's `match` — is refused: every call exits 2 with the reason and records nothing. A route
 // that followed nothing would stay at its first reply for the whole run, so a typo in a fixture
@@ -53,10 +50,6 @@
 // publishes the settlement of a check the rig reports with it, so the rig has one publisher. It
 // prints what became of the envelope, as a call records it, and exits 0 when the listener
 // answered 2xx and 1 when it did not.
-// `unreported` is rig.sh's mark on a route whose first reply is a counted set that has not
-// reported the check yet, which red_report drops when the rig reports it. The stand-in answers no
-// differently for it, and keeps it through its own writes of fixtures.json, which hold only what
-// Fixtures parses.
 //   gh-standin.ts gh <args...>
 //   gh-standin.ts --check
 //   gh-standin.ts --publish <envelope file>
@@ -78,20 +71,20 @@ const Reply = z.object({
 });
 /** rig.sh's worker_fixture writes each route as {match, stdout?, stderr?, exit?}, and a route that
  * answers a sequence, follows another route's calls, spends itself or publishes a settlement adds
- * `replies`, `follows`, `spends` and `publish`; red_fixture marks a route red_report trims
- * `unreported`. A `follows` names the `match` of a route of the same file. `answered` is the
- * stand-in's own: the count of calls the route has answered. */
+ * `replies`, `follows`, `spends` and `publish`. A `follows` names the `match` of a route of the
+ * same file. `answered` is the stand-in's own: the count of calls the route has answered. A route
+ * is parsed loosely, as the file is, so a key of the rig's own outlives the write back. */
 const Fixtures = z
   .looseObject({
     routes: z.array(
-      Reply.extend({
+      z.looseObject({
+        ...Reply.shape,
         match: z.string(),
         replies: z.array(Reply).optional(),
         follows: z.string().optional(),
         spends: z.number().optional(),
         answered: z.number().optional(),
         publish: z.unknown().optional(),
-        unreported: z.boolean().optional(),
       })
     ),
   })
@@ -272,37 +265,25 @@ const followed =
     : fixtures.routes.find((candidate) => candidate.match === route.follows);
 const answer = replies[Math.min(followed?.answered ?? 0, replies.length - 1)] ?? route;
 // The count of calls each route has answered outlives this process in fixtures.json, with the body
-// where this call edited the pull request's: one read-modify-write of the file carries both. The
-// file is written only where this call changed what it holds: a body edit, or an `answered` that
-// is read back — this route carries `spends`, it carries `replies` that follow no other route, or
-// another route's `replies` follow it by `match`. The calls of a plain route, and of one whose
-// `replies` follow another's, change nothing a later call reads.
-const counted =
-  route.spends !== undefined ||
-  (route.replies !== undefined && route.follows === undefined) ||
-  fixtures.routes.some(
-    (candidate) => candidate.replies !== undefined && candidate.follows === route.match
-  );
-if (body !== undefined || counted) {
-  const edited = fixtures.routes.map((candidate) => ({
-    ...candidate,
-    answered: candidate === route ? (candidate.answered ?? 0) + 1 : candidate.answered,
-    ...(body === undefined
-      ? {}
-      : {
-          stdout: withBody(candidate.stdout, body),
-          replies: candidate.replies?.map((reply) => ({
-            ...reply,
-            stdout: withBody(reply.stdout, body),
-          })),
-        }),
-  }));
-  // The rename is what makes the write atomic: the temporary file is a sibling, in the run
-  // directory, so the rename is within one filesystem.
-  const temporary = `${run}/fixtures.${process.pid}.json`;
-  writeFileSync(temporary, JSON.stringify({ ...fixtures, routes: edited }));
-  renameSync(temporary, `${run}/fixtures.json`);
-}
+// where this call edited the pull request's: one read-modify-write of the file carries both.
+const edited = fixtures.routes.map((candidate) => ({
+  ...candidate,
+  answered: candidate === route ? (candidate.answered ?? 0) + 1 : candidate.answered,
+  ...(body === undefined
+    ? {}
+    : {
+        stdout: withBody(candidate.stdout, body),
+        replies: candidate.replies?.map((reply) => ({
+          ...reply,
+          stdout: withBody(reply.stdout, body),
+        })),
+      }),
+}));
+// The rename is what makes the write atomic: the temporary file is a sibling, in the run
+// directory, so the rename is within one filesystem.
+const temporary = `${run}/fixtures.${process.pid}.json`;
+writeFileSync(temporary, JSON.stringify({ ...fixtures, routes: edited }));
+renameSync(temporary, `${run}/fixtures.json`);
 closeSync(lock);
 if (body !== undefined) kept = body;
 let output: unknown = answer.stdout ?? "";

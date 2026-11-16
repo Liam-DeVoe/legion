@@ -5423,7 +5423,13 @@ Each item below names a flag, then what it means.
   optional: the Oh My Pi build steps 2 and 3 run (`github:sjawhar/oh-my-pi@<version>`), `.omp-pin`'s by default.
   Stage 2 and Stage 3 pass the build their daemon and panes run, so no other build opens the profile;
   under `LEGION_E2E_MODEL_ROUTE=box-login` that profile's `agent.db` is the operator's login database ([`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)).
+  It is always a tool spec: a path given to it goes to mise as one.
   Refused when empty.
+
+- `--omp-binary <path>`
+
+  optional: an `omp` binary steps 2 and 3 run as it is, with no mise call at all, for a machine that carries the pinned binary and no mise (a Kubernetes issue pod's `LEGION_OMP_PATH`; the skill-scenario rig passes its `SKILL_SCENARIOS_OMP`).
+  Refused, by its path, when it is not an executable file, and refused when empty or given beside `--omp`.
 
 The first four flags are required; each refusal names its flag and exits 2.
 Stdout is exactly one line, the installed manifest's path as `HOME=<home> OMP_PROFILE=<name> omp plugin list --json` reports the plugin;
@@ -5442,6 +5448,7 @@ Then:
 Steps 2 and 3 run the Oh My Pi `--omp` names, else the one the daemon pins (`.omp-pin`), under `HOME=<home>`, from `<dir>`, as the daemon runs it:
 the build's own `bin/omp` by its absolute path (`mise where <pin>`) under `mise x <pin> --`, never an `omp` looked up on the caller's `PATH`.
 An operator's wrapper there (the devbox's `~/.dotfiles/shims/omp`) reads its own files from `HOME`, which is the run's, and its own setup could rewrite the profile, whose `agent.db` is the operator's login database under the box-login route.
+With `--omp-binary` they run that binary by its absolute path instead, under the same `HOME` and from the same `<dir>`.
 
 Each step cites its source by what it runs, never by line number: the lines move with every edit above them.
 

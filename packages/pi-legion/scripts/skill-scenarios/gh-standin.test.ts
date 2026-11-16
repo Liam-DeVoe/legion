@@ -19,17 +19,22 @@ interface Call {
 }
 
 /** A run directory of a test's own, holding the routes the stand-in answers from. The environment
- * it reads is the world's own, so a row that publishes names its listener and its token file after
- * the directory exists. Each call is spawned rather than run in this process: the stand-in is a
- * process per call, and a test serving its publish needs its own loop free while the call runs. */
+ * it reads is this process's without its Envoy variables, which a Legion pane exports for the live
+ * relay, and then the world's own, so a row that publishes names its listener and its token file
+ * after the directory exists, and a row that names none publishes nowhere. Each call is spawned
+ * rather than run in this process: the stand-in is a process per call, and a test serving its
+ * publish needs its own loop free while the call runs. */
 function world(routes: unknown[]) {
   const run = runDirectory();
   const env: Record<string, string> = { SKILL_SCENARIO_RUN: run };
   writeFileSync(path.join(run, "fixtures.json"), JSON.stringify({ routes }));
   /** One run of the stand-in with `argv`: a `gh` call, or the rig's `--check` of the file. */
   async function standinRun(...argv: string[]) {
+    const inherited = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith("ENVOY_"))
+    );
     const child = Bun.spawn(["bun", standin, ...argv], {
-      env: { ...process.env, ...env },
+      env: { ...inherited, ...env },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -154,7 +159,7 @@ test("a call past the end of a route's replies takes the last reply again", asyn
 });
 
 test("a route that follows another advances on that route's calls, never on its own", async () => {
-  const { gh, fixtures } = world([
+  const { gh } = world([
     { match: "^gh pr checks", replies: [RED, GREEN], follows: "^gh run rerun" },
     { match: "^gh pr view", replies: [RED, GREEN] },
     { match: "^gh run rerun", stdout: RERUN },
@@ -173,10 +178,6 @@ test("a route that follows another advances on that route's calls, never on its 
   ]);
   expect(own.map((call) => call.stdout)).toEqual([`${RED.stdout}\n`, `${GREEN.stdout}\n`]);
   expect([pressed.stdout, pressed.exit]).toEqual([`${GREEN.stdout}\n`, 0]);
-  // The sequence is read from `answered` of the route it follows, never from its own, so the four
-  // calls of the route that follows count nothing: nothing reads that count, and a write of it
-  // beside the re-run could put back the re-run's count as it stood before the re-run.
-  expect(fixtures().routes.map((route) => route.answered)).toEqual([undefined, 2, 1]);
 });
 
 /** How many times each row below runs its calls at once: the lost update they pin was measured
@@ -206,7 +207,7 @@ test("reads of the head made beside the re-run never lose the re-run's count", a
   );
 }, 60_000);
 
-test("calls of one counted route made at once each take a reply of their own and each count", async () => {
+test("calls of one route made at once each take a reply of their own and each count", async () => {
   const calls = 6;
   const seen: unknown[] = [];
   for (let trial = 0; trial < TRIALS; trial += 1) {
@@ -340,4 +341,31 @@ test("a publish the listener refuses, or that reaches nothing, leaves the call's
 
   expect((await unreachable.gh("run", "rerun", "17420", "--failed")).exit).toBe(2);
   expect(unreachable.calls()[0]?.published).toHaveProperty("error");
+});
+
+// This process stands in for a Legion pane, whose ENVOY_URL and ENVOY_TOKEN_FILE name the live
+// relay. Catches: a world that hands the stand-in this process's environment whole, so a row that
+// names no listener of its own posts its settlement to that relay.
+test("a row that names no listener publishes nowhere, whatever Envoy this process names", async () => {
+  const pane = listener();
+  const { gh, calls, run } = world([
+    { match: "^gh run rerun \\d+ --failed", stdout: RERUN, publish: ENVELOPE },
+  ]);
+  const saved = { url: process.env.ENVOY_URL, tokenFile: process.env.ENVOY_TOKEN_FILE };
+  process.env.ENVOY_URL = pane.url;
+  process.env.ENVOY_TOKEN_FILE = tokenFile(run, "pane-relay-bearer");
+  try {
+    const result = await gh("run", "rerun", "17420", "--failed");
+    expect([result.stdout, result.exit]).toEqual([`${RERUN}\n`, 0]);
+  } finally {
+    for (const [name, value] of [
+      ["ENVOY_URL", saved.url],
+      ["ENVOY_TOKEN_FILE", saved.tokenFile],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  expect(pane.received).toEqual([]);
+  expect(calls()[0]?.published).toEqual({ error: "ENVOY_URL or ENVOY_TOKEN_FILE is unset" });
 });

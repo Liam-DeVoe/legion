@@ -1,11 +1,13 @@
 import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -243,33 +245,34 @@ describe("install_model_route", () => {
   });
 });
 
+/** A label's checkout whose plugin installer and home maker do nothing, with the real key-file
+ * route. */
+function labelCheckout(): string {
+  const co = freshDir("route-checkout");
+  mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
+  mkdirSync(path.join(co, "skills/asd-ste100"), { recursive: true });
+  writeFileSync(path.join(co, "skills/asd-ste100/SKILL.md"), "# STE\n");
+  writeFileSync(path.join(co, ".omp-pin"), "omp@pin\n");
+  // The real key-file route, with the lib it sources for its base URL's check.
+  for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh"]) {
+    cpSync(path.join(root, "scripts/e2e/lib", file), path.join(co, "scripts/e2e/lib", file));
+  }
+  writeFileSync(
+    path.join(co, "scripts/e2e/lib/omp-home.sh"),
+    'make_omp_home() { mkdir -p "$1/.omp"; }\n'
+  );
+  writeFileSync(path.join(co, "scripts/e2e/lib/install-plugin-profile.sh"), "exit 0\n");
+  return co;
+}
+const routeEnv = () => ({
+  LEGION_E2E_MODEL_ROUTE: "key-file",
+  LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+});
+
 // The key-file route's key command reads the operator's key for as long as it exists
 // (install-key-file-model-route.sh: the caller removes --key-dir on every exit that keeps no
 // profile). A setup that stops after the route is installed leaves no profile to use it.
 describe("a setup that fails after install_model_route", () => {
-  /** A checkout whose plugin installer and home maker do nothing, with the real key-file route. */
-  function checkout(): string {
-    const co = freshDir("route-checkout");
-    mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
-    mkdirSync(path.join(co, "skills/asd-ste100"), { recursive: true });
-    writeFileSync(path.join(co, "skills/asd-ste100/SKILL.md"), "# STE\n");
-    writeFileSync(path.join(co, ".omp-pin"), "omp@pin\n");
-    // The real key-file route, with the lib it sources for its base URL's check.
-    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh"]) {
-      cpSync(path.join(root, "scripts/e2e/lib", file), path.join(co, "scripts/e2e/lib", file));
-    }
-    writeFileSync(
-      path.join(co, "scripts/e2e/lib/omp-home.sh"),
-      'make_omp_home() { mkdir -p "$1/.omp"; }\n'
-    );
-    writeFileSync(path.join(co, "scripts/e2e/lib/install-plugin-profile.sh"), "exit 0\n");
-    return co;
-  }
-  const routeEnv = () => ({
-    LEGION_E2E_MODEL_ROUTE: "key-file",
-    LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-  });
-
   // Catches: a label profile that fails after its route is installed (here the superpowers probe)
   // and keeps a key command that still reads the operator's key.
   test("cmd_profile removes the label's model-key and marks nothing ready", () => {
@@ -289,7 +292,7 @@ describe("a setup that fails after install_model_route", () => {
       "install_superpowers() { fail 'the superpowers probe failed'; }",
       'work=$1; cmd_profile probe "$2"',
     ].join("\n");
-    const failed = bash(script, [work, checkout()], {
+    const failed = bash(script, [work, labelCheckout()], {
       ...routeEnv(),
       SKILL_SCENARIOS_SUPERPOWERS: "set",
     });
@@ -304,7 +307,7 @@ describe("a setup that fails after install_model_route", () => {
     const kept = freshDir("route-work");
     const ok = bash(
       script.replace("fail 'the superpowers probe failed'", ":"),
-      [kept, checkout()],
+      [kept, labelCheckout()],
       {
         ...routeEnv(),
         SKILL_SCENARIOS_SUPERPOWERS: "set",
@@ -319,7 +322,7 @@ describe("a setup that fails after install_model_route", () => {
   // command.
   test("judge_profiles removes both profiles' model-key and marks nothing ready", () => {
     const work = freshDir("judge-route-work");
-    const co = checkout();
+    const co = labelCheckout();
     const script = [
       "set -euo pipefail",
       ...["fail", "on_exit", "drop_unready_keys", "install_model_route", "judge_profiles"].map(fn),
@@ -341,6 +344,59 @@ describe("a setup that fails after install_model_route", () => {
     expect(existsSync(path.join(dir, "ste/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "bare/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "ready"))).toBe(false);
+  });
+});
+
+// cmd_profile hands both plugin installs the Oh My Pi the label runs: .omp-pin's, through mise, or
+// the binary SKILL_SCENARIOS_OMP names, which install-plugin-profile.sh takes as --omp-binary alone
+// (its --omp is a mise tool spec, whatever it looks like).
+describe("cmd_profile's Oh My Pi", () => {
+  /** cmd_profile of the label `probe` under `env`, with an installer that records its arguments. */
+  function profile(env: Record<string, string>) {
+    const co = labelCheckout();
+    const installs = path.join(co, "installs");
+    writeFileSync(
+      path.join(co, "scripts/e2e/lib/install-plugin-profile.sh"),
+      `printf '%s\\n' "$*" >>${JSON.stringify(installs)}\n`
+    );
+    const work = freshDir("omp-profile-work");
+    const script = [
+      "set -euo pipefail",
+      ...[
+        "fail",
+        "label_dir",
+        "on_exit",
+        "drop_unready_keys",
+        "install_model_route",
+        "given_omp",
+        "cmd_profile",
+      ].map(fn),
+      "checkout_commit() { printf 'fixture parents=base\\n'; }",
+      'work=$1; cmd_profile probe "$2"',
+    ].join("\n");
+    const result = bash(script, [work, co], { ...routeEnv(), ...env });
+    const P = path.join(work, "profiles/probe");
+    return {
+      code: result.code,
+      stderr: result.stderr,
+      installs: readFileSync(installs, "utf8").trimEnd().split("\n"),
+      flags: ["pi-envoy", "pi-legion"].map(
+        (pkg) => `--package ${pkg} --profile skills-probe --home ${P}/home --dest ${P}/${pkg}`
+      ),
+    };
+  }
+
+  // Catches: the binary handed on as --omp, which the installer reads as a mise tool spec, so a
+  // pod with no mise fails at `mise install <path>`.
+  test("a set SKILL_SCENARIOS_OMP goes to both installs as --omp-binary, and an unset one as nothing", () => {
+    const omp = path.join(freshDir("omp-given"), "omp");
+    writeFileSync(omp, "#!/bin/sh\n", { mode: 0o755 });
+    const given = profile({ SKILL_SCENARIOS_OMP: omp });
+    expect({ code: given.code, stderr: given.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(given.installs).toEqual(given.flags.map((flags) => `${flags} --omp-binary ${omp}`));
+    const pinned = profile({});
+    expect({ code: pinned.code, stderr: pinned.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(pinned.installs).toEqual(pinned.flags);
   });
 });
 
@@ -765,7 +821,7 @@ echo done
     );
     const run = () =>
       bash(
-        `${fn("fail")}\n${fn("given_omp")}\n${fn("pinned_omp")}\n${fn("pinned_command")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
+        `${fn("fail")}\n${fn("given_omp")}\n${fn("pinned_command")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
         [label],
         { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
       );
@@ -1224,16 +1280,48 @@ describe("require_superpowers", () => {
 });
 
 // launch with a stand-in tmux that starts the pane's command a moment later, as a real tmux server
-// does, and a stand-in mise that prints the omp command line it was given.
+// does, a stand-in start_process that starts it at once in the background, both recording each
+// call, and a stand-in mise that prints the omp command line it was given.
 describe("launch", () => {
-  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
-  // once, and extra omp arguments placed anywhere but after the prompt.
-  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
+  const standIns = `
+tmux() {
+  printf 'tmux %s\\n' "$1" >>"$R/calls"
+  case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac
+}
+start_process() {
+  printf 'start_process %s\\n' "$1" >>"$R/calls"
+  shift
+  "$@" &
+  agent_pid=$!
+}
+stop_tree() { :; }
+sleep() { command sleep 0.05; }`;
+  /** One later turn, `launch spec-writing-s1-1 --continue`, in a run directory of its own: the
+   * pane's out.txt as its wait read it, and the tmux and start_process calls it made. `tmux` puts
+   * a tmux binary on PATH, which is what launch looks for: the row's own tmux function takes
+   * every call either way. With none, PATH holds only the tools launch and its pane run, so a tmux
+   * elsewhere on the machine is not on it. `given` sets SKILL_SCENARIOS_OMP to an omp of the run's
+   * own, which prints its path and its arguments. */
+  function laterTurn({ tmux, given }: { tmux: boolean; given: boolean }) {
     const run = freshDir("launch-run");
     const bin = freshDir("launch-bin");
+    let PATH = `${bin}:${childEnv.PATH}`;
+    if (tmux) {
+      writeFileSync(path.join(bin, "tmux"), '#!/bin/sh\necho "tmux ran: $*" >&2\nexit 1\n', {
+        mode: 0o755,
+      });
+    } else {
+      const tools = freshDir("launch-tools");
+      for (const tool of ["bash", "cat", "chmod", "cp", "env", "grep", "sleep", "tail"]) {
+        const found = Bun.which(tool);
+        if (found === null) throw new Error(`launch's row needs ${tool} on PATH`);
+        symlinkSync(found, path.join(tools, tool));
+      }
+      PATH = `${bin}:${tools}`;
+    }
     for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
     writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on LWEVAL-2.\n");
-    writeFileSync(path.join(run, "pane.env"), `PATH=${bin}:${process.env.PATH ?? ""}\n`);
+    writeFileSync(path.join(run, "pane.env"), `PATH=${PATH}\n`);
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
     writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
@@ -1242,17 +1330,165 @@ describe("launch", () => {
       `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\necho "$@"\n`,
       { mode: 0o755 }
     );
-    const standIns = `
-tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
-sleep() { command sleep 0.05; }`;
+    const omp = path.join(bin, "given", "omp");
+    mkdirSync(path.dirname(omp));
+    writeFileSync(omp, '#!/bin/sh\necho "$0 $*"\n', { mode: 0o755 });
     const result = bash(
-      `${fn("fail")}\n${fn("given_omp")}\n${fn("pinned_omp")}\n${fn("pinned_command")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
+      `${fn("fail")}\n${fn("given_omp")}\n${fn("pinned_command")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
       [run],
-      { PATH: `${bin}:${childEnv.PATH}` }
+      given ? { PATH, SKILL_SCENARIOS_OMP: omp } : { PATH }
     );
-    expect(result.code).toBe(0);
-    expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
+    return {
+      run,
+      bin,
+      omp,
+      code: result.code,
+      stderr: result.stderr,
+      seen: existsSync(path.join(run, "seen")) ? readFileSync(path.join(run, "seen"), "utf8") : "",
+      calls: readFileSync(path.join(run, "calls"), "utf8").trimEnd().split("\n"),
+    };
+  }
+  const prompt = "-p The person answered your asks on LWEVAL-2. --continue --session-dir";
+  const inTmux = ["tmux kill-session", "tmux new-session", "tmux kill-session"];
+
+  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
+  // once, and extra omp arguments placed anywhere but after the prompt.
+  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
+    const { run, bin, code, seen } = laterTurn({ tmux: true, given: false });
+    expect(code).toBe(0);
+    expect(seen).toBe(
       `${bin}/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${run}/sessions\nexit=0\n`
+    );
+  });
+
+  // Catches: SKILL_SCENARIOS_OMP deciding whether tmux runs as well as which omp does, so a box
+  // that has tmux and tries an Oh My Pi build of its own loses its panes.
+  test("with tmux on PATH, a set SKILL_SCENARIOS_OMP still runs in a tmux session, as it is", () => {
+    const turn = laterTurn({ tmux: true, given: true });
+    expect({ code: turn.code, stderr: turn.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(turn.seen).toBe(`${turn.omp} ${prompt} ${turn.run}/sessions\nexit=0\n`);
+    expect(turn.calls).toEqual(inTmux);
+  });
+
+  // Catches: a box with no tmux that sets no SKILL_SCENARIOS_OMP, where launch would start no
+  // agent at all.
+  test("with no tmux on PATH, the agent is a process group of the run's own shell, whichever omp runs", () => {
+    const turn = laterTurn({ tmux: false, given: false });
+    expect({ code: turn.code, stderr: turn.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(turn.seen).toBe(`${turn.bin}/pin/bin/omp ${prompt} ${turn.run}/sessions\nexit=0\n`);
+    expect(turn.calls).toEqual(["start_process agent"]);
+  });
+});
+
+// pinned_command: the command a label's agents run omp by, the binary SKILL_SCENARIOS_OMP names
+// or mise's install of the pin, each refused in words of its own when it is not executable.
+describe("pinned_command", () => {
+  /** pinned_command of the pin omp@pin under `env`, and the command it set, one word a line. */
+  const pinned = (env: Record<string, string>) =>
+    bash(
+      `${fn("fail")}\n${fn("given_omp")}\n${fn("pinned_command")}\npinned_command omp@pin\nprintf '%s\\n' "\${omp_command[@]}"`,
+      [],
+      env
+    );
+
+  // Catches: the two branches' failure texts run together, which read "the Oh My Pi binary
+  // SKILL_SCENARIOS_OMP names/x/omp, is not executable".
+  test("a SKILL_SCENARIOS_OMP that is not executable is refused by name, as is a pin's install", () => {
+    const dir = freshDir("pinned");
+    const given = path.join(dir, "omp");
+    writeFileSync(given, "#!/bin/sh\n", { mode: 0o644 });
+    expect(pinned({ SKILL_SCENARIOS_OMP: given })).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: `skill-scenarios: ${given}, the Oh My Pi binary SKILL_SCENARIOS_OMP names, is not executable\n`,
+    });
+    chmodSync(given, 0o755);
+    expect(pinned({ SKILL_SCENARIOS_OMP: given })).toEqual({
+      code: 0,
+      stdout: `${given}\n`,
+      stderr: "",
+    });
+
+    const bin = freshDir("pinned-bin");
+    mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
+    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o644 });
+    writeFileSync(path.join(bin, "mise"), `#!/bin/sh\necho "${bin}/pin"\n`, { mode: 0o755 });
+    expect(pinned({ PATH: `${bin}:${childEnv.PATH}` })).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: `skill-scenarios: ${bin}/pin/bin/omp, the Oh My Pi binary of the pin omp@pin, is not executable\n`,
+    });
+  });
+});
+
+// services_up and a run's start_dispatch, with every process they start stood in for: the Go
+// toolchain (which records each build and writes the binary it names), the Postgres and NATS a
+// batch was given, the listener, and run-server.sh, whose environment the row reads.
+describe("the batch's Dispatch server build", () => {
+  // Catches: a run whose Dispatch start compiles the server, as run-server.sh does when it is given
+  // no binary: the first runs of a batch, compiling at once, overran the daemon stand-in's 30 s
+  // start bound (trial-a-head-1 left an empty daemon.log).
+  test("services_up builds the Dispatch server once, and each run's start_dispatch runs that build", () => {
+    const work = freshDir("dispatch-build-work");
+    const bin = freshDir("dispatch-build-bin");
+    const builds = path.join(work, "builds");
+    writeFileSync(
+      path.join(bin, "go"),
+      `#!/usr/bin/env bash
+printf '%s %s\\n' "$PWD" "$*" >>${JSON.stringify(builds)}
+while [ $# -gt 0 ]; do
+  if [ "$1" = -o ]; then printf '#!/bin/sh\\n' >"$2" && chmod +x "$2"; fi
+  shift
+done
+`,
+      { mode: 0o755 }
+    );
+    const globals =
+      "work=$1 root=$2 tag=t services_env=$1/services/env " +
+      "services_postgres=$1/services/postgres-url services_dispatch=$1/services/dispatch-server";
+    const up = bash(
+      [
+        ...["fail", "note", "safe_url", "given_services", "lock_services", "services_up"].map(fn),
+        "until_true() { :; }",
+        "pg_sql() { echo 100; }",
+        "start_listener() { envoy_port=9020; }",
+        globals,
+        "lock_services",
+        "services_up",
+      ].join("\n"),
+      [work, root],
+      {
+        PATH: `${bin}:${childEnv.PATH}`,
+        SKILL_SCENARIOS_POSTGRES_URL: "postgres://rig@127.0.0.1:5432/postgres",
+        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+        SKILL_SCENARIOS_PARALLEL: "1",
+      }
+    );
+    expect({ code: up.code, stderr: up.stderr }).toEqual({ code: 0, stderr: "" });
+    const envoy = path.join(root, "packages/envoy");
+    expect(readFileSync(builds, "utf8")).toBe(
+      `${envoy} build -o ${work}/services/envoy-listener ./cmd/listener\n` +
+        `${envoy} build -o ${work}/services/dispatch-server ./cmd/dispatch\n`
+    );
+
+    // A run's start, in a process of its own as `rig.sh run` is: run-server.sh is given the build.
+    const run = freshDir("dispatch-build-run");
+    mkdirSync(path.join(run, "logs"));
+    const start = bash(
+      [
+        fn("start_dispatch"),
+        'start_process() { env >"$evidence/run-server.env"; dispatch_pid=1; }',
+        "await_start() { :; }",
+        "report_port() { echo 5555; }",
+        globals,
+        "evidence=$3",
+        "start_dispatch postgres://rig@127.0.0.1:5432/run_x",
+      ].join("\n"),
+      [work, root, run]
+    );
+    expect({ code: start.code, stderr: start.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(run, "run-server.env"), "utf8").split("\n")).toContain(
+      `DISPATCH_E2E_SERVER_BIN=${work}/services/dispatch-server`
     );
   });
 });
@@ -1362,7 +1598,7 @@ describe.skipIf(withoutPython || withoutLibpq)(
 // world a run's name and world.json carry. The scorer's half of the scenario is score.test.ts's,
 // and the stand-in's sequencing is gh-standin.test.ts's.
 
-/** The twelve worlds, as rig.sh's header lists them and cmd_run and cmd_batch take them. */
+/** The twelve worlds, as rig.sh's header lists them and its red_world knows them. */
 const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"] as const;
 type RedWorld = (typeof RED_WORLDS)[number];
 /** Each world's red check, the job that carries it, and what the head settles at once the re-run
@@ -1459,7 +1695,7 @@ function greenRun(name: string): string {
 function redFixture(world: string): string {
   const run = greenRun(`red-${world}`);
   const result = bash(
-    `${fn("fail")}\n${fn("red_world")}\n${fn("red_fixture")}\nR=$1 worker_key=$2 worker_repo=$3\nred_fixture "$4"`,
+    `${fn("fail")}\n${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_fixture")}\nR=$1 worker_key=$2 worker_repo=$3\nred_fixture "$4"`,
     [run, RED_KEY, RED_REPO, world]
   );
   if (result.code !== 0) throw new Error(`red_fixture ${world} failed: ${result.stderr}`);
@@ -2205,29 +2441,32 @@ describe("red_fixture", () => {
     };
     expect(
       RED_WORLDS.map((world) =>
-        JSON.parse(bash(`${fn("red_world")}\nred_world "$1"`, [world]).stdout)
+        JSON.parse(
+          bash(`${fn("red_world_table")}\n${fn("red_world")}\nred_world "$1"`, [world]).stdout
+        )
       )
     ).toEqual(RED_WORLDS.map((world) => facts[world]));
-    expect(bash(`${fn("red_world")}\nred_world "$1"`, ["z"])).toEqual({
+    expect(bash(`${fn("red_world_table")}\n${fn("red_world")}\nred_world "$1"`, ["z"])).toEqual({
       code: 4,
       stdout: "",
       stderr: "",
     });
   });
 
+  /** Each route of the run's fixtures.json that carries the mark, with its count of replies. */
+  const marked = (run: string) => {
+    const fixtures: { routes: { match: string; replies?: unknown[]; unreported?: boolean }[] } =
+      JSON.parse(readFileSync(path.join(run, "fixtures.json"), "utf8"));
+    return fixtures.routes
+      .filter((route) => route.unreported === true)
+      .map((route) => [route.match, route.replies?.length]);
+  };
+
   // Catches: a red_report that trims routes by their shape, which takes any other route of three
   // replies with them, a mark the gh stand-in drops when it writes fixtures.json back (a re-run
   // pressed before the report writes it, as a pull request body edit does), which would leave
   // world l's counted set unreported for good, and a mark in a world the rig reports nothing in.
   test("world l marks the routes red_report trims, and the mark outlives the stand-in's writes", async () => {
-    /** Each route of the run's fixtures.json that carries the mark, with its count of replies. */
-    const marked = (run: string) => {
-      const fixtures: { routes: { match: string; replies?: unknown[]; unreported?: boolean }[] } =
-        JSON.parse(readFileSync(path.join(run, "fixtures.json"), "utf8"));
-      return fixtures.routes
-        .filter((route) => route.unreported === true)
-        .map((route) => [route.match, route.replies?.length]);
-    };
     const counted = [
       "^gh api .*graphql.*statusCheckRollup",
       "^gh pr view",
@@ -2253,6 +2492,38 @@ describe("red_fixture", () => {
         (match) => fixtures.routes.find((route) => route.match === match)?.replies?.length
       )
     ).toEqual([2, 2, 2, 2]);
+  });
+
+  // Catches: a red_report that rewrites fixtures.json without the lock every gh stand-in call
+  // holds from its read of the file to its write back: a call between its read and its write would
+  // put back the answers the report dropped, or the report would drop the call's count.
+  test("red_report rewrites fixtures.json only once it holds the lock a gh call holds", async () => {
+    const run = redFixture("l");
+    // The lock as a gh call holds it, taken before the report starts: the holder prints once it
+    // has the lock, and lets it go when its stdin closes.
+    const holder = Bun.spawn(
+      ["flock", "--exclusive", path.join(run, "fixtures.lock"), "bash", "-c", "echo held; read -r"],
+      { env: childEnv, stdin: "pipe", stdout: "pipe" }
+    );
+    await holder.stdout.getReader().read();
+    const report = redReport(run, "http://127.0.0.1:1");
+    // A real-time bound, because what the row shows is a thing that does not happen: the report
+    // runs as a process of its own, which no fake clock reaches, and no signal marks a write it
+    // never made. Unlocked, its jq and mv take milliseconds, far inside the bound; locked, it
+    // writes nothing however long the bound is, so the bound decides no passing run.
+    await Bun.sleep(500);
+    const whileHeld = {
+      marked: marked(run).length,
+      reported: existsSync(path.join(run, "reported-at")),
+    };
+    holder.stdin.end();
+    await holder.exited;
+    await report;
+    expect(whileHeld).toEqual({ marked: 4, reported: false });
+    expect({
+      marked: marked(run).length,
+      reported: existsSync(path.join(run, "reported-at")),
+    }).toEqual({ marked: 0, reported: true });
   });
 });
 
@@ -2305,6 +2576,7 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
       // daemon stand-in (boot_worker), and each turn's line of turns.txt (record_turn); and the
       // world's facts (red_world), which worker_world seeds the issue by.
       fn("worker_world"),
+      fn("red_world_table"),
       fn("red_world"),
       fn("architect_assignment"),
       fn("boot_worker"),
@@ -2471,8 +2743,9 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
   });
 });
 
-// cmd_run and cmd_batch read SKILL_SCENARIOS_RED_WORLD: the run function is stood in for, so a
-// row reads the name the command made and what it refused.
+// cmd_run and cmd_batch read SKILL_SCENARIOS_RED_WORLD and take it only where red_world prints its
+// facts: the run function is stood in for, so a row reads the name the command made and what it
+// refused, and a row may stand in for red_world too, with `worlds` in place of rig.sh's own.
 describe("a red-at-the-head run's world", () => {
   const runStandIns = `
 load_label() { P=$work/profiles/$1; mkdir -p "$P"; printf 'commit\\n' >"$P/built-from"; }
@@ -2481,12 +2754,18 @@ run_red_at_the_head() {
   printf 'run_red_at_the_head %s\\n' "$*" >>"$work/calls"
   printf 'exit=0\\n' >"$R/out.txt"
 }`;
-  const run = (work: string, world: string | undefined, n: string) =>
+  const run = (
+    work: string,
+    world: string | undefined,
+    n: string,
+    worlds = `${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_worlds")}`
+  ) =>
     bash(
       [
         fn("fail"),
         fn("cmd_run"),
         fn("run_prefix"),
+        worlds,
         runStandIns,
         "work=$1",
         'mkdir -p "$work"',
@@ -2528,6 +2807,8 @@ run_red_at_the_head() {
         fn("base_env"),
         fn("cmd_run"),
         fn("run_prefix"),
+        fn("red_world_table"),
+        fn("red_world"),
         'load_label() { P=$work/profiles/$1; mkdir -p "$P/home"; printf \'commit\\n\' >"$P/built-from"; }',
         "on_exit() { :; }",
         "run_red_at_the_head() { base_env; printf 'exit=0\\n' >\"$R/out.txt\"; }",
@@ -2571,7 +2852,10 @@ load_label() { printf 'load_label %s\\n' "$1" >>"$work/calls"; }
 on_exit() { :; }
 lock_services() { printf 'lock_services\\n' >>"$work/calls"; }
 services_up() { printf 'services_up\\n' >>"$work/calls"; }`;
-  function batch(world: string | undefined) {
+  function batch(
+    world: string | undefined,
+    worlds = `${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_worlds")}`
+  ) {
     const work = freshDir("red-batch-work");
     const here = freshDir("red-batch-here");
     writeFileSync(
@@ -2582,6 +2866,7 @@ services_up() { printf 'services_up\\n' >>"$work/calls"; }`;
       [
         fn("fail"),
         fn("cmd_batch"),
+        worlds,
         batchStandIns,
         "work=$1",
         "here=$2",
@@ -2617,5 +2902,36 @@ services_up() { printf 'services_up\\n' >>"$work/calls"; }`;
       "run run red-at-the-head s1 1",
       "run run red-at-the-head s1 2",
     ]);
+  });
+
+  // Catches: a list of worlds in cmd_run or cmd_batch beside red_world's table, which a world added
+  // to the table would be missing from: here red_world knows `m` alone.
+  test("cmd_run and cmd_batch take the worlds red_world knows, and keep no list of their own", () => {
+    const worlds = `red_world() { [ "$1" = m ] && echo '{"role":"tester"}'; }\nred_worlds() { echo m; }`;
+    const work = freshDir("red-run-catalogue");
+    expect(run(work, "m", "1", worlds)).toEqual({
+      code: 0,
+      stdout: "trial-m-s1-1: exit=0\n",
+      stderr: "",
+    });
+    const refused = run(work, "a", "1", worlds);
+    expect(refused.code).toBe(1);
+    // The refusal names the worlds red_worlds reads from the table, not a list of its own.
+    expect(refused.stderr).toBe("skill-scenarios: SKILL_SCENARIOS_RED_WORLD is 'a', not m\n");
+    expect(readFileSync(path.join(work, "calls"), "utf8")).toBe(
+      "run_red_at_the_head trial-m-s1-1 1 3 1740000000 m\n"
+    );
+    const ran = batch("m", worlds);
+    expect({ code: ran.code, calls: ran.calls }).toEqual({
+      code: 0,
+      calls: [
+        "load_label s1",
+        "lock_services",
+        "services_up",
+        "run run red-at-the-head s1 1",
+        "run run red-at-the-head s1 2",
+      ],
+    });
+    expect(batch("a", worlds)).toMatchObject({ code: 1, calls: [] });
   });
 });

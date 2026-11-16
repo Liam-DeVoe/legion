@@ -361,8 +361,10 @@ A batch starts its Postgres and its NATS as two containers, unless `SKILL_SCENAR
 and `SKILL_SCENARIOS_NATS_URL` name two servers of your own, both or neither: set both and the
 batch starts no container. The Postgres must be on this machine, as `run_database_url` requires. The NATS must run JetStream (`nats-server -js`), or the Envoy listener
 exits before any run starts. `SKILL_SCENARIOS_OMP` runs the Oh My Pi binary it names in place of
-the install mise made for the label's pin, and each run's agent is then a process group of the
-rig's own shell rather than a tmux pane, so a box with neither mise nor tmux runs a batch too.
+the install mise made for the label's pin (the profile installs the plugins with it, as
+`install-plugin-profile.sh --omp-binary`), so a box with no mise runs a batch. Where no tmux is on
+`PATH`, each run's agent is a process group of the rig's own shell rather than a tmux pane, so a box
+with no tmux runs one too.
 The judges are what still needs Docker: `rig.sh judge-omp` runs each one in a container, and
 every container a batch or a judge starts has CPU and memory limits.
 `SKILL_SCENARIOS_WORK` must have no `.omp` in it or above it, so not under your home directory: Oh

@@ -4180,6 +4180,7 @@ const redTest = "notify > retries a refused send";
 /** The error that read answers in world h, where the log cannot be read. */
 const redLogError =
   "failed to get run log: HTTP 410: Gone (https://api.github.com/repos/example/widgets/actions)";
+const rigFunction = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
 /** Each world's facts as rig.sh's red_world prints them, which red_fixture writes into world.json
  * beside the world's red: read from the rig itself, so each row below is scored by the facts a
  * run of its world is given. */
@@ -4188,7 +4189,7 @@ const redFacts: Record<string, object> = (() => {
   const printed = Bun.spawnSync([
     "bash",
     "-c",
-    `${scriptFunctions(path.join(import.meta.dir, "rig.sh"))("red_world")}\nfor world in "$@"; do red_world "$world" || exit; done`,
+    `${rigFunction("red_world_table")}\n${rigFunction("red_world")}\nfor world in "$@"; do red_world "$world" || exit; done`,
     "-",
     ...worlds,
   ]);

@@ -143,7 +143,9 @@
 # docker. Each run gets a Dispatch of its own (own_dispatch): a database named after the run
 # in the batch's Postgres, and the e2e harness's real Go Dispatch server
 # (packages/dispatch/e2e/run-server.sh) on that database, seeded and read back through its API
-# (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
+# (seed.ts) and stopped when the run ends. The batch builds that server once, before any run
+# starts, and every run's run-server.sh runs that build (services_up, start_dispatch), so no run's
+# start waits on a compile. A `dispatch search` searches every project of its
 # server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
 # each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
 # and score.ts does not score two runs that name one database. A given server's URL carries its
@@ -187,14 +189,13 @@
 #   SKILL_SCENARIOS_RED_WORLD     red-at-the-head: a, b, c, d, e, f, g, h, i, j, k or l, the world
 #                                 run's head is red in (required for that scenario)
 #   SKILL_SCENARIOS_OMP           the Oh My Pi binary a label's agents run, in place of the
-#                                 install mise made for the label's pin (pinned_omp). With it
+#                                 install mise made for the label's pin (pinned_command). With it
 #                                 set, `profile` and every run reach omp directly rather than
-#                                 through `mise x <pin> --`, and a run's agent is a background
-#                                 process group of the run's own shell rather than a tmux session
-#                                 (launch): that is how a batch runs where there is no mise and no
-#                                 tmux. Nothing here checks the binary's version, so give the one
-#                                 .omp-pin names: the label's profile is built for it. `judge-omp`
-#                                 keeps its own SKILL_SCENARIOS_JUDGE_OMP and its container
+#                                 through `mise x <pin> --`: that is how a batch runs where there
+#                                 is no mise. Nothing here checks the binary's version, so give the
+#                                 one .omp-pin names: the label's profile is built for it.
+#                                 `judge-omp` keeps its own SKILL_SCENARIOS_JUDGE_OMP and its
+#                                 container
 #   SKILL_SCENARIOS_POSTGRES_URL  a Postgres the batch uses in place of the container it would
 #                                 start, as a URL
 #                                 (postgres://<user>:<password>@<host>:<port>/<database>) whose
@@ -237,10 +238,10 @@
 #     (load_label refuses a profile that does not).
 #   - It runs in the tmux session skill-scenarios-<digest>-<run> on the work directory's own tmux
 #     server (<work>/tmux.sock), <run> being <scenario>-<label>-<n> (askgate-<case>-<label>-<n> for
-#     askgate), or, with SKILL_SCENARIOS_OMP set, as a background process group of the run's own
-#     shell and no tmux at all (launch). The pane shows nothing: omp's output goes to
-#     <work>/runs/<run>/out.txt, and the transcript, which grows as the agent works, to the .jsonl
-#     under <work>/runs/<run>/sessions.
+#     askgate), or, where no tmux is on PATH, as a background process group of the run's own shell
+#     (launch): that is how a batch runs where there is no tmux. The pane shows nothing: omp's
+#     output goes to <work>/runs/<run>/out.txt, and the transcript, which grows as the agent works,
+#     to the .jsonl under <work>/runs/<run>/sessions.
 #   - `gh` and `bun` stand-ins are first on its PATH (standins): no run reaches GitHub, and a bun
 #     it reaches through PATH is the bun this script runs on, recorded. A bun named by its path or
 #     run through `mise exec` bypasses the stand-in and goes unrecorded. Every container and tmux
@@ -352,7 +353,7 @@ tmux_socket=$work/tmux.sock
 tmux() { command tmux -S "$tmux_socket" "$@"; }
 
 # What a command started, for its exit trap: the run directory, its agent (a tmux session, or the
-# background process group launch starts under SKILL_SCENARIOS_OMP), the pids lib/rig.sh's
+# background process group launch starts where there is no tmux), the pids lib/rig.sh's
 # start_process sets (that agent and a run's own Dispatch server among them), and the services'
 # URLs and directory.
 R='' session='' agent_pid='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
@@ -543,11 +544,11 @@ cmd_profile() {
   )
   # Both plugins: a tester-proof worker's pane loads the Legion extension, which exits a Legion
   # session that finds no Envoy plugin, and every plain session gets its Dispatch skills and tools
-  # from the Envoy plugin. With SKILL_SCENARIOS_OMP set the installer is given that binary, since
-  # a pod carries the pinned Oh My Pi and no mise; with it unset the installer reads .omp-pin and
-  # runs it through mise, as it always has.
+  # from the Envoy plugin. With SKILL_SCENARIOS_OMP set the installer is given that binary as
+  # --omp-binary, since a pod carries the pinned Oh My Pi and no mise; with it unset the installer
+  # reads .omp-pin and runs it through mise, as it always has.
   local -a omp_arg=()
-  if given_omp; then omp_arg=(--omp "$SKILL_SCENARIOS_OMP"); fi
+  if given_omp; then omp_arg=(--omp-binary "$SKILL_SCENARIOS_OMP"); fi
   bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$P/home" --dest "$P/pi-envoy" "${omp_arg[@]}" >"$P/install.log" 2>&1 ||
     fail "install-plugin-profile.sh --package pi-envoy failed; see $P/install.log"
   bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$P/home" --dest "$P/pi-legion" "${omp_arg[@]}" >>"$P/install.log" 2>&1 ||
@@ -577,31 +578,24 @@ cmd_profile() {
 # of the install mise made for the label's pin: a pod carries the pinned binary and no mise.
 given_omp() { [ -n "${SKILL_SCENARIOS_OMP:-}" ]; }
 
-# pinned_omp PIN prints the path of the omp binary mise installed for PIN, or of the binary
-# SKILL_SCENARIOS_OMP names when it is set (given_omp), which a batch runs in place of mise's
-# install. A run names the binary by path: `mise x <pin> -- omp` leaves an `omp` earlier on the
-# caller's PATH (a wrapper script, say) ahead of the pin's own whenever PIN is the version mise
-# already has active there, so the run would get the wrapper and whatever omp and configuration it
-# picks, not the label's pin.
-pinned_omp() {
-  local omp
-  if given_omp; then
-    omp=$SKILL_SCENARIOS_OMP
-  else
-    omp=$(mise where "$1")/bin/omp || fail "mise has no install of $1"
-  fi
-  [ -x "$omp" ] || fail "$omp, the Oh My Pi binary ${SKILL_SCENARIOS_OMP:+SKILL_SCENARIOS_OMP names}${SKILL_SCENARIOS_OMP:-of the pin $1}, is not executable"
-  printf '%s\n' "$omp"
-}
-
 # pinned_command PIN sets the caller's array omp_command to the command that runs the label's omp
-# by its path (pinned_omp): the pin's own install is reached through `mise x <pin> --`, and a given
-# binary (given_omp) is run as it is.
+# by its path: the binary SKILL_SCENARIOS_OMP names when it is set (given_omp), run as it is, and
+# otherwise the omp binary mise installed for PIN, reached through `mise x <pin> --`. A run names
+# the pin's binary by path: `mise x <pin> -- omp` leaves an `omp` earlier on the caller's PATH (a
+# wrapper script, say) ahead of the pin's own whenever PIN is the version mise already has active
+# there, so the run would get the wrapper and whatever omp and configuration it picks, not the
+# label's pin.
 pinned_command() {
   local omp
-  omp=$(pinned_omp "$1") || exit 1
-  omp_command=("$omp")
-  given_omp || omp_command=(mise x "$1" -- "$omp")
+  if given_omp; then
+    [ -x "$SKILL_SCENARIOS_OMP" ] ||
+      fail "$SKILL_SCENARIOS_OMP, the Oh My Pi binary SKILL_SCENARIOS_OMP names, is not executable"
+    omp_command=("$SKILL_SCENARIOS_OMP")
+  else
+    omp=$(mise where "$1")/bin/omp || fail "mise has no install of $1"
+    [ -x "$omp" ] || fail "$omp, the Oh My Pi binary of the pin $1, is not executable"
+    omp_command=(mise x "$1" -- "$omp")
+  fi
 }
 
 # install_superpowers P PROFILE PIN copies SKILL_SCENARIOS_SUPERPOWERS's writing-plans and
@@ -695,12 +689,13 @@ EOF
 
 # launch NAME [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd
 # under $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text)
-# when it exists, as the tmux session <tag>-<name>, or, with SKILL_SCENARIOS_OMP set, as a
-# background process group of this shell (start_process) and no tmux: the same $R/launch.sh either
-# way, started by the same command line, and the same wait. It waits for the agent to exit or time
-# out. A timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not an
-# until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
-# wait reads only its own exit line.
+# when it exists, as the tmux session <tag>-<name>, or, where no tmux is on PATH, as a background
+# process group of this shell (start_process): the same $R/launch.sh either way, started by the
+# same command line, and the same wait. Which omp runs (pinned_command) decides nothing here, so a
+# box that has tmux and sets SKILL_SCENARIOS_OMP keeps its panes. It waits for the agent to exit or
+# time out. A timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not
+# an until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so
+# its wait reads only its own exit line.
 launch() {
   local system='' extra='' run name=$1 start
   local -a omp_command
@@ -720,17 +715,18 @@ EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
   start="bash $(printf %q "$R/launch.sh"); echo exit=\$? >>$(printf %q "$R/out.txt")"
-  if given_omp; then
+  # `type -P` reads PATH alone: `command -v` would answer this script's own tmux function.
+  if type -P tmux >/dev/null; then
+    session=$tag-$name
+    tmux kill-session -t "=$session" 2>/dev/null || true
+    tmux new-session -d -s "$session" -x 200 -y 50 "$start"
+  else
     # No tmux: the agent is a process group of its own (start_process's `set -m`), which stop_tree
     # stops as it stops any other process this shell started, and its log holds what launch.sh
     # itself writes. The agent takes the run's SKILL_SCENARIO_RUN from its pane file, so the sweep
     # that ends a run or a batch (stop_env_processes) reaches it and every process it started,
     # a child that left its tree included, as it reaches a pane's.
     start_process agent bash -c "$start"
-  else
-    session=$tag-$name
-    tmux kill-session -t "=$session" 2>/dev/null || true
-    tmux new-session -d -s "$session" -x 200 -y 50 "$start"
   fi
   local deadline=$((SECONDS + ${SKILL_SCENARIOS_TIMEOUT:-1500}))
   # The command after launch.sh appends `exit=<status>` as out.txt's last line once omp has exited.
@@ -856,6 +852,11 @@ services_env=$work/services/env
 # never one its own environment names. The file is 0600, since the URL can carry a password, and
 # its absence is how a run knows its batch started a container instead.
 services_postgres=$work/services/postgres-url
+# The Dispatch server binary services_up builds from this checkout before any run starts, which
+# each run's start_dispatch hands run-server.sh to execute (DISPATCH_E2E_SERVER_BIN): run-server.sh
+# builds the server itself when it is given none, and the first runs of a batch, all compiling at
+# once, overran the daemon stand-in's 30 s start bound while that build ran.
+services_dispatch=$work/services/dispatch-server
 
 # start_listener serves the Envoy listener on a port the kernel chose, held from that choice until
 # the listener serves on it (lib/rig.sh's start_held), and sets envoy_port.
@@ -867,9 +868,10 @@ start_listener() {
     curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$S/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
 }
 
-# start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The
-# harness's fake Envoy and GitHub, which run-server.sh names and this rig does not run, are port 1,
-# where nothing listens; its broker switch is empty, so the server has no secrets broker.
+# start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database: the build
+# services_up made ($services_dispatch), so the start compiles nothing. The harness's fake Envoy
+# and GitHub, which run-server.sh names and this rig does not run, are port 1, where nothing
+# listens; its broker switch is empty, so the server has no secrets broker.
 # With no DISPATCH_E2E_PORT, run-server.sh serves Dispatch on a port the kernel chose, held until
 # the server serves on it, and the server reports it (`msg="dispatch: listening"
 # addr=127.0.0.1:<port>`), which sets dispatch_port. Each run has an evidence directory of its own,
@@ -878,6 +880,7 @@ start_dispatch() {
   local url=$1 log=$evidence/logs/dispatch.log
   : >"$log"
   DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 DISPATCH_E2E_AGENT_SECRETS_URL='' \
+    DISPATCH_E2E_SERVER_BIN=$services_dispatch \
     start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
   await_start dispatch "$dispatch_pid" 300 "Dispatch to report its port" \
     report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:'
@@ -974,7 +977,9 @@ services_up() {
     [ "$parallel" -le "$fits" ] ||
       fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
   fi
-  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
+  # The listener, and the Dispatch server each run's own Dispatch runs (start_dispatch), built once
+  # here, before any run starts.
+  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener && go build -o "$services_dispatch" ./cmd/dispatch)
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
   {
@@ -1768,7 +1773,8 @@ run_tester_proof() {
 # red_world WORLD prints the facts of WORLD as one JSON object, the one place each world's facts are
 # written: red_fixture adds them to <run>/world.json, where run_red_at_the_head and score.ts's
 # redAtTheHead read them, and worker_world reads the two it seeds the run's issue by. WORLD outside
-# the twelve prints nothing and fails. The facts:
+# the twelve prints nothing and fails, which is how cmd_run, cmd_batch and red_fixture refuse it:
+# the table below is the shell's one list of the worlds. The facts:
 #   after         what the head settles at once the re-run is pressed, green or red
 #   role          the role that holds the phase: the reviewer in `i` and `j`, the tester in the rest
 #   phase         that role's phase, as the daemon's task names it (testing or reviewing)
@@ -1797,8 +1803,8 @@ run_tester_proof() {
 #                 and reports it only when the rig does, between the two turns (red_report): `l`
 #   decline_fails whether a round the role ended before its re-run fails the world: `k`, whose
 #                 commit endpoint answers a by-hand failure that reads as the re-run already spent
-red_world() {
-  jq -nce --arg world "$1" '
+red_world_table() {
+  printf '%s\n' '
     {
       a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false},
       b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false},
@@ -1812,10 +1818,19 @@ red_world() {
       j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false},
       k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true},
       l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false}
-    }[$world] // empty
+    }'
+}
+red_world() {
+  jq -nce --arg world "$1" "$(red_world_table)"'[$world] // empty
     | . + {phase:{tester:"testing", reviewer:"reviewing"}[.role],
            handoff:{tester:"test", reviewer:"review"}[.role],
            turns:(if .rerun then 2 else 1 end)}'
+}
+
+# red_worlds prints red_world's worlds as a refusal names them, `a, b, … k or l`, from its table,
+# so a world added there is named in every refusal with nothing else to edit.
+red_worlds() {
+  jq -nr "$(red_world_table)"' | keys_unsorted | (.[:-1] | join(", ")) + " or " + .[-1]'
 }
 
 # red_fixture WORLD turns worker_fixture's green head red, over the world it has already written:
@@ -1884,16 +1899,10 @@ red_fixture() {
   job_id=$((8000000 + pr))
   red_id=$((9000000 + pr))
   log_err=''
+  # The worlds whose red is not a's. Every other world red_world knows carries a's red, the
+  # failing test of packages/notify, and red_world has already refused a world it does not know,
+  # so the catalogue of worlds is red_world's alone.
   case $world in
-  a | b | e | h | i | j | k | l)
-    check='test (notify)'
-    job='test (notify)'
-    test_name='notify > retries a refused send'
-    step='Run bun test packages/notify'
-    summary='1 of 412 tests in packages/notify failed.'
-    log='(fail) notify > retries a refused send [3.00ms]'
-    [ "$world" != h ] || log_err='failed to get run log: HTTP 410: Gone (https://api.github.com/repos/example/widgets/actions/runs)'
-    ;;
   c)
     check='build'
     job='build (linux-x64)'
@@ -1926,7 +1935,15 @@ red_fixture() {
     summary='1 of 6 lanes failed: test (notify).'
     log='(fail) notify > retries a refused send [3.00ms]'
     ;;
-  *) fail "red_fixture: '$world' is no world of red-at-the-head" ;;
+  *)
+    check='test (notify)'
+    job='test (notify)'
+    test_name='notify > retries a refused send'
+    step='Run bun test packages/notify'
+    summary='1 of 412 tests in packages/notify failed.'
+    log='(fail) notify > retries a refused send [3.00ms]'
+    [ "$world" != h ] || log_err='failed to get run log: HTTP 410: Gone (https://api.github.com/repos/example/widgets/actions/runs)'
+    ;;
   esac
   # The failing line this world's log read answers, as the world knows it: a world whose read
   # answers an error (h) leaves none, since the role reads no line there.
@@ -2163,11 +2180,19 @@ red_fixture() {
 # since the turn below runs whether the wake reached the role or not.
 # <run>/reported-at is the moment the counted set reported it, which score.ts's redAtTheHead
 # reads the role's re-run and its first turn against.
+# The rewrite of fixtures.json holds the run's fixtures lock, an exclusive flock(2) on
+# <run>/fixtures.lock, from its read of the file to its rename, as every gh stand-in call holds it
+# (gh-standin.ts): a call that read the file before the rewrite and wrote it back after would put
+# the dropped answers back, and a rewrite over a call's own write would lose that call's count. A
+# lock, read or write that fails stops the report there and fails it.
 red_report() {
   local url
-  jq '.routes |= map(if .unreported then .replies |= .[1:] | del(.unreported) else . end)' \
-    "$R/fixtures.json" >"$R/fixtures.reported.json"
-  mv "$R/fixtures.reported.json" "$R/fixtures.json"
+  (
+    flock --exclusive 9 &&
+      jq '.routes |= map(if .unreported then .replies |= .[1:] | del(.unreported) else . end)' \
+        "$R/fixtures.json" >"$R/fixtures.reported.json" &&
+      mv "$R/fixtures.reported.json" "$R/fixtures.json"
+  ) 9>>"$R/fixtures.lock" || return 1
   date -u +%Y-%m-%dT%H:%M:%SZ >"$R/reported-at"
   url=$(sed -n 's/^ENVOY_URL=//p' "$services_env")
   ENVOY_URL=$url ENVOY_TOKEN_FILE=$(sed -n 's/^ENVOY_TOKEN_FILE=//p' "$services_env") \
@@ -2271,13 +2296,11 @@ cmd_run() {
     *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
     esac
   elif [ "$scenario" = red-at-the-head ]; then
-    # A red-at-the-head run's name carries its world, for the same reason.
-    case ${SKILL_SCENARIOS_RED_WORLD:-} in
-    a | b | c | d | e | f | g | h | i | j | k | l)
-      name=$(run_prefix "$scenario")-$SKILL_SCENARIOS_RED_WORLD-${P##*/}-$n
-      ;;
-    *) fail "SKILL_SCENARIOS_RED_WORLD is '${SKILL_SCENARIOS_RED_WORLD:-}', not a, b, c, d, e, f, g, h, i, j, k or l" ;;
-    esac
+    # A red-at-the-head run's name carries its world, for the same reason. The worlds are
+    # red_world's, the one place they are written.
+    red_world "${SKILL_SCENARIOS_RED_WORLD:-}" >/dev/null ||
+      fail "SKILL_SCENARIOS_RED_WORLD is '${SKILL_SCENARIOS_RED_WORLD:-}', not $(red_worlds)"
+    name=$(run_prefix "$scenario")-$SKILL_SCENARIOS_RED_WORLD-${P##*/}-$n
   else
     name=$(run_prefix "$scenario")-${P##*/}-$n
   fi
@@ -2327,10 +2350,8 @@ cmd_batch() {
     '' | warn | block) ;;
     *) fail "an askgate batch takes SKILL_SCENARIOS_ASKGATE_MODE unset, warn or block (got '$SKILL_SCENARIOS_ASKGATE_MODE')" ;;
   esac
-  [ "$batch_scenario" != red-at-the-head ] || case ${SKILL_SCENARIOS_RED_WORLD:-} in
-    a | b | c | d | e | f | g | h | i | j | k | l) ;;
-    *) fail "a red-at-the-head batch needs SKILL_SCENARIOS_RED_WORLD set to a, b, c, d, e, f, g, h, i, j, k or l (got '${SKILL_SCENARIOS_RED_WORLD:-}')" ;;
-  esac
+  [ "$batch_scenario" != red-at-the-head ] || red_world "${SKILL_SCENARIOS_RED_WORLD:-}" >/dev/null ||
+    fail "a red-at-the-head batch needs SKILL_SCENARIOS_RED_WORLD set to $(red_worlds) (got '${SKILL_SCENARIOS_RED_WORLD:-}')"
   [[ $runs =~ ^[0-9]+$ ]] || fail "run count '$runs' is not a number"
   # A spec batch numbers its run one above its first label's highest (next_run, below), so a second
   # label or a second run could take the number of a run cmd_run would then remove: one run of one
