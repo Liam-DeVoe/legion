@@ -18,7 +18,7 @@ import { renderAdvice } from "./advice";
 import { movedApprovalLine, resolveReplyToAsk } from "./asks";
 import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
 import { anchor, resolveArtifact } from "./document-targets";
-import { throughPostCorrections } from "./failures";
+import { dispatchAnswered, refusalWithCode, throughPostCorrections } from "./failures";
 import {
   itemReplyTo,
   messageArgumentId,
@@ -65,11 +65,44 @@ export async function resolveCommentArgument(
       client.getArtifactComments(artifact.id)
     );
   }
-  const read = await client.getComment(id);
+  const read = await client.getComment(id).catch(async (error: unknown) => {
+    throw await refuseMissingOfRef(client, error, "comment", id, ref.owner, refOwnerName(ref));
+  });
   await refuseItemOffRef(tool, "comment", ref, reference, read.comment, async () =>
     document === undefined ? "" : document.id
   );
   return { id, ...(document === undefined ? {} : { document }) };
+}
+
+/**
+ * The refusal a reference's own read earns when Dispatch answers `404 NOT_FOUND`: its `not found`
+ * names neither the post nor the issue, so a reader cannot tell a post that is not there from an
+ * issue that is not (dispatch://INFRA-1523). The owner is read once, on this failing path alone,
+ * to say which: a reference whose issue Dispatch does not hold names that issue, and one whose
+ * issue stands names the post it holds no row of. A document's owner is already read above, so
+ * only an issue is read here.
+ */
+async function refuseMissingOfRef(
+  client: DispatchClient,
+  error: unknown,
+  kind: "comment" | "message",
+  id: string,
+  owner: { readonly kind: string; readonly issue?: string },
+  ownerName: string
+): Promise<unknown> {
+  if (!(dispatchAnswered(error, 404) && error.code === "NOT_FOUND")) return error;
+  if (owner.kind === "issue" && owner.issue !== undefined) {
+    const issueKey = owner.issue;
+    const issueStands = await client
+      .getIssue(issueKey)
+      .then(() => true)
+      .catch((caught: unknown) => {
+        if (dispatchAnswered(caught, 404)) return false;
+        throw caught;
+      });
+    if (!issueStands) return refusalWithCode(error, `this Dispatch holds no issue ${issueKey}`);
+  }
+  return refusalWithCode(error, `${ownerName} holds no ${kind} ${id}`);
 }
 
 /**
@@ -104,7 +137,11 @@ export async function resolveMessageArgument(
   // The thread the message belongs to, read by its id alone, names the issue it is really on:
   // the listing above resolves a prefix among this issue's messages, but a full uuid names a
   // message of any issue. A message is on an issue or on none, so no document is read for it.
-  const read = await client.getMessageThread(id, session === "" ? undefined : session);
+  const read = await client
+    .getMessageThread(id, session === "" ? undefined : session)
+    .catch(async (error: unknown) => {
+      throw await refuseMissingOfRef(client, error, "message", id, ref.owner, issueKey);
+    });
   await refuseItemOffRef(
     tool,
     "message",
