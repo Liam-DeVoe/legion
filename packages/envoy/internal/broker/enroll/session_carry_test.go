@@ -2,6 +2,7 @@ package enroll
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,18 +17,52 @@ import (
 // before the successor enrols.
 var carryKinds = []string{"session", "pod"}
 
+// carryDaemonAccount is the account the daemon of these tests logs in as, and carryPodAccount the
+// account the pods it launches run as, which daemonLogin binds to that daemon's service.
+const (
+	carryDaemonAccount = "system:serviceaccount:legion:legion-daemon"
+	carryPodAccount    = "system:serviceaccount:legion:worker"
+)
+
+// daemonLogins is the one token login each Service's daemon holds (daemonLogin).
+var daemonLogins sync.Map
+
+// daemonLogin is the token login a Legion daemon enrols its pods under, as it holds one: logged in
+// once per Service as carryDaemonAccount, whose pods (carryPodAccount) BROKER_SERVICES binds to its
+// service, and handed back on every later call, since the broker keeps one live credential per
+// account and a daemon enrols each pod's next generation under the login it already holds. A pod's
+// grants follow the pair of its account and this login's (carryPrincipal), so the carry of a pod
+// is measured under it.
+func daemonLogin(t *testing.T, svc *Service) Credential {
+	t.Helper()
+	if cred, ok := daemonLogins.Load(svc); ok {
+		return cred.(Credential)
+	}
+	if svc.ServiceLogins == nil {
+		svc.ServiceLogins = map[string]string{}
+	}
+	if svc.ServicesByAccount == nil {
+		svc.ServicesByAccount = map[string]string{}
+	}
+	svc.ServiceLogins[carryDaemonAccount] = "legion-daemon"
+	svc.ServicesByAccount[carryPodAccount] = "legion-daemon"
+	cred := podRig{svc: svc}.login(t, carryDaemonAccount, "")
+	daemonLogins.Store(svc, cred)
+	return cred
+}
+
 // carryEnrollment enrols one named session of kind, under the credential that kind's launcher
-// holds: a person's own machine login for a session, a Kubernetes service's login for a pod. name
-// is the runtime id, the session id and the thumbprint's suffix at once, so every row of one
-// subtest is that subtest's.
+// holds: a person's own machine login for a session, the daemon's token login for a pod. name is
+// the runtime id, the session id and the thumbprint's suffix at once, so every row of one subtest
+// is that subtest's.
 func carryEnrollment(t *testing.T, svc *Service, issuer *oidctest.Issuer, key *oidctest.Key, kind, name string) (Credential, Enrollment) {
 	t.Helper()
 	ctx := context.Background()
 	in := Enrollment{Kind: kind, RuntimeID: name, Thumbprint: "tp-" + name, SessionID: str(name)}
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
 	if kind == "pod" {
-		cred = mintCredential(t, svc, nil, str("legion-daemon"), "cluster")
-		in.PodToken = mintPodToken(t, issuer, key, "system:serviceaccount:legion:worker", name)
+		cred = daemonLogin(t, svc)
+		in.PodToken = mintPodToken(t, issuer, key, carryPodAccount, name)
 	}
 	enr, err := svc.Create(ctx, cred, in)
 	if err != nil {

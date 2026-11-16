@@ -58,12 +58,13 @@ var (
 	ErrPodSelfEnrollOnly = errors.New("a pod's own machine login enrols that pod alone")
 	// ErrPodSelfEnrollNoSession refuses a session name on the enrolment ErrPodSelfEnrollOnly holds
 	// to one pod: a pod enrolling itself under its own token login. Every pod of one account
-	// enrols under one principal (carryPrincipal), so a name such a pod picked for itself is a
-	// name a sibling pod of the account holds, and this enrollment would take that sibling's
-	// grants and pending requests off it while the sibling is still running (adopt). A pod
-	// enrolling itself registers no agent session and needs no name: `agent-secrets enroll --pod`
-	// refuses --session-id by name. A launcher's enrolment of a pod it launches is another case
-	// and states a session name as before.
+	// enrolling itself enrols under one principal (carryPrincipal: the account, paired with that
+	// same account as its launcher), so a name such a pod picked for itself is a name a sibling
+	// pod of the account holds, and this enrollment would take that sibling's grants and pending
+	// requests off it while the sibling is still running (adopt). A pod enrolling itself registers
+	// no agent session and needs no name: `agent-secrets enroll --pod` refuses --session-id by
+	// name. A launcher's enrolment of a pod it launches is another case and states a session name
+	// as before.
 	ErrPodSelfEnrollNoSession = errors.New("a pod enrolling itself states no session name")
 	// ErrPodNotLaunched refuses a pod enrollment under a token login that neither belongs to that
 	// pod nor launches the pods of the account its token proves: BROKER_SERVICES does not bind
@@ -144,10 +145,18 @@ type Enrollment struct {
 	Subject      *string
 	LeaseExpires time.Time
 	Existing     bool // true when Create returned an already-live enrollment for the same key
-	// carry is the principal the enrollment belongs to, as enrollments.carry_principal records
-	// it: Create works it out from what the caller proved (carryPrincipal) and nothing reads it
-	// back off this struct, so it is the package's own and never a caller's to state.
+	// carry is the principal the enrollment's grants follow, as enrollments.carry_principal
+	// records it, and name the principal its session name is held under (bindSessionName). The
+	// two differ for a pod alone, whose grants follow the pair of its account and the login that
+	// enrolled it while its name is held under its account (carryPrincipal, namePrincipal).
+	// Create works both out from what the caller proved and nothing reads them back off this
+	// struct, so they are the package's own and never a caller's to state.
 	carry *string
+	name  *string
+	// launcher is the account the token login enrolling a pod proved (Credential.Subject), nil off
+	// a pod and for a login that proved none: adopt reads it to take the same daemon's rows an
+	// older broker wrote under the account alone.
+	launcher *string
 }
 
 type PodClaims struct {
@@ -180,12 +189,13 @@ type Service struct {
 	// no pod and serves no Kubernetes token login.
 	Pod PodVerifier
 
-	// Sessions binds every enrollment that names a session to the principal that enrollment
-	// belongs to (carryPrincipal), in the enrollment's own transaction, and refuses it a name
-	// another principal holds (Create, ErrSessionHeld). It is the broker's one record of which
-	// principal holds a session name, oauth_session_bindings, written here and by the token
-	// exchange alike, so the name a session writes its Dispatch tokens under and the name its
-	// grant follows have the same holder.
+	// Sessions binds every enrollment that names a session to the principal its name is held
+	// under (namePrincipal), in the enrollment's own transaction, and refuses it a name another
+	// principal holds (Create, ErrSessionHeld). It is the broker's one record of which principal
+	// holds a session name, oauth_session_bindings, written here and by the token exchange alike,
+	// so the name a session writes its Dispatch tokens under and the name its grant follows have
+	// the same holder: for a pod that holder is its account, which the pair its grant follows
+	// begins with (carryPrincipal).
 	//
 	// nil on a broker that binds nothing: such a broker writes no binding, refuses no
 	// enrollment its name, and so lets two principals enrol one name, each adopting nothing of
@@ -626,8 +636,12 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		in.Subject = &claims.Subject
 	}
 	// The other half of the pair a grant follows, read from what the caller has just proved and
-	// written beside the session's name in the insert below (carryPrincipal).
-	in.carry = carryPrincipal(cred, in)
+	// written beside the session's name in the insert below (carryPrincipal), and the principal the
+	// name itself is held under (namePrincipal).
+	in.carry, in.name = carryPrincipal(cred, in), namePrincipal(cred, in)
+	if in.Kind == "pod" {
+		in.launcher = cred.Subject
+	}
 	in.ID = uuid.New()
 	in.LeaseExpires = time.Now().Add(s.Lease)
 
@@ -701,24 +715,27 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 	return in, false, tx.Commit(ctx)
 }
 
-// bindSessionName binds in's session name to the principal the enrollment belongs to (in.carry),
-// in the enrollment's own transaction, which oauthstore.WithTx is how the binder joins: the name
-// is this principal's from here on, and the binding and the enrollment commit or roll back
-// together, so a refused name leaves no enrollment and a rolled-back enrollment leaves no
-// binding.
+// bindSessionName binds in's session name to the principal it is held under (in.name,
+// namePrincipal), in the enrollment's own transaction, which oauthstore.WithTx is how the binder
+// joins: the name is this principal's from here on, and the binding and the enrollment commit or
+// roll back together, so a refused name leaves no enrollment and a rolled-back enrollment leaves
+// no binding.
 //
 // It is the same claim the token exchange makes for every token it mints
 // (oauthstore.Store.BindSession) on the same table, which is the point: a Legion role's pod
 // trades a token under its session name before or after it enrolls under that name, and the two
 // claims are the same principal's (exchange.AccountPrincipal of the ServiceAccount subject its
-// projected token proved, which carryPrincipal spells the same way), so neither refuses the
-// other. A name another principal holds is ErrSessionHeld, naming the session and no holder.
+// projected token proved, which namePrincipal spells the same way), so neither refuses the
+// other. That is why a pod's name is bound under its account and not under the pair its grants
+// follow (carryPrincipal): the exchange knows no launcher, and a name bound to the pair would
+// refuse the pod its own trade. A name another principal holds is ErrSessionHeld, naming the
+// session and no holder.
 //
-// An enrollment with no principal beside its name binds nothing and is refused nothing, as it
-// adopts nothing: that is an enrollment stating no session, and one whose credential proved no
-// principal at all (carryPrincipal). The claim is made for the enrollment's lease, so the name
-// stays this principal's for oauthstore.SessionRetention past the lease, as a token's name stays
-// its principal's past the token.
+// An enrollment with no principal beside its name binds nothing and is refused nothing: that is
+// an enrollment stating no session, and one whose credential proved no principal at all
+// (namePrincipal). The claim is made for the enrollment's lease, so the name stays this
+// principal's for oauthstore.SessionRetention past the lease, as a token's name stays its
+// principal's past the token.
 //
 // The claim is not fixed: the configuration fixes a name for a principal at the exchange's own
 // entries (exchange.Set.Reservations), and an enrollment is no entry, so a name the
@@ -728,10 +745,10 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 // which is the order the exchange takes them in too — it mints the launcher credential before it
 // claims the name (oauth.Provider.claimSession) — so neither can deadlock with the other.
 func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment) error {
-	if s.Sessions == nil || in.carry == nil {
+	if s.Sessions == nil || in.name == nil {
 		return nil
 	}
-	_, err := s.Sessions.BindSession(oauthstore.WithTx(ctx, tx), *in.SessionID, *in.carry, false, in.LeaseExpires)
+	_, err := s.Sessions.BindSession(oauthstore.WithTx(ctx, tx), *in.SessionID, *in.name, false, in.LeaseExpires)
 	if errors.Is(err, oauthstore.ErrSessionHeld) {
 		return fmt.Errorf("%w: %s. Enrol under a name of your own.", ErrSessionHeld, *in.SessionID)
 	}
@@ -741,16 +758,22 @@ func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment)
 	return nil
 }
 
-// carryPrincipal is the identity an enrollment belongs to, which the insert writes into
+// carryPrincipal is the identity an enrollment's grants follow, which the insert writes into
 // enrollments.carry_principal: the half of the pair a grant follows that keeps one session name
 // from reaching another principal's grant (adopt). It is read from what the caller has already
 // proved and never from anything the launcher states, and every spelling is exchange's own, the
-// broker's one definition of each, so that the name a session writes its Dispatch tokens under
-// and the name its grant follows have the same holder.
+// broker's one definition of each.
 //
-//   - A pod belongs to the service account its own projected token proved
-//     (exchange.AccountPrincipal), the same account requests.Machine.requester reads a pod's
-//     service authority from.
+//   - A pod's grants follow the service account its own projected token proved
+//     (exchange.AccountPrincipal, the same account requests.Machine.requester reads a pod's
+//     service authority from) paired with the account of the token login that enrolled it
+//     (exchange.PodLaunchPrincipal). The pods of several daemons run as one account — every
+//     public Legion project's pods run as legion-worker — and each daemon logs in as an account
+//     of its own, so a role of one daemon's pod that names a session of another daemon's pod
+//     takes none of its grants (dispatch://INFRA-840, plan E's t-e-54). A pod enrolled under a
+//     login that proved no account, one a person approved through a machine-login code, carries
+//     nothing: no such login says which launcher it is, and a service's login holds no operator
+//     (authorized refuses a pod to every credential that carries one).
 //   - A session under a credential that carries an operator — a person's own box, and that
 //     person's sign-in on a machine — belongs to that person (exchange.PersonPrincipal), so it
 //     follows them from one box to the next.
@@ -762,6 +785,25 @@ func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment)
 // adopts nothing. So does an enrollment that states no session, whatever its credential proved,
 // because a principal with no name beside it is no pair.
 func carryPrincipal(cred Credential, in Enrollment) *string {
+	if in.SessionID == nil || *in.SessionID == "" {
+		return nil
+	}
+	if in.Kind == "pod" && in.Subject != nil {
+		if cred.Subject == nil {
+			return nil
+		}
+		return nullable(exchange.PodLaunchPrincipal(*in.Subject, exchange.AccountPrincipal(*cred.Subject)))
+	}
+	return namePrincipal(cred, in)
+}
+
+// namePrincipal is the principal an enrollment's session name is held under (bindSessionName):
+// the principal its grants follow (carryPrincipal) for every kind but a pod, whose name is held
+// under its account alone, the principal its own token exchange claims the name under, so that a
+// pod's enrollment and its trade under one name never refuse each other. A pod enrolled under a
+// login that proved no account still holds its name under its account, as it did before its
+// grants followed a pair.
+func namePrincipal(cred Credential, in Enrollment) *string {
 	if in.SessionID == nil || *in.SessionID == "" {
 		return nil
 	}
@@ -808,6 +850,14 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // adopt moves what every predecessor of this enrollment's (carry_principal, session_id) holds to
 // the enrollment createAttempt has just inserted, inside that same transaction, revoking none of
 // it. Both kinds of enrollment adopt, a session's and a pod's.
+//
+// A pod's predecessor also includes a row of the same session an older broker wrote, whose carry
+// principal is the pod's account alone, when the token login that enrolled it proved the same
+// account as this enrollment's login: the same daemon's own row, written by a broker replica that
+// had not yet taken the pair (exchange.PodLaunchPrincipal). The broker rolls one replica at a
+// time, so the old one writes such rows after migration 0032 has rewritten the rest, and without
+// this they would be adopted by nothing and their grants swept. Another daemon's legacy row is
+// still no predecessor, so no pod takes another daemon's grants under either spelling.
 //
 // A predecessor is another enrollment of the same pair, and the rule has two parts, because what
 // a grant may follow and what a withhold must follow are not the same thing:
@@ -879,16 +929,25 @@ func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, actor string) error {
 	if in.carry == nil {
 		return nil
 	}
+	// The legacy spelling a pod's own daemon's older rows carry, and that daemon's login account:
+	// both nil off a pod, where the clause below matches nothing.
+	var legacy, launcher *string
+	if in.Kind == "pod" {
+		legacy, launcher = in.name, in.launcher
+	}
 	// Both parts of the predecessor rule in one statement, over the pair. The second column says
 	// which part a row matched by: a row the carry left something on gives up its grants and
 	// requests as well as its withheld names, and a row that matched the withheld clause alone
 	// gives up the names.
 	rows, err := tx.Query(ctx, `select e.id, e.dormant_since is not null, `+carriesForItsSession+`
 		from enrollments e
-		where e.carry_principal=$1 and e.session_id=$2 and e.id <> $3
+		where e.carry_principal in ($1, $4::text) and e.session_id=$2 and e.id <> $3
+			and (e.carry_principal=$1
+				or (e.kind='pod' and exists (select 1 from launcher_credentials c
+					where c.id=e.launcher_credential_id and c.subject=$5::text)))
 			and (`+carriesForItsSession+`
 				or exists (select 1 from withheld_secrets w where w.enrollment_id=e.id))
-		order by e.id for update of e`, *in.carry, *in.SessionID, in.ID)
+		order by e.id for update of e`, *in.carry, *in.SessionID, in.ID, legacy, launcher)
 	if err != nil {
 		return err
 	}
