@@ -1542,6 +1542,9 @@ jobs:
               # the guide's slow-suite list to the jobs the full-ci label gates.
               - '.github/scripts/ci_job_reads.py'
               - 'AGENTS.md'
+              # The go-version-file of the test job's setup-go, which installs the go every
+              # fixture's go list runs with.
+              - 'packages/daemon/go.mod'
             check_ts_filters_test: &check_ts_filters_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1575,6 +1578,9 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-shards.test.sh'
               - '.github/scripts/go-test-shards.py'
+              # The go-version-file of the test job's setup-go, which installs the go every
+              # fixture module is built with (GOTOOLCHAIN=local).
+              - 'packages/daemon/go.mod'
 
             # The test job: the Claude Code plugin build, the changelog fold, the script
             # harnesses above and the Bun suites of scripts/. The daemon's Go tests are the

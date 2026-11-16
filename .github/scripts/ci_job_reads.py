@@ -2028,6 +2028,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2172 imports this table to derive the plain step's -run lists"),
         ("AGENTS.md", "check-ci-filters.test.sh:2579 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        ("packages/daemon/go.mod", "the test job's setup-go reads it (ci-job-test.yaml:549-553) and installs the go every fixture's go list runs with"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:47)"),
@@ -2046,6 +2047,7 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("go_test_shards_test", "Test the go test shard split", f"{SCRIPTS}/go-test-shards.test.sh", [
         (f"{SCRIPTS}/go-test-shards.py", "the script under test"),
+        ("packages/daemon/go.mod", "the test job's setup-go reads it (ci-job-test.yaml:549-553) and installs the go every fixture module is built with (GOTOOLCHAIN=local, go-test-shards.test.sh:24)"),
     ]),
 ]
 
