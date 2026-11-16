@@ -841,6 +841,9 @@ export const CONTROL_LABELS = freeze({
   copy_command: "Copy the command",
   /** Copies the address of the block the caret is in, in the open document's toolbar (R16). */
   copy_link: "Copy link",
+  /** Copies the focused node's `dispatch://` address, among the focused row's acts, as today's
+   *  page offers it on the same node (part G's R6, root R19). */
+  copy_reference: "Copy reference",
   /** Draws a pinned version of the open document against the document as it stands (R16). */
   diff_vs_current: "Diff vs current",
   /** The one panel of the issue's properties, which opens over the right of the page, and the
