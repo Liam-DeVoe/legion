@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * omp-client.ts — one Oh My Pi Envoy extension instance in an OS process of its own, for
- * `scripts/smoke-role-takeover.sh` only.
+ * `scripts/smoke-role-takeover.sh` and `scripts/e2e/nats-callout-sessions.sh`.
  *
  * It loads the real `extensions/envoy.ts` from this checkout and hands it the stand-in host the
  * package's own suite is driven against (`createStandInHost` in `test/stand-in-host.ts`, which
@@ -23,6 +23,7 @@
  *   {"id":"2","op":"tool","name":"envoy_role_set","args":{"role":"reviewer"}}
  *   {"id":"3","op":"switch","session":"ses_b","reason":"fork"}
  *   {"id":"4","op":"heartbeat"}
+ *   {"id":"5","op":"deliveries"}
  *
  * `roles` replaces the session's branch with one `envoy-role-claim` entry per element (a string
  * is a claim, null a release), which is what a resumed or forked transcript carries; omitted, the
@@ -30,6 +31,9 @@
  * run: it re-registers the session, which is how a holder says it still answers for the role
  * claims it made, and it re-asserts the role that session holds. It answers as soon as the pass
  * is under way, as a timer tick does; the smoke reads the pass's own calls at the proxy.
+ * `deliveries` answers every message the extension handed the host, in order: each card it showed
+ * (`pi.sendMessage`) and each user turn it started (`pi.sendUserMessage`), the two ways an Envoy
+ * delivery reaches the session.
  */
 import { appendFileSync } from "node:fs";
 import type { PiApi } from "@legion/pi-shared/pi-types";
@@ -59,7 +63,7 @@ let sessionID = "";
 let heartbeatPass: (() => void) | undefined;
 // One host, shared with the package's own suite: its `entries` are this session's branch, which
 // the extension's `pi.appendEntry` writes into.
-const { entries, handlers, pi, tools } = createStandInHost();
+const { entries, handlers, messages, pi, tools, userMessages } = createStandInHost();
 const notices: string[] = [];
 
 const sessionManager = {
@@ -154,6 +158,11 @@ async function run(command: Command): Promise<Record<string, unknown>> {
       heartbeatPass();
       return { session: sessionID };
     }
+    case "deliveries":
+      return {
+        deliveries: [...messages],
+        turns: userMessages.map((turn) => turn.content),
+      };
     default:
       throw new Error(`unknown op ${command.op}`);
   }
