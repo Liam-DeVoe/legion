@@ -12,7 +12,9 @@ body: |-
   `retire_task`). `request_backward_move` and `sign_off` on the parent are refused
   `WAITING_ON_CHILDREN`. Once no child is open, the admission pass returns the parent to the start
   it held on a new phase entry. A held test, review or acceptance returns as `implementing`, and
-  the first implementing task asks for a forward merge and a full test round. Migration
+  each task of the first implementing round after the wait, a retry's, a fresh session's and a
+  re-admission's included, asks for a forward merge and a full test round until the implementer
+  completes that round. Migration
   `20261114232555_awaiting_children` adds the phase, the held start, `forward_merge_owed`,
   `children_waited_at` and `phases.entry_from`. `docs/kubernetes.md` says how to roll the release
   back.

@@ -7,7 +7,8 @@ body: |-
   skills say that the daemon holds a parent's phase starts while a child of it is open, in
   `awaiting_children`, and that the parent comes back with a forward merge and a full test round.
   They also tell an architect how to write a root as a view on an approved ancestor and register
-  it on that ancestor's approval. The `plan-reviewer` and `plan-gap-analyst` agents ask for no task
+  it on that ancestor's approval, and that work which cannot be built or tested until the
+  ancestor's own pull request merges goes into the ancestor's spec rather than a root under it. The `plan-reviewer` and `plan-gap-analyst` agents ask for no task
   and no check of a requirement whose text starts `Delivered by` and names the issue that
   delivers it, whatever that issue's parent, since that issue's checks serve it.
 custom:
