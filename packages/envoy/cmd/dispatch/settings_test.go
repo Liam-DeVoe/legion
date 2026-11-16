@@ -1040,6 +1040,32 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		"DISPATCH_PRIVATE_PROJECTS": func(t *testing.T) {
+			// The list's own reading is TestThePrivateProjectsSettingIsAListOfKeys. Its reader: the
+			// owner's switch of PRIV to private, refused with no list before anything is read, with
+			// a list that names another project for want of PRIV on it, and with PRIV on it only for
+			// want of a bus to hold the private-projects record, which this router is given none of.
+			t.Run("router", func(t *testing.T) {
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(context.Background(), `
+					insert into projects (key, name, default_assignee) values ('PRIV', 'Private', 'alice@example.com');
+					insert into session_projects_filled default values;
+					insert into access_events_scrubbed default values;
+				`); err != nil {
+					t.Fatalf("seed alice's project PRIV: %v", err)
+				}
+				for value, want := range map[string]string{"": "PRIVATE_PROJECTS_OFF", "OTHER": "PRIVATE_PROJECT_NOT_PROVISIONED", "PRIV": "PRIVATE_PROJECTS_UNAVAILABLE"} {
+					request := signedIn(t, httptest.NewRequest(http.MethodPatch, "/api/v1/projects/PRIV/access", strings.NewReader(`{"visibility":"private"}`)), "alice@example.com")
+					request.Header.Set("Content-Type", "application/json")
+					request.Header.Set("Sec-Fetch-Site", "same-origin")
+					response := httptest.NewRecorder()
+					routerFor(t, resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": value}), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
+					if response.Code != http.StatusConflict || errorCode(response) != want {
+						t.Errorf("DISPATCH_PRIVATE_PROJECTS=%q: PATCH PRIV private answered %d %s, want 409 %s", value, response.Code, response.Body.String(), want)
+					}
+				}
+			})
+		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
 				t.Errorf("set: client %q from %q, %v; want the variable over app.json", clientID, source, err)
@@ -2338,5 +2364,24 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 				t.Fatalf("GET /api/v1/credential-requests = %d %s: the broker was never called, so the answer must name Dispatch's own unreadable ServiceAccount token, not an unreachable broker", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+// DISPATCH_PRIVATE_PROJECTS is the comma-separated keys of the projects the deployment has
+// provisioned as private: each entry trimmed, empty ones dropped, the list deduplicated and sorted.
+// An entry that is no project key refuses the boot naming it, the old on/off value 1 included,
+// which is never read as a list.
+func TestThePrivateProjectsSettingIsAListOfKeys(t *testing.T) {
+	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": " PRIV, ALPHA ,PRIV,"}); !slices.Equal(boot.PrivateProjects, []string{"ALPHA", "PRIV"}) {
+		t.Errorf(`DISPATCH_PRIVATE_PROJECTS=" PRIV, ALPHA ,PRIV,": PrivateProjects = %q, want [ALPHA PRIV]`, boot.PrivateProjects)
+	}
+	for name, overrides := range map[string]map[string]string{"unset": {}, "empty": {"DISPATCH_PRIVATE_PROJECTS": ""}} {
+		if boot := resolveWith(t, overrides); len(boot.PrivateProjects) != 0 {
+			t.Errorf("%s: PrivateProjects = %q, want no project", name, boot.PrivateProjects)
+		}
+	}
+	for _, entry := range []string{"1", "priv"} {
+		refusedWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "ALPHA," + entry},
+			`DISPATCH_PRIVATE_PROJECTS names project keys; "`+entry+`" is not a project key`)
 	}
 }

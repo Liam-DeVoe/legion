@@ -161,6 +161,17 @@ An issue created through the default also gets a `repo:owner/name` label.
 
 Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
 
+`DISPATCH_PRIVATE_PROJECTS` names, comma-separated, the projects this deployment has provisioned as private: their namespaces, stores and grants exist (agent-infra's `legion.PrivateProjects`).
+Only these projects can be made private, and an entry that is not a project key, the old value `1` included, refuses startup; unset or empty, no project can be made private, as before the setting existed.
+An owner's switch of a project to private (`PATCH /api/v1/projects/{key}/access`) is refused `409 PRIVATE_PROJECTS_OFF` with no list, `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a project the list does not name, `409 PRIVATE_PROJECTS_INCOMPLETE` until that project's rows all have their nodes and both `envoy-dispatch backfill-session-projects` and `envoy-dispatch scrub-access-events` have run, naming the command, and `409 PRIVATE_PROJECTS_UNAVAILABLE` while the hub does not take the project's key in its `envoy_private_projects` bucket.
+A switch to public is never refused by any of them.
+Nothing here stops the boot, because a boot that exits would stop every project:
+a project the database holds private that the list does not name stays private, refuses every change of its visibility but its owner's switch to public, and is named by an ERROR line at boot and at every maintenance pass and by `/healthz`'s `private_projects_unprovisioned`, which leaves `ok` and the status as they are (Making a project public without the server, below);
+with a list, a store a private project's reads would answer wrongly is one ERROR line at boot and one an hour, naming its first rows and the command that repairs it.
+
+Every response Dispatch's HTTP server makes, errors, `/healthz` and both sockets' `101` included, carries `Dispatch-Private-Projects: 1` when `DISPATCH_PRIVATE_PROJECTS` is non-empty or the database holds a private project, and `Dispatch-Private-Projects: 0` otherwise; the shared stores' check reads it.
+The database's part is read at boot, right after the migrate and before any loop or the repository seed, and a boot whose read fails logs `dispatch: read the private projects` and exits 1, as one whose database will not open does; it is read again every 30 seconds after, and a later read that fails answers `1`.
+
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
@@ -1421,6 +1432,7 @@ A process that finds it held tries again
 - The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
+  Each pass also logs an ERROR line for each project the database holds private that `DISPATCH_PRIVATE_PROJECTS` does not name, and, with a list, once an hour per process, an ERROR line while the store cannot hold a private project (Required configuration, above).
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
@@ -2587,6 +2599,22 @@ where not exists (select 1 from people where email = p.default_assignee);
 ```
 
 When it names any project, set `DISPATCH_PROJECT_OWNER_FALLBACK` for the deploy.
+
+### Making a project public without the server
+
+A project the database holds private that `DISPATCH_PRIVATE_PROJECTS` no longer names stays private, and only its owner's switch to public changes its visibility, so nothing of it reaches anyone who could not see it before.
+Its owner decides the repair: put the key back on agent-infra's `legion.PrivateProjects`, or make the project public.
+The owner makes it public from the Access tab; an operator makes it public with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-visibility <KEY> public
+```
+
+It reads `DATABASE_URL` and makes the change in one transaction that appends `project.access_changed`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-visibility"}` (`access.SetVisibility`).
+It makes a project public only, so it makes no bus call: the private-projects record's writer deletes the project's key at the server's start pass, or within a minute on a running server, and until then the project's messages stay withheld, never shown.
+It exits 0 once the change commits;
+2 for a key no project holds, for any value but `public`, and for arguments that are not exactly a key and `public`, writing nothing;
+and 1 when the database cannot be opened or written.
 
 ### Filling the sessions' projects
 

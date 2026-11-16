@@ -172,7 +172,12 @@ holds, since `session_projects` has no unique key, and then the one `session_pro
 `envoy-dispatch scrub-access-events` (`access_events_scrub.go`) rewrites every stored
 `project.access_changed` to `{project, change}`, 10,000 events at a time, then writes the one
 `access_events_scrubbed` row (README "Giving a project to another owner", "Filling the sessions'
-projects", "Scrubbing the access events").
+projects", "Scrubbing the access events"). `envoy-dispatch project-visibility <KEY> public`
+(`project_visibility.go`, `makeProjectPublic`) makes a project public through `access.SetVisibility`
+in one transaction that appends `project.access_changed` as `{kind: "system", id: "envoy-dispatch
+project-visibility"}`, with no bus call, and exits 2 for an unknown key, any value but `public`, or
+wrong arguments: the repair of a private project `DISPATCH_PRIVATE_PROJECTS` no longer names (README
+"Making a project public without the server").
 Dispatch loads config at every start, `DISPATCH_NATS_DISABLED` set or not, in this precedence
 order: the user `envoy.json` (`${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`), the `dispatch`
 section of the checkout's `.envoy/envoy.json` in the directory it starts in, then environment
@@ -576,6 +581,25 @@ write identity errors with `identity.WriteError`.
   second reads the membership answer. With an audience and no first list every
   account of the issuer is admitted, as before the setting, and
   `resolveBootConfig` logs one WARN saying so.
+- `DISPATCH_PRIVATE_PROJECTS` is the comma-separated keys of the projects the deployment has
+  provisioned as private (`privateProjectsSetting`: trimmed, empty entries dropped, deduplicated
+  and sorted; an entry that is no project key, `1` included, refuses the boot). `appContextOptions`
+  hands it to the router as `api.Deps.PrivateProjects`, which a switch to private checks after the
+  owner (`409 PRIVATE_PROJECT_NOT_PROVISIONED`; no list is A1's `409 PRIVATE_PROJECTS_OFF` before
+  any read). Nothing about it refuses the boot: `reportPrivateProjects`, right after
+  `store.EnsureProjectOwners`, logs an ERROR line for each private project off the list, an INFO
+  line for listed keys not private yet, and, with a list, an ERROR line for a store a private
+  project would read wrongly; the maintenance sweep repeats the first every pass and the last
+  hourly, and `/healthz` names the first in `private_projects_unprovisioned` without touching
+  `ok`. Every response carries `Dispatch-Private-Projects` (`access.PrivateProjectsHeader`): `1`
+  with a list, else `1` while the database holds a private project or the read failed, else `0`.
+  Both come from `privateProjectsState`: its first read (`startPrivateProjectsState`) runs at boot
+  after the migrate and the owners and before the first loop and the seed, and its failure exits 1
+  (`dispatch: read the private projects`); it then reads every 30 s, a failure counting as `1`. The
+  boot report reads its first answer. `serveHandler` wraps the one handler `newHTTPServer` serves, and
+  `TestTheServerServesOnlyTheWrappedHandler` names any server built around another. A 101 reads no
+  header of the writer's, so `/ws/live` passes `access.UpgradeHeader(w)` to its upgrader and the
+  document socket writes the value on its hijacked connection (`docs.processHeaderWriter`).
 - An access token the secrets broker issued is the fifth credential and the one
   that is not a bearer: it is presented under RFC 9449's DPoP scheme
   (`Authorization: DPoP <token>` with a `DPoP:` proof header), because that RFC

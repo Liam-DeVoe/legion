@@ -24,7 +24,13 @@ const (
 // three access people.
 func newAccessServer(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	return newAccessServerWith(t, testServerOptions{})
+}
+
+// newAccessServerWith is newAccessServer's server under options.
+func newAccessServerWith(t *testing.T, options testServerOptions) (http.Handler, *store.Store) {
+	t.Helper()
+	handler, database, _ := newTestServer(t, options)
 	seedPeople(t, database, accessCarol, accessDave, accessErin)
 	markRestricted(t, database, accessErin)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -66,7 +72,7 @@ func wantRefusal(t *testing.T, response *httptest.ResponseRecorder, status int, 
 
 // TestOnlyTheOwnerChangesTheAccessList: the owner names people and groups on the list and takes
 // them off; anyone else is 403 PROJECT_OWNER_REQUIRED and nothing is written; a project cannot be
-// made private in this release.
+// made private where the deployment does not let one be.
 func TestOnlyTheOwnerChangesTheAccessList(t *testing.T) {
 	handler, database := newAccessServer(t)
 	if got := readAccess(t, handler, "bob"); got.Owner != "alice" || got.Visibility != model.ProjectPublic || len(got.People) != 0 || got.People == nil || got.Groups == nil {
