@@ -151,6 +151,9 @@ func requirePrivateProjectsRefusal(t *testing.T, row privateProjectsRefusal, err
 //     The host rows fail with "privateProjects was taken beside the host user "example-host-a" as
 //     the auth service's user". Deleting the kind check alone leaves the grant check refusing the
 //     host's wide grant, with its own message: the two refusals are two doors.
+//   - Let a private clustered hub open its monitoring port: delete gcp/clusteredhub.go's refusal
+//     of monitorNamespaces beside privateProjects. The monitorNamespaces row fails with
+//     "privateProjects was taken beside the monitoring port open to the namespace "legion"".
 func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		for _, row := range privateProjectsRefusals() {
@@ -182,12 +185,33 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 				require.Empty(t, m.Registrations(), "nothing registered")
 			})
 		}
-		t.Run("with authCallout and the service's user alone, it registers", func(t *testing.T) {
+		// nats-server's monitoring port answers /connz, /subsz and /jsz with no authentication,
+		// naming the subjects, connections and consumers of every client, a private project's
+		// among them, so a private hub opens it to no namespace.
+		t.Run("beside monitorNamespaces", func(t *testing.T) {
+			args := privateClusteredHub()
+			args.MonitorNamespaces = []string{"legion"}
+			_, err := gcp.ResolveClusteredNatsHub(args)
+			const want = `monitorNamespaces and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication`
+			require.ErrorContains(t, err, want, `privateProjects was taken beside the monitoring port open to the namespace "legion"`)
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "monitorNamespaces", input.Input, "%v", err)
+			m, err := runClustered(t, "example-clustered-hub", args, nil)
+			require.ErrorContains(t, err, want)
+			require.Empty(t, m.Registrations(), "nothing registered")
+		})
+		t.Run("with authCallout and the service's user alone, it registers, opening no monitoring port", func(t *testing.T) {
 			_, err := gcp.ResolveClusteredNatsHub(privateClusteredHub())
 			require.NoError(t, err)
 			m, err := runClustered(t, "example-clustered-hub", privateClusteredHub(), nil)
 			require.NoError(t, err)
 			require.Contains(t, m.Types(), clusteredHubType)
+			for _, rule := range clusteredPolicyRules(t, m) {
+				for _, port := range rule.(map[string]any)["ports"].([]any) {
+					require.NotEqual(t, 8222.0, port.(map[string]any)["port"], "the private hub's NetworkPolicy admits the monitoring port: %v", rule)
+				}
+			}
 		})
 	})
 }

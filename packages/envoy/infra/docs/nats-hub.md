@@ -298,6 +298,21 @@ naming no user, names `authCallout`, as `authCallout: callout.issuer is not an a
 field by the hub's path, as `authCallout.issuer: an nkey user seed, which is never an input of the
 hub (not echoed)`.
 
+nats-server's monitoring port, 8222, answers `/connz`, `/subsz` and `/jsz` with no authentication,
+and they name every client's subjects, connections and consumers, a private project's among them.
+So `gcp:ClusteredNatsHub` refuses `monitorNamespaces` beside `privateProjects`, as
+`monitorNamespaces and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz
+and /jsz with no authentication, …`, and a private hub's NetworkPolicy admits 8222 from no pod. Its
+chart's headless Service, `<n>-headless`, also lists 8222, but it adds no reach: it has no cluster
+address (`clusterIP: None`), so its name resolves to the pods' own addresses, and the NetworkPolicy
+on those pods admits only the ports its rules name, whatever name a caller dialled. No reader of the
+hub needs 8222 from another namespace: the kubelet's probes do not pass the NetworkPolicy, the
+exporter in each pod reads `localhost:8222`, `kubectl port-forward` and `exec` reach a pod through
+the API server, and Managed Prometheus reads the exporter's port, 7777. `gcp:NatsHub` opens 8222
+only to Google Cloud's health-check probe ranges, `130.211.0.0/22` and `35.191.0.0/16` (its
+firewall `<h>-health-checks` and the VM's own iptables rule), from which its group's health check
+reads `/healthz`; no input widens that, so it has nothing to refuse.
+
 `privateProjects` is checked when the hub is planned, and renders nothing itself. What it demands
 (the callout, no session user, no client user beside the auth service's) reaches a running server
 only when that server restarts. On `gcp:ClusteredNatsHub` each pod takes it as the pod roll
