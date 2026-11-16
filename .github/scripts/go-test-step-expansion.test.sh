@@ -346,4 +346,19 @@ check "and sees the same variables under the caller's" \
 check "a -race go command runs with cgo on under a caller's CGO_ENABLED=0" \
   "$(contains "$(polluted go_seen go "$work" "$work/go" test -race)" '^CGO_ENABLED=1$')"
 
+# The rewrite probe runs the selected toolchain's own go, under go_environment() and that
+# toolchain's GOROOT. A caller's GOROOT of another Go - the one a version manager's python3 shim
+# hands the interpreter - reaching that go made it refuse its own compiler (`compile: version
+# "go1.27.0" does not match go tool version "go1.27.3"`), and a caller's GOOS built a probe it could
+# not run. The caller here sets every kind of Go variable `polluted` sets, GOROOT among them, for a
+# directory whose go is a stand-in that only prints its environment; the probe must still answer,
+# rune for rune, as it does for a clean caller.
+echo "case: the rewrite probe answers under a caller's GOROOT of another Go"
+for run in $'Test\xe1\xb2\x89' 'TestÉclair'; do
+  check "read, under the polluted caller: -run $run" "$(is "$(polluted listed_run "$run")" read)"
+done
+out=$(polluted listed_run $'Test\xe2\x80\x8bAlpha')
+check "U+200B still refused, under the polluted caller" "$(contains "$out" 'and it holds U+200B, which go test -run rewrites')"
+check "  and the probe did not fail" "$(is "$(contains "$out" 'the rewrite probe exited')" false)"
+
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"

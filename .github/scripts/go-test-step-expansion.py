@@ -135,7 +135,6 @@ pair is run twice undeclared and none is unrun, 1 when one is, 2 when it cannot 
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
 import subprocess
@@ -619,7 +618,8 @@ _PROBED: dict[tuple[str, str], bool] = {}
 
 def go_root(directory: Path) -> str:
     """The GOROOT of the toolchain go selects in `directory`, which is the toolchain a step's own
-    go test runs there (a module's go or toolchain line may select another than the one on PATH)."""
+    go test runs there (a module's go or toolchain line may select another than the one on PATH).
+    go() runs it under go_environment(), so a caller's GOROOT or GOTOOLCHAIN does not choose it."""
     return go(["go", "env", "GOROOT"], directory, f"go env GOROOT in {directory}").strip()
 
 
@@ -628,7 +628,12 @@ def rewritten_runes(pattern: str, directory: Path) -> list[str]:
     Go's rule. An ASCII character is decided here, since the rule needs no table for it: of ASCII,
     isSpace names \\t \\n \\v \\f \\r and the space, and strconv.IsPrint calls 0x20-0x7E printable.
     Every other rune is asked of REWRITE_PROBE, built and run once per run with the toolchain go
-    selects in `directory`, GOTOOLCHAIN=local so that it does not select another."""
+    selects in `directory`: its own bin/go, under go_environment() (none of the caller's Go
+    variables, no go env file) with GOROOT set to that toolchain's root, GOTOOLCHAIN=local so that
+    it selects no other, and GOWORK=off for the scratch directory it runs in. A caller's GOROOT of
+    another Go - the one a version manager's python3 shim hands this interpreter - would otherwise
+    reach that go, which then refuses its own compiler (`compile: version "go1.27.0" does not match
+    go tool version "go1.27.3"`)."""
     def ascii_rewritten(c: str) -> bool:
         return c in "\t\n\v\f\r " or not 0x20 <= ord(c) <= 0x7E
     root = None
@@ -641,7 +646,8 @@ def rewritten_runes(pattern: str, directory: Path) -> list[str]:
             Path(scratch, "probe.go").write_text(REWRITE_PROBE)
             done = subprocess.run([str(Path(root, "bin", "go")), "run", "probe.go"], cwd=scratch,
                                   input="".join(unasked) + "\n", capture_output=True, encoding="utf-8",
-                                  env={**os.environ, "GOTOOLCHAIN": "local", "GOWORK": "off", "GOFLAGS": ""},
+                                  env={**go_environment(), "GOROOT": root, "GOTOOLCHAIN": "local",
+                                       "GOWORK": "off"},
                                   check=False)
         if done.returncode != 0:
             raise Refused(f"the rewrite probe exited {done.returncode} under {root}\n{indent(done.stderr)}")
