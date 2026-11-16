@@ -334,11 +334,14 @@ func TestACommentEventCarriesTheTreeOfTheQuestionItReplies(t *testing.T) {
 // A handoff's card draws each string of its body through the renderer: every top-level field
 // that holds one, and each entry of a `proof` list that is one (handoffFields). So a read of one
 // handoff with its body carries, under the header alone, the tree of each such string keyed by
-// its JSON path, each the tree pmdoc.DisplayJSON makes of exactly that string, and no tree of a
-// value the card draws as JSON - a number, a boolean, an object, a proof entry that is an
-// object - or of an empty string. A body that is no JSON object, which only a row written
-// before the API refused one can hold, is drawn whole, and its tree stands under the root path
-// "". Both routes that answer a body answer the trees, and the document declares them.
+// its JSON Pointer into the body (`/summary`, `/proof/0`), each the tree pmdoc.DisplayJSON makes
+// of exactly that string, and no tree of a value the card draws as JSON - a number, a boolean, an
+// object, a proof entry that is an object - or of an empty string. A field named `proof.0` and
+// the first proof entry each keep their own tree under their own pointer, and a field whose name
+// holds a `/` or a `~` is keyed with them escaped (`~1`, `~0`). A body that is no JSON object,
+// which only a row written before the API refused one can hold, is drawn whole, and its tree
+// stands under the root's pointer "". Both routes that answer a body answer the trees, and the
+// document declares them.
 func TestAHandoffReadCarriesTheTreeOfEachTextItsCardDraws(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TREE", "Handoff trees", "A spec")
@@ -348,6 +351,9 @@ func TestAHandoffReadCarriesTheTreeOfEachTextItsCardDraws(t *testing.T) {
 		first   = "`go test ./...` passes."
 		third   = "The *second* proof."
 		legacy  = "A legacy **plain** handoff."
+		dotted  = "A field *named* like an entry."
+		entry   = "The **only** proof entry."
+		escaped = "A field whose name holds a _slash_ and a tilde."
 	)
 	body, err := json.Marshal(map[string]any{
 		"summary": summary, "notes": notes, "count": 3, "done": true, "blank": "",
@@ -358,6 +364,11 @@ func TestAHandoffReadCarriesTheTreeOfEachTextItsCardDraws(t *testing.T) {
 		t.Fatalf("encode the handoff body: %v", err)
 	}
 	written := recordedHandoff(t, handler, issue.Key, "implement", string(body))
+	colliding, err := json.Marshal(map[string]any{"proof.0": dotted, "proof": []string{entry}, "a/b~c": escaped})
+	if err != nil {
+		t.Fatalf("encode the handoff body whose keys would collide as dotted paths: %v", err)
+	}
+	pointed := recordedHandoff(t, handler, issue.Key, "review", string(colliding))
 	var legacyID string
 	if err := database.Pool.QueryRow(context.Background(), `
 		insert into handoffs (issue_key, phase, version, body, author) values ($1, 'plan', 1, $2, $3::jsonb)
@@ -376,11 +387,15 @@ func TestAHandoffReadCarriesTheTreeOfEachTextItsCardDraws(t *testing.T) {
 		want                  map[string]json.RawMessage
 	}{
 		{"a handoff by id", "/api/v1/handoffs/{id}", "/api/v1/handoffs/" + written.ID, map[string]json.RawMessage{
-			"summary": trees(summary), "notes": trees(notes), "proof.0": trees(first), "proof.2": trees(third),
+			"/summary": trees(summary), "/notes": trees(notes), "/proof/0": trees(first), "/proof/2": trees(third),
 		}},
 		{"a phase's latest handoff", "/api/v1/issues/{key}/handoffs/{phase}/latest",
 			"/api/v1/issues/" + issue.Key + "/handoffs/implement/latest", map[string]json.RawMessage{
-				"summary": trees(summary), "notes": trees(notes), "proof.0": trees(first), "proof.2": trees(third),
+				"/summary": trees(summary), "/notes": trees(notes), "/proof/0": trees(first), "/proof/2": trees(third),
+			}},
+		{"a field named like a proof entry, and one whose name holds a slash and a tilde", "/api/v1/handoffs/{id}",
+			"/api/v1/handoffs/" + pointed.ID, map[string]json.RawMessage{
+				"/proof.0": trees(dotted), "/proof/0": trees(entry), "/a~1b~0c": trees(escaped),
 			}},
 		{"a body that is no JSON object", "/api/v1/handoffs/{id}", "/api/v1/handoffs/" + legacyID,
 			map[string]json.RawMessage{"": trees(legacy)}},

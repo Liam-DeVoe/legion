@@ -1,0 +1,397 @@
+[
+  {
+    "name": "a mention crossing the cut",
+    "text": "Ask [@Planner](dispatch://agent/s1) now",
+    "limit": 10,
+    "ellipsis": "",
+    "head": "Ask"
+  },
+  {
+    "name": "a mention crossing the cut of a line",
+    "text": "Ask [@Planner](dispatch://agent/s1) now",
+    "limit": 11,
+    "ellipsis": "…",
+    "head": "Ask…"
+  },
+  {
+    "name": "a mention crossing the cut at its address",
+    "text": "Ask [@Planner](dispatch://agent/s1) now",
+    "limit": 20,
+    "ellipsis": "",
+    "head": "Ask"
+  },
+  {
+    "name": "a mention whose words escape a bracket",
+    "text": "Ask [@a\\[b](dispatch://agent/s1) now",
+    "limit": 14,
+    "ellipsis": "",
+    "head": "Ask"
+  },
+  {
+    "name": "a cut in the words of a link whose words balance brackets",
+    "text": "Ask [@Alice [x]](dispatch://agent/s1) now",
+    "limit": 10,
+    "ellipsis": "",
+    "head": "Ask"
+  },
+  {
+    "name": "a picture crossing the cut",
+    "text": "See ![chart](dispatch://CORE-1/artifact/chart) now",
+    "limit": 8,
+    "ellipsis": "",
+    "head": "See"
+  },
+  {
+    "name": "a key in a link's words crossing the cut",
+    "text": "See [CORE-1234](dispatch://CORE-1234) now",
+    "limit": 9,
+    "ellipsis": "",
+    "head": "See"
+  },
+  {
+    "name": "a bare address crossing the cut",
+    "text": "Read dispatch://CORE-1/spec first",
+    "limit": 12,
+    "ellipsis": "",
+    "head": "Read"
+  },
+  {
+    "name": "a bare key crossing the cut",
+    "text": "Ship CORE-1234 today",
+    "limit": 12,
+    "ellipsis": "",
+    "head": "Ship"
+  },
+  {
+    "name": "a bare key crossing the cut of a line",
+    "text": "Ship CORE-1234 today",
+    "limit": 13,
+    "ellipsis": "…",
+    "head": "Ship…"
+  },
+  {
+    "name": "a dashboard URL crossing the cut",
+    "text": "Open https://dispatch.example/issues/CORE-1 now",
+    "limit": 20,
+    "ellipsis": "",
+    "origin": "https://dispatch.example",
+    "head": "Open"
+  },
+  {
+    "name": "a dashboard URL the ellipsis would join",
+    "text": "Open https://dispatch.example/issues/CORE-1 now",
+    "limit": 44,
+    "ellipsis": "…",
+    "origin": "https://dispatch.example",
+    "head": "Open…"
+  },
+  {
+    "name": "a dashboard URL of no known origin is cut as runes",
+    "text": "Open https://dispatch.example/issues/CORE-1 now",
+    "limit": 20,
+    "ellipsis": "",
+    "head": "Open https://dispatc"
+  },
+  {
+    "name": "an external URL crossing the cut is cut as runes",
+    "text": "Open https://example.com/issues/CORE-1 now",
+    "limit": 20,
+    "ellipsis": "",
+    "origin": "https://dispatch.example",
+    "head": "Open https://example"
+  },
+  {
+    "name": "a question id crossing the cut",
+    "text": "See #q12 now",
+    "limit": 7,
+    "ellipsis": "",
+    "head": "See"
+  },
+  {
+    "name": "a key ending at the bound",
+    "text": "Ship CORE-1234 today",
+    "limit": 14,
+    "ellipsis": "",
+    "head": "Ship CORE-1234"
+  },
+  {
+    "name": "a key ending at the bound of a line",
+    "text": "Ship CORE-1234 today",
+    "limit": 15,
+    "ellipsis": "…",
+    "head": "Ship CORE-1234…"
+  },
+  {
+    "name": "a mention ending at the bound",
+    "text": "Ask [@Planner](dispatch://agent/s1) now",
+    "limit": 35,
+    "ellipsis": "",
+    "head": "Ask [@Planner](dispatch://agent/s1)"
+  },
+  {
+    "name": "a mention ending at the bound of a line",
+    "text": "Ask [@Planner](dispatch://agent/s1) now",
+    "limit": 36,
+    "ellipsis": "…",
+    "head": "Ask [@Planner](dispatch://agent/s1)…"
+  },
+  {
+    "name": "an address ending at the bound",
+    "text": "Read dispatch://CORE-1 first",
+    "limit": 22,
+    "ellipsis": "",
+    "head": "Read dispatch://CORE-1"
+  },
+  {
+    "name": "an address the ellipsis would join",
+    "text": "Read dispatch://CORE-1 first",
+    "limit": 23,
+    "ellipsis": "…",
+    "head": "Read…"
+  },
+  {
+    "name": "a key the cut would make of no key",
+    "text": "Ship CORE-12x4 today",
+    "limit": 12,
+    "ellipsis": "",
+    "head": "Ship"
+  },
+  {
+    "name": "a key the cut would make of a decimal",
+    "text": "Ship CORE-1.5 today",
+    "limit": 11,
+    "ellipsis": "",
+    "head": "Ship"
+  },
+  {
+    "name": "a line with no reference",
+    "text": "The quick brown fox",
+    "limit": 9,
+    "ellipsis": "",
+    "head": "The quick"
+  },
+  {
+    "name": "a line with no reference cut after a space",
+    "text": "The quick brown fox",
+    "limit": 4,
+    "ellipsis": "",
+    "head": "The "
+  },
+  {
+    "name": "a line with no reference and an ellipsis",
+    "text": "The quick brown fox",
+    "limit": 10,
+    "ellipsis": "…",
+    "head": "The quick…"
+  },
+  {
+    "name": "a line at the bound",
+    "text": "Ship CORE-1234",
+    "limit": 14,
+    "ellipsis": "…",
+    "head": "Ship CORE-1234"
+  },
+  {
+    "name": "a multibyte line",
+    "text": "界界界 CORE-1234 界",
+    "limit": 8,
+    "ellipsis": "",
+    "head": "界界界"
+  },
+  {
+    "name": "a multibyte mention",
+    "text": "界 [@计划者](dispatch://agent/s1) 界",
+    "limit": 5,
+    "ellipsis": "",
+    "head": "界"
+  },
+  {
+    "name": "a reference on the line after another",
+    "text": "First line.\nShip CORE-1234 today",
+    "limit": 19,
+    "ellipsis": "",
+    "head": "First line.\nShip"
+  },
+  {
+    "name": "a text opening with an address past the bound keeps its rune cut",
+    "text": "dispatch://CORE-1/artifact/notes is long",
+    "limit": 10,
+    "ellipsis": "…",
+    "head": "dispatch:…"
+  },
+  {
+    "name": "an excerpt opening with an external URL past the bound is cut as runes",
+    "text": "https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "limit": 240,
+    "ellipsis": "",
+    "head": "https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+    "name": "a first line opening with a long GitHub URL is cut as runes",
+    "text": "https://github.com/cybermonklabs/legion/actions/runs/1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111 failed again",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "https://github.com/cybermonklabs/legion/actions/runs/1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111…"
+  },
+  {
+    "name": "a first line opening with a long address keeps its rune cut",
+    "text": "dispatch://CORE-1/artifact/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx is long",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "dispatch://CORE-1/artifact/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "a cut that moves to the start of its line",
+    "text": "First line.\nCORE-1234 today",
+    "limit": 15,
+    "ellipsis": "",
+    "head": "First line."
+  },
+  {
+    "name": "an address before a line break keeps the break before the ellipsis",
+    "text": "Read dispatch://CORE-1\nCORE-1234 today",
+    "limit": 27,
+    "ellipsis": "…",
+    "head": "Read dispatch://CORE-1\n…",
+    "note": "The ellipsis right after the address would join it, so the head keeps the line break after the address, and the address with it, rather than stepping back past the address."
+  },
+  {
+    "name": "an address before a blank line keeps one break before the ellipsis",
+    "text": "Read dispatch://CORE-1\n\nCORE-1234 today",
+    "limit": 28,
+    "ellipsis": "…",
+    "head": "Read dispatch://CORE-1\n…",
+    "note": "As the row before: one whitespace character after the address is kept, the first, and the rest dropped."
+  },
+  {
+    "name": "a line of short addresses keeps its last whole address and a space",
+    "text": "dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 ",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 dispatch://CORE-1 …",
+    "note": "The cut inside the ninth address moves back to its start, and the head, ending after the eighth, keeps the space after it, so the ellipsis joins no address and the walk stops there. Without that space the ellipsis would join each address in turn, the walk would step back past every one of them, and the cut by length would split the ninth: `dispatch://CORE…`."
+  },
+  {
+    "name": "a code span crossing the cut",
+    "text": "See `dispatch://CORE-1 is code` and more",
+    "limit": 26,
+    "ellipsis": "…",
+    "head": "See…",
+    "note": "A code span the cut opens and does not close counts as crossing the cut, so the cut moves back to before its opening backtick. Cut after `is`, the head would hold the span's opening backtick and no closing one, so that backtick would read as text and the address after it as a live reference."
+  },
+  {
+    "name": "a text opening with a code span past the bound keeps its rune cut",
+    "text": "`dispatch://CORE-1 is code` and more",
+    "limit": 10,
+    "ellipsis": "…",
+    "head": "`dispatch…",
+    "note": "Moving back to the span's backtick would leave nothing before the ellipsis, so the cut by length stands, as it does for a text that opens with a reference longer than the bound."
+  },
+  {
+    "name": "a cut that moves to the start of a line after a blank one",
+    "text": "First line.\n\nCORE-1234 today",
+    "limit": 16,
+    "ellipsis": "…",
+    "head": "First line.…"
+  },
+  {
+    "name": "a cut in the words of a link that wrap",
+    "text": "See [the spec for\nthis part](dispatch://CORE-1/spec) now",
+    "limit": 20,
+    "ellipsis": "",
+    "head": "See"
+  },
+  {
+    "name": "a cut in the address of a link whose words wrap",
+    "text": "See [the spec for\nthis part](dispatch://CORE-1/spec) now",
+    "limit": 35,
+    "ellipsis": "",
+    "head": "See"
+  },
+  {
+    "name": "a blank line ends a link's words",
+    "text": "See [the spec\n\nfor](dispatch://CORE-1/spec) now",
+    "limit": 17,
+    "ellipsis": "",
+    "head": "See [the spec\n\nfo"
+  },
+  {
+    "name": "a line of spaces ends a link's words",
+    "text": "See [the spec\n  \nfor](dispatch://CORE-1/spec) now",
+    "limit": 19,
+    "ellipsis": "",
+    "head": "See [the spec\n  \nfo"
+  },
+  {
+    "name": "a mention with a title",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [@Alice](dispatch://agent/s1 \"t\") now",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "a mention whose address is in angle brackets",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [@Alice](<dispatch://agent/s1>) now",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "a key's link with a single-quoted title",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [see CORE-1](dispatch://CORE-1 'x') now",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "a link followed by a dash crossing the cut",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [the spec](dispatch://CORE-1/artifact/spec)—see it",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+    "note": "The link's address is the address its `(` and `)` hold, so the words after the `)` are no part of the reference, and the cut inside the link moves back to its `[`."
+  },
+  {
+    "name": "a link followed by a slash crossing the cut",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [the spec](dispatch://CORE-1/artifact/spec)/see it",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "a link followed by a letter crossing the cut",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [the spec](dispatch://CORE-1/artifact/spec)s work",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "a key's link followed by a dash crossing the cut",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [CORE-1](dispatch://CORE-1)—see it",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "a key's link followed by a slash crossing the cut",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [CORE-1](dispatch://CORE-1)/see it",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "a key's link followed by a letter crossing the cut",
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [CORE-1](dispatch://CORE-1)s work",
+    "limit": 160,
+    "ellipsis": "…",
+    "head": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "a link crossing the cut whose ) falls past the window is cut by runes",
+    "text": "see [the spec](dispatch://CORE-1/artifact/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) now",
+    "limit": 20,
+    "ellipsis": "…",
+    "head": "see [the spec](disp…",
+    "note": "The link's ) stands past the window both copies read, the bound and 1,024 characters past it, so neither reads a link there and the address running to the window's edge is no reference the cut keeps whole: the cut by length stands. A copy that read the whole text would move the cut back to the link's [."
+  }
+]

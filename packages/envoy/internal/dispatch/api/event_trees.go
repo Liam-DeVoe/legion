@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/json/jsontext"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -45,9 +46,9 @@ func attachEventTrees(events []model.Event, reader *displayTreeReader) {
 // eventDisplayTrees is the display tree of every stored text one event's payload carries, keyed
 // by that text's path: the body a comment or a message event carries, the question of the ask a
 // comment event replies to, and an ask event's question, options, answer text and resolution
-// reason, the question and options an edit replaced among them. The texts themselves are found by
-// eventPayloadTexts, which the publish path reads the same payload with to store those trees
-// (storeEventDisplayTrees).
+// reason, the question and options an edit replaced and the text and chosen labels of the answer
+// a change replaced among them. The texts themselves are found by eventPayloadTexts, which the
+// publish path reads the same payload with to store those trees (storeEventDisplayTrees).
 //
 // It reads each text where it stands rather than from the table: its one caller is a live
 // frame, which is no request and has no reader of its own, and whose event the publish path is
@@ -67,9 +68,10 @@ func eventDisplayTrees(event model.Event) map[string]json.RawMessage {
 // text's path rooted at the envelope: the body a comment or a message event carries, the
 // question of the ask a comment event replies to (`ask_question`, model.CommentEventPayload),
 // and an ask event's question, options, answer text and resolution reason, the question and
-// options an edit replaced among them. A payload is read as the JSON it is rather than as its Go
-// type, because a read serves it as the database stored it (readEvents) and a publish as the
-// type the write built, and both have to answer the same keys.
+// options an edit replaced and the text and chosen labels of the answer a change replaced among
+// them. A payload is read as the JSON it is rather than as its Go type, because a read serves it
+// as the database stored it (readEvents) and a publish as the type the write built, and both have
+// to answer the same keys.
 //
 // The event's type says which fields can hold a text, and only those are read: the whole payload
 // of a feed's event is several times the size of its body, and a decode of all of it -
@@ -129,6 +131,12 @@ type askEventTexts struct {
 // comment is hundreds of them, and its texts stand in five places, so its payload is decoded in
 // one pass into the fields that can hold one rather than scanned for each.
 //
+// The superseded answer's texts are its text and each label it chose, under
+// `payload.previous_answer.selected.<n>`, which the Activity tab's `was:` line draws: such a
+// label can name an option the ask no longer holds, so no option's tree in the same payload
+// stands for it. The current answer's labels are not visited, because the tab draws the option
+// each one names, from that option's own tree.
+//
 // A payload no text can be read from - one that is not a JSON object, which no payload Dispatch
 // appends is - decodes to no texts, and a field of an unexpected type is left as it stood, which
 // for a text is the empty string and is visited for nothing: a malformed field costs its own
@@ -143,8 +151,13 @@ func askEventPayloadTexts(raw json.RawMessage, visit func(path, text string)) {
 			visit, eventPayloadPrefix+".previous", texttrees.AskEditPreviousContent(*payload.Previous),
 		)
 	}
-	if payload.PreviousAnswer != nil && payload.PreviousAnswer.Text != nil {
-		visitText(visit, eventPayloadPrefix+".previous_answer", "text", *payload.PreviousAnswer.Text)
+	if previous := payload.PreviousAnswer; previous != nil {
+		if previous.Text != nil {
+			visitText(visit, eventPayloadPrefix+".previous_answer", "text", *previous.Text)
+		}
+		for index, label := range previous.Selected {
+			visitText(visit, eventPayloadPrefix+".previous_answer.selected", strconv.Itoa(index), label)
+		}
 	}
 }
 

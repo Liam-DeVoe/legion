@@ -162,8 +162,11 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: graphEdgeReads(edges, reader), UnknownKinds: unknownKinds}
+	// The node's own text and the text its pin recorded go through the request's reader; each
+	// edge's excerpt is a cut, read where it stands (graphEdgeReads).
+	trees := wantsDisplayTrees(r)
+	reader := s.readDisplayTrees(r.Context(), trees)
+	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: graphEdgeReads(edges, trees), UnknownKinds: unknownKinds}
 	answer.Node.shape(reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
@@ -643,7 +646,7 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, artifact.RefKey)
+	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, artifact.RefKey, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

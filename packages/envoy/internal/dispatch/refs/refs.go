@@ -539,9 +539,13 @@ func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (m
 // of its current blocks, once per source, in the shape the document surfaces read (kind, id
 // order). A citing document, comment, message or ask is listed itself, not by the block holding
 // its link: an ask that cites the document from one of its parts alone — an option, or the
-// answer it was given — is listed as that ask, once.
-func ReferencedBy(ctx context.Context, q Queryer, refKey string) ([]model.ReferencedBy, error) {
-	edges, err := resolveEdges(ctx, q, Query{Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true})
+// answer it was given — is listed as that ask, once. serverURL is the deployment the caller
+// reads, whose dashboard URLs each source's excerpt is cut around as references, as the graph
+// read cuts them (Query.ServerURL).
+func ReferencedBy(ctx context.Context, q Queryer, refKey, serverURL string) ([]model.ReferencedBy, error) {
+	edges, err := resolveEdges(ctx, q, Query{
+		ServerURL: serverURL, Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true,
+	})
 	if err != nil {
 		return nil, err
 	}

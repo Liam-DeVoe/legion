@@ -3153,7 +3153,7 @@ export interface components {
     };
     ArchitectureTree: {
       components: components["schemas"]["ArchitectureComponentRead"][] | null;
-      not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
+      not_architectural: components["schemas"]["ArchitectureTreeNoneRead"][] | null;
       retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
       sources: components["schemas"]["ArchitectureTreeSource"][] | null;
       totals: components["schemas"]["ArchitectureTreeTotals"];
@@ -3195,6 +3195,19 @@ export interface components {
       inherited_from: null | string;
       key: string;
       reason: string;
+      status: string;
+      title: string;
+    };
+    ArchitectureTreeNoneRead: {
+      inherited_from: null | string;
+      key: string;
+      reason: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       status: string;
       title: string;
     };
@@ -3408,6 +3421,11 @@ export interface components {
       at: string;
       id?: string;
       selected: string[] | null;
+      selected_trees?: ({
+        type: string;
+      } & {
+        [key: string]: unknown;
+      })[];
       text: null | string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       text_tree?: {
@@ -4734,10 +4752,6 @@ export interface components {
       node: components["schemas"]["GraphNode"];
       source_seq: null | number;
     };
-    GraphExcerpt: {
-      block_id?: string;
-      text: string;
-    };
     GraphExcerptWithTrees: {
       block_id?: string;
       text: string;
@@ -5102,6 +5116,12 @@ export interface components {
       /** Format: date-time */
       closed_at: null | string;
       components: components["schemas"]["IssueComponents"];
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      components_reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
@@ -5647,6 +5667,12 @@ export interface components {
     };
     PriorityRow: {
       description: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      description_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -13770,6 +13796,7 @@ export type ArchitectureTreeComponent = components["schemas"]["ArchitectureTreeC
 export type ArchitectureTreeIssue = components["schemas"]["ArchitectureTreeIssue"];
 export type ArchitectureTreeIssueRef = components["schemas"]["ArchitectureTreeIssueRef"];
 export type ArchitectureTreeNone = components["schemas"]["ArchitectureTreeNone"];
+export type ArchitectureTreeNoneRead = components["schemas"]["ArchitectureTreeNoneRead"];
 export type ArchitectureTreeRetired = components["schemas"]["ArchitectureTreeRetired"];
 export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSource"];
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
@@ -13935,7 +13962,6 @@ export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
 export type GraphEdgeWithTrees = components["schemas"]["GraphEdgeWithTrees"];
-export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
 export type GraphExcerptWithTrees = components["schemas"]["GraphExcerptWithTrees"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];

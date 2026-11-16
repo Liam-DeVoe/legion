@@ -23,6 +23,13 @@ func TestTargetOfStoresRecordsAndNeitherURLsNorParties(t *testing.T) {
 		{reference: "dispatch://role/reviewer"},
 		{reference: "dispatch://person/alice@example.com"},
 		{reference: "dispatch://CORE-1", kind: "issue", id: "CORE-1"},
+		// An address with a trailing slash, and one to a tab of the issue's page, name the issue
+		// itself, so the edge a text writes to either is the issue's.
+		{reference: "dispatch://CORE-1/", kind: "issue", id: "CORE-1"},
+		{reference: "dispatch://CORE-1/plan", kind: "issue", id: "CORE-1"},
+		{reference: "dispatch://CORE-1/log", kind: "issue", id: "CORE-1"},
+		{reference: "https://dispatch.test/issues/CORE-1/children", kind: "issue", id: "CORE-1"},
+		{reference: "https://dispatch.test/issues/CORE-1/artifact/notes-md", kind: "artifact", id: "CORE-1/notes-md"},
 		{reference: "dispatch://CORE-1/spec", kind: "artifact", id: "CORE-1/spec"},
 		{
 			reference: "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png",

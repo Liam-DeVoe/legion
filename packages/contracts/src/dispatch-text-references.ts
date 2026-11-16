@@ -1,5 +1,6 @@
 import { CODE_CONTEXT } from "./dispatch-text-references-code";
 import { IN_CODE } from "./dispatch-text-references-in-code";
+import { PLAIN_ISSUE_TABS } from "./dispatch-text-rules";
 
 /** The questions the `#id` rows below belong to, each block id to its ask's reference. */
 const QUESTIONS = {
@@ -102,6 +103,54 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     refs: ["dispatch://CORE-9/spec"],
   },
   { body: "(see dispatch://CORE-10).", refs: ["dispatch://CORE-10"] },
+  // An issue's address with nothing after its trailing slash is the issue, the sentence's stop
+  // after the slash dropped as after any reference. Anything else after the slash that the
+  // grammar does not name - a second slash, a word, an empty `artifact/` or `ask/` - names
+  // nothing, and neither does the issue's page with a trailing slash.
+  {
+    body: "Filed as dispatch://CORE-40/ and dispatch://CORE-41/.",
+    refs: ["dispatch://CORE-40", "dispatch://CORE-41"],
+  },
+  {
+    body: "Nothing: dispatch://CORE-42//, dispatch://CORE-42/notes, dispatch://CORE-42/artifact/, dispatch://CORE-42/ask/ and https://dispatch.test/issues/CORE-42/.",
+    refs: [],
+  },
+  // A link's address in angle brackets may hold a space: the reference before the space names
+  // nothing, and a head cut inside such a link, ending at the address's trailing slash, names the
+  // issue.
+  { body: "See [the notes](<dispatch://CORE-43/a b>) now.", refs: [] },
+  { body: "Cut at [the notes](<dispatch://CORE-44/", refs: ["dispatch://CORE-44"] },
+  // A tab of an issue's page whose route is the tab itself (`PLAIN_ISSUE_TABS`) reads as the
+  // issue, as a reference and as the dashboard's page, and so does the conversation, written
+  // `log` in a reference too. One row per tab, so a tab the list gains is read by both readers or
+  // fails here.
+  ...PLAIN_ISSUE_TABS.map((tab) => ({
+    body: `The ${tab} tab: dispatch://CORE-45/${tab} and https://dispatch.test/issues/CORE-46/${tab}.`,
+    refs: ["dispatch://CORE-45", "dispatch://CORE-46"],
+  })),
+  {
+    body: "The conversation: dispatch://CORE-47/conversation, dispatch://CORE-48/log and https://dispatch.test/issues/CORE-54/conversation.",
+    refs: ["dispatch://CORE-47", "dispatch://CORE-48", "dispatch://CORE-54"],
+  },
+  {
+    body: "No tab: https://dispatch.test/issues/CORE-49/log, dispatch://CORE-49/plan/, dispatch://CORE-49/Plan, https://dispatch.test/issues/CORE-49/plan/ and dispatch://CORE-49/decisions.",
+    refs: [],
+  },
+  // A document's page at `artifact/<slug>` is its page at `artifacts/<slug>`, which the issue
+  // page opens as the same document: a version, a block and a trailing slash read as they do
+  // there.
+  {
+    body: "https://dispatch.test/issues/CORE-50/artifact/notes-md, https://dispatch.test/issues/CORE-51/artifact/notes-md?v=2 and https://dispatch.test/issues/CORE-52/artifact/notes-md#b-ship-it",
+    refs: [
+      "dispatch://CORE-50/artifact/notes-md",
+      "dispatch://CORE-51/artifact/notes-md@v2",
+      "dispatch://CORE-52/artifact/notes-md#b-ship-it",
+    ],
+  },
+  {
+    body: "No page: https://dispatch.test/issues/CORE-53/artifact/notes-md/ and https://dispatch.test/issues/CORE-53/artifact/notes-md?v=02",
+    refs: [],
+  },
   {
     body: "Quoted \"dispatch://CORE-11\", 'dispatch://CORE-12' and <dispatch://CORE-13>.",
     refs: ["dispatch://CORE-11", "dispatch://CORE-12", "dispatch://CORE-13"],
@@ -887,7 +936,13 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
  * (readers take any percent-encoding; an id past MAX_BLOCK_ID_BYTES names nothing), optionally
  * pinned to version N of the document, or to revision N of the comment or of the ask's parts, by
  * a trailing `@v<N>` (a message never changes, so a pinned message block names nothing); each
- * `refs` entry for one is written that canonical way.
+ * `refs` entry for one is written that canonical way. An issue's address reads as the issue with
+ * nothing after its key, with a trailing slash and nothing after it, and with a tab of its page
+ * whose route is the tab itself after it (`PLAIN_ISSUE_TABS`, and the conversation: `log` or
+ * `conversation` in a reference, `conversation` in the dashboard's path), so `dispatch://CORE-1/`,
+ * `dispatch://CORE-1/plan` and `https://dispatch.test/issues/CORE-1/plan` each cite
+ * `dispatch://CORE-1`; a document's page reads the same at `artifacts/<slug>` and at
+ * `artifact/<slug>`.
  *
  * A text also cites what it writes bare: an issue key (`CORE-12`) that names an existing issue,
  * as `dispatch://CORE-12`, and `#` with the id of a question block of the text's document, as

@@ -69,7 +69,6 @@ export type DispatchReadingSurface =
   | "inbox-thread-title"
   | "issue-decision"
   | "decision-heading-words"
-  | "issue-decision-link"
   | "issue-open-question"
   | "item-match-first-line"
   | "spec-requirement-words"
@@ -97,6 +96,7 @@ export type DispatchReadingSurface =
   | "priority-description"
   | "body-reference-cards"
   | "dispatch-reference-card"
+  | "reference-card-words"
   | "github-reference-card"
   | "reference-hover-card"
   | "reference-hover-card-ask"
@@ -215,11 +215,10 @@ const DIRECT_MESSAGE_REACH =
   "/agents, a row's message sent to its session on no issue (`POST /api/v1/agents/{session_id}/messages`), and the session's reply to it";
 
 /** The one test that holds the Decisions panel's projected links to the reader: an open
- *  question's link and a shaped block's link (and the name its Change is given, which is
- *  `decision-heading-words`). */
+ *  question's link (and the name its Change is given, which is `decision-heading-words`). */
 const DECISIONS_PANEL_PROOF: DispatchReadingProof = {
   file: "packages/dispatch/web/src/features/issue/DecisionsPanel.test.tsx",
-  test: "an open question, a shaped block's link and the Change's name read their text's plain-text projection",
+  test: "an open question and the Change's name read their text's plain-text projection",
 };
 
 /** Why a broadcast's own text is no record: the graph holds the copy each recipient got, never
@@ -263,11 +262,6 @@ const COMMAND_OUTPUT_REASON =
  *  summary and a credential request's reason say. */
 const ONE_LINE_FIELD_REASON =
   "It is a one-line field its writer fills in, which INFRA-1702's non-goals leave out of the reference framework, as they leave a title: it is stored and shown as the characters its writer gave it.";
-
-/** Why a chosen option's label reaches some surfaces as written, which is what the three rows
- *  that draw one that way say. */
-const NO_LABEL_TREE_REASON =
-  "A chosen option is the label its asker wrote, and the page parses no stored text: a label is drawn from the tree of the option it names. Where a label reaches the page with no such option, it has no tree anywhere, so it is shown as the characters its asker wrote.";
 
 /** Why the Proof editor's own drawing of a document is no mount of the renderer, which is what
  *  the live document and a past version of one both say. */
@@ -399,7 +393,8 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "broadcasts-list-body",
   },
-  // The Answers page: the subject a row answers, the answer, and the reply that carried it.
+  // The Answers page: the subject a row answers, the options an answer chose, the answer, and
+  // the reply that carried it.
   {
     files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
     reach: "/answers, a row's subject line",
@@ -417,9 +412,8 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   {
     files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
     reach: "/answers, a row's chosen options",
-    reason: `${NO_LABEL_TREE_REASON} A row carries its answer's options as their labels alone (\`GET /api/v1/me/answers\`), with no option a tree could be taken from.`,
     record: true,
-    rendered: false,
+    rendered: true,
     surface: "answers-chosen-options",
   },
   {
@@ -536,16 +530,17 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "ask-answer-history",
   },
+  // An option an earlier answer chose, drawn from the tree of its own label, which the answer
+  // carries: it may name an option the ask has since renamed or removed.
   {
     files: [
-      "packages/dispatch/web/src/features/activity/EventBody.tsx",
       "packages/dispatch/web/src/features/inbox/AskCompletionCard.tsx",
+      "packages/dispatch/web/src/features/activity/EventBody.tsx",
     ],
     reach:
-      "/issues/<ISSUE>/activity, a pinned changed answer's `was:` line; /, an ask card's earlier answers, for an option the ask no longer holds",
-    reason: `${NO_LABEL_TREE_REASON} An earlier answer can name an option the ask no longer holds, renamed or removed since, and only such a label is drawn so: every other is drawn from its option's tree.`,
+      "/, an ask card's earlier answers, an option one chose; /issues/<ISSUE>/activity, a pinned changed answer's `was:` line",
     record: true,
-    rendered: false,
+    rendered: true,
     surface: "earlier-chosen-option",
   },
   {
@@ -638,22 +633,15 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "inbox-thread-title",
   },
   // The issue's Decisions panel, which names the decisions document by its artifact id: a
-  // decision's heading and paragraphs, the spec blocks it shaped, and the open questions.
+  // decision's heading and paragraphs, and the open questions. A link to a spec block a decision
+  // shaped draws no stored text: it names the block by its id, in the panel's own words, since
+  // the decisions read sends none of the block's text (`refs.BlockLinks`).
   {
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
     reach: "/issues/<ISSUE>/decisions, a decision's heading and paragraphs",
     record: true,
     rendered: true,
     surface: "issue-decision",
-  },
-  {
-    files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
-    proof: DECISIONS_PANEL_PROOF,
-    reach: "/issues/<ISSUE>/decisions, a link under Shaped in the spec",
-    reason: `The link to a spec block a decision shaped is worded with the head of that block's text. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
-    record: true,
-    rendered: false,
-    surface: "issue-decision-link",
   },
   {
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
@@ -672,7 +660,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       test: "a match's first line reads its plain-text projection",
     },
     reach: "An issue address whose short id names several items, a match's link",
-    reason: `A match is a link to its item, worded with the first line of the item's text, which the server cuts and reads into a tree. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    reason: `A match is a link to its item, worded with the first line of the item's text, which the server cuts and reads into a tree. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON} A document's first line is its file's name, which has no tree: a name, drawn as the characters it is.`,
     record: true,
     rendered: false,
     surface: "item-match-first-line",
@@ -942,6 +930,16 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "dispatch-reference-card",
   },
+  {
+    files: ["packages/dispatch/web/src/features/refs/Unfurl.tsx"],
+    reach:
+      "A Dispatch reference card under a body, its first line while the target's title loads and for a target that has none",
+    reason:
+      "A card names its target by its title, and by the reference as the body wrote it while the title loads and where the target has none (a session Dispatch knows with no title of its own). A card is drawn only under a body that is nothing but references (`referenceCards`), so what the body wrote is one address, issue key or `#id`, never a link's words: a name, which holds no markdown, so it is shown as the characters it is - the words written, as R8 reads an unresolved reference.",
+    record: true,
+    rendered: false,
+    surface: "reference-card-words",
+  },
   // The one reader this change does not fold: a GitHub issue or pull request, matched and drawn
   // by the card itself.
   {
@@ -982,9 +980,8 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   {
     files: ["packages/dispatch/web/src/features/search/AskHitStatus.tsx"],
     reach: "Ctrl+K, an ask hit's `Chose …`",
-    reason: `${NO_LABEL_TREE_REASON} A hit carries its answer's options as their labels alone (\`SearchAsk\`), with no option a tree could be taken from.`,
     record: true,
-    rendered: false,
+    rendered: true,
     surface: "search-ask-chosen-options",
   },
   {

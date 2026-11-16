@@ -566,8 +566,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 {Status: http.StatusOK, Response: model.ArchitectureSource{}},
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
-	// tree, so the row names that read: the document describes the body the handler sends, and
-	// a client generated from it holds the field a reader draws.
+	// tree and whose Not architectural rows carry their reasons', so the row names that read: the
+	// document describes the body the handler sends, and a client generated from it holds the
+	// field a reader draws.
 	"GET /api/v1/projects/{key}/architecture":        {Status: http.StatusOK, Response: architectureTreeRead{}},
 	"GET /api/v1/settings/project-default-assignees": {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
 	"PUT /api/v1/projects/{key}/default-assignee": {
@@ -623,8 +624,9 @@ var routeShapes = map[string]routeShape{
 		Also: []routeAnswer{{Status: http.StatusOK, Body: whoamiAgent{}}},
 	},
 	"GET /api/v1/dashboard/builds": {Status: http.StatusOK, Response: dashboardBuilds{}},
+	// The listing answers prioritiesRead, whose rows carry each description's tree.
 	"GET /api/v1/priorities": {
-		Status: http.StatusOK, Response: model.Priorities{}, Params: prioritiesQuery{},
+		Status: http.StatusOK, Response: prioritiesRead{}, Params: prioritiesQuery{},
 	},
 	"POST /api/v1/priorities": {
 		Status: http.StatusCreated, Response: model.Priority{}, Request: createPriorityInput{},

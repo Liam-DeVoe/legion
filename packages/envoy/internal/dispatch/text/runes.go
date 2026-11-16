@@ -66,14 +66,24 @@ const longestWholeReferenceRunes = 1024
 // names nothing Dispatch holds, so it is cut as text is.
 //
 // Where a reference starts before the cut and ends after it, the cut moves back to its start - the
-// link's `[` where a link wraps it. It moves back the same way where the head, with the ellipsis
-// after it, does not read the references of the text it holds as the text does: a reference it
-// reads that the text does not write (`CORE-12` of `CORE-12x4`), or one the text writes whole
-// that the ellipsis joins (`dispatch://agent/s1` and `…` read as the session `s1…`). A cut that
-// moved drops the whitespace before it, line breaks included. A cut never empties the head: where
-// moving back would leave nothing before the ellipsis - a text that opens with a reference longer
-// than the bound - the rune cut stands, since a head of nothing tells a reader less than half a
-// reference does. A cut that moves nothing is HeadRunes' own.
+// link's `[` where a link wraps it. A code span the cut opens and does not close counts as
+// crossing it too, and the cut moves back to before its opening backticks (codeSpans): the head
+// would hold those backticks with no closing run, which reads them as text and what the span
+// held - an address in it included - as prose with live references. It moves back the same way
+// where the head, with the ellipsis after it, does not read the references of the text it holds
+// as the text does: a reference it reads that the text does not write (`CORE-12` of `CORE-12x4`),
+// or one the text writes whole that the ellipsis joins (`dispatch://agent/s1` and `…` read as the
+// session `s1…`). A cut that moved drops the whitespace before it, line breaks included, save
+// where the head then ends after a reference: there it keeps the first whitespace character the
+// text has after that reference, so the ellipsis joins nothing and the walk stops - a line of
+// short addresses separated by spaces is cut after its last whole address and a space, not back
+// past every one of them. A cut never empties the head: where moving back would leave nothing
+// before the ellipsis - a text that opens with a reference or a code span longer than the bound -
+// the rune cut stands, since a head of nothing tells a reader less than half a reference does. A
+// cut that moves nothing is HeadRunes' own.
+//
+// The dashboard's headRefs (`packages/dispatch/web/src/features/refs/head-refs.ts`) cuts the
+// same way, and `testdata/head-refs.json` is the table both copies are held to.
 func HeadRefs(value string, limit int, ellipsis, serverURL string) string {
 	keep := max(limit-utf8.RuneCountInString(ellipsis), 0)
 	cut, window, count := 0, len(value), 0
@@ -98,13 +108,17 @@ func HeadRefs(value string, limit int, ellipsis, serverURL string) string {
 }
 
 // headEnd is where the head of window, value's first runes, cut at cut ends (HeadRefs). A
-// reference that runs to the window's edge where the window stops short of value may run further,
-// so it is no reference the cut keeps whole.
+// reference or a code span that runs to the window's edge where the window stops short of value
+// may run further, so it is none the cut keeps whole.
 func headEnd(window string, truncated bool, cut int, ellipsis, serverURL string) int {
 	written := cutReferences(window, serverURL)
+	spans := codeSpans(window)
 	if truncated {
 		written = slices.DeleteFunc(written, func(reference cutReference) bool {
 			return reference.end >= len(window)
+		})
+		spans = slices.DeleteFunc(spans, func(span codeRange) bool {
+			return span.end >= len(window)
 		})
 	}
 	head := cut
@@ -113,6 +127,11 @@ func headEnd(window string, truncated bool, cut int, ellipsis, serverURL string)
 		for _, reference := range written {
 			if reference.start < head && head < reference.end {
 				back = min(back, reference.start)
+			}
+		}
+		for _, span := range spans {
+			if span.start < head && head < span.end {
+				back = min(back, span.start)
 			}
 		}
 		read := cutReferences(window[:head]+ellipsis, serverURL)
@@ -130,11 +149,32 @@ func headEnd(window string, truncated bool, cut int, ellipsis, serverURL string)
 			break
 		}
 		head = len(strings.TrimRight(window[:back], " \t\r\n"))
+		// A head that now ends after a reference the text follows with whitespace keeps the
+		// first of it, so the ellipsis after the head joins nothing: without it the ellipsis would
+		// join that reference and the walk step back past it, and on a line of short addresses
+		// back past every one of them.
+		if head < back && slices.ContainsFunc(written, func(reference cutReference) bool {
+			return reference.end == head
+		}) {
+			head++
+		}
 	}
 	if head == 0 {
 		return cut
 	}
 	return head
+}
+
+// codeSpans is every code span body writes (codeRanges), its blocks left out: a cut inside a
+// span the head does not close leaves its opening backticks as text, and what the span held -
+// an address in it included - read as prose, where a cut inside a fenced block leaves the rest
+// of the head in the block as the text has it. A body with no backtick has no span, and is not
+// walked for one.
+func codeSpans(body string) []codeRange {
+	if !strings.Contains(body, "`") {
+		return nil
+	}
+	return slices.DeleteFunc(codeRanges(body), func(code codeRange) bool { return code.block })
 }
 
 // cutReference is one reference a text writes, as a cut reads it: the bytes [start, end) a reader

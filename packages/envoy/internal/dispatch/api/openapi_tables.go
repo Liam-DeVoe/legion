@@ -63,8 +63,8 @@ var schemaNames = map[reflect.Type]string{
 	// imports. The eleven `WithTrees` names from AskWithTrees to ArtifactApprovalWithTrees are
 	// announced by packages/contracts/.changes/unreleased/pr2712-Added-20261104-000317.yaml, and
 	// the two after them, a backlink's excerpt and its edge, by
-	// packages/contracts/.changes/unreleased/pr3125-Added-20261116-081717.yaml; the last three
-	// below are names main already exports. Declared under their Go names, every one of these
+	// packages/contracts/.changes/unreleased/pr3125-Added-20261116-081717.yaml; the ones after
+	// them are names main already exports. Declared under their Go names, every one of these
 	// shapes would reach a client under two exported names at once.
 	reflect.TypeOf(shapedAsk{}):               "AskWithTrees",
 	reflect.TypeOf(askOptionRead{}):           "AskOptionWithTrees",
@@ -79,13 +79,18 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(artifactApprovalRead{}):    "ArtifactApprovalWithTrees",
 	reflect.TypeOf(graphExcerptRead{}):        "GraphExcerptWithTrees",
 	reflect.TypeOf(graphEdgeRead{}):           "GraphEdgeWithTrees",
-	// The three whose published name is the model's own rather than a `WithTrees` of it: the
-	// shaping is the whole body each route answers, so a client that reads an architecture tree,
-	// a node's references or a handoff with its body reads one of these and never the model
-	// behind it.
+	// The ones whose published name is the model's own rather than a `WithTrees` of it: the
+	// shaping is the whole body each route answers, or the whole of a list in one, so a client
+	// that reads an architecture tree, a node's references, a handoff with its body, or the
+	// priorities and their rows reads one of these and never the model behind it. An
+	// architecture tree's components and Not architectural rows are published under their Go
+	// names (ArchitectureComponentRead, ArchitectureTreeNoneRead) beside the model's own, which
+	// the tree still embeds (architectureTreeRead).
 	reflect.TypeOf(architectureTreeRead{}): "ArchitectureTree",
 	reflect.TypeOf(graphReferencesRead{}):  "GraphReferences",
 	reflect.TypeOf(handoffRead{}):          "Handoff",
+	reflect.TypeOf(prioritiesRead{}):       "Priorities",
+	reflect.TypeOf(priorityRowRead{}):      "PriorityRow",
 
 	// The members of the collaborators answer, whose Go names say which handler built them and
 	// whose names here are the ones main's TypeScript exported and a consumer imports

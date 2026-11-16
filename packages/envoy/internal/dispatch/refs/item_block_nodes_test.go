@@ -213,7 +213,7 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; truncated || !reflect.DeepEqual(members, want) {
 		t.Errorf("closure = %#v (truncated %t); want %#v", members, truncated, want)
 	}
-	citers, err := ReferencedBy(ctx, tx, handbook)
+	citers, err := ReferencedBy(ctx, tx, handbook, "")
 	if err != nil {
 		t.Fatalf("read referenced-by: %v", err)
 	}

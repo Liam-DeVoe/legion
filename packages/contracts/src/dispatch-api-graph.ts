@@ -1,9 +1,17 @@
-import type { GraphEdgeWithTrees, GraphExcerpt } from "./dispatch-api.generated";
+import type { GraphEdgeWithTrees, GraphExcerptWithTrees } from "./dispatch-api.generated";
 
 /**
  * The reference graph: what points at what, read by `GET /api/v1/references` and
  * `GET /api/v1/block-links`, and the document lists built on it.
  */
+
+/** An edge's excerpt without the tree a dashboard read carries: the excerpt the route table holds
+ *  (`GraphExcerptWithTrees`) less its `text_tree`. It is written here because the route table no
+ *  longer names the plain excerpt: the server's edge read declares the edge's own fields rather
+ *  than embedding model.GraphEdge, so the document's reflector never reaches model.GraphExcerpt,
+ *  and main exports this name. A `GraphExcerptWithTrees` is a `GraphExcerpt` wherever one is
+ *  wanted. */
+export type GraphExcerpt = Omit<GraphExcerptWithTrees, "text_tree">;
 
 /** One edge of the reference graph without the tree a dashboard read carries: the edge the route
  *  table holds (`GraphEdgeWithTrees`) with its excerpt back to the plain `GraphExcerpt`. A

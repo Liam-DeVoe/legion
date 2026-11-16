@@ -90,6 +90,93 @@
     ]
   },
   {
+    "body": "Filed as dispatch://CORE-40/ and dispatch://CORE-41/.",
+    "refs": [
+      "dispatch://CORE-40",
+      "dispatch://CORE-41"
+    ]
+  },
+  {
+    "body": "Nothing: dispatch://CORE-42//, dispatch://CORE-42/notes, dispatch://CORE-42/artifact/, dispatch://CORE-42/ask/ and https://dispatch.test/issues/CORE-42/.",
+    "refs": []
+  },
+  {
+    "body": "See [the notes](<dispatch://CORE-43/a b>) now.",
+    "refs": []
+  },
+  {
+    "body": "Cut at [the notes](<dispatch://CORE-44/",
+    "refs": [
+      "dispatch://CORE-44"
+    ]
+  },
+  {
+    "body": "The verification tab: dispatch://CORE-45/verification and https://dispatch.test/issues/CORE-46/verification.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The plan tab: dispatch://CORE-45/plan and https://dispatch.test/issues/CORE-46/plan.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The activity tab: dispatch://CORE-45/activity and https://dispatch.test/issues/CORE-46/activity.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The children tab: dispatch://CORE-45/children and https://dispatch.test/issues/CORE-46/children.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The artifacts tab: dispatch://CORE-45/artifacts and https://dispatch.test/issues/CORE-46/artifacts.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The collaborators tab: dispatch://CORE-45/collaborators and https://dispatch.test/issues/CORE-46/collaborators.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The conversation: dispatch://CORE-47/conversation, dispatch://CORE-48/log and https://dispatch.test/issues/CORE-54/conversation.",
+    "refs": [
+      "dispatch://CORE-47",
+      "dispatch://CORE-48",
+      "dispatch://CORE-54"
+    ]
+  },
+  {
+    "body": "No tab: https://dispatch.test/issues/CORE-49/log, dispatch://CORE-49/plan/, dispatch://CORE-49/Plan, https://dispatch.test/issues/CORE-49/plan/ and dispatch://CORE-49/decisions.",
+    "refs": []
+  },
+  {
+    "body": "https://dispatch.test/issues/CORE-50/artifact/notes-md, https://dispatch.test/issues/CORE-51/artifact/notes-md?v=2 and https://dispatch.test/issues/CORE-52/artifact/notes-md#b-ship-it",
+    "refs": [
+      "dispatch://CORE-50/artifact/notes-md",
+      "dispatch://CORE-51/artifact/notes-md@v2",
+      "dispatch://CORE-52/artifact/notes-md#b-ship-it"
+    ]
+  },
+  {
+    "body": "No page: https://dispatch.test/issues/CORE-53/artifact/notes-md/ and https://dispatch.test/issues/CORE-53/artifact/notes-md?v=02",
+    "refs": []
+  },
+  {
     "body": "Quoted \"dispatch://CORE-11\", 'dispatch://CORE-12' and <dispatch://CORE-13>.",
     "refs": [
       "dispatch://CORE-11",

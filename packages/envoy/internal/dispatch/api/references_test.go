@@ -243,6 +243,110 @@ func TestArtifactReferencesListOutgoingAndReferencedBy(t *testing.T) {
 	}
 }
 
+// A document's Referenced by cuts each citer's excerpt as the graph read cuts the head of a text
+// beside an edge: around this deployment's dashboard URLs as references (refs.itemExcerpt). A
+// comment whose dashboard URL crosses the 240-rune bound is listed with its words before the URL,
+// read through GET /api/v1/artifacts/{id}/references as through GET /api/v1/references, and not
+// with the URL cut in half, as a read that knew no deployment would cut it.
+func TestArtifactReferencesCutAnExcerptAroundADashboardURL(t *testing.T) {
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	design := createProjectDocument(t, handler, "CORE", "Design notes", "# Design\n")
+	// 229 runes and a space, so the dashboard URL after them starts before the cut at 240 and
+	// ends after it.
+	words := strings.Repeat("x", 229)
+	citer := createReferenceAPIComment(t, handler, issue.Key,
+		words+" "+testServerURL+"/issues/"+issue.Key+" follows dispatch://CORE/artifact/design-notes")
+	quoter := createReferenceAPIComment(t, handler, issue.Key, "See dispatch://"+issue.Key+"/comment/"+citer.ID)
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+design.ID+"/references", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("get artifact references: status=%d body=%s", response.Code, response.Body.String())
+	}
+	referencedBy := decodeBody[model.ArtifactReferences](t, response).ReferencedBy
+	if len(referencedBy) != 1 || referencedBy[0].ID != citer.ID {
+		t.Fatalf("referenced by = %#v; want the citing comment alone", referencedBy)
+	}
+	if got := referencedBy[0].Excerpt; got != words {
+		t.Errorf("the citing comment's excerpt through the document's references = %q; want %q, the dashboard URL the cut falls inside left out whole", got, words)
+	}
+	outgoing := graphEdges(t, handler, url.Values{"from": {"dispatch://" + issue.Key + "/comment/" + quoter.ID}})
+	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.ID != citer.ID || outgoing.Edges[0].Excerpt == nil {
+		t.Fatalf("outgoing edges = %#v; want one mention of the citing comment with an excerpt", outgoing.Edges)
+	}
+	if got := outgoing.Edges[0].Excerpt.Text; got != words {
+		t.Errorf("the citing comment's excerpt through the graph read = %q; want %q", got, words)
+	}
+}
+
+// A references answer to a caller that sends no Dispatch-Trees header is the bytes the route
+// wrote before an edge's excerpt carried a tree: each edge written as model.GraphEdge writes it,
+// `excerpt` between `block` and `created_at`. The read shape declares the edge's fields itself
+// (graphEdgeRead), so it is also held to declare model.GraphEdge's own fields, in the edge's
+// order, which is what a field added to the edge and not to the shape would break.
+func TestAReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T) {
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "LEGION")
+	createReferenceAPIProject(t, handler, "ACME")
+	legion := createReferenceAPIIssue(t, handler, "LEGION")
+	acme := createReferenceAPIIssue(t, handler, "ACME")
+	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
+		"question": "Ship the **reference** graph?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if askResponse.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", askResponse.Code, askResponse.Body.String())
+	}
+	askRef := "dispatch://" + legion.Key + "/ask/" + decodeBody[model.Ask](t, askResponse).ID
+	messageResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+acme.Key+"/messages", map[string]any{
+		"body": "Decided in " + askRef + ".", "actor": sessionActor(),
+	})
+	if messageResponse.Code != http.StatusCreated {
+		t.Fatalf("create message: status=%d body=%s", messageResponse.Code, messageResponse.Body.String())
+	}
+	messageRef := "dispatch://" + acme.Key + "/message/" + decodeBody[model.Message](t, messageResponse).ID
+
+	for _, query := range []url.Values{{"to": {askRef}}, {"from": {messageRef}}} {
+		response := treesRequest(t, handler, "/api/v1/references?"+query.Encode(), false)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/references?%s: status=%d body=%s", query.Encode(), response.Code, response.Body.String())
+		}
+		// The answer as the route wrote it before: the node as it stands, and each edge as
+		// model.GraphEdge, encoded as WriteJSON encodes.
+		var before struct {
+			Node         json.RawMessage   `json:"node"`
+			Edges        []model.GraphEdge `json:"edges"`
+			UnknownKinds []string          `json:"unknown_kinds,omitempty"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &before); err != nil {
+			t.Fatalf("decode GET /api/v1/references?%s: %v", query.Encode(), err)
+		}
+		if len(before.Edges) != 1 || before.Edges[0].Excerpt == nil {
+			t.Fatalf("GET /api/v1/references?%s edges = %#v; want the one mention with its excerpt", query.Encode(), before.Edges)
+		}
+		var want bytes.Buffer
+		if err := json.NewEncoder(&want).Encode(before); err != nil {
+			t.Fatalf("encode the answer as it was written before: %v", err)
+		}
+		if !bytes.Equal(response.Body.Bytes(), want.Bytes()) {
+			t.Errorf("GET /api/v1/references?%s without the trees header =\n\t%s\nwant the bytes model.GraphEdge writes\n\t%s",
+				query.Encode(), response.Body.String(), want.String())
+		}
+	}
+
+	names := func(shape reflect.Type) []string {
+		var fields []string
+		for index := range shape.NumField() {
+			name, _, _ := strings.Cut(shape.Field(index).Tag.Get("json"), ",")
+			fields = append(fields, name)
+		}
+		return fields
+	}
+	if got, want := names(reflect.TypeOf(graphEdgeRead{})), names(reflect.TypeOf(model.GraphEdge{})); !slices.Equal(got, want) {
+		t.Errorf("graphEdgeRead declares %v, want model.GraphEdge's own fields in its order, %v", got, want)
+	}
+}
+
 func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 	handler := newTestHandler(t)
 	// Authentication comes before the versions parameter: a value the route refuses still

@@ -3,6 +3,7 @@ package text
 import (
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -249,12 +250,21 @@ func trimReference(raw string) string {
 	return ""
 }
 
+// issueTabs is every tab of an issue's page whose address names the issue itself, holding no
+// block, slug or id: the dashboard's `PLAIN_ISSUE_TABS` and its conversation
+// (web/src/features/refs/routes.ts). A reference to a tab, `dispatch://CORE-1/plan` or the
+// dashboard's `/issues/CORE-1/plan`, reads as the issue, as the dashboard draws it, so the graph
+// holds the edge the page shows. The shared text table holds a row per tab in both forms, so a tab
+// one reader names and the other does not fails there.
+var issueTabs = []string{"verification", "plan", "activity", "children", "artifacts", "collaborators", "conversation"}
+
 // parseDispatch reads a `dispatch://` reference, without its scheme, by the grammar the dashboard's
 // `parseDispatchReference` reads: a slug as written, an `@v` version, an agent's session id as
 // written, an item id decoded as `itemSegment` decodes it, a `#b-` block of a document, an
 // ask, a comment or a message as parseBlock reads it, and the three parties, `agent/<session
-// id>`, `role/<token>` and `person/<login>`. A reference holding a control character
-// names nothing.
+// id>`, `role/<token>` and `person/<login>`. An issue's key with nothing after it, a trailing
+// slash, a tab of its page (issueTabs) or `log`, the conversation's older name, is the issue. A
+// reference holding a control character names nothing.
 func parseDispatch(value string) (Ref, bool) {
 	if hasControl(value) {
 		return Ref{}, false
@@ -264,7 +274,7 @@ func parseDispatch(value string) (Ref, bool) {
 	}
 	key, tail, found := strings.Cut(value, "/")
 	if issueKeyPattern.MatchString(key) {
-		if !found || tail == "" {
+		if !found || tail == "" || tail == "log" || slices.Contains(issueTabs, tail) {
 			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
 		}
 		if tail == "spec" {
@@ -627,7 +637,8 @@ func parseServer(raw string, base *url.URL) (Ref, bool) {
 			return Ref{}, false
 		}
 		switch {
-		case len(parts) == 2:
+		// The issue's page, or a tab of it that names the issue itself (issueTabs).
+		case len(parts) == 2 || (len(parts) == 3 && slices.Contains(issueTabs, parts[2])):
 			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
 		// A document page of the issue, which `dispatch search` links to with the item in its query
 		// for an anchored comment or ask.
@@ -637,7 +648,9 @@ func parseServer(raw string, base *url.URL) (Ref, bool) {
 		// whatever its fragment, as the dashboard and the agent client read it.
 		case len(parts) == 3 && parts[2] == "decisions":
 			return Ref{Kind: "artifact", IssueKey: key, ID: "decisions-md"}, true
-		case len(parts) == 4 && parts[2] == "artifacts":
+		// A document's page, at `artifacts/<slug>` or at `artifact/<slug>`, which the issue page opens
+		// as the same document (the dashboard's `parseIssuePath`).
+		case len(parts) == 4 && (parts[2] == "artifacts" || parts[2] == "artifact"):
 			slug, err := url.PathUnescape(parts[3])
 			if err != nil || !artifactSlugPattern.MatchString(slug) {
 				return Ref{}, false
