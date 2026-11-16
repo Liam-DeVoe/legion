@@ -338,6 +338,58 @@ test("The names are read in one batched request, after every other read has answ
   }
 });
 
+// The reviewer's finding on `useIssueTree.ts:164`: a plan task has no words until the names read
+// answers, so what its words cite is in no address that read was given. One more read names
+// those addresses alone, once the first has answered, and the page publishes its answer too.
+test("what a plan task's words cite is named by one more read", async () => {
+  const cited = "dispatch://CORE-7";
+  const words = `Draw the tree as ${cited} asks.`;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        return target.ref === cited
+          ? { ...target, kind: "issue", name: "The cited issue" }
+          : target;
+      }),
+    };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current).toBe("The cited issue"));
+    expect(asked).toHaveLength(2);
+    expect(asked[0]).toContain(TASK_REF);
+    expect(asked[0]).not.toContain(cited);
+    expect(asked[1]).toEqual([cited]);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // The tester's F17: one block read for every document of the issue was 25 of a first load's 47
 // requests. The tree reads the blocks of the spec and of the plan, Verification and decisions
 // documents, whose typed blocks the page draws, and of no other document: each the one the issue

@@ -1455,6 +1455,49 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
   expect(nodeOf(older, id)).toMatchObject({ state: "waiting_review", waiting: true });
 });
 
+// R3, R7: a person may ask two changes of one decision before its agent edits it. Each change
+// newer than the decision's words is drawn under the decision, not only the newest, so neither
+// sits at the outline's foot with nothing tying it to what it changes; a change older than the
+// decision's words is no change and sits under the issue.
+test("every Change newer than a decision's words is drawn under it", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const reviewed: Decision = {
+    ...decision("d1", "## Keep it\n\nKeep the model pure.", ["r1"]),
+    changed_at: "2026-11-05T00:00:00Z",
+    waiting_review: true,
+  };
+  const change = (id: string, createdAt: string): Comment => ({
+    ...comment(id, createdAt),
+    anchor: {
+      artifact_id: made.id,
+      block_id: "d1-words",
+      mark_id: id,
+      orphaned: false,
+      quote: "Keep the model pure.",
+      version: 1,
+    },
+  });
+  const root = buildIssueTree({
+    comments: [
+      change("c-older", "2026-11-04T00:00:00Z"),
+      change("c-first", "2026-11-06T00:00:00Z"),
+      change("c-second", "2026-11-07T00:00:00Z"),
+    ],
+    coverage: coverage([requirement("r1", "The first.")]),
+    decisions: decisions([reviewed]),
+    documents: [{ artifactId: spec.id, blocks: [block("r1", "requirement")] }],
+    issue: issueDetails([spec, made]),
+    viewer: "alice",
+  });
+  const id = blockNodeId("decisions-md", "d1");
+
+  expect(placementsOf(root, "c-first").map((one) => one.parent)).toEqual([id]);
+  expect(placementsOf(root, "c-second").map((one) => one.parent)).toEqual([id]);
+  expect(placementsOf(root, "c-older").map((one) => one.parent)).toEqual([KEY]);
+  expect(nodeOf(root, id)).toMatchObject({ state: "change_requested", waiting: false });
+});
+
 // R14: a reply is drawn under the entry it answers. The write climbs `reply_to` to the head of
 // the thread before it stores, so a tree parented by `reply_to` draws every reply of a thread
 // under its head; `answers` is the comment the write named, which is what nests a reply under

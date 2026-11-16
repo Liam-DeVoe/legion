@@ -279,8 +279,8 @@ export function filterSignals(
   // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
   // checks as failed.
   const failing = countOf(verification.root, "check", (node) => node.state === "failed");
-  // The decisions of the review list (R35): an agent's decision that waits and that a `shaped`
-  // tie names a statement for, which is what the tree marks `waiting` (`decision-review.ts`'s
+  // The decisions of the review list (R35): an agent's decision that waits and that a link ties
+  // to a statement of this issue, which is what the tree marks `waiting` (`decision-review.ts`'s
   // `inReviewList`), so the signal, the list and the header's count cannot disagree.
   const toReview = countOf(decisions.root, "decision", (node) => node.waiting);
   return {

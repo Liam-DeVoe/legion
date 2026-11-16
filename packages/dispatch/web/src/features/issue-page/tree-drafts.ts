@@ -21,6 +21,7 @@ import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
   type ChangeComment,
+  decisionChangeComments,
   decisionChanges,
   decisionsDocumentId,
   inReviewList,
@@ -317,8 +318,9 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addDocumentBlocks(drafts, reads, context);
   addChildren(drafts, reads);
   const asks = addAsks(drafts, reads, context);
-  const changes = decisionChanges(reads.decisions, reads.comments, reads.issue.artifacts);
-  addTurns(drafts, reads, context, asks, changes);
+  const placed = decisionChangeComments(reads.decisions, reads.comments, reads.issue.artifacts);
+  const changes = decisionChanges(reads.decisions, reads.comments, reads.issue.artifacts, placed);
+  addTurns(drafts, reads, context, asks, placed);
   orderConversation(drafts);
   addDecisions(drafts, reads, context, asks, changes);
   addRequirements(drafts, reads, context);
@@ -646,8 +648,9 @@ interface Turn {
  * are no node either where only agents wrote them, and sit under the issue once a person has
  * written among them. A message carries no such column, so its thread stays as
  * `in_reply_to` holds it. A comment that is a change a person asked of a decision, and answers
- * nothing else, is drawn under that decision (`decision-review.ts`'s `decisionChanges`), so the
- * change stands tied to the decision it changes.
+ * nothing else, is drawn under that decision: every change newer than the decision's words, and
+ * not only the newest, which `changeOf` holds by the comment's id (`decision-review.ts`'s
+ * `decisionChangeComments`), so each change stands tied to the decision it changes.
  *
  * An address naming a comment or a message of the outline (`/comments/<id>`, `/messages/<id>`,
  * `?comment=`) is therefore an address of a row of this tree.
@@ -657,7 +660,7 @@ function addTurns(
   reads: IssueTreeReads,
   context: TreeContext,
   asks: ReadonlyMap<string, string>,
-  changes: ReadonlyMap<string, ChangeComment>
+  changeOf: ReadonlyMap<string, string>
 ): void {
   // The asks `addAsks` drew its nodes from, which is what tells a reply under a question the
   // tree draws from one under an approval request, which it does not.
@@ -665,7 +668,6 @@ function addTurns(
     ...(reads.issue.open_asks ?? []),
     ...(reads.asks ?? []),
   ]);
-  const changeOf = new Map([...changes].map(([ref, comment]) => [comment.id, ref]));
   const turns: Turn[] = [
     ...(reads.comments ?? []).map((comment) => ({
       at: comment.created_at,

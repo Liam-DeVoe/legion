@@ -199,8 +199,8 @@ export interface TreeNode {
   readonly options?: readonly NodeOption[];
   /** Whether this ask takes more than one of its options, which its answer's picks follow. */
   readonly multiple?: true;
-  /** Whether this node is an open question that waits on the reader, which the fold unfolds the
-   *  path to whatever its depth (R6). */
+  /** Whether this node is an open question, whoever's turn it is - the reader's, another
+   *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
   /** The node's own `dispatch://` address, where it has one. */
   readonly reference?: string;
@@ -237,8 +237,10 @@ export interface TreeNode {
   readonly unsure?: true;
   /** Whether this node waits on the reader: a decision waiting for their review, which is where
    *  Keep and Change are drawn and what the Decisions preset opens on (R7), or an open question
-   *  whose turn is a person's. The header's count of what waits puts the focus on the first
-   *  of them (R13, `waiting.ts`). */
+   *  whose turn is the reader's own - it waits on a person, and that person
+   *  (`Ask.waiting_on_person`) is the reader's login. Nothing waits on a reader whose login has
+   *  not resolved. The header's count of what waits puts the focus on the first of them (R13,
+   *  `waiting.ts`). */
   readonly waiting: boolean;
 }
 

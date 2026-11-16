@@ -67,10 +67,12 @@ function treeDocumentIds(issue: IssueDetails): string[] {
  * Every `dispatch://` address the tree holds: each node's own, so a block's words can be read,
  * each chip's, so a chip can name its target, and each one a node's words or its answer cite, so
  * a row links what its words name from this read and makes none per mention
- * (`row-references.ts`). This is what the one batched reference read is given, which is why the
- * page draws every chip and every link in one request rather than one per node (R21). It is
- * here and not beside the model, because reading a text's citations takes the page's markdown
- * reading, which the model's own module stays clear of so the browser suite can import it.
+ * (`row-references.ts`). This is what the batched reference read is given, which is why the
+ * page draws every chip and every link in one request rather than one per node (R21); a block
+ * whose words come from that read's own answer cites what nothing else cites, which one more
+ * read names (`useIssueTree`). It is here and not beside the model, because reading a text's
+ * citations takes the page's markdown reading, which the model's own module stays clear of so
+ * the browser suite can import it.
  */
 function treeReferences(root: TreeNode): string[] {
   const refs = new Set<string>();
@@ -97,16 +99,22 @@ function treeReferences(root: TreeNode): string[] {
  * reader has not opened (R20). Every one of them is a key another surface of this issue already
  * reads, so opening the Conversation or the Decisions panel after the tree finds them answered
  * rather than fetching again. The conversation's comments and messages are nodes of this tree
- * too, and a child issue's check reads them (`tree-drafts.ts`, `treeDrafts`). No document is a
- * node of the tree (R3), so nothing here reads a document's own text. The reader's login says
- * which open questions wait on the reader (`IssueTreeReads.viewer`).
+ * too, its turns, and the comments also say which decisions a person asked to change
+ * (`tree-drafts.ts`'s `treeDrafts`, `decision-review.ts`). No document is a node of the tree
+ * (R3), so nothing here reads a document's own text. The reader's login says which open
+ * questions wait on the reader (`IssueTreeReads.viewer`).
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one
  * batched request (`referenceTargetsQuery`; a tree holding more addresses than the server reads
  * at once costs one request per batch of them, which no ordinary issue reaches), and the tree is
- * built again with the names in it. Until that answers the tree draws, with a chip naming its
- * target's address and a block of a document carrying no words yet; on every read after the
- * first the names already in hand stand while the new set loads.
+ * built again with the names in it. A typed block that is no statement, check, ask or decision -
+ * a plan task, a callout - has no words until that read answers, so what its words cite is in
+ * no address the read was given: one more read names those addresses alone, made only where
+ * such words cite one, and the tree is built with both answers. That is the last read of a
+ * round: a node's words come from the names of node addresses, every one of which the first
+ * read holds, so the second's answer changes no node's words. Until the names answer the tree
+ * draws, with a chip naming its target's address and a block of a document carrying no words
+ * yet; on every read after the first the names already in hand stand while the new set loads.
  */
 export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
@@ -206,7 +214,32 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     ...referenceTargetsQuery(treeRead ? refs : []),
     placeholderData: keepPreviousData,
   });
-  const named = targets.data === undefined ? undefined : (targets.data.targets ?? []);
+  const first = useMemo(
+    () => (targets.data === undefined ? undefined : (targets.data.targets ?? [])),
+    [targets.data]
+  );
+  const firstTree = useMemo(
+    () => (first === undefined ? unnamed : buildIssueTree({ ...reads, targets: first })),
+    [first, reads, unnamed]
+  );
+  // What the named tree's words cite that the first read was not given: a typed block's words
+  // come from that read's answer, so what they cite is known only now (above). An empty set is
+  // no request, and the names already in hand stand while a new set loads, as above.
+  const extra = useMemo(() => {
+    if (first === undefined) return [];
+    const asked = new Set(refs);
+    return treeReferences(firstTree).filter((reference) => !asked.has(reference));
+  }, [first, firstTree, refs]);
+  const more = useQuery({
+    ...referenceTargetsQuery(extra),
+    placeholderData: keepPreviousData,
+  });
+  // Both answers, the second's standing for an address both name.
+  const named = useMemo(() => {
+    const added = more.data?.targets ?? [];
+    if (first === undefined || added.length === 0) return first;
+    return [...new Map([...first, ...added].map((target) => [target.ref, target])).values()];
+  }, [first, more.data]);
   // The same answer every link of this page would otherwise read one pointer at a time: a
   // block's own words, which a link in a document, in a decision's card or in a comment's
   // preview shows (`reference-names.tsx`, R20). Every one of those draws the name it is given
@@ -231,8 +264,11 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   );
   usePublishReferenceNames(names);
   const root = useMemo(
-    () => (named === undefined ? unnamed : buildIssueTree({ ...reads, targets: named })),
-    [named, reads, unnamed]
+    () =>
+      named === undefined || named === first
+        ? firstTree
+        : buildIssueTree({ ...reads, targets: named }),
+    [first, firstTree, named, reads]
   );
   return useMemo(() => ({ blocksRead: documents.read, root }), [documents.read, root]);
 }
