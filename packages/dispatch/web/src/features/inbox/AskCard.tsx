@@ -56,6 +56,8 @@ import { buildDispatchReference, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useKeymapScope } from "../shell/keymap";
+import { placeCaret, useQuoteTarget, withQuote } from "../threads/quote-reply";
+import { stepAsideFromSelection } from "../threads/SelectionBar";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
@@ -460,8 +462,42 @@ export function AskCard({
   const openDefine = (picked: SelectedWords | null) => {
     if (picked === null) return false;
     setDefinition(picked);
+    // The answer beside the words is the one thing drawn over them.
+    stepAsideFromSelection();
     return true;
   };
+  // Quote reply (`threads/quote-reply.ts`): the selected words go into the answer box, which a
+  // compact card opens from behind its disclosure, and the cursor waits on the empty line under
+  // them once the box holds them. The box grows to show them, and goes back to its own size once
+  // it is empty again.
+  const quoteCaret = useRef<number | null>(null);
+  const quoteGrew = useRef(false);
+  const quoteIntoAnswer = (selected: string) => {
+    const quoted = withQuote(answerText, selected);
+    if (quoted === null) return;
+    if (isCompact) setOwnWordsOpen(true);
+    setQuestionChoice(false);
+    setAnswerText(quoted.text);
+    quoteCaret.current = quoted.caret;
+  };
+  useLayoutEffect(() => {
+    const field = answerFieldRef.current;
+    if (field === null) return;
+    if (answerText === "" && quoteGrew.current) {
+      field.style.height = "";
+      quoteGrew.current = false;
+    }
+    if (quoteCaret.current === null) return;
+    placeCaret(field, quoteCaret.current);
+    quoteCaret.current = null;
+    quoteGrew.current = true;
+  });
+  useQuoteTarget(
+    articleRef,
+    displayedAsk.state === "open" && completed === null
+      ? { define: () => openDefine(selectionInCard()), quote: quoteIntoAnswer }
+      : undefined
+  );
   const changeMenuOpen = (open: boolean) => {
     if (open) setMenuSelection(selectionInCard());
     setMenuOpen(open);

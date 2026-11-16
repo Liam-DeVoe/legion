@@ -2,7 +2,15 @@
 // project, PANE, with the open questions and documents the pictures show. Every word here is
 // invented; no production read went into it, so the fixtures live in the repository and the
 // single file inlines them with the app.
-import type { Agent, Comment, InboxRow, IssueSummary, Project, Subscriber } from "../api/types";
+import type {
+  Agent,
+  Comment,
+  InboxRow,
+  IssueSummary,
+  MessageRead,
+  Project,
+  Subscriber,
+} from "../api/types";
 import type { AskRewrite, CommentRewrite, IssueRewrite } from "../features/inbox/ask-rewrite";
 
 /** The moment the page's clock starts from (`clock.ts`), so every age reads the same. */
@@ -435,6 +443,28 @@ export const COMMENTS: Record<string, (Comment & { rewrite?: CommentRewrite })[]
         },
       },
     } as unknown as Comment & { rewrite?: CommentRewrite },
+  ],
+};
+
+/** The messages of each issue's Conversation tab: a note the rollout architect wrote on PANE-3,
+ *  whose words a Quote reply answers from the tab's composer. */
+export const MESSAGES: Record<string, MessageRead[]> = {
+  "PANE-3": [
+    {
+      message: {
+        author: ORDER,
+        body: "The cluster team moved the window. The ledger can move on Monday only before 10:00; after that, its next slot is Thursday.\n\nThe mirror can move on any day, so if the ledger misses Monday morning, the mirror goes first and the ledger follows on Thursday.\n\nI will keep the order the open question settles on unless the ledger misses its slot.",
+        broadcast_id: null,
+        created_at: minutesAgo(95),
+        deliveries: [],
+        id: "e3000000-0000-4000-8000-000000000001",
+        in_reply_to: null,
+        issue_key: "PANE-3",
+        reply_block: null,
+        target: null,
+      },
+      replies: [],
+    } as unknown as MessageRead,
   ],
 };
 

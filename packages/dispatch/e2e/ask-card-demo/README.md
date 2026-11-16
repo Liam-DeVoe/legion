@@ -1,12 +1,12 @@
 # Ask card demo
 
-A live demo of Rewrite and Define on the ask card: the Dispatch web app, run by Vite, with a
-stubbed back end in the browser. It is a prototype for the owner's approval, not part of the
-browser suite, and not for merge.
+A live demo of Rewrite, Define and Quote reply on the ask card: the Dispatch web app, run by
+Vite, with a stubbed back end in the browser. It is a prototype for the owner's approval, not
+part of the browser suite, and not for merge.
 
-Every word of the asks, the documents, the rewrites and the definitions is invented. The
-fixtures are in the repository, and a note in the bottom right corner of every page says that
-the back end is stubbed and the text invented.
+Every word of the asks, the documents, the comments, the messages, the rewrites and the
+definitions is invented. The fixtures are in the repository, and a note in the bottom right
+corner of every page says that the back end is stubbed and the text invented.
 
 ## What it shows
 
@@ -38,7 +38,21 @@ the back end is stubbed and the text invented.
   view `d` defines the selection. In the edit view, where letters type, the key is **Ctrl+Alt+Y**,
   **Cmd+Alt+Y** on a Mac: neither the browser, macOS nor the app uses it (Cmd+Alt+D shows and
   hides the Dock, and Cmd+Alt+I, J, C, U, K and E open the browsers' developer tools).
-- The shortcut help (`?`) lists the card's keys under **Ask card**.
+- Quote reply: select words in an ask's question or options (in the Inbox and on an issue's
+  page), in a comment of a thread (an issue's Conversation tab, a document's margin, a thread in
+  the Inbox) or in a message of an issue's Conversation, and a dark selection bar over the words
+  offers **Quote reply** `q` and, over an ask's words, **Define** `d`, each with its key beside
+  its name. `q` is free in every scope the bar shows in (Ask card, Issue, Inbox, Document and
+  Global); `r`, GitHub's key for it, is the card's Rewrite. Quote reply opens the reply box of
+  that same thread, or takes it where it is open: the ask's answer box (a compact card opens it
+  from behind **Add a note**), the thread's reply box, or, for a message, the Conversation's
+  composer, replying to that message. The words go in as a Markdown quote of the text as the
+  page shows it, not of its Markdown source: each line of the selection after `> `, a bare `>`
+  between two lines, then a blank line, and the cursor waits on the empty line under it. Text the
+  box already held stays, and the quote goes after it and a blank line; the box grows to show the
+  quote.
+- The shortcut help (`?`) lists the card's keys under **Ask card**, `q` among them, and the `q`
+  for comments and messages under the page's own section (**Issue**, **Inbox** or **Document**).
 
 The fixtures to try it on (project PANE, signed in as `alice`):
 
@@ -46,13 +60,18 @@ The fixtures to try it on (project PANE, signed in as `alice`):
   audit", "the train" or "refused lease" answers from the record and then from the agent.
 - PANE-3 "Which service moves first?": the first Rewrite fails, as one that changed an option's
   label would; the second goes through.
-- PANE-2: the ask Dispatch's check rewrote before it reached the Inbox.
+- PANE-2: the ask Dispatch's check rewrote before it reached the Inbox. Select from "The R3
+  audit decides" to the end of its recommendation and press `q`: the two paragraphs go into its
+  answer box as a quote.
+- PANE-3's Conversation tab (`/issues/PANE-3/conversation`): a message from the rollout
+  architect, whose words Quote reply answers from the composer at the top.
 - PANE-1: an approval request; its document reads in the Inbox's reading pane, and its card is on
   the issue's Conversation tab.
 - PANE-6: a decision block in the issue's spec that the check rewrote (`/issues/PANE-6/spec`).
 - PANE-4 "Can the hand-back batch hold 500 leases…": dana handed it on to bruno, so it shows in
   the Inbox under Assignee: everyone (`/?assignee=everyone`).
-- PANE-5's Conversation tab: a comment of the lease-mirror implementer the reviewer rewrote.
+- PANE-5's Conversation tab: a comment of the lease-mirror implementer the reviewer rewrote;
+  Expand thread shows its reply box, where Quote reply puts the comment's words.
 - PANE-7: an issue the lease-tool implementer opened, whose title and spec the reviewer
   rewrote (`/issues/PANE-7`).
 
@@ -125,8 +144,9 @@ replaces `fetch` and `WebSocket` in the page, and the router reads the address's
 (`#/issues/PANE-5/spec`).
 
 The second command opens the file with the network off and checks that it opens on the Inbox,
-that the menu lists its five actions, that a rewrite and Define answer, and that an issue's spec
-opens by its fragment address.
+that the menu lists its five actions, that a rewrite and Define answer, that an issue's spec
+opens by its fragment address, and that Quote reply puts an ask's selected words in its answer
+box.
 
 ## What the stub does differently from the server the design describes
 
@@ -145,3 +165,6 @@ opens by its fragment address.
   text. The server's rewrite of a block writes that new version of the document itself.
 - An Unsubscribe on the Reaches list lasts until the page reloads, and an Unfollow for the tab;
   the server cuts the route and tells the session.
+- A reply sent from the Conversation's composer to a message (`POST
+  /api/v1/issues/{key}/messages`) is answered and kept nowhere, as a comment that answers no ask
+  is; the server stores it under the message, so the thread shows it.

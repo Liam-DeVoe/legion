@@ -13,7 +13,16 @@ import type {
   IssueDetails,
 } from "../api/types";
 import { type DemoDocument, DOCUMENTS, documentById, specId } from "./document-fixtures";
-import { ASKS, COMMENTS, DEMO_CLOCK, ISSUES, issueSummary, PROJECT, READER } from "./fixtures";
+import {
+  ASKS,
+  COMMENTS,
+  DEMO_CLOCK,
+  ISSUES,
+  issueSummary,
+  MESSAGES,
+  PROJECT,
+  READER,
+} from "./fixtures";
 import { type DemoRoute, goTime, notFound, ok } from "./http";
 
 /** Where server.ts keeps the asks the tab has written, so an ask answered in the Inbox reads
@@ -157,7 +166,7 @@ export const DOCUMENT_ROUTES: DemoRoute[] = [
       });
     },
   },
-  // No message, handoff or event of the issues is invented: their lists are empty.
+  // No handoff or event of the issues is invented: their lists are empty.
   {
     method: "GET",
     pattern: /^\/api\/v1\/issues\/([^/]+)\/comments$/,
@@ -169,7 +178,11 @@ export const DOCUMENT_ROUTES: DemoRoute[] = [
         )
       ),
   },
-  { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/messages$/, answer: () => ok([]) },
+  {
+    method: "GET",
+    pattern: /^\/api\/v1\/issues\/([^/]+)\/messages$/,
+    answer: ([key]) => ok(MESSAGES[key ?? ""] ?? []),
+  },
   { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/handoffs$/, answer: () => ok([]) },
   { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/events$/, answer: () => ok([]) },
   {

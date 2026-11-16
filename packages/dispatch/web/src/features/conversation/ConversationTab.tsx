@@ -58,6 +58,8 @@ import { Unfurl } from "../refs/Unfurl";
 import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { quoteInto } from "../threads/quote-reply";
+import { QuotableText } from "../threads/SelectionBar";
 import { threadLayout } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
@@ -97,7 +99,12 @@ import type { CarriedBlockIds } from "./send-request";
 import { capabilitiesForTarget, TargetedMessageCard } from "./TargetedMessageCard";
 import { useFollowLatest } from "./use-follow-latest";
 import { useAgents } from "./useAgents";
-import { threadRepliesSendKey, threadReplySendKey, usePhoneThread } from "./usePhoneThread";
+import {
+  phoneThreadComposerKey,
+  threadRepliesSendKey,
+  threadReplySendKey,
+  usePhoneThread,
+} from "./usePhoneThread";
 
 interface ConversationTabProps {
   /** Every artifact on the issue by id - uploads and images as well as documents, which is
@@ -184,6 +191,10 @@ function replyTargetFor(
   };
 }
 
+/** Quote reply on a message's words (`threads/quote-reply.ts`): the docked composer answers
+ *  `target`, and the words go at the end of what it holds. */
+type QuoteReply = (target: ReplyTarget, selected: string) => void;
+
 /** A reply in a thread as the Conversation renders it: the quoted parent links to that turn,
  *  a delivered reply (a human's follow-up on a targeted thread) shows its attempt and keeps the
  *  retry row while unanswered, and every reply can be replied to, on a closed issue too. */
@@ -192,6 +203,7 @@ function ConversationReply({
   currentReplyId,
   issueKey,
   markRef,
+  onQuoteReply,
   onReply,
   reply,
   replyDisabled,
@@ -203,6 +215,8 @@ function ConversationReply({
   /** The shared thread read mark (`useMarkThreadRead`), on the thread's newest reply. */
   markRef?: DwellRef;
   onReply: (target: ReplyTarget) => void;
+  /** Quote reply on the reply's words, in a reply to it; absent while no reply can start. */
+  onQuoteReply: QuoteReply | undefined;
   reply: MessageWithTrees;
   replyDisabled: boolean;
   root: MessageConversation;
@@ -228,14 +242,20 @@ function ConversationReply({
       at={reply.created_at}
       author={reply.author}
       body={
-        <>
+        <QuotableText
+          onQuote={
+            onQuoteReply === undefined
+              ? undefined
+              : (selected) => onQuoteReply(replyTargetFor(reply, root, issueKey), selected)
+          }
+        >
           <MarkdownBody
             markdown={reply.body}
             source={textSourceOf("message", reply.id)}
             tree={reply.body_tree}
           />
           <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
-        </>
+        </QuotableText>
       }
       current={reply.id === currentReplyId}
       markRef={markRef}
@@ -276,6 +296,7 @@ function Thread({
   agents,
   currentReplyId,
   issueKey,
+  onQuoteReply,
   onReply,
   replyDisabled,
   root,
@@ -283,6 +304,7 @@ function Thread({
   agents: readonly Agent[] | undefined;
   currentReplyId: string | undefined;
   issueKey: string;
+  onQuoteReply: QuoteReply | undefined;
   onReply: (target: ReplyTarget) => void;
   replyDisabled: boolean;
   root: MessageConversation;
@@ -310,6 +332,7 @@ function Thread({
           issueKey={issueKey}
           key={reply.id}
           markRef={reply === newest ? markRef : undefined}
+          onQuoteReply={onQuoteReply}
           onReply={onReply}
           reply={reply}
           replyDisabled={replyDisabled}
@@ -332,6 +355,7 @@ function MessageTurn({
   issueKey,
   item,
   onPin,
+  onQuoteReply,
   onReply,
   pinned,
   register,
@@ -344,6 +368,8 @@ function MessageTurn({
   issueKey: string;
   item: Extract<Conversation, { kind: "message" }>;
   onPin: () => void;
+  /** Quote reply on the message's words, in a reply to it; absent while no reply can start. */
+  onQuoteReply: QuoteReply | undefined;
   onReply: (target: ReplyTarget) => void;
   pinned: boolean;
   register?: DwellRef;
@@ -365,12 +391,20 @@ function MessageTurn({
             <Timestamp at={item.root.created_at} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody
-            markdown={item.root.body}
-            source={textSourceOf("message", item.root.id)}
-            tree={item.root.body_tree}
-          />
-          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <QuotableText
+            onQuote={
+              onQuoteReply === undefined
+                ? undefined
+                : (selected) => onQuoteReply(replyTargetFor(item.root, item, issueKey), selected)
+            }
+          >
+            <MarkdownBody
+              markdown={item.root.body}
+              source={textSourceOf("message", item.root.id)}
+              tree={item.root.body_tree}
+            />
+            <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
+          </QuotableText>
         </div>
         <TurnActions>
           <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
@@ -385,6 +419,7 @@ function MessageTurn({
         agents={agents}
         currentReplyId={currentReplyId}
         issueKey={issueKey}
+        onQuoteReply={onQuoteReply}
         onReply={onReply}
         replyDisabled={replyDisabled}
         root={item}
@@ -742,6 +777,23 @@ function CommentTurn({
     }
     setExpanded(!expanded);
   };
+  // Quote reply on the thread's words goes where a reply to it goes: the composer already
+  // answering it (the docked one, which holds while a send of the tab's is out), on a phone the
+  // thread's own composer, which its Reply opens, and otherwise the card's reply box, opened.
+  const quoteReply = (selected: string) => {
+    if (isPhone) {
+      if (onReply(commentReplyTarget(item.root, agentText, issueKey))) {
+        quoteInto(phoneThreadComposerKey(sendKey), selected);
+      }
+      return;
+    }
+    if (hideReplyComposer) {
+      if (!replyDisabled) quoteInto(sendKey, selected);
+      return;
+    }
+    if (!currentExpanded) setExpanded(true);
+    quoteInto(replySendKey, selected);
+  };
   return (
     <li
       aria-current={current ? "true" : undefined}
@@ -769,6 +821,7 @@ function CommentTurn({
         onEdit={editComment}
         onEditingChange={setEditingCommentId}
         onRetryAction={onRetryAction}
+        onQuoteReply={quoteReply}
         onToggle={toggleThread}
         owner={{ key: issueKey, kind: "issue" }}
         pendingAction={pendingAction}
@@ -827,6 +880,7 @@ function TargetedMessageTurn({
   currentReplyId,
   issueKey,
   item,
+  onQuoteReply,
   onReply,
   register,
   replyDisabled,
@@ -836,6 +890,8 @@ function TargetedMessageTurn({
   currentReplyId: string | undefined;
   issueKey: string;
   item: Extract<Conversation, { kind: "targeted-message" }>;
+  /** Quote reply on the message's words, in a reply to it; absent while no reply can start. */
+  onQuoteReply: QuoteReply | undefined;
   onReply: (target: ReplyTarget) => void;
   register?: DwellRef;
   replyDisabled: boolean;
@@ -863,12 +919,20 @@ function TargetedMessageTurn({
             <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody
-            markdown={item.root.body}
-            source={textSourceOf("message", item.root.id)}
-            tree={item.root.body_tree}
-          />
-          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <QuotableText
+            onQuote={
+              onQuoteReply === undefined
+                ? undefined
+                : (selected) => onQuoteReply(replyTargetFor(item.root, item, issueKey), selected)
+            }
+          >
+            <MarkdownBody
+              markdown={item.root.body}
+              source={textSourceOf("message", item.root.id)}
+              tree={item.root.body_tree}
+            />
+            <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
+          </QuotableText>
         </>
       }
       canAside={capabilities?.includes("aside") !== false}
@@ -888,6 +952,7 @@ function TargetedMessageTurn({
           agents={agents}
           currentReplyId={currentReplyId}
           issueKey={issueKey}
+          onQuoteReply={onQuoteReply}
           onReply={onReply}
           replyDisabled={replyDisabled}
           root={item}
@@ -1066,6 +1131,13 @@ export function ConversationTab({
     setReplyTo(reply);
     return reply.id === target.id;
   };
+  // Quote reply on a message's words: the docked composer answers the message, and the words go
+  // at the end of what it holds (`threads/quote-reply.ts`). None while a send of the tab's is out.
+  const quoteMessage: QuoteReply | undefined = composerSending
+    ? undefined
+    : (target, selected) => {
+        if (beginReply(target)) quoteInto(sendKey, selected);
+      };
   const phoneReplyTargetsThread =
     phoneThread !== undefined && phone.replyTo?.id === phoneThread.root.id;
   // The list is on the page only once all four reads answer: `loading` and `failed` both hide it
@@ -1314,6 +1386,7 @@ export function ConversationTab({
                 issueKey={issueKey}
                 item={item}
                 key={item.id}
+                onQuoteReply={quoteMessage}
                 onReply={beginReply}
                 register={register}
                 replyDisabled={composerSending}
@@ -1330,6 +1403,7 @@ export function ConversationTab({
                 item={item}
                 key={item.id}
                 onPin={() => pinConversation(item.id)}
+                onQuoteReply={quoteMessage}
                 onReply={beginReply}
                 pinned={pinned}
                 register={register}

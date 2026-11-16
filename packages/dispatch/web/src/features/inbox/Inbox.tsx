@@ -56,6 +56,7 @@ import {
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { useQuoteReplyKey } from "../threads/quote-reply";
 import { useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
@@ -1167,6 +1168,9 @@ export function Inbox({
   // has no row to fall back through - is one level out rather than a dead end.
   const pickerOrigin = useRef<string | null>(null);
   useKeymapScope(keymapScope);
+  // Quote reply on words of a thread the column shows (`threads/quote-reply.ts`); the card in
+  // hand quotes its own question's words with its own `q`.
+  useQuoteReplyKey(keymapScope);
   // The selected question's card takes its keys first: the `ask` scope stands above the list's
   // own. The drawer is a dialog, which consults its own scope alone, so there the card's keys
   // stay on it.

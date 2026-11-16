@@ -62,6 +62,8 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
+import { quoteInto } from "../threads/quote-reply";
+import { QuotableText } from "../threads/SelectionBar";
 import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
@@ -325,34 +327,43 @@ function CommentThreadBody({
     )
     .map(commentTurn);
   const rootTurn = root === undefined ? undefined : commentTurn(root);
+  // Quote reply on the thread's words goes into its reply box below (`threads/quote-reply.ts`).
   return (
-    <ThreadTurns
-      composer={
-        root === undefined ? null : (
-          <MentionComposer
-            closed={issue.data !== undefined && issue.data.closed_at !== null}
-            frame="mt-2"
-            inline
-            kind="comment"
-            mutationKey={threadSendKey(thread.thread_id)}
-            onClose={noReturn}
-            onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: commentsKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-            }}
-            owner={owner}
-            replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
-            standing
-          />
-        )
+    <QuotableText
+      onQuote={
+        root === undefined
+          ? undefined
+          : (selected) => quoteInto(threadSendKey(thread.thread_id), selected)
       }
-      markNewest={markNewest}
-      openAtFirstUnread={openAtFirstUnread}
-      replies={replies}
-      root={rootTurn}
-      threadId={thread.thread_id}
-      unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
-    />
+    >
+      <ThreadTurns
+        composer={
+          root === undefined ? null : (
+            <MentionComposer
+              closed={issue.data !== undefined && issue.data.closed_at !== null}
+              frame="mt-2"
+              inline
+              kind="comment"
+              mutationKey={threadSendKey(thread.thread_id)}
+              onClose={noReturn}
+              onSent={() => {
+                void queryClient.invalidateQueries({ queryKey: commentsKey });
+                void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              }}
+              owner={owner}
+              replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+              standing
+            />
+          )
+        }
+        markNewest={markNewest}
+        openAtFirstUnread={openAtFirstUnread}
+        replies={replies}
+        root={rootTurn}
+        threadId={thread.thread_id}
+        unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
+      />
+    </QuotableText>
   );
 }
 
@@ -410,40 +421,50 @@ function MessageThreadBody({
     read === undefined ? undefined : newestAttempt([read.message, ...(read.replies ?? [])]);
   const target = root?.target;
   return (
-    <ThreadTurns
-      composer={
-        root === undefined ? null : (
-          <MentionComposer
-            closed={issue.data !== undefined && issue.data.closed_at !== null}
-            frame="mt-2"
-            inline
-            mutationKey={threadSendKey(thread.thread_id)}
-            onClose={noReturn}
-            onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: messagesKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-            }}
-            owner={{ issueKey, kind: "issue" }}
-            replyTo={{
-              actor: root.author,
-              excerpt: "",
-              id: root.id,
-              parentKind: "message",
-              ...(target === null || target === undefined
-                ? {}
-                : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }),
-            }}
-            standing
-          />
-        )
+    <QuotableText
+      onQuote={
+        root === undefined
+          ? undefined
+          : (selected) => quoteInto(threadSendKey(thread.thread_id), selected)
       }
-      markNewest={markNewest}
-      openAtFirstUnread={openAtFirstUnread}
-      replies={replies}
-      root={rootTurn}
-      threadId={thread.thread_id}
-      unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
-    />
+    >
+      <ThreadTurns
+        composer={
+          root === undefined ? null : (
+            <MentionComposer
+              closed={issue.data !== undefined && issue.data.closed_at !== null}
+              frame="mt-2"
+              inline
+              mutationKey={threadSendKey(thread.thread_id)}
+              onClose={noReturn}
+              onSent={() => {
+                void queryClient.invalidateQueries({ queryKey: messagesKey });
+                void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              }}
+              owner={{ issueKey, kind: "issue" }}
+              replyTo={{
+                actor: root.author,
+                excerpt: "",
+                id: root.id,
+                parentKind: "message",
+                ...(target === null || target === undefined
+                  ? {}
+                  : {
+                      thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target },
+                    }),
+              }}
+              standing
+            />
+          )
+        }
+        markNewest={markNewest}
+        openAtFirstUnread={openAtFirstUnread}
+        replies={replies}
+        root={rootTurn}
+        threadId={thread.thread_id}
+        unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
+      />
+    </QuotableText>
   );
 }
 

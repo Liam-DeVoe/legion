@@ -20,6 +20,7 @@ import {
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useQuoteReplyKey } from "../threads/quote-reply";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
 
@@ -49,6 +50,8 @@ export function DocumentPage(): ReactNode {
     },
   });
   const agentText = useAgentText();
+  // Quote reply on words of a comment in the document's margin (`threads/quote-reply.ts`).
+  useQuoteReplyKey("document");
   const unsubscribe = useKeyedWrite({
     label: (sessionId: string) =>
       `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from this document`,

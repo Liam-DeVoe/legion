@@ -41,6 +41,11 @@ const BLOCK = '[data-proof-block-type="ask"]';
 const HANDED_ON = "a7000000-0000-4000-8000-000000000007";
 /** PANE-5's comment the reviewer rewrote, as its Conversation tab draws it expanded. */
 const COMMENT = '[data-margin-item="c5000000-0000-4000-8000-000000000001"]';
+/** PANE-3's message from the rollout architect, on its Conversation tab. */
+const MESSAGE = '[data-turn="message:e3000000-0000-4000-8000-000000000001"]';
+/** The selection bar over words selected outside a document, and the Conversation's composer. */
+const BAR = "[data-selection-bar]";
+const DOCKED = 'form[aria-label="Comment composer"] textarea[aria-label="Comment"]';
 
 /** PANE-5's Conversation tab with the rewritten comment's thread open. */
 async function openComment(page: Page): Promise<void> {
@@ -67,6 +72,8 @@ interface Shot {
   name: string;
   viewport: { width: number; height: number };
   take: (page: Page) => Promise<void>;
+  /** Draws the text cursor, where the picture is of where it waits. */
+  caret?: boolean;
 }
 
 interface Report {
@@ -127,6 +134,72 @@ async function select(page: Page, root: string, words: string): Promise<void> {
   );
   await page.waitForTimeout(600);
 }
+
+/** Selects with the mouse, as a reader's drag does, from the start of `from` to the end of `to`
+ *  (the end of `from` where `to` is not given), both under the first element `root` names, and
+ *  waits for the selection bar to stand over the words. */
+async function drag(page: Page, root: string, from: string, to = from): Promise<void> {
+  const ends = await page.evaluate(
+    ([selector, first, last]) => {
+      const element = document.querySelector(selector);
+      if (element === null) throw new Error(`no ${selector}`);
+      const find = (wanted: string, start: boolean) => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+          const at = node.textContent?.indexOf(wanted) ?? -1;
+          if (at < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, start ? at : at + wanted.length - 1);
+          range.setEnd(node, start ? at + 1 : at + wanted.length);
+          const box = range.getBoundingClientRect();
+          return { x: start ? box.left + 1 : box.right - 1, y: box.top + box.height / 2 };
+        }
+        throw new Error(`no "${wanted}" under ${selector}`);
+      };
+      return { from: find(first, true), to: find(last, false) };
+    },
+    [root, from, to] as const
+  );
+  await page.mouse.move(ends.from.x, ends.from.y);
+  await page.mouse.down();
+  await page.mouse.move(ends.to.x, ends.to.y, { steps: 8 });
+  await page.mouse.up();
+  await page.locator(BAR).waitFor({ timeout: 5_000 });
+  await page.waitForTimeout(400);
+}
+
+/** Checks that the box `field` names holds `expected`, has the focus, and has the cursor at its
+ *  end, on the empty line under the quote. */
+async function checkQuoted(page: Page, field: string, expected: string, what: string) {
+  const state = await page.locator(field).evaluate((element) => {
+    const box = element as HTMLTextAreaElement;
+    return {
+      caret: box.selectionStart === box.value.length && box.selectionEnd === box.value.length,
+      focused: document.activeElement === box,
+      value: box.value,
+    };
+  });
+  check(
+    state.value === expected && state.caret && state.focused,
+    `${what} (${JSON.stringify(state.value)}, cursor at the end: ${state.caret}, focused: ${state.focused})`
+  );
+}
+
+/** The Inbox with PANE-2's question in the reading pane, two of its paragraphs selected with the
+ *  mouse: the end of its facts and its recommendation. */
+async function selectInAsk(page: Page): Promise<void> {
+  await inbox(page, CHECKED);
+  await drag(
+    page,
+    `${card(CHECKED)} [data-ask-question]`,
+    "The R3 audit decides",
+    "only out of date for a week."
+  );
+}
+
+/** Those two paragraphs quoted as the page shows them: the bold of the recommendation is no `**`. */
+const ASK_QUOTE =
+  "> The R3 audit decides whether the mirror retries a refused lease or hands it back at once, so until it closes the flag prints today's retries.\n>\n> Recommended: ship it as is. It writes nothing, so the audit cannot make it wrong, only out of date for a week.\n\n";
 
 /** Presses Rewrite on the card in the reading pane and waits for the badge to say `state`. */
 async function rewrite(page: Page, id: string, state: "done" | "failed"): Promise<void> {
@@ -451,6 +524,109 @@ const shots: Shot[] = [
       await page.waitForTimeout(500);
     },
   },
+  {
+    name: "ask-card-24-quote-select",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await selectInAsk(page);
+      const actions = await page
+        .locator(`${BAR} [data-selection-action]`)
+        .evaluateAll((all) => all.map((action) => action.textContent));
+      check(
+        actions.join(",") === "Quote replyq,Defined",
+        `the bar over an ask's words offers Quote reply and Define, each with its key (${actions.join(",")})`
+      );
+      await rest(page);
+    },
+  },
+  {
+    name: "ask-card-25-quote-ask",
+    viewport: DESKTOP,
+    caret: true,
+    take: async (page) => {
+      await selectInAsk(page);
+      await page.keyboard.press("q");
+      await page.waitForTimeout(400);
+      await checkQuoted(
+        page,
+        `${card(CHECKED)} [data-ask-answer]`,
+        ASK_QUOTE,
+        "q quotes an ask's words in its answer box, as the page shows them, the cursor under them"
+      );
+      check((await page.locator(BAR).count()) === 0, "the bar goes once the words are quoted");
+      await rest(page);
+    },
+  },
+  {
+    name: "ask-card-26-quote-comment",
+    viewport: DESKTOP,
+    caret: true,
+    take: async (page) => {
+      await openComment(page);
+      await drag(
+        page,
+        `${COMMENT} .dispatch-markdown`,
+        "Of last week's 412 refused leases",
+        "so a retry wins back very little."
+      );
+      await page.keyboard.press("q");
+      await page.waitForTimeout(400);
+      await checkQuoted(
+        page,
+        `${COMMENT} textarea[aria-label="Reply"]`,
+        "> Of last week's 412 refused leases, 9 went through on a retry, all within 30 seconds, so a retry wins back very little.\n\n",
+        "q quotes a comment's words in the thread's reply box"
+      );
+      await rest(page);
+    },
+  },
+  {
+    name: "ask-card-27-quote-append",
+    viewport: DESKTOP,
+    caret: true,
+    take: async (page) => {
+      await openComment(page);
+      const reply = `${COMMENT} textarea[aria-label="Reply"]`;
+      await page.locator(reply).fill("Agreed. One question about the next cycle:");
+      await drag(page, `${COMMENT} .dispatch-markdown`, "hand a refused lease back at once");
+      await page.keyboard.press("q");
+      await page.waitForTimeout(400);
+      await checkQuoted(
+        page,
+        reply,
+        "Agreed. One question about the next cycle:\n\n> hand a refused lease back at once\n\n",
+        "a quote goes at the end of what the box already held, after a blank line"
+      );
+      await rest(page);
+    },
+  },
+  {
+    name: "ask-card-28-quote-message",
+    viewport: DESKTOP,
+    caret: true,
+    take: async (page) => {
+      await open(page, "/issues/PANE-3/conversation", `${MESSAGE} .dispatch-markdown`);
+      // The tab's top, as a reader who opened it stands: the issue's header above the composer.
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.waitForTimeout(400);
+      await drag(page, `${MESSAGE} .dispatch-markdown`, "The mirror can move", "on Thursday.");
+      // The bar's own button this time, rather than `q`.
+      await page.locator(`${BAR} [data-selection-action="Quote reply"]`).click();
+      await page.waitForTimeout(400);
+      await checkQuoted(
+        page,
+        DOCKED,
+        "> The mirror can move on any day, so if the ledger misses Monday morning, the mirror goes first and the ledger follows on Thursday.\n\n",
+        "Quote reply on a message's words puts them in the conversation's composer"
+      );
+      const composer = await page.locator('form[aria-label="Comment composer"]').innerText();
+      check(
+        composer.includes("rollout architect"),
+        "the composer replies to the message the words were quoted from"
+      );
+      await rest(page);
+    },
+  },
 ];
 
 /** The single file, clicked through with the network off. */
@@ -494,6 +670,21 @@ const fileShots: Shot[] = [
       check(true, "an issue's spec opens by its fragment address");
     },
   },
+  {
+    name: "file-quote-reply",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await selectInAsk(page);
+      await page.keyboard.press("q");
+      await page.waitForTimeout(400);
+      await checkQuoted(
+        page,
+        `${card(CHECKED)} [data-ask-answer]`,
+        ASK_QUOTE,
+        "Quote reply quotes an ask's words in its answer box from the file"
+      );
+    },
+  },
 ];
 
 async function takeAll(browser: Browser, list: Shot[]): Promise<void> {
@@ -517,7 +708,12 @@ async function takeAll(browser: Browser, list: Shot[]): Promise<void> {
     try {
       await shot.take(page);
       const file = join(out, `${shot.name}.png`);
-      await page.screenshot({ path: file });
+      // A still picture of where the cursor waits draws it steadily rather than mid-blink.
+      if (shot.caret === true) {
+        await page.addStyleTag({ content: "textarea { caret-animation: manual; }" });
+        await page.waitForTimeout(100);
+      }
+      await page.screenshot({ path: file, caret: shot.caret === true ? "initial" : "hide" });
       report.shots.push(file);
       console.log(`wrote ${file}`);
     } catch (error) {

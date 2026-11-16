@@ -1,5 +1,5 @@
 import type { MutationKey } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
@@ -48,6 +48,7 @@ import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
+import { quoteInto, useQuoteTarget } from "../threads/quote-reply";
 import { threadLayout } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
@@ -121,6 +122,10 @@ export interface ThreadCardProps {
   onRetryAction(): void;
   onSelect?(): void;
   onToggle(): void;
+  /** Quote reply on words selected in the thread (`threads/quote-reply.ts`), where another
+   *  composer than the card's own answers it (the Conversation's). By default the card opens its
+   *  reply composer, where it has one, and quotes the words there. */
+  onQuoteReply?(selected: string): void;
   owner: MarginOwner;
   /** This thread's action is saving, or waiting its turn behind another thread's save. The
    *  buttons stay enabled meanwhile - a disabled button drops the focus it holds and turns a
@@ -262,6 +267,7 @@ export function ThreadCard({
   onRetryAction,
   onSelect,
   onToggle,
+  onQuoteReply,
   owner,
   selected = false,
   showReference = true,
@@ -371,6 +377,22 @@ export function ThreadCard({
       />
     </div>
   ) : null;
+  // Quote reply on the thread's words: the host's, else the card's own reply composer, which the
+  // press opens on a folded card. A decided suggestion's thread takes no reply.
+  const articleRef = useRef<HTMLElement>(null);
+  useQuoteTarget(
+    articleRef,
+    onQuoteReply !== undefined
+      ? { quote: onQuoteReply }
+      : replyMutationKey === undefined || terminalSuggestion
+        ? undefined
+        : {
+            quote: (selected) => {
+              if (!expanded) onToggle();
+              quoteInto(replyMutationKey, selected);
+            },
+          }
+  );
 
   return (
     <>
@@ -386,6 +408,7 @@ export function ThreadCard({
         } ${rootRewrite?.state === "done" ? "outline-none" : ""} ${className ?? ""}`}
         data-hovered={hovered ? "true" : undefined}
         data-anchor-block={thread.anchor?.block_id ?? undefined}
+        ref={articleRef}
         onClickCapture={() => {
           if (
             pulseOrphanBlock &&

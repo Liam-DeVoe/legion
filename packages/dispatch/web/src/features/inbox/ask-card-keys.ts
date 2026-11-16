@@ -1,4 +1,5 @@
 import { type KeyBinding, useKeymap } from "../shell/keymap";
+import { quoteReplyKey, quoteSelection } from "../threads/quote-reply";
 
 /**
  * What an open ask's card does on its keys. Each mounted `AskCard` registers its own against
@@ -75,10 +76,10 @@ export function askCardLeadKeys(card: () => Element | null): KeyBinding[] {
  * The card's keys, under the `ask` scope the shortcut help lists as **Ask card**, in the order
  * and with the labels of the card's menu: `lead` first (`1`–`9` and Enter, `askCardLeadKeys`),
  * then `r` Rewrite, `b` Ask back, `a` Hand this question to, `n` Decline to answer, `d` Define
- * selected words, `w` the original wording, and, from the answer box, the modified Enter that
- * sends and Escape, which leaves Ask back. `card` names the card in hand, or null for none; the
- * host also pushes the `ask` scope above its own while one is (`useKeymapScope`), so these act
- * before its keys.
+ * selected words, `q` Quote reply, `w` the original wording, and, from the answer box, the
+ * modified Enter that sends and Escape, which leaves Ask back. `card` names the card in hand, or
+ * null for none; the host also pushes the `ask` scope above its own while one is
+ * (`useKeymapScope`), so these act before its keys.
  */
 export function useAskCardKeys(card: () => Element | null, lead: readonly KeyBinding[]): void {
   const actions = () => askCardActions(card());
@@ -119,6 +120,13 @@ export function useAskCardKeys(card: () => Element | null, lead: readonly KeyBin
       run: () => actions()?.define(),
       when: () => actions()?.hasSelection() === true,
     },
+    // The selection bar's other action (`threads/SelectionBar.tsx`): the selected words, quoted
+    // in the answer box.
+    quoteReplyKey(
+      "Quote selected words in your answer",
+      quoteSelection,
+      () => actions()?.hasSelection() === true
+    ),
     {
       id: "original",
       keys: "w",

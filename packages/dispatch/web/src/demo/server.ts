@@ -10,7 +10,7 @@
 
 // The server's own block schema, which `GET /api/v1/schema/blocks` answers with.
 import blockSchema from "../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
-import type { Ask, AskRead, Comment, DispatchEvent, InboxRow } from "../api/types";
+import type { Ask, AskRead, Comment, DispatchEvent, InboxRow, Message } from "../api/types";
 import type { AskRewrite, Definition } from "../features/inbox/ask-rewrite";
 import { DOCUMENT_ROUTES } from "./documents";
 import {
@@ -170,6 +170,14 @@ export class DemoServer {
       method: "POST",
       pattern: /^\/api\/v1\/issues\/([^/]+)\/comments$/,
       answer: ([key], _, body) => this.comment(key, body as { body: string; ask_id?: string }),
+    },
+    {
+      // A reply to a message, as Quote reply on one starts: taken, and kept nowhere, as a
+      // comment that answers no ask is.
+      method: "POST",
+      pattern: /^\/api\/v1\/issues\/([^/]+)\/messages$/,
+      answer: ([key], _, body) =>
+        this.message(key, body as { body: string; in_reply_to?: string | null }),
     },
     {
       method: "GET",
@@ -474,6 +482,22 @@ export class DemoServer {
       );
     }
     return { status: 201, body: comment };
+  }
+
+  private message(key: string, input: { body: string; in_reply_to?: string | null }): DemoAnswer {
+    const message = {
+      author: { id: READER, kind: "user" },
+      body: input.body,
+      broadcast_id: null,
+      created_at: goTime(new Date()),
+      deliveries: [],
+      id: `message-${Date.now()}`,
+      in_reply_to: input.in_reply_to ?? null,
+      issue_key: key,
+      reply_block: null,
+      target: null,
+    } as unknown as Message;
+    return { status: 201, body: message };
   }
 
   private publish(row: DemoRow, type: string): void {
