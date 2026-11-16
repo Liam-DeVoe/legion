@@ -122,11 +122,13 @@ webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1",
 for _, hook := range hooks {
     mux.Handle(hook.path, webhookGate)
 }
-mux.Handle("/v1/", apiAuth(apiToken, apiVerifier, logger, v1Gate))
+v1Handler := apiAuth(apiAuthConfig, v1Gate)
+mux.Handle("/v1", v1Handler)
+mux.Handle("/v1/", v1Handler)
 // ... phase 5, once NATS and the CI store are open:
 openWebhooks(webhookGate, hooks, client, ciStore)
 // ... phase 6, once the interest and session caches are warm:
-openV1Routes(v1Gate, ready, cfg.MachineID, logger, listeningAt)
+openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 deliveryLease.Start(leaseCtx)
 receiver.Start()
 deps.Store(ready)
@@ -149,7 +151,7 @@ while the old pod still delivers.
 
 | Phase | `/healthz` | Body | Meaning |
 |-------|-----------|------|---------|
-| Starting | 503 | `{"status":"starting"}` | Up, init in progress: NATS connecting, caches warming or the OIDC issuer's discovery pending. Webhooks answer 503 until NATS and the CI store are open, `/v1/*` until the interest and session caches are warm too |
+| Starting | 503 | `{"status":"starting"}` | Up, init in progress: NATS connecting, caches warming or the discovery of the OIDC issuer or of Google's issuer pending. Webhooks answer 503 until NATS and the CI store are open, `/v1/*` until the interest and session caches are warm too |
 | Active | 200 | `{"status":"healthy","role":"active",...}` | Serving, and this pod receives the durable; the body carries its lag |
 | Standby | 200 | `{"status":"healthy","role":"standby","active_instance":...}` | Serving; another pod of the machine id holds the lease |
 | Degraded | 200 | `{"status":"degraded","error":"..."}` | A KV dependency or the durable's lag read failed transiently (NATS reconnect and the monitor retry), or this pod is the machine's deliverer and does not receive the durable yet: it holds the delivery lease, runs without one, has read no holder at all, or the lease record still names it while its renewals have lapsed. Nothing of the durable reaches a session until it receives, so no such answer is healthy; it stays 200, so a readiness probe keeps the pod in service |

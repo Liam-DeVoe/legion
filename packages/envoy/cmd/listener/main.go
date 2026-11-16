@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/webhook"
@@ -499,7 +500,8 @@ type healthAnswer struct {
 // healthzHandler is the listener's /healthz, the readiness answer of every pod of a machine id. It
 // answers 503 "starting" until main publishes deps, which it does once NATS is connected, the
 // webhook and /v1 gates are open over warm caches and the receive loop has started, and, on a
-// listener configured with an OIDC issuer, until the issuer's discovery has succeeded (verifier).
+// listener configured with an OIDC issuer or a Google audience, until each issuer's discovery has
+// succeeded (verifiers, listenerAPIAuth.verifiers).
 // Then it answers 200 "healthy" once every dependency answers, naming this pod's "role": "active"
 // while it receives the durable (it holds the lease and is subscribed, or it runs without a lease
 // and receives), with the durable's lag (num_pending, num_ack_pending), or "standby" otherwise,
@@ -597,12 +599,12 @@ type healthAnswer struct {
 // /v1/sessions keeps answering the copy, which it refuses only when the view cannot be served. The
 // answers dependencyHealth gives carry only status and error, as before: they report a fault
 // below the copy, not its freshness.
-func healthzHandler(deps *atomic.Pointer[listenerDeps], verifier *apiVerifier) http.HandlerFunc {
+func healthzHandler(deps *atomic.Pointer[listenerDeps], verifiers ...*apiVerifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), healthzDeadline)
 		defer cancel()
 		answered := make(chan healthAnswer, 1)
-		go func() { answered <- listenerHealth(ctx, deps.Load(), verifier) }()
+		go func() { answered <- listenerHealth(ctx, deps.Load(), verifiers...) }()
 		var answer healthAnswer
 		select {
 		case answer = <-answered:
@@ -620,8 +622,8 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], verifier *apiVerifier) h
 
 // listenerHealth runs /healthz's checks over d, nil until main publishes it, within ctx, its bus
 // checks within healthzBudget of it.
-func listenerHealth(ctx context.Context, d *listenerDeps, verifier *apiVerifier) healthAnswer {
-	if d == nil || !verifier.ready() {
+func listenerHealth(ctx context.Context, d *listenerDeps, verifiers ...*apiVerifier) healthAnswer {
+	if d == nil || !discovered(verifiers) {
 		return healthAnswer{http.StatusServiceUnavailable, map[string]interface{}{"status": "starting"}}
 	}
 	unhealthy := func(body map[string]interface{}) healthAnswer {
@@ -911,6 +913,20 @@ func newStartingGate(name string, logger *logging.Logger) *startingGate {
 }
 
 func (g *startingGate) open(mux *http.ServeMux) { g.mux.Store(mux) }
+
+// route names the /v1 route r reaches, envoy_listener_requests_total's path label: once the gate
+// is open, the pattern of the route that serves it ((*http.ServeMux).Handler, which routes as
+// ServeHTTP does and changes nothing on r), and before then, or for a path no route matches, the
+// pattern that routed it to the gate (/v1 or /v1/). It is always a pattern and never the path, so
+// a session id, or any other text a caller writes into a path, never becomes a series of its own.
+func (g *startingGate) route(r *http.Request) string {
+	if mux := g.mux.Load(); mux != nil {
+		if _, pattern := mux.Handler(r); pattern != "" {
+			return pattern
+		}
+	}
+	return r.Pattern
+}
 
 func (g *startingGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux := g.mux.Load()
@@ -1357,11 +1373,24 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// An issuer's discovery runs in the background until it succeeds (apiVerifier.discover): /v1
+	oidcAccounts, err := resolveListenerOIDCAccounts(os.Getenv, oidcIssuer)
+	if err != nil {
+		log.Fatal(err)
+	}
+	googleAudience, googleAccounts, err := resolveListenerGoogleConfig(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Each issuer's discovery runs in the background until it succeeds (apiVerifier.discover): /v1
 	// answers 503 "service starting" and /healthz "starting" meanwhile, so an issuer that does not
 	// answer at start leaves the listener up and unready instead of ending it.
 	apiVerifier := newAPIVerifier(oidcIssuer, oidcAudience)
-	// The broker-token settings are read here, beside the other two credentials, so a
+	// A Google identity token's issuer is Google itself, so only its audience is a setting.
+	var googleCallers *googleIdentities
+	if googleAudience != "" {
+		googleCallers = &googleIdentities{audience: googleAudience, verifier: newAPIVerifier(oidc.GoogleIssuer, googleAudience), accounts: googleAccounts}
+	}
+	// The broker-token settings are read here, beside the bearers' own, so a
 	// half-configured one refuses the start before anything is bound. Its verifier is built
 	// later, once JetStream is open: the spent-proof bucket it records a proof in lives there
 	// (brokerTokens.open).
@@ -1370,13 +1399,24 @@ func main() {
 		log.Fatal(err)
 	}
 	brokerTokenAuth := newBrokerTokens(brokerConfig)
-	if err := validateListenerAPIAuth(cfg, apiToken, os.Getenv("ENVOY_API_ALLOW_UNAUTHENTICATED"), apiVerifier); err != nil {
+	apiAuthConfig := listenerAPIAuth{
+		token:        apiToken,
+		verifier:     apiVerifier,
+		accounts:     oidcAccounts,
+		google:       googleCallers,
+		brokers:      brokerTokenAuth,
+		allowedHosts: cfg.AllowedHosts,
+		logger:       logger,
+	}
+	if err := validateListenerAPIAuth(cfg, apiAuthConfig, os.Getenv("ENVOY_API_ALLOW_UNAUTHENTICATED")); err != nil {
 		log.Fatal(err)
 	}
-	logger.Info("listener API auth: " + describeListenerAPIAuth(apiToken, oidcIssuer, brokerTokenAuth))
-	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiToken, apiVerifier, cfg.AllowedHosts))
-	if apiVerifier != nil {
-		go apiVerifier.discover(context.Background(), logger)
+	logger.Info("listener API auth: " + describeListenerAPIAuth(apiAuthConfig, oidcIssuer))
+	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiAuthConfig))
+	for _, verifier := range apiAuthConfig.verifiers() {
+		if verifier != nil {
+			go verifier.discover(context.Background(), logger)
+		}
 	}
 
 	// Load webhook config (fast — env var reads only).
@@ -1449,7 +1489,7 @@ func main() {
 
 	// /healthz is always reachable, before NATS setup as well as after it, and answers 503
 	// "starting" until the listener is ready.
-	mux.HandleFunc("/healthz", healthzHandler(&deps, apiVerifier))
+	mux.HandleFunc("/healthz", healthzHandler(&deps, apiAuthConfig.verifiers()...))
 
 	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
 	// durable consumer. It says only that the process answers, for the startup and liveness
@@ -1464,17 +1504,19 @@ func main() {
 	// The webhook and /v1 routes answer 503 "service starting" until their dependencies are open
 	// (the two /v1 list reads the refilling answer, startingGate), each behind its own gate: the
 	// webhooks once NATS and, for the GitHub route, the CI store are (Phase 5), /v1 once the
-	// interest and session caches are too (Phase 6) and, with an OIDC issuer configured, its
-	// discovery has succeeded (apiAuth answers that wait itself). Neither waits for the durable
-	// consumer, which only /healthz reads. The webhook paths reach their gate bare, /v1 through
-	// apiAuth.
+	// interest and session caches are too (Phase 6) and, with an OIDC issuer or a Google audience
+	// configured, each issuer's discovery has succeeded (apiAuth answers that wait itself). Neither
+	// waits for the durable consumer, which only /healthz reads. The webhook paths reach their gate
+	// bare, /v1 through apiAuth.
 	webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1", logger)
 	hooks := webhookRoutes(webhookCfg)
 	for _, hook := range hooks {
 		mux.Handle(hook.path, webhookGate)
 	}
 	// Serve /v1/* on the listener port for local plugin registration.
-	v1Handler := apiAuth(apiToken, apiVerifier, brokerTokenAuth, cfg.AllowedHosts, logger, v1Gate)
+	apiAuthConfig.requests = newListenerRequests(met)
+	apiAuthConfig.route = v1Gate.route
+	v1Handler := apiAuth(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)
 	mux.Handle("/v1/", v1Handler)
 

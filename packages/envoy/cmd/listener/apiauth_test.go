@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -198,7 +199,7 @@ func TestAPIAuth(t *testing.T) {
 				configured = verifier
 			}
 			var logged bytes.Buffer
-			apiAuth(tc.token, configured, nil, nil, logging.NewWithWriter("test-machine", &logged), next).
+			apiAuth(listenerAPIAuth{token: tc.token, verifier: configured, logger: logging.NewWithWriter("test-machine", &logged)}, next).
 				ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
@@ -287,7 +288,7 @@ func TestAPIAuthValidatesV1BodyContentType(t *testing.T) {
 			}
 			recorder := httptest.NewRecorder()
 
-			apiAuth("", nil, nil, nil, logging.NewWithWriter("test-machine", io.Discard), next).ServeHTTP(recorder, request)
+			apiAuth(listenerAPIAuth{logger: logging.NewWithWriter("test-machine", io.Discard)}, next).ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, tc.wantStatus, recorder.Body.String())
@@ -308,14 +309,29 @@ func TestAPIAuthValidatesV1BodyContentType(t *testing.T) {
 // service-account token, naming the class and never repeating the bearer.
 func assertRejectionLog(t *testing.T, logged, wantReason, authorize string) {
 	t.Helper()
-	const message = "listener: service-account token rejected"
+	raw, bearer := strings.CutPrefix(authorize, "Bearer ")
+	if !bearer {
+		raw = ""
+	}
+	assertRejectionLines(t, logged, "listener: service-account token rejected", wantReason, "", raw)
+}
+
+// assertRejectionLines holds the listener to one line carrying message per refused token, naming
+// the class wantReason, naming the account wantAccount when one is expected, and never repeating
+// raw, the token it refused. An empty wantReason expects no line.
+func assertRejectionLines(t *testing.T, logged, message, wantReason, wantAccount, raw string) {
+	t.Helper()
 	lines := 0
 	for _, line := range strings.Split(strings.TrimSpace(logged), "\n") {
-		if strings.Contains(line, message) {
-			lines++
-			if !strings.Contains(line, `"reason":"`+wantReason+`"`) {
-				t.Fatalf("rejection line does not name reason %q: %s", wantReason, line)
-			}
+		if !strings.Contains(line, message) {
+			continue
+		}
+		lines++
+		if !strings.Contains(line, `"reason":"`+wantReason+`"`) {
+			t.Fatalf("rejection line does not name reason %q: %s", wantReason, line)
+		}
+		if wantAccount != "" && !strings.Contains(line, `"account":"`+wantAccount+`"`) {
+			t.Fatalf("rejection line does not name the account %q: %s", wantAccount, line)
 		}
 	}
 	want := 0
@@ -323,15 +339,16 @@ func assertRejectionLog(t *testing.T, logged, wantReason, authorize string) {
 		want = 1
 	}
 	if lines != want {
-		t.Fatalf("logged %d rejection lines, want %d; log: %s", lines, want, logged)
+		t.Fatalf("logged %d rejection lines %q, want %d; log: %s", lines, message, want, logged)
 	}
-	if raw, ok := strings.CutPrefix(authorize, "Bearer "); ok && raw != "" && strings.Contains(logged, raw) {
-		t.Fatalf("the log repeats the bearer it refused: %s", logged)
+	if raw != "" && strings.Contains(logged, raw) {
+		t.Fatalf("the log repeats the token it refused: %s", logged)
 	}
 }
 
 func TestValidateListenerAPIAuth(t *testing.T) {
 	verifier := newAPIVerifier("https://oidc.eks.example/id/CLUSTER", listenerTestAudience)
+	google := newGoogleStandIn(t, listenerGoogleAccount)
 
 	cases := []struct {
 		name                 string
@@ -339,6 +356,7 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 		apiToken             string
 		allowUnauthenticated string
 		oidc                 bool
+		google               bool
 		wantError            bool
 	}{
 		{
@@ -369,6 +387,11 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 			oidc:       true,
 		},
 		{
+			name:       "allows non-loopback bind with only Google identities",
+			listenHost: "0.0.0.0",
+			google:     true,
+		},
+		{
 			name:                 "allows explicit unauthenticated non-loopback bind",
 			listenHost:           "0.0.0.0",
 			allowUnauthenticated: "1",
@@ -377,13 +400,16 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var configured *apiVerifier
+			auth := listenerAPIAuth{token: tc.apiToken}
 			if tc.oidc {
-				configured = verifier
+				auth.verifier = verifier
 			}
-			err := validateListenerAPIAuth(config.Service{ListenHost: tc.listenHost}, tc.apiToken, tc.allowUnauthenticated, configured)
+			if tc.google {
+				auth.google = google.identities
+			}
+			err := validateListenerAPIAuth(config.Service{ListenHost: tc.listenHost}, auth, tc.allowUnauthenticated)
 			if (err != nil) != tc.wantError {
-				t.Fatalf("validateListenerAPIAuth(%q, token set: %t, allow unauthenticated: %q, verifier set: %t) error = %v, want error: %t", tc.listenHost, tc.apiToken != "", tc.allowUnauthenticated, configured != nil, err, tc.wantError)
+				t.Fatalf("validateListenerAPIAuth(%q, token set: %t, allow unauthenticated: %q, verifier set: %t, google set: %t) error = %v, want error: %t", tc.listenHost, tc.apiToken != "", tc.allowUnauthenticated, tc.oidc, tc.google, err, tc.wantError)
 			}
 		})
 	}
@@ -446,11 +472,13 @@ func TestResolveListenerOIDCConfig(t *testing.T) {
 
 func TestDescribeListenerAPIAuth(t *testing.T) {
 	cases := []struct {
-		name    string
-		token   string
-		issuer  string
-		brokers *brokerTokens
-		want    string
+		name     string
+		token    string
+		issuer   string
+		accounts []string
+		google   *googleIdentities
+		brokers  *brokerTokens
+		want     string
 	}{
 		{
 			name: "neither is disabled",
@@ -471,6 +499,17 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 			token:  "expected-token",
 			issuer: "https://oidc.eks.example/id/CLUSTER",
 			want:   "shared token and oidc https://oidc.eks.example/id/CLUSTER",
+		},
+		{
+			name:     "the verifier names the subjects ENVOY_OIDC_ACCOUNTS holds it to",
+			issuer:   "https://oidc.eks.example/id/CLUSTER",
+			accounts: []string{"system:serviceaccount:dispatch:envoy-broker", "system:serviceaccount:dispatch:dispatch"},
+			want:     "oidc https://oidc.eks.example/id/CLUSTER for system:serviceaccount:dispatch:envoy-broker, system:serviceaccount:dispatch:dispatch",
+		},
+		{
+			name:   "Google identities name their audience and accounts",
+			google: &googleIdentities{audience: "https://listener.example", accounts: []string{"example-sink@example-project.iam.gserviceaccount.com"}},
+			want:   "google https://listener.example for example-sink@example-project.iam.gserviceaccount.com",
 		},
 		{
 			name: "only broker tokens name the broker and the projected token it calls as",
@@ -501,12 +540,25 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 			}),
 			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and broker tokens at https://broker.example as projected token /var/run/secrets/broker/token",
 		},
+		{
+			name:   "every credential names itself, the bearers first",
+			token:  "expected-token",
+			issuer: "https://oidc.eks.example/id/CLUSTER",
+			google: &googleIdentities{audience: "https://listener.example", accounts: []string{"example-sink@example-project.iam.gserviceaccount.com"}},
+			brokers: newBrokerTokens(listenerBrokerConfig{
+				BrokerURL:      "https://broker.example",
+				GoogleAudience: "legion-broker-pod",
+				Origin:         "https://listener.example",
+			}),
+			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and google https://listener.example for example-sink@example-project.iam.gserviceaccount.com and broker tokens at https://broker.example as google audience legion-broker-pod",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := describeListenerAPIAuth(tc.token, tc.issuer, tc.brokers); got != tc.want {
-				t.Fatalf("describeListenerAPIAuth(token set: %t, %q, brokers set: %t) = %q, want %q", tc.token != "", tc.issuer, tc.brokers != nil, got, tc.want)
+			auth := listenerAPIAuth{token: tc.token, accounts: tc.accounts, google: tc.google, brokers: tc.brokers}
+			if got := describeListenerAPIAuth(auth, tc.issuer); got != tc.want {
+				t.Fatalf("describeListenerAPIAuth(token set: %t, %q, accounts %q, google set: %t, brokers set: %t) = %q, want %q", tc.token != "", tc.issuer, tc.accounts, tc.google != nil, tc.brokers != nil, got, tc.want)
 			}
 		})
 	}
@@ -560,7 +612,7 @@ func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) 
 			recorder := httptest.NewRecorder()
 			var logged bytes.Buffer
 
-			apiAuth(tc.token, nil, nil, allowed, logging.NewWithWriter("test-machine", &logged), next).ServeHTTP(recorder, request)
+			apiAuth(listenerAPIAuth{token: tc.token, allowedHosts: allowed, logger: logging.NewWithWriter("test-machine", &logged)}, next).ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
 				t.Fatalf("Host %q: status = %d, want %d; body = %s", tc.host, recorder.Code, tc.wantStatus, recorder.Body.String())
@@ -618,7 +670,7 @@ func TestAPIAuthAnswersServiceStartingUntilDiscoverySucceeds(t *testing.T) {
 		cancel()
 		<-discovered
 	})
-	handler := apiAuth("expected-token", verifier, nil, nil, logger, next)
+	handler := apiAuth(listenerAPIAuth{token: "expected-token", verifier: verifier, logger: logger}, next)
 	serve := func(path, bearer string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, path, nil)
@@ -652,6 +704,72 @@ func TestAPIAuthAnswersServiceStartingUntilDiscoverySucceeds(t *testing.T) {
 		if recorder := serve("/v1/sessions", bearer); recorder.Code != http.StatusNoContent {
 			t.Fatalf("/v1 after discovery = %d %q, want it served", recorder.Code, recorder.Body.String())
 		}
+	}
+}
+
+// A listener that takes Google identities waits for Google's discovery as it waits for its
+// cluster issuer's, rather than ending its start: until that discovery succeeds, /v1 answers 503
+// "service starting" to every request, the shared token's and a listed Google identity's
+// included, and /healthz answers 503 "starting" with the listener's dependencies published, though
+// the projected-token verifier beside it is discovered. Once it succeeds, both are served.
+func TestAPIAuthAndHealthzWaitForGoogleDiscovery(t *testing.T) {
+	cluster := newClusterIssuer(t)
+	issuer := oidctest.New(t)
+	key := issuer.PublishKey(t, "google-signing-key")
+	claims := issuer.Claims("118000000000000000001", listenerGoogleAudience)
+	claims["email"], claims["email_verified"] = listenerGoogleAccount, true
+	googleToken := issuer.Mint(t, key, claims)
+	issuer.FailDiscovery(http.StatusServiceUnavailable)
+	google := &googleIdentities{audience: listenerGoogleAudience, verifier: newAPIVerifier(issuer.URL(), listenerGoogleAudience), accounts: []string{listenerGoogleAccount}}
+	var logged cmdtest.LockedBuffer
+	logger := logging.NewWithWriter("test-machine", &logged)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		google.verifier.discover(ctx, logger)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	auth := listenerAPIAuth{token: "expected-token", verifier: cluster.verifier, google: google, logger: logger}
+	handler := apiAuth(auth, served)
+	serve := func(bearer string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, bearerRequest("/v1/sessions", "Bearer "+bearer))
+		return recorder
+	}
+
+	waitFor(t, 10*time.Second, "a failed discovery to be logged", func() bool {
+		return strings.Contains(logged.String(), "listener API oidc discovery failed; retrying")
+	})
+	for _, bearer := range []string{"expected-token", googleToken} {
+		if recorder := serve(bearer); recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != "{\"error\":\"service starting\"}\n" {
+			t.Fatalf("/v1 before Google's discovery = %d %q, want 503 service starting", recorder.Code, recorder.Body.String())
+		}
+	}
+	var state atomic.Pointer[listenerDeps]
+	state.Store(&listenerDeps{})
+	recorder := httptest.NewRecorder()
+	healthzHandler(&state, auth.verifiers()...).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"status":"starting"`) {
+		t.Fatalf("/healthz before Google's discovery = %d %s, want 503 starting", recorder.Code, recorder.Body.String())
+	}
+
+	issuer.FailDiscovery(0)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("discovery did not succeed within 10 s of the issuer answering:\n%s", logged.String())
+	}
+	for _, bearer := range []string{"expected-token", googleToken} {
+		if recorder := serve(bearer); recorder.Code != http.StatusNoContent {
+			t.Fatalf("/v1 after Google's discovery = %d %q, want it served", recorder.Code, recorder.Body.String())
+		}
+	}
+	if !discovered(auth.verifiers()) {
+		t.Fatal("/healthz still waits for a discovery after both succeeded")
 	}
 }
 

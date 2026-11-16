@@ -521,6 +521,8 @@ session never receives it.
 | `ENVOY_LISTEN_HOST`, `PORT` | Where to listen. Defaults: `127.0.0.1` and `9020`. |
 | `ENVOY_API_TOKEN` | The bearer token `/v1` callers must send. |
 | `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` | Also accept Kubernetes service-account tokens from that issuer for that audience. Set both or neither. |
+| `ENVOY_OIDC_ACCOUNTS` | The service accounts whose tokens the OIDC pair admits, as `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces. Unset or empty, every account the issuer signs for is admitted; a value that names no account, only spaces or commas, refuses startup, and so does a stray comma that leaves an entry empty. Any pod of a cluster can get a token for any audience, so set it on a listener that takes no shared token. |
+| `ENVOY_OIDC_GOOGLE_AUDIENCE`, `ENVOY_OIDC_GOOGLE_ACCOUNTS` | Also accept a Google identity token that Google signed for that audience, for a caller that runs on Google Cloud and holds no Kubernetes token, such as a Cloud Run service. The accounts are service account addresses separated by commas or spaces; the token must name one of them, with its address verified, so the caller asks its metadata server for the token with `format=full`. Set both or neither. |
 | `ENVOY_ALLOWED_HOSTS` | Comma-separated host names or addresses, with no port, that a listener with no bearer serves `/v1` to besides loopback. Set it to each name clients reach such a listener by, such as a forward to it. |
 | `ENVOY_NATS_REPLICAS` | The deployment's replica count, a whole number from 1 to 5; default `1`. The listener creates the `ENVOY_NOTIFICATIONS` stream and its buckets with this many copies and raises one it finds with fewer, at start and every 30 seconds after ([Keeping the stream](#keeping-the-stream)). More than 1 needs a clustered NATS: a single server refuses it, and the listener then exits at start with an error naming the variable. Any other value refuses startup. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
 | `ENVOY_STREAM_MAX_BYTES` | The `ENVOY_NOTIFICATIONS` stream's size limit, a positive whole number of bytes. Once the stream holds that much it refuses every new message and keeps every one it holds, which leaves only when it is 72 hours old, and the sender gets an error it can retry: the listener answers a GitHub webhook `503`, which Dispatch's redelivery sweep has GitHub send again (on a doubling backoff, until GitHub records the delivery or 72 hours after its first failed attempt); Dispatch's outbox retries its event; an agent's send or publish fails with `stream ENVOY_NOTIFICATIONS is full`. Size the limit above what the stream takes in 72 hours at its busiest, with room to spare. Unset, the listener creates the stream with no limit and keeps a limit the stream already has; set, it raises a smaller limit, or none, to its own at start and every 30 seconds, and never lowers one ([Keeping the stream](#keeping-the-stream)). A limit larger than the NATS server can reserve makes the listener exit at start with an error naming the variable. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
@@ -536,13 +538,28 @@ session never receives it.
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
 
-A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN` or the OIDC pair,
-unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its port, as the
-clustered hub's NetworkPolicy fences its listener's port.
-A listener with neither serves `/v1` only to a request whose `Host` is `localhost`, a loopback
+A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN`, the OIDC pair or
+the Google pair, unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its
+port, as the clustered hub's NetworkPolicy fences its listener's port.
+A listener with none of them serves `/v1` only to a request whose `Host` is `localhost`, a loopback
 address or a name in `ENVOY_ALLOWED_HOSTS`, and answers any other `Host` with a JSON `421`, so a
 page that rebinds its own name to the listener's address cannot use the API.
 Keep the API private: only `/webhook/...` needs to be reachable from GitHub and Slack.
+
+The Google identity-token branch accepts both `https://accounts.google.com` and
+`accounts.google.com` as Google's issuer, including when the projected-token verifier is also
+configured. Both spellings require a listed, verified account address; addresses are compared
+without case. The listener reads Google's discovery document in the background from boot, as it
+reads the OIDC issuer's: until it answers, `/v1` answers `503` `service starting` and `/healthz`
+`503` `starting`.
+
+`/metrics` counts every `/v1` request the listener admits in `envoy_listener_requests_total`, by
+`credential` — `shared_token`, `none` (a listener with no bearer, which admits a request with no
+credential), `oidc`, `google` or `broker` — and by `path`, the route that served it. A request
+admitted on the shared token or with no credential also logs a warning, at most once a minute
+each, naming the route and the caller's address, so callers that still use either can be found
+and moved to a token of their own. Every listener pod of a machine counts and warns of what it
+admits itself, the standby as the active one, so a census reads every pod's `/metrics`.
 
 Raising a bucket to `ENVOY_NATS_REPLICAS` copies is an update of the bucket's stream, so the
 listener's NATS user needs `$JS.API.STREAM.UPDATE.KV_<bucket>` for each of its buckets beside the
@@ -667,7 +684,7 @@ so run one listener per machine id until the grant is in place.
 
 | Answer | Meaning |
 | --- | --- |
-| `503` `starting` | The listener cannot serve yet: it is connecting to NATS, loading its caches, or waiting for its OIDC issuer. It stays up and keeps trying, however long that takes. |
+| `503` `starting` | The listener cannot serve yet: it is connecting to NATS, loading its caches, or waiting for its OIDC issuer or Google's to answer discovery. It stays up and keeps trying, however long that takes. |
 | `200` `healthy`, `role` `active` | Everything answers, and this listener delivers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
 | `200` `healthy`, `role` `standby` | Everything answers, and another listener of the machine delivers; `active_instance` names it. A standby is ready: send it traffic. Its body carries `role_claim_repair` too. |
 | `200` `degraded` | A passing key-value failure the listener is retrying, a role claim view that answers no read, or a pod that is its machine's deliverer and does not receive the durable yet: it holds the delivery lease, runs without one, has read no holder at all, or the lease record still names it while its renewals have lapsed. Nothing of the durable reaches a session until it receives, so no such answer is healthy; it stays `200`, so a readiness probe keeps the pod in service. The role claim view answers no read until its watcher's first scan has delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has; it repairs itself, so that answer stays `200` too. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, on an active pod's answer and a standby's alike, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the pod has not rebuilt its key-value watches for a minute after a NATS reconnect, active or standby: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out a pod still serving those caches and replace it with one that rebuilds into the same failure with empty caches. A pod that has more than one of these names each in `error`, in the order it reads them: its own failure first, then the role claim view or its late repair, then the stalled rebuild. |

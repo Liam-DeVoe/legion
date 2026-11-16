@@ -17,6 +17,9 @@ Every pod of a machine id, active or standby:
 
 - serves `/v1`, `/healthz`, `/metrics` and the webhook routes;
 
+- authenticates `/v1` by the same settings and counts what it admits in its own `envoy_listener_requests_total` (`apiauth.go`), warning once a minute of its own shared-token and credential-less admissions;
+  a census of the shared token or the open `/v1` therefore reads every pod's `/metrics`, never one pod's;
+
 - is a member of the role lane's core-NATS queue group `envoy-listener-<machine id>`;
   NATS hands each message of a queue group to one member, so no role message is delivered by two pods;
 
@@ -218,7 +221,7 @@ A lease left unreleased (the budget ran out) is taken by a standby once it expir
 `/healthz` takes no credential and answers within 5 s (`healthzDeadline`): a check that has not answered by then makes the answer `503 {"status":"unhealthy"}`.
 
 - `503 {"status":"starting"}`:
-  Until the pod can serve: NATS connected, the webhook and `/v1` gates open over warm caches, the receive loop started and, with an OIDC issuer configured, its discovery succeeded.
+  Until the pod can serve: NATS connected, the webhook and `/v1` gates open over warm caches, the receive loop started and, with an OIDC issuer or a Google audience configured, each issuer's discovery succeeded.
   A NATS or issuer that does not answer keeps the pod here, up and retrying; it never exits for that.
 
 - `200 {"status":"healthy","role":"active",…}`:
