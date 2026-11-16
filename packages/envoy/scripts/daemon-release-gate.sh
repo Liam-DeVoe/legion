@@ -14,17 +14,23 @@
 # no daemon (`replicas: 0`, or `daemon: false`) is printed SKIPPED, by name. With --listeners it
 # reads the three listener pins instead: envoy/Pulumi.prod.yaml `listenerImage`,
 # envoy-cluster/Pulumi.prod.yaml `envoyImage`, and dispatch/Pulumi.prod.yaml `listenerImage`, which
-# that stack's program sets on its listener in place of `envoyImage` (dispatch/main.go,
-# pinListenerImage), or `envoyImage` where it sets none.
+# that stack's program sets on its listener in place of `envoyImage`, the Dispatch server's
+# (dispatch/main.go, pinListenerImage). A dispatch stack that sets no `listenerImage` is UNKNOWN:
+# its deployment requires that key, and the listener runs no other image.
 #
 # Each pin's org.opencontainers.image.source and .revision labels are read with `docker buildx
 # imagetools inspect`. A single image is read whole; an OCI image index, which carries no image
 # config of its own (its `.Image.Config.Labels` reads `null`), is read one platform at a time, the
 # `unknown/unknown` attestation entries left out, and every platform must name the same source and
-# revision. A pin built from any repository but https://github.com/cybermonklabs/legion is refused by
-# name and never compared, since its revision names another repository's commit. Any other is
-# compared with `gh api repos/cybermonklabs/legion/compare/<commit>...<revision>`, and passes when
-# GitHub answers `ahead` or `identical` with `behind_by` 0.
+# revision. A pin built from https://github.com/cybermonklabs/legion, or from a name the deployment
+# records as the same repository (the repositoryRenames pairs of legion/Pulumi.prod.yaml's project
+# entries, which the daemon reads as `repository_renames`: sjawhar/legion is this repository under
+# its name before the transfer), is compared with `gh api
+# repos/cybermonklabs/legion/compare/<commit>...<revision>`, and passes when GitHub answers `ahead`
+# or `identical` with `behind_by` 0; its line names the rename it was read by. A pin built from any
+# other repository is refused by name and never compared, since its revision names another
+# repository's commit, and one built under another name while that record cannot be read is
+# UNKNOWN.
 #
 # It prints one line per pin: `PASS`, `GATE SHUT` (behind <commit>, or built elsewhere), `UNKNOWN`
 # (a label, a stack file or a comparison it could not read) or `SKIPPED`; then the verdict, alone on
@@ -202,18 +208,79 @@ read_pin() {
   fi
 }
 
+# aliases_state is unread, read or failed; load_aliases reads the record once, on the first pin
+# built anywhere but legion_source, into $work/aliases.
+aliases_state=unread
+aliases_error=""
+
+# load_aliases writes into $work/aliases, lowercased and one per line, every name a recorded
+# rename makes one repository with cybermonklabs/legion. The record is the deployment's own:
+# the repositoryRenames pairs of the project entries of the deployment repository
+# legion/Pulumi.prod.yaml, which render as each daemon's `repository_renames` and which the
+# daemon's ghrepo.Renames reads (packages/daemon/internal/ghrepo/renames.go). It is the one place
+# the transfer of sjawhar/legion to cybermonklabs/legion is recorded, so the gate keeps no copy of
+# the pair. Without the list mode has read that file already ($work/legion.yaml); --listeners
+# reads it here. A record it cannot read leaves aliases_state failed, with GitHub's or the
+# parser's first line in aliases_error.
+load_aliases() {
+  [ "$aliases_state" = unread ] || return 0
+  local encoded
+  if [ ! -s "$work/legion.yaml" ]; then
+    if ! encoded=$(gh api repos/<owner>/<deployment repo>/contents/legion/Pulumi.prod.yaml --jq .content 2>"$work/err") ||
+      ! printf '%s' "$encoded" | base64 -d >"$work/legion.yaml" 2>"$work/err"; then
+      aliases_state=failed
+      aliases_error=$(first_line "$work/err")
+      return 0
+    fi
+  fi
+  if ! python3 - "$work/legion.yaml" >"$work/aliases" 2>"$work/err" <<'PY'; then
+import sys
+
+import yaml
+
+with open(sys.argv[1]) as handle:
+    document = yaml.safe_load(handle) or {}
+projects = (document.get("config") or {}).get("<deployment repo>-legion:projects") or []
+home = "cybermonklabs/legion"
+for entry in projects:
+    for pair in entry.get("repositoryRenames") or []:
+        names = {str(pair.get("from", "")).lower(), str(pair.get("to", "")).lower()}
+        if home in names:
+            for name in names - {home, ""}:
+                print(name)
+PY
+    aliases_state=failed
+    aliases_error=$(first_line "$work/err")
+    return 0
+  fi
+  aliases_state="read"
+}
+
 # judge <key> <ref>: reads the pin, holds it to the source rule, compares it, and prints its line.
+# A pin built under a name a recorded rename makes one repository with cybermonklabs/legion is a
+# build of this repository, compared like any other; its line names the rename it was read by.
 judge() {
-  local key=$1 ref=$2 answer status behind_by
+  local key=$1 ref=$2 answer status behind_by repo via=""
   compared=$((compared + 1))
   if ! read_pin "$key" "$ref"; then
     unknown=$((unknown + 1))
     return
   fi
-  if [ "$source" != "$legion_source" ]; then
-    printf 'GATE SHUT: %s runs an image built from %s\n' "$key" "$source"
-    shut=$((shut + 1))
-    return
+  repo=${source#https://github.com/}
+  repo=$(printf '%s' "${repo%.git}" | tr '[:upper:]' '[:lower:]')
+  if [ "$repo" != cybermonklabs/legion ]; then
+    load_aliases
+    if [ "$aliases_state" = failed ]; then
+      printf 'UNKNOWN: %s: built from %s, and the repository renames of the deployment repository legion/Pulumi.prod.yaml could not be read: %s\n' "$key" "$source" "$aliases_error"
+      unknown=$((unknown + 1))
+      return
+    fi
+    if ! grep -qxF -- "$repo" "$work/aliases"; then
+      printf 'GATE SHUT: %s runs an image built from %s\n' "$key" "$source"
+      shut=$((shut + 1))
+      return
+    fi
+    via="; built as $source, which legion/Pulumi.prod.yaml's repositoryRenames makes one repository with $legion_source"
   fi
   if ! answer=$(gh api "repos/cybermonklabs/legion/compare/${commit}...${revision}" --jq '{status,behind_by}' 2>"$work/err"); then
     printf 'UNKNOWN: %s: cannot compare %s...%s in cybermonklabs/legion: %s\n' "$key" "$commit" "$revision" "$(first_line "$work/err")"
@@ -226,14 +293,14 @@ judge() {
     return
   fi
   case "$status:$behind_by" in
-    ahead:0) printf 'PASS: %s runs %s (ahead of %s)\n' "$key" "$revision" "$commit" ;;
-    identical:0) printf 'PASS: %s runs %s (identical to %s)\n' "$key" "$revision" "$commit" ;;
+    ahead:0) printf 'PASS: %s runs %s (ahead of %s)%s\n' "$key" "$revision" "$commit" "$via" ;;
+    identical:0) printf 'PASS: %s runs %s (identical to %s)%s\n' "$key" "$revision" "$commit" "$via" ;;
     behind:*)
-      printf 'GATE SHUT: %s runs %s (behind %s by %s)\n' "$key" "$revision" "$commit" "$behind_by"
+      printf 'GATE SHUT: %s runs %s (behind %s by %s)%s\n' "$key" "$revision" "$commit" "$behind_by" "$via"
       shut=$((shut + 1))
       ;;
     diverged:*)
-      printf 'GATE SHUT: %s runs %s (diverged from %s, behind by %s)\n' "$key" "$revision" "$commit" "$behind_by"
+      printf 'GATE SHUT: %s runs %s (diverged from %s, behind by %s)%s\n' "$key" "$revision" "$commit" "$behind_by" "$via"
       shut=$((shut + 1))
       ;;
     *)
@@ -274,6 +341,8 @@ if [ "$mode" = listeners ]; then
   # so it is UNKNOWN rather than a reading of the server's image.
   listener dispatch dispatch <deployment repo>-dispatch:listenerImage
 elif stack_file legion/Pulumi.prod.yaml; then
+  # The same file records the repository renames (load_aliases), so it is read once.
+  cp "$work/stack.yaml" "$work/legion.yaml"
   if ! daemon_pins >"$work/pins" 2>"$work/err"; then
     printf 'UNKNOWN: cannot read the deployment repository legion/Pulumi.prod.yaml: %s\n' "$(first_line "$work/err")"
     unknown=$((unknown + 1))

@@ -340,21 +340,21 @@ function parseIdentity(data: string) {
 }
 
 /**
- * Whether a followed topic, expanded as the subscription it stands for, reaches `subject`: the
- * one "does this topic reach this frame" check the follow filter asks.
+ * Whether a followed topic, expanded as the subscription it stands for, reaches a frame whose
+ * subject reads as `forms`: the one "does this topic reach this frame" check the follow filter
+ * asks. The caller passes the frame's forms, which it reads once per frame rather than once per
+ * followed topic.
  *
- * Both are read in every form of their name while the rename that put a project into an issue's,
- * an agent's and a role's name is under way (`topicForms`, dispatch://INFRA-3862): the listener's
- * consumer filters carry both forms, so a frame arrives in a form the session did not follow in,
- * and this client is the last reader of it. Comparing the spellings as they stand would drop
- * every such frame, and drop it in silence (`receive` answers `done` and the resume point passes
- * it). Until the old form is refused only.
+ * Both sides are read in every form of their name while the rename that put a project into an
+ * issue's, an agent's and a role's name is under way (`topicForms`, dispatch://INFRA-3862): the
+ * listener's consumer filters carry both forms, so a frame arrives in a form the session did not
+ * follow in, and this client is the last reader of it. Comparing the spellings as they stand
+ * would drop every such frame, and drop it in silence (`receive` answers `done` and the resume
+ * point passes it). Until the old form is refused only.
  */
-function reaches(topic: string, subject: string): boolean {
+function reaches(topic: string, forms: readonly string[]): boolean {
   const patterns = topicForms(topic).flatMap((form) => expandSubscriptionTopics([form]));
-  return topicForms(subject).some((form) =>
-    patterns.some((pattern) => subjectsOverlap(pattern, form))
-  );
+  return forms.some((form) => patterns.some((pattern) => subjectsOverlap(pattern, form)));
 }
 
 function every(ms: number, callback: () => void): () => void {
@@ -459,9 +459,10 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
 
   const followedAt = (subject: string): number | undefined => {
     if (ownsSubject(subject)) return Number.NEGATIVE_INFINITY;
+    const forms = topicForms(subject);
     let earliest: number | undefined;
     for (const [topic, at] of follows) {
-      if (!reaches(topic, subject)) continue;
+      if (!reaches(topic, forms)) continue;
       if (earliest === undefined || at < earliest) earliest = at;
     }
     return earliest;
