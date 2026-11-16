@@ -189,13 +189,64 @@ func refusals(files Tree) map[string]string {
 		}
 	}
 	for _, p := range problems {
-		if slices.Contains(nodes, p.Node) {
+		switch {
+		case p.Rule == "loop" && slices.ContainsFunc(files.Statements, func(s Statement) bool { return s.ID == p.Node }):
+			refuse(p.Rule, loopOf(files, p.Node)...)
+		case slices.Contains(nodes, p.Node):
 			refuse(p.Rule, p.Node)
-		} else {
+		default:
 			refuse(p.Rule, nodes...)
 		}
 	}
 	return refused
+}
+
+// loopOf is each statement of files in one loop of parent and serves relations with the statement
+// id, id among them: each that id reaches and that reaches id. The loop rule of Validate names the
+// smallest id of the loop, and the loop refuses each of its statements, so that no state depends
+// on the order of the ids.
+func loopOf(files Tree, id string) []string {
+	statement := make(map[string]bool, len(files.Statements))
+	for _, s := range files.Statements {
+		statement[s.ID] = true
+	}
+	up, down := map[string][]string{}, map[string][]string{}
+	link := func(from, to string) {
+		if statement[to] {
+			up[from] = append(up[from], to)
+			down[to] = append(down[to], from)
+		}
+	}
+	for _, s := range files.Statements {
+		link(s.ID, s.Parent)
+		for _, served := range s.Serves {
+			link(s.ID, served)
+		}
+	}
+	reachedUp, reachedDown := reached(up, id), reached(down, id)
+	var loop []string
+	for _, s := range files.Statements {
+		if reachedUp[s.ID] && reachedDown[s.ID] {
+			loop = append(loop, s.ID)
+		}
+	}
+	return loop
+}
+
+// reached is start and each node that edges lead to from it.
+func reached(edges map[string][]string, start string) map[string]bool {
+	seen := map[string]bool{start: true}
+	for next := []string{start}; len(next) > 0; {
+		n := next[len(next)-1]
+		next = next[:len(next)-1]
+		for _, to := range edges[n] {
+			if !seen[to] {
+				seen[to] = true
+				next = append(next, to)
+			}
+		}
+	}
+	return seen
 }
 
 // changedPaths is one answer of History.Changed.
@@ -304,10 +355,12 @@ func (j *checkJudge) state(c Check) CheckState {
 // byAnotherAgent is whether the record of the failing example fault shows that an agent that did
 // not write the test wrote the fault (R9: "An agent that did not write the test writes the fault"):
 // it names the author of the fault and one or more authors of the test, and the author of the fault
-// is none of them. A record that names no author of one of the two cannot show it.
+// is none of them. A record that names no author of one of the two cannot show it, and an author
+// of no letter and no digit, by the test that Validate reads a missing text with (hasWord), names
+// nobody.
 func byAnotherAgent(fault Result) bool {
-	namesTestAuthor := slices.ContainsFunc(fault.TestAuthors, func(a string) bool { return a != "" })
-	return fault.FaultAuthor != "" && namesTestAuthor && !slices.Contains(fault.TestAuthors, fault.FaultAuthor)
+	namesTestAuthor := slices.ContainsFunc(fault.TestAuthors, hasWord)
+	return hasWord(fault.FaultAuthor) && namesTestAuthor && !slices.Contains(fault.TestAuthors, fault.FaultAuthor)
 }
 
 // newestApproval is the statement, of statement and each statement above it in the approved spec,

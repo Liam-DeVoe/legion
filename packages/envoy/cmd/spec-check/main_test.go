@@ -1158,6 +1158,8 @@ func TestAFailingExampleThatNamesNoTestAuthorDoesNotCount(t *testing.T) {
 		}},
 		{"another agent wrote the fault, and the record names no test_authors", func(fault map[string]any) { delete(fault, "test_authors") }},
 		{"another agent wrote the fault, and test_authors is empty", func(fault map[string]any) { fault["test_authors"] = []any{} }},
+		{"the one test author is only white space", func(fault map[string]any) { fault["test_authors"] = []any{" "} }},
+		{"the author of the fault is only white space", func(fault map[string]any) { fault["fault_author"] = " " }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()

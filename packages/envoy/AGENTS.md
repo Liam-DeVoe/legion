@@ -3258,6 +3258,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   It reads a statement that has no check where the tree rules ask for one as `unknown (no_check)`, each statement above it as `unknown`, and a wait on it as one that holds: a leaf (`leaf-without-check`, R6) or a statement that other statements serve (`supported-without-check`, R5), the pair that `Validate` asks a check of.
   It gives no clean state for a tree that the rules refuse: it runs `Validate` on the files (`refusals` in `internal/dispatch/specgraph/checkstate.go`), and each check and statement that a problem names reads `unknown (refused)` with the rule as its detail, each statement above such a statement `unknown (statement_refused)`, and a wait on it holds.
   A problem that names no check and no statement, such as a bad term or a bad component, refuses each check and statement of the tree, whatever file holds it, since a file is no relation of The Spec; the reasons above stay first where they apply.
+  A loop of parent and support relations refuses each statement of the loop, whichever id the rule names first, so a wait on each holds.
+  A refusal never hides a failure: a refused statement whose own check is false, or under which a statement or a supporter is not met, reads not met, while a check that a problem names itself reads `unknown (refused)` whatever its results.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.

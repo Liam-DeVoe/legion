@@ -259,19 +259,19 @@ func (j *statementJudge) lacksCheck(id string) bool {
 
 // ownState is the state of the statement id over those of its own checks that read the subject
 // (R29, with R10: "Only the checks that read the subject count"): not built when the files do not
-// hold its current text; unknown when it lacks a check that the tree rules ask for (lacksCheck;
-// R10: "Met means that its checks pass") or the tree rules refuse it (refusals); else not met when
-// one of them is false, unknown when one is unknown, and met when all are true, also when a
-// statement with statements under it and no supporter has no own check, or none of its checks
-// reads the subject.
+// hold its current text; else not met when one of them is false, also when the tree rules refuse
+// it, since a refusal never hides a failure; else unknown when it lacks a check that the tree
+// rules ask for (lacksCheck; R10: "Met means that its checks pass"), the tree rules refuse it
+// (refusals), or one of them is unknown; and met when all are true, also when a statement with
+// statements under it and no supporter has no own check, or none of its checks reads the subject.
 func (j *statementJudge) ownState(id string) string {
 	if j.notBuilt(id) {
 		return statementNotBuilt
 	}
-	if _, refused := j.refused[id]; refused || j.lacksCheck(id) {
-		return statementUnknown
-	}
 	state := statementMet
+	if _, refused := j.refused[id]; refused || j.lacksCheck(id) {
+		state = statementUnknown
+	}
 	for _, c := range j.own[id] {
 		switch j.checks[c].State { // a check that does not read the subject has no state here
 		case checkFalse:
