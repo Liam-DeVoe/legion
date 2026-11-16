@@ -147,9 +147,10 @@ jobs:
           retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
 YAML
 
-  # Exception (a)'s fourth site: the browser lane's visual job pulls the pinned Playwright copy
-  # from the same package. The entry naming it is in EXEMPTIONS, and an entry matching nothing
-  # fails this check, so every fixture carries the site its entry names.
+  # Exception (a)'s fourth and fifth sites: the browser lane's visual job pulls the pinned
+  # Playwright copy and its stack's Postgres copy from the same package. The entries naming them
+  # are in EXEMPTIONS, and an entry matching nothing fails this check, so every fixture carries
+  # the sites its entries name.
   cat > "$root/.github/workflows/dispatch-browser.yaml" <<YAML
 name: Dispatch browser
 on:
@@ -159,6 +160,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Pull the pinned Playwright copy
+        run: docker pull ghcr.io/example/legion/ci@$DIGEST
+      - name: Pull the visual stack's Postgres copy
         run: docker pull ghcr.io/example/legion/ci@$DIGEST
 YAML
 
@@ -413,10 +416,11 @@ root=$(fixture exceptions)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it read" "$(contains "$out" 'every network fetch in CI retries at the floor')"
-# Five sites, not the seven this case counted while exception (c) had a script: that script
+# Six sites, not the seven this case counted while exception (c) had a script: that script
 # went with the browser suite's move into an image this repository builds
-# (cybermonklabs/legion#2938), and its two exempted apt sites went with it.
-check "counts the sites the exceptions name" "$(contains "$out" '5 site(s) the exceptions name')"
+# (cybermonklabs/legion#2938), and its two exempted apt sites went with it; the visual job's
+# pull of its stack's Postgres copy is the one added since (dispatch://INFRA-1545, round 37).
+check "counts the sites the exceptions name" "$(contains "$out" '6 site(s) the exceptions name')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: a workflow with a bare curl of a release asset"

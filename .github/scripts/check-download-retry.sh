@@ -657,7 +657,9 @@
 #      this repository's own package, and it must be seen rather than retried over. R2 named two
 #      sites, .github/actions/pull-test-images and the `envoy-client` job's pull; T7's
 #      `download-retry-images` job added a third, the pull of the base images of the three
-#      Dockerfiles, which is the same package and the same reasoning.
+#      Dockerfiles, which is the same package and the same reasoning. The browser lane's visual
+#      job holds two more, its pulls of the pinned Playwright copy and of its stack's Postgres
+#      copy, each made before its timed browser step (dispatch://INFRA-1545, round 37).
 #   b. A `uses:` reference, and anything inside a third-party action. This needs no entry: only a
 #      step's `run:` is read, and no third-party action's source is in this tree. A composite
 #      action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun runtime with a
@@ -2952,6 +2954,8 @@ EXEMPTIONS = [
               "Pull every base image the three builds read", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "visual",
               "Pull the pinned Playwright copy", ("docker pull",), GHCR_WHY),
+    Exemption(".github/workflows/dispatch-browser.yaml", "visual",
+              "Pull the visual stack's Postgres copy", ("docker pull",), GHCR_WHY),
 ]
 
 

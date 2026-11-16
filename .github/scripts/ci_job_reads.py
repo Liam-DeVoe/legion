@@ -1774,10 +1774,19 @@ BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
+# The visual job's build of the four commands its stack starts, outside its browser step's
+# budget (dispatch://INFRA-1545, round 37): the server as e2e/run-server.sh builds it and the
+# broker's three as e2e/run-broker.sh builds them, to the paths those scripts write, so each
+# script's own build inside the browser step finds its binary current. Pinned whole, since the
+# lines carry an `-o`, which the simple form does not reduce.
+BROWSER_VISUAL_BUILD = "Build the visual stack's Dispatch server and broker"
+BROWSER_VISUAL_BUILD_SCRIPT = """\
+mkdir -p out/dispatch-e2e-broker
+go build -o ./dispatch-e2e ./cmd/dispatch
+go build -o out/dispatch-e2e-broker/ ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
-# e2e/run-server.sh's `go build` of the Dispatch server has already run, and then runs Playwright
-# in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
-# pinned build step in the gate below names already, so this job adds no command of its own.
+# e2e/run-server.sh's and e2e/run-broker.sh's builds find the binaries the build step above made
+# current, and then runs Playwright in the pinned container.
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
 # The six steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
@@ -2525,11 +2534,11 @@ GATES = [
     # container (dispatch://INFRA-1443), which shell_reason counts as exactly such a thing, so a
     # script Run here would fall to reading every Go file of the repository. It costs this
     # filter nothing. Those two jobs run no go command at all - run-server.sh and run-broker.sh
-    # execute the binaries the first entry below builds - and the scripts the multiprocess job
-    # and the visual job still start compile closures this filter already carries:
-    # run-server.sh, which both of them start, builds ./cmd/dispatch, which the multiprocess
-    # job's own pinned build step below names, and run-signin-issuer.sh builds
-    # ./cmd/dev-oidc-issuer, which that first entry names. No job's e2e/harness-postgres.ts runs
+    # execute the binaries the first entry below builds - and the scripts the multiprocess job,
+    # the embedder job and the visual job still start compile closures this filter already
+    # carries: run-server.sh, which each of them starts, builds ./cmd/dispatch, which each job's
+    # own pinned build step below names, and run-signin-issuer.sh builds ./cmd/dev-oidc-issuer,
+    # which that first entry names. No job's e2e/harness-postgres.ts runs
     # a go command in CI: each job that starts stacks there hands it the connection limit that
     # a pinned step below reads.
     gate("dispatch_browser", BROWSER_JOB, exact=[
@@ -2565,6 +2574,16 @@ GATES = [
         # lane because this check looks a step up by name across the workflow.
         pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        ], workflow=BROWSER_SITE),
+        # The visual job builds the server and the broker's three commands once, before its
+        # timed browser step, so e2e/run-server.sh's and e2e/run-broker.sh's builds inside that
+        # step find all four current (dispatch://INFRA-1545, round 37). Two go commands, each
+        # named by the closure it compiles.
+        pinned_step(BROWSER_VISUAL, BROWSER_VISUAL_BUILD, ENVOY, BROWSER_VISUAL_BUILD_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+            (ENVOY, BROKER_PKGS,
+             "go build -o out/dispatch-e2e-broker/ of the real broker, its dev OIDC issuer and the seeding step",
+             {"mode": "build"}),
         ], workflow=BROWSER_SITE),
     ], reads=reads(
         ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "
