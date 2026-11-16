@@ -34,3 +34,14 @@ func TestNamedReadsTheSettingsAsPgxDoes(t *testing.T) {
 		})
 	}
 }
+
+// Lookup answers what Named does and, for a connection string pgx cannot parse, pgx's own error,
+// which Dispatch's Open refuses the string with; a string it can parse brings no error.
+func TestLookupReturnsPgxsParseError(t *testing.T) {
+	if named, err := poolsetting.Lookup("postgres://u@h:port/db?pool_max_conns=7"); err == nil || named {
+		t.Errorf("Lookup of a URL with a port that is no number = %t, %v; want false and pgx's parse error", named, err)
+	}
+	if named, err := poolsetting.Lookup("host=h pool_max_conns = 7"); err != nil || !named {
+		t.Errorf("Lookup(%q) = %t, %v; want true and no error", "host=h pool_max_conns = 7", named, err)
+	}
+}

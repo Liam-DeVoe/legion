@@ -356,9 +356,10 @@ where it would write `pgxpool.New`, and sets `config.MaxConns` to the constant o
 another pool's `Config()` keeps that pool's size, and `testpg.ClonePool` is sized at the
 constant. A store a product opens sizes its own pool on every machine, so a test that opens one,
 or a process it starts on a test's DSN, gets that store's size: the daemon's `store.Open` holds
-32 and the broker's 10 unless the DSN names `pool_max_conns`, which both read with
-`packages/envoy/poolsetting`'s `Named` as pgx reads the settings, and Dispatch's `store.Open`
-holds its `sharedPoolSize` and refuses a DSN that names one.
+32 and the broker's 10 unless the DSN names `pool_max_conns`, and Dispatch's `store.Open` holds
+its `sharedPoolSize` and refuses a DSN that names one. All three read the DSN with
+`packages/envoy/poolsetting`, as pgxpool reads the settings: Dispatch through `Lookup`, which
+returns pgx's parse error, and the other two through `Named`.
 
 A store with such a default tests it through `packages/envoy/poolsetting/poolsettingtest`, which
 the daemon's store and the broker's both call: `SameOnEveryMachine` starts the test binary again on
