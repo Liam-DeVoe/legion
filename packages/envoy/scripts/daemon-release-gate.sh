@@ -11,7 +11,10 @@
 # Without --listeners it reads the image that runs each Legion daemon: for each entry of the
 # `<deployment repo>-legion:projects` list of the deployment repository legion/Pulumi.prod.yaml, its
 # `daemonImage` when set, else its `image` (legion/README.md's `daemonImage` row). An entry that runs
-# no daemon (`replicas: 0`, or `daemon: false`) is printed SKIPPED, by name. With --listeners it
+# no daemon (`replicas: 0`, or `daemon: false`) is printed SKIPPED, by name. An entry at `runtime:
+# tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from its
+# `image` (the deployment repository legion/host.go, checkHost), and the gate reads no image for it: it is UNKNOWN
+# by name, and so is an entry on any runtime but `kubernetes`, the default. With --listeners it
 # reads the three listener pins instead: envoy/Pulumi.prod.yaml `listenerImage`,
 # envoy-cluster/Pulumi.prod.yaml `envoyImage`, and dispatch/Pulumi.prod.yaml `listenerImage`, which
 # that stack's program sets on its listener in place of `envoyImage`, the Dispatch server's
@@ -30,10 +33,13 @@
 # or `identical` with `behind_by` 0; its line names the rename it was read by. A pin built from any
 # other repository is refused by name and never compared, since its revision names another
 # repository's commit, and one built under another name while that record cannot be read is
-# UNKNOWN.
+# UNKNOWN. A revision label that is not a commit id, 7 to 40 lowercase hex digits, is UNKNOWN and
+# never compared: GitHub's compare resolves any ref, so a label naming a branch (`main`) would
+# compare as wherever that branch points now.
 #
 # It prints one line per pin: `PASS`, `GATE SHUT` (behind <commit>, or built elsewhere), `UNKNOWN`
-# (a label, a stack file or a comparison it could not read) or `SKIPPED`; then the verdict, alone on
+# (a label, a stack file or a comparison it could not read, a revision that is no commit id, or a
+# daemon whose image it does not read) or `SKIPPED`; then the verdict, alone on
 # the last line: `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one,
 # `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A usage error exits 2.
 #
@@ -86,7 +92,8 @@ stack_file() {
 }
 
 # daemon_pins: one line per entry of $work/stack.yaml's projects list, tab-separated: the entry's
-# key, then READ and the image that runs its daemon, SKIP and why it runs none, or NOIMAGE. A file
+# key, then READ and the image that runs its daemon, SKIP and why it runs none, HOST for an entry
+# whose daemon runs on a tmux host, RUNTIME and a runtime the gate does not know, or NOIMAGE. A file
 # with no such list prints ERROR and why.
 daemon_pins() {
   python3 - "$work/stack.yaml" <<'PY'
@@ -106,6 +113,10 @@ for entry in projects:
         print(f"{key}\tSKIP\treplicas: 0")
     elif entry.get("daemon") is False:
         print(f"{key}\tSKIP\tdaemon: false")
+    elif entry.get("runtime") == "tmux":
+        print(f"{key}\tHOST")
+    elif entry.get("runtime") not in (None, "", "kubernetes"):
+        print(f"{key}\tRUNTIME\t{entry.get('runtime')}")
     elif entry.get("daemonImage") or entry.get("image"):
         print(f"{key}\tREAD\t{entry.get('daemonImage') or entry.get('image')}")
     else:
@@ -258,7 +269,10 @@ PY
 
 # judge <key> <ref>: reads the pin, holds it to the source rule, compares it, and prints its line.
 # A pin built under a name a recorded rename makes one repository with cybermonklabs/legion is a
-# build of this repository, compared like any other; its line names the rename it was read by.
+# build of this repository, compared like any other; its line names the rename it was read by. A
+# revision that is not 7 to 40 lowercase hex digits is UNKNOWN and never compared: GitHub's compare
+# resolves any ref, so a label naming a branch or a tag (`main`) would compare as wherever that ref
+# points now, not as the commit the image was built from.
 judge() {
   local key=$1 ref=$2 answer status behind_by repo via=""
   compared=$((compared + 1))
@@ -281,6 +295,11 @@ judge() {
       return
     fi
     via="; built as $source, which legion/Pulumi.prod.yaml's repositoryRenames makes one repository with $legion_source"
+  fi
+  if ! [[ $revision =~ ^[0-9a-f]{7,40}$ ]]; then
+    printf 'UNKNOWN: %s: %s names revision %s, which is no commit id\n' "$key" "$ref" "$revision"
+    unknown=$((unknown + 1))
+    return
   fi
   if ! answer=$(gh api "repos/cybermonklabs/legion/compare/${commit}...${revision}" --jq '{status,behind_by}' 2>"$work/err"); then
     printf 'UNKNOWN: %s: cannot compare %s...%s in cybermonklabs/legion: %s\n' "$key" "$commit" "$revision" "$(first_line "$work/err")"
@@ -353,6 +372,14 @@ elif stack_file legion/Pulumi.prod.yaml; then
       READ) judge "$key" "$detail" ;;
       NOIMAGE)
         printf 'UNKNOWN: %s runs a daemon and names neither daemonImage nor image\n' "$key"
+        unknown=$((unknown + 1))
+        ;;
+      HOST)
+        printf 'UNKNOWN: %s runs its daemon on a tmux host (runtime: tmux), from host.legionWorker, an image this gate does not read\n' "$key"
+        unknown=$((unknown + 1))
+        ;;
+      RUNTIME)
+        printf 'UNKNOWN: %s names runtime %s, which this gate does not know, so it reads no image for its daemon\n' "$key" "$detail"
         unknown=$((unknown + 1))
         ;;
       *)
