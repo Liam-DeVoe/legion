@@ -72,10 +72,10 @@ jobs:
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout: the setup before the plain step is now this
     # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
-    # minutes, then the race step's 1,193 s (its own comment says how that figure is made) and
-    # its 30, then Stage 1 and the report. The two Go steps' share is 4,732 s; with the 325 s of
-    # setup and the 13 s after the race step that the `test` job measured when it carried these
-    # steps, upper bounds for this job's, that is 5,070 s, or about 85 minutes, and 90 minutes
+    # minutes, then the race step's 1,320 s (its own comment says where that figure was measured)
+    # and its 30, then Stage 1 and the report. The two Go steps' share is 4,859 s; with the 325 s
+    # of setup and the 13 s after the race step that the `test` job measured when it carried these
+    # steps, upper bounds for this job's, that is 5,197 s, or about 87 minutes, and 90 minutes
     # holds it (dispatch://INFRA-1052 measured the other figures over the 30 newest counted test
     # jobs of main push runs).
     timeout-minutes: 90
@@ -213,13 +213,11 @@ jobs:
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
       # test's ten-minute default, internal/daemon, by far the slowest of the three packages, took
       # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). Two tests of the project release run in this
-      # step: TestAProjectMovesToAnotherClusterAndBack took 243 s without -race and
-      # TestAProjectMovesBackToTheFirstCluster 39 s, and the two took 297 s together under
-      # `CGO_ENABLED=1 go test -race` in an issue pod on 2026-11-15. The whole step took 896 s on
-      # run 43693570294 (job `test`) at d740f06b, a commit that holds neither test. The step's
-      # figure is that run's 896 s and the pod's 297 s, 1,193 s in all: a sum of two machines'
-      # figures and no measured run, which the 30 minutes hold with 607 s to spare.
+      # main at job 125691048644 (run 41562777668). The project release's tests run in this step
+      # too, its two move tests among them (TestAProjectMovesToAnotherClusterAndBack took 243 s
+      # without -race in an issue pod on 2026-11-15). With them the step took 1,320 s on run
+      # 43819284302 (job `test`, 07:06:43Z to 07:28:43Z on 2026-11-16) at 28a00ef5, a head of the
+      # pull request that added them, and the 30 minutes hold that with 480 s to spare.
       #
       # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
