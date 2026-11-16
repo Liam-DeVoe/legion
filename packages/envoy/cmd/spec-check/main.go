@@ -70,23 +70,24 @@
 // prints nothing, when the approved spec does not hold an id or removed it.
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
-// <dir>/.github/scripts and <dir>/scripts as text, and names each line that holds the command that
+// <dir>/.github/scripts and <dir>/scripts as text, and names each line that names the command that
 // compares the files (ciFilesThatCompare) on standard error, "spec-check: <dir>/<path>:<line>:
-// this line holds the command that compares the files with the approved spec, and no CI job runs
-// that command (R2). If no shell runs this line, reword it.", with "spec-check: <dir>: <n> lines
-// of CI files hold the command that compares the files" on standard output, exit 1. It exits 1
-// with "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file, since an
-// instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>: no line
-// of <k> CI files holds the command that compares the files". The guard names each place of a CI
-// file where the command's name and then the word compare stand as two words that follow each
-// other, with quote characters, a $ before a quote, backslashes and line breaks between them
-// ignored, and the indentation after a backslash and a line break ignored too. So it also names a
-// comment or a quoted text that no shell runs, and the author rewords that line. It does not find
-// a command that an expansion or an escape builds, or one with another word between the two, and
-// it is no defence against an author who hides the command: compare itself refuses to run in a CI
-// job. A step can run the comparison from a file it does not read, such as a package script or a
-// make target: compare's refusal covers that route when the step passes the runner's environment
-// on, and nothing covers it when the step does not.
+// this line names the command that compares the files with the approved spec, and no CI job runs
+// that command (R2). If the line only mentions the command, for example in a comment, a quoted
+// text, a pattern or a name, reword it.", with "spec-check: <dir>: <n> lines of CI files name the
+// command that compares the files" on standard output, exit 1. It exits 1 with "spec-check: <dir>:
+// read no workflow" when <dir>/.github/workflows holds no file, since an instrument that read
+// nothing has not passed, and 0 otherwise, with "spec-check: <dir>: no line of <k> CI files names
+// the command that compares the files". The guard names each place of a CI file where the
+// command's name and then the word compare follow each other with only white space, commas or
+// opening brackets between them, and with quote characters (also a $ before one), backslashes, and
+// line breaks with the indentation after them ignored. So it also names a comment or a quoted text
+// that no shell runs, and the author rewords that line. It does not find a command that an
+// expansion or an escape builds, or one with another word between the two, and it is no defence
+// against an author who hides the command: compare itself refuses to run in a CI job. A step can
+// run the comparison from a file it does not read, such as a package script or a make target:
+// compare's refusal covers that route when the step passes the runner's environment on, and
+// nothing covers it when the step does not.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on

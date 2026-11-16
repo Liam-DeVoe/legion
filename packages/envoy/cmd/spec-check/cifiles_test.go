@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// ciFilesThatCompare names each line of the CI files that holds the command that compares the
+// ciFilesThatCompare names each line of the CI files that names the command that compares the
 // files with the approved spec (R2: "No CI job compares the files"). The clean fixture runs
 // spec-check tree and print, and says in a comment that no step compares the files: no line is
 // named. The planted fixture runs the comparison once from a job step, once from a composite
@@ -284,6 +284,30 @@ func TestCIFilesThatCompareNamesACommentOrAQuotedTextThatNoShellRuns(t *testing.
 	}
 }
 
+// A script in another language runs the command with a list of its arguments, so a comma or an
+// opening bracket stands between the two words once the quotes go. Node's execFileSync and
+// spawnSync, and a Python list with no space after its comma, are named, as Bun's spawn, a Python
+// list with spaces and Go's exec.Command are. A builder that adds the argument by a method call is
+// named too: the word of the command's name runs on through ).arg, and the ( after it is the
+// opening bracket before compare.
+func TestCIFilesThatCompareNamesAListOfArguments(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct{ name, path, text string }{
+		{"Node's execFileSync", "scripts/a.ts", `execFileSync("spec-check", ["compare", "--dir", dir, "--approved", approved]);`},
+		{"Node's spawnSync", "scripts/a.ts", `spawnSync('spec-check', ['compare', '--dir', dir]);`},
+		{"a Python list with no space after its comma", ".github/scripts/a.py", `subprocess.run(["spec-check","compare","--dir",d])`},
+		{"Bun's spawn", "scripts/a.ts", `Bun.spawn(["spec-check", "compare", "--dir", dir]);`},
+		{"a Python list with spaces", ".github/scripts/a.py", `subprocess.run(["spec-check", "compare", "--dir", d], check=True)`},
+		{"Go's exec.Command", "scripts/a.go", `exec.Command("spec-check", "compare", "--dir", d)`},
+		{"a builder that adds the argument by a method call", "scripts/a.rs", `Command::new("spec-check").arg("compare").arg("--dir").status()`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			expectFiles(t, map[string]string{row.path: "\n" + row.text + "\n"}, []string{row.path + ":2"})
+		})
+	}
+}
+
 // A folded or a plain run: value turns a line break into a space before Bash reads it, so a
 // backslash at the end of the line escapes that space: Bash runs spec-check " compare", which is
 // no comparison. The rule ignores the backslash and the line break, and names the line that holds
@@ -349,6 +373,19 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 			"scripts/a.sh":             "spec-check\\\n  com\\\npare --dir a\n",
 			".github/workflows/a.yaml": workflowSteps + "      - run: |\n          spec-check\\\n            com\\\n          pare --dir a\n",
 		}, []string{"scripts/a.sh:1"})
+	})
+	// A container action whose entrypoint is the command and whose args hold compare: a YAML key
+	// stands between the two words.
+	t.Run("a container action's entrypoint and args", func(t *testing.T) {
+		t.Parallel()
+		expectFiles(t, map[string]string{
+			".github/actions/a/action.yml": "runs:\n  using: docker\n  image: Dockerfile\n  entrypoint: spec-check\n  args:\n    - compare\n    - --dir\n    - .dispatch/spec\n",
+		}, nil)
+	})
+	// A binary built under another name is not the command's name.
+	t.Run("a binary built under another name", func(t *testing.T) {
+		t.Parallel()
+		expectScriptAndBlock(t, "go build -o /tmp/sc ./cmd/spec-check && /tmp/sc compare --dir a", nil)
 	})
 }
 
