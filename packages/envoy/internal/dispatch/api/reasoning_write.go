@@ -253,7 +253,12 @@ type nodeStateWrite struct {
 // that restates the node (graphstore.Node.Restates), dated and signed by the request and at
 // graphstore.NoEvent, as every write of these routes is. So graphstore.Write moves the row's state
 // and appends the one state tuple that says so, whose writer is who: the row and the log agree,
-// and every read of the node answers the new state at once. made_at and made_by stay the row's
+// and every read of the node answers the new state at once. The tuple is at the sentinel, which no
+// repeat key drops, so a node moved proposed, live and proposed again holds three state tuples. The
+// row keeps the cause the store holds of it (graphstore.Node.KeepsCause): a write of the state is
+// no cause of the node's other facts, and a block row put at the sentinel would take the event of
+// its document's next version, whose index pass moves its cause onto every block row still at the
+// sentinel, whether or not that version changed the block. made_at and made_by stay the row's
 // own, the store's rule for a node written again, so the node's author is still the writer of its
 // first write. A write of the state the node holds moves nothing and appends nothing. A write that
 // moves it marks the node changed (graphstore.Node's Changed), so one made for a run names the node
@@ -283,7 +288,7 @@ func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graph
 	if previous == write.state {
 		return node, previous, nil
 	}
-	node.State, node.Restates, node.Changed = write.state, false, true
+	node.State, node.Restates, node.KeepsCause, node.Changed = write.state, false, true, true
 	node.MadeAt, node.MadeBy, node.SourceEvent = write.at, write.who, graphstore.NoEvent
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
 		return graphstore.Node{}, "", err

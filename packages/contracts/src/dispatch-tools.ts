@@ -2583,9 +2583,11 @@ export const dispatchToolSpecs = [
       "takes a lens, a finding, a risk or a constraint out of every read; a block of a document " +
       "is removed by editing its document. A state the node cannot take is refused with 409 " +
       "NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the value: gone on a " +
-      "block of a document, an issue, a document, an ask, a comment or a message, and any state " +
-      "on a gone node. Settle a proposal with dispatch settle. The result names the node's " +
-      `state before and after. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
+      "block of a document, an issue, a document, an ask, a comment or a message, any state " +
+      "on a gone node, and any state on a block of an ask, a comment or a message, which the " +
+      "store keeps no node of and every read answers live. Settle a proposal with dispatch " +
+      "settle. The result names the node's state before and after. " +
+      `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       node: z.string({ min: 1 }).describe(`The node whose state to write: ${NODE_UNDER_ISSUE}.`),

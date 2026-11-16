@@ -117,16 +117,24 @@ func findFarEndUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, 
 
 // farEndOf is the kind and the id a tuple whose far end is node names it by, where address is what
 // named it (decodeNodeAddress): the node's own kind and id, but for a document, whose node answers
-// its uuid and which a tuple names by its ref_key, the id its address decodes to. A finding of a
-// lens is named lens_block, the kind the graph addresses it by, at its own id, as a tuple into a
-// block of an item names that item's block kind (refs.TargetOf): graph_edges answers the tuple as
-// it is stated, so every read of an edge into a finding - refs.Edges, the backlink arm of a lens
-// standing on it, the lens read - finds it under that kind, and a predicate over that end reads
-// the store's block row behind it (refs.VisibleEnd).
+// its uuid and which a tuple names by its ref_key, the id its address decodes to, and for a block
+// of an ask, a comment or a message, whose node answers the kind block as a document's block does
+// (refs' loadItemBlockNodes) and which a tuple names by its item's block kind, the kind its address
+// decodes to (comment_block; refs.TargetOf). graph_nodes keys such a block under that kind, and
+// every reader of an edge into one keys it so: graph_edges, the references read of the block, the
+// backlink arm of a lens standing on it and the lens read. A finding of a lens is named lens_block,
+// the kind the graph addresses it by, at its own id, as a tuple into a block of an item names that
+// item's block kind: graph_edges answers the tuple as it is stated, so every read of an edge into a
+// finding - refs.Edges, the backlink arm of a lens standing on it, the lens read - finds it under
+// that kind, and a predicate over that end reads the store's block row behind it
+// (refs.VisibleEnd).
 func farEndOf(node model.GraphNode, address string) storedEnd {
 	end := storedEnd{kind: node.Kind, id: node.ID}
-	if node.Kind == graphstore.KindArtifact {
+	switch node.Kind {
+	case graphstore.KindArtifact:
 		_, end.id, _ = decodeNodeAddress(address)
+	case refs.BlockNodeKind:
+		end.kind, _, _ = decodeNodeAddress(address)
 	}
 	return end
 }

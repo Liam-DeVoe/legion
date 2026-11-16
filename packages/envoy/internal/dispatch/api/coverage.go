@@ -24,7 +24,9 @@ import (
 // after the spec's approval. A requirement whose block's node state is proposed is a question
 // still open (dispatch://INFRA-1950/spec#b-r-proposed), so it raises neither gap here and the
 // approval request's answer names none for it; one at settled or live is counted as every
-// requirement is, and dispatch://INFRA-1253 gives overtaken its meaning. Nothing is ever refused
+// requirement is, and dispatch://INFRA-1253 gives overtaken its meaning. A check or a plan task
+// whose block is proposed is a question still open too, so it serves nothing yet and its
+// requirement is counted without it (servingBlockCounts). Nothing is ever refused
 // for a gap: three readers show it — the route below for the Spec tab, `dispatch read --issue`,
 // which prints each gap after `Coverage: `, and an approval request's answer, which names the
 // missing checks alone.
@@ -97,7 +99,7 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
-	served, err := servingBlockCounts(ctx, q, coverage.SpecArtifactID, append([]string{issueKey}, descendants...))
+	served, err := servingBlockCounts(ctx, q, who, coverage.SpecArtifactID, append([]string{issueKey}, descendants...))
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -216,8 +218,16 @@ type servingCounts struct {
 
 // servingBlockCounts counts, for each block of the spec, the `check` and `plan_task` blocks of
 // the documents of issues that name it in `serves`. Both ends are current blocks of their
-// documents: deleting the check deletes its row, so its requirement is uncovered again.
-func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, issues []string) (map[string]servingCounts, error) {
+// documents: deleting the check deletes its row, so its requirement is uncovered again. A check or
+// a plan task whose block's node state is proposed is a question still open and serves nothing
+// yet (dispatch://INFRA-1950/spec#b-r-proposed), so it is not counted; one at any other state is,
+// and one the store holds no row of reads live, as every read of a node answers one. Its state is
+// read for who in the same statement, as requirementStatesQuery reads a requirement's: from the
+// store's row of the block (kind block, keyed by the row's node_id), through the block kind's
+// predicate over that row (refs.VisibleKindRow), with the kind, the state and the reader bound. So
+// a block the predicate hides from who answers who no state and is counted as live, and the count
+// tells who nothing of the state of a node who may not see.
+func servingBlockCounts(ctx context.Context, q queryer, who model.Actor, specArtifactID string, issues []string) (map[string]servingCounts, error) {
 	rows, err := q.Query(ctx, `
 		select t.block_id, s.type, count(*)
 		from block_refs r
@@ -226,8 +236,12 @@ func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, i
 		join artifacts a on a.id = r.artifact_id
 		where r.kind = 'serves' and r.to_kind = 'block'
 		  and a.issue_key = any($2) and s.type in ('check', 'plan_task')
+		  and not exists (
+		      select 1 from graph_nodes serving
+		      where serving.kind = $3 and serving.id = s.node_id and serving.state = $4
+		        and `+refs.VisibleKindRow(refs.BlockNodeKind, "serving", "$5")+`)
 		group by t.block_id, s.type
-	`, specArtifactID, issues)
+	`, specArtifactID, issues, refs.BlockNodeKind, graphstore.StateProposed, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read what serves the requirements of %s: %w", specArtifactID, err)
 	}

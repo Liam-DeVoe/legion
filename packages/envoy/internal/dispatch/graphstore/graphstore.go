@@ -109,6 +109,17 @@ type Node struct {
 	// leaves it false. WriteArms reads none of it: its upsert moves nothing on a node already
 	// there.
 	Restates bool
+	// KeepsCause says the write keeps the cause the store holds of a node already there, its
+	// row's source_event, whatever else of the row it moves. It is for a write that moves only a
+	// base attribute of a node another write caused: a request's write of a node's state (api's
+	// writeNodeState), at NoEvent. That write is no cause of the node's other facts, and a row it
+	// put at the sentinel would take the event of the next write Caused moves onto it
+	// (causeNodes) - the next index pass of a block's document, for a version that changed nothing
+	// of the block. The base attributes it states still carry its own SourceEvent, so one at
+	// NoEvent states each at the sentinel, which no repeat key drops: proposed, live and proposed
+	// again are three tuples. A node the store does not hold is made at the write's own
+	// SourceEvent, since it has no cause to keep.
+	KeepsCause bool
 	// Changed marks a node this write created or changed, which a write made for a run names as
 	// changed by it (WithRun): Write and Caused, on a context holding a run, append one
 	// TupleChangedByRun from it to that run's interaction. Its writer sets it, because the store
