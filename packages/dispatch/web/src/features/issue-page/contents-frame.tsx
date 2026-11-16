@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, useContext, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import {
   focusVisibleRing,
@@ -10,6 +10,7 @@ import {
   pagePaperBg,
 } from "../../theme/classes";
 import { useDialog, useMediaQuery } from "../shell/useDialog";
+import { ContentsChosen } from "./contents-chosen";
 import { issueAddress } from "./issue-address";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -24,16 +25,6 @@ export const CONTENTS_PANE_QUERY = "(min-width: 64rem)";
 /** The page's inset from the edges of its column, the prototype's: 28 px from the phone's width
  *  up, 14 px below it. The Contents pane takes none, and stands against the rail. */
 export const PAGE_INSET = "px-3.5 md:px-7";
-
-/** What a chosen entry of the Contents list does to the box the list is drawn in: the Outline
- *  sheet closes, and the pane, which stays, does nothing. */
-const ContentsChosen = createContext<() => void>(() => {});
-
-/** The function the Contents list calls when the reader chooses an entry (`slots/contents.tsx`):
- *  it closes the Outline sheet the list is drawn in, and does nothing in the pane. */
-export function useContentsChosen(): () => void {
-  return useContext(ContentsChosen);
-}
 
 /**
  * The Contents pane at the left of the issue page (dispatch://INFRA-1196 R14, R8, the
@@ -67,7 +58,7 @@ export function IssueContentsPane(props: SlotProps): ReactNode {
  * sheet it opens over the page, from 56 px under the top to the foot. The sheet holds, from its
  * head down, `tools` - the controls the view row moves here on a phone, which a later part
  * hands it - and `slots/contents.tsx`, whose list closes the sheet once an entry is chosen
- * (`useContentsChosen`). Escape and its Close close it.
+ * (`contents-chosen.ts`'s `useContentsChosen`). Escape and its Close close it.
  */
 export function OutlineSheet({
   slot,
