@@ -53,7 +53,8 @@ const REPOSITORY = "local-org/local-repo";
 const WORKFLOW = ".github/workflows/ci-results.yaml";
 /** The refs the entry takes: every branch of two segments, such as `refs/heads/topic/one`. */
 const REF_PATTERN = "refs/heads/*/*";
-/** The person the entry acts for. */
+/** The person the entry acts for, which a result entry needs (`exchange.checkGrant`) and which no
+ *  stored result, no answer of Dispatch and no output of `dispatch result --project` names. */
 const PERSON = "ada@example.com";
 /** The audience a job asks its runner to mint its token for, which the broker requires. */
 const ACTIONS_AUDIENCE = "dispatch-ci-results-local";
@@ -126,7 +127,11 @@ export interface StoredResult {
   readonly id: string;
   readonly seq: number;
   readonly attestation: {
-    readonly predicate: { readonly check: string; readonly verdict: string };
+    readonly predicate: {
+      readonly check: string;
+      readonly verdict: string;
+      readonly observed: string;
+    };
   };
 }
 
@@ -140,7 +145,7 @@ export interface CIResultsStack {
   readonly github: FakeGitHubActions;
   readonly project: string;
   readonly repository: string;
-  /** The person the result entry acts for. */
+  /** The person the result entry acts for: the broker's configuration, which no result names. */
   readonly person: string;
   /** The session and the principal every results token of the entry writes under. */
   readonly resultSession: string;

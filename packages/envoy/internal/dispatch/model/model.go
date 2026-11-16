@@ -78,10 +78,11 @@ type Credential struct {
 	ReadOnly bool
 	// ResultsOnly is a broker-issued token that writes only the results of its project's spec
 	// checks (brokertoken.ScopeResults): one the secrets broker minted from a result entry for one
-	// CI run, naming a person, one project and the run. Dispatch serves it on the routes its
-	// results list names (resultsScopeRoutes) alone and answers it 403 RESULTS_ONLY_TOKEN on every
-	// other (refuseResultsOnlyToken), before anything else the route does. False for every other
-	// credential.
+	// CI run, naming a person, one project and the run. The person stays inside the server: a
+	// result, an answer and the access log name the run (SpecCheckRecorder). Dispatch serves it on
+	// the routes its results list names (resultsScopeRoutes) alone and answers it 403
+	// RESULTS_ONLY_TOKEN on every other (refuseResultsOnlyToken), before anything else the route
+	// does. False for every other credential.
 	ResultsOnly bool
 	// CI is the run a ResultsOnly credential was minted for, as the broker answered it: what that
 	// credential writes is held to the run's commit, repository and check run. Nil for every other
@@ -1367,7 +1368,7 @@ type AttestationSubject struct {
 // results token, from GitHub and from the spec files at the commit, except Verdict and Observed,
 // which the job wrote: Check and ProcedureDigest are the check as the files hold it, Test its test
 // part, Job and Leg the name of the run's check run cut at its last " (", Run the run the token
-// was minted for, and Recorder the session, principal and person the token proved.
+// was minted for, and Recorder the run's session and principal the token proved.
 type SpecCheckPredicate struct {
 	Project         string            `json:"project"`
 	Check           string            `json:"check"`
@@ -1403,11 +1404,11 @@ type SpecCheckRun struct {
 }
 
 // SpecCheckRecorder is who wrote a result, as its token proved it: the session of the run's
-// workflow, the broker's principal of it, and the person its result entry names.
+// workflow and the broker's principal of it. It names no person: the airlock authenticated a run,
+// and the person a result entry names is the broker's configuration, who ran no test.
 type SpecCheckRecorder struct {
 	Session   string `json:"session"`
 	Principal string `json:"principal"`
-	Person    string `json:"person"`
 }
 
 // CheckResult is one result recorded against a `check` block of an issue's Verification

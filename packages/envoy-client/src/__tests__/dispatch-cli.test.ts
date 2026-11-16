@@ -9,7 +9,13 @@ import {
   SUBJECT_TOKEN_TYPE_GITHUB,
 } from "@legion/broker-client/wire";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import {
+  DISPATCH_BLOCK_UNITS,
+  IDEMPOTENCY_KEY_HEADER,
+  PROJECT_KEY_RULE,
+  SPEC_CHECK_OBSERVED_CUT_NOTE,
+  SPEC_CHECK_OBSERVED_MAX,
+} from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
@@ -137,7 +143,6 @@ function storedSpecResult(seq: number, verdict: string, leg: string, attempt: nu
         recorder: {
           session: `ci-results:${workflow}`,
           principal: `workflow-results:${workflow}`,
-          person: "ada@example.com",
         },
         recorded_at: "2026-11-16T10:00:00Z",
       },
@@ -2089,6 +2094,36 @@ describe("dispatch result --project, as a CI job writes it", () => {
       `DPoP ${RESULTS_TOKEN}`,
     ]);
     expect(requests).toEqual([]);
+  });
+
+  test("sends what a result keeps of observed: cut and saying so, with what Dispatch cannot store replaced", async () => {
+    // A failing test's log over 1 MiB is ordinary, and Dispatch takes no request that large. A
+    // result keeps SPEC_CHECK_OBSERVED_MAX characters, so that is what the command sends: the
+    // first of them, then the note that says the text was cut. A NUL, which Dispatch cannot store,
+    // and each byte that is not UTF-8 are sent as U+FFFD, so the result is still written.
+    const long = join(stateDir, "observed-long.txt");
+    writeFileSync(long, `--- FAIL: TestP\n${"x".repeat(1024 * 1024)}`);
+    const binary = join(stateDir, "observed-binary.txt");
+    writeFileSync(binary, Buffer.from([0x61, 0x00, 0x62, 0xff, 0x63]));
+    for (const file of [long, binary]) {
+      const ran = await runJob([...record, "--observed-file", file], jobEnvironment());
+      expect(ran.code, ran.stdout).toBe(0);
+    }
+
+    const sent = written.map(({ body }) =>
+      body !== null &&
+      typeof body === "object" &&
+      "observed" in body &&
+      typeof body.observed === "string"
+        ? body.observed
+        : ""
+    );
+    const kept = SPEC_CHECK_OBSERVED_MAX - [...SPEC_CHECK_OBSERVED_CUT_NOTE].length;
+    expect(sent).toEqual([
+      `--- FAIL: TestP\n${"x".repeat(kept - 16)}${SPEC_CHECK_OBSERVED_CUT_NOTE}`,
+      "a\uFFFDb\uFFFDc",
+    ]);
+    expect([...(sent[0] ?? "")].length).toBe(SPEC_CHECK_OBSERVED_MAX);
   });
 
   test("dispatch results --project lists each stored result of the commit, one line each, newest first", async () => {

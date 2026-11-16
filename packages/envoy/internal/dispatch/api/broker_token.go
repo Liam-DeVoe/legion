@@ -204,9 +204,14 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a
-	// fleet's name as a person's login.
+	// fleet's name as a person's login. A results token's writer is the session of its run: the
+	// airlock authenticated the run, and the person its result entry names ran nothing and stays
+	// inside the server (R12).
 	writer := caller.Person
-	if writer == "" {
+	switch {
+	case caller.ResultsOnly:
+		writer = caller.Session
+	case writer == "":
 		writer = "service:" + caller.Service
 	}
 	accesslog.Note(r.Context(), accesslog.KindBrokerToken, writer)

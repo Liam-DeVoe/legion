@@ -5,19 +5,25 @@ package api
 // results token the secrets broker minted for its run (brokertoken.Caller.ResultsOnly), and this
 // route is the one route that token reaches (resultsScopeRoutes). Dispatch takes who wrote the
 // result and what it is for from that token, from GitHub and from the spec files at the run's
-// commit; the body says only what the job observed. Each result is a new row of
+// commit; the body says only what the job observed. The recorder of a result is the run, and no
+// person: the broker's result entry names a person, whom nobody authenticated for this write and
+// who ran no test, so that person stays inside the server. Each result is a new row of
 // spec_check_results, which nothing updates or deletes.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -43,7 +49,10 @@ const (
 	codeRepositoryNotTheProjects = "REPOSITORY_NOT_THE_PROJECTS"
 	// codeCheckRunNotTheRuns refuses a token whose check run GitHub names for another commit.
 	codeCheckRunNotTheRuns = "CHECK_RUN_NOT_THE_RUNS"
-	// codeCheckNotInFiles refuses a check the spec files at the run's commit do not hold once.
+	// codeSpecFilesRefused refuses a result at a commit whose spec files the graph logic refuses
+	// (specgraph.Judge): such files hold no check to write a result for.
+	codeSpecFilesRefused = "SPEC_FILES_REFUSED"
+	// codeCheckNotInFiles refuses a check the spec files at the run's commit do not hold.
 	codeCheckNotInFiles = "CHECK_NOT_IN_FILES"
 	// codeCheckNotThisJobs refuses a check whose test part names another job than the run's.
 	codeCheckNotThisJobs = "CHECK_NOT_THIS_JOBS"
@@ -52,9 +61,6 @@ const (
 	codeCheckRunUnreadable = "CHECK_RUN_UNREADABLE"
 	codeFilesUnreadable    = "FILES_UNREADABLE"
 )
-
-// observedRunes is how much of what a job observed a result keeps.
-const observedRunes = 2000
 
 // The in-toto statement a result is stored as: its own type, and the type of its predicate.
 const (
@@ -71,7 +77,8 @@ type specCheckResultInput struct {
 	Check string `json:"check" required:"true"`
 	// Verdict is pass, fail or could_not_run.
 	Verdict string `json:"verdict" required:"true"`
-	// Observed is what the job observed; the result keeps its first 2000 runes.
+	// Observed is what the job observed; the result keeps contracts.SpecCheckObservedMax runes of
+	// it (cutObserved).
 	Observed string `json:"observed"`
 }
 
@@ -88,21 +95,29 @@ type specCheckResults struct {
 	Results []model.SpecCheckResult `json:"results"`
 }
 
-// specCheckFacts is what the route reads of one check id in the spec files at a commit: how many
-// checks carry it, the first one's procedure digest, and its test part, empty for a check with
-// none.
+// specCheckFacts is what the route reads of one check of the spec files at a commit: its
+// procedure digest, and its test part, empty for a check with none.
 type specCheckFacts struct {
-	Count    int    `json:"count"`
 	Digest   string `json:"digest"`
 	Runner   string `json:"runner"`
 	Selector string `json:"selector"`
 	Job      string `json:"job"`
 }
 
+// specFiles is what the route reads of the spec files at a commit: how many problems the graph
+// logic finds in them and the first one, as specgraph.Judge orders them, and, when it finds none,
+// their checks by id. A file over notes.MaxFileSize is one problem, as it is to every reader of
+// spec files.
+type specFiles struct {
+	Problems int                       `json:"problems,omitempty"`
+	First    string                    `json:"first,omitempty"`
+	Checks   map[string]specCheckFacts `json:"checks,omitempty"`
+}
+
 // specResultReads keeps what the route reads of GitHub for the life of the process, since
-// neither changes: a check run's name and commit, by repository and id, and the checks of the
-// spec files, by repository and commit. Each is held as JSON in a byte-bounded cache, so many
-// runs and commits cannot grow it without bound (bytelru).
+// neither changes: a check run's name and commit, by repository and id, and what the spec files
+// hold, by repository and commit. Each is held as JSON in a byte-bounded cache, so many runs and
+// commits cannot grow it without bound (bytelru).
 type specResultReads struct {
 	once      sync.Once
 	checkRuns *bytelru.Cache[string, []byte]
@@ -126,9 +141,10 @@ func (c *specResultReads) init() {
 // recordSpecCheckResult is POST /api/v1/projects/{key}/results. The checks run in this order,
 // each before anything is read of GitHub that it does not need: the credential is a results
 // token; the body names the four fields alone, well formed; its commit is the run's; the project
-// maps the run's repository; GitHub names the run's check run at that commit; the files at that
-// commit hold the check once; and the check's job is the check run's. The project check of the
-// path is withinProjectScope's, which register puts in front of this handler.
+// maps the run's repository; GitHub names the run's check run at that commit; the graph logic
+// takes the files at that commit; the files hold the check; and the check's job is the check
+// run's. The project check of the path is withinProjectScope's, which register puts in front of
+// this handler.
 func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
@@ -186,16 +202,26 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, leg := jobAndLeg(checkRun.Name)
-	checks, err := s.specChecksAt(ctx, reader, run.Repository, run.SHA)
+	files, err := s.specFilesAt(ctx, reader, run.Repository, run.SHA)
 	if err != nil {
 		writeError(w, codeFilesUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
 			"GitHub did not answer the read of %s of %s at %s, so the result was not judged; write it again: %v", specDir, run.Repository, run.SHA, err))
 		return
 	}
-	check := checks[input.Check]
-	if check.Count != 1 {
+	if files.Problems > 0 {
+		problems := "1 problem"
+		if files.Problems != 1 {
+			problems = fmt.Sprintf("%d problems", files.Problems)
+		}
+		writeError(w, codeSpecFilesRefused, http.StatusConflict, fmt.Sprintf(
+			"the spec files of %s at %s have %s, so they hold no check to write a result for. The first: %s",
+			run.Repository, run.SHA, problems, files.First))
+		return
+	}
+	check, held := files.Checks[input.Check]
+	if !held {
 		writeError(w, codeCheckNotInFiles, http.StatusConflict, fmt.Sprintf(
-			"the spec files of %s at %s hold %d checks with the id %q, and a result is for one check that the files hold", run.Repository, run.SHA, check.Count, input.Check))
+			"the spec files of %s at %s hold no check with the id %q, and a result is for a check that the files hold", run.Repository, run.SHA, input.Check))
 		return
 	}
 	if check.Job != job {
@@ -213,7 +239,7 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		project: project, repository: run.Repository, check: input.Check, commit: run.SHA,
 		procedureDigest: check.Digest, job: job, leg: leg,
 		checkRunID: numbers.checkRun, runID: numbers.run, attempt: numbers.attempt,
-		verdict: input.Verdict, observed: cutToRunes(input.Observed, observedRunes),
+		verdict: input.Verdict, observed: cutObserved(input.Observed),
 		session: actor.Credential.Session,
 		test:    model.SpecCheckTest{Runner: check.Runner, Selector: check.Selector, Job: check.Job},
 		run: model.SpecCheckRun{
@@ -221,9 +247,6 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 			RunID: run.RunID, Attempt: numbers.attempt, CheckRunID: run.CheckRunID, RunnerEnvironment: run.RunnerEnvironment,
 		},
 		recorder: model.SpecCheckRecorder{Session: actor.Credential.Session, Principal: resultPrincipal(run.WorkflowRef)},
-	}
-	if actor.Owner != nil {
-		row.recorder.Person = *actor.Owner
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -367,47 +390,62 @@ func (s *server) specCheckRun(ctx context.Context, reader *repositoryReader, rep
 	return run, nil
 }
 
-// specChecksAt is the checks of the spec files of repository at commit, by id: the process's
-// cached answer, or the files GitHub serves read with the graph logic's parser. A commit whose
-// tree holds no spec directory holds no check.
-func (s *server) specChecksAt(ctx context.Context, reader *repositoryReader, repository, commit string) (map[string]specCheckFacts, error) {
+// specFilesAt is what the spec files of repository at commit hold: the process's cached answer, or
+// the files GitHub serves read with the graph logic's one reading of them (specgraph.Judge), with
+// no retired list, since the files hold no history. A commit whose tree holds no spec directory
+// holds no check, and a file over notes.MaxFileSize is a problem of the files, not a GitHub that
+// did not answer.
+func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repository, commit string) (specFiles, error) {
 	s.specReads.init()
 	key := repository + "@" + commit
 	if cached, ok := s.specReads.checks.Get(key); ok {
-		var checks map[string]specCheckFacts
-		if err := json.Unmarshal(cached, &checks); err == nil {
-			return checks, nil
+		var files specFiles
+		if err := json.Unmarshal(cached, &files); err == nil {
+			return files, nil
 		}
 	}
 	token, err := reader.installationToken(ctx)
 	if err != nil {
-		return nil, err
+		return specFiles{}, err
 	}
 	listing, err := s.deps.GitHub.Dir(ctx, token, reader.owner, reader.name, commit, specDir)
 	if err != nil {
-		return nil, err
+		return specFiles{}, err
 	}
-	files, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
-	if err != nil {
-		return nil, err
+	var files specFiles
+	read, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
+	switch {
+	case errors.Is(err, notes.ErrFileTooLarge):
+		files = specFiles{Problems: 1, First: err.Error()}
+	case err != nil:
+		return specFiles{}, err
+	default:
+		files = judgeSpecFiles(read)
 	}
-	tree, _ := specgraph.Parse(files)
-	checks := make(map[string]specCheckFacts, len(tree.Checks))
-	for _, check := range tree.Checks {
-		facts := checks[check.ID]
-		facts.Count++
-		if facts.Count == 1 {
-			facts.Digest = check.Digest()
-			if check.Test != nil {
-				facts.Runner, facts.Selector, facts.Job = check.Test.Runner, check.Test.Selector, check.Test.Job
-			}
-		}
-		checks[check.ID] = facts
-	}
-	if encoded, err := json.Marshal(checks); err == nil {
+	if encoded, err := json.Marshal(files); err == nil {
 		s.specReads.checks.Put(key, encoded)
 	}
-	return checks, nil
+	return files, nil
+}
+
+// judgeSpecFiles is what the route keeps of files as specgraph.Judge reads them: how many
+// problems they have and the first, written as spec-check writes one, "<dir>/<file>:<line>:
+// <node>: <detail>", or, with none, every check by id.
+func judgeSpecFiles(read map[string][]byte) specFiles {
+	tree, problems := specgraph.Judge(read, specgraph.Options{})
+	if len(problems) > 0 {
+		first := problems[0]
+		return specFiles{Problems: len(problems), First: fmt.Sprintf("%s/%s:%d: %s: %s", specDir, first.Pos.File, first.Pos.Line, first.Node, first.Detail)}
+	}
+	files := specFiles{Checks: make(map[string]specCheckFacts, len(tree.Checks))}
+	for _, check := range tree.Checks {
+		facts := specCheckFacts{Digest: check.Digest()}
+		if check.Test != nil {
+			facts.Runner, facts.Selector, facts.Job = check.Test.Runner, check.Test.Selector, check.Test.Job
+		}
+		files.Checks[check.ID] = facts
+	}
+	return files
 }
 
 // jobAndLeg reads a check run's name as GitHub names a job's check run: the job's name, then its
@@ -425,6 +463,17 @@ func jobAndLeg(name string) (job, leg string) {
 func resultPrincipal(workflowRef string) string {
 	workflow, _, _ := strings.Cut(workflowRef, "@")
 	return "workflow-results:" + workflow
+}
+
+// cutObserved is what a result keeps of what a job observed: the text whole when it is
+// contracts.SpecCheckObservedMax runes or fewer, else its first runes and
+// contracts.SpecCheckObservedCutNote, that many runes in all, so the stored text says that it was
+// cut. `dispatch result --project` cuts by the same rule before it sends the text.
+func cutObserved(text string) string {
+	if utf8.RuneCountInString(text) <= contracts.SpecCheckObservedMax {
+		return text
+	}
+	return cutToRunes(text, contracts.SpecCheckObservedMax-utf8.RuneCountInString(contracts.SpecCheckObservedCutNote)) + contracts.SpecCheckObservedCutNote
 }
 
 // cutToRunes is text cut to its first limit runes.

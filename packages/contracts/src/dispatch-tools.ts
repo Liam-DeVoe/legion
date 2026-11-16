@@ -6,6 +6,7 @@ import {
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
+  SPEC_CHECK_OBSERVED_MAX,
 } from "./dispatch-api-limits";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
@@ -1733,7 +1734,11 @@ export const dispatchToolSpecs = [
       "trades the OIDC token of its run at the secrets broker for a results token, and Dispatch " +
       "refuses this form from every other credential. The call sends commit, check, verdict and " +
       "observed. Dispatch takes the job, the procedure and the recorder from the token, from " +
-      "GitHub and from the spec files at the commit. verdict could_not_run is a test that did " +
+      "GitHub and from the spec files at the commit. The recorder is the run, and no person. " +
+      "Spec files that the graph logic refuses hold no check: 409 SPEC_FILES_REFUSED names the " +
+      `first problem. A result keeps ${SPEC_CHECK_OBSERVED_MAX} characters of observed. The ` +
+      "command sends a longer text cut, with a last line that says so, and it sends a NUL as " +
+      "U+FFFD. verdict could_not_run is a test that did " +
       "not finish. The command prints the stored result as JSON, an in-toto statement of the " +
       "run. It reads DISPATCH_URL, AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY " +
       "(github-actions in a GitHub Actions job), and no session. " +

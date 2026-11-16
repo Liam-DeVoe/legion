@@ -216,6 +216,7 @@ A service whose verifier does not set the switch, the Envoy listener among them,
 
 A results token is the token the broker mints from a result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) for one GitHub Actions run.
 It holds the OAuth scope `results` alone and the project scope `results`, and names a person, one project, the session of its workflow and the run (`ci`).
+That person stays inside Dispatch: the result such a token writes names the run's session and principal as its recorder and no person, and the access log names the run's session as the caller.
 `brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesResults` set too, so Dispatch accepts such a token and marks its credential results-only with the run (`model.Credential.ResultsOnly`, `model.Credential.CI`), with no OAuth scope.
 Dispatch serves it on the routes its results list names (`resultsScopeRoutes` in `internal/dispatch/api/routes_table.go`):
 `POST /api/v1/projects/{key}/results`, where a CI job writes the result of a check of the spec files at its commit, and `POST /api/v1/issues/{key}/results`, where it records the result of a check whose `ci_check` names its job (`/api/v1/issues/{key}/results` below).

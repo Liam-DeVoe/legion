@@ -319,6 +319,14 @@ const MaxIssueAdvances = 20
 const MaxIssuePageLimit = 250
 const DefaultIssuePageLimit = 50
 
+// SpecCheckObservedMax is the most runes of what a CI job observed that a result of a spec check
+// keeps, and SpecCheckObservedCutNote the end of a text cut to it, which says that it was cut: a
+// longer text is kept as its first runes and the note, SpecCheckObservedMax runes in all.
+// Generated from SPEC_CHECK_OBSERVED_MAX and SPEC_CHECK_OBSERVED_CUT_NOTE in packages/contracts,
+// so the text Dispatch keeps and the text `dispatch result --project` sends are cut by one rule.
+const SpecCheckObservedMax = 2000
+const SpecCheckObservedCutNote = "\n[The text is cut here. A result keeps 2000 characters of what the job observed.]"
+
 // IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
 // server's refusal and the dashboard's title fields cannot drift apart.
