@@ -242,6 +242,18 @@ func TestTheOtherRules(t *testing.T) {
 			want: Problem{pos(9), "work-unit", "bad-term", "bad-term: a term has a name and a definition"},
 		},
 		{
+			name: "a component whose purpose is two sentences",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) {
+				c.Purpose = "It keeps each message until its session reads it. It also deletes each message after a week."
+			})}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
+			name: "a component whose purpose is two sentences on two lines",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Purpose = "It keeps each issue.\nDoes it keep each result?" })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
 			name: "a component whose parent is an interface",
 			tree: Tree{Components: []Component{
 				component("dispatch", nil), component("legion", nil),
@@ -282,6 +294,22 @@ func TestTheOtherRules(t *testing.T) {
 				t.Errorf("Validate:\n got %+v\nwant %+v", got, []Problem{row.want})
 			}
 		})
+	}
+}
+
+// A purpose of one sentence is valid, also on two lines and with a dot inside a word: the controls
+// of the two-sentence rows of TestTheOtherRules.
+func TestAPurposeOfOneSentenceIsValid(t *testing.T) {
+	t.Parallel()
+	for _, purpose := range []string{
+		"It keeps each message until its session reads it.",
+		"It keeps each message\nuntil its session reads it.",
+		"It keeps version 1.2 of each message for Node.js clients",
+	} {
+		tree := Tree{Components: []Component{{ID: "dispatch", Name: "Dispatch", Purpose: purpose, Pos: Position{File: "x.md", Line: 1}}}}
+		if problems := Validate(tree, Options{}); len(problems) != 0 {
+			t.Errorf("purpose %q: %+v, want none", purpose, problems)
+		}
 	}
 }
 

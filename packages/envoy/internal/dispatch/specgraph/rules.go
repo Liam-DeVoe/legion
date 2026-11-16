@@ -3,6 +3,7 @@ package specgraph
 import (
 	"cmp"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -26,9 +27,9 @@ type Options struct {
 //   - a check: check-serves (not exactly one statement), no-claim, no-procedure,
 //     no-failing-example, bad-subject, bad-procedure, no-test and no-job (a program check without
 //     its test part), test-on-non-program, bad-selector (a go selector that picks no one test);
-//   - a component: bad-component (no name or purpose, a parent that is no component, or joins on a
-//     component that is no interface) and bad-interface (fewer than two components joined, or a
-//     joined node that is no component);
+//   - a component: bad-component (no name, a purpose that is not one sentence, a parent that is no
+//     component, or joins on a component that is no interface) and bad-interface (fewer than two
+//     components joined, or a joined node that is no component);
 //   - a term: bad-term (no name or definition);
 //   - any text: code-in-text, a name of code in a statement's text, a check's claim, procedure or
 //     failing example, a component's name or purpose, or a term's definition (R4 and R15). A
@@ -226,8 +227,13 @@ func (v *validator) check(c Check) {
 	v.code(c.Pos, c.ID, "failing example", c.FailingExample)
 }
 
+// sentenceEnd is the end of a sentence that more text follows: ".", "!" or "?", then white space,
+// where ste-lint splits a line into its sentences. A dot inside a word, such as the one of 1.2 or
+// Node.js, ends no sentence.
+var sentenceEnd = regexp.MustCompile(`[.!?]\s+\S`)
+
 func (v *validator) component(c Component) {
-	if c.Name == "" || c.Purpose == "" {
+	if c.Name == "" || c.Purpose == "" || sentenceEnd.MatchString(c.Purpose) {
 		v.problem(c.Pos, c.ID, "bad-component: a component has a name and one sentence of purpose")
 	}
 	if c.Parent != "" {
