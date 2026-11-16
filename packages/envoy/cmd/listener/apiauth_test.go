@@ -220,10 +220,10 @@ func TestAPIAuth(t *testing.T) {
 }
 
 // A service-account token the listener could not judge, because its issuer's key set cannot be
-// read, is answered 503 with a Retry-After, so Dispatch tries the call again rather than settling
-// it failed, and the log names the class as it does for a refusal. The outage turns no verdict
-// into a 503: a token for another audience is refused 401 during it, from its own claims. Once
-// the keys read again, the same token is admitted.
+// read, is answered 503 with a Retry-After, so Dispatch tries the call again for up to 12 seconds
+// rather than settling it failed at once, and the log names the class as it does for a refusal.
+// The outage turns no verdict into a 503: a token for another audience is refused 401 during it,
+// from its own claims. Once the keys read again, the same token is admitted.
 func TestAPIAuthAnswersAnIssuerOutage503(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
