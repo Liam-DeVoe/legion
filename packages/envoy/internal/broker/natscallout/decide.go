@@ -168,7 +168,18 @@ func decide(ctx context.Context, deps Deps, services []ServiceEntry, req Request
 	if entry, named := natsgrant.NamesSystemSubject(decision.Grant); named {
 		return Decision{}, refuse(credentialKind(req), "grant names a system subject: "+entry)
 	}
+	// And a grant with an empty allow list in either direction is every subject in that
+	// direction, not none (natsgrant.OpenDirection), so it is refused whatever produced it.
+	// encodeAnswer refuses it again, since that is the one place every answer passes.
+	if direction, open := natsgrant.OpenDirection(decision.Grant); open {
+		return Decision{}, refuse(credentialKind(req), openDirectionReason(direction))
+	}
 	return decision, nil
+}
+
+// openDirectionReason is the refusal of a grant whose allow list in direction is empty.
+func openDirectionReason(direction string) string {
+	return "grant opens every subject: its " + direction + " allow list is empty"
 }
 
 // decideCredential is the decision of the credential req presents, before the guard.

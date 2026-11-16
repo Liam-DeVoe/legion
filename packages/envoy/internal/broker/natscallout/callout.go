@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 const (
@@ -279,6 +280,14 @@ func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal 
 		return "", errors.New("natscallout: the request names no user key")
 	}
 	response.Audience = req.ServerID
+	// The one place every answer passes, so the last guard is here: a grant with an empty allow
+	// list in either direction would be every subject in that direction (natsgrant.OpenDirection),
+	// and it is answered as a refusal naming that direction, never encoded as a user.
+	if refusal == nil {
+		if direction, open := natsgrant.OpenDirection(decision.Grant); open {
+			refusal = errors.New(openDirectionReason(direction))
+		}
+	}
 	if refusal != nil {
 		response.Error = refusal.Error()
 		return response.Encode(issuer)
