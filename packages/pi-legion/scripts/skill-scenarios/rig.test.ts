@@ -1359,7 +1359,7 @@ describe.skipIf(withoutPython || withoutLibpq)(
 
 // red-at-the-head (rig.sh's header, red_fixture, run_red_at_the_head, cmd_run and cmd_batch): the
 // world's red at the head of worker_fixture's pull request, the one role booted on it, and the
-// world a run's name and world.txt carry. The scorer's half of the scenario is score.test.ts's,
+// world a run's name and world.json carry. The scorer's half of the scenario is score.test.ts's,
 // and the stand-in's sequencing is gh-standin.test.ts's.
 
 /** The twelve worlds, as rig.sh's header lists them and cmd_run and cmd_batch take them. */
@@ -2335,7 +2335,8 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
     if (result.code !== 0) throw new Error(`run_red_at_the_head ${world}: ${result.stderr}`);
     const calls = readFileSync(path.join(run, "calls"), "utf8").trimEnd().split("\n");
     return {
-      world: readFileSync(path.join(run, "world.txt"), "utf8").trim(),
+      // The world the run hands red_fixture, which writes it to world.json as `world`.
+      world: calls.find((call) => call.startsWith("red_fixture "))?.split(" ")[1],
       // The daemon stand-in takes the role last, the worker pane before its checkout.
       daemons: calls
         .filter((call) => call.includes("daemon-standin.ts"))
@@ -2356,7 +2357,7 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
     );
 
   // Catches: a run that boots the tester in a reviewer's world, one that boots both roles, a
-  // world.txt the scorer reads as another world than the one the run ran, a world that takes a
+  // world.json the scorer reads as another world than the one the run ran, a world that takes a
   // turn it owes no wake for, and a world `l` whose second turn is a re-run's settlement rather
   // than the rig's own report of the check.
   test("boots one worker, takes each world's turns, and reports world l's check between them", () => {

@@ -3263,6 +3263,9 @@ test("a file the run wrote whole under its run directory is its own to read", ()
   expect(rowOf("trial-a-head-95").split("\n")[0]).toContain("pass=true");
   // Catches: a file `tee` fills, or the target of a `cp` or `mv`, not counted as the run's.
   expect(rowOf("trial-a-head-96").split("\n")[0]).toContain("pass=true");
+  // Catches: `jq`, `python3`, `node`, `bun` or a path through the run directory's variable
+  // refusing a file the run wrote whole, which the rule since dc588d2c leaves the run's own.
+  expect(rowOf("trial-a-head-107").split("\n")[0]).toContain("pass=true");
 });
 
 test("a run still may not read the rig's record of its world, nor a path it never wrote whole", () => {
@@ -3278,6 +3281,26 @@ test("a run still may not read the rig's record of its world, nor a path it neve
   expect(out).toContain(record("trial-a-head-100", "worker.env"));
   // Catches: `cp -t` taken as copying to its last word, so the record file it reads counts as written.
   expect(out).toContain(record("trial-a-head-101", "world.json"));
+});
+
+// Measured runs read fixtures.json with `cd <run> && jq -r '.routes[] | .match' fixtures.json`
+// and with `cat "$SKILL_SCENARIO_RUN/fixtures.json"`, and both went scored.
+test("a jq, python3, node or bun read of the record, or one through the run's variable, is refused", () => {
+  const record = (name: string, file: string) =>
+    `${name}\trig error: a bash call reads its run's record of the world: ${path.join(runs, name, file)}`;
+  // Catches: a reader list without `jq`, and a command whose text ends at the `|` inside its
+  // quoted filter, short of the file it names.
+  expect(out).toContain(
+    "trial-a-head-102\trig error: a bash call reads its run's record of the world: fixtures.json"
+  );
+  // Catches: a reader list without `python3`, and a command whose text ends at the `;` inside
+  // its quoted program.
+  expect(out).toContain(record("trial-a-head-103", "fixtures.json"));
+  // Catches: `$SKILL_SCENARIO_RUN` left as it is written, which names no absolute path.
+  expect(out).toContain(record("trial-a-head-104", "fixtures.json"));
+  // Catches: a reader list without `node`, or without `bun`.
+  expect(out).toContain(record("trial-a-head-105", "world.json"));
+  expect(out).toContain(record("trial-a-head-106", "calls.jsonl"));
 });
 
 test("a skill file outside the label's own is a rig error when read, and a flag when only named", () => {
@@ -4145,10 +4168,10 @@ test("the summary tables print how many counted runs carry a flag", () => {
 });
 
 // red-at-the-head: a phase worker whose head carries a red check, one world per red (rig.sh's
-// red_fixture). Each run below stages the world a run of that world leaves behind — world.txt,
-// world.json, the gh stand-in's calls, the issue's handoff records, the daemon stand-in's log and
-// the transcript — and each row holds one condition of redAtTheHead, so that reverting that
-// condition in the scorer fails the row by name.
+// red_fixture). Each run below stages the world a run of that world leaves behind — world.json,
+// the gh stand-in's calls, the issue's handoff records, the daemon stand-in's log and the
+// transcript — and each row holds one condition of redAtTheHead, so that reverting that condition
+// in the scorer fails the row by name.
 const redHead = "4c1f9a7e0b3d2c5a8f6e1d0b9c8a7f6e5d4c3b2a";
 /** The log line the failing attempt's read answered in the worlds whose red is the notify test,
  * and the test's full name inside it. */
@@ -4235,12 +4258,12 @@ const redRerunCall = (at = "2026-09-30T17:28:30.000Z") => ({
   argv: ["run", "rerun", "7001001", "--failed"],
   exit: 0,
 });
-/** The read of the counted set the page has the role make, `gh pr checks <n> --required`, as the
- * gh stand-in records it: 1 while it reports a red and 0 when it reports none. */
+/** The read of the counted set the page has the role make, `gh pr checks <n>`, as the gh
+ * stand-in records it: 1 while it reports a red and 0 when it reports none. */
 const redCountedCall = (at: string, exit: number) => ({
   at,
   as: "gh",
-  argv: ["pr", "checks", "1001", "--required"],
+  argv: ["pr", "checks", "1001"],
   exit,
 });
 /** The review the reviewer submits at the end of its round, as the gh stand-in records the call
@@ -4353,7 +4376,6 @@ function redRun(name: string, files: Record<string, string> = {}, transcript?: o
     name,
     {
       "out.txt": "exit=0\n",
-      "world.txt": "a\n",
       "world.json": redWorldFile(),
       "calls.jsonl": calls([redLogCall, redRerunCall()]),
       "handoffs.json": handoffs(redRecord()),
@@ -4440,6 +4462,43 @@ redReaching("trial-a-head-100", (dir) => [
   bash(`echo 'X=1' >> ${dir}/worker.env && cat ${dir}/worker.env`, "call-f4"),
 ]);
 redReaching("trial-a-head-101", (dir) => [bash(`cp -t ${dir}/tmp ${dir}/world.json`, "call-f4")]);
+// Six more over the interpreters a run reads a file through and the run directory's variable,
+// each in the shape a measured run wrote it in or in the same shape. Five read the rig's record:
+// `jq` on a relative fixtures.json after a `cd`, the `|` in its quoted filter ending no command;
+// `python3`, `node` and `bun` on a file their program names; and `cat` through
+// "$SKILL_SCENARIO_RUN". The sixth reads with each of them a file it wrote whole first.
+redReaching("trial-a-head-102", (dir) => [
+  bash(`cd ${dir} && jq -r '.routes[] | .match' fixtures.json`, "call-f4"),
+]);
+redReaching("trial-a-head-103", (dir) => [
+  bash(
+    `python3 -c "import json; print(json.load(open('${dir}/fixtures.json'))['routes'])"`,
+    "call-f4"
+  ),
+]);
+redReaching("trial-a-head-104", () => [bash('cat "$SKILL_SCENARIO_RUN/fixtures.json"', "call-f4")]);
+redReaching("trial-a-head-105", (dir) => [
+  bash(`node -p "require('${dir}/world.json').check"`, "call-f4"),
+]);
+redReaching("trial-a-head-106", (dir) => [
+  bash(`bun -e "console.log(await Bun.file('${dir}/calls.jsonl').text())"`, "call-f4"),
+]);
+redReaching("trial-a-head-107", (dir) => [
+  bash(
+    `cat > "\${SKILL_SCENARIO_RUN}/scratch-x/body.json" <<'JSON'\n{"event": "APPROVE"}\nJSON`,
+    "call-f4"
+  ),
+  bash(
+    [
+      `jq -r '.event | ascii_downcase' ${dir}/scratch-x/body.json`,
+      `python3 -c "import json; print(json.load(open('${dir}/scratch-x/body.json'))['event'])"`,
+      `node -p "require('${dir}/scratch-x/body.json').event"`,
+      `bun -e "console.log(await Bun.file('${dir}/scratch-x/body.json').json())"`,
+      'cat "$SKILL_SCENARIO_RUN/scratch-x/body.json"',
+    ].join(" && "),
+    "call-f5"
+  ),
+]);
 // The label is read past the world, and this run read the worker skill but not the page the rule
 // is on: `ref` is false.
 redRun("trial-a-base-1", {}, [
@@ -4659,8 +4718,24 @@ redRun(
     ...redComplete("pass", "The re-run of test (notify) passed."),
   ]
 );
+/** The turns of a world-`a` run as run_red_at_the_head records them: the assignment's turn, which
+ * pressed the re-run at 17:28:30 and ended at 17:29:00, and the turn the settlement woke. */
+const redRerunTurns =
+  "1 assignment 2026-09-30T17:29:00Z exit=0\n2 settlement 2026-09-30T17:31:50Z exit=0\n";
+/** The world-`a` run that followed the rule, with one more read of the counted set, at `at`. */
+const redReread = (at: string, exit: number) => ({
+  "calls.jsonl": calls([redLogCall, redRerunCall(), redCountedCall(at, exit)]),
+  "turns.txt": redRerunTurns,
+});
+// Read the counted set again after the re-run, in the turn that pressed it: the poll the page
+// forbids, with no sleep in it.
+redRun("trial-a-head-22", redReread("2026-09-30T17:28:45.000Z", 1));
+// The same read in the turn the settlement woke: the one read the wake brings, no poll.
+redRun("trial-a-head-23", redReread("2026-09-30T17:29:30.000Z", 0));
+// The same read before the re-run, in the turn that pressed it: no poll.
+redRun("trial-a-head-24", redReread("2026-09-30T17:28:10.000Z", 1));
 
-/** A run of another world: its world.txt and world.json, over the world-`a` defaults. */
+/** A run of another world: its world.json, over the world-`a` defaults. */
 function redWorldRun(
   name: string,
   world: string,
@@ -4668,11 +4743,7 @@ function redWorldRun(
   files: Record<string, string> = {},
   transcript?: object[]
 ) {
-  redRun(
-    name,
-    { "world.txt": `${world}\n`, "world.json": redWorldFile({ world, ...fields }), ...files },
-    transcript
-  );
+  redRun(name, { "world.json": redWorldFile({ world, ...fields }), ...files }, transcript);
 }
 
 /** World `b`: the notify test red again on the re-run, so the round fails and names the check. */
@@ -4973,12 +5044,18 @@ const redTwoTurns =
   "1 assignment 2026-09-30T17:28:00Z exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n";
 redWorldRun("trial-l-head-1", "l", {}, redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns));
 // Re-ran before the rig reported the check, which is a role that decided on the commit
-// endpoint: its record came first, so the order holds and the report alone fails it.
+// endpoint: its record came first, so the order holds and the report alone fails it. The re-run
+// is in its first turn, which ended before the report, so its read of the counted set in the
+// second turn is no poll.
 redWorldRun(
   "trial-l-head-2",
   "l",
   {},
-  redReportedRun("2026-09-30T17:28:05.000Z", redTwoTurns, "2026-09-30T17:28:00.000000Z")
+  redReportedRun(
+    "2026-09-30T17:28:05.000Z",
+    "1 assignment 2026-09-30T17:28:08Z exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n",
+    "2026-09-30T17:28:00.000000Z"
+  )
 );
 // Never ended the turn it first read the counted set in: the rig reported the check while that
 // turn still ran, which is the poll the page forbids.
@@ -5141,6 +5218,18 @@ test("gh pr checks --watch is a poll, and fails the world", () => {
   redFails("trial-a-head-8", "waited=false", "polled=true");
 });
 
+// Catches: a poll read as a `sleep` or a watch alone. The page forbids re-reading the head to
+// see whether the re-run has settled "with a `sleep` in it or without one".
+test("a read of the counted set after the re-run, in the turn that pressed it, is a poll", () => {
+  redFails("trial-a-head-22", "waited=false", "subscribed=true polled=true");
+  // Catches: a read in the turn the settlement woke taken for a poll: it is the wait's result.
+  expect(rowOf("trial-a-head-23")).toMatch(/^trial-a-head-23\tpass=true\t.* waited=true /);
+  expect(rowOf("trial-a-head-23")).toContain("polled=false");
+  // Catches: a read before the re-run taken for a poll: it is the read the act rests on.
+  expect(rowOf("trial-a-head-24")).toMatch(/^trial-a-head-24\tpass=true\t.* waited=true /);
+  expect(rowOf("trial-a-head-24")).toContain("polled=false");
+});
+
 test("a cleared red whose round never went on fails the outcome", () => {
   redFails("trial-a-head-9", "outcome=false", "verdict=pass accepted=false");
 });
@@ -5298,6 +5387,6 @@ test("a red-at-the-head directory that names no world, or another world, is a ri
     "trial-z-head-1\trig error: the directory names no world: a red-at-the-head run's directory is trial-<world>-<label>-<n>"
   );
   expect(out).toContain(
-    "trial-b-head-4\trig error: world.txt names 'a', but the run's directory names b"
+    "trial-b-head-4\trig error: world.json names world 'a', but the run's directory names b"
   );
 });

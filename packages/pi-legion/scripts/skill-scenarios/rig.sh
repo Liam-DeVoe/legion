@@ -116,15 +116,14 @@
 #                   `workflow_dispatch` run's, which the counted set does not hold; `l` `a` with a
 #                   counted set that has not reported the check when the role first reads it. The
 #                   world is in the run's name, trial-<world>-<label>-<n> (run_prefix), so each
-#                   world's batch keeps its own runs, and each run writes it to <run>/world.txt
-#                   (run_red_at_the_head, red_fixture). Each world's facts, among them its role,
-#                   its phase and its turns, are written once (red_world), and red_fixture writes
-#                   them to <run>/world.json, where the run and the score read them. A world that
-#                   expects a re-run takes two turns: the architect's assignment, then, once the
-#                   re-run has reached calls.jsonl, --continue on the settlement the re-run's own
-#                   route published; `d`, `e` and `f` expect no re-run and take one turn, and `l`
-#                   takes its second turn on the rig's own report of the check (red_report) rather
-#                   than on a re-run. Scored by redAtTheHead, which reads <run>/world.txt and
+#                   world's batch keeps its own runs. Each world's facts, among them its role, its
+#                   phase and its turns, are written once (red_world), and red_fixture writes them
+#                   and the world to <run>/world.json, where the run and the score read them. A
+#                   world that expects a re-run takes two turns: the architect's assignment, then,
+#                   once the re-run has reached calls.jsonl, --continue on the settlement the
+#                   re-run's own route published; `d`, `e` and `f` expect no re-run and take one
+#                   turn, and `l` takes its second turn on the rig's own report of the check
+#                   (red_report) rather than on a re-run. Scored by redAtTheHead, which reads
 #                   <run>/world.json.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
@@ -2204,7 +2203,6 @@ rerun_pressed() {
 # turn ended, RFC 3339> <exit line>`, and each turn's output is <run>/out-<turn>.txt.
 run_red_at_the_head() {
   local name=$1 n=$2 index=$3 start=$4 world=$5 role phase turns report wake told='' state project port pr head check version
-  printf '%s\n' "$world" >"$R/world.txt"
   worker_world "$index" "$start" "$world"
   read -r role phase turns report < <(jq -r '"\(.role) \(.phase) \(.turns) \(.report)"' "$R/world.json")
   # The architect's assignment for the world's phase, in run_tester_proof's shape.
