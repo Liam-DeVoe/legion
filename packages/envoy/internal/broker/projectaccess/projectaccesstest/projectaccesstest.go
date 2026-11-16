@@ -39,6 +39,14 @@ type Row struct {
 	Listed []string
 	// Repositories are the "owner/name" repositories Dispatch maps to the project.
 	Repositories []string
+	// SlackChannels are the Slack channel ids the project's owner named. A real Dispatch always
+	// carries the key, empty when the project names none, so this stand-in does too — unless
+	// NoSlackChannels, which is a Dispatch from before dispatch://INFRA-3862's #t-a-31 and
+	// carries no such key at all.
+	SlackChannels []string
+	// NoSlackChannels makes this project's answer carry no slack_channels key, the shape a
+	// Dispatch from before #t-a-31 answers.
+	NoSlackChannels bool
 }
 
 // Server is the stand-in: URL is its base, Token the one bearer it takes, and Account that bearer
@@ -77,6 +85,7 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}}
 	for key, row := range rows {
 		row.Listed, row.Repositories = slices.Clone(row.Listed), slices.Clone(row.Repositories)
+		row.SlackChannels = slices.Clone(row.SlackChannels)
 		s.rows[key] = row
 	}
 	for login, kind := range people {
@@ -141,7 +150,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		if repositories == nil {
 			repositories = []string{}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		answer := map[string]any{
 			"project":      key,
 			"visibility":   row.Visibility,
 			"owner":        row.Owner,
@@ -149,7 +158,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			"member_kind":  s.kind(person),
 			"visible":      s.visible(row, person),
 			"repositories": repositories,
-		})
+		}
+		if !row.NoSlackChannels {
+			channels := row.SlackChannels
+			if channels == nil {
+				channels = []string{}
+			}
+			answer["slack_channels"] = channels
+		}
+		writeJSON(w, http.StatusOK, answer)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "NOT_FOUND", "error": r.URL.Path})
 	}

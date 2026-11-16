@@ -108,6 +108,15 @@ type Answer struct {
 	// Repositories is every "owner/name" repository Dispatch maps to the project, renames
 	// included, nil when the answer carries none.
 	Repositories []string `json:"repositories"`
+	// SlackChannels is every Slack channel id the project's owner named, sorted, and empty for a
+	// project that names none (dispatch://INFRA-3862's #t-a-31). SlackChannelsPresent says
+	// whether the answer carried the key at all: a Dispatch from before that task carries none,
+	// and the broker fails closed on it rather than reading it as "no limit" (requests'
+	// AirlockSecret.Limited), so the two deploy in either order safely. Decoded through a
+	// pointer, which is the one way a missing key and an empty list read differently.
+	SlackChannels []string `json:"-"`
+	// SlackChannelsPresent is whether the answer carried slack_channels.
+	SlackChannelsPresent bool `json:"-"`
 	// AskedAt is when the question this answers was asked, read before it was sent, so an
 	// answer's age is never less than it truly is. *Client always sets it; a zero AskedAt is an
 	// answer from a source that keeps no clock, which Visible takes as fresh.
@@ -193,8 +202,14 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 		query.Set("person", key.person)
 	}
 	asked := c.now()
+	// The answer's own fields, and slack_channels beside them through a pointer: a Dispatch from
+	// before dispatch://INFRA-3862's #t-a-31 carries no such key, and "no key" must read
+	// differently from "an empty list", which a []string alone could not say.
 	var answer Answer
-	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, &answer)
+	var wire struct {
+		SlackChannels *[]string `json:"slack_channels"`
+	}
+	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, &decodeInto{answer: &answer, extra: &wire})
 	switch {
 	case err != nil:
 		return Answer{}, err
@@ -202,9 +217,29 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 		c.keepAnswer(key, cachedAnswer{missing: true, at: asked})
 		return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
 	}
+	if wire.SlackChannels != nil {
+		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
+	}
 	answer.AskedAt = asked
 	c.keepAnswer(key, cachedAnswer{answer: answer, at: asked})
 	return answer, nil
+}
+
+// decodeInto reads one JSON answer into two values: the Answer's own tagged fields, and whatever
+// else a caller wants off the same bytes. json.Unmarshal into one target would need every field
+// on one struct, and slack_channels needs a pointer to tell a missing key from an empty list,
+// which Answer's own []string cannot carry.
+type decodeInto struct {
+	answer *Answer
+	extra  any
+}
+
+// UnmarshalJSON gives both targets the same bytes.
+func (d *decodeInto) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, d.answer); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, d.extra)
 }
 
 // MemberKind is the person's member kind, from the cache while it is younger than CacheTTL.
