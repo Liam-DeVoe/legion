@@ -160,6 +160,26 @@ func TestParseRefuses(t *testing.T) {
 			text: ":::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\" time_limit=\"a day\"}\nClaim: The page shows each statement.\n:::\n",
 			want: Problem{Pos: Position{"x.md", 1}, Node: "c", Rule: "bad-time-limit", Detail: `bad-time-limit: "a day" is not a positive Go duration`},
 		},
+		{
+			name: "a definition that is not UTF-8",
+			text: ":::term{#cafe-term name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n",
+			want: Problem{Pos: Position{"x.md", 2}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
+		},
+		{
+			name: "a name that is not UTF-8",
+			text: ":::term{#cafe-term name=\"caf\xe9\"}\nA cafe is a place where a session waits.\n:::\n",
+			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
+		},
+		{
+			name: "a NUL byte",
+			text: ":::term{#nul-term name=\"nul term\"}\nA nul term is a word.\n\nIt holds a nul\x00byte.\n:::\n",
+			want: Problem{Pos: Position{"x.md", 4}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
+		},
+		{
+			name: "two lines that are not text, named once at the first",
+			text: ":::term{#cafe-term name=\"cafe\"}\nA caf\xe9 is a place.\nA caf\xe9 is a room.\n:::\n",
+			want: Problem{Pos: Position{"x.md", 2}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -168,6 +188,16 @@ func TestParseRefuses(t *testing.T) {
 				t.Errorf("Parse(%q):\n got %+v\nwant %+v", row.text, problems, []Problem{row.want})
 			}
 		})
+	}
+}
+
+// A file in UTF-8 reads with no problem, whatever letters it holds: the control of the bad-encoding
+// rows of TestParseRefuses, which write the same term in Latin-1.
+func TestParseReadsUTF8Text(t *testing.T) {
+	t.Parallel()
+	tree, problems := Parse(map[string][]byte{"x.md": []byte(":::term{#cafe-term name=\"caf\u00e9\"}\nA caf\u00e9 is a place where a session waits.\n:::\n")})
+	if len(problems) != 0 || len(tree.Terms) != 1 || tree.Terms[0].Name != "caf\u00e9" {
+		t.Errorf("Parse: tree %+v, problems %+v; want the term café and no problem", tree, problems)
 	}
 }
 
