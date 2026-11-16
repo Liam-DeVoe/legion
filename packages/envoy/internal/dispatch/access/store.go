@@ -71,7 +71,7 @@ func PersonPrincipal(email string) (string, error) {
 // MemberKind is the member kind of the person login names, MemberNone when no people row holds
 // them. Its error names the read that failed and never the login: every caller knows whom it
 // asked, and a caller that logs the error would otherwise write a person's email
-// (TestAnAccessReadErrorNamesNoPerson).
+// (TestNoAccessErrorNamesAPerson).
 func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind, error) {
 	var kind string
 	err := q.QueryRow(ctx, `select member_kind from people where email = $1`, model.CanonicalLogin(login)).Scan(&kind)
@@ -281,7 +281,7 @@ func AddPrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, 
 		select exists (select 1 from target), $2 = 'person' or exists (select 1 from named_group),
 			exists (select 1 from already) or exists (select 1 from inserted), (select rows from size)
 	`, key, kind, name, by, MaxPrincipals).Scan(&project, &group, &listed, &size); err != nil {
-		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("list %s %s on project %s: %w", kind, name, key, err)
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("list a %s on project %s: %w", kind, key, err)
 	}
 	switch {
 	case !project:
@@ -316,7 +316,7 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 		)
 		select exists (select 1 from target)
 	`, key, kind, name).Scan(&project); err != nil {
-		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("take %s %s off project %s: %w", kind, name, key, err)
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("take a %s off project %s: %w", kind, key, err)
 	}
 	if !project {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
