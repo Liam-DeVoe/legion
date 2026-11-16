@@ -181,6 +181,40 @@ out=$(skip_run $'^(Test\xe2\x80\x8bAlpha|TestGamma)$')
 check "names no package lists are refused" "$(contains "$out" '^refused: ')"
 check "  naming each" "$(contains "$out" "skips 'TestGamma', 'Test\\\\u200bAlpha', which no package of it lists")"
 
+# -list matches each top-level name against the whole pattern; go test -run (and -skip) first
+# splits it at every / and every | outside brackets and parentheses, then rewrites each part (a
+# space becomes _). A step pattern the two read differently would have this script, which learns
+# what a step runs from -list, wrong about it, so such a pattern is refused by name.
+echo "case: a -run or -skip that -list and -run can read differently is refused"
+parsed() { # parsed <line>: "read" or "refused: <why>" for one go test line
+  py 'step = ex.Step(workflow="(a test case)", job="(a job)", name="(a step)", workdir="packages/envoy", script="")
+try:
+    ex.parse_go_test(step, sys.argv[1], [])
+except ex.Refused as refusal:
+    print("refused:", refusal)
+else:
+    print("read")' "$1"
+}
+out=$(parsed "go test -run '^A\$|^B\$/x' ./pkg")
+check "a / is refused" "$(contains "$out" "runs by '^A\\\$|^B\\\$/x', and it holds a \`/\`")"
+out=$(parsed "go test -run '^TestBeta\$|^\\QTestAlpha|\\Qjunk\\E\$' ./pkg")
+check "a top-level | around a \\Q quote is refused" "$(contains "$out" 'and it holds a `|` outside brackets and parentheses')"
+out=$(parsed $'go test -run \'^(Test\xc2\xa0Alpha)$\' ./pkg')
+check "a no-break space is refused, named by its code point" "$(contains "$out" 'and it holds U+00A0, which go test -run rewrites')"
+out=$(parsed $'go test -skip \'^(Test\xc2\xa0Alpha)$\' ./pkg')
+check "  and in a -skip too" "$(contains "$out" 'skips by .*U+00A0')"
+out=$(parsed "go test -run 'Test Alpha' ./pkg")
+check "a plain space is refused" "$(contains "$out" 'U+0020')"
+for line in "go test -run FuzzAirlock ./internal/broker/airlock/" \
+  "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/" \
+  "go test -count=1 -run '^(TestAlpha|TestBeta)\$' ./pkg" \
+  "go test -count=1 -skip '^(TestAlpha|TestBeta)\$' ./pkg" \
+  "go test -run '^Test[|]\$' ./pkg" \
+  "go test -run '^TestA\\|B\$' ./pkg" \
+  "go test -run 'TestÉclair' ./pkg"; do
+  check "read: $line" "$(is "$(parsed "$line")" read)"
+done
+
 # envoy-go-race-api is a matrix whose legs each run one shard of internal/dispatch/api, and the
 # leg's index and the leg count reach its script as `${{ strategy.job-index }}` and
 # `${{ strategy.job-total }}`. Read as one step, the script holds two expressions no shell can run

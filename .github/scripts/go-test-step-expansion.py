@@ -98,6 +98,12 @@ How it reads a step:
   * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from what
     the step runs and left in what it compiles, since the binary holds a skipped test and never
     runs it; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
+  * a `-run` or `-skip` that `-list` and `go test` can read differently is refused by name: one
+    holding a `/`, a `|` outside brackets and parentheses, or a character testing's matcher
+    rewrites (a space, or a rune Go does not print), since `go test` splits and rewrites the
+    pattern before it matches and `-list` does neither (list_run_disagreement says why). A plain
+    pattern such as airlock-lean's `-run FuzzAirlock`, and every `^(Name|Name|…)$` the lister
+    scripts print, reads alike under both;
   * what a step compiles is a second `go test -list` over the same packages under the same build
     flags and the pattern `.*`, run where the step carries a `-run`, because `-list` answers the
     pattern it is given and a `-run` listing names only the functions the step runs. The second
@@ -541,8 +547,53 @@ def skip_names(pattern: str) -> list[str] | None:
     return names if all(SKIP_NAME.match(name) for name in names) else None
 
 
+# The characters testing's matcher rewrites in a -run or -skip part before it matches (match.go's
+# rewrite: each space isSpace names becomes `_`, and each rune strconv.IsPrint calls unprintable
+# becomes its escape). `-test.list` matches the raw pattern and rewrites nothing.
+GO_SPACES = frozenset("\t\n\v\f\r \x85\xa0\u1680\u2028\u2029\u202f\u205f\u3000"
+                      + "".join(chr(c) for c in range(0x2000, 0x200B)))
+
+
+def list_run_disagreement(pattern: str) -> str | None:
+    """Why `go test -list` and `go test -run` (or -skip) can select different tests by `pattern`,
+    or None when they cannot. This script learns what a step runs from -list, so a pattern they can
+    read differently is refused rather than read. -list matches each top-level name against the
+    whole pattern; -run first splits it (match.go's splitRegexp, mirrored below) at every `/` and
+    every `|` outside brackets and parentheses, then rewrites each part. So a pattern is safe when
+    it holds no `/`, no `|` at the top level and no character the rewrite changes. Printability is
+    Python's isprintable(): its tables are older than Go's, so a letter newer than them reads as
+    unprintable and is refused - a refusal of a pattern -list and -run would have read alike, never
+    a miss, since the general categories Go calls printable are the ones Python does."""
+    if "/" in pattern:
+        return "it holds a `/`, at which go test -run splits a pattern and -list does not"
+    brackets = parentheses = 0
+    index = 0
+    while index < len(pattern):
+        character = pattern[index]
+        if character == "[":
+            brackets += 1
+        elif character == "]":
+            brackets = max(brackets - 1, 0)  # an unmatched `]` is legal
+        elif character == "(" and brackets == 0:
+            parentheses += 1
+        elif character == ")" and brackets == 0:
+            parentheses -= 1
+        elif character == "\\":
+            index += 1
+        elif character == "|" and brackets == 0 and parentheses == 0:
+            return ("it holds a `|` outside brackets and parentheses, at which go test -run splits a pattern "
+                    "and -list does not")
+        index += 1
+    rewritten = sorted({c for c in pattern if c in GO_SPACES or not c.isprintable()})
+    if rewritten:
+        return (f"it holds {', '.join(f'U+{ord(c):04X}' for c in rewritten)}, which go test -run rewrites "
+                f"before it matches and -list does not")
+    return None
+
+
 def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
-    """The packages, -tags, -race, -run and -skip of one `go test` command."""
+    """The packages, -tags, -race, -run and -skip of one `go test` command. A -run or -skip that
+    -list and -run can read differently is refused (list_run_disagreement says when)."""
     command = GoTest(step=step, text=text, packages=list(packages))
     words = shlex.split(text)
     position = words.index("test") + 1
@@ -556,6 +607,11 @@ def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
             if not value and flag in VALUE_FLAGS:
                 value = words[position]
                 position += 1
+            if flag in ("-run", "-skip"):
+                reason = list_run_disagreement(value)
+                if reason:
+                    raise Refused(f"{step.label}: `{text}` {flag[1:]}s by {value!a}, and {reason}, so "
+                                  f"this script, which learns what a step runs from -list, cannot read it")
             if flag == "-run":
                 command.run = value
             elif flag == "-skip":
