@@ -2026,17 +2026,17 @@ console.log(JSON.stringify(args, null, 2));
       { decision: "allow", outcome: "abandoned", ruleOutcome: "abandoned" },
     ]);
     expect(g.entries).toHaveLength(1);
-    // A hang guard, not a bound on the work: what can hang here is the dry run, a real `dispatch`
-    // subprocess the gate spawns through bash, or a model call the harness never settles unless
-    // the stop aborts it. The row's own cost, read from bun's junit reporter on this two-CPU pod:
-    // 169.33 / 526.93 / 3599.86 ms (min/median/max over 20 runs under 96 busy loops, 48 per CPU)
-    // and 1806.78 / 6202.16 / 15992.96 ms over 10 runs under 240, 120 per CPU, the rung this file
-    // takes; on the pod of 2026-11-16, 1.6 times slower, 282.91 / 5440.77 / 29939.11 ms over 20
-    // runs under 240. The row runs on the gate's own 90 s deadline, so by the rule above
-    // `DryRunner` it takes 60_000 below that deadline, 2.0 times the slower pod's worst, and the
-    // runner's limit, which names the row, is what ends a dry run or a call that never returns.
-    // Control: with the tool's end leaving the call's stop out
-    // (`inflight.get(event.toolCallId)?.("abandoned")` removed from the gate's
+    // A hang guard, not a bound on the work: what can hang is the dry run, a real `dispatch`
+    // subprocess the gate spawns through bash, or a model call the harness never settles unless the
+    // stop aborts it. The row runs on the gate's own 90 s deadline, so by the rule above
+    // `DryRunner` it takes 60_000 below that deadline: the runner's limit, naming the row, ends a
+    // call that never returns. At 240 busy loops on the pod of 2026-11-16 a correct run cost past
+    // that 60_000 (1 in 20, `this test timed out after 60000ms`), and no guard may pass the 90 s,
+    // so this row's acceptance rung is 160 busy loops, 80 per CPU: its own cost there, read from
+    // bun's junit reporter, 1523.43 / 5092.05 / 12535.92 ms (min/median/max over 20 runs), so
+    // 60_000 is 4.8 times that worst, and at 160 the base fails the row 10 of 10 at bun's 5 s
+    // default, where at 96 it fails 1 of 10. Control: with the tool's end leaving the call's stop
+    // out (`inflight.get(event.toolCallId)?.("abandoned")` removed from the gate's
     // `tool_execution_end` handler) the row fails 3 of 3 at the `aborted` assertion above.
   }, 60_000);
   test("dispatch search is not reviewed", async () => {
