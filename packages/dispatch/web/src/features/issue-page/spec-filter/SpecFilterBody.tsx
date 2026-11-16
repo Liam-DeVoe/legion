@@ -33,7 +33,8 @@ import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
 import { shortDay } from "../node-time";
 import { useReferenceNames } from "../one-line";
-import { useOutlineWriter } from "../outline-writer";
+import { useTakeOutlineRequest } from "../outline-request";
+import { conversationItem, useOutlineWriter } from "../outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
 import {
   ANSWER_LINES,
@@ -72,8 +73,8 @@ const NOTHING = (): void => {};
  * carries, then two columns, Decided by and Statement. In the left column stands, once per run
  * of statements one decision shaped, that decision in the words it came from, with a bracket
  * tying it to its statements; in the right column each statement's words in full, with one line
- * under them naming the decision that shaped them, and its mark at the right of the row. Below
- * 900 px it is one column and each decision stands above its statements, as
+ * under them naming the decision that shaped them, and its mark at the right of the row. At
+ * 900 px and below it is one column and each decision stands above its statements, as
  * `page-v3-spec-390.png` draws it.
  *
  * Which decision shaped which statement is `spec-decided-by.ts`, which is pure; this module
@@ -117,14 +118,16 @@ export function SpecFilterBody({
   /** What the body says where the filter's query left no statement. */
   emptyLine: string;
   /** Whether the page takes Escape from a row before the body is left: a filter by words to
-   *  clear or the filter to turn off comes first in the key table's order (`IssueBody.tsx`). */
+   *  clear or the filter to turn off comes first in the key table's order
+   *  (`slots/view-spec.tsx`). */
   holdsEscape: boolean;
   issue: IssueDetails;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
   /** Whether the spec's blocks are still being read, which says whether it holds a summary. */
   reading: boolean;
-  /** What the page last asked of the outline: go to a node. Each ask is acted on once. */
+  /** What the page last asked of the outline: go to a node. The page acts on each ask once,
+   *  whichever outline or body took it (`useTakeOutlineRequest`). */
   request?: OutlineRequest;
   /** The node the address names, which takes the focus once per address (R19). */
   reveal?: string;
@@ -154,7 +157,8 @@ export function SpecFilterBody({
     () => specDecidedBy({ checks: results?.checks ?? [], decisions, nodeIdOf, reader, root, view }),
     [decisions, nodeIdOf, reader, results, root, view]
   );
-  const summary = specSummary(root, primarySpec(issue)?.slug ?? "");
+  const specSlug = primarySpec(issue)?.slug ?? "";
+  const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const tree = useRef<HTMLDivElement | null>(null);
@@ -189,11 +193,16 @@ export function SpecFilterBody({
       setStop(node.id);
       // A move to a statement is the reader going on from what a key reported.
       setReport((held) => (held?.row === node.id ? held : undefined));
+      const item = conversationItem(node);
+      const line = firstLineOf(nodeWords(node)).line;
       setFocusedNode({
         ...(node.author === undefined ? {} : { author: node.author }),
         id: node.id,
+        ...(item === undefined ? {} : { item }),
         ...(node.reference === undefined ? {} : { reference: node.reference }),
-        title: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
+        ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
+        // A node with no words is titled by its kind's word, never by its id (decision 66).
+        title: line === "" ? NODE_TYPE_NAMES[node.type] : line,
         type: node.type,
       });
     },
@@ -219,13 +228,17 @@ export function SpecFilterBody({
     target?.focus();
     return target != null;
   }, []);
-  // What the page asked for, each ask acted on once.
-  const handled = useRef<number | undefined>(undefined);
+  // What the page asked for, each ask taken once by whichever outline or body the page drew when
+  // it came (`useTakeOutlineRequest`), so a body drawn again - the view turned off and on - does
+  // not move the reader for an ask already acted on. An ask goes only to a statement's row,
+  // never to a cell: a cell can carry the answered ask's id, which a Contents entry names.
+  const takeRequest = useTakeOutlineRequest();
   useEffect(() => {
-    if (request === undefined || request.seq === handled.current) return;
-    handled.current = request.seq;
-    if (request.id !== undefined) goTo(request.id);
-  }, [goTo, request]);
+    if (request === undefined || !takeRequest(request) || request.id === undefined) return;
+    tree.current
+      ?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(request.id)}"]`)
+      ?.focus();
+  }, [request, takeRequest]);
   // An address that names a statement puts the focus on it, once per address (R19): the row is
   // not on the page until the reads that hold it have answered, so this looks again on every
   // drawing of the columns.
@@ -279,7 +292,7 @@ export function SpecFilterBody({
       ) : null}
       <Legend />
       <div
-        className={`sticky top-[var(--issue-identity-height,0px)] z-[6] grid grid-cols-[280px_minmax(0,1fr)] gap-x-5 border-b pt-2 pb-1.5 max-[900px]:hidden ${pageLineBorder} ${pagePaperBg}`}
+        className={`sticky top-[var(--issue-identity-height,0px)] z-[6] grid grid-cols-[280px_minmax(0,1fr)] gap-x-5 border-b pt-2 pb-1.5 max-[901px]:hidden ${pageLineBorder} ${pagePaperBg}`}
         data-spec-head=""
       >
         <span className={CAP} {...pageChrome}>
@@ -291,7 +304,7 @@ export function SpecFilterBody({
       </div>
       {/* The issue's three sentences, the first group, in the statements' column, as the
           prototype's `renderSpec` puts them after the column heads (ruling 5). */}
-      <div className="mt-[18px] ml-[300px] min-w-0 max-[900px]:ml-0">
+      <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
         <IssueThreeThings look="spec" nameOf={nameOf} reading={reading} summary={summary} />
       </div>
       {/* The outline the page draws under the Spec filter, which is this body's two columns:
@@ -304,8 +317,15 @@ export function SpecFilterBody({
         className="flex min-w-0 flex-col"
         data-spec-tree=""
         onBlur={releaseFocus}
+        // A focus on the tree itself - part D's `reachPart` where the view draws no row, or a
+        // press between its items - goes on to the tab-stop row; with no row it stays here.
+        onFocus={(event) => {
+          if (event.target !== event.currentTarget) return;
+          event.currentTarget.querySelector<HTMLElement>('[data-node-row][tabindex="0"]')?.focus();
+        }}
         ref={tree}
         role="tree"
+        tabIndex={-1}
       >
         {groups.map((group) => (
           <Group
@@ -370,7 +390,7 @@ function markWord(mark: SpecMark): string {
 function Legend(): ReactNode {
   return (
     <p
-      className={`mb-1 ml-[300px] flex flex-wrap gap-[14px] text-xs leading-5 max-[900px]:ml-0 ${pageQuietText}`}
+      className={`mb-1 ml-[300px] flex flex-wrap gap-[14px] text-xs leading-5 max-[901px]:ml-0 ${pageQuietText}`}
       data-spec-legend=""
     >
       {MARK_ORDER.map((mark) => (
@@ -434,7 +454,7 @@ function Group({
       {group.parent === undefined ? null : <GroupHeading parent={group.parent} />}
       {group.runs.map((run) => (
         <div
-          className="grid min-w-0 grid-cols-[280px_minmax(0,1fr)] gap-x-5 max-[900px]:grid-cols-[minmax(0,1fr)]"
+          className="grid min-w-0 grid-cols-[280px_minmax(0,1fr)] gap-x-5 max-[901px]:grid-cols-[minmax(0,1fr)]"
           data-spec-run=""
           key={run.statements[0]?.node.id ?? ""}
           role="presentation"
@@ -470,7 +490,7 @@ function Group({
 function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
   return (
     <div
-      className="mb-1 ml-[300px] flex min-w-0 flex-col pl-[26px] max-[900px]:ml-0 max-[900px]:pl-0"
+      className="mb-1 ml-[300px] flex min-w-0 flex-col pl-[26px] max-[901px]:ml-0 max-[901px]:pl-0"
       data-spec-group-heading=""
       role="presentation"
     >
@@ -528,7 +548,7 @@ function DecisionCell({
   return (
     <div
       aria-level={1}
-      className={`relative self-stretch rounded-l-[4px] border-r-2 pt-1 pr-3.5 pb-2 pl-0.5 text-xs leading-[18px] max-[900px]:my-1.5 max-[900px]:rounded-none max-[900px]:border-r-0 max-[900px]:border-l-2 max-[900px]:py-0.5 max-[900px]:pr-0 max-[900px]:pl-2.5 ${
+      className={`relative self-stretch rounded-l-[4px] border-r-2 pt-1 pr-3.5 pb-2 pl-0.5 text-xs leading-[18px] max-[901px]:my-1.5 max-[901px]:rounded-none max-[901px]:border-r-0 max-[901px]:border-l-2 max-[901px]:py-0.5 max-[901px]:pr-0 max-[901px]:pl-2.5 ${
         decision?.said === "agent" ? "border-dashed" : ""
       } ${rule} ${pageMutedText}`}
       data-decision-id={decision?.id}
@@ -548,13 +568,13 @@ function DecisionCell({
     >
       <span
         aria-hidden="true"
-        className={`absolute top-0 -right-0.5 h-0.5 w-2 max-[900px]:hidden ${cap}`}
+        className={`absolute top-0 -right-0.5 h-0.5 w-2 max-[901px]:hidden ${cap}`}
       />
       <span
         aria-hidden="true"
-        className={`absolute -right-0.5 bottom-0 h-0.5 w-2 max-[900px]:hidden ${cap}`}
+        className={`absolute -right-0.5 bottom-0 h-0.5 w-2 max-[901px]:hidden ${cap}`}
       />
-      <div className="sticky top-[calc(var(--issue-identity-height,0px)+44px)] flex min-w-0 flex-col gap-[3px] max-[900px]:static">
+      <div className="sticky top-[calc(var(--issue-identity-height,0px)+44px)] flex min-w-0 flex-col gap-[3px] max-[901px]:static">
         {decision === undefined ? (
           known ? (
             <p data-spec-nothing="" {...pageChrome}>
@@ -694,7 +714,7 @@ function Statement({
   return (
     <div
       aria-level={1}
-      className={`grid min-w-0 grid-cols-[18px_minmax(0,1fr)_26px] items-start gap-x-2 rounded-md py-[3px] pr-1.5 outline-none max-[760px]:grid-cols-[16px_minmax(0,1fr)_22px] max-[760px]:gap-x-1.5 ${
+      className={`grid min-w-0 grid-cols-[18px_minmax(0,1fr)_26px] items-start gap-x-2 rounded-md py-[3px] pr-1.5 outline-none max-[761px]:grid-cols-[16px_minmax(0,1fr)_22px] max-[761px]:gap-x-1.5 ${
         focused ? pageFocusedRow : ""
       }`}
       data-node-context={context ? "" : undefined}
@@ -714,7 +734,7 @@ function Statement({
       role="treeitem"
       tabIndex={tabStop ? 0 : -1}
     >
-      <span className="flex h-6 w-[18px] items-center justify-center max-[760px]:w-4">
+      <span className="flex h-6 w-[18px] items-center justify-center max-[761px]:w-4">
         <i
           aria-hidden="true"
           className={`block size-[7px] rounded-full ${
@@ -776,7 +796,7 @@ function OtherRow({
   return (
     <div
       aria-level={1}
-      className={`mt-[18px] ml-[300px] min-w-0 rounded-md py-[3px] pr-1.5 pl-[26px] outline-none max-[900px]:ml-0 max-[900px]:pl-0 ${
+      className={`mt-[18px] ml-[300px] min-w-0 rounded-md py-[3px] pr-1.5 pl-[26px] outline-none max-[901px]:ml-0 max-[901px]:pl-0 ${
         focused ? pageFocusedRow : ""
       }`}
       data-node-id={node.id}

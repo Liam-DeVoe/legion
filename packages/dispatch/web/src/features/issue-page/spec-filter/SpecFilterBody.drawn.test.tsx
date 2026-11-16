@@ -11,7 +11,9 @@ import type { CheckBlock, Decision } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
+import type { OutlineRequest } from "../IssueTree";
 import type { TreeNode } from "../issue-tree";
+import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import {
   ANSWER_LINES,
@@ -58,7 +60,10 @@ function IssueScope(): ReactNode {
 }
 
 /** The body over `tree`, with `made` as the issue's decisions read and `checks` as its results
- *  read. `decisions: "out"` leaves the decisions read unanswered, and `"failed"` fails it. */
+ *  read. `decisions: "out"` leaves the decisions read unanswered, and `"failed"` fails it. The
+ *  page's provider of the Contents list's requests stands above the body, so `request` is
+ *  taken as the page takes it; `redraw(false)` takes the body off the page and `redraw(true)`
+ *  draws a new one under the same provider, as the view turned off and on again does. */
 function drawBody(
   tree: TreeNode,
   made: readonly Decision[] = [],
@@ -68,6 +73,7 @@ function drawBody(
     decisions = "answered",
     named = [],
     reader = READER,
+    request,
     reveal,
   }: {
     checks?: readonly CheckBlock[];
@@ -75,9 +81,14 @@ function drawBody(
     decisions?: "answered" | "failed" | "out";
     named?: readonly string[];
     reader?: string;
+    request?: OutlineRequest;
     reveal?: string;
   } = {}
-): { read: Mock<typeof api.getIssueDecisions>; view: RenderResult } {
+): {
+  read: Mock<typeof api.getIssueDecisions>;
+  redraw: (drawn: boolean) => void;
+  view: RenderResult;
+} {
   const answer = decisionsRead(made);
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -92,29 +103,35 @@ function drawBody(
   } else {
     read.mockReturnValue(new Promise(() => {}));
   }
-  const view = render(
+  const page = (drawn: boolean): ReactNode => (
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <KeymapProvider>
           <MarginProvider>
-            <IssueScope />
-            <SpecFilterBody
-              context={context}
-              emptyLine={EMPTY_STATE_LINES.spec}
-              holdsEscape={false}
-              issue={issueDetails()}
-              reader={reader}
-              reading={false}
-              {...(reveal === undefined ? {} : { reveal })}
-              root={tree}
-              view={presetView(tree, "spec", "", new Set(named)).root}
-            />
+            <OutlineRequestProvider>
+              <IssueScope />
+              {drawn ? (
+                <SpecFilterBody
+                  context={context}
+                  emptyLine={EMPTY_STATE_LINES.spec}
+                  holdsEscape={false}
+                  issue={issueDetails()}
+                  reader={reader}
+                  reading={false}
+                  {...(request === undefined ? {} : { request })}
+                  {...(reveal === undefined ? {} : { reveal })}
+                  root={tree}
+                  view={presetView(tree, "spec", "", new Set(named)).root}
+                />
+              ) : null}
+            </OutlineRequestProvider>
           </MarginProvider>
         </KeymapProvider>
       </MemoryRouter>
     </QueryClientProvider>
   );
-  return { read, view };
+  const view = render(page(true));
+  return { read, redraw: (drawn) => view.rerender(page(drawn)), view };
 }
 
 /** The text of every element matching `selector`, in the order they are drawn. */
@@ -425,6 +442,57 @@ test("an address naming a statement puts the focus on it", async () => {
   });
   try {
     await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r2")));
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// Departure 1 of dispatch://INFRA-3939's plan: the page acts on each of the Contents list's asks
+// once, whichever outline or body took it (`outline-request.tsx`), so a body drawn again - the
+// view turned off and on again - does not move the reader back to an ask it already went to.
+test("a body drawn again does not act on a request the page already took", async () => {
+  const { read, redraw, view } = drawBody(
+    issueTree([statement("r1"), statement("r2"), statement("r3")]),
+    [],
+    { request: { focusBranch: false, id: "spec#b-r2", seq: 1 } }
+  );
+  try {
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r2")));
+    act(() => rowOf(view, "spec#b-r3").focus());
+    redraw(false);
+    redraw(true);
+    await act(async () => {});
+    expect(view.container.querySelector("[data-spec-tree]")).not.toBeNull();
+    expect(document.activeElement).not.toBe(rowOf(view, "spec#b-r2"));
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// A focus on the tree itself goes on to its tab-stop row, so the reader is on a row and the
+// tree's keys work from there.
+test("a focus on the tree goes on to its tab-stop row", () => {
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    act(() => view.container.querySelector<HTMLElement>("[data-spec-tree]")?.focus());
+    expect(document.activeElement).toBe(rowOf(view, "spec#b-r1"));
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// Where the view draws no row, part D's `reachPart` puts the focus on the tree itself, and it
+// stays there: the focus is in the view, never on the document's body.
+test("a view with no statement holds the focus on its tree", () => {
+  const { read, view } = drawBody(issueTree([]));
+  try {
+    const tree = view.container.querySelector<HTMLElement>("[data-spec-tree]");
+    expect(tree?.tabIndex).toBe(-1);
+    expect(() => act(() => tree?.focus())).not.toThrow();
+    expect(document.activeElement).toBe(tree);
   } finally {
     view.unmount();
     read.mockRestore();

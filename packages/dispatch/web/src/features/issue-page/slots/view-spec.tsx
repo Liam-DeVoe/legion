@@ -11,7 +11,6 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
-import { specSummary } from "../spec-summary";
 import { useIssueTree } from "../useIssueTree";
 
 /**
@@ -42,17 +41,16 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   }, [targetDocument, targetId, targetKind]);
   const revealed = useMemo(() => pathToTarget(root, target)?.at(-1)?.id, [root, target]);
   const named = useMemo(() => new Set(revealed === undefined ? [] : [revealed]), [revealed]);
-  const memo = useMemo(() => specSummary(root, specSlug ?? "")?.id, [root, specSlug]);
   const view = useMemo(
-    () => presetView(root, "spec", address.filter, named, memo),
-    [address.filter, memo, named, root]
+    () => presetView(root, "spec", address.filter, named),
+    [address.filter, named, root]
   );
   const request = useOutlineRequest();
   return (
     <NoTooltips>
       {/* The view's measure, the prototype's `.spec`: at most 1080 px, in the middle of the
           column; on a phone 4 px from the left edge and 10 px from the right, as the outline. */}
-      <div className="mx-auto flex w-full max-w-[1080px] min-w-0 flex-col max-[760px]:-mr-1 max-[760px]:-ml-2.5 max-[760px]:w-auto">
+      <div className="mx-auto flex w-full max-w-[1080px] min-w-0 flex-col max-[761px]:-mr-1 max-[761px]:-ml-2.5 max-[761px]:w-auto">
         <SpecFilterBody
           context={view.context}
           emptyLine={address.filter === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match}
