@@ -313,27 +313,32 @@ export function useDataTable<Row>({
     if (previousView.current !== viewKey) layout.scrollRef.current?.scrollTo({ top: 0 });
     previousView.current = viewKey;
   }, [viewKey, layout.scrollRef]);
-  // The rows the last commit drew. A commit that draws the same rows - the virtualizer moving its
-  // range on a scroll - moves no row the anchor could hold, so it is not anchored, and a scroll
-  // alone reads no layout. The same rows are the same ids holding the same data, in the same
-  // order: a change of the data hands every row new data (`rows` is made again), and a sort,
-  // a filter, a group or a page moves or replaces them.
-  const drawnRows = useRef(pageRows);
+  // What the last commit drew: its rows and the virtualizer's scroll as it stood. A commit that
+  // only scrolls - the same rows, the virtualizer's offset or its scrolling flag moved - is the
+  // reader's own move, which the anchor leaves alone, and so a scroll alone reads no layout.
+  // Every other commit is anchored: rows another reader changed, and anything above the rows
+  // that changed height while they stayed (a notice, a failed read's alert). The same rows are
+  // the same ids holding the same data, in the same order.
+  const scroll = { offset: virtualizer.scrollOffset, scrolling: virtualizer.isScrolling };
+  const drawn = useRef({ rows: pageRows, scroll });
   useLayoutEffect(() => {
-    drawnRows.current = pageRows;
+    drawn.current = { rows: pageRows, scroll };
   });
-  const rowsMoved = () => {
-    const drawn = drawnRows.current;
-    return (
-      drawn.length !== pageRows.length ||
-      pageRows.some(
-        (row, index) => row.id !== drawn[index]?.id || row.original !== drawn[index]?.original
-      )
-    );
+  const onlyScrolled = () => {
+    const last = drawn.current;
+    const sameRows =
+      last.rows.length === pageRows.length &&
+      pageRows.every(
+        (row, index) =>
+          row.id === last.rows[index]?.id && row.original === last.rows[index]?.original
+      );
+    const scrolled =
+      last.scroll.offset !== scroll.offset || last.scroll.scrolling !== scroll.scrolling;
+    return sameRows && scrolled;
   };
 
   return {
-    anchorEnabled: () => previousView.current === viewKey && rowsMoved(),
+    anchorEnabled: () => previousView.current === viewKey && !onlyScrolled(),
     displayRows,
     focusRow,
     layout,
@@ -397,6 +402,11 @@ export interface DataTableProps<Row> {
   /** The width of a last, unheaded column that each row draws itself (`DataTableCells`'
    *  `trailing`). */
   readonly trailingWidth?: number;
+  /** Hold a reader at the top too (`ViewportAnchor`'s `holdAtTop`): a row another reader adds
+   *  above the first row on screen lands out of view above. The Issues table and the priorities
+   *  table take it; a live feed whose reader at the top waits for arrivals (the Delivery page's
+   *  PR list) leaves it off and sees them land, as main's anchor does. */
+  readonly holdAtTop?: boolean;
 }
 
 /** One header cell: its sort control, which doubles as the handle that drags the column
@@ -523,6 +533,7 @@ export function DataTable<Row>({
   empty,
   filterCounts,
   filterUnloaded,
+  holdAtTop = false,
   label,
   model,
   onOpenFilterChange,
@@ -571,13 +582,12 @@ export function DataTable<Row>({
           scrollPaddingTop: 64,
         }}
       >
-        {/* The reader's place, at the top too (`holdAtTop`): a row another reader adds above
-            the first row on screen lands out of view above, in every table this core draws. */}
+        {/* The reader's place; at the top too where the caller asks (`holdAtTop`). */}
         <ViewportAnchor
           item={names.rowAttribute}
           className="w-max min-w-full"
           group={names.groupAttribute}
-          holdAtTop
+          holdAtTop={holdAtTop}
           scroller={layout.scrollRef}
           enabled={model.anchorEnabled}
         >

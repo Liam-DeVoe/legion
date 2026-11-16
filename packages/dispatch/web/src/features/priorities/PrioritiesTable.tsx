@@ -231,6 +231,8 @@ export function PrioritiesTable({
       <DataTable
         empty="No priorities match these filters."
         filterCounts={facets}
+        // A reader at the top keeps their place: a priority another reader adds lands above.
+        holdAtTop
         label="Priorities table"
         model={model}
         onOpenFilterChange={setOpenFilter}

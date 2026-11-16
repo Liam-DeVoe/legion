@@ -169,12 +169,17 @@ test("a reader at the top sees new rows arrive without the view following the ce
   }
 });
 
-// A host that holds a reader at the top too (`holdAtTop`: the tables of issues, the Board) keeps
-// the first row on screen there: a row added above it lands out of view above, and the rows on
-// screen keep their tops.
-test("a host that holds a reader at the top keeps the first row on screen as rows arrive above", () => {
+/** Waits until the frame the last commit went into is painted: a frame's callbacks, then a task. */
+const painted = () =>
+  new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+
+// A host that holds a reader at the top too (`holdAtTop`: the Issues and priorities tables, the
+// Board) keeps the first row on screen there once the reader has seen it: a row added above it
+// lands out of view above, and the rows on screen keep their tops.
+test("a host that holds a reader at the top keeps the first row on screen as rows arrive above", async () => {
   const view = render(<List holdAtTop rows={ids(12)} />);
   try {
+    await painted();
     expect(chosen()).toEqual({ id: "r1", via: "top" });
     const before = viewportTop("r1");
     view.rerender(<List holdAtTop rows={["new-a", ...ids(12)]} />);
@@ -186,17 +191,34 @@ test("a host that holds a reader at the top keeps the first row on screen as row
   }
 });
 
-test("a host that holds a reader at the top keeps the first row on screen in its own scroller", () => {
+test("a host that holds a reader at the top keeps the first row on screen in its own scroller", async () => {
   const view = render(<List holdAtTop rows={ids(12)} scroller={scrollerRef} />);
   try {
     const scroller = scrollerRef.current;
     if (scroller === null) throw new Error("no scroller");
+    await painted();
     expect(chosen()).toEqual({ id: "r1", via: "top" });
     const before = viewportTop("r1");
     view.rerender(<List holdAtTop rows={["new-a", "new-b", ...ids(12)]} scroller={scrollerRef} />);
     expect(viewportTop("r1")).toBe(before);
     expect(scroller.scrollTop).toBe(2 * ROW_HEIGHT);
     expect(window.scrollY).toBe(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Rows drawn but not yet painted are rows no reader has seen: a draw before the first frame
+// (the table's second draw at the width it measured) holds nothing, and the rows start at the top.
+test("a host that holds a reader at the top holds nothing before the rows are first painted", async () => {
+  const view = render(<List holdAtTop rows={ids(12)} />);
+  try {
+    expect(chosen()).toBeNull();
+    view.rerender(<List holdAtTop rows={["new-a", ...ids(12)]} />);
+    expect(window.scrollY).toBe(0);
+    expect(viewportTop("new-a")).toBe(LIST_TOP);
+    await painted();
+    expect(chosen()).toEqual({ id: "new-a", via: "top" });
   } finally {
     view.unmount();
   }

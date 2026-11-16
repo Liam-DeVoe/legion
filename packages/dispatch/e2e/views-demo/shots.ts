@@ -398,7 +398,10 @@ const NEW_ISSUE_TITLE = "An issue another reader just made (invented by the demo
 /** Work time's method sentence, which its header tooltip, a Board card's Work time fact and the
  *  Columns menu show alike. */
 const WORK_TIME_METHOD =
-  "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it, without Backlog, Icebox and Queue phase hours.";
+  "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours that the issue waits to start with no free capacity.";
+
+/** What a Queue number says in its tooltip. */
+const QUEUE_HELP = "Legion starts issues in this order";
 
 /** The sort hint of a sortable header the reader may drag: main's words. */
 const SORT_HINT = "Sort (shift-click to add a second sort); drag to move the column";
@@ -415,6 +418,58 @@ async function checkNoSortTitles(page: Page, name: string): Promise<void> {
   check(
     buttons.count > 0 && buttons.titled.length === 0,
     `${name}: none of the page's ${buttons.count} sort buttons carries a title${buttons.titled.length > 0 ? ` (${buttons.titled.join(", ")} do)` : ""}`
+  );
+}
+
+/** Checks that no cell of a Queue column, in any table on the page, carries a browser title
+ *  on itself or on anything in it, since the shared tooltip says what its number is. A Queue
+ *  column is one whose header reads Queue; its cells are the drawn rows' cells under it. */
+async function checkNoQueueTitles(page: Page, name: string): Promise<void> {
+  const cells = await page.evaluate(() => {
+    let count = 0;
+    let numbers = 0;
+    const titled: string[] = [];
+    for (const table of document.querySelectorAll("table")) {
+      const headers = [...table.querySelectorAll("thead th")];
+      const at = headers.findIndex((th) =>
+        /^Queue\b/.test(th.querySelector("button")?.textContent?.trim() ?? "")
+      );
+      if (at < 0) continue;
+      for (const row of table.querySelectorAll("tbody tr[data-issue-row]")) {
+        const cell = row.children[at];
+        if (cell === undefined) continue;
+        count += 1;
+        numbers += cell.querySelectorAll("[data-queue-place]").length;
+        if (cell.hasAttribute("title") || cell.querySelector("[title]") !== null)
+          titled.push(row.getAttribute("data-issue-row") ?? "");
+      }
+    }
+    return { count, numbers, titled };
+  });
+  check(
+    cells.count > 0 && cells.titled.length === 0,
+    `${name}: none of the ${cells.count} Queue cells drawn (${cells.numbers} with a number) carries a title${cells.titled.length > 0 ? ` (the cells of ${cells.titled.join(", ")} do)` : ""}`
+  );
+}
+
+/** Checks that a table the reader opened and has not scrolled stands at its top, with its first
+ *  row whole under the sticky header: the box's scrollTop is 0 and the first row's top is at the
+ *  header cells' bottom, within 1 px. */
+async function checkFirstRowWhole(page: Page, name: string): Promise<void> {
+  const place = await page.getByTestId("issues-table-scroll").evaluate((box) => {
+    const head = box.querySelector("thead th")?.getBoundingClientRect();
+    const first = box.querySelector("[data-issue-row]");
+    const own = first?.getBoundingClientRect();
+    return {
+      scrollTop: Math.round(box.scrollTop),
+      headBottom: Math.round(head?.bottom ?? Number.NaN),
+      key: first?.getAttribute("data-issue-row") ?? "",
+      top: Math.round(own?.top ?? Number.NaN),
+    };
+  });
+  check(
+    place.scrollTop === 0 && Math.abs(place.top - place.headBottom) <= 1,
+    `${name}: the table opens at its top (scrollTop ${place.scrollTop}), its first row ${place.key} at ${place.top} px under the header's bottom at ${place.headBottom} px`
   );
 }
 
@@ -758,6 +813,7 @@ const afterShots: Shot[] = [
       await open(page, view("open"));
       check(!(await legendScrolls(page)), "view-open-1440: the legend draws no scroll bar");
       await checkHeaders(page, "view-open-1440");
+      await checkFirstRowWhole(page, "view-open-1440");
       await checkOnFirstScreen(page, "view-open-1440", "Open", ["Created by", "Open asks"]);
     },
   },
@@ -1036,6 +1092,7 @@ const afterShots: Shot[] = [
     take: async (page) => {
       await open(page, view("done"));
       await checkHeaders(page, "view-done-1440");
+      await checkFirstRowWhole(page, "view-done-1440");
     },
   },
   // Done with one week picked in the Closed column's date-range filter, the 3rd of November to
@@ -1117,8 +1174,8 @@ const afterShots: Shot[] = [
     },
   },
   // Work time's header reached with the keyboard: Tab from the filter of the column before it
-  // onto Work time's sort, which opens the header's tooltip: one sentence on how Dispatch
-  // measures it, and main's sort hint under it. The pointer stands off the page, so no hover
+  // onto Work time's sort, which opens the header's tooltip: how Dispatch measures it, and
+  // main's sort hint under it. The pointer stands off the page, so no hover
   // opens it.
   {
     name: "done-work-time-tooltip-focus-1440",
@@ -1162,6 +1219,47 @@ const afterShots: Shot[] = [
         `${name}: Tab onto Status's header opens its tooltip: "${focused.lines.join(" / ")}"`
       );
       await checkNoSortTitles(page, name);
+      await checkTooltipInWindow(page, name);
+    },
+  },
+  // A Queue number reached with the keyboard: Tab along the first row from its key until the
+  // Queue number has the focus opens its tooltip, and no Queue cell carries a browser title.
+  // The pointer stands off the page, so no hover opens it.
+  {
+    name: "view-open-queue-tooltip-focus-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      const name = "view-open-queue-tooltip-focus-1440";
+      await open(page, view("open"));
+      await page.mouse.move(1, 1);
+      const first = page.locator("[data-issue-row]").first();
+      const key = (await first.getAttribute("data-issue-row")) ?? "";
+      await first.getByRole("link", { name: key, exact: true }).focus();
+      let presses = 0;
+      while (presses < 8) {
+        const on = await page.evaluate(() =>
+          document.activeElement?.hasAttribute("data-queue-place")
+        );
+        if (on) break;
+        await page.keyboard.press("Tab");
+        presses += 1;
+      }
+      await page.waitForTimeout(500);
+      const focused = await page.evaluate(() => {
+        const active = document.activeElement;
+        const named = active?.getAttribute("aria-describedby");
+        const tip = named ? document.getElementById(named) : null;
+        return {
+          place: active?.getAttribute("data-queue-place") ?? null,
+          row: active?.closest("[data-issue-row]")?.getAttribute("data-issue-row") ?? "",
+          tip: tip?.getAttribute("role") === "tooltip" ? (tip.textContent?.trim() ?? "") : "",
+        };
+      });
+      check(
+        focused.place !== null && focused.row === key && focused.tip === QUEUE_HELP,
+        `${name}: ${presses} Tab presses from ${key}'s key bring the focus to its Queue number #${focused.place}, whose tooltip reads "${focused.tip}"`
+      );
+      await checkNoQueueTitles(page, name);
       await checkTooltipInWindow(page, name);
     },
   },
@@ -1667,9 +1765,17 @@ const afterShots: Shot[] = [
     take: async (page) => {
       await openPriority(page);
       await checkNoSortTitles(page, "priority-page-1440");
+      await checkNoQueueTitles(page, "priority-page-1440");
     },
   },
-  { name: "view-open-390", viewport: PHONE, take: (page) => open(page, view("open")) },
+  {
+    name: "view-open-390",
+    viewport: PHONE,
+    take: async (page) => {
+      await open(page, view("open"));
+      await checkFirstRowWhole(page, "view-open-390");
+    },
+  },
   {
     name: "board-open-legion-phase-390",
     viewport: PHONE,
@@ -1683,6 +1789,7 @@ const afterShots: Shot[] = [
     viewport: PHONE,
     take: async (page) => {
       await openDoneInHours(page);
+      await checkFirstRowWhole(page, "done-time-per-phase-hours-390");
       // Swipe the column in as a reader would: its left edge just after the pinned Key.
       await page.getByTestId("issues-table-scroll").evaluate((box) => {
         const headers = [...box.querySelectorAll("th")];

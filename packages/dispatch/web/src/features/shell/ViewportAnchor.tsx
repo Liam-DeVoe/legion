@@ -40,10 +40,10 @@ export interface ViewportAnchorProps {
   scroller?: RefObject<HTMLElement | null>;
   /** Hold a reader at the top too: with no hand on a row and the rows at their top, the place
    *  kept is the first row on screen in the column nearest the middle, so a row added above it
-   *  lands out of view above and the rows on screen keep their tops. A table of issues and the
-   *  Board take it ("content that others add does not move a reader's place"); a feed whose
-   *  reader at the top is waiting for arrivals (the Activity tab, the Inbox, the Conversation)
-   *  leaves it off and sees them land. */
+   *  lands out of view above and the rows on screen keep their tops. The Issues table, the
+   *  priorities table and the Board take it ("content that others add does not move a reader's
+   *  place"); a feed whose reader at the top is waiting for arrivals (the Activity tab, the
+   *  Inbox, the Conversation, the Delivery page's PR list) leaves it off and sees them land. */
   holdAtTop?: boolean;
 }
 
@@ -149,12 +149,12 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
  * the pointer, else the one nearest the list's visible centre - the first two hold even at the
  * top of the page (the hand is on that row), the centre only once the reader has scrolled, since
  * a reader at the top of a feed is looking for arrivals and should see them land. A host that
- * holds a reader at the top too (`holdAtTop`: the tables of issues, the Board) keeps the first
- * row on screen there instead, so an arrival lands out of view above. A row that itself leaves
- * its place for another `group` (a section) is not followed: the reader's place is where the row
- * was, not where it went. The pointer moving from a row onto the hover card a reference in that
- * row opened keeps that row the current one while the card is open: the card is the row's own
- * doing and sits outside the list only because it is `fixed`.
+ * holds a reader at the top too (`holdAtTop`: the Issues and priorities tables, the Board) keeps
+ * the first row on screen there instead, so an arrival lands out of view above. A row that itself
+ * leaves its place for another `group` (a section) is not followed: the reader's place is where
+ * the row was, not where it went. The pointer moving from a row onto the hover card a reference in
+ * that row opened keeps that row the current one while the card is open: the card is the row's
+ * own doing and sits outside the list only because it is `fixed`.
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -207,6 +207,16 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  reader moving the view. Scroll events run before resize observations in a frame, so
    *  without this the compensation's own event would record the place it just corrected. */
   private selfScrolled = false;
+  /** The first row on screen when the last commit was painted, with the rows at their top: the
+   *  one row a reader at the top has seen there (`holdAtTop`), and the only one the anchor holds
+   *  for them. Null before the rows were first painted, while the reader is scrolled, and once
+   *  this anchor has gone. A commit drawn but not yet painted - the table's second draw at the
+   *  width it measured, a header wrapping taller before any frame - moves rows no reader saw, so
+   *  the first draw of a view's rows starts at the top. */
+  private paintedTop: HTMLElement | null = null;
+  /** How many commits this anchor has seen, and whether it waits for one to be painted. */
+  private commits = 0;
+  private awaitingPaint = false;
 
   /** Where the pointer last was, in viewport pixels. A row moving under a pointer that has not
    *  moved makes the browser dispatch `pointerout`/`pointerover` again, with the same
@@ -330,12 +340,40 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // Capture, because `scroll` does not bubble: one listener catches the window's and the
     // named box's alike, and the handler reads a rect only for the box this anchor owns.
     window.addEventListener("scroll", this.viewScrolled, true);
+    this.committed();
   }
 
   componentWillUnmount(): void {
     window.removeEventListener("scroll", this.viewScrolled, true);
     this.contentSize?.disconnect();
     this.contentSize = null;
+    this.paintedTop = null;
+  }
+
+  /** After every commit, where the host holds a reader at the top: once the frame that commit
+   *  went into is painted - a task queued from the frame's callbacks runs after its paint -
+   *  records the first row on screen there (`paintedTop`). A commit after that frame waits for
+   *  the next one. Hit tests only, a few per painted commit, and none while the reader is
+   *  scrolled. */
+  private committed(): void {
+    this.commits += 1;
+    if (this.props.holdAtTop !== true || this.awaitingPaint) return;
+    this.awaitingPaint = true;
+    requestAnimationFrame(() => {
+      const drawn = this.commits;
+      setTimeout(() => {
+        this.awaitingPaint = false;
+        if (this.commits !== drawn) {
+          this.committed();
+          return;
+        }
+        const root = this.root;
+        const scroller = this.scrollerElement();
+        const atTop = (scroller === null ? window.scrollY : scroller.scrollTop) <= 0;
+        this.paintedTop =
+          root === null || !atTop ? null : firstRowOnScreen(root, `[${this.props.item}]`, scroller);
+      }, 0);
+    });
   }
 
   // Both listeners hang off the rendered root, not `document`: `pointerover`/`pointerout` bubble,
@@ -429,8 +467,13 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const selector = `[${this.props.item}]`;
     if ((scroller === null ? window.scrollY : scroller.scrollTop) <= 0) {
       if (this.props.holdAtTop !== true) return null;
+      // Only a row the reader has seen there: the first row on screen when the last commit was
+      // painted. The first draw of a view's rows, and every draw before a frame shows them, holds
+      // nothing, and the rows start at the top.
       const first = firstRowOnScreen(root, selector, scroller);
-      return first === null ? null : { id: this.idOf(first), row: first, via: "top" };
+      return first === null || first !== this.paintedTop
+        ? null
+        : { id: this.idOf(first), row: first, via: "top" };
     }
     const row = rowAtCenter(root, selector, scroller);
     return row === null ? null : { id: this.idOf(row), row, via: "center" };
@@ -467,6 +510,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     _previousState: Readonly<object>,
     snapshot: Snapshot | null
   ): void {
+    this.committed();
     const root = this.root;
     if (snapshot === null || root === null) return;
     const element = root.querySelector<HTMLElement>(

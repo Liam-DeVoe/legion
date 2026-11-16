@@ -1195,6 +1195,8 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
             }
             filterCounts={openFacets}
             filterUnloaded={done !== undefined && !doneLoaded ? DONE_UNLOADED : undefined}
+            // A reader at the top keeps their place: an issue another reader adds lands above.
+            holdAtTop
             label={`${place.kind === "embedded" ? place.label : "Project issues"} table`}
             model={model}
             onOpenFilterChange={setOpenFilter}

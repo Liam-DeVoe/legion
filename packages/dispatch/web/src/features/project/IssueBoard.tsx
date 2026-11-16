@@ -84,7 +84,6 @@ const boardFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
 // draws every card's drag hooks again.
 const MOUSE_OPTIONS = { activationConstraint: { distance: 8 } };
 const TOUCH_OPTIONS = { activationConstraint: { delay: 150, tolerance: 5 } };
-const MINUTE_MS = 60_000;
 
 /** The card `node` sits in, or is. */
 const cardAround = (node: Element | null): HTMLElement | null =>
@@ -147,9 +146,17 @@ function OpenAsks({ count }: { count: number }): ReactNode {
   );
 }
 
+/** The Time in Legion phase a card draws at `nowMs`, or undefined for a card with none: the one
+ *  time on a card that counts from the Board's clock. A claim's age keeps itself current through
+ *  `Timestamp`'s own tick, and a wait's since is a date. */
+const phaseTimeOf = (item: Item, nowMs: number): string | undefined => {
+  const since = item.card?.card.phase_since;
+  return since === null || since === undefined ? undefined : formatPhaseTime(since, nowMs);
+};
+
 /** What a card with a card on the Legion board shows beside today's card: every field the
  *  Legion view's card showed, from the board route. */
-function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode {
+function LegionFacts({ item, phaseTime }: { item: Item; phaseTime?: string }): ReactNode {
   const legion = item.card?.card;
   if (legion === undefined) return null;
   const roles = (legion.roles ?? []).map(workerName);
@@ -159,12 +166,12 @@ function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode 
   return (
     <>
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        {legion.phase_since === null ? null : (
+        {phaseTime === undefined ? null : (
           <Fact
             hook="phase-time"
             label="Time in Legion phase"
             method={MEASURE_METHODS.time_in_phase}
-            value={formatPhaseTime(legion.phase_since, nowMs)}
+            value={phaseTime}
           />
         )}
         {workHours === undefined ? null : (
@@ -210,12 +217,13 @@ function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode 
 
 /** What a card is drawn from. A card is drawn again only when one of these changes
  *  (`sameCard`): the issue, its Legion card and facts and its queue number keep their identity
- *  across reads where nothing in them changed (the query cache's structural sharing), so a live
- *  change to one issue draws that issue's card, not the Board's 1,500. */
+ *  across reads where nothing in them changed (the query cache's structural sharing), and the
+ *  card's time is the text it draws, so a live change to one issue draws that issue's card, not
+ *  the Board's 1,500, and a new minute draws only the cards whose time reads differently. */
 interface CardProps {
   readonly item: Item;
-  /** The Board's clock, to the minute, which Time in Legion phase counts from. */
-  readonly nowMs: number;
+  /** The Time in Legion phase the card draws (`phaseTimeOf`); undefined where it draws none. */
+  readonly phaseTime?: string;
   /** The column, and the lane, the card stands in (its column's drop id). */
   readonly place?: string;
   readonly unread: boolean;
@@ -226,7 +234,7 @@ const sameCard = (a: CardProps, b: CardProps): boolean =>
   a.item.place === b.item.place &&
   a.item.card?.card === b.item.card?.card &&
   a.item.facts === b.item.facts &&
-  a.nowMs === b.nowMs &&
+  a.phaseTime === b.phaseTime &&
   a.place === b.place &&
   a.unread === b.unread;
 
@@ -235,7 +243,12 @@ const sameCard = (a: CardProps, b: CardProps): boolean =>
  *  drag handle: an 8 px mouse move or a 150 ms touch hold lifts it. Its drag hooks draw it
  *  again whenever the drag context changes, so what it shows is a body of its own (`CardBody`),
  *  drawn again only when its data changes. */
-const BoardCard = memo(function BoardCard({ item, nowMs, place, unread }: CardProps): ReactNode {
+const BoardCard = memo(function BoardCard({
+  item,
+  phaseTime,
+  place,
+  unread,
+}: CardProps): ReactNode {
   const { issue } = item;
   const { attributes, isDragging, listeners, setNodeRef, transform } = useDraggable({
     attributes: { role: "article", roleDescription: "card", tabIndex: -1 },
@@ -266,13 +279,13 @@ const BoardCard = memo(function BoardCard({ item, nowMs, place, unread }: CardPr
       {...attributes}
       {...listeners}
     >
-      <CardBody item={item} nowMs={nowMs} unread={unread} />
+      <CardBody item={item} phaseTime={phaseTime} unread={unread} />
     </article>
   );
 }, sameCard);
 
 /** What a card shows inside its drag handle. */
-const CardBody = memo(function CardBody({ item, nowMs, unread }: CardProps): ReactNode {
+const CardBody = memo(function CardBody({ item, phaseTime, unread }: CardProps): ReactNode {
   const { issue } = item;
   return (
     <>
@@ -309,7 +322,7 @@ const CardBody = memo(function CardBody({ item, nowMs, unread }: CardProps): Rea
         ))}
         {issue.open_asks === 0 ? null : <OpenAsks count={issue.open_asks} />}
       </div>
-      <LegionFacts item={item} nowMs={nowMs} />
+      <LegionFacts item={item} phaseTime={phaseTime} />
     </>
   );
 }, sameCard);
@@ -387,7 +400,7 @@ function BoardColumn({
             <BoardCard
               item={item}
               key={item.issue.key}
-              nowMs={nowMs}
+              phaseTime={phaseTimeOf(item, nowMs)}
               place={dropId}
               unread={issueIsUnread(item.issue, userState?.[item.issue.key]?.last_read_seq ?? 0)}
             />
@@ -533,9 +546,9 @@ export function IssueBoard({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string>();
-  // To the minute, the finest Time in Legion phase shows, so a render within the same minute
-  // leaves every card's props as they were.
-  const nowMs = Math.floor(Date.now() / MINUTE_MS) * MINUTE_MS;
+  // The time each card's Time in Legion phase counts to. A card compares the text it draws, not
+  // this, so a render draws again only the cards whose time reads differently.
+  const nowMs = Date.now();
   // While a card is dragged, and until the drop's own changes are drawn, the anchor leaves the
   // page alone: the dragged card moves under the reader's hand by a transform, and a commit then
   // would read that move as content shifting around it. Released two frames after the drop, when

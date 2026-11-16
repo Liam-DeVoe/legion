@@ -1,14 +1,16 @@
 import type { ColumnDef, FilterFn, Row, RowData } from "@tanstack/react-table";
-import { useMemo } from "react";
+import { type ReactNode, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
+import { Tooltip, useTooltip } from "../../components/Tooltip";
 import type { LayoutColumns } from "../../components/table-layout";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   checkboxAccent,
+  focusVisibleRing,
   linkHoverText,
   linkText,
   textMutedOnCanvas,
@@ -92,6 +94,28 @@ declare module "@tanstack/react-table" {
   }
 }
 
+/** A Queue number, which says what it is in the shared tooltip on hover and on keyboard focus,
+ *  as the measures' help does. */
+function QueuePlace({ place }: { place: number }): ReactNode {
+  const anchor = useRef<HTMLSpanElement>(null);
+  const tooltip = useTooltip();
+  return (
+    <span
+      {...tooltip.props}
+      className={`rounded-sm font-semibold tabular-nums outline-none focus-visible:ring-2 ${focusVisibleRing}`}
+      data-queue-place={place}
+      ref={anchor}
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: the tab stop opens the tooltip that says what the number is.
+      tabIndex={0}
+    >
+      #{place}
+      <Tooltip anchorRef={anchor} trigger={tooltip}>
+        Legion starts issues in this order
+      </Tooltip>
+    </span>
+  );
+}
+
 const inPicks: FilterFn<Item> = (row, id, value: string[] | string) =>
   matchesFilters(row.original, [{ id, value }]);
 
@@ -159,12 +183,7 @@ const renderings = (
     },
     cell: ({ row }) => {
       const { place, queued } = row.original;
-      if (place !== undefined)
-        return (
-          <span className="font-semibold tabular-nums" title="Legion starts issues in this order">
-            #{place}
-          </span>
-        );
+      if (place !== undefined) return <QueuePlace place={place} />;
       // In the Legion queue with no number of its own: a Queue card the daemon's order does
       // not name.
       return queued ? (
@@ -619,11 +638,7 @@ const EMBEDDED_RENDERINGS: Readonly<Partial<Record<ColumnId, Partial<ColumnDef<I
     sortDescFirst: false,
     cell: ({ getValue }) => {
       const place = getValue<number | undefined>();
-      return place === undefined ? null : (
-        <span className="font-semibold tabular-nums" title="Legion starts issues in this order">
-          #{place}
-        </span>
-      );
+      return place === undefined ? null : <QueuePlace place={place} />;
     },
   },
   assignee: {

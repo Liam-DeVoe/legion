@@ -178,9 +178,11 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
   cell and its tooltip open, inside the window;
 - `done-work-time-tooltip-focus-1440`: Done with Work time's header reached by Tab from the
   filter before it, its tooltip open on the keyboard focus alone, inside the window: the
-  method's one sentence, and main's sort hint under it;
+  method's two sentences, and main's sort hint under them;
 - `view-open-status-sort-tooltip-focus-1440`: Open with Status's header reached by Tab from
   Queue's filter, its tooltip open with main's sort hint alone;
+- `view-open-queue-tooltip-focus-1440`: Open with the first row's Queue number reached by Tab
+  from its key, its tooltip open with "Legion starts issues in this order";
 - `done-work-time-empty-1440`: Done narrowed to the day a done issue with Legion facts and no
   measured work closed (the newest closed of them, or the one `--empty-work-time` names),
   whose Work time cell is empty beside rows that draw one;
@@ -274,13 +276,18 @@ check of what the page drew failed:
   5 s; on the Board, Todo's first card moving more than 1 px, the new card not standing first
   in Todo above it (in view or not), or Todo and the Open tab not counting it within 10 s;
 - the banner not naming an issue change the picture made, with who made it;
+- a table just opened (Open at 1440 and 390, Done at 1440, Done in Hours at 390) not standing
+  at its top with its first row whole under the header;
 - the reader's own drag not moving its card at once, or moving the column counts wrongly, in
   the demo and in the single file;
-- Work time's header tooltip not opening on keyboard focus, or not holding its one method
-  sentence and then main's sort hint; a Board card's Work time tooltip not holding the same
-  sentence;
+- Work time's header tooltip not opening on keyboard focus, or not holding its method's two
+  sentences word for word and then main's sort hint; a Board card's Work time tooltip or the
+  Columns menu's line under Work time not holding the same two sentences;
 - Status's header tooltip not opening on keyboard focus, or holding anything but main's sort
   hint; a sort button carrying a browser title, on Open or on the priority pages;
+- the first row's Queue number not taking the focus by Tab from its key, or its tooltip
+  reading anything but "Legion starts issues in this order"; a Queue cell, or anything in it,
+  carrying a browser title, on Open or on a priority page;
 - a tooltip standing partly outside the window;
 - the done issue with no measured work drawing anything in its Work time cell;
 - Created by or Open asks not whole on Open's first screen at 1440, on INFRA or on the project

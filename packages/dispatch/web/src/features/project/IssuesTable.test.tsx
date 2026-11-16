@@ -1,4 +1,5 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, setSystemTime, spyOn, test } from "bun:test";
+import * as dndCore from "@dnd-kit/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -1283,6 +1284,8 @@ test("a row added above the first row on screen lands out of view for a reader a
   const rows = [issue("CORE-2"), issue("CORE-3")];
   const { client } = table(rows);
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  // The rows painted: the reader has seen the first row on screen.
+  await new Promise((resolve) => setTimeout(resolve, 50));
   const top = (key: string) =>
     document.querySelector(`tr[data-issue-row="${key}"]`)?.getBoundingClientRect().top;
   const before = top("CORE-2");
@@ -1346,6 +1349,8 @@ test("a card added above the first card of the middle column keeps that card's t
   const { client } = table(rows, "?layout=board");
   const card = await screen.findByRole("article", { name: "CORE-5 Work CORE-5" });
   (document.activeElement as HTMLElement | null)?.blur();
+  // The cards painted: the reader has seen the first card of the middle column.
+  await new Promise((resolve) => setTimeout(resolve, 50));
   const before = card.getBoundingClientRect().top;
   // Nothing in hand: the reader at the top of the page, reading.
   expect(before).toBe(TOP);
@@ -1367,10 +1372,105 @@ test("a card added above the first card of the middle column keeps that card's t
   expect(screen.getByRole("tab", { name: "Open 5" })).toBeDefined();
 });
 
-// k13: a live change to one issue draws that issue's card, not the Board's hundreds. Every card
-// body draws `UnreachableRouteMarker` once per render, and on the Board nothing else does, so
-// its calls count the card bodies a commit drew.
-test("a live read that moves one card of 600 draws at most 5 card bodies", async () => {
+// A notice above the table moves the reader's place no more than an arrival does: with the hand on
+// a row, a failed read's alert that appears above the table while its rows stay leaves that row's
+// top where it was, and the box scrolls by the alert's height instead.
+test("an alert above the table with the hand on a row leaves that row's top in place", async () => {
+  const BOX = 300;
+  const ALERT = 40;
+  const HEAD = 48;
+  const ROW = 64;
+  const scrolledBy = () => screen.queryByTestId("issues-table-scroll")?.scrollTop ?? 0;
+  const boxTop = () => BOX + (document.querySelector('[role="alert"]') === null ? 0 : ALERT);
+  const rowsOnPage = () => [...document.querySelectorAll<HTMLElement>("tr[data-issue-row]")];
+  // The geometry the anchor reads: the box below whatever stands above it, its header HEAD tall,
+  // each row ROW tall under it, all scrolled by the box's `scrollTop`.
+  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.dataset.testid === "issues-table-scroll") return box(0, boxTop(), 1000, 600);
+    const index = rowsOnPage().indexOf(this);
+    if (index >= 0) return box(0, boxTop() + HEAD + index * ROW - scrolledBy(), 1000, ROW);
+    return box(0, boxTop() - scrolledBy(), 1000, 2000);
+  });
+  restores.push(() => rect.mockRestore());
+  const { client, listing } = table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")]);
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  screen.getByRole("checkbox", { name: "Select CORE-2" }).focus();
+  const top = () =>
+    document.querySelector('tr[data-issue-row="CORE-2"]')?.getBoundingClientRect().top;
+  const before = top();
+  expect(before).toBe(BOX + HEAD + ROW);
+
+  listing.mockRejectedValueOnce(new Error("unreachable"));
+  await client.invalidateQueries({ queryKey: ["issues"] });
+  await screen.findByRole("alert");
+
+  expect(listedKeys()).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
+  expect(top()).toBe(before);
+  expect(scrolledBy()).toBe(ALERT);
+});
+
+// The first draw of a view's rows starts at the top. On a 390 px phone the table first draws at
+// the width it starts from, then measures its box and draws again before any frame is painted,
+// and its header wraps taller at the narrower widths (in the browser, Done's Time per phase
+// header stacks its sort over its Share/Hours control, 44 px). The rows move down under it; no
+// reader has seen them yet, so nothing holds the first row where it was, and the box stays at
+// its top with the first row whole under the header.
+test("a table that draws its rows after a loading state opens at its top with its first row whole on a phone", async () => {
+  const BOX = 300;
+  const HEAD = 49;
+  const STACKED = 44;
+  const ROW = 64;
+  const scrolledBy = () => screen.queryByTestId("issues-table-scroll")?.scrollTop ?? 0;
+  // The header wraps STACKED taller once the box is measured at 390 px and Title narrows under
+  // the 240 px it starts at.
+  const titleWidth = () =>
+    Number.parseFloat(
+      [...document.querySelectorAll<HTMLElement>("thead th")].find((th) =>
+        (th.textContent ?? "").startsWith("Title")
+      )?.style.width ?? "240"
+    );
+  const headHeight = () => HEAD + (titleWidth() < 240 ? STACKED : 0);
+  const rowsOnPage = () => [...document.querySelectorAll<HTMLElement>("tr[data-issue-row]")];
+  // The geometry the table and the anchor read: a 390 px box at BOX, its header HEAD tall and
+  // STACKED taller while a header stacks, each row ROW tall under it, scrolled by the box.
+  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.dataset.testid === "issues-table-scroll") return box(0, BOX, 390, 600);
+    if (this.tagName === "THEAD") return box(0, BOX, 390, headHeight());
+    const index = rowsOnPage().indexOf(this);
+    if (index >= 0) return box(0, BOX + headHeight() + index * ROW - scrolledBy(), 390, ROW);
+    return box(0, BOX - scrolledBy(), 390, 2000);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    if (y < BOX + headHeight()) return null;
+    return rowsOnPage()[Math.floor((y - BOX - headHeight() + scrolledBy()) / ROW)] ?? null;
+  });
+  restores.push(() => {
+    rect.mockRestore();
+    point.mockRestore();
+  });
+  table(
+    ["CORE-1", "CORE-2", "CORE-3"].map((key) => issue(key, { status: "done" })),
+    "?view=done"
+  );
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(titleWidth()).toBeLessThan(240);
+  expect(scrolledBy()).toBe(0);
+  expect(rowsOnPage()[0]?.getBoundingClientRect().top).toBe(BOX + HEAD + STACKED);
+});
+
+// k13: a live change to one issue draws that issue's card, not the Board's hundreds, in the same
+// minute and in the next. Every card body draws `UnreachableRouteMarker` once per render and every
+// card shell calls `useDraggable` once, and on the Board nothing else does either, so their calls
+// count the bodies and the shells a change drew. The clock is fixed, then moved a minute on: a
+// card that draws no time ignores it.
+test("a live read that moves one card of 600 draws at most 5 card bodies and 5 card shells", async () => {
+  setSystemTime(new Date("2026-11-14T12:00:30Z"));
+  restores.push(() => setSystemTime());
   const rows = Array.from({ length: 600 }, (_, index) =>
     issue(`CORE-${1000 + index}`, { status: index % 3 === 0 ? "in_progress" : "todo" })
   );
@@ -1379,23 +1479,43 @@ test("a live read that moves one card of 600 draws at most 5 card bodies", async
     timeout: 30_000,
   });
   const bodies = spyOn(routeReach, "UnreachableRouteMarker");
-  restores.push(() => bodies.mockRestore());
-  const moved = rows.findIndex((row) => row.status === "todo");
-  const key = rows[moved]?.key ?? "";
-  rows[moved] = issue(key, { status: "in_progress", updated_at: "2026-09-11T00:00:00Z" });
-  await client.invalidateQueries({ queryKey: ["issues"] });
-  await waitFor(
-    () =>
-      expect(
-        document.querySelector(`[data-board-column="in_progress"] [data-board-card="${key}"]`)
-      ).not.toBeNull(),
-    { timeout: 30_000 }
+  const shells = spyOn(dndCore, "useDraggable");
+  restores.push(() => {
+    bodies.mockRestore();
+    shells.mockRestore();
+  });
+  /** Moves the `nth` Todo card to In progress, as another reader's change read again, and gives
+   *  the bodies and shells that drew for it. */
+  const move = async (nth: number, updated_at: string) => {
+    bodies.mockClear();
+    shells.mockClear();
+    const moved = rows.flatMap((row, index) => (row.status === "todo" ? [index] : []))[nth] ?? 0;
+    const key = rows[moved]?.key ?? "";
+    rows[moved] = issue(key, { status: "in_progress", updated_at });
+    await client.invalidateQueries({ queryKey: ["issues"] });
+    await waitFor(
+      () =>
+        expect(
+          document.querySelector(`[data-board-column="in_progress"] [data-board-card="${key}"]`)
+        ).not.toBeNull(),
+      { timeout: 30_000 }
+    );
+    // Whatever the change still draws after the card lands is counted too.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return { bodies: bodies.mock.calls.length, shells: shells.mock.calls.length };
+  };
+  const sameMinute = await move(0, "2026-11-14T12:00:40Z");
+  setSystemTime(new Date("2026-11-14T12:01:31Z"));
+  const nextMinute = await move(1, "2026-11-14T12:01:35Z");
+  console.log(
+    `k13: one moved card of 600 drew ${sameMinute.bodies} card bodies and ${sameMinute.shells} card shells; in the next minute ${nextMinute.bodies} bodies and ${nextMinute.shells} shells`
   );
-  // Whatever the change still draws after the card lands is counted too.
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  console.log(`k13: ${bodies.mock.calls.length} card bodies drew for one moved card of 600`);
-  expect(bodies.mock.calls.length).toBeGreaterThan(0);
-  expect(bodies.mock.calls.length).toBeLessThanOrEqual(5);
+  for (const counts of [sameMinute, nextMinute]) {
+    expect(counts.bodies).toBeGreaterThan(0);
+    expect(counts.bodies).toBeLessThanOrEqual(5);
+    expect(counts.shells).toBeGreaterThan(0);
+    expect(counts.shells).toBeLessThanOrEqual(5);
+  }
 }, 120_000);
 
 test("a scoped table lists the issues the server answers for the priority, over every project", async () => {
