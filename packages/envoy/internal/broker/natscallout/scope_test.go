@@ -430,7 +430,8 @@ func TestAProjectItsPersonCannotSeeRefusesTheConnection(t *testing.T) {
 }
 
 // An exchange entry that names no project (the shared public-session account's form) gives the
-// connection nothing to hold it to, and is refused saying so, not by the grant's emptiness.
+// connection nothing to hold it to, and is refused saying so under a label of its own, not by the
+// grant's emptiness.
 func TestAnEntryNamingNoProjectIsRefusedByName(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
@@ -439,7 +440,21 @@ func TestAnEntryNamingNoProjectIsRefusedByName(t *testing.T) {
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, slowDaemonAccount: nil}, dispatch, services)
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("empty-token"))
-	requireRefused(t, err, labelNotHeldToProjects, "account's exchange entry names no project to hold it to: "+slowDaemonAccount)
+	requireRefused(t, err, labelNoProjects, "account's exchange entry names no project to hold it to: "+slowDaemonAccount)
+}
+
+// A grant natsgrant.WithinProjects cannot hold to the entry's projects is refused naming why,
+// under a label of its own: here Dispatch maps PUB to a repository that is not owner/name, which
+// no GitHub lane can be written for.
+func TestAGrantThatCannotBeHeldToItsProjectsIsRefusedByName(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"not-a-repository"}}}
+	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}}, dispatch, services)
+
+	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
+	requireRefused(t, err, labelGrantNotHoldable, "grant cannot be held to its projects: service daemon/"+pubDaemonAccount+`: natsgrant: scope repository "not-a-repository" is not owner/name`)
 }
 
 // Through the auth service, Dispatch's grant may write the private-projects bucket and a

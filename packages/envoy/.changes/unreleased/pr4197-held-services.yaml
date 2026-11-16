@@ -5,10 +5,11 @@ body: |-
   the repositories Dispatch maps them to (`natsgrant.WithinProjects`), where before it refused
   every such entry; the person that exchange entry acts for must see each project, as the token
   exchange requires of that account's token. It refuses, naming the reason and counting it under
-  its own label, an account no exchange entry lists (`no_exchange_entry`), a project it holds no
-  answer about yet (`project_not_known`, which the client retries), a project Dispatch does not
-  hold (`project_not_found`), one the entry's person cannot see (`project_not_visible`), and an
-  entry naming no project or a grant that cannot be held to projects (`not_held_to_projects`).
+  a label of its own, an account no exchange entry lists (`no_exchange_entry`), an entry naming no
+  project (`no_exchange_projects`), a project it holds no answer about yet (`project_not_known`,
+  which the client retries), a project Dispatch does not hold (`project_not_found`), one the
+  entry's person cannot see (`project_not_visible`), and a grant that cannot be held to projects
+  (`grant_not_holdable`).
   A dispatch or listener entry with `-` is now refused at startup, as a measurement entry's is.
   No connection waits on Dispatch: the broker asks it about every such project at its start and
   every 20 seconds after, and keeps the last answer while Dispatch cannot be reached. Dispatch's

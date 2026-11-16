@@ -71,7 +71,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	case !listed:
 		return natsgrant.Permissions{}, refuse(labelNoExchangeEntry, "account has no exchange entry: "+entry.Account)
 	case len(projects) == 0:
-		return natsgrant.Permissions{}, refuse(labelNotHeldToProjects, "account's exchange entry names no project to hold it to: "+entry.Account)
+		return natsgrant.Permissions{}, refuse(labelNoProjects, "account's exchange entry names no project to hold it to: "+entry.Account)
 	}
 	var repositories []string
 	for _, project := range projects {
@@ -94,7 +94,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	}
 	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Repositories: repositories, Identity: entry.Account})
 	if err != nil {
-		return natsgrant.Permissions{}, refuse(labelNotHeldToProjects, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
+		return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
 	}
 	return scoped, nil
 }
