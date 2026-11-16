@@ -36,6 +36,11 @@ const MaxHeldNamesPerClaim = 2048
 // keeps every name it holds.
 var ErrHeldNamesCap = errors.New("the claim would hold more session names than one claim may")
 
+// heldNamesCapLine is the Warn line of a registration refused at MaxHeldNamesPerClaim. Its
+// `release` field is the claim's ReleaseOldNamesStatement, the operator's way to let it start a new
+// session; an operator reads the line whole, so it is pinned here.
+const heldNamesCapLine = "supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the statement frees the names of its older sessions for a new one"
+
 // ReleaseOldNamesStatement is the statement an operator runs to let a claim at MaxHeldNamesPerClaim
 // start a new session again: it frees the claim's holds recorded more than 12 hours ago, except
 // every name of the session it records and of the one it last abandoned. A name of its current or
@@ -183,7 +188,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		holders, err = m.deps.Store.HoldSessions(ctx, m.claim.Project, m.claim.Token, ask)
 		return err
 	}); errors.Is(err, ErrHeldNamesCap) {
-		m.log.Warn("supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the statement frees the names of its older sessions for a new one",
+		m.log.Warn(heldNamesCapLine,
 			"claim", m.claim.Token, "names", len(ask), "cap", MaxHeldNamesPerClaim, "error", err,
 			"release", ReleaseOldNamesStatement(m.claim.Project, m.claim.Token))
 		return fmt.Errorf("hold the session of %s: %w", m.claim.Token, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))

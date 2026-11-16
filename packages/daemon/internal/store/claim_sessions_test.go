@@ -609,23 +609,24 @@ func explainPlan(t *testing.T, store *Store, query string, args ...any) string {
 	return strings.Join(lines, "\n")
 }
 
-// scansOf is how many sequential and index scans of claim_sessions call makes, read from
+// tuplesReadBy is how many tuples of claim_sessions call reads, by sequential scan or by index, from
 // pg_stat_user_tables. call runs on a Store of one connection, whose statistics that connection
-// flushes on demand (pg_stat_force_next_flush, PostgreSQL 15 and later), so the counts are its
-// call's alone; nothing else scans claim_sessions while it runs.
-func scansOf(t *testing.T, store *Store, call func(one *Store)) (seq, idx int64) {
+// flushes on demand (pg_stat_force_next_flush, PostgreSQL 15 and later), so the count is its call's
+// alone; nothing else reads claim_sessions while it runs. A count that never moves is no
+// measurement: a conflict read of recorded names reads at least one tuple, so the test fails.
+func tuplesReadBy(t *testing.T, store *Store, call func(one *Store)) int64 {
 	t.Helper()
 	ctx := context.Background()
-	read := func() (int64, int64) {
-		var seq, idx int64
+	read := func() int64 {
+		var tuples int64
 		if _, err := store.Pool().Exec(ctx, `select pg_stat_clear_snapshot()`); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Pool().QueryRow(ctx, `select seq_scan, coalesce(idx_scan, 0) from pg_stat_user_tables
-			where relname = 'claim_sessions'`).Scan(&seq, &idx); err != nil {
-			t.Fatalf("read claim_sessions' scan counts: %v", err)
+		if err := store.Pool().QueryRow(ctx, `select coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0)
+			from pg_stat_user_tables where relname = 'claim_sessions'`).Scan(&tuples); err != nil {
+			t.Fatalf("read claim_sessions' tuple counts: %v", err)
 		}
-		return seq, idx
+		return tuples
 	}
 	one := secondStore(t, store, func(config *pgxpool.Config) { config.MaxConns = 1 })
 	flush := func() {
@@ -637,15 +638,17 @@ func scansOf(t *testing.T, store *Store, call func(one *Store)) (seq, idx int64)
 		}
 	}
 	flush()
-	seqBefore, idxBefore := read()
+	before := read()
 	call(one)
 	flush()
 	// The flush lands as the connection goes idle, so the read waits for it a little.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		seqAfter, idxAfter := read()
-		if seqAfter != seqBefore || idxAfter != idxBefore || time.Now().After(deadline) {
-			return seqAfter - seqBefore, idxAfter - idxBefore
+		if after := read(); after != before {
+			return after - before
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("claim_sessions' tuple counts never moved after the conflict read: UNKNOWN, no measurement")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -663,16 +666,17 @@ const productionClaims = 7508
 // of a database reached across a network. The time bound is a third of the budget, so a loaded
 // runner has room; the statement bound is what does not depend on the runner.
 //
-// Nor may it grow with the rows the table has gathered (review N2): a claim may hold up to
+// Nor may it grow with the rows the table has gathered (reviews N2 and F2): a claim may hold up to
 // supervise.MaxHeldNamesPerClaim names, most of them of sessions it no longer records, and nothing
 // deletes a hold. So the steady step is measured again with half a million rows no claim records
-// any more, as 245 claims at the cap would hold, and the rows it reads stay within twice the
-// claims and the names they record. Every name is found through the primary key, so the step's
-// cost follows the names the claims record, whatever the table holds.
+// any more, as 245 claims at the cap would hold: the conflict read must read, on the server, at
+// most twice the tuples of claim_sessions that the claims' names are. The read looks each name up
+// by key; the planner's choice is logged, not asserted, since it follows the table's statistics.
 //
 // The controls (the pull request records each run): HoldRecordedSessions as a statement per name,
 // which sends 33,786 inserts and, at a millisecond each, takes past the bound; and SessionConflicts
-// reading the project's whole table, which reads every stale row.
+// as 723aa7826a's join, which the planner runs over this table as a hash join over a sequential
+// scan, reading every stale row.
 func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 	const (
 		statementBound = 10
@@ -754,8 +758,9 @@ func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 			stale, staleSent, staleTook, statementBound, timeBound)
 	}
 
-	// The rows returned say nothing of the rows read (review F2): the read must find each recorded
-	// name through the primary key, which its plan shows and the table's scan counts confirm.
+	// The rows returned say nothing of the rows the server reads (review F2), so the read's tuples
+	// of claim_sessions are counted too: at most twice the names the claims record. The planner's
+	// choice is not asserted, since it follows the table's statistics; the plan is logged.
 	var kinds, recordedNamesOf []string
 	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
 		current, abandoned, err := recordedNames(ctx, tx, "legion")
@@ -766,19 +771,17 @@ func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	plan := explainPlan(t, store, conflictHoldersQuery, "legion", kinds, recordedNamesOf)
-	t.Logf("the conflict read's plan over %d recorded names and %d rows:\n%s", len(kinds), names+stale, plan)
-	if strings.Contains(plan, "Seq Scan on claim_sessions") || !strings.Contains(plan, "Index Scan using claim_sessions_pkey on claim_sessions") {
-		t.Errorf("the conflict read's plan scans claim_sessions in sequence, or finds its rows by no lookup of the primary key:\n%s", plan)
-	}
-	seqScans, indexScans := scansOf(t, store, func(one *Store) {
+	t.Logf("the conflict read's plan over %d recorded names and %d rows:\n%s", len(kinds), names+stale,
+		explainPlan(t, store, conflictHoldersQuery, "legion", kinds, recordedNamesOf))
+	tuples := tuplesReadBy(t, store, func(one *Store) {
 		if conflicts, err := one.SessionConflicts(ctx, "legion"); err != nil || len(conflicts) != 0 {
 			t.Fatalf("the counted conflict read answered %+v, %v; want none", conflicts, err)
 		}
 	})
-	t.Logf("one conflict read over %d rows: seq_scan +%d, idx_scan +%d on claim_sessions", names+stale, seqScans, indexScans)
-	if seqScans != 0 || indexScans == 0 {
-		t.Errorf("one conflict read scanned claim_sessions in sequence %d times and by index %d times; want no sequential scan, and the names found by index", seqScans, indexScans)
+	t.Logf("one conflict read over %d rows read %d tuples of claim_sessions", names+stale, tuples)
+	if bound := int64(2 * names); tuples > bound {
+		t.Errorf("one conflict read over %d rows read %d tuples of claim_sessions; want at most %d, twice the names the claims record: its cost follows those names, not the holds the table has gathered",
+			names+stale, tuples, bound)
 	}
 
 	if firstSent > statementBound || steadySent > statementBound {

@@ -545,6 +545,15 @@ func TestAClaimAtTheCapOfHeldNamesIsRefusedANewSession(t *testing.T) {
 		if got, want := h.store.heldBy(h.token), MaxHeldNamesPerClaim-names+1; got != want {
 			t.Fatalf("the claim holds %d names after the refusal, want the %d it held before", got, want)
 		}
+		// The operator's way out is on the refusal's line: the statement that frees the names of its
+		// older sessions (review F1 of #4220), which the store's test runs.
+		lines := h.records.of(heldNamesCapLine)
+		if len(lines) != 1 {
+			t.Fatalf("the refusal was logged %d times, want once", len(lines))
+		}
+		if release, ok := lines[0].attr("release"); !ok || release.String() != ReleaseOldNamesStatement(h.claim().Project, h.token) {
+			t.Fatalf("the refusal's line gives the statement %v, want %q", release, ReleaseOldNamesStatement(h.claim().Project, h.token))
+		}
 	})
 
 	t.Run("a registration that fills the cap exactly", func(t *testing.T) {

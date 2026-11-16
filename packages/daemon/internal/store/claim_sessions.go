@@ -195,11 +195,14 @@ func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, 
 }
 
 // conflictHoldersQuery is SessionConflicts' read of the holders of the names claims record: $1 the
-// project, $2 and $3 the kinds and names, one pair a recorded name. Each name is looked up through
-// the primary key by a lateral subquery whose `limit 1` keeps the planner from flattening it into a
-// join: as a join, the planner chose a hash join over a sequential scan of the project's whole
-// table once the table outgrew the names (review F2 of #4220: 533,786 rows read for 33,786 names).
-// As a lookup, the read costs one index probe a recorded name, whatever the table holds.
+// project, $2 and $3 the kinds and names, one pair a recorded name. It is written as a lookup of
+// each name by the primary key: a lateral subquery whose `limit 1` keeps the planner from flattening
+// it into a join. As a join, the planner chose its plan by the table's statistics (review F2 of
+// #4220, measured on PostgreSQL 18.6 over 7,508 claims' 33,786 names): a hash join over a
+// sequential scan of the project's whole table at 533,786 rows (334.5 ms, every row read), and the
+// index at 15.4 million rows, the cap's ceiling (198.8 ms). As a lookup, at 533,786 rows, it read
+// 33,786 tuples, one index probe a recorded name. The planner may still scan a small table in
+// sequence, which costs what the table holds and no more; at scale the bound comes from the index.
 const conflictHoldersQuery = `select r.kind, r.name, h.claim
 	from unnest($2::text[], $3::text[]) as r(kind, name)
 	cross join lateral (select claim from claim_sessions h
@@ -214,11 +217,10 @@ const conflictHoldersQuery = `select r.kind, r.name, h.claim
 // the steps).
 //
 // It is two reads whatever the project's size: the claims, and the holders of the names they
-// record, each found through the primary key (conflictHoldersQuery), never by reading the whole
-// table. A claim may hold up to supervise.MaxHeldNamesPerClaim names, most of them of sessions it
-// no longer records, so the table can hold far more rows than the claims name, and the boot's cost
-// follows what the claims record, about 4.5 names a claim, not what the table has gathered
-// (reviews N2 and F2 of #4220).
+// record, each looked up by key (conflictHoldersQuery). A claim may hold up to
+// supervise.MaxHeldNamesPerClaim names, most of them of sessions it no longer records, so the table
+// can hold far more rows than the claims name; at that scale the read follows what the claims
+// record, about 4.5 names a claim, not what the table has gathered (reviews N2 and F2 of #4220).
 func (s *Store) SessionConflicts(ctx context.Context, project string) ([]SessionConflict, error) {
 	var conflicts []SessionConflict
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
