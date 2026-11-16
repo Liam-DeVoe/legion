@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -23,19 +24,50 @@ var pubScope = natsgrant.Scope{
 	Identity:     "legion-daemon-PUB",
 }
 
-// A reply prefix is "_INBOX_" and the identity with every byte outside [A-Za-z0-9_-] written "_",
-// so it is one subject token whatever the identity holds, and never nats.go's own "_INBOX".
+// A reply prefix is "_INBOX_" and the identity with every byte outside [A-Za-z0-9-] escaped
+// as _hh, including underscores, so it is one subject token and distinct identities stay distinct.
 func TestInboxPrefixIsOneTokenOfTheIdentity(t *testing.T) {
 	for identity, want := range map[string]string{
 		"legion-daemon-PUB": "_INBOX_legion-daemon-PUB",
-		"system:serviceaccount:legion-pub:legion-pub-daemon": "_INBOX_system_serviceaccount_legion-pub_legion-pub-daemon",
-		"daemon@example.iam.gserviceaccount.com":             "_INBOX_daemon_example_iam_gserviceaccount_com",
-		"a.b*c>d e\tf":                                       "_INBOX_a_b_c_d_e_f",
-		"é":                                                  "_INBOX___",
+		"system:serviceaccount:legion-pub:legion-pub-daemon": "_INBOX_system_3aserviceaccount_3alegion-pub_3alegion-pub-daemon",
+		"daemon@example.iam.gserviceaccount.com":             "_INBOX_daemon_40example_2eiam_2egserviceaccount_2ecom",
+		"a.b*c>d e\tf":                                       "_INBOX_a_2eb_2ac_3ed_20e_09f",
+		"é":                                                  "_INBOX__c3_a9",
+		"\x00\r\n*>.":                                        "_INBOX__00_0d_0a_2a_3e_2e",
+		"a.b":                                                "_INBOX_a_2eb",
+		"a_b":                                                "_INBOX_a_5fb",
+		"daemon@example.com":                                 "_INBOX_daemon_40example_2ecom",
+		"daemon_example_com":                                 "_INBOX_daemon_5fexample_5fcom",
+		"a.b@x.com":                                          "_INBOX_a_2eb_40x_2ecom",
+		"a_b@x.com":                                          "_INBOX_a_5fb_40x_2ecom",
 	} {
 		got := natsgrant.InboxPrefix(identity)
 		require.Equal(t, want, got, "InboxPrefix(%q)", identity)
 		require.True(t, natsgrant.SessionToken(got), "InboxPrefix(%q) = %q is one subject token", identity, got)
+		options := natsgo.GetDefaultOptions()
+		require.NoError(t, natsgo.CustomInboxPrefix(got)(&options), "nats.go accepts InboxPrefix(%q)", identity)
+		grant, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})
+		require.NoError(t, err)
+		require.Contains(t, grant.Subscribe, want+".>", "the grant names the prefix the client uses")
+	}
+	// The control is the old byte-replacement rule, not the implementation under test: each
+	// pair must be one that the old rule merged before we trust its new prefixes differ.
+	oldPrefix := func(identity string) string {
+		prefix := []byte("_INBOX_")
+		for i := range len(identity) {
+			c := identity[i]
+			if 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '_' || c == '-' {
+				prefix = append(prefix, c)
+			} else {
+				prefix = append(prefix, '_')
+			}
+		}
+		return string(prefix)
+	}
+	for _, pair := range [][2]string{{"a.b@x.com", "a_b@x.com"}, {"a.b", "a_b"}, {"daemon@example.com", "daemon_example_com"}} {
+		require.Equal(t, oldPrefix(pair[0]), oldPrefix(pair[1]), "the old rule must merge the collision control")
+		require.NotEqual(t, natsgrant.InboxPrefix(pair[0]), natsgrant.InboxPrefix(pair[1]),
+			"distinct accounts %q and %q must not share replies", pair[0], pair[1])
 	}
 }
 
@@ -81,8 +113,10 @@ func TestWithinProjectsHoldsTheDaemonGrantToItsProjects(t *testing.T) {
 	}, got)
 }
 
-// Each kind of entry on its own: rewritten to the scope's subjects, dropped, or refused naming the
-// entry. A refusal is the whole answer, never a grant with the entry left out.
+// Each kind of entry beside the reply inboxes: rewritten to the scope's subjects, dropped, or
+// refused naming the entry. A refusal is the whole answer, never a grant with the entry left out.
+// The reply inboxes keep each direction from coming out empty, which is refused on its own
+// (TestWithinProjectsRefusesAGrantHeldToNothingInADirection).
 func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 	scope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets"}, Identity: "id"}
 	pubConsumers := []string{"dispatch", "mapping", "wake", "ready", "github-0"}
@@ -137,6 +171,8 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		{entry: "$JS.API.DIRECT.GET.KV_envoy_roles.>", refused: "KV bucket"},
 		{entry: "$JS.API.CONSUMER.CREATE.KV_envoy_roles.>", refused: "KV bucket"},
 		{entry: "$JS.API.CONSUMER.DELETE.KV_envoy_roles.>", refused: "KV bucket"},
+		{entry: "$JS.API.CONSUMER.DURABLE.CREATE.KV_envoy_roles.watcher", refused: "KV bucket"},
+		{entry: "$JS.API.STREAM.MSG.DELETE.KV_envoy_roles", refused: "KV bucket"},
 		{entry: "$JS.FC.KV_envoy_roles.>", refused: "KV bucket"},
 		// Every project's notifications at once.
 		{entry: "notifications.>", refused: "every project"},
@@ -160,9 +196,12 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		{entry: "", refused: "cannot be held"},
 	} {
 		for _, direction := range []string{"publish", "subscribe"} {
-			grant := natsgrant.Permissions{Publish: []string{row.entry}}
-			if direction == "subscribe" {
-				grant = natsgrant.Permissions{Subscribe: []string{row.entry}}
+			const inboxes, heldInboxes = "_INBOX.>", "_INBOX_id.>"
+			grant := natsgrant.Permissions{Publish: []string{inboxes}, Subscribe: []string{inboxes}}
+			if direction == "publish" {
+				grant.Publish = append(grant.Publish, row.entry)
+			} else {
+				grant.Subscribe = append(grant.Subscribe, row.entry)
 			}
 			got, err := natsgrant.WithinProjects(grant, scope)
 			name := direction + " " + strconv.Quote(row.entry)
@@ -174,15 +213,13 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 				continue
 			}
 			require.NoError(t, err, name)
-			held := got.Publish
+			held, other := got.Publish, got.Subscribe
 			if direction == "subscribe" {
-				held = got.Subscribe
+				held, other = got.Subscribe, got.Publish
 			}
-			if row.want == nil {
-				require.Empty(t, slices.Concat(got.Publish, got.Subscribe), name)
-				continue
-			}
-			require.Equal(t, row.want, held, name)
+			require.Equal(t, []string{heldInboxes}, other, name)
+			// A dropped entry (want nil) leaves the reply prefix alone.
+			require.Equal(t, slices.Compact(slices.Concat([]string{heldInboxes}, row.want)), held, name)
 		}
 	}
 }
@@ -205,12 +242,33 @@ func TestWithinProjectsRefusesAScopeItCannotName(t *testing.T) {
 	}
 }
 
-// With no project the grant names no project's subject: the daemon keeps its reply prefix and
-// nothing else.
-func TestWithinProjectsWithNoProjectNamesNoProjectSubject(t *testing.T) {
-	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Repositories: []string{"acme/widgets"}, Identity: "id"})
-	require.NoError(t, err)
-	require.Equal(t, natsgrant.Permissions{Subscribe: []string{"_INBOX_id.>"}}, got)
+// With no project a daemon's grant keeps no publish entry. nats-server holds a user JWT to nothing
+// in a direction whose allow list is empty (server/accounts.go, buildPermissionsFromJwt), and the
+// auth service writes the grant's lists into the JWT as they are, so WithinProjects refuses it
+// naming the direction rather than answering a grant that may publish to every subject. A
+// direction whose every entry is dropped, or that held no entry to begin with, is refused the same
+// way.
+func TestWithinProjectsRefusesAGrantHeldToNothingInADirection(t *testing.T) {
+	for name, row := range map[string]struct {
+		grant     natsgrant.Permissions
+		scope     natsgrant.Scope
+		direction string
+	}{
+		"Daemon() of no project": {grant: natsgrant.Daemon(), scope: natsgrant.Scope{Identity: "id"}, direction: "publish"},
+		"every publish entry dropped": {
+			grant: natsgrant.Permissions{
+				Publish:   []string{"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS", "$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS"},
+				Subscribe: []string{"_INBOX.>"},
+			},
+			scope:     pubScope,
+			direction: "publish",
+		},
+		"no subscribe entry": {grant: natsgrant.Permissions{Publish: []string{"_INBOX.>"}}, scope: pubScope, direction: "subscribe"},
+	} {
+		got, err := natsgrant.WithinProjects(row.grant, row.scope)
+		require.ErrorContains(t, err, "no "+row.direction+" entry", name)
+		require.Equal(t, natsgrant.Permissions{}, got, name)
+	}
 }
 
 // The order of a scope's lists and a repeat in them change nothing.
@@ -274,6 +332,7 @@ func TestWithinProjectsNamesOnlyItsScope(t *testing.T) {
 		for name, grant := range map[string]natsgrant.Permissions{"Daemon()": natsgrant.Daemon(), "every kind": every} {
 			got, err := natsgrant.WithinProjects(grant, scope)
 			require.NoError(t, err, "%s within %v", name, scope)
+			require.NotEmpty(t, got.Publish, "%s within %v", name, scope)
 			require.NotEmpty(t, got.Subscribe, "%s within %v", name, scope)
 			entry, found := natsgrant.NamesSystemSubject(got)
 			require.False(t, found, "%s within %v names %q", name, scope, entry)
@@ -284,14 +343,17 @@ func TestWithinProjectsNamesOnlyItsScope(t *testing.T) {
 	}
 }
 
+// daemonConsumerName matches the name of a consumer a Legion daemon opens, legion-go-<P>-<kind>,
+// capturing the project and, for a GitHub consumer, its index.
+var daemonConsumerName = regexp.MustCompile(`^legion-go-([A-Z][A-Z0-9]+)-(dispatch|mapping|wake|ready|github-([0-9]+))$`)
+
 // requireInScope fails unless entry reaches only what scope names.
 func requireInScope(t *testing.T, scope natsgrant.Scope, entry string) {
 	t.Helper()
 	subject, _, _ := strings.Cut(entry, " ")
-	consumer := regexp.MustCompile(`^legion-go-([A-Z][A-Z0-9]+)-(dispatch|mapping|wake|ready|github-([0-9]+))$`)
 	ownConsumer := func(name string) {
 		t.Helper()
-		match := consumer.FindStringSubmatch(name)
+		match := daemonConsumerName.FindStringSubmatch(name)
 		require.NotNil(t, match, "%q names consumer %q, which no daemon opens", entry, name)
 		require.Contains(t, scope.Projects, match[1], "%q names another project's consumer", entry)
 		if match[3] != "" {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -109,6 +110,14 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	for _, subject := range []string{"_INBOX.>", natsgrant.InboxPrefix(livePRIVIdentity) + ".>", "notifications.envoy.exceptions.notifications.role.PRIV.*"} {
 		narrowedPub.requireRefused(t, "subscription", subject)
 	}
+	// Both admitted observers must see a body the PRIV predicate accepts before a clean result
+	// means anything. Keep these controls in the final expected set rather than clearing a count.
+	observerControls := []string{"PRIV-inbox-observer-control", "PRIV-role-observer-control"}
+	require.NoError(t, admin.Publish(natsgrant.InboxPrefix(livePUBIdentity)+".observer-control", []byte(observerControls[0])))
+	require.NoError(t, admin.Publish("notifications.envoy.exceptions.notifications.role.PUB.observer-control", []byte(observerControls[1])))
+	require.NoError(t, admin.Flush())
+	require.Eventually(t, func() bool { return narrowedSeen.count() == len(observerControls) }, liveWait, 50*time.Millisecond,
+		"the narrowed connection's own inbox and role observers must detect the PRIV controls")
 
 	// PRIV pulls again, on today's grant (the default inbox) and on its own narrowed grant (its
 	// own prefix).
@@ -174,43 +183,45 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	}
 	require.Equal(t, []string{"PUB-repository"}, repository)
 
-	// What the server refuses the narrowed PUB daemon.
-	refusedCreate := func(config jetstream.ConsumerConfig, subject string) {
+	// What the server refuses the narrowed PUB daemon: each call fails at the client, and the
+	// server reports a publish violation naming the call's subject.
+	refused := func(subject string, call func(ctx context.Context) error) {
 		t.Helper()
 		callCtx, cancel := context.WithTimeout(ctx, liveRefusalWait)
 		defer cancel()
-		_, err := pubJS.CreateOrUpdateConsumer(callCtx, bus.Stream, config)
-		require.Error(t, err, "create %+v", config)
+		require.Error(t, call(callCtx), subject)
 		narrowedPub.requireRefused(t, "publish", subject)
 	}
+	refusedCreate := func(subject string, config jetstream.ConsumerConfig) {
+		t.Helper()
+		refused(subject, func(ctx context.Context) error {
+			_, err := pubJS.CreateOrUpdateConsumer(ctx, bus.Stream, config)
+			return err
+		})
+	}
 	const create = "$JS.API.CONSUMER.CREATE." + bus.Stream + "."
-	refusedCreate(jetstream.ConsumerConfig{Durable: "legion-go-PUB-dispatch", FilterSubject: "notifications.dispatch.issue.PRIV.>", AckPolicy: jetstream.AckExplicitPolicy},
-		create+"legion-go-PUB-dispatch.notifications.dispatch.issue.PRIV.>")
-	refusedCreate(jetstream.ConsumerConfig{Durable: "legion-go-PUB-dispatch", FilterSubjects: []string{"notifications.dispatch.issue.PUB.>", "notifications.dispatch.issue.PRIV.>"}, AckPolicy: jetstream.AckExplicitPolicy},
-		create+"legion-go-PUB-dispatch")
-	refusedCreate(jetstream.ConsumerConfig{Durable: "legion-go-PUB-github-0", FilterSubject: "notifications.github.acme.secret.>", AckPolicy: jetstream.AckExplicitPolicy},
-		create+"legion-go-PUB-github-0.notifications.github.acme.secret.>")
-	{
-		callCtx, cancel := context.WithTimeout(ctx, liveRefusalWait)
-		_, err := pubJS.Stream(callCtx, bus.Stream)
-		cancel()
-		require.Error(t, err, "the stream's info")
-		narrowedPub.requireRefused(t, "publish", "$JS.API.STREAM.INFO."+bus.Stream)
-	}
-	{
-		callCtx, cancel := context.WithTimeout(ctx, liveRefusalWait)
-		_, err := pubJS.Consumer(callCtx, bus.Stream, "legion-go-PRIV-dispatch")
-		cancel()
-		require.Error(t, err, "PRIV's consumer's info")
-		narrowedPub.requireRefused(t, "publish", "$JS.API.CONSUMER.INFO."+bus.Stream+".legion-go-PRIV-dispatch")
-	}
+	refusedCreate(create+"legion-go-PUB-dispatch.notifications.dispatch.issue.PRIV.>",
+		jetstream.ConsumerConfig{Durable: "legion-go-PUB-dispatch", FilterSubject: "notifications.dispatch.issue.PRIV.>", AckPolicy: jetstream.AckExplicitPolicy})
+	refusedCreate(create+"legion-go-PUB-dispatch",
+		jetstream.ConsumerConfig{Durable: "legion-go-PUB-dispatch", FilterSubjects: []string{"notifications.dispatch.issue.PUB.>", "notifications.dispatch.issue.PRIV.>"}, AckPolicy: jetstream.AckExplicitPolicy})
+	refusedCreate(create+"legion-go-PUB-github-0.notifications.github.acme.secret.>",
+		jetstream.ConsumerConfig{Durable: "legion-go-PUB-github-0", FilterSubject: "notifications.github.acme.secret.>", AckPolicy: jetstream.AckExplicitPolicy})
+	refused("$JS.API.STREAM.INFO."+bus.Stream, func(ctx context.Context) error {
+		_, err := pubJS.Stream(ctx, bus.Stream)
+		return err
+	})
+	refused("$JS.API.CONSUMER.INFO."+bus.Stream+".legion-go-PRIV-dispatch", func(ctx context.Context) error {
+		_, err := pubJS.Consumer(ctx, bus.Stream, "legion-go-PRIV-dispatch")
+		return err
+	})
 	for subject, body := range map[string]string{
 		"$JS.API.STREAM.MSG.GET." + bus.Stream:                                 `{"seq":1}`,
 		"$JS.API.CONSUMER.MSG.NEXT." + bus.Stream + ".legion-go-PRIV-dispatch": `{"batch":1,"no_wait":true}`,
 	} {
-		_, err := narrowedPub.conn.Request(subject, []byte(body), liveRefusalWait)
-		require.Error(t, err, subject)
-		narrowedPub.requireRefused(t, "publish", subject)
+		refused(subject, func(ctx context.Context) error {
+			_, err := narrowedPub.conn.RequestWithContext(ctx, subject, []byte(body))
+			return err
+		})
 	}
 
 	// A create whose subject names PUB's filter while its body asks for PRIV's is refused by the
@@ -233,12 +244,20 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	require.Equal(t, 10131, answer.Error.ErrCode, string(reply.Data))
 	t.Logf("a create naming PUB's filter with PRIV's in its body: %s", reply.Data)
 
-	// After all of it the narrowed PUB daemon received none of PRIV's 15 messages, on any
-	// subscription, while the control kept receiving today's PRIV daemon's.
+	// Only the ten PRIV messages pulled after these subscriptions started can be observed here.
+	// Flush waits for a protocol reply, not the asynchronous subscription callbacks; the barrier
+	// must finish those callbacks before the final snapshot can establish that no message leaked.
 	require.NoError(t, narrowedPub.conn.Flush())
-	require.Zero(t, narrowedSeen.count(), "the narrowed PUB daemon received PRIV's messages: %v", narrowedSeen.bodies())
+	callbacksDone := make(chan struct{})
+	require.NoError(t, narrowedPub.conn.Barrier(func() { close(callbacksDone) }))
+	select {
+	case <-callbacksDone:
+	case <-time.After(liveWait):
+		t.Fatal("the narrowed connection's observation callbacks did not finish")
+	}
+	require.ElementsMatch(t, observerControls, narrowedSeen.bodies(), "the narrowed PUB daemon received PRIV's messages")
 	narrowedPub.requireNotRefused(t, "notifications.envoy.exceptions.notifications.role.PUB.*")
-	t.Logf("narrowed: a PUB daemon on WithinProjects(Daemon(), PUB) received 0 of 15 PRIV messages; the control received %d", controlSeen.count())
+	t.Logf("narrowed: a PUB daemon on WithinProjects(Daemon(), PUB) received 0 of 10 PRIV messages pulled while it observed; the control received %d", controlSeen.count())
 
 	// The largest project's grant fits in the answer the server takes: the connection is admitted
 	// and its last GitHub consumer opens on the first repository.
@@ -377,7 +396,7 @@ func (c *liveClient) requireNotRefused(t *testing.T, subject string) {
 func (c *liveClient) reported() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]string(nil), c.violations...)
+	return slices.Clone(c.violations)
 }
 
 // seenPRIV is every message body naming PRIV that one connection's subscriptions received.
@@ -395,7 +414,7 @@ func (s *seenPRIV) count() int {
 func (s *seenPRIV) bodies() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.seen...)
+	return slices.Clone(s.seen)
 }
 
 // countPRIV subscribes conn to each subject and records each message body names reports true for

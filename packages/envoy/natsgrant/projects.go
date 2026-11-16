@@ -1,6 +1,7 @@
 package natsgrant
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -20,7 +21,8 @@ import (
 // Dispatch's project answers) and hands it to WithinProjects with that service's grant.
 type Scope struct {
 	// Projects are project keys (contracts.ProjectKeyPattern). None means the grant names no
-	// project's subject at all.
+	// project's subject at all, so a daemon's grant keeps no publish entry and WithinProjects
+	// refuses it.
 	Projects []string
 	// Repositories are the "owner/name" repositories Dispatch maps to Projects, each mapping's
 	// name and its renamed_to both.
@@ -36,23 +38,26 @@ type Scope struct {
 var inboxPrefixBase = strings.TrimSuffix(nats.InboxPrefix, ".") + "_"
 
 // InboxPrefix is the reply prefix of the client whose credential names identity: "_INBOX_" and
-// identity with each byte outside [A-Za-z0-9_-] written "_", so it is one subject token whatever
-// the identity holds. The client sets it with nats.CustomInboxPrefix from its own credential's
-// identity, and the auth service grants InboxPrefix(identity)+".>" in place of _INBOX.>, so the two
-// ends compute one string from one input. Two identities that differ only in the bytes it writes
-// "_" share a prefix: an operator who lists both for the auth service gives each the other's
-// replies, so the list must not hold two such accounts.
+// identity with each byte outside [A-Za-z0-9-], including '_', escaped as '_' and two lowercase
+// hex digits. It is one subject token and distinct identities have distinct prefixes. The client
+// sets it with nats.CustomInboxPrefix and the auth service grants InboxPrefix(identity)+".>" in
+// place of _INBOX.>; both ends call this function with the identity their credential names.
 func InboxPrefix(identity string) string {
-	prefix := []byte(inboxPrefixBase)
+	const hex = "0123456789abcdef"
+	var prefix strings.Builder
+	prefix.Grow(len(inboxPrefixBase) + 3*len(identity))
+	prefix.WriteString(inboxPrefixBase)
 	for i := range len(identity) {
 		c := identity[i]
-		if 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '_' || c == '-' {
-			prefix = append(prefix, c)
+		if 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '-' {
+			prefix.WriteByte(c)
 		} else {
-			prefix = append(prefix, '_')
+			prefix.WriteByte('_')
+			prefix.WriteByte(hex[c>>4])
+			prefix.WriteByte(hex[c&15])
 		}
 	}
-	return string(prefix)
+	return prefix.String()
 }
 
 // The subjects of Dispatch and the Legion daemon that the daemon's consumers filter on and that
@@ -92,8 +97,8 @@ var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 
 // WithinProjects is grant held to scope: each entry that reaches every project's subjects
 // rewritten to the subjects of scope's projects and repositories, and refused, naming the entry,
-// when it cannot be. The grant handed in is not changed. Per entry, a subscribe entry's queue
-// group kept after the rewritten subject:
+// when it cannot be. The grant handed in is not changed, and a subscribe entry's queue group
+// follows each subject that replaces it. Per entry:
 //
 //   - _INBOX.>, where every client's replies arrive, becomes InboxPrefix(scope.Identity)+".>";
 //   - each family whose names carry the project as a token of their own becomes that family under
@@ -118,6 +123,12 @@ var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 // Refused: a stored-message read of any other stream and a direct get of this one; a consumer
 // create whose subject cannot name a filter; any call on a KV bucket; notifications.>; and every
 // entry not named above, since an entry this function does not know is one it cannot vouch for.
+//
+// A grant that comes out with no publish or no subscribe entry is refused too, naming the
+// direction: nats-server holds a user JWT to nothing in a direction whose allow list is empty
+// (server/accounts.go, buildPermissionsFromJwt), and the auth service writes these lists into the
+// JWT as they are. A daemon's grant held to no project keeps no publish entry, so it is refused
+// rather than answered as a grant that may publish to every subject.
 func WithinProjects(grant Permissions, scope Scope) (Permissions, error) {
 	held, err := newHeldScope(scope)
 	if err != nil {
@@ -131,15 +142,22 @@ func WithinProjects(grant Permissions, scope Scope) (Permissions, error) {
 	if err != nil {
 		return Permissions{}, err
 	}
+	if len(publish) == 0 {
+		return Permissions{}, errors.New("natsgrant: grant held to scope keeps no publish entry, and a NATS user with no publish allow list may publish to every subject")
+	}
+	if len(subscribe) == 0 {
+		return Permissions{}, errors.New("natsgrant: grant held to scope keeps no subscribe entry, and a NATS user with no subscribe allow list may subscribe to every subject")
+	}
 	return Permissions{Publish: publish, Subscribe: subscribe}, nil
 }
 
-// heldScope is a Scope checked and laid out for the rewrite: its projects and repositories sorted
-// with repeats taken out, each repository's subject prefix, and the daemon's consumers under it.
+// heldScope is a Scope checked and laid out for the rewrite: the identity that names its reply
+// prefix, its projects and repositories sorted with repeats taken out, each repository's lane,
+// and the daemon's consumers under it.
 type heldScope struct {
-	scope     Scope
+	identity  string
 	projects  []string
-	repos     []string // each repository's subject prefix, notifications.github.<owner>.<name>
+	repoLanes []string // each repository's events, notifications.github.<owner>.<name>.>
 	consumers []daemonConsumer
 }
 
@@ -163,22 +181,19 @@ func newHeldScope(scope Scope) (heldScope, error) {
 	repositories := slices.Clone(scope.Repositories)
 	slices.Sort(repositories)
 	repositories = slices.Compact(repositories)
-	var repos []string
+	var repoLanes []string
 	for _, repository := range repositories {
 		owner, name, found := strings.Cut(repository, "/")
 		if !found || !repositoryPart(owner) || !repositoryPart(name) {
 			return heldScope{}, fmt.Errorf("natsgrant: scope repository %q is not owner/name", repository)
 		}
-		if prefix := contracts.GithubRepositoryPrefix(owner, name); !slices.Contains(repos, prefix) {
-			repos = append(repos, prefix)
+		// Two repositories can spell one lane (a.b and a_b): the lane is held once.
+		if lane := contracts.GithubRepositoryPrefix(owner, name) + ".>"; !slices.Contains(repoLanes, lane) {
+			repoLanes = append(repoLanes, lane)
 		}
 	}
 
-	held := heldScope{scope: scope, projects: projects, repos: repos}
-	githubFilters := make([]string, len(repos))
-	for i, repo := range repos {
-		githubFilters[i] = repo + ".>"
-	}
+	held := heldScope{identity: scope.Identity, projects: projects, repoLanes: repoLanes}
 	for _, project := range projects {
 		named := func(kind string, filters ...string) daemonConsumer {
 			return daemonConsumer{name: daemonConsumerPrefix + project + "-" + kind, filters: filters}
@@ -189,8 +204,10 @@ func newHeldScope(scope Scope) (heldScope, error) {
 			named("wake", contracts.LegionWakeSubject(strings.ToLower(project))),
 			named("ready", bus.LegionWakeTopic),
 		)
+		// The daemon numbers its own sorted repositories, which need not be the scope's, so each
+		// index below the repository count may open on any lane of the scope.
 		for n := range repositories {
-			held.consumers = append(held.consumers, named("github-"+strconv.Itoa(n), githubFilters...))
+			held.consumers = append(held.consumers, named("github-"+strconv.Itoa(n), repoLanes...))
 		}
 	}
 	return held, nil
@@ -208,6 +225,7 @@ func repositoryPart(part string) bool {
 // entries is each of entries held to the scope (WithinProjects), in order, with no entry twice.
 func (h heldScope) entries(entries []string) ([]string, error) {
 	var out []string
+	seen := make(map[string]struct{})
 	for _, entry := range entries {
 		subject, queue, _ := strings.Cut(strings.TrimSpace(entry), " ")
 		subjects, err := h.subjects(entry, subject)
@@ -218,7 +236,8 @@ func (h heldScope) entries(entries []string) ([]string, error) {
 			if queue != "" {
 				held += " " + queue
 			}
-			if !slices.Contains(out, held) {
+			if _, repeat := seen[held]; !repeat {
+				seen[held] = struct{}{}
 				out = append(out, held)
 			}
 		}
@@ -236,10 +255,10 @@ func (h heldScope) subjects(entry, subject string) ([]string, error) {
 	case isKVCall(subject):
 		return refuse("is a KV bucket's call, which no project's grant holds")
 	case subject == inboxes:
-		if h.scope.Identity == "" {
+		if h.identity == "" {
 			return refuse("needs the scope's identity to name its reply prefix")
 		}
-		return []string{InboxPrefix(h.scope.Identity) + ".>"}, nil
+		return []string{InboxPrefix(h.identity) + ".>"}, nil
 	case subject == streamInfo, subject == streamMsgGet:
 		return nil, nil
 	case strings.HasPrefix(subject, streamMsgGetCall), strings.HasPrefix(subject, directGetCall):
@@ -282,11 +301,7 @@ func (h heldScope) subjects(entry, subject string) ([]string, error) {
 			return contracts.LegionNoticeTopicPrefix + strings.ToLower(project) + ".>"
 		}), nil
 	case subject == githubLanes:
-		repos := make([]string, len(h.repos))
-		for i, repo := range h.repos {
-			repos[i] = repo + ".>"
-		}
-		return repos, nil
+		return h.repoLanes, nil
 	case subject == everyTopic:
 		return refuse("reaches every project's notifications")
 	}
@@ -297,27 +312,19 @@ func (h heldScope) subjects(entry, subject string) ([]string, error) {
 // JetStream API call on its stream (KV_<bucket>), or its watchers' flow control or
 // acknowledgements.
 func isKVCall(subject string) bool {
-	if strings.HasPrefix(subject, kvSubjects) {
+	if strings.HasPrefix(subject, kvSubjects) ||
+		strings.HasPrefix(subject, jsFlow+kvStream) || strings.HasPrefix(subject, jsAck+kvStream) {
 		return true
-	}
-	for _, prefix := range []string{jsFlow, jsAck} {
-		if strings.HasPrefix(subject, prefix+kvStream) {
-			return true
-		}
 	}
 	api, found := strings.CutPrefix(subject, jsAPI)
 	if !found {
 		return false
 	}
-	// A stream call names the stream as its third token (STREAM.INFO.<stream>,
-	// CONSUMER.CREATE.<stream>, DIRECT.GET.<stream>), and STREAM.MSG.GET and CONSUMER.MSG.NEXT as
-	// their fourth.
-	stream := 2
-	if strings.HasPrefix(api, "STREAM.MSG.GET.") || strings.HasPrefix(api, "CONSUMER.MSG.NEXT.") {
-		stream = 3
-	}
-	tokens := strings.Split(api, ".")
-	return len(tokens) > stream && strings.HasPrefix(tokens[stream], kvStream)
+	// The API names a call's stream as its third token (STREAM.INFO.<stream>) or, when its verb is
+	// two tokens, its fourth (STREAM.MSG.GET.<stream>, CONSUMER.DURABLE.CREATE.<stream>.<consumer>),
+	// so a call with any token naming a KV stream is a call on a bucket. No entry WithinProjects
+	// holds has one.
+	return slices.ContainsFunc(strings.Split(api, "."), func(token string) bool { return strings.HasPrefix(token, kvStream) })
 }
 
 // perProject is subject(project) for each project of the scope.
