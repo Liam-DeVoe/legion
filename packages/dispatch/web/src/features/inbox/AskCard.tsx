@@ -63,7 +63,13 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
+import {
+  badgeSelectBadge,
+  badgeSelectOverlay,
+  badgeSelectPageBadge,
+  badgeSelectPageWrapper,
+  badgeSelectWrapper,
+} from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -331,12 +337,19 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
       : waitingOn === ""
         ? `${pagePaneBg} ${pageQuietText}`
         : pageLabelChip;
+  // Inside `NoTooltips` who the ask waits on and who handed it on are values, so each breaks
+  // anywhere and the badge's wrapper narrows to the line rather than keep its width; the select
+  // still covers the badge however many lines it takes (`badgeSelectPageWrapper`, decision 104 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md).
   return (
     <div
       className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${page === null ? textMutedOnSurface : pageQuietText}`}
     >
-      <span className={badgeSelectWrapper}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeTone}`}>
+      <span className={page === null ? badgeSelectWrapper : badgeSelectPageWrapper}>
+        <span
+          aria-hidden="true"
+          className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+        >
           {write.pending
             ? "Handing on…"
             : waitingOn === ""
@@ -378,7 +391,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
         </select>
       </span>
       {handedOnBy === "" || handedOnAt === null ? null : (
-        <span>
+        <span className={page === null ? undefined : "min-w-0 max-w-full [overflow-wrap:anywhere]"}>
           handed on by {handedOnBy} <Timestamp at={handedOnAt} />
         </span>
       )}
@@ -548,6 +561,17 @@ export function AskCard({
       : sessionAuthor === undefined
         ? agentText.label(displayedAsk.author)
         : `${agentText.label(sessionAuthor)} · ${sessionAuthor.id}`;
+  // The asker's name, cut with its tooltip where one is drawn; inside `NoTooltips`, where no
+  // tooltip gives back what an ellipsis cut, it is a value that breaks anywhere instead (decision
+  // 104 of dispatch://INFRA-1196/artifact/part-decisions-md).
+  const askerName = (name: ReactNode) =>
+    tooltips ? (
+      <TruncatedText className="min-w-0" title={askerTitle}>
+        {name}
+      </TruncatedText>
+    ) : (
+      <span className="min-w-0 [overflow-wrap:anywhere]">{name}</span>
+    );
   // The copy handles' values: the title the session stamped, as the clipboard has always had it.
   const sessionTitle = sessionAuthor?.origin?.session_title?.trim();
   const tmuxTarget = sessionAuthor?.origin?.tmux;
@@ -775,7 +799,9 @@ export function AskCard({
               here to copy.
             </p>
             <p
-              className={`mt-1 text-sm whitespace-pre-wrap ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
+              // Inside `NoTooltips` the reader's own words are a value, which breaks anywhere
+              // (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md).
+              className={`mt-1 text-sm whitespace-pre-wrap ${tooltips ? textPrimaryOnSurface : `max-w-full [overflow-wrap:anywhere] ${ON_PAGE.ink}`}`}
             >
               {unsentAnswer}
             </p>
@@ -868,11 +894,17 @@ export function AskCard({
               a margin) the turn takes a line of its own with no separator after it, and the
               asker and time share the next: beside the turn and the live link's 44 px touch box
               the asker's name kept only two letters. A block ask the server indexed with no
-              pending author has an empty label and still says when it was asked. */}
-          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap">
+              pending author has an empty label and still says when it was asked. Inside
+              `NoTooltips` no title gives back what an ellipsis cut, and a name and an instant
+              are values, which wrap there: each name breaks anywhere inside its own part of the
+              group, which still holds its one line, so no separator opens a line there either
+              (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). */}
+          <span
+            className={`flex min-w-0 items-center gap-x-1.5 ${tooltips ? "whitespace-nowrap " : ""}@max-sm:flex-wrap`}
+          >
             {turnHolder === null ? null : (
               <span
-                className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold @max-sm:basis-full ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
+                className={`${turnHolder === "you" ? "shrink-0" : tooltips ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"} font-semibold @max-sm:basis-full ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
                 data-testid={`turn-${displayedAsk.id}`}
               >
                 Waiting on {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
@@ -885,20 +917,21 @@ export function AskCard({
             )}
             <span className="flex min-w-0 items-center gap-x-1.5">
               {sessionAuthor === undefined ? (
-                <TruncatedText className="min-w-0" title={tooltips ? askerTitle : undefined}>
-                  {displayedAsk.author.id === "" ? (
+                askerName(
+                  displayedAsk.author.id === "" ? (
                     "asked"
                   ) : (
                     <AgentName actor={displayedAsk.author} />
-                  )}
-                </TruncatedText>
+                  )
+                )
               ) : (
                 // The asker's button keeps its name and opens the session's copy handles; the
                 // component's live link sits beside it, outside the button. `whitespace-pre`
-                // keeps the space before an attribution suffix, which a flex item would drop.
+                // keeps the space before an attribution suffix, which a flex item would drop;
+                // inside `NoTooltips` `whitespace-pre-wrap` keeps it too, and lets the name wrap.
                 <AgentName
                   actor={sessionAuthor}
-                  className="flex min-w-0 items-center whitespace-pre"
+                  className={`flex min-w-0 items-center ${tooltips ? "whitespace-pre" : "whitespace-pre-wrap"}`}
                   control={(name) => (
                     <button
                       aria-expanded={handlesOpen}
@@ -906,9 +939,7 @@ export function AskCard({
                       onClick={() => setHandlesOpen((open) => !open)}
                       type="button"
                     >
-                      <TruncatedText className="min-w-0" title={tooltips ? askerTitle : undefined}>
-                        {name}
-                      </TruncatedText>
+                      {askerName(name)}
                       <ChevronIcon expanded={handlesOpen} />
                     </button>
                   )}

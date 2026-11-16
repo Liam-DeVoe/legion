@@ -747,6 +747,62 @@ test("at 760 px the header scrolls away and the view row stays at the top of a s
   });
 });
 
+/** The document's `scroll-padding-top`, and against it the summed height of the bands above the
+ *  rows that stay at the top of the screen: the header's identity block and the view row's box,
+ *  each counted only while it is `position: sticky`. */
+async function topPadding(page: Page): Promise<{ padding: string; stays: number }> {
+  return page.evaluate(() => {
+    const bands = new Set<Element>();
+    const block = document.querySelector("[data-identity-block]");
+    if (block !== null) bands.add(block);
+    for (let at = document.querySelector("[data-filter-row]"); at !== null; at = at.parentElement) {
+      if (getComputedStyle(at).position === "sticky") {
+        bands.add(at);
+        break;
+      }
+    }
+    let stays = 0;
+    for (const band of bands) {
+      if (getComputedStyle(band).position === "sticky") {
+        stays += Math.round(band.getBoundingClientRect().height);
+      }
+    }
+    return { padding: getComputedStyle(document.documentElement).scrollPaddingTop, stays };
+  });
+}
+
+// What a scroll brings into view stands below everything that stays at the top of the screen
+// (decision 113 of INFRA-1196's parts): the page scrolls the document, whose
+// `scroll-padding-top` is the height of the bands above the rows that are sticky at that width,
+// the view row at 390 px and the header's identity block, where a part draws it, at 1440 px. A
+// later part's focused row lands by `scrollIntoView`, which reads that padding. With no padding
+// set the row fails at 390 px on "scroll-padding-top is not the height of what stays at 390 px".
+test("the page's scroll padding at the top is the height of what stays above the rows, at 390 and 1440 px", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    for (const width of [390, 1440]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${key}`);
+      if (width === 390) {
+        expect(
+          (await topPadding(page)).stays,
+          "nothing above the rows stays at the top at 390 px"
+        ).toBeGreaterThan(0);
+      }
+      await expect
+        .poll(
+          async () => {
+            const { padding, stays } = await topPadding(page);
+            return padding === `${stays}px` ? "equal" : `${padding} against ${stays}px`;
+          },
+          { message: `scroll-padding-top is not the height of what stays at ${width} px` }
+        )
+        .toBe("equal");
+    }
+  });
+});
+
 // From an address that names a node (`#b-`), a pointer press on Spec and then on Decisions moves
 // to each view's address, one history entry each (decision 93 of INFRA-1196's parts). There, a
 // press whose mousedown took the focus out of the outline closed the body of the outline's row,
