@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1041,6 +1041,134 @@ test("a check's words draw their links from the results read's tree", async () =
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
   } finally {
     view.unmount();
+  }
+});
+
+/** Lays every element out `height` px tall until the answer is called, as
+ *  `NodeRow.drawn.test.tsx` lays a row out: no DOM of a unit test lays anything out, and a
+ *  statement's cut reads the words' own boxes (`CutWords`, through `NodeRow.tsx`'s
+ *  `measureClamp`). */
+function layOut(height: number): () => void {
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get: () => height,
+  });
+  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 600, height)
+  );
+  return () => {
+    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+    else Object.defineProperty(HTMLElement.prototype, "scrollHeight", own);
+    box.mockRestore();
+  };
+}
+
+// Part V's R8: the keyboard alone reaches each control of the view, with Tab in reading order:
+// each chip, the "more" control of a cut statement, each check's words, each link in a check's
+// words, the line of earlier results and, in the opened facts, the copy control of a command.
+// The view passes `tabStops` to G's `CutWords`, `NodeFacts` and `RowText`, so none of them takes
+// its controls out of the tab order. The issue's row comes before the chip All, so the Tab after
+// `t k` reaches the first chip.
+test("each control of the view is a tab stop", async () => {
+  const user = userEvent.setup();
+  const text = "Read [the runbook](https://example.com/runbook) and dispatch://CORE-2 first.";
+  const linked = check({
+    block_id: "c-one",
+    results: [
+      result({ created_at: "2026-11-13T09:00:00Z", id: "earlier" }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "newest" }),
+    ],
+    text,
+  });
+  const plain = passing("c-two");
+  // Sixty words over 400 lines of 24 px: six lines are drawn and 59 words are held back, more
+  // than the twenty a cut must hide, so the statement is cut and draws its "more" control.
+  const long = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
+  const restore = layOut(9600);
+  try {
+    const view = drawBody(
+      [
+        statementNode("r1", long, [
+          { ...checkNode(linked), tree: displayTree(text) },
+          checkNode(plain),
+        ]),
+      ],
+      [linked, plain]
+    );
+    try {
+      // In document order the issue's row, the tree's one tab stop, comes before the chip All.
+      expect(
+        [...view.container.querySelectorAll("[data-verification-issue], [data-verification-chip]")]
+          .slice(0, 2)
+          .map((drawn) =>
+            drawn.hasAttribute("data-verification-issue")
+              ? "issue"
+              : drawn.getAttribute("data-verification-chip")
+          )
+      ).toEqual(["issue", "all"]);
+
+      const chips = [...view.container.querySelectorAll<HTMLElement>("[data-verification-chip]")];
+      expect(chips).toHaveLength(4);
+      const more = view.container.querySelector<HTMLElement>(
+        "[data-verification-card] [data-node-more]"
+      );
+      expect(more?.textContent?.startsWith(CONTROL_LABELS.read_more)).toBe(true);
+      const words = [
+        ...view.container.querySelectorAll<HTMLElement>("[data-verification-check-words]"),
+      ];
+      expect(words).toHaveLength(2);
+
+      // The reader presses the first check's facts open, so they stay drawn wherever the focus
+      // goes next.
+      await user.click(words[0] as Element);
+      act(() => words[0]?.blur());
+      expect(
+        [...view.container.querySelectorAll("[data-verification-check]")].map((row) =>
+          row.getAttribute("aria-expanded")
+        )
+      ).toEqual(["true", "false"]);
+      const links = await waitFor(() => {
+        expect(
+          words[0]?.querySelector('a[href="https://example.com/runbook"]') ?? null
+        ).not.toBeNull();
+        expect(words[0]?.querySelector('a[data-row-reference="dispatch://CORE-2"]')).not.toBeNull();
+        return [
+          ...view.container.querySelectorAll<HTMLElement>("[data-verification-check-words] a"),
+        ];
+      });
+      expect(links).toHaveLength(2);
+      const copies = [
+        ...view.container.querySelectorAll<HTMLElement>(
+          `[aria-label="${CONTROL_LABELS.copy_command}"]`
+        ),
+      ];
+      expect(copies.length).toBeGreaterThan(0);
+      const earlier = [
+        ...view.container.querySelectorAll<HTMLElement>("[data-verification-earlier]"),
+      ];
+      expect(earlier).toHaveLength(1);
+
+      // Each control by its name, so a control out of the tab order is named where it fails.
+      const controls: [string, HTMLElement | null][] = [
+        ...chips.map((chip): [string, HTMLElement] => [
+          `chip ${chip.getAttribute("data-verification-chip")}`,
+          chip,
+        ]),
+        ["more", more],
+        ...words.map((one, at): [string, HTMLElement] => [`words of check ${at + 1}`, one]),
+        ...links.map((link): [string, HTMLElement] => [`link ${link.getAttribute("href")}`, link]),
+        ...copies.map((copy, at): [string, HTMLElement] => [`copy control ${at + 1}`, copy]),
+        ...earlier.map((line): [string, HTMLElement] => ["earlier results", line]),
+      ];
+      expect(controls.map(([name, control]) => [name, control?.tabIndex])).toEqual(
+        controls.map(([name]) => [name, 0])
+      );
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    restore();
   }
 });
 
