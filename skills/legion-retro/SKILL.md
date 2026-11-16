@@ -36,7 +36,9 @@ topic in the `Legion addressing` line of your system prompt, with the command an
 check with no pass standing at the head goes back as step 1 says. A defect you find in the work at
 any other step goes to the architect with its evidence, and you hold your completion until the
 architect answers: while retro holds the phase, `request_backward_move` is yours to make, and your
-`handoff_complete` moves the issue to `merging`, which takes that move from you. End each turn of
+`handoff_complete` moves the issue to `merging`, which takes that move from you. A person's
+request after the sign-off, which the architect sends you, is a requirement of this issue: retro
+moves the issue back for it, to the phase the architect names. End each turn of
 that hold with a WAITING line naming the defect and the architect's answer you wait on. The
 Dispatch message (step 5) is for a finished retro only.
 

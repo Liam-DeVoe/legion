@@ -224,8 +224,9 @@ and decides there, the only gate on such an issue.
   check with no `ci_check` again at the new head, its `--observed` ending
   `forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean`. A search that finds an instance is a failure, not a re-check: record it under `failures` and run a full test round. The
   real-surface verification is not repeated, except in a parent's last round, which the architect
-  or the implementer's forward-merge comment names to you: then run a full test round. Different:
-  a full test round.
+  or the implementer's forward-merge comment names to you, or where a spec or
+  Verification-document version was approved since your results: then run a full test round.
+  Different: a full test round.
 - **The implementer runs `skill://simplify-settled-diff` once per pull request, in its first
   implementing round, after its own results and before it completes that round,
   whatever the diff touches, a docs-only diff included.** The daemon starts no implementing round

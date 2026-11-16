@@ -4,14 +4,9 @@ Part of `skill://legion-worker`. Read it when you are the reviewer submitting a 
 approval, the tester on a look of its closed issue's production check, or the merger merging
 the pull request. Every path it cites is in cybermonklabs/legion.
 
-The order, in full: the tester's evidence green → the reviewer's approval of the head → the
-architect's acceptance, in `accepting` → retro → the merger's merge of the head it read, which
-closes the issue → the production check after the close, which the project's `production_check`
-setting gives to a role or takes away. Every handoff is a record on the Dispatch issue, never a
-commit, so the head that merges carries none. Retro commits nothing (*Retro*, below), so the
-approved head is the head that merges, and no Legion check holds the head that merges to the head
-the review approved in any case: a repository that wants its newest push reviewed says so in its
-own rulesets. A conflict-forced merge goes back to the reviewer for a confirmation or a new round,
+Every handoff is a record on the Dispatch issue, never a
+commit, so the head that merges carries none.
+A conflict-forced merge goes back to the reviewer for a confirmation or a new round,
 as the fingerprint decides (*The reviewer*, below, and
 `skill://legion-worker/references/conflicts-and-rewrites.md`).
 
@@ -109,7 +104,7 @@ as the fingerprint decides (*The reviewer*, below, and
   The daemon's own count in the issue's `mergeWait`, `checkRuns`, is only the runs a CI settlement applied, so a zero there is no evidence of what GitHub holds: read the two lists on GitHub before you act.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   A check carrying `ci_check` is CI's: the one result that `dispatch results` derives from the named run decides it (`skill://legion-worker/references/ci-checks.md`). While that run has not concluded, wait for it by its name, and do not approve or request changes for that check. Wait the same way where GitHub could not be read. When no run of that name answers after the head's checks settle, tell the architect as a finding and request no changes for it.
-  A check whose `run` is a whole test suite has wrong words, which the architect rewrites: tell the architect as a finding, wait for the rewrite with a `WAITING` line naming it, and request no changes for it.
+  A check whose `run` is a whole test suite and has no pass standing at the head has wrong words, which the architect rewrites: tell the architect as a finding, wait for the rewrite with a `WAITING` line naming it, and request no changes for it. One that has a pass standing at the head is a finding for the architect too, and its pass decides the check, so the review goes on.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
   A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head; which head proves which check is *An issue is proved by its own checks* in `skill://legion-worker/references/pr-body.md`.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
@@ -168,9 +163,11 @@ as the fingerprint decides (*The reviewer*, below, and
   Any other line, `Dispatch at … is unreachable` or another refusal (in a script `dispatch` prints its refusal on standard output, which the loop prints as it leaves), is Dispatch not answering, never "no handoff": run it again, and while it does not answer there is no head to take the fingerprint at, which is a new round.
   A body that names more than one such SHA and does not say which it read, or names none, leaves no head to take the fingerprint at, which is a new round.
   Equal and that review was
-  `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
-  and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass. Equal and
-  that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
+  `APPROVE`: a spec version approved since that review makes this a full round, as a parent's
+  last round is; otherwise submit one more `APPROVE` naming the new head by SHA, its body naming
+  both SHAs and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass,
+  but the goal check and the red team run once, and it carries no verdict it cannot read. Equal
+  and that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
   nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
   one review.
 - Answer every thread you opened, and every thread a bot opened that is none of Legion's role

@@ -177,8 +177,9 @@ with the destination and pushes it (the procedure in
 `skill://legion-worker/references/conflicts-and-rewrites.md`), posting the before and after
 fingerprints; the tester re-runs the bare gates only and the class search of every earlier
 round's findings at the new head; the reviewer approves the new head by SHA, or continues its
-round if it had not approved; the daemon carries the issue through your acceptance and retro to
-the merger's merge.
+round if it had not approved; a spec version approved since, or for the tester a
+Verification-document one, makes either a full round; the daemon carries the issue through your
+acceptance and retro to the merger's merge.
 
 ## A review thread GitHub will not resolve
 
