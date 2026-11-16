@@ -152,6 +152,9 @@ describe("postSlackReply", () => {
     );
     await expect(failure).rejects.toThrow("nothing was posted");
     await expect(failure).rejects.toThrow("agent-secrets: request req-1 is still waiting");
+    await expect(failure).rejects.toThrow(
+      "do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds"
+    );
     expect(slack.calls).toEqual([]);
   });
 
@@ -168,12 +171,21 @@ describe("postSlackReply", () => {
     expect(slack.calls).toEqual([]);
   });
 
+  // A session outside a Legion pod is denied the Legion app's token, and it must not then post the
+  // reply through another Slack tool, which posts as the person whose Slack login it holds
+  // (dispatch://INFRA-810/ask/3cb6e199-a3c1-413d-93b6-6fb6a5122a17).
   test("a denied grant posts nothing and names the broker's state", async () => {
     const slack = fakeSlack({ ok: true, ts: "1.2" });
     const { env } = brokerEnvironment("denied", slack.url);
 
-    await expect(postSlackReply(reply, { env })).rejects.toThrow(
+    const failure = postSlackReply(reply, { env });
+
+    await expect(failure).rejects.toThrow(
       "the secrets broker denied LEGION_SLACK_BOT_TOKEN (agent-secrets: request req-1 was denied); nothing was posted"
+    );
+    await expect(failure).rejects.toThrow("only a Legion pod's session may post as the Legion app");
+    await expect(failure).rejects.toThrow(
+      "do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds"
     );
     expect(slack.calls).toEqual([]);
   });
@@ -197,8 +209,13 @@ describe("postSlackReply", () => {
     const slack = fakeSlack({ ok: true, ts: "1.2" });
     const { env } = brokerEnvironment("unenrolled", slack.url);
 
-    await expect(postSlackReply(reply, { env })).rejects.toThrow(
+    const failure = postSlackReply(reply, { env });
+
+    await expect(failure).rejects.toThrow(
       "the secrets broker did not release LEGION_SLACK_BOT_TOKEN (agent-secrets: AGENT_SECRETS_URL is required); nothing was posted"
+    );
+    await expect(failure).rejects.toThrow(
+      "do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds"
     );
     expect(slack.calls).toEqual([]);
   });
@@ -383,8 +400,13 @@ describe("postSlackReply", () => {
   test("a session without the broker's client says so and posts nothing", async () => {
     const env = { PATH: makeDirectory("empty") };
 
-    await expect(postSlackReply(reply, { env })).rejects.toThrow(
+    const failure = postSlackReply(reply, { env });
+
+    await expect(failure).rejects.toThrow(
       "agent-secrets is not on PATH: slack_post takes the bot token from the secrets broker, which this session is not enrolled with; nothing was posted"
+    );
+    await expect(failure).rejects.toThrow(
+      "do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds"
     );
   });
 

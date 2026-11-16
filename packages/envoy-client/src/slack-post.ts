@@ -182,6 +182,13 @@ interface PosterLine {
 const MAY_HAVE_POSTED =
   "the reply may have been posted, and posting it again may put it in the thread twice";
 
+/** Ends each broker refusal that posts nothing. The tool itself never falls back, but three agent
+ * sessions the broker refused this token each sent the same reply within 20 s through another
+ * Slack tool, which posted it as the person whose Slack login that tool held
+ * (dispatch://INFRA-810/ask/3cb6e199-a3c1-413d-93b6-6fb6a5122a17). */
+const NO_PERSON_REPOST =
+  "do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds";
+
 /** The secrets client's final line before it execs the poster. Once this has appeared, the poster
  * owns every later stderr byte and a missing answer may follow a Slack post; never describe that
  * as a broker refusal or quote those later bytes. */
@@ -300,7 +307,7 @@ function insideCluster(host: string, dispatchHost: string | undefined, fromUrl: 
  * thread. A reply linking an address inside the cluster (linkInsideCluster) is refused before
  * anything is asked, since nobody in Slack can open it. A broker that has not granted
  * LEGION_SLACK_BOT_TOKEN (pending approval, denied, or any other refusal) posts nothing, and the
- * error names the state and quotes the client.
+ * error names the state, quotes the client and ends with NO_PERSON_REPOST.
  */
 export async function postSlackReply(
   reply: SlackReply,
@@ -323,7 +330,7 @@ export async function postSlackReply(
   const client = Bun.which("agent-secrets", { PATH: searchPath });
   if (client === null) {
     throw new Error(
-      "agent-secrets is not on PATH: slack_post takes the bot token from the secrets broker, which this session is not enrolled with; nothing was posted"
+      `agent-secrets is not on PATH: slack_post takes the bot token from the secrets broker, which this session is not enrolled with; nothing was posted; ${NO_PERSON_REPOST}`
     );
   }
   const reason = `slack_post: reply in Slack channel ${reply.channel}, thread ${reply.threadTs}`;
@@ -365,16 +372,19 @@ export async function postSlackReply(
     if (injectedAt < 0 && beforeInjection.startsWith("agent-secrets:")) {
       if (code === 75) {
         throw new Error(
-          `the secrets broker has not granted ${SLACK_BOT_TOKEN_SECRET}: its request is waiting for approval (${beforeInjection}); nothing was posted`
+          `the secrets broker has not granted ${SLACK_BOT_TOKEN_SECRET}: its request is waiting for approval (${beforeInjection}); nothing was posted; ${NO_PERSON_REPOST}`
         );
       }
+      // The token is an agent secret the Legion daemon service owns, which the broker grants only
+      // to the pods that service enrolls, so a denial is final everywhere else
+      // (dispatch://INFRA-810/ask/3cb6e199-a3c1-413d-93b6-6fb6a5122a17 keeps it with the pods).
       if (code === 77) {
         throw new Error(
-          `the secrets broker denied ${SLACK_BOT_TOKEN_SECRET} (${beforeInjection}); nothing was posted`
+          `the secrets broker denied ${SLACK_BOT_TOKEN_SECRET} (${beforeInjection}); nothing was posted; only a Legion pod's session may post as the Legion app; ${NO_PERSON_REPOST}`
         );
       }
       throw new Error(
-        `the secrets broker did not release ${SLACK_BOT_TOKEN_SECRET} (${beforeInjection}); nothing was posted`
+        `the secrets broker did not release ${SLACK_BOT_TOKEN_SECRET} (${beforeInjection}); nothing was posted; ${NO_PERSON_REPOST}`
       );
     }
     // The poster prints a line whatever happens, so a poster with none died before it could.
