@@ -10,4 +10,7 @@ body: |-
   and `POST /v1/roles/set` keep a name given in the old form as written and answer it with a
   warning naming the new form; `envoy_listener_legacy_subjects_total{kind}` counts each old-form
   name registered, claimed, or read back from a stored row into a filter. Nothing is published in
-  the new form yet, and nothing is refused for the old one.
+  the new form yet, and nothing is refused for the old one. A role named in the new form under a
+  project its role does not work for (`PRIV.legion-zz-controller`) is refused with 400, as every
+  dotted role was before. Dispatch's subscriber list and its removal count a session that follows
+  an issue in either form, and an unsubscribe answers every form it took out of the record.
