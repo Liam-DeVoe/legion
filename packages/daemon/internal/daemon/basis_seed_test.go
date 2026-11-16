@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -34,19 +36,33 @@ var (
 	basisSeedApprovedAt = time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
 )
 
-// basisDispatch is outboxDispatch with each document's own approval and reviews, by document id.
+// basisDispatch is outboxDispatch with each document's own approval and reviews, by document id,
+// the issue each document belongs to, which the approval read names, and each issue as Dispatch
+// shows it, by key.
 type basisDispatch struct {
 	outboxDispatch
 	approvals map[string]dispatch.Approval
 	reviews   map[string][]dispatch.Review
+	owners    map[string]string
+	issues    map[string]dispatch.Issue
 }
 
 func (d *basisDispatch) Approval(_ context.Context, artifactID string) (dispatch.Approval, error) {
-	return d.approvals[artifactID], nil
+	approval := d.approvals[artifactID]
+	approval.IssueKey = cmp.Or(approval.IssueKey, d.owners[artifactID])
+	return approval, nil
 }
 
 func (d *basisDispatch) Reviews(_ context.Context, artifactID string) ([]dispatch.Review, error) {
 	return d.reviews[artifactID], nil
+}
+
+func (d *basisDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
+	issue, ok := d.issues[key]
+	if !ok {
+		return dispatch.Issue{}, fmt.Errorf("Dispatch has no issue %s", key)
+	}
+	return issue, nil
 }
 
 // basisSeedRig is the outbox of one daemon over a store holding the root, admitted in its own
@@ -65,7 +81,9 @@ func newBasisSeedRig(t *testing.T) *basisSeedRig {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	client := &basisDispatch{approvals: map[string]dispatch.Approval{}, reviews: map[string][]dispatch.Review{}}
+	client := &basisDispatch{approvals: map[string]dispatch.Approval{}, reviews: map[string][]dispatch.Review{},
+		owners: map[string]string{basisSeedDoc: basisSeedAncestor, basisSeedRootDoc: basisSeedRoot},
+		issues: map[string]dispatch.Issue{basisSeedAncestor: {Key: basisSeedAncestor, Status: "in_progress", Labels: []string{dispatch.LegionLabel}}}}
 	rig := &basisSeedRig{t: t, pool: pool, records: records, client: client,
 		runner: &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, handlers: []intake.Handler{engine}, now: time.Now}}
 	for _, issue := range []record.Issue{
@@ -165,28 +183,37 @@ func basisSeedPending(generation uint64) record.PendingBasisSeed {
 // on, and applies what it finds as the events it missed would have: the person's approval opens
 // the step; their approval and then a changes request on that version opens it and passes the
 // changes request on to both architects; a changes request, a newer version or the request closed
-// with no approval ends the wait; a request still waiting changes nothing. Each changes request
-// names the reason the review list gives it, also where a newer version leaves the document's
-// approval showing none. A read for another generation changes nothing, and the same read again
-// is told nothing new.
+// with no approval ends the wait; a request still waiting changes nothing. The person's approval
+// opens no step on an ancestor that Dispatch shows accepted or without the legion label, which
+// the seed reads of the ancestor's issue as register_gate reads it: the wait ends instead. Each
+// changes request names the reason the review list gives it, also where a newer version leaves the
+// document's approval showing none. A read for another generation changes nothing, and the same
+// read again is told nothing new.
 func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 	approvedAt, sentBackAt := basisSeedApprovedAt.Add(24*time.Hour), basisSeedApprovedAt.Add(25*time.Hour)
 	approved := dispatch.Review{Version: 4, State: "approved", Kind: "person", Actor: basisSeedPerson, At: approvedAt, AskID: "ask-100"}
 	sentBack := dispatch.Review{Version: 4, State: "changes_requested", Kind: "person", Actor: basisSeedPerson, At: sentBackAt, Reason: "name the rollback path"}
 	reason := "name the rollback path"
 	changesEnded := `user:alice requested changes on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec): "name the rollback path".`
+	approvedRead := dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: approvedAt, Seq: 60, By: basisSeedPerson}
 	for _, tc := range []struct {
 		name       string
 		approval   dispatch.Approval
 		reviews    []dispatch.Review
+		ancestor   *dispatch.Issue
 		generation uint64
 		open       bool
 		pending    bool
 		ended      string
 		asked      int
 	}{
-		{name: "approved by the person", approval: dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: approvedAt, Seq: 60, By: basisSeedPerson},
-			reviews: []dispatch.Review{approved}, open: true},
+		{name: "approved by the person", approval: approvedRead, reviews: []dispatch.Review{approved}, open: true},
+		{name: "approved by the person, with the ancestor done", approval: approvedRead, reviews: []dispatch.Review{approved},
+			ancestor: &dispatch.Issue{Key: basisSeedAncestor, Status: "done", Labels: []string{dispatch.LegionLabel}},
+			ended:    "Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
+		{name: "approved by the person, with the ancestor no longer labelled", approval: approvedRead, reviews: []dispatch.Review{approved},
+			ancestor: &dispatch.Issue{Key: basisSeedAncestor, Status: "in_progress", Labels: []string{"infra"}},
+			ended:    "LEGION-100 no longer carries the legion label."},
 		{name: "approved and then sent back", approval: dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4), Reason: &reason,
 			At: sentBackAt, Seq: 61, By: basisSeedPerson}, reviews: []dispatch.Review{sentBack, approved}, open: true, asked: 1},
 		{name: "approved, sent back, and then a newer version", approval: dispatch.Approval{State: "draft", LatestVersion: 5},
@@ -198,13 +225,15 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 		{name: "the request closed with no approval", approval: dispatch.Approval{State: "draft", LatestVersion: 4},
 			ended: "Dispatch shows approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) closed with no approval"},
 		{name: "still waiting", approval: dispatch.Approval{State: "awaiting", LatestVersion: 4, AskID: "ask-100", WaitingOn: "human"}, pending: true},
-		{name: "another generation", approval: dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: approvedAt, Seq: 60, By: basisSeedPerson},
-			reviews: []dispatch.Review{approved}, generation: 2, pending: true},
+		{name: "another generation", approval: approvedRead, reviews: []dispatch.Review{approved}, generation: 2, pending: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newBasisSeedRig(t)
 			rig.pendingOnBasis(basisSeedRoot, basisSeedRootDoc)
 			rig.client.approvals[basisSeedDoc], rig.client.reviews[basisSeedDoc] = tc.approval, tc.reviews
+			if tc.ancestor != nil {
+				rig.client.issues[basisSeedAncestor] = *tc.ancestor
+			}
 			generation := max(tc.generation, 1)
 
 			rig.execute(basisSeedPending(generation))

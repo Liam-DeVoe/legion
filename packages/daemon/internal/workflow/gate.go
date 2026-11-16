@@ -70,9 +70,13 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // A registration on a basis (fact.Basis, dispatch://INFRA-3320 R1 to R3) rests the step on an
 // ancestor's approval rather than on a person's approval of the root's own document, which
 // register_gate found absent at this version, with no changes request as the newest review: what
-// that read shows of the root's own document opens and closes nothing here. The engine stamps the
-// basis with its own time of the registration (registeredBasis). An approved basis writes the row
-// open (record.OpenOnBasis), so the tree starts as after a person's approval at that version, and
+// that read shows of the root's own document opens and closes nothing here. register_gate read the
+// ancestor outside any transaction, so the registration reads it again here before it writes
+// anything (acceptedBasis): an ancestor accepted since, by a sign-off this fact's lock ordered
+// before it, refuses the registration as register_gate refuses one, recording nothing. The engine
+// stamps the basis with its own time of the registration, or keeps the first one's where the step
+// already stands on that basis (registeredBasis). An approved basis writes the row open
+// (record.OpenOnBasis), so the tree starts as after a person's approval at that version, and
 // answers a root waiting on that gate as such an approval does; a pending one writes it closed on
 // the ancestor's open request (record.PendOnBasis) and declares no hand-back, so the root keeps
 // its slot, its phase and any wait it holds. What each tells, and to whom, is
@@ -83,6 +87,9 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	if refusal, accepted, err := e.acceptedBasis(ctx, tx, fact); err != nil || accepted {
+		return refusal, err
 	}
 	request, err := e.mirrorRegisteredRequest(ctx, tx, *issue, fact)
 	if err != nil {
@@ -113,7 +120,6 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if err := e.recordViewOf(ctx, tx, issue, step, fact.ViewOf); err != nil {
 		return intake.Result{}, err
 	}
-	basis := e.registeredBasis(fact, ungated)
 	// The version the gate is registered at is the newest either side knows of: the caller's, or
 	// Dispatch's latest as register_gate's read found it (register_gate refuses a caller's version
 	// above Dispatch's). A same-document registration older than the gate's newest observation (a
@@ -137,6 +143,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 			"artifact", fact.ArtifactID, "version", version, "open", classify.DesignGateOpen(*stored), "since_seq", fact.Since.Seq)
 		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation})
 	}
+	basis := e.registeredBasis(fact, ungated, stored, version)
 	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version}
 	// An approval of an older version the gate of this document holds is kept, as a version event
 	// keeps it (classify.ApplyDesignGateEvent): a late changes request it answered stays answered.

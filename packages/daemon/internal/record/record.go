@@ -1253,13 +1253,24 @@ type DesignGate struct {
 	// did not approve. It is what the step falls back to when the basis ends (CloseBasis), and nil
 	// whenever no basis stands.
 	KeptPerson *PersonApproval
-	// RestsOn is the ancestor a basis first opened this step on in this generation, "" for a step
-	// no basis has opened: the ancestor's sign-off waits on the issue from then until the
-	// generation ends, whether the step is open or closed later (R8). Only a re-admission takes
-	// it away, by clearing the generation's rows, and Store.PutGate keeps the first one written.
-	// A step pending on an ancestor rests on that ancestor through its basis instead, and stops
-	// resting on it when the wait ends without opening (RestsOnIssue).
-	RestsOn string
+	// RestsOn is every ancestor a basis has opened this step on in this generation, in the order
+	// the bases first opened it, nil for a step no basis has opened: each ancestor's sign-off waits
+	// on the issue from then until the generation ends, whether the step is open or closed later
+	// (R8), so a root that rests on a far ancestor and then registers on a nearer one rests on
+	// both. Only a re-admission takes them away, by clearing the generation's rows, and
+	// Store.PutGate keeps each one written. A step pending on an ancestor rests on that ancestor
+	// through its basis instead, and stops resting on it when the wait ends without opening
+	// (RestsOnIssue).
+	RestsOn []string
+	// BasisChanges is how many times the step's basis has changed in this generation: a basis set
+	// on a step that had none, a change of the ancestor, its document, the version or the request a
+	// pending basis waits on (an opening on the person's answer included), and the end of a basis.
+	// Store.PutGate counts each write that makes such a change and no other, and a write never sets
+	// it; a re-admission clears it with the generation's rows. It is the row's own reading of
+	// whether its basis has moved, which a register_gate fact's id names (api's gateRegister), so a
+	// call made again over a step whose basis a registration moved since is a fact of its own, and
+	// one made again over a step whose basis its first attempt left as it was is not.
+	BasisChanges int
 }
 
 // GateBasis is an ancestor's approval that a step of a root stands open on, or the ancestor's
@@ -1286,8 +1297,10 @@ type GateBasis struct {
 	Reason  string
 	Session string
 	// RegisteredAt is the daemon's own time of the registration: the moment the waiting line
-	// takes for a step a basis opened (TreeGate.OpenedAt). It is never zero (Store.PutGate refuses
-	// a basis without it).
+	// takes for a step a basis opened (TreeGate.OpenedAt). A registration of the same step again on
+	// the same basis, standing open or pending on the same request at the same version, keeps the
+	// first one's time, so that moment does not move (workflow's registeredBasis). It is never zero
+	// (Store.PutGate refuses a basis without it).
 	RegisteredAt time.Time
 	// Pending is the open approval request the step waits on, nil for a basis that stands.
 	Pending *PendingBasis

@@ -3,6 +3,7 @@ package workflow
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -119,7 +120,7 @@ func TestARegistrationOnAnApprovedBasisOpensTheStepAndRecordsIt(t *testing.T) {
 	gates := gatesOf(t, pool, gatedRoot)
 	gate := gates[record.DesignStepSpec]
 	if !gate.OnBasis() || !record.GateOpen(gate) || *gate.ApprovedVersion != 4 || gate.ApprovedMark != (record.EventMark{}) ||
-		gate.KeptPerson != nil || gate.RestsOn != basisAncestor {
+		gate.KeptPerson != nil || !slices.Equal(gate.RestsOn, []string{basisAncestor}) {
 		t.Fatalf("the spec step = %#v, want it open at version 4 on the basis, resting on %s, with no person's approval", gate, basisAncestor)
 	}
 	basis := gate.Basis
@@ -173,6 +174,79 @@ func TestARegistrationOnAnApprovedBasisOpensTheStepAndRecordsIt(t *testing.T) {
 	}
 }
 
+// A registration of the same step on the same basis again keeps the moment the step first opened
+// (R2): the basis keeps the daemon's time of the first registration, and so the waiting line's
+// moment for the tree (record.TreeGate.OpenedAt) does not move when the architect registers the
+// open step again, at a later sequence and a later time of the daemon's clock. The same holds for a
+// step that waits on the same request of the ancestor.
+func TestARegistrationOfAnOpenBasisStepAgainKeepsTheMomentItOpened(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		basis func() *record.GateBasis
+	}{
+		{"a step open on the basis", approvedBasis},
+		{"a step pending on the basis", pendingBasis},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := applyFacts(t, pool, engine)
+			seedGatedTree(t, pool)
+			seedLiveAncestor(t, pool)
+
+			apply("register-on-basis", onBasis(tc.basis(), 6))
+			later := basisEngineNow.Add(3 * time.Hour)
+			engine.cfg.Clock = func() time.Time { return later }
+			apply("register-on-basis-again", onBasis(tc.basis(), 7))
+
+			gates := gatesOf(t, pool, gatedRoot)
+			if got := gates[record.DesignStepSpec].Basis; got == nil || !got.RegisteredAt.Equal(basisEngineNow) {
+				t.Fatalf("the basis after the registration again = %#v, want it registered at the first registration's time %s", got, basisEngineNow)
+			}
+			if tree := (record.TreeGate{Steps: engine.cfg.Steps, Rows: gates}); tree.Open() && !tree.OpenedAt().Equal(basisEngineNow) {
+				t.Fatalf("the tree's gate opened at %s after the registration again, want the first registration's time %s", tree.OpenedAt(), basisEngineNow)
+			}
+		})
+	}
+}
+
+// register_gate reads the ancestor not accepted and builds its fact outside any transaction, so
+// the ancestor's sign-off can commit between that read and the registration's commit. The
+// registration reads the ancestor again in its own transaction, under the lock every fact applies
+// under (intake.SerializeFacts) and so in one order with the sign-off's read of the roots that rest
+// on the ancestor, finds it accepted, and is refused as register_gate refuses an accepted
+// ancestor: nothing is recorded, no gate row, no mirrored request, no view fact and no outbox row,
+// and its event is left unmarked, so a call made again is judged afresh. The other order is
+// TestRestingRootsHoldTheAncestorSignOff's: the registration first, and the sign-off refused while
+// the root rests on the ancestor.
+func TestARegistrationOnAnAncestorAcceptedSinceItsReadIsRefused(t *testing.T) {
+	pool := migratedPool(t)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	seedGatedTree(t, pool)
+	seedAcceptingAncestor(t, pool)
+	if result := signOffNow(t, pool, "signoff", basisAncestor); result.Refusal != nil {
+		t.Fatalf("the ancestor's sign-off = %+v, want it accepted", result.Refusal)
+	}
+
+	refusedWith(t, apply("register-on-basis", onBasis(restingBasis(), 6)), "BASIS_ACCEPTED", basisAncestor, "retro")
+
+	if gates := gatesOf(t, pool, gatedRoot); len(gates) != 0 {
+		t.Fatalf("the root's gates = %#v, want none: the refused registration records nothing", gates)
+	}
+	var asks, rows, marked int
+	if err := pool.QueryRow(t.Context(), `select (select count(*) from root_asks where issue = $1), (select count(*) from outbox where issue = $1),
+		(select count(*) from processed_events where event_id = 'register-on-basis')`, gatedRoot).Scan(&asks, &rows, &marked); err != nil {
+		t.Fatalf("read what the refused registration left: %v", err)
+	}
+	if asks != 0 || rows != 0 || marked != 0 {
+		t.Fatalf("the refused registration left %d mirrored requests, %d outbox rows and %d marked events, want none", asks, rows, marked)
+	}
+	if got := recordedRoot(t, pool).ViewOf; got != "" {
+		t.Fatalf("the root's view fact = %q, want none written", got)
+	}
+}
+
 // A registration on the ancestor's open approval request leaves the step closed and pending on that
 // request, declares no hand-back although the root's own request is open on the person, and keeps
 // the root at admitted in its slot. It queues the pending-basis seed and the resting-root notice of
@@ -188,7 +262,7 @@ func TestARegistrationOnAPendingBasisLeavesTheStepClosed(t *testing.T) {
 
 	gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
 	if !gate.PendingOnBasis() || record.GateOpen(gate) || gate.Basis.Pending.Ask != "ask-100" || gate.Basis.Version != 4 ||
-		!gate.Basis.RegisteredAt.Equal(basisEngineNow) || gate.RestsOn != "" || !gate.RestsOnIssue(basisAncestor) {
+		!gate.Basis.RegisteredAt.Equal(basisEngineNow) || gate.RestsOn != nil || !gate.RestsOnIssue(basisAncestor) {
 		t.Fatalf("the spec step = %#v, want it closed, pending on ask-100 of version 4 and resting on %s through it", gate, basisAncestor)
 	}
 	root := recordedRoot(t, pool)
@@ -313,11 +387,11 @@ func TestARegistrationWithNoBasisAfterABasisLeavesNoneBehind(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		basis   *record.GateBasis
-		restsOn string
+		restsOn []string
 		resting int
 	}{
-		{"after an approved basis", approvedBasis(), basisAncestor, 1},
-		{"after a pending basis", pendingBasis(), "", 2},
+		{"after an approved basis", approvedBasis(), []string{basisAncestor}, 1},
+		{"after a pending basis", pendingBasis(), nil, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -333,7 +407,7 @@ func TestARegistrationWithNoBasisAfterABasisLeavesNoneBehind(t *testing.T) {
 
 			gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
 			if gate.Basis != nil || gate.KeptPerson != nil || record.GateOpen(gate) || gate.ApprovedVersion != nil || gate.LatestVersion != 4 ||
-				gate.RestsOn != tc.restsOn || gate.RestsOnIssue(basisAncestor) != (tc.restsOn != "") {
+				!slices.Equal(gate.RestsOn, tc.restsOn) || gate.RestsOnIssue(basisAncestor) != (tc.restsOn != nil) {
 				t.Fatalf("the spec step = %#v, want it closed at version 4 with no basis, resting on %q", gate, tc.restsOn)
 			}
 			resting := noticesOfKind(t, pool, basisAncestor, "resting-root")

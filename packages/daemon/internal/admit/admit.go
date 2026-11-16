@@ -1452,16 +1452,16 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 //     person's approval it keeps apart, and the ancestor it rests on, so key reads the step as open
 //     on that basis, and the ancestor's sign-off waits for key as it waited for the old root. A
 //     basis is only on an ancestor that is not accepted (R1), so where the ancestor is done or
-//     accepted (ancestorAccepted), no row comes: key's catch-up reports the step unregistered, and
-//     its architect registers key's own document for it.
+//     accepted (record.BasisAcceptance), no row comes: key's catch-up reports the step
+//     unregistered, and its architect registers key's own document for it.
 //   - A step that waits on an ancestor's open approval request (PendingOnBasis) arrives closed and
 //     registered on the old root's document with no basis (record.EndPendingBasis): the wait was
 //     the old root's registration on one request, and key's architect registers again.
 //   - Every other step arrives as the old root held it, open on a person's approval or closed.
 //
-// key rests on an ancestor from then on as the old root did (record.DesignGate.RestsOn): the old
-// root rests on the ancestor a basis first opened the step on until its generation ends, open or
-// closed later, and so does the step it carries, but only while that ancestor is neither done nor
+// key rests on each ancestor the old root rested on from then on (record.DesignGate.RestsOn): the
+// old root rests on every ancestor a basis opened the step on until its generation ends, open or
+// closed later, and so does the step it carries, but only on each that is neither done nor
 // accepted. A rest on an ancestor that is either does not come with the step, which still comes
 // as above.
 func (a *Admission) carriedGate(ctx context.Context, tx pgx.Tx, key string, gate record.DesignGate) (*record.DesignGate, error) {
@@ -1469,7 +1469,7 @@ func (a *Admission) carriedGate(ctx context.Context, tx pgx.Tx, key string, gate
 	standing := ""
 	if gate.OnBasis() {
 		standing = gate.Basis.Issue
-		accepted, err := a.ancestorAccepted(ctx, tx, standing)
+		accepted, err := record.BasisAcceptance(ctx, a.store, tx, standing)
 		if err != nil {
 			return nil, err
 		}
@@ -1480,42 +1480,23 @@ func (a *Admission) carriedGate(ctx context.Context, tx pgx.Tx, key string, gate
 		}
 	}
 	gate = record.EndPendingBasis(gate)
-	if gate.RestsOn != "" && gate.RestsOn != standing {
-		accepted, err := a.ancestorAccepted(ctx, tx, gate.RestsOn)
-		if err != nil {
-			return nil, err
+	var rests []string
+	for _, ancestor := range gate.RestsOn {
+		if ancestor != standing {
+			accepted, err := record.BasisAcceptance(ctx, a.store, tx, ancestor)
+			if err != nil {
+				return nil, err
+			}
+			if accepted != "" {
+				a.log.Info("admission carry: no rest on an accepted ancestor", "issue", key, "step", gate.Step.OrSpec(),
+					"ancestor", ancestor, "accepted", accepted)
+				continue
+			}
 		}
-		if accepted != "" {
-			a.log.Info("admission carry: no rest on an accepted ancestor", "issue", key, "step", gate.Step.OrSpec(),
-				"ancestor", gate.RestsOn, "accepted", accepted)
-			gate.RestsOn = ""
-		}
+		rests = append(rests, ancestor)
 	}
+	gate.RestsOn = rests
 	return &gate, nil
-}
-
-// ancestorAccepted says why ancestor no longer meets R1's first condition for a basis, as
-// register_gate reads it, or "" where it still does: the daemon's mirror of Dispatch shows it done
-// or retro, or the daemon records it in retro or merging (record.Accepted). Where neither the
-// mirror nor the record knows the ancestor, nothing the daemon holds says that it is accepted.
-func (a *Admission) ancestorAccepted(ctx context.Context, tx pgx.Tx, ancestor string) (string, error) {
-	mirrored, err := a.store.DispatchIssuesOf(ctx, tx, []string{ancestor})
-	if err != nil {
-		return "", fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", ancestor, err)
-	}
-	for _, row := range mirrored {
-		if row.Key == ancestor && (row.Status == record.DoneStatus || row.Status == "retro") {
-			return "Dispatch shows it " + row.Status, nil
-		}
-	}
-	recorded, err := a.store.Issue(ctx, tx, ancestor)
-	if err != nil {
-		return "", fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
-	}
-	if recorded != nil && record.Accepted(*recorded) {
-		return "the daemon records it in " + string(record.StandsAt(*recorded)), nil
-	}
-	return "", nil
 }
 
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the

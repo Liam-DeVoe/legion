@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -76,9 +77,8 @@ func TestABasisOpeningTakesTheRegistrationsMomentInTheLine(t *testing.T) {
 
 // The transitions keep a person's approval apart while a basis stands, and fall back to it, or
 // to none, never to the version the basis opened (R2, R3). A step a person's approval holds open
-// at its latest version stays on that approval. The ancestor a basis first opened the step on is
-// the one it rests on for the generation, and a pending wait rests on its ancestor only while it
-// waits.
+// at its latest version stays on that approval. Each ancestor a basis opens the step on is one it
+// rests on for the generation, and a pending wait rests on its ancestor only while it waits.
 func TestTheBasisTransitionsKeepThePersonsApprovalApart(t *testing.T) {
 	registered := time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)
 	personal := EventMark{Seq: 9, At: registered.Add(-48 * time.Hour)}
@@ -92,7 +92,7 @@ func TestTheBasisTransitionsKeepThePersonsApprovalApart(t *testing.T) {
 	if approval := opened.ApprovedByPerson(); approval == nil || approval.Version != 2 || approval.Mark != personal {
 		t.Fatalf("the person's approval read off the open step = %#v, want version 2, not the version the basis opened", approval)
 	}
-	if opened.RestsOn != "LEGION-100" || !opened.RestsOnIssue("LEGION-100") || opened.RestsOnIssue("LEGION-101") {
+	if !slices.Equal(opened.RestsOn, []string{"LEGION-100"}) || !opened.RestsOnIssue("LEGION-100") || opened.RestsOnIssue("LEGION-101") {
 		t.Fatalf("the open step rests on %q, want LEGION-100 alone", opened.RestsOn)
 	}
 	// OpenOnBasis takes the gate by value, so only what it shares through a pointer could be
@@ -106,7 +106,7 @@ func TestTheBasisTransitionsKeepThePersonsApprovalApart(t *testing.T) {
 		closed.ApprovedMark != personal || GateOpen(closed) {
 		t.Fatalf("the step whose basis closed = %#v, want it closed on the person's own approval of version 2", closed)
 	}
-	if closed.RestsOn != "LEGION-100" {
+	if !slices.Equal(closed.RestsOn, []string{"LEGION-100"}) {
 		t.Fatalf("the step whose basis closed rests on %q, want LEGION-100 until the generation ends", closed.RestsOn)
 	}
 	never := CloseBasis(OpenOnBasis(DesignGate{Issue: "LEGION-209", ArtifactID: "artifact-209", LatestVersion: 1}, basisOf("LEGION-100", 3, registered)))
@@ -114,11 +114,12 @@ func TestTheBasisTransitionsKeepThePersonsApprovalApart(t *testing.T) {
 		t.Fatalf("a step with no person's approval falls back to %#v, want none, never the version the basis opened", never)
 	}
 
-	// A second basis on another ancestor keeps the approval the first kept and the first rest.
+	// A second basis on another ancestor keeps the approval the first kept, and the step rests on
+	// both ancestors, without writing through the rests of the step it was given.
 	again := OpenOnBasis(opened, basisOf("LEGION-101", 5, registered.Add(time.Minute)))
-	if again.KeptPerson == nil || again.KeptPerson.Version != 2 || again.RestsOn != "LEGION-100" ||
-		!again.RestsOnIssue("LEGION-101") || !again.RestsOnIssue("LEGION-100") {
-		t.Fatalf("the step opened again on another ancestor = %#v, want the kept approval of version 2, the first rest and the new basis", again)
+	if again.KeptPerson == nil || again.KeptPerson.Version != 2 || !slices.Equal(again.RestsOn, []string{"LEGION-100", "LEGION-101"}) ||
+		!again.RestsOnIssue("LEGION-101") || !again.RestsOnIssue("LEGION-100") || !slices.Equal(opened.RestsOn, []string{"LEGION-100"}) {
+		t.Fatalf("the step opened again on another ancestor = %#v, want the kept approval of version 2 and both rests", again)
 	}
 
 	// A person's approval at the latest version outranks any basis.
@@ -137,7 +138,7 @@ func TestTheBasisTransitionsKeepThePersonsApprovalApart(t *testing.T) {
 		pending.Basis.Approval != (EventMark{}) || pending.Basis.Approver != "" || pending.KeptPerson != nil {
 		t.Fatalf("the pending step = %#v, want it closed, waiting on ask-1 with no approval of the ancestor's", pending)
 	}
-	if !pending.RestsOnIssue("LEGION-102") || pending.RestsOn != "" {
+	if !pending.RestsOnIssue("LEGION-102") || pending.RestsOn != nil {
 		t.Fatalf("the pending step rests on LEGION-102 %t with RestsOn %q, want it resting there through its basis alone", pending.RestsOnIssue("LEGION-102"), pending.RestsOn)
 	}
 	if approval := pending.ApprovedByPerson(); approval == nil || approval.Version != 2 {
@@ -152,7 +153,7 @@ func TestTheBasisTransitionsKeepThePersonsApprovalApart(t *testing.T) {
 	answered := OpenPendingBasis(pending, approvedAt, "user:bob")
 	if !answered.OnBasis() || !GateOpen(answered) || answered.Basis.Approval != approvedAt || answered.Basis.Approver != "user:bob" ||
 		!answered.Basis.RegisteredAt.Equal(registered) || answered.KeptPerson == nil || answered.KeptPerson.Version != 2 ||
-		answered.RestsOn != "LEGION-102" {
+		!slices.Equal(answered.RestsOn, []string{"LEGION-102"}) {
 		t.Fatalf("the pending step a person's approval of the ancestor's version answered = %#v, want it open on that approval at the registration's moment, keeping the person's own and resting on LEGION-102", answered)
 	}
 	if got := OpenPendingBasis(earlier, approvedAt, "user:bob"); !reflect.DeepEqual(got, earlier) {
@@ -160,11 +161,11 @@ func TestTheBasisTransitionsKeepThePersonsApprovalApart(t *testing.T) {
 	}
 }
 
-// The gate carries its basis, the person's approval it keeps apart and the ancestor it rests on
+// The gate carries its basis, the person's approval it keeps apart and the ancestors it rests on
 // through the store, and the three reads find a step by its basis document, by the request it
-// waits on and by the ancestor it rests on, across trees. rests_on is kept once written: a write
-// that carries none, or another ancestor, takes nothing away. A basis is written whole or
-// refused, and a row a release before the basis moved reads as that move's end of the basis.
+// waits on and by an ancestor it rests on, across trees. rests_on only grows: a write that carries
+// none takes nothing away. A basis is written whole or refused, and a row a release before the
+// basis moved reads as that move's end of the basis.
 func TestTheGateRoundTripsItsBasis(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -194,8 +195,10 @@ func TestTheGateRoundTripsItsBasis(t *testing.T) {
 			must(t, records.PutGate(ctx, tx, gate))
 		}
 	})
-	openBack := open
+	// Each row reads back with its basis counted once, the one a new row carries.
+	openBack, pendingBack, elsewhereBack := open, pending, elsewhere
 	openBack.EverOpened = true
+	openBack.BasisChanges, pendingBack.BasisChanges, elsewhereBack.BasisChanges = 1, 1, 1
 	read := func(tx pgx.Tx, key string) DesignGate {
 		t.Helper()
 		gates, err := records.GatesOf(ctx, tx, key)
@@ -203,24 +206,24 @@ func TestTheGateRoundTripsItsBasis(t *testing.T) {
 		return *SpecGate(gates)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		for _, want := range []DesignGate{openBack, pending, elsewhere, plain} {
+		for _, want := range []DesignGate{openBack, pendingBack, elsewhereBack, plain} {
 			if got := read(tx, want.Issue); !reflect.DeepEqual(got, want) {
 				t.Fatalf("the gate of %s reads back as %#v, want %#v", want.Issue, got, want)
 			}
 		}
 		byDocument, err := records.GatesForBasisArtifact(ctx, tx, "artifact-LEGION-100")
 		must(t, err)
-		if !reflect.DeepEqual(byDocument, []DesignGate{openBack, pending}) {
+		if !reflect.DeepEqual(byDocument, []DesignGate{openBack, pendingBack}) {
 			t.Fatalf("the gates on LEGION-100's document = %#v, want the open and the pending step", byDocument)
 		}
 		byAsk, err := records.GatesByPendingAsk(ctx, tx, "ask-2")
 		must(t, err)
-		if !reflect.DeepEqual(byAsk, []DesignGate{elsewhere}) {
+		if !reflect.DeepEqual(byAsk, []DesignGate{elsewhereBack}) {
 			t.Fatalf("the gates pending on ask-2 = %#v, want LEGION-210's alone", byAsk)
 		}
 		resting, err := records.GatesRestingOn(ctx, tx, "LEGION-100")
 		must(t, err)
-		if !reflect.DeepEqual(resting, []DesignGate{openBack, pending}) {
+		if !reflect.DeepEqual(resting, []DesignGate{openBack, pendingBack}) {
 			t.Fatalf("the gates resting on LEGION-100 = %#v, want the open and the pending step", resting)
 		}
 		none, err := records.GatesByPendingAsk(ctx, tx, "ask-9")
@@ -237,13 +240,13 @@ func TestTheGateRoundTripsItsBasis(t *testing.T) {
 		closed.LatestVersion = 5
 		must(t, records.PutGate(ctx, tx, closed))
 		must(t, records.PutGate(ctx, tx, EndPendingBasis(read(tx, "LEGION-209"))))
-		// A write that carries no rest, as a stale copy or a re-registration would, keeps it.
+		// A write that carries no rest, as a stale copy would, keeps it.
 		carriesNone := read(tx, "LEGION-208")
-		carriesNone.RestsOn = ""
+		carriesNone.RestsOn = nil
 		must(t, records.PutGate(ctx, tx, carriesNone))
 		got := read(tx, "LEGION-208")
 		if got.Basis != nil || got.KeptPerson != nil || got.ApprovedVersion == nil || *got.ApprovedVersion != 2 ||
-			got.ApprovedMark != personal || got.RestsOn != "LEGION-100" {
+			got.ApprovedMark != personal || !slices.Equal(got.RestsOn, []string{"LEGION-100"}) {
 			t.Fatalf("the step whose basis closed reads back as %#v, want it on the person's approval of version 2, resting on LEGION-100", got)
 		}
 		byDocument, err := records.GatesForBasisArtifact(ctx, tx, "artifact-LEGION-100")
@@ -281,11 +284,103 @@ func TestTheGateRoundTripsItsBasis(t *testing.T) {
 	})
 }
 
+// A step rests on every ancestor a basis of its generation opened it on (R8), not on the first
+// alone: a root that opened its step on a far ancestor's approval and then registered on a nearer
+// ancestor's newly approved document rests on both once the step closes. The transitions keep each
+// rest, and so does the store, whose writes come from a registration that builds the step afresh,
+// carrying only the ancestor it opens the step on; the read of the gates resting on either finds
+// the step.
+func TestAStepRestsOnEachAncestorABasisOpenedItOn(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	registered := time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)
+	fresh := DesignGate{Issue: "LEGION-208", Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: 4}
+	far := OpenOnBasis(fresh, basisOf("LEGION-100", 3, registered))
+
+	if closed := CloseBasis(OpenOnBasis(far, basisOf("LEGION-150", 2, registered.Add(time.Hour)))); !closed.RestsOnIssue("LEGION-100") || !closed.RestsOnIssue("LEGION-150") {
+		t.Fatalf("the step opened on LEGION-100 and then on LEGION-150, closed since = %#v, want it resting on both", closed)
+	}
+
+	issue := issueFixture("LEGION-208")
+	issue.Tree, issue.Phase, issue.Status = "LEGION-208", phase.Admitted, "in_progress"
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutGate(ctx, tx, far))
+		must(t, records.PutGate(ctx, tx, OpenOnBasis(fresh, basisOf("LEGION-150", 2, registered.Add(time.Hour)))))
+		gates, err := records.GatesOf(ctx, tx, "LEGION-208")
+		must(t, err)
+		closed := CloseBasis(*SpecGate(gates))
+		closed.LatestVersion = 5
+		must(t, records.PutGate(ctx, tx, closed))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		gates, err := records.GatesOf(ctx, tx, "LEGION-208")
+		must(t, err)
+		if got := SpecGate(gates); got.Basis != nil || !got.RestsOnIssue("LEGION-100") || !got.RestsOnIssue("LEGION-150") {
+			t.Fatalf("the closed step reads back as %#v, want it with no basis, resting on LEGION-100 and LEGION-150", got)
+		}
+		for _, ancestor := range []string{"LEGION-100", "LEGION-150"} {
+			resting, err := records.GatesRestingOn(ctx, tx, ancestor)
+			must(t, err)
+			if len(resting) != 1 || resting[0].Issue != "LEGION-208" {
+				t.Fatalf("the gates resting on %s = %#v, want LEGION-208's", ancestor, resting)
+			}
+		}
+	})
+}
+
+// The row counts each write that moves its basis and no other (DesignGate.BasisChanges): a new
+// row with no basis starts at zero; a pending basis set on it, the person's approval answering its
+// request, another ancestor's basis registered over it and its end each add one. A write of the
+// same basis again, with another reason and registration time, adds nothing, and neither does a
+// write of no basis over a row that holds none.
+func TestTheGateCountsEachChangeOfItsBasis(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	registered := time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)
+	fresh := DesignGate{Issue: "LEGION-208", Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: 4}
+	asked := basisOf("LEGION-100", 4, registered)
+	askedAgain := basisOf("LEGION-100", 4, registered.Add(time.Hour))
+	askedAgain.Reason = "the root's checks serve r1 and r2 of the ancestor"
+	answer := EventMark{Seq: 44, At: registered.Add(2 * time.Hour)}
+	issue := issueFixture("LEGION-208")
+	issue.Tree, issue.Phase, issue.Status = "LEGION-208", phase.Admitted, "in_progress"
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		for _, write := range []struct {
+			what string
+			gate DesignGate
+			want int
+		}{
+			{"a row with no basis", fresh, 0},
+			{"no basis again", fresh, 0},
+			{"a pending basis", PendOnBasis(fresh, asked, "ask-1"), 1},
+			{"the same pending basis again, with another reason", PendOnBasis(fresh, askedAgain, "ask-1"), 1},
+			{"the person's approval answering its request", OpenPendingBasis(PendOnBasis(fresh, asked, "ask-1"), answer, "user:bob"), 2},
+			{"the same open basis again", OpenPendingBasis(PendOnBasis(fresh, askedAgain, "ask-1"), answer, "user:bob"), 2},
+			{"another ancestor's basis over it", OpenOnBasis(fresh, basisOf("LEGION-150", 2, registered)), 3},
+			{"its end", fresh, 4},
+			{"no basis again after the end", fresh, 4},
+		} {
+			must(t, records.PutGate(ctx, tx, write.gate))
+			gates, err := records.GatesOf(ctx, tx, "LEGION-208")
+			must(t, err)
+			if got := SpecGate(gates).BasisChanges; got != write.want {
+				t.Fatalf("after %s the row counts %d changes of its basis, want %d", write.what, got, write.want)
+			}
+		}
+	})
+}
+
 // A release before the basis names none of its columns, so a move it makes of a step a basis
 // opened leaves the basis behind. This release reads such a row as that move's end of the basis,
 // as its own rule would have made it: a newer version falls back to the person's kept approval,
 // never to the version the basis opened; a changes request clears the approval; a person's
 // approval stands as the person's. A pending step a person's approval opened has ended its wait.
+// The earlier release counts nothing in basis_changes, so the row reads back with the one basis
+// its first write carried.
 func TestARowAnEarlierReleaseMovedReadsItsBasisEnded(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -302,12 +397,13 @@ func TestARowAnEarlierReleaseMovedReadsItsBasisEnded(t *testing.T) {
 	}{
 		{"a newer version", `update design_gates set latest_version = 5 where issue = $1`,
 			DesignGate{Issue: key, Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: 5,
-				ApprovedVersion: new(2), ApprovedMark: personal, EverOpened: true, RestsOn: "LEGION-100"}},
+				ApprovedVersion: new(2), ApprovedMark: personal, EverOpened: true, RestsOn: []string{"LEGION-100"}, BasisChanges: 1}},
 		{"a changes request", `update design_gates set approved_version = null where issue = $1`,
-			DesignGate{Issue: key, Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: 4, EverOpened: true, RestsOn: "LEGION-100"}},
+			DesignGate{Issue: key, Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: 4, EverOpened: true, RestsOn: []string{"LEGION-100"},
+				BasisChanges: 1}},
 		{"a person's approval", `update design_gates set approved_version = 4, approved_seq = 50 where issue = $1`,
 			DesignGate{Issue: key, Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: 4,
-				ApprovedVersion: new(4), ApprovedMark: EventMark{Seq: 50}, EverOpened: true, RestsOn: "LEGION-100"}},
+				ApprovedVersion: new(4), ApprovedMark: EventMark{Seq: 50}, EverOpened: true, RestsOn: []string{"LEGION-100"}, BasisChanges: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, st, func(tx pgx.Tx) {
@@ -342,7 +438,7 @@ func TestARowAnEarlierReleaseMovedReadsItsBasisEnded(t *testing.T) {
 			gates, err := records.GatesOf(ctx, tx, key)
 			must(t, err)
 			want := DesignGate{Issue: key, Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: 4,
-				ApprovedVersion: new(4), ApprovedMark: EventMark{Seq: 50}}
+				ApprovedVersion: new(4), ApprovedMark: EventMark{Seq: 50}, BasisChanges: 1}
 			if got := SpecGate(gates); !reflect.DeepEqual(got, &want) {
 				t.Fatalf("the pending step a person's approval opened reads back as %#v, want %#v", got, want)
 			}

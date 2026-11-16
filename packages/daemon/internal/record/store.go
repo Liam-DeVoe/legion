@@ -1543,11 +1543,11 @@ func scannedMark(seq *int64, at *time.Time) EventMark {
 }
 
 // gateColumns reads the basis's text columns as "" where no basis stands, its served references
-// as nil where it names none, and rests_on as "" for a step that rests on nothing.
+// as nil where it names none, and rests_on as nil for a step that rests on nothing.
 const gateColumns = `issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at, told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened,
 	coalesce(basis_issue, ''), coalesce(basis_artifact_id, ''), coalesce(basis_version, 0), basis_approved_seq, basis_approved_at, coalesce(basis_approver, ''),
 	nullif(basis_serves, '{}'), coalesce(basis_reason, ''), coalesce(basis_session, ''), basis_registered_at, coalesce(basis_pending_ask, ''),
-	kept_person_version, kept_person_seq, kept_person_at, coalesce(rests_on, '')`
+	kept_person_version, kept_person_seq, kept_person_at, nullif(rests_on, '{}'), basis_changes`
 
 // scanGate reads a gate row in the shape PutGate writes: an approval's mark only with the approval,
 // a told changes request's reason and mark only with its version, a basis only with its document,
@@ -1567,7 +1567,7 @@ func scanGate(row scanner) (DesignGate, error) {
 		&gate.ToldChangesVersion, &gate.ToldChangesReason, &toldSeq, &toldAt, &gate.EverOpened,
 		&basis.Issue, &basis.ArtifactID, &basis.Version, &basisSeq, &basisAt, &basis.Approver,
 		&basis.Serves, &basis.Reason, &basis.Session, &registeredAt, &pendingAsk,
-		&keptVersion, &keptSeq, &keptAt, &gate.RestsOn); err != nil {
+		&keptVersion, &keptSeq, &keptAt, &gate.RestsOn, &gate.BasisChanges); err != nil {
 		return DesignGate{}, err
 	}
 	gate.Step = DesignStep(step)
@@ -1689,14 +1689,14 @@ func (s *Postgres) GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string)
 }
 
 // GatesRestingOn is every gate that rests on one of ancestors in this generation
-// (DesignGate.RestsOnIssue), of every tree, in issue and then step order: rests_on names the
-// ancestor a basis first opened the step on, and basis_issue the ancestor of the basis the step
-// stands open on or waits on now. The condition is the indexed prefilter, and the rule over each
-// row as read decides: a pending row an earlier release's write of a person's approval opened
-// still names its ancestor in basis_issue, but reads back with no basis (basisAsWritten), and so
-// rests on nothing.
+// (DesignGate.RestsOnIssue), of every tree, in issue and then step order: rests_on names each
+// ancestor a basis opened the step on, and basis_issue the ancestor of the basis the step stands
+// open on or waits on now. The condition is the indexed prefilter, and the rule over each row as
+// read decides: a pending row an earlier release's write of a person's approval opened still
+// names its ancestor in basis_issue, but reads back with no basis (basisAsWritten), and so rests
+// on nothing.
 func (s *Postgres) GatesRestingOn(ctx context.Context, tx pgx.Tx, ancestors ...string) ([]DesignGate, error) {
-	gates, err := gatesWhere(ctx, tx, "rests_on = any($1) or basis_issue = any($1)", ancestors, "resting on "+strings.Join(ancestors, ", "))
+	gates, err := gatesWhere(ctx, tx, "rests_on && $1::text[] or basis_issue = any($1)", ancestors, "resting on "+strings.Join(ancestors, ", "))
 	if err != nil {
 		return nil, err
 	}
@@ -1779,15 +1779,25 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	// because a changes request's write carries a gate whose approval it has just cleared and would
 	// otherwise put out a mark a past approval lit. What counts as opened is the one statement of
 	// it (GateOpen), which classify.DesignGateOpen calls too, and which reads a step a basis opened
-	// as open. rests_on is kept once written, for the same reason: the ancestor a basis first
-	// opened the step on is rested on until a re-admission deletes the row (DesignGate.RestsOn), and
-	// a write that carries none, or a later ancestor, takes nothing away.
+	// as open. rests_on only ever grows, for the same reason: each ancestor a basis opened the step
+	// on is rested on until a re-admission deletes the row (DesignGate.RestsOn), and a registration
+	// builds the step afresh, carrying the one ancestor it opens the step on. So the write keeps
+	// every ancestor the row names and adds those the gate names that it does not, in the order
+	// each was first written, and a write that carries none takes nothing away.
+	//
+	// basis_changes is the write's own count of the basis moving (DesignGate.BasisChanges): a new
+	// row starts at one where it carries a basis and at zero where it does not, and a write over a
+	// row adds one where the basis it writes differs from the row's in its ancestor, document,
+	// version or request, which counts a basis set on a row that had none and the end of one, and
+	// adds nothing otherwise. The gate's own value is never written.
 	_, err := tx.Exec(ctx, `insert into design_gates (issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at,
 		told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened,
 		basis_issue, basis_artifact_id, basis_version, basis_approved_seq, basis_approved_at, basis_approver, basis_serves,
-		basis_reason, basis_session, basis_registered_at, basis_pending_ask, kept_person_version, kept_person_seq, kept_person_at, rests_on)
+		basis_reason, basis_session, basis_registered_at, basis_pending_ask, kept_person_version, kept_person_seq, kept_person_at, rests_on,
+		basis_changes)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-		$13, $14, $15, $16, $17, $18, $19::text[], $20, $21, $22, $23, $24, $25, $26, nullif($27::text, ''))
+		$13, $14, $15, $16, $17, $18, $19::text[], $20, $21, $22, $23, $24, $25, $26, nullif($27::text[], '{}'),
+		case when $13::text is null then 0 else 1 end)
 		on conflict (issue, step) do update set artifact_id = excluded.artifact_id,
 		latest_version = excluded.latest_version, approved_version = excluded.approved_version,
 		approved_seq = excluded.approved_seq, approved_at = excluded.approved_at,
@@ -1800,7 +1810,14 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 		basis_session = excluded.basis_session, basis_registered_at = excluded.basis_registered_at,
 		basis_pending_ask = excluded.basis_pending_ask, kept_person_version = excluded.kept_person_version,
 		kept_person_seq = excluded.kept_person_seq, kept_person_at = excluded.kept_person_at,
-		rests_on = coalesce(design_gates.rests_on, excluded.rests_on)`,
+		rests_on = (select array_agg(ancestor order by first) from (
+			select ancestor, min(place) as first
+			from unnest(coalesce(design_gates.rests_on, '{}') || coalesce(excluded.rests_on, '{}')) with ordinality as named (ancestor, place)
+			group by ancestor) as kept),
+		basis_changes = design_gates.basis_changes + case
+			when (design_gates.basis_issue, design_gates.basis_artifact_id, design_gates.basis_version, design_gates.basis_pending_ask)
+				is distinct from (excluded.basis_issue, excluded.basis_artifact_id, excluded.basis_version, excluded.basis_pending_ask) then 1
+			else 0 end`,
 		gate.Issue, string(step), gate.ArtifactID, gate.LatestVersion, gate.ApprovedVersion, approvedSeq, approvedAt,
 		gate.ToldChangesVersion, toldReason, toldSeq, toldAt,
 		gate.EverOpened || GateOpen(gate),

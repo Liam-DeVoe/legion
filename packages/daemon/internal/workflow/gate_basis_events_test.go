@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func TestAPendingBasisOpensOnThePersonsApprovalOfTheAncestorsVersion(t *testing.
 	apply("ancestor-approved", approved)
 
 	gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
-	if !gate.OnBasis() || !record.GateOpen(gate) || *gate.ApprovedVersion != 4 || gate.RestsOn != basisAncestor {
+	if !gate.OnBasis() || !record.GateOpen(gate) || *gate.ApprovedVersion != 4 || !slices.Equal(gate.RestsOn, []string{basisAncestor}) {
 		t.Fatalf("the spec step = %#v, want it open at version 4 on the basis, resting on %s", gate, basisAncestor)
 	}
 	if basis := gate.Basis; basis.Version != 4 || basis.Approver != "user:alice" || basis.Approval != approved.Mark || !basis.RegisteredAt.Equal(basisEngineNow) {
@@ -205,7 +206,8 @@ func TestAPendingBasisOfAStepTheDeploymentDoesNotGateTakesNoEvent(t *testing.T) 
 }
 
 // The daemon's own move of the ancestor into merging accepts it, which ends every step waiting on
-// its request as R1's first condition ends it.
+// its request as R1's first condition ends it. No registration on an ancestor in retro records a
+// basis (acceptedBasis), so the step's wait is written as it stands.
 func TestTheAncestorsMoveIntoMergingEndsAPendingBasis(t *testing.T) {
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -216,7 +218,9 @@ func TestTheAncestorsMoveIntoMergingEndsAPendingBasis(t *testing.T) {
 		HandedOver: true, LastDispatchSeq: 1})
 	seedTreeLifecycle(t, pool, basisAncestor)
 	seedPhase(t, pool, record.PhaseRow{Issue: basisAncestor, Role: claim.RoleImplementer, Claim: "claim"})
-	apply("register-pending", onBasis(pendingBasis(), 6))
+	waiting := pendingBasis()
+	waiting.RegisteredAt = basisEngineNow
+	seedGate(t, pool, record.PendOnBasis(record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 4}, *waiting, "ask-100"))
 
 	apply("retro-done", intake.HandoffComplete{Generation: 1, Issue: basisAncestor, Role: claim.RoleImplementer, Claim: "claim", Commit: "retro"})
 
@@ -366,7 +370,7 @@ func TestTheRootsOwnDocumentMovesAnOpenBasisStepAsAnApprovedStep(t *testing.T) {
 
 			gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
 			stillOnBasis := tc.name == "the person's approval of the earlier version again"
-			if record.GateOpen(gate) != tc.open || gate.OnBasis() != stillOnBasis || gate.RestsOn != basisAncestor {
+			if record.GateOpen(gate) != tc.open || gate.OnBasis() != stillOnBasis || !slices.Equal(gate.RestsOn, []string{basisAncestor}) {
 				t.Fatalf("the spec step = %#v, want open=%t, on its basis=%t, still resting on %s", gate, tc.open, stillOnBasis, basisAncestor)
 			}
 			switch {
@@ -492,14 +496,17 @@ func TestAnOpenBasisPassesOnOnlyAPersonsChangesRequestOnItsVersion(t *testing.T)
 // The pending-basis seed's read applies as the events it read would have, and only to a step of
 // that generation still pending on that request: the person's approval opens it, an approval
 // followed by a changes request opens it and passes the changes request on, a changes request or
-// a closed request ends it, and a request still waiting changes nothing. A read of a wait that has
-// ended since, or of another generation, changes nothing.
+// a closed request ends it, and a request still waiting changes nothing. The person's approval
+// opens nothing on an ancestor the seed's read of its issue shows done or retro, or without the
+// legion label: the wait ends instead. A read of a wait that has ended since, or of another
+// generation, changes nothing.
 func TestThePendingBasisReadOpensOrEndsOnlyAStepStillPendingOnIt(t *testing.T) {
 	approval := &intake.BasisReview{Mark: record.EventMark{At: basisApprovedAt.Add(24 * time.Hour)}, Actor: basisPerson}
 	changes := &intake.BasisReview{Mark: record.EventMark{At: basisApprovedAt.Add(25 * time.Hour)}, Actor: basisPerson, Reason: "name the rollback path"}
+	// The seed's read of the ancestor's issue shows it at work and carrying the legion label.
 	read := func(edit func(*intake.PendingBasisRead)) intake.PendingBasisRead {
 		fact := intake.PendingBasisRead{Issue: gatedRoot, Step: record.DesignStepSpec, Generation: 1, ArtifactID: gateDoc, BasisArtifactID: basisDoc,
-			BasisVersion: 4, Ask: "ask-100", LatestVersion: 4, RequestOpen: true}
+			BasisVersion: 4, Ask: "ask-100", LatestVersion: 4, RequestOpen: true, AncestorStatus: "in_progress", AncestorLegion: true}
 		edit(&fact)
 		return fact
 	}
@@ -514,6 +521,12 @@ func TestThePendingBasisReadOpensOrEndsOnlyAStepStillPendingOnIt(t *testing.T) {
 		{name: "approved by the person", fact: read(func(f *intake.PendingBasisRead) { f.Approval, f.RequestOpen = approval, false }), open: true},
 		{name: "approved and then sent back", fact: read(func(f *intake.PendingBasisRead) { f.Approval, f.Changes, f.RequestOpen = approval, changes, false }),
 			open: true, asked: 1},
+		{name: "approved by the person, with the ancestor in Dispatch's retro", fact: read(func(f *intake.PendingBasisRead) {
+			f.Approval, f.RequestOpen, f.AncestorStatus = approval, false, "retro"
+		}), ended: 1},
+		{name: "approved by the person, with the ancestor no longer labelled", fact: read(func(f *intake.PendingBasisRead) {
+			f.Approval, f.RequestOpen, f.AncestorLegion = approval, false, false
+		}), ended: 1},
 		{name: "sent back", fact: read(func(f *intake.PendingBasisRead) { f.Changes, f.RequestOpen = changes, false }), ended: 1},
 		{name: "a newer version", fact: read(func(f *intake.PendingBasisRead) { f.LatestVersion = 5 }), ended: 1},
 		{name: "the request closed with no approval", fact: read(func(f *intake.PendingBasisRead) { f.RequestOpen = false }), ended: 1},
@@ -556,4 +569,87 @@ func TestThePendingBasisReadOpensOrEndsOnlyAStepStillPendingOnIt(t *testing.T) {
 			t.Fatalf("basis-ended notices = %#v, want the version's alone", got)
 		}
 	})
+}
+
+// The pending-basis seed's read of the person's approval opens no step on an ancestor that has
+// left R1's first condition since the registration, as the daemon's own store shows it: recorded
+// in its retro or its merge, or shown done or in retro by the daemon's mirror of Dispatch. The wait
+// ends instead, as the ancestor's own event of that move ends it, with the root's architect told
+// why and the step closed on the root's own document with no basis.
+func TestThePendingBasisReadOpensNoStepOnAnAcceptedAncestor(t *testing.T) {
+	approval := &intake.BasisReview{Mark: record.EventMark{At: basisApprovedAt.Add(24 * time.Hour)}, Actor: basisPerson}
+	for _, tc := range []struct {
+		name   string
+		accept func(t *testing.T, pool *pgxpool.Pool)
+		act    string
+	}{
+		{"the daemon records it in retro", func(t *testing.T, pool *pgxpool.Pool) {
+			seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "T",
+				HandedOver: true, LastDispatchSeq: 1})
+		}, "The daemon records LEGION-100 in retro, so LEGION-100 is accepted."},
+		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { seedMirror(t, pool, basisAncestor, "done") },
+			"Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, _, apply := registeredPending(t)
+			tc.accept(t, pool)
+
+			apply("read", intake.PendingBasisRead{Issue: gatedRoot, Step: record.DesignStepSpec, Generation: 1, ArtifactID: gateDoc,
+				BasisArtifactID: basisDoc, BasisVersion: 4, Ask: "ask-100", LatestVersion: 4, Approval: approval})
+
+			if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; gate.Basis != nil || record.GateOpen(gate) || gate.RestsOnIssue(basisAncestor) {
+				t.Fatalf("the spec step = %#v, want it closed with no basis, resting on nothing", gate)
+			}
+			if ended := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(ended) != 1 || !strings.Contains(ended[0].Reason, tc.act) {
+				t.Fatalf("basis-ended notices = %#v, want one naming %q", ended, tc.act)
+			}
+			if opened := noticesOfKind(t, pool, gatedRoot, "design-approved"); len(opened) != 0 {
+				t.Fatalf("design-approved notices = %#v, want none: the step did not open", opened)
+			}
+		})
+	}
+}
+
+// The person's approval of the ancestor's version a step waits on, arriving as its live event,
+// opens no step on an ancestor that has left R1's first condition as the daemon's own store shows
+// it: recorded in its retro, shown done by the daemon's mirror of Dispatch, or recorded without
+// the legion label as Dispatch last showed it. The wait ends instead, as the pending-basis seed
+// ends it, with the root's architect told why and the step closed on the root's own document with
+// no basis.
+func TestAnApprovalEventOpensNoPendingStepOnAnAncestorThatLeftR1(t *testing.T) {
+	ancestorAt := func(at phase.Phase, status string, labelled bool) func(*testing.T, *pgxpool.Pool) {
+		return func(t *testing.T, pool *pgxpool.Pool) {
+			seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: at, Generation: 1, Status: status, Rank: "T",
+				HandedOver: labelled, LastDispatchSeq: 1})
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		leave func(t *testing.T, pool *pgxpool.Pool)
+		act   string
+	}{
+		{"the daemon records it in retro", ancestorAt(phase.Retro, "retro", true), "The daemon records LEGION-100 in retro, so LEGION-100 is accepted."},
+		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { seedMirror(t, pool, basisAncestor, "done") },
+			"Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
+		{"the daemon records it without the legion label", ancestorAt(phase.Planning, "in_progress", false), "LEGION-100 no longer carries the legion label."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, _, apply := registeredPending(t)
+			tc.leave(t, pool)
+
+			apply("ancestor-approved", ancestorReview(intake.DispatchArtifactApproved, 4, 60, ""))
+
+			if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; gate.Basis != nil || record.GateOpen(gate) || gate.RestsOnIssue(basisAncestor) {
+				t.Fatalf("the spec step = %#v, want it closed with no basis, resting on nothing", gate)
+			}
+			if ended := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(ended) != 1 || !strings.Contains(ended[0].Reason, tc.act) {
+				t.Fatalf("basis-ended notices = %#v, want one naming %q", ended, tc.act)
+			}
+			if opened := noticesOfKind(t, pool, gatedRoot, "design-approved"); len(opened) != 0 {
+				t.Fatalf("design-approved notices = %#v, want none: the step did not open", opened)
+			}
+		})
+	}
 }

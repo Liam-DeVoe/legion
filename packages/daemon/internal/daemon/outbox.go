@@ -2807,7 +2807,10 @@ func basisReview(review dispatch.Review, approval dispatch.Approval) intake.Basi
 // a first one that is a person's approval opens the step, and a changes request after it is passed
 // on as well, as the two events in order give live; with no such approval, a changes request on
 // that version, a newer version of the document, or the request no longer open ends the wait. A
-// request still open on that version with no review changes nothing, and applies no fact. The
+// request still open on that version with no review changes nothing, and applies no fact. Where
+// it finds the person's approval, it reads the ancestor's issue as well, the issue Dispatch names
+// the document on, as register_gate reads it: the approval opens the step only on an ancestor
+// that is neither done nor retro and carries the legion label (R1's first condition). The
 // workflow applies the fact only while the step still waits on that request in that generation,
 // so a read of a wait that has opened or ended since changes nothing. The fact's id is the step,
 // the request and what the read found, so the same read again is a duplicate, and a later read
@@ -2839,6 +2842,13 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 		case review.State == "changes_requested" && (fact.Approval != nil || fact.Changes == nil):
 			fact.Changes = &read
 		}
+	}
+	if fact.Approval != nil {
+		ancestor, err := r.dispatch.GetIssue(ctx, approval.IssueKey)
+		if err != nil {
+			return fmt.Errorf("read Dispatch issue %s, the ancestor whose document %s is: %w", approval.IssueKey, payload.BasisArtifactID, err)
+		}
+		fact.AncestorStatus, fact.AncestorLegion = ancestor.Status, dispatch.CarriesLegionLabel(ancestor.Labels)
 	}
 	var found string
 	switch {

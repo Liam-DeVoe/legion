@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -11,11 +12,12 @@ import (
 const gateBasisVersion = 20261114064234
 
 // 20261114064234 gives a design-gate step its basis, the person's approval it keeps apart while a
-// basis stands and the ancestor it rests on (dispatch://INFRA-3320), and an issue the ancestor its
-// spec is a view on. The negative control is the write itself, which names columns the tables do
-// not have before the migration. A gate and an issue the earlier release wrote migrate with none
-// of it, and a write of an earlier release, which names none of the new columns, is still taken
-// on a row that carries them. Each version and sequence refuses zero, as 0055's do, and each read
+// basis stands, the ancestors it rests on and the count of its basis's changes
+// (dispatch://INFRA-3320), and an issue the ancestor its spec is a view on. The negative control
+// is the write itself, which names columns the tables do not have before the migration. A gate and
+// an issue the earlier release wrote migrate with none of it, the count at zero, and a write of an
+// earlier release, which names none of the new columns, is still taken on a row that carries them
+// and leaves them as they are. Each version and sequence refuses zero, as 0055's do, and each read
 // by a basis, a pending request or a rest has its index.
 func TestTheGateBasisArrivesWith20261114064234(t *testing.T) {
 	ctx := context.Background()
@@ -39,7 +41,7 @@ func TestTheGateBasisArrivesWith20261114064234(t *testing.T) {
 		basis_approved_seq = 31, basis_approved_at = now(), basis_approver = 'user:alice',
 		basis_serves = '{dispatch://LEGION-100/spec#b-r1-ancestor@v3}', basis_reason = 'the checks serve r1',
 		basis_session = 'ses_architect', basis_registered_at = now(), approved_version = 4, approved_seq = null,
-		kept_person_version = 2, kept_person_seq = 9, kept_person_at = now(), rests_on = 'LEGION-100'
+		kept_person_version = 2, kept_person_seq = 9, kept_person_at = now(), rests_on = '{LEGION-100,LEGION-150}', basis_changes = 2
 		where issue = 'LEGION-208'`
 	if err := exec(basisWrite); err == nil || !strings.Contains(err.Error(), "basis_issue") {
 		t.Fatalf("a basis written before the migration = %v, want it refused for naming a column the table does not have", err)
@@ -58,7 +60,7 @@ func TestTheGateBasisArrivesWith20261114064234(t *testing.T) {
 		and basis_approved_at is null and basis_approver is null and basis_serves is null and basis_reason is null
 		and basis_session is null and basis_registered_at is null and basis_pending_ask is null
 		and kept_person_version is null and kept_person_seq is null and kept_person_at is null and rests_on is null
-		and approved_version = 2 and approved_seq = 9`).Scan(&carried); err != nil || carried != 1 {
+		and basis_changes = 0 and approved_version = 2 and approved_seq = 9`).Scan(&carried); err != nil || carried != 1 {
 		t.Fatalf("the earlier release's gate after the migration = %d rows with no basis and its approval as it was (%v), want 1", carried, err)
 	}
 	var viewOf *string
@@ -82,9 +84,12 @@ func TestTheGateBasisArrivesWith20261114064234(t *testing.T) {
 			t.Fatalf("%s: %v, want it accepted", accepted, err)
 		}
 	}
-	var kept string
-	if err := store.Pool().QueryRow(ctx, `select rests_on from design_gates where issue = 'LEGION-208'`).Scan(&kept); err != nil || kept != "LEGION-100" {
-		t.Fatalf("the rest after the earlier release's writes = %q (%v), want LEGION-100 left as it was", kept, err)
+	var kept []string
+	var changes int
+	if err := store.Pool().QueryRow(ctx, `select rests_on, basis_changes from design_gates where issue = 'LEGION-208'`).Scan(&kept, &changes); err != nil ||
+		!slices.Equal(kept, []string{"LEGION-100", "LEGION-150"}) || changes != 2 {
+		t.Fatalf("the rests and the basis's changes after the earlier release's writes = %q and %d (%v), want LEGION-100 and LEGION-150 and 2, left as they were",
+			kept, changes, err)
 	}
 
 	for _, refused := range []struct{ why, statement string }{

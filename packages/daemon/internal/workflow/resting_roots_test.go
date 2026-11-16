@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -57,7 +58,7 @@ func registerResting(t *testing.T, pool *pgxpool.Pool, apply func(string, intake
 	t.Helper()
 	seedGatedTree(t, pool)
 	apply("register-on-basis", onBasis(restingBasis(), 6))
-	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.OnBasis() || gate.RestsOn != basisAncestor {
+	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.OnBasis() || !slices.Equal(gate.RestsOn, []string{basisAncestor}) {
 		t.Fatalf("R's spec step = %#v, want it open on P's approval and resting on %s", gate, basisAncestor)
 	}
 	leave(t, pool, gatedRoot, phase.Implementing, "in_progress")
@@ -291,7 +292,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		registerResting(t, pool, apply)
 
 		apply("root-v5", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 5, Mark: askSeq(9)})
-		if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; record.GateOpen(gate) || gate.Basis != nil || gate.RestsOn != basisAncestor {
+		if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; record.GateOpen(gate) || gate.Basis != nil || !slices.Equal(gate.RestsOn, []string{basisAncestor}) {
 			t.Fatalf("R's spec step after version 5 = %#v, want it closed with no basis, still resting on %s", gate, basisAncestor)
 		}
 		refusedWith(t, signOffNow(t, pool, "signoff-held", basisAncestor), signOffRestingRoot, restingNamed)
@@ -384,7 +385,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 			Approval: record.EventMark{Seq: 41, At: basisApprovedAt}, Approver: "user:alice", Serves: restingBasis().Serves, RegisteredAt: basisEngineNow}),
 			"dispatch://LEGION-100/artifact/verification-md", 2},
 		{"the criteria step resting on P after its basis ended", record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria,
-			ArtifactID: criteriaDoc, LatestVersion: 3, EverOpened: true, RestsOn: basisAncestor},
+			ArtifactID: criteriaDoc, LatestVersion: 3, EverOpened: true, RestsOn: []string{basisAncestor}},
 			"dispatch://LEGION-100/spec", 3},
 	} {
 		t.Run("two steps that rest on the ancestor, "+tc.name, func(t *testing.T) {

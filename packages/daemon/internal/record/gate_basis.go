@@ -1,6 +1,9 @@
 package record
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // The rules of a step that an ancestor's approval opens, or that waits on an ancestor's open
 // approval request (dispatch://INFRA-3320, R1 to R3), written once here, where both the store's
@@ -40,10 +43,11 @@ func (g DesignGate) ApprovedByPerson() *PersonApproval {
 }
 
 // RestsOnIssue says whether the step rests on ancestor in this generation (R8): a basis on
-// ancestor opened it at some point (RestsOn), or its basis names ancestor now, standing or
-// pending. A pending wait that ended without opening leaves no rest of its own.
+// ancestor opened it at some point (RestsOn, which names each ancestor a basis opened it on), or
+// its basis names ancestor now, standing or pending. A pending wait that ended without opening
+// leaves no rest of its own.
 func (g DesignGate) RestsOnIssue(ancestor string) bool {
-	return ancestor != "" && (g.RestsOn == ancestor || g.Basis != nil && g.Basis.Issue == ancestor)
+	return ancestor != "" && (slices.Contains(g.RestsOn, ancestor) || g.Basis != nil && g.Basis.Issue == ancestor)
 }
 
 // openedAt is the moment the step opened, as the waiting line orders it (TreeGate.OpenedAt): the
@@ -61,9 +65,10 @@ func (g DesignGate) openedAt() time.Time {
 // becomes that version with no ApprovedMark, so GateOpen, TreeGate.Open, EverOpened and the
 // merger's start read the step open as after a person's approval. A person's approval of an
 // earlier version the step held moves into KeptPerson; a basis that already stood keeps the
-// approval it kept. The first ancestor a basis opens the step on is the one it rests on for the
-// generation (RestsOn). A step a person's approval holds open at its latest version stays on
-// that approval, which no basis outranks (R3), and is returned as it is.
+// approval it kept. The step rests on basis's ancestor for the generation from then on, beside
+// each ancestor an earlier basis opened it on (RestsOn). A step a person's approval holds open at
+// its latest version stays on that approval, which no basis outranks (R3), and is returned as it
+// is.
 func OpenOnBasis(gate DesignGate, basis GateBasis) DesignGate {
 	if !gate.OnBasis() && GateOpen(gate) {
 		return gate
@@ -75,8 +80,9 @@ func OpenOnBasis(gate DesignGate, basis GateBasis) DesignGate {
 	gate.Basis = &basis
 	registered := gate.LatestVersion
 	gate.ApprovedVersion, gate.ApprovedMark = &registered, EventMark{}
-	if gate.RestsOn == "" {
-		gate.RestsOn = basis.Issue
+	if !slices.Contains(gate.RestsOn, basis.Issue) {
+		// Clipped, so the append never writes into the backing array of the caller's gate.
+		gate.RestsOn = append(slices.Clip(gate.RestsOn), basis.Issue)
 	}
 	return gate
 }

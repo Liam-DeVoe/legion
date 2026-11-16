@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"sort"
@@ -136,6 +137,47 @@ func AcceptedPhase(p phase.Phase) bool {
 // accepted that another counts as still at work.
 func Accepted(issue Issue) bool {
 	return AcceptedPhase(StandsAt(issue))
+}
+
+// BasisAcceptance says why ancestor no longer meets the daemon's half of R1's first condition for
+// a basis (dispatch://INFRA-3320), as the daemon's own store shows it now, or "" where it still
+// does: what the daemon last read of Dispatch shows it done or retro (AcceptedStatus), in its
+// mirror of Dispatch's issues or in its record of the ancestor, or the daemon records it in its
+// retro or its merge (Accepted) or done. Where neither the mirror nor the record knows the
+// ancestor, nothing the daemon holds says that it is accepted. The answer is a sentence's subject
+// and verb, naming the ancestor and what holds it ("Dispatch shows LEGION-100 done").
+//
+// It is the one reading of that half of the condition inside a transaction of the daemon's own: a
+// registration on a basis reads it again under the lock every fact applies under (workflow's
+// gateRegistered), so it and an ancestor's sign-off, whose hold reads the roots that rest on the
+// ancestor (workflow's RestingRoots), apply in one order; the pending-basis seed's read and the
+// person's approval as its live event read it before either opens a step; and a step carried onto
+// a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
+func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, error) {
+	mirrored, err := store.DispatchIssuesOf(ctx, tx, []string{ancestor})
+	if err != nil {
+		return "", fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", ancestor, err)
+	}
+	for _, row := range mirrored {
+		if row.Key == ancestor && AcceptedStatus(row.Status) {
+			return fmt.Sprintf("Dispatch shows %s %s", ancestor, row.Status), nil
+		}
+	}
+	recorded, err := store.Issue(ctx, tx, ancestor)
+	if err != nil {
+		return "", fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
+	}
+	switch {
+	case recorded == nil:
+		return "", nil
+	case AcceptedStatus(recorded.DispatchStatus):
+		return fmt.Sprintf("Dispatch shows %s %s", ancestor, recorded.DispatchStatus), nil
+	case Accepted(*recorded):
+		return fmt.Sprintf("The daemon records %s in %s", ancestor, StandsAt(*recorded)), nil
+	case StandsAt(*recorded) == phase.Done:
+		return fmt.Sprintf("The daemon records %s done", ancestor), nil
+	}
+	return "", nil
 }
 
 // Ancestors is every issue above issue inside its own tree, nearest first and the tree's own

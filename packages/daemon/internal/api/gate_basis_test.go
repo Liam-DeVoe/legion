@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"slices"
@@ -15,10 +17,13 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The issues of every basis case (dispatch://INFRA-3320, k2): R is the tree root that registers,
@@ -705,5 +710,126 @@ func TestARegistrationWithNoBasisAfterOneOnABasisIsItsOwnFact(t *testing.T) {
 	}
 	if second, ok := got[1].(intake.GateRegistered); !ok || second.Basis != nil || second.ViewOf != basisP {
 		t.Fatalf("the second registration = %#v, want no basis and the view fact naming %s", got[1], basisP)
+	}
+}
+
+// pendingP gives P's primary document a latest version 4, which adds requirement p5, with its
+// approval request ask-p4 waiting on the person and no review at that version, and R's one check a
+// check of P5: a registration naming that version rests on a pending basis.
+func pendingP(world *statusRecorder) {
+	world.approvals[pSpec] = dispatch.Approval{State: "awaiting", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 21, At: basisApprovedAt,
+		AskID: "ask-p4", WaitingOn: "human"}
+	world.withVersion(pSpec, 4, requirementBlocks("p1", "p2", "p3", "p:4", "p5"))
+	world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p5@v4"))
+}
+
+// basisEngineHarness serves the routes over world with the daemon's workflow deciding each fact
+// they apply, beside the recorder of every fact, and holds R as a recorded tree root of generation
+// 1, the run a pending basis's seed names, with its live architect. seam, nil for none, is the
+// route's GateRegistrationRead.
+func basisEngineHarness(t *testing.T, world *statusRecorder, seam func(context.Context, string)) (*harness, *factRecorder, liveClaim) {
+	t.Helper()
+	h := newHarness(t)
+	steps := config.DesignGateRootIssues.Steps()
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Steps: steps, Repositories: testRepositories},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	facts := &factRecorder{}
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Steps: steps, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
+		Handlers: []intake.Handler{engine, facts}, Dispatch: world, GateRegistrationRead: seam,
+	}).Handler
+	seedTree(t, h, basisR)
+	if _, err := h.store.Pool().Exec(context.Background(), "update issues set generation = 1 where key = $1", basisR); err != nil {
+		t.Fatalf("record %s at generation 1: %v", basisR, err)
+	}
+	return h, facts, newLiveClaim(t, h, basisR, claim.RoleArchitect)
+}
+
+// specGateOf is R's spec step as the record holds it, nil for none.
+func specGateOf(t *testing.T, h *harness) *record.DesignGate {
+	t.Helper()
+	var gate *record.DesignGate
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		gates, err := record.NewStore().GatesOf(context.Background(), tx, basisR)
+		gate = record.SpecGate(gates)
+		return err
+	}); err != nil {
+		t.Fatalf("read the gates of %s: %v", basisR, err)
+	}
+	return gate
+}
+
+// Calls at one sequence of the root that move the step's basis back and forth are each a fact the
+// workflow applies, never a duplicate of an earlier call of the same body that answers 200 and
+// changes nothing: the fact's id names how many times the step's basis has changed
+// (record.DesignGate.BasisChanges). A registration with no basis over a step that a pending basis
+// left waiting ends that wait, and a registration on the pending basis again after that puts the
+// step back on it. A call made again over a step whose basis its first attempt left as it was
+// stays one fact.
+func TestARegistrationOverAStepWhoseBasisMovedIsItsOwnFact(t *testing.T) {
+	noBasis := func(architect liveClaim) map[string]any {
+		return map[string]any{"grantId": architect.grant(t), "issue": basisR, "artifactId": rSpec, "version": 4}
+	}
+	pending := func(architect liveClaim) map[string]any {
+		body := basisBody(architect.grant(t))
+		body["basisVersion"] = 4
+		return body
+	}
+	for index, tc := range []struct {
+		name  string
+		calls []func(liveClaim) map[string]any
+		// facts is how many facts the intake holds after each call.
+		facts []int
+		// waits says whether the step waits on the pending basis after the last call.
+		waits bool
+	}{
+		{"no basis, a pending basis, no basis", []func(liveClaim) map[string]any{noBasis, pending, noBasis}, []int{1, 2, 3}, false},
+		{"a pending basis, no basis, the pending basis again", []func(liveClaim) map[string]any{pending, noBasis, pending}, []int{1, 2, 3}, true},
+		// The second call of each pair is the first made again: a registration with no basis over a
+		// step with none, and the pending basis again over the step it already left pending on it.
+		{"each call made again where its first attempt changed no basis", []func(liveClaim) map[string]any{noBasis, noBasis, pending, pending, pending},
+			[]int{1, 1, 2, 3, 3}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world := basisWorld(int64(540 + index))
+			pendingP(&world)
+			h, facts, architect := basisEngineHarness(t, &world, nil)
+			for call, body := range tc.calls {
+				if recorder := h.request(http.MethodPost, "/legion/v1/gates/register", body(architect), nil); recorder.Code != http.StatusOK {
+					t.Fatalf("call %d = %d: %s", call+1, recorder.Code, recorder.Body)
+				}
+				if got := len(facts.recorded()); got != tc.facts[call] {
+					t.Fatalf("facts after call %d = %d, want %d", call+1, got, tc.facts[call])
+				}
+			}
+			gate := specGateOf(t, h)
+			if waits := gate != nil && gate.PendingOnBasis() && gate.Basis.Pending.Ask == "ask-p4"; waits != tc.waits {
+				t.Fatalf("R's spec step = %#v, want it waiting on ask-p4 %t", gate, tc.waits)
+			}
+		})
+	}
+}
+
+// register_gate reads the ancestor not accepted, and the ancestor's sign-off commits before the
+// registration's fact does: at the seam between the route's reads and its fact, the daemon records
+// P in retro, as the sign-off leaves it. The workflow reads P again in the fact's own transaction
+// and refuses the registration as the route refuses an accepted ancestor, with 409 BASIS_ACCEPTED,
+// and nothing is recorded: no gate row for R, and no register_gate fact marked as applied.
+func TestARegistrationOnAnAncestorAcceptedAfterItsReadIsRefused(t *testing.T) {
+	world := basisWorld(530)
+	var h *harness
+	h, _, architect := basisEngineHarness(t, &world, func(context.Context, string) { putBasisRecord(t, h, phase.Retro) })
+	putBasisRecord(t, h, phase.Accepting)
+
+	refusal := refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", basisBody(architect.grant(t)), nil), http.StatusConflict, "BASIS_ACCEPTED")
+	if !strings.Contains(refusal, basisP) || !strings.Contains(refusal, "retro") {
+		t.Fatalf("refusal = %q, want it naming %s in retro", refusal, basisP)
+	}
+	if got := gateEventsOf(t, h, basisR); got != 0 {
+		t.Fatalf("register_gate facts of %s marked applied = %d, want none", basisR, got)
+	}
+	if gate := specGateOf(t, h); gate != nil {
+		t.Fatalf("R's spec step = %#v, want none", gate)
 	}
 }

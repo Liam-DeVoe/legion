@@ -437,7 +437,7 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	if step := stepOf(state, fresh.root.Key); step.Basis != nil || step.ApprovedVersion != nil {
 		t.Fatalf("after a new version the spec step of %s = %+v (basis %+v), want it closed with no basis and no approval\nstate %s", fresh.root.Key, step, step.Basis, body)
 	}
-	if gate := r.gates(fresh.root.Key)[record.DesignStepSpec]; record.GateOpen(gate) || gate.Basis != nil || gate.RestsOn != fresh.parent.Key {
+	if gate := r.gates(fresh.root.Key)[record.DesignStepSpec]; record.GateOpen(gate) || gate.Basis != nil || !slices.Equal(gate.RestsOn, []string{fresh.parent.Key}) {
 		t.Fatalf("after a new version the spec row of %s = %+v, want it closed with no basis, still resting on %s", fresh.root.Key, gate, fresh.parent.Key)
 	}
 	if standing := state.Issues[fresh.root.Key].Phase; standing != phase.Planning {

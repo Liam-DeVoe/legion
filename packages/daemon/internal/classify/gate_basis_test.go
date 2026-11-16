@@ -31,7 +31,7 @@ func TestApplyDesignGateEventEndsABasisAsAPersonsReviewOfTheRootsDocument(t *tes
 		ApprovedVersion: new(2), ApprovedMark: personal}
 	open := record.OpenOnBasis(earlier, basisAt(registered))
 	pending := record.PendOnBasis(earlier, basisAt(registered), "ask-1")
-	closedOn := func(latest int, approved *int, mark record.EventMark, rests string) record.DesignGate {
+	closedOn := func(latest int, approved *int, mark record.EventMark, rests ...string) record.DesignGate {
 		return record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: latest,
 			ApprovedVersion: approved, ApprovedMark: mark, RestsOn: rests}
 	}
@@ -50,9 +50,9 @@ func TestApplyDesignGateEventEndsABasisAsAPersonsReviewOfTheRootsDocument(t *tes
 		{"a person's approval of an earlier version", open, DesignGateApproved, 3, open},
 		{"a changes request at the registered version", open, DesignGateChangesRequested, 4, closedOn(4, nil, record.EventMark{}, "LEGION-100")},
 		{"a changes request of an earlier version", open, DesignGateChangesRequested, 3, open},
-		{"a newer version of a pending step", pending, DesignGateVersion, 5, closedOn(5, new(2), personal, "")},
-		{"a person's approval of a pending step", pending, DesignGateApproved, 4, closedOn(4, new(4), review, "")},
-		{"a changes request on a pending step", pending, DesignGateChangesRequested, 4, closedOn(4, nil, record.EventMark{}, "")},
+		{"a newer version of a pending step", pending, DesignGateVersion, 5, closedOn(5, new(2), personal)},
+		{"a person's approval of a pending step", pending, DesignGateApproved, 4, closedOn(4, new(4), review)},
+		{"a changes request on a pending step", pending, DesignGateChangesRequested, 4, closedOn(4, nil, record.EventMark{})},
 		{"an earlier version's review of a pending step", pending, DesignGateApproved, 3, pending},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

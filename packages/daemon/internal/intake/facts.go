@@ -322,6 +322,10 @@ type BasisReview struct {
 // otherwise. Changes is a changes request on that version: after such an approval, the newest
 // one; with none, the first review of that version, where it is a changes request. LatestVersion
 // is the document's latest version, and RequestOpen says the request still stands open.
+// AncestorStatus and AncestorLegion are what Dispatch shows of the ancestor's issue, read as
+// register_gate reads it and only where the read found such an approval, which alone opens the
+// step: its status, and whether it carries dispatch.LegionLabel. The approval opens the step only
+// on an ancestor that still meets R1's first condition.
 //
 // It is a fact of its own and never the gate seed's (intake.DispatchArtifact), whose rows are the
 // root's own document's: applied as one of those, the ancestor's read would reach the ancestor's
@@ -339,6 +343,8 @@ type PendingBasisRead struct {
 	Changes         *BasisReview
 	LatestVersion   int
 	RequestOpen     bool
+	AncestorStatus  string
+	AncestorLegion  bool
 }
 
 func (PendingBasisRead) isFact() {}

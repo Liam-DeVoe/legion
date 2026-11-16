@@ -189,7 +189,10 @@ func approvalShown(approval dispatch.Approval) string {
 // root's child_of chain up to the basis's issue, then the step's document of each ancestor below
 // it, nearest first; the ancestor's record; for a pending basis the basis document's reviews; the
 // ancestor's primary document at the version its requirements are read at; and the root's own
-// documents, which viewOf reads.
+// documents, which viewOf reads. None of them is in the fact's transaction, so an ancestor's
+// sign-off can commit between the read of its record and the registration's commit: the workflow
+// reads what the daemon's own store holds of the ancestor again in that transaction, and refuses
+// the registration there as here (workflow's acceptedBasis).
 func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant credential.Grant, req GateRegisterRequest, step record.DesignStep,
 	root dispatch.Issue, document string, own dispatch.Approval) (*record.GateBasis, bool) {
 	ctx := r.Context()

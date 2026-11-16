@@ -227,7 +227,7 @@ func TestAHandOverCarriesAStepOpenOnABasisWithItsBasisAndItsRest(t *testing.T) {
 			if kept := gate.ApprovedByPerson(); kept == nil || kept.Version != 2 || kept.Mark.Seq != 9 {
 				t.Fatalf("the person's approval the carried step keeps = %#v, want the old root's of version 2", kept)
 			}
-			if gate.RestsOn != carryAncestor {
+			if !slices.Equal(gate.RestsOn, []string{carryAncestor}) {
 				t.Fatalf("the carried step rests on %q, want %s", gate.RestsOn, carryAncestor)
 			}
 			if got := restingOn(t, pool); !slices.Equal(got, []string{carryRoot, carryChild}) {
@@ -318,8 +318,8 @@ func TestAHandOverOntoAnAcceptedAncestorCarriesNoRowForTheStepOnItsBasis(t *test
 // old root's document with no basis: the wait was the old root's registration, on one request, and
 // the child's architect registers again. A step whose basis a new version of the old root's
 // document ended comes as the old root held it, closed on the person's approval it kept. Either
-// keeps the rest the old root had (record.DesignGate.RestsOn), from the first time a basis on the
-// ancestor opened the step, while the ancestor is neither done nor accepted: the child rests on
+// keeps the rests the old root had (record.DesignGate.RestsOn), each from the first time a basis on
+// that ancestor opened the step, while the ancestor is neither done nor accepted: the child rests on
 // it as the old root did. A wait that never opened the step leaves no rest, and a rest on an
 // accepted ancestor does not come with the step.
 func TestAHandOverCarriesAStepWithNoStandingBasisClosedWithTheRestTheOldRootHad(t *testing.T) {
@@ -364,11 +364,12 @@ func TestAHandOverCarriesAStepWithNoStandingBasisClosedWithTheRestTheOldRootHad(
 			if (gate.ApprovedVersion == nil) != (tc.approved == nil) || tc.approved != nil && *gate.ApprovedVersion != *tc.approved {
 				t.Fatalf("the carried step's approval = %v, want %v", gate.ApprovedVersion, tc.approved)
 			}
-			wantRest, wantResting := "", []string{carryRoot}
+			var wantRest []string
+			wantResting := []string{carryRoot}
 			if tc.rests {
-				wantRest, wantResting = carryAncestor, []string{carryRoot, carryChild}
+				wantRest, wantResting = []string{carryAncestor}, []string{carryRoot, carryChild}
 			}
-			if gate.RestsOn != wantRest {
+			if !slices.Equal(gate.RestsOn, wantRest) {
 				t.Fatalf("the carried step rests on %q, want %q", gate.RestsOn, wantRest)
 			}
 			if got := restingOn(t, pool); !slices.Equal(got, wantResting) {
