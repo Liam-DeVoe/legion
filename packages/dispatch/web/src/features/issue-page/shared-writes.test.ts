@@ -14,6 +14,7 @@ import type {
   ArchitectureSource,
   ArtifactApproval,
   Issue,
+  IssueComponents,
   IssueDetails,
   UserIssueState,
 } from "../../api/types";
@@ -33,8 +34,15 @@ import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePr
 import { issueStatuses } from "../project/board-model";
 import { writesOf } from "../writes/write-store";
 import { statusGlyph, statusTone } from "./issue-status";
-import { CONTROL_LABELS } from "./page-words";
-import { doc, draw, SPEC_ID, undraw, VERIFICATION_ID } from "./shared-controls-fixture";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import {
+  architecture,
+  doc,
+  draw,
+  SPEC_ID,
+  undraw,
+  VERIFICATION_ID,
+} from "./shared-controls-fixture";
 import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /** What the new issue page's header and Details share (dispatch://INFRA-3935 R8 and R10). */
@@ -289,10 +297,22 @@ test("the four control names are main's", async () => {
 // dispatch://INFRA-3935 R2 and R8: the new issue page's add menu, its `l` key and its rows find
 // the labels control by the name it carries inside `NoTooltips`, which `labelsControlName`
 // builds: the words it draws, then the issue's key, while it has no label; `main`'s name once it
-// has one.
+// has one; and while it saves, the words it draws then, their ellipsis dropped, then the key
+// (decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md).
 test("labelsControlName names the labels control as it is drawn", () => {
   expect(labelsControlName([], "CORE-1", CONTROL_LABELS)).toBe("Add a label to CORE-1");
   expect(labelsControlName(["api"], "CORE-1", CONTROL_LABELS)).toBe("Edit labels");
+  expect(labelsControlName([], "CORE-1", CONTROL_LABELS, ANSWER_LINES)).toBe(
+    "Saving labels of CORE-1"
+  );
+  expect(labelsControlName(["api"], "CORE-1", CONTROL_LABELS, ANSWER_LINES)).toBe(
+    "Saving labels of CORE-1"
+  );
+  expect(labelsControlName(["api"], undefined, CONTROL_LABELS, ANSWER_LINES)).toBe("Saving labels");
+  // Three dots end the words as an ellipsis does.
+  expect(
+    labelsControlName([], "CORE-1", CONTROL_LABELS, { saving_labels: "Saving labels..." })
+  ).toBe("Saving labels of CORE-1");
 
   const view = draw(
     createElement(IssueLabels, {
@@ -312,6 +332,121 @@ test("labelsControlName names the labels control as it is drawn", () => {
     expect(control.textContent).toBe(CONTROL_LABELS.add_label);
   } finally {
     undraw(view);
+  }
+});
+
+// dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md:
+// the new issue page's add menu and its rows find the components picker by the name its trigger
+// carries inside `NoTooltips`, which `componentsControlName` builds: the words the trigger draws,
+// then the issue's key, and while it saves the page's "Saving components…" that `ComponentPicker`
+// draws in their place, its ellipsis dropped. On the issue's own set the trigger draws a bare
+// "+", a symbol no voice user says, and the name stays `main`'s word-first one. Called with the
+// key alone, as `main`'s callers call it, it is `main`'s name, which the trigger carries outside
+// `NoTooltips` in every state, beside `main`'s "Saving…" while it saves (R1).
+test("componentsControlName names the components picker as it is drawn", async () => {
+  const notAttached: IssueComponents = {
+    ids: [],
+    inherited_from: null,
+    mode: "inherit",
+    reason: null,
+    unknown: [],
+  };
+  const ownSet: IssueComponents = { ...notAttached, ids: ["dispatch-server"], mode: "explicit" };
+  const drawnName = (components: IssueComponents, saving = false) =>
+    componentsControlName("CORE-1", {
+      components,
+      controlLabels: CONTROL_LABELS,
+      saving: saving ? ANSWER_LINES : undefined,
+    });
+  expect(componentsControlName("CORE-1")).toBe("Edit components of CORE-1");
+  expect(drawnName(notAttached)).toBe("Set components of CORE-1");
+  expect(drawnName({ ...notAttached, mode: "none", reason: "A process change" })).toBe(
+    "Set components of CORE-1"
+  );
+  expect(drawnName({ ...ownSet, inherited_from: "CORE-9" })).toBe("Set components of CORE-1");
+  expect(drawnName(ownSet)).toBe("Edit components of CORE-1");
+  expect(ANSWER_LINES.saving_components).toBe("Saving components…");
+  expect(drawnName(notAttached, true)).toBe("Saving components of CORE-1");
+  expect(drawnName(ownSet, true)).toBe("Saving components of CORE-1");
+  // The saving words are the ones passed, and three dots end them as an ellipsis does.
+  expect(
+    componentsControlName("CORE-1", {
+      components: notAttached,
+      controlLabels: CONTROL_LABELS,
+      saving: { saving_components: "Writing components..." },
+    })
+  ).toBe("Writing components of CORE-1");
+
+  const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const tree = spyOn(api, "getArchitecture").mockResolvedValue(architecture);
+  // Each save is held until the case answers it.
+  const answers: ReturnType<typeof Promise.withResolvers<Issue>>[] = [];
+  const patchIssue = answerIssuePatches().mockImplementation(() => {
+    const answer = Promise.withResolvers<Issue>();
+    answers.push(answer);
+    return answer.promise;
+  });
+  const line = (components: IssueComponents, key: string) =>
+    createElement(IssueComponentsLine, {
+      issue: { components, key, project: "CORE", status: "todo", title: "Ship" },
+    });
+  const user = userEvent.setup();
+  // Picks a component in the picker `trigger` opens and closes it, so its save goes.
+  const save = async (trigger: HTMLElement) => {
+    await user.click(trigger);
+    const body = within(document.body);
+    await user.click(
+      await body.findByRole("option", { name: "dispatch-server · Dispatch server" })
+    );
+    // The picker's own Escape handler sits on its search box (`IssueComponentsLine.test.tsx`).
+    body.getByRole("combobox", { name: "Search components" }).focus();
+    await user.keyboard("{Escape}");
+  };
+  const views: RenderResult[] = [];
+  try {
+    const inside = draw(
+      createElement("div", null, line(notAttached, "CORE-1"), line(ownSet, "CORE-2")),
+      "inside"
+    );
+    views.push(inside);
+    const scope = within(inside.container);
+    const trigger = await scope.findByRole("button", { name: "Set components of CORE-1" });
+    expect(trigger.textContent).toBe(CONTROL_LABELS.components_set);
+    expect("Set components of CORE-1".startsWith(trigger.textContent ?? "")).toBe(true);
+    expect(scope.getByRole("button", { name: "Edit components of CORE-2" }).textContent).toBe("+");
+
+    // A save in flight: `ComponentPicker` draws the page's "Saving components…", and the name
+    // begins with those words, their ellipsis dropped.
+    await save(trigger);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    const saving = await scope.findByRole("button", { name: "Saving components of CORE-1" });
+    expect(saving.textContent).toBe(ANSWER_LINES.saving_components);
+    const said = (saving.textContent ?? "").replace(/…$/u, "");
+    expect("Saving components of CORE-1".startsWith(said)).toBe(true);
+    await act(async () => {
+      answers[0]?.resolve({} as Issue);
+    });
+    await scope.findByRole("button", { name: "Set components of CORE-1" });
+
+    const outside = draw(line(notAttached, "CORE-1"), "outside");
+    views.push(outside);
+    const mains = await within(outside.container).findByRole("button", {
+      name: "Edit components of CORE-1",
+    });
+    expect(mains.textContent).toBe("Set components");
+    await save(mains);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mains.textContent).toBe("Saving…"));
+    expect(mains.getAttribute("aria-label")).toBe("Edit components of CORE-1");
+  } finally {
+    for (const answer of answers) answer.resolve({} as Issue);
+    await act(settle);
+    for (const view of views) undraw(view);
+    patchIssue.mockRestore();
+    tree.mockRestore();
+    sources.mockRestore();
   }
 });
 
