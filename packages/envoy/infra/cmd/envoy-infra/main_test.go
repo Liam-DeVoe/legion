@@ -154,6 +154,92 @@ func TestRenderPrintsToStdout(t *testing.T) {
 	}
 }
 
+// calloutUsers are the users of the nats-start-script rows below: a client with a seed, the session
+// user whom a client presenting no credential becomes, and the auth service's user. Public keys
+// only; their seeds were discarded when they were made.
+const calloutUsers = `"users": [
+    {"name": "example-hub", "nkey": "UCVLUXHFBITELHZUNIQG35K5PGQJIP6RX4LUG32L5I22JL7VGXKJQ4BV", "publish": {"allow": ["notifications.>"]}, "subscribe": {"allow": ["_INBOX.>"]}, "hasSeed": true},
+    {"name": "example-sessions", "nkey": "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5", "publish": {"allow": ["notifications.agent.>"]}, "subscribe": {"allow": ["_INBOX.>"]}},
+    {"name": "example-auth", "nkey": "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "publish": {"allow": ["$SYS._INBOX.>"]}, "subscribe": {"allow": ["$SYS.REQ.USER.AUTH"]}, "hasSeed": true}
+  ]`
+
+// calloutJSON is the callout of the nats-start-script rows below, as the authorization file holds
+// it.
+const calloutJSON = `"callout": {"issuer": "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G", "xkey": "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL", "serviceUser": "example-auth"}`
+
+// startScriptWithout is the script `envoy-infra render nats-start-script` printed, at
+// cybermonklabs/legion 545b211633 (before the callout existed), for calloutUsers with the session
+// user as noAuthUser, `--config-header x --server-arg -js --config-path /tmp/n.conf`.
+const startScriptWithout = `set -eu; printf '%s' '# x
+authorization {
+  users: [
+    # example-hub
+    {"nkey": "UCVLUXHFBITELHZUNIQG35K5PGQJIP6RX4LUG32L5I22JL7VGXKJQ4BV", "permissions": {"publish": {"allow": ["notifications.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}}
+    # example-sessions
+    {"nkey": "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5", "permissions": {"publish": {"allow": ["notifications.agent.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}}
+    # example-auth
+    {"nkey": "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "permissions": {"publish": {"allow": ["$SYS._INBOX.>"]}, "subscribe": {"allow": ["$SYS.REQ.USER.AUTH"]}}}
+  ]
+}
+# example-sessions: a client presenting no credential becomes this user
+no_auth_user: "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5"
+' > /tmp/n.conf; exec nats-server --config /tmp/n.conf -js`
+
+// TestRenderNatsStartScriptWithACallout: the authorization file takes the callout and
+// privateProjects as core.Authorization spells them. With a callout the script's configuration
+// gains the authorization timeout and the auth_callout block, listing every keyed user's key;
+// without one it is byte for byte the script the command printed before the callout existed; and
+// privateProjects beside a session user is refused, naming it.
+func TestRenderNatsStartScriptWithACallout(t *testing.T) {
+	render := func(t *testing.T, authorization string) (string, string, int) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "a.json")
+		if err := os.WriteFile(path, []byte(authorization), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		args := []string{"render", "nats-start-script", "--authorization-file", path,
+			"--config-header", "x", "--server-arg", "-js", "--config-path", "/tmp/n.conf"}
+		code := run(context.Background(), args, &stdout, &stderr, noStore(t))
+		return stdout.String(), stderr.String(), code
+	}
+
+	t.Run("with a callout", func(t *testing.T) {
+		stdout, stderr, code := render(t, `{`+calloutUsers+`, "noAuthUser": "example-sessions", `+calloutJSON+`}`)
+		if code != 0 || stderr != "" {
+			t.Fatalf("exit %d, stderr %q; want 0 and no stderr", code, stderr)
+		}
+		want := strings.Replace(startScriptWithout, "  ]\n}\n", "  ]\n"+
+			"  timeout: 5\n"+
+			"  auth_callout {\n"+
+			`    issuer: "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G"`+"\n"+
+			`    auth_users: ["UCVLUXHFBITELHZUNIQG35K5PGQJIP6RX4LUG32L5I22JL7VGXKJQ4BV", "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5", "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN"]`+"\n"+
+			`    xkey: "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"`+"\n"+
+			"  }\n"+
+			"}\n", 1)
+		if stdout != want {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+		}
+	})
+	t.Run("without a callout, the script printed before callouts existed", func(t *testing.T) {
+		stdout, stderr, code := render(t, `{`+calloutUsers+`, "noAuthUser": "example-sessions"}`)
+		if code != 0 || stderr != "" {
+			t.Fatalf("exit %d, stderr %q; want 0 and no stderr", code, stderr)
+		}
+		if stdout != startScriptWithout {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, startScriptWithout)
+		}
+	})
+	t.Run("private projects beside a session user are refused, naming it", func(t *testing.T) {
+		stdout, stderr, code := render(t, `{`+calloutUsers+`, "noAuthUser": "example-sessions", `+calloutJSON+`, "privateProjects": true}`)
+		want := `refused: --authorization-file: authorization: privateProjects: noAuthUser "example-sessions": ` +
+			"a client presenting no credential would become a user while a project is private\n"
+		if code != 2 || stdout != "" || stderr != want {
+			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and stderr %q", code, stdout, stderr, want)
+		}
+	})
+}
+
 // TestAnInterruptDuringTheWriteEndsAsAnErrorAfterWriting: an interrupt while PutSecretValue is in
 // flight cancels the call rather than killing the process, so generate ends as any write whose
 // answer never came does: exit 1, the public key it printed before the write, `version id:

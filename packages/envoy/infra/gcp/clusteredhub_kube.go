@@ -42,6 +42,13 @@ const (
 	// new nats.conf (the StatefulSet is applied after the ConfigMap), as a session-user change does;
 	// a raise rolls them as well, which costs a restart and keeps one rule.
 	clusteredHubMaxFileStoreAnnotation = "envoy-infra.sjawhar.dev/max-file-store"
+	// clusteredHubAuthCalloutAnnotation, on the hub's pod template, holds the SHA-256 of auth.conf's
+	// callout lines (core.Authorization.CalloutBlock), and is absent without authCallout.
+	// nats-server v2.15.1 refuses a whole reload that changes the callout ("config reload not
+	// supported for AuthCallout", which clusteredhub_callout_live_test.go measures), so a callout
+	// change, a user added to or removed from auth_users among them, rolls the pods as a
+	// session-user change does; a change of a grant alone leaves the lines as they were.
+	clusteredHubAuthCalloutAnnotation = "envoy-infra.sjawhar.dev/auth-callout"
 	// clusteredHubAuthConf is the file of the chart's ConfigMap holding the users' authorization,
 	// which nats.conf includes and the reloader watches.
 	clusteredHubAuthConf = "auth.conf"
@@ -214,6 +221,9 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 	annotations := pulumi.Map{clusteredHubMaxFileStoreAnnotation: gibibytes(s.size.maxFileStoreGb)}
 	if s.sessionNKey != "" {
 		annotations[clusteredHubNoAuthUserAnnotation] = pulumi.String(s.sessionNKey)
+	}
+	if s.calloutDigest != "" {
+		annotations[clusteredHubAuthCalloutAnnotation] = pulumi.String(s.calloutDigest)
 	}
 	podMerge["metadata"] = pulumi.Map{"annotations": annotations}
 	podTemplate["merge"] = podMerge

@@ -1,6 +1,8 @@
 package gcp
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +14,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/infra/nats"
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
@@ -165,6 +168,11 @@ type ClusteredNatsHubArgs struct {
 	Users []NATSUserArgs `pulumi:"users,optional"`
 	// The user a client presenting no credential becomes, granted core.SessionPermissions.
 	SessionUser *SessionUserArgs `pulumi:"sessionUser,optional"`
+	// The auth service's callout, as gcp:NatsHub's: unset, the hub renders exactly what it rendered
+	// before callouts existed.
+	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
+	// The deployment may make a Dispatch project private, as gcp:NatsHub's privateProjects.
+	PrivateProjects bool `pulumi:"privateProjects,optional"`
 	// The hub's tailnet entry: a Tailscale Service serving NATS and the session listener.
 	Tailnet *ClusteredHubTailnetArgs `pulumi:"tailnet,optional"`
 	// The tailnet auth key the tailnet hosts join with: required with tailnet, refused without.
@@ -249,7 +257,11 @@ type clusteredHubSettings struct {
 	// sessionNKey is the session user's public key, "" without a session user: the hub pods'
 	// no-auth-user annotation, which rolls them when it changes (clusteredHubNoAuthUserAnnotation).
 	sessionNKey string
-	tailnet     *clusteredHubTailnet
+	// calloutDigest is the hex SHA-256 of auth.conf's callout lines (core.Authorization.CalloutBlock),
+	// "" without authCallout: the hub pods' auth-callout annotation, which rolls them when it
+	// changes (clusteredHubAuthCalloutAnnotation).
+	calloutDigest string
+	tailnet       *clusteredHubTailnet
 }
 
 // clusteredHubSize is each hub pod's volume, JetStream's file store within it, nats-server's
@@ -282,9 +294,10 @@ type clusteredHubListener struct {
 // clusteredHubSeededInput names the first plain string input of args that holds an nkey seed
 // (bus.HoldsSeed), by its path and never its value. Every one of them reaches a Kubernetes object,
 // the chart's values or a refusal that quotes it, and each user's machine id becomes that user's
-// rules before core sees them, as seededInput says of gcp:NatsHub's. A user's name, nkey and rule
-// entries, the session user's, and the listener's nkey are core's to refuse, as they are for
-// gcp:NatsHub; kubeconfig and tailnetAuthKey are Inputs, checked once they resolve.
+// rules before core sees them, as seededInput says of gcp:NatsHub's; the authCallout's fields are
+// named by the hub's own path, as gcp:NatsHub names them (calloutSeedFields). A user's name, nkey
+// and rule entries, the session user's, and the listener's nkey are core's to refuse, as they are
+// for gcp:NatsHub; kubeconfig and tailnetAuthKey are Inputs, checked once they resolve.
 func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 	type field struct{ path, value string }
 	fields := []field{
@@ -327,6 +340,9 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 			opt("tailnet.listener.memory", l.Memory)
 			list("tailnet.listener.allowedHosts", l.AllowedHosts)
 		}
+	}
+	for _, f := range calloutSeedFields(args.AuthCallout) {
+		fields = append(fields, field{f[0], f[1]})
 	}
 	for _, f := range fields {
 		if bus.HoldsSeed(f.value) {
@@ -413,11 +429,14 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 			return clusteredHubSettings{}, err
 		}
 	}
+	if args.AuthCallout != nil && args.Tailnet != nil && args.Tailnet.Listener != nil {
+		return clusteredHubSettings{}, listenerBesideCallout("tailnet.listener")
+	}
 	var listener *listenerUser
 	if s.tailnet, listener, err = newClusteredHubTailnet(args, s); err != nil {
 		return clusteredHubSettings{}, err
 	}
-	auth, err := authorization(args.Users, listener, args.SessionUser)
+	auth, err := authorization(args.Users, listener, args.SessionUser, args.AuthCallout, args.PrivateProjects)
 	if err != nil {
 		return clusteredHubSettings{}, authorizationRefusal(err)
 	}
@@ -426,6 +445,10 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	}
 	if args.SessionUser != nil {
 		s.sessionNKey = args.SessionUser.NKey
+	}
+	if block := auth.CalloutBlock(); block != "" {
+		sum := sha256.Sum256([]byte(block))
+		s.calloutDigest = hex.EncodeToString(sum[:])
 	}
 	return s, nil
 }
@@ -731,10 +754,12 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	return tailnet, &listenerUser{machineID: machineID, nkey: l.NKey}, nil
 }
 
-// authorizationRefusal is a refusal of the users' rendering as a core.InputError: one that already
-// is passes unchanged; any other names the input its message starts with, as authorization and core
-// name a user (users[<i>], the listener, the session user or its noAuthUser).
+// authorizationRefusal is a refusal of the users' rendering as a core.InputError: core's refusal of
+// the callout names the hub's input authCallout (calloutRefusal); any other that already is passes
+// unchanged; any other names the input its message starts with, as authorization and core name a
+// user (users[<i>], the listener, the session user or its noAuthUser).
 func authorizationRefusal(err error) error {
+	err = calloutRefusal(err)
 	var input *core.InputError
 	if errors.As(err, &input) {
 		return err
