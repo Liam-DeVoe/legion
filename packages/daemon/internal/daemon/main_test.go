@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"os"
+	"runtime/debug"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -53,4 +55,25 @@ func TestMain(m *testing.M) {
 			return testbuild.Main(func() int { return testnats.Main(m) })
 		})
 	}))
+}
+
+// This test binary links no module of testcontainers-go, so no start of it pays that library's
+// package init, which reads every process on the machine: 7.6 to 11.5 s and 600 to 910 MB of
+// allocation per start of this binary on a machine that ran 13,000 to 20,000 processes
+// (packages/daemon/internal/testnats/container.go). The binary starts itself again for each role
+// process of the idle rig (TestIdleRigRoleProcess above), and each of those starts paid that init.
+// The test reads the modules the binary was built from, as `go version -m` prints them.
+func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		t.Fatal("this test binary carries no build information to read its modules from")
+	}
+	if len(info.Deps) == 0 {
+		t.Fatal("this test binary's build information lists no module, so it cannot say what is linked")
+	}
+	for _, dep := range info.Deps {
+		if strings.HasPrefix(dep.Path, "github.com/testcontainers/") {
+			t.Errorf("this test binary links %s %s, and every start of it as a role process pays that module's package init; `go list -deps -test -f '{{.ImportPath}} {{.Imports}}' ./internal/daemon/` names the package that imports it", dep.Path, dep.Version)
+		}
+	}
 }

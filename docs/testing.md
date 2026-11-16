@@ -494,6 +494,15 @@ that other work shares.
   `HostConfigModifier` for a `GenericContainer` (`packages/envoy/internal/testpg/testpg.go` is one).
   `WithHostConfigModifier` replaces any modifier an earlier option set, so a test that needs a host
   configuration of its own sets the limits in that same modifier.
+- A test binary that starts itself again as a helper process links no testcontainers-go. That
+  library's package init reads every process on the machine, which cost 7.6 to 11.5 s and 600 to
+  910 MB of allocation at each start of `internal/daemon`'s test binary on a box that ran 13,000 to
+  20,000 processes, and the binary pays it at each of its starts. Such a test drives its container
+  through the docker CLI, with `--cpus` and `--memory` on `docker create`, as
+  `packages/daemon/internal/testnats/container.go` does, whose reaper removes the containers of a
+  test binary that is killed before it removes them.
+  `TestThisTestBinaryLinksNoTestcontainers` in the daemon's `cmd/legion`, `internal/daemon` and
+  `internal/testnats` fails when the library is linked again.
 - In a script, `docker run` takes `--cpus` and `--memory` before the image. A Postgres whose data
   directory is a `tmpfs` mount counts that data against its memory limit. `scripts/e2e/README.md`
   lists each proof's containers and their limits.
