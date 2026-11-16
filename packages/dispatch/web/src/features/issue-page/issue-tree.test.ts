@@ -617,6 +617,34 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   expect(firstLineOf(atTheEdge)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
 });
 
+// R1 and decision 51: a statement opens on its label - `R1.`, `12.`, `1.2.` - and the label is
+// part of its first line, not a sentence end. A first word that ends in `.` and is longer than
+// five characters or holds no digit is no label, and ends the line as any other sentence does.
+test("a leading label is no sentence end", () => {
+  expect(firstLineOf("R1. Draw the tree from one read. Then the rest.")).toEqual({
+    cut: true,
+    line: "R1. Draw the tree from one read.",
+  });
+  expect(firstLineOf("12. Twelve.")).toEqual({ cut: false, line: "12. Twelve." });
+  expect(firstLineOf("t3. Cut the patch.").line).toBe("t3. Cut the patch.");
+  expect(firstLineOf("1.2. Nested.").line).toBe("1.2. Nested.");
+  expect(firstLineOf("Mr. Smith went home.").line).toBe("Mr.");
+  expect(firstLineOf("R1234. Six.").line).toBe("R1234.");
+  expect(firstLineOf("1.2.3. Six.").line).toBe("1.2.3.");
+
+  // A labelled sentence past the limit is cut at a word inside it, and its label stays.
+  const long = firstLineOf(`R1. ${"word ".repeat(30)}`);
+  expect(long.line.length).toBeLessThanOrEqual(100);
+  expect(long.line.startsWith("R1. ")).toBe(true);
+  expect(long.cut).toBe(true);
+  expect(drawnLine(long).endsWith("…")).toBe(true);
+  // A label followed by one unbroken run is cut at the limit, never at the label's own space.
+  expect(firstLineOf(`R1. ${"a".repeat(200)}`)).toEqual({
+    cut: true,
+    line: `R1. ${"a".repeat(96)}`,
+  });
+});
+
 // Ruling 1 and row 20 of the differences: a line that is a whole sentence ends on its own mark,
 // so a cut after it draws no ellipsis - "Thread 1 opens here.…" reads as four dots - and a cut
 // that ended inside a sentence draws one.
