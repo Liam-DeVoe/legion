@@ -24,10 +24,12 @@ import type {
   IssueDetails,
   UserState,
 } from "../../api/types";
+import { linkText, pageInkText } from "../../theme/classes";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { buildDispatchReference } from "../refs/routes";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
@@ -356,6 +358,59 @@ test("the blocked-by editor opened again draws no refusal from the attempt befor
   }
 });
 
+// A closed section unmounts its rows, so the blocked-by editor's state is the panel's and not
+// its row's: a reader who closes Development while the save is out finds the editor, the list
+// they typed and the refusal that landed meanwhile when they open it again.
+test("closing Development keeps the blocked-by editor, its typed list and a refusal that lands after the close", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const saving = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => saving.promise);
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    await user.click(await screen.findByLabelText("Issues CORE-1 waits on"));
+    await user.paste("CORE-2 CORE-9");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith(
+        "CORE-1",
+        { blocked_by: ["CORE-2", "CORE-9"] },
+        keyedAttempt
+      )
+    );
+
+    const development = screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development });
+    await user.click(development);
+    expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument();
+    saving.reject(
+      new ApiError(400, { code: "BLOCKED_BY_INPUT", error: "blocked_by issue CORE-9 not found" })
+    );
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    await user.click(development);
+    expect(
+      screen.queryAllByLabelText("Issues CORE-1 waits on"),
+      "closing Development threw away the open blocked-by editor"
+    ).toHaveLength(1);
+    expect(
+      screen.getByLabelText<HTMLInputElement>("Issues CORE-1 waits on").value,
+      "closing Development threw away the list typed into the editor"
+    ).toBe("CORE-2 CORE-9");
+    expect(
+      screen.queryByRole("alert")?.textContent,
+      "the refusal that landed while Development was closed is drawn nowhere"
+    ).toBe("There is no issue CORE-9.");
+  } finally {
+    unmount();
+    restore();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "issue.margin-sections"));
+  }
+});
+
 // R21: each refusal of a blocked-by list is a sentence in the page's words, with the key the
 // refusal is about inside it as the reader's own text: a key Dispatch knows no issue for, the
 // issue itself, and a list longer than an issue waits on.
@@ -530,6 +585,81 @@ test("Details' Blocks is read again when another issue starts waiting on this on
       "Blocks does not draw the issue that started waiting on CORE-1"
     ).toHaveAttribute("href", "/issues/CORE-5");
     expect(row).toHaveTextContent("Ship the release");
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Blocks says None only for an answer that holds nothing waiting on the issue: while that answer
+// is still out the row says nothing, rather than read as an issue nothing waits on.
+test("Details' Blocks says nothing while its read is out, and None once it answers with none", async () => {
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const answer = Promise.withResolvers<GraphReferences>();
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => answer.promise);
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+
+  try {
+    await waitFor(() =>
+      expect(getReferences).toHaveBeenCalledWith(reference, { kind: "blocked_by" })
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.blocks),
+      "Blocks reads None while its read is out"
+    ).not.toHaveTextContent(CONTROL_LABELS.none);
+
+    answer.resolve({
+      edges: [],
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    });
+    await waitFor(() =>
+      expect(
+        detailsRow(PROPERTY_LABELS.blocks),
+        "Blocks does not read None for an answer that holds nothing waiting on the issue"
+      ).toHaveTextContent(CONTROL_LABELS.none)
+    );
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Details draws its own control of Referenced by: the application's `ReferencedByToggle` is in
+// its link blue, one sky-blue control among values in the page's ink.
+test("Referenced by's control is in the page's ink, opens the list and reads the count", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 3 });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const { unmount } = renderDetails();
+
+  try {
+    const toggle = await screen.findByRole("button", { name: "Referenced by (3)" });
+    expect(toggle, "Referenced by's control is not in the page's ink").toHaveClass(pageInkText);
+    for (const token of linkText.split(" ")) {
+      expect(toggle, "Referenced by's control is in the application's link blue").not.toHaveClass(
+        token
+      );
+    }
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(toggle, "Referenced by's control does not say the list is open").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    expect(toggle, "Referenced by's control names no list it opens").toHaveAttribute(
+      "aria-controls",
+      list.id
+    );
   } finally {
     unmount();
     getReferences.mockRestore();
@@ -967,6 +1097,55 @@ test("a parent Dispatch refuses is said in the Parent row with Dispatch's reason
       ).toBe(reason)
     );
     expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The route's save is Details' own write, and inline, so the write store leaves its refusal to
+// the row: a route Dispatch refuses is said where it was saved, in Dispatch's words and with
+// Retry, as a refused parent is in the Parent row.
+test("a route Dispatch refuses is said in the Messages go to row with Dispatch's reason and Retry", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const route = "role:legion-controller-core";
+  const reason = "invalid route";
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: reason }))
+  );
+  const { unmount } = renderDetails();
+  const routeRow = () => {
+    const row = document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="route"]`);
+    if (!(row instanceof HTMLElement)) throw new Error("Details draws no Messages go to row");
+    return row;
+  };
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(route);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledWith("CORE-1", { route }, keyedAttempt));
+
+    await waitFor(() =>
+      expect(
+        within(routeRow()).queryByRole("alert")?.textContent,
+        "the Messages go to row does not say why Dispatch refused the route"
+      ).toBe(reason)
+    );
+    await user.click(within(routeRow()).getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(
+      patchIssue.mock.calls.map(([, input]) => input),
+      "Retry did not send the refused route again"
+    ).toEqual([{ route }, { route }]);
+    await waitFor(() =>
+      expect(
+        within(routeRow()).queryByRole("alert"),
+        "the refusal is still said after the route landed"
+      ).not.toBeInTheDocument()
+    );
   } finally {
     unmount();
     restore();

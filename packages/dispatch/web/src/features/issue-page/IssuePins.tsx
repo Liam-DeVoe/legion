@@ -18,9 +18,7 @@ import {
 import { AgentParts } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
-import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { drawnLine, firstLineOf } from "./issue-tree";
-import { useMarginDrawer } from "./margin-slot";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
@@ -49,8 +47,6 @@ export function IssuePins({
   issueKey: string;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const drawer = useMarginDrawer();
-  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const pins = pinnedConversations([...dismissed]);
   const eventPins = pinnedEventIds([...dismissed]);
   const reading = pins.length > 0;
@@ -91,10 +87,6 @@ export function IssuePins({
       .find((one) => one.id === id);
     return message === undefined ? undefined : recordWords(message.body, message.body_tree);
   };
-  // On a phone Details covers the page the link lands on.
-  const leave = () => {
-    if (phone) drawer?.setOpen(false);
-  };
   const link = `dispatch-inline-link ${ROW_LINK} ${pageInkText}`;
   return (
     <section aria-label={CONTROL_LABELS.pinned} data-testid="issue-pins">
@@ -115,7 +107,6 @@ export function IssuePins({
               <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                 <Link
                   className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${link}`}
-                  onClick={leave}
                   to={
                     pin.kind === "handoff"
                       ? buildIssuePath({ key: issueKey, kind: "activity" })
@@ -152,7 +143,6 @@ export function IssuePins({
                 )}
                 <Link
                   className={`${event === undefined ? "min-w-0 flex-1" : "shrink-0"} ${link}`}
-                  onClick={leave}
                   to={buildIssuePath({ key: issueKey, kind: "activity" })}
                   {...pageChrome}
                 >

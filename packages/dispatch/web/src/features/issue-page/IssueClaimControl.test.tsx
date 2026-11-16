@@ -303,42 +303,48 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     unresponsive("session-one", "Implementer", lastSeen),
   ]);
-  // The chip's `title` is read here, so it is drawn on a host that raises one (a List row, a
-  // Board card); the words it draws are the same on either surface.
-  const view = claimRow({ ...base, claim }, {}, { tooltips: true });
+  // Drawn as Details draws it, inside `NoTooltips`: the chip says in its words what a tooltip
+  // would have held, and carries no `title`, since the issue page raises no tooltip.
+  const view = claimRow({ ...base, claim });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
     expect(screen.queryByText("not running")).not.toBeInTheDocument();
     // The state and the moment it started, which is what tells a reader whether to wait.
-    expect(stalled).toHaveTextContent("unresponsive since");
+    expect(stalled).toHaveTextContent(
+      `${CONTROL_LABELS.unresponsive} ${CONTROL_LABELS.unresponsive_since}`
+    );
     expect(
       within(stalled)
         .getByTestId("issue-claim-unresponsive-since")
         .querySelector("time")
         ?.getAttribute("datetime")
     ).toBe(new Date(lastSeen).toISOString());
-    const chip = screen.getByTestId("issue-claim");
-    expect(chip.getAttribute("title")).toContain("missed its heartbeats without ending");
-    expect(chip.getAttribute("title")).toContain(
-      `last seen ${new Date(lastSeen).toLocaleString()}`
-    );
     // The wait the chip names is the sum the server refuses by, not a guess of its own, and the
     // issue is not free until then.
     const takeableAt = lastSeen + ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS;
-    expect(chip.getAttribute("title")).toContain(
-      `keeps this issue until ${new Date(takeableAt).toLocaleString()}, when another agent may take it`
+    const free = within(stalled).getByTestId("issue-claim-takeable");
+    expect(free.textContent).toBe(
+      `, ${CONTROL_LABELS.takeable} ${new Date(takeableAt).toLocaleString(undefined, {
+        dateStyle: "short",
+        timeStyle: "short",
+      })}`
     );
-    expect(
-      within(stalled)
-        .getByTestId("issue-claim-takeable")
-        .querySelector("time")
-        ?.getAttribute("datetime")
-    ).toBe(new Date(takeableAt).toISOString());
+    expect(free.querySelector("time")?.getAttribute("datetime")).toBe(
+      new Date(takeableAt).toISOString()
+    );
+    const chip = screen.getByTestId("issue-claim");
     expect(
       chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
     ).toBe("unresponsive");
-    expect(within(chip).getByRole("img", { name: "Unresponsive" })).toBeDefined();
+    // That the holder missed its heartbeats without ending, which a tooltip held, is the name of
+    // the holder's dot.
+    expect(
+      within(chip).getByRole("img", {
+        name: /^Unresponsive · .*missed its heartbeats without ending/u,
+      })
+    ).toBeDefined();
+    expect(chip.getAttribute("title"), "the chip in Details carries a tooltip").toBeNull();
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -424,8 +430,9 @@ test("the issue read's own holder_state outranks an agent list that does not nam
     last_seen: lastSeen,
     takeable_at: takeableAt,
   };
-  // Read on a host that raises a tooltip, because this row reads the chip's `title` too.
-  const view = claimRow({ ...base, claim }, liveness, { tooltips: true });
+  // Drawn as Details draws it, inside `NoTooltips`: the moment the claim comes free is the
+  // chip's own words, and the chip carries no `title`.
+  const view = claimRow({ ...base, claim }, liveness);
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
@@ -436,15 +443,18 @@ test("the issue read's own holder_state outranks an agent list that does not nam
         .querySelector("time")
         ?.getAttribute("datetime")
     ).toBe(lastSeen);
-    expect(
-      within(stalled)
-        .getByTestId("issue-claim-takeable")
-        .querySelector("time")
-        ?.getAttribute("datetime")
-    ).toBe(takeableAt);
-    expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(
-      `keeps this issue until ${new Date(takeableAt).toLocaleString()}`
+    const free = within(stalled).getByTestId("issue-claim-takeable");
+    expect(free.querySelector("time")?.getAttribute("datetime")).toBe(takeableAt);
+    expect(free.textContent).toBe(
+      `, ${CONTROL_LABELS.takeable} ${new Date(takeableAt).toLocaleString(undefined, {
+        dateStyle: "short",
+        timeStyle: "short",
+      })}`
     );
+    expect(
+      screen.getByTestId("issue-claim").getAttribute("title"),
+      "the chip in Details carries a tooltip"
+    ).toBeNull();
   } finally {
     view.unmount();
     agents.mockRestore();

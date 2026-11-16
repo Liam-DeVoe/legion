@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefCallback, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import {
@@ -24,7 +24,7 @@ import { stateForIssue } from "../issue/pins";
 import { RepoControl } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
-import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
+import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { BlockedByControl, IssueLine } from "./BlockedByControl";
 import { DetailsErrorLine } from "./details-error";
@@ -47,6 +47,7 @@ import {
 } from "./page-structure";
 import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type MarginSections, useMarginSections } from "./useMarginSections";
 import { waitingOnReader } from "./waiting";
@@ -151,6 +152,13 @@ export function IssueMarginPanel({
   const [referencesOpen, setReferencesOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const referencesPanelId = useId();
+  // The blocked-by editor's state is the panel's and not its row's, because a closed section
+  // unmounts its rows and the panel stays drawn for the life of the page (`slots/details.tsx`):
+  // a list typed before the reader closed Development, and a refusal that lands after, are
+  // still there when it opens again (`BlockedByControl`).
+  const [blockedByEditing, setBlockedByEditing] = useState(false);
+  const [blockedByDraft, setBlockedByDraft] = useState("");
+  const blockedByWrite = useIssueBlockedBy(issue.key, () => setBlockedByEditing(false));
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // What Details reads beyond the issue - the titles of the issues around this one, and its
   // links on GitHub - only while the drawer is open, so a load that leaves it shut costs no
@@ -306,7 +314,15 @@ export function IssueMarginPanel({
           ) : null}
         </Row>
         <Row glyph="⊘" label={PROPERTY_LABELS.blocked_by}>
-          <BlockedByControl issue={issue} titleOf={titleOf} />
+          <BlockedByControl
+            draft={blockedByDraft}
+            editing={blockedByEditing}
+            issue={issue}
+            onDraft={setBlockedByDraft}
+            onEditing={setBlockedByEditing}
+            titleOf={titleOf}
+            write={blockedByWrite}
+          />
           {/* The blockers are drawn by their keys where their titles could not be read, and the
               row says so rather than drawing keys alone as though they had none. */}
           {blockerTitles.isError ? (
@@ -318,9 +334,9 @@ export function IssueMarginPanel({
             />
           ) : null}
         </Row>
-        {/* What this issue blocks: drawn whenever the panel is, with None where nothing waits
-            on it and the failure where the read failed, as every other row of the panel says
-            what it holds. */}
+        {/* What this issue blocks: drawn whenever the panel is, with None where the answer holds
+            nothing that waits on it, nothing while that answer is still out, and the failure
+            where the read failed, as every other row of the panel says what it holds. */}
         <Row glyph="⊙" label={PROPERTY_LABELS.blocks}>
           {blocking.isError ? (
             <DetailsErrorLine
@@ -329,7 +345,7 @@ export function IssueMarginPanel({
               onRetry={() => void blocking.refetch()}
               retrying={blocking.isFetching}
             />
-          ) : blocks.length === 0 ? (
+          ) : blocking.isPending ? null : blocks.length === 0 ? (
             none
           ) : (
             <IssueList issues={blocks} />
@@ -374,6 +390,19 @@ export function IssueMarginPanel({
             onClose={() => onEditingField(null)}
             writes={writes}
           />
+          {/* A route Dispatch refused, said in the row it was saved from with Dispatch's reason
+              and Retry, as the Parent row says a refused parent. The save is Details' own write
+              (the details slot's `useIssueHeaderWrites`), and inline, so the write store leaves
+              its refusal to this row, and the header, which says the page's other refusals,
+              never sees it. */}
+          {writes.updateIssue.isError && writes.updateIssue.variables?.route !== undefined ? (
+            <DetailsErrorLine
+              error={writes.updateIssue.error}
+              message={apiErrorMessage(writes.updateIssue.error, "Could not update this issue.")}
+              onRetry={writes.drafts.retry}
+              retrying={writes.updateIssue.isPending}
+            />
+          ) : null}
         </Row>
         <Row glyph="▦" label={PROPERTY_LABELS.components}>
           <IssueComponentsLine inRow issue={issue} />
@@ -427,12 +456,27 @@ export function IssueMarginPanel({
           />
         </Row>
         <Row wide>
-          <ReferencedByToggle
-            controls={referencesPanelId}
-            count={issue.referenced_by_count}
-            expanded={referencesOpen}
-            onToggle={() => setReferencesOpen((open) => !open)}
-          />
+          {/* Details' own control of the list, with the name, the role and the states of the
+              application's `ReferencedByToggle`, in the page's ink rather than its link blue. A
+              count of zero is a fact and not a control, as there: opening it would only say
+              that nothing references the issue. */}
+          {issue.referenced_by_count === 0 ? (
+            <span
+              className={`inline-flex min-h-11 items-center text-sm md:min-h-0 ${pageQuietText}`}
+            >
+              Referenced by (0)
+            </span>
+          ) : (
+            <button
+              aria-controls={referencesPanelId}
+              aria-expanded={referencesOpen}
+              className={`inline-flex min-h-11 items-center text-left text-sm font-medium md:min-h-0 ${ROW_LINK} ${pageInkText}`}
+              onClick={() => setReferencesOpen((open) => !open)}
+              type="button"
+            >
+              {`Referenced by (${issue.referenced_by_count})`}
+            </button>
+          )}
           {referencesOpen ? (
             <ReferencedBy
               className="w-full"

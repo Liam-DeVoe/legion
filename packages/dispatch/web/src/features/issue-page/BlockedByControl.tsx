@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
@@ -14,7 +14,7 @@ import { FormActions } from "./IssueFieldForms";
 import { authorText, HELP_LINES, pageChrome } from "./page-structure";
 import { ANSWER_LINES, BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
 import { ROW_LINK } from "./row-references";
-import { useIssueBlockedBy } from "./useIssueBlockedBy";
+import type { BlockedByWrite } from "./useIssueBlockedBy";
 
 /** The issues `value` names, in the order they were typed, with every repeat and blank dropped:
  *  what a reader types into the blocked-by editor as the model's own list. */
@@ -56,36 +56,57 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
  * refused, because a reader who closed it a moment before the refusal landed would be shown no
  * refusal at all. Opening the editor forgets the last refusal, so the one drawn is always the
  * one the reader is looking at.
+ *
+ * Whether the editor is open, the list typed into it and its write are the panel's
+ * (`IssueMarginPanel`), handed down here, and not this row's: a closed section of Details
+ * unmounts its rows, so a reader who closes Development while a save is out still finds the
+ * editor, the list they typed and the refusal that landed meanwhile when they open it again.
  */
 export function BlockedByControl({
+  draft,
+  editing,
   issue,
+  onDraft,
+  onEditing,
   titleOf,
+  write,
 }: {
+  /** The list typed into the editor. */
+  draft: string;
+  /** Whether the editor is open. */
+  editing: boolean;
   issue: IssueDetails;
+  onDraft: (draft: string) => void;
+  onEditing: (editing: boolean) => void;
   /** The title of the issue `key`, once Details has read it. */
   titleOf: (key: string) => string | undefined;
+  /** The write that saves the list (`useIssueBlockedBy`), which closes the editor on a landing. */
+  write: BlockedByWrite;
 }): ReactNode {
   const blockers = issue.blocked_by ?? [];
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
   const input = useRef<HTMLInputElement>(null);
-  const write = useIssueBlockedBy(issue.key, () => setEditing(false));
+  // Set by the reader's own open, so the box takes the focus then and not when Development is
+  // opened again over an editor that stayed open.
+  const focusBox = useRef(false);
   const isClosed = issue.closed_at !== null;
   // The editor opens with the issue's own list in it, and the focus in the box: the control
   // that opened it is still on the page, so a reader on the keyboard would otherwise have to
   // find the box themselves.
   useEffect(() => {
-    if (editing) input.current?.focus();
+    if (!editing || !focusBox.current) return;
+    focusBox.current = false;
+    input.current?.focus();
   }, [editing]);
   const open = () => {
     write.forgetRefusal();
-    setDraft(blockers.join(" "));
-    setEditing(true);
+    onDraft(blockers.join(" "));
+    focusBox.current = true;
+    onEditing(true);
   };
   // The save holds the editor open: the refusal it may bring is drawn in this form and nowhere
   // else, so a close taken meanwhile would throw it away.
   const close = () => {
-    if (!write.pending) setEditing(false);
+    if (!write.pending) onEditing(false);
   };
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -122,7 +143,7 @@ export function BlockedByControl({
             aria-label={`Issues ${issue.key} waits on`}
             className={`w-full rounded-[7px] border px-2 py-1 text-sm outline-none ${pageField}`}
             id="issue-blocked-by"
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => onDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape") close();
             }}
