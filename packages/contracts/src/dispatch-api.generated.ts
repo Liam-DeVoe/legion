@@ -2592,7 +2592,7 @@ export interface paths {
     /** @description Every result CI jobs wrote for checks of the spec files at ?commit= (40 lowercase hex, else 400 INVALID_QUERY), of ?check= alone when given: {results}, each {id, seq, kind, attestation}, newest first by seq, Dispatch's record order. A results token is refused it. */
     get: operations["getApiV1ProjectsByKeyResults"];
     put?: never;
-    /** @description Record one result of one check of the spec files, written by the CI job that ran it {commit, check, verdict, observed}: only a results token, which the secrets broker mints for one GitHub Actions run, writes it (403 RESULTS_SCOPE_REQUIRED for every other credential), and any other body member is 400 RESULT_INPUT naming it. Dispatch reads the rest from the token, from GitHub and from .dispatch/spec at the run's commit: commit must be the run's (403 COMMIT_NOT_THE_RUNS), the project must map the run's repository (403 REPOSITORY_NOT_THE_PROJECTS), GitHub must name the run's check run at that commit (403 CHECK_RUN_NOT_THE_RUNS), and the files must hold the check once (409 CHECK_NOT_IN_FILES) with its job the check run's name without its matrix values (409 CHECK_NOT_THIS_JOBS); 503 CHECK_RUN_UNREADABLE or FILES_UNREADABLE when GitHub does not answer. Answers 201 with the stored row {id, seq, kind, attestation}, an in-toto statement of the run. Each result is a new row, and none is changed. */
+    /** @description Record one result of one check of the spec files, written by the CI job that ran it {commit, check, verdict, observed}: only a results token, which the secrets broker mints for one GitHub Actions run, writes it (403 RESULTS_SCOPE_REQUIRED for every other credential), and any other body member is 400 RESULT_INPUT naming it. Dispatch reads the rest from the token, from GitHub and from .dispatch/spec at the run's commit: commit must be the run's (403 COMMIT_NOT_THE_RUNS), the project must map the run's repository (403 REPOSITORY_NOT_THE_PROJECTS), GitHub must name the run's check run at that commit (403 CHECK_RUN_NOT_THE_RUNS), the graph logic must take the files as spec-check does (409 SPEC_FILES_REFUSED naming the first problem), and the files must hold the check (409 CHECK_NOT_IN_FILES) with its job the check run's name without its matrix values (409 CHECK_NOT_THIS_JOBS); 503 CHECK_RUN_UNREADABLE or FILES_UNREADABLE when GitHub does not answer. A result keeps 2000 characters of observed: a longer text is its first characters and a last line that says it was cut. Answers 201 with the stored row {id, seq, kind, attestation}, an in-toto statement of the run whose recorder is the run's session and principal, and no person. Each result is a new row, and none is changed. */
     post: operations["postApiV1ProjectsByKeyResults"];
     delete?: never;
     options?: never;
@@ -6031,7 +6031,6 @@ export interface components {
       verdict: string;
     };
     SpecCheckRecorder: {
-      person: string;
       principal: string;
       session: string;
     };

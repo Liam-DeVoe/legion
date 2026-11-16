@@ -6274,6 +6274,7 @@ The entry decides the scope, and the exchange request never does: the broker ref
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 A result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`, `<repository>=<workflow path>=<ref pattern>=<project>=<person>`) lists a workflow by its repository, its path and a pattern of refs in its place, such as `refs/heads/*`, where a `*` stands for one segment of the ref.
 The token it mints holds the scope `results` and the project scope `results`, names that person and that project, writes under the session `ci-results:<repository>/<workflow path>`, and carries the run as `ci`.
+The person is the entry's configuration and ran no test, so Dispatch writes that person on no result and in no answer: a result names its run as the recorder.
 The run's token must carry every claim of the run, the `check_run_id` of its job among them, and a run whose ref two patterns match is refused.
 The broker refuses to start on a workflow that both settings list, because one workflow mints one kind of token.
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);

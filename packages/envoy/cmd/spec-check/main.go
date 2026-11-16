@@ -40,7 +40,6 @@
 package main
 
 import (
-	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -159,9 +158,9 @@ type judged struct {
 }
 
 // judge reads dir with notes.ReadSet, warns on stderr of each entry that is not a spec file, and
-// parses and validates the files it read with o. The error is ReadSet's: notes.ErrNoDirectory for
-// a directory that does not exist, a *notes.SizeRefusal for a file above the bound, and an error
-// naming the path for any other failure to read.
+// judges the files it read with o as every reader of spec files does (specgraph.Judge). The error
+// is ReadSet's: notes.ErrNoDirectory for a directory that does not exist, a *notes.SizeRefusal
+// for a file above the bound, and an error naming the path for any other failure to read.
 func judge(stderr io.Writer, dir string, o specgraph.Options) (judged, error) {
 	set, err := notes.ReadSet(os.DirFS(dir), dir)
 	for _, entry := range set.Rejected {
@@ -170,12 +169,7 @@ func judge(stderr io.Writer, dir string, o specgraph.Options) (judged, error) {
 	if err != nil {
 		return judged{dir: dir}, err
 	}
-	tree, problems := specgraph.Parse(set.Files)
-	problems = append(problems, specgraph.Validate(tree, o)...)
-	slices.SortFunc(problems, func(a, b specgraph.Problem) int {
-		return cmp.Or(cmp.Compare(a.Pos.File, b.Pos.File), cmp.Compare(a.Pos.Line, b.Pos.Line), cmp.Compare(a.Node, b.Node),
-			cmp.Compare(a.Rule, b.Rule), cmp.Compare(a.Detail, b.Detail))
-	})
+	tree, problems := specgraph.Judge(set.Files, o)
 	return judged{dir: dir, tree: tree, problems: problems, files: len(set.Files)}, nil
 }
 

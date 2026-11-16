@@ -16,7 +16,11 @@ import type {
   IssueRouteStatus,
   SpecCheckResult,
 } from "@legion/contracts";
-import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
+import {
+  DEFAULT_ISSUE_PAGE_LIMIT,
+  SPEC_CHECK_OBSERVED_CUT_NOTE,
+  SPEC_CHECK_OBSERVED_MAX,
+} from "@legion/contracts";
 import { actorText } from "../actor-text";
 import {
   type DispatchClient,
@@ -839,11 +843,36 @@ function formatCheckResults(results: IssueCheckResults, brief = false): string {
   return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
 
+/** The UTF-16 length of the first `count` characters (code points) of `text`, or undefined when
+ *  `text` holds no more than `count` characters. */
+function lengthOfFirst(text: string, count: number): number | undefined {
+  let at = 0;
+  for (let seen = 0; seen < count && at < text.length; seen += 1) {
+    at += (text.codePointAt(at) ?? 0) > 0xffff ? 2 : 1;
+  }
+  return at < text.length ? at : undefined;
+}
+
+/** What a result keeps of `observed`, as Dispatch keeps it (`cutObserved`, spec_results.go): each
+ *  NUL, which Dispatch cannot store, as U+FFFD, then the text whole when it is
+ *  SPEC_CHECK_OBSERVED_MAX characters or fewer, else its first characters and
+ *  SPEC_CHECK_OBSERVED_CUT_NOTE, that many in all. Each byte of a file that is not UTF-8 is
+ *  already U+FFFD, as the command decodes the files it reads. A test's log can be larger than any
+ *  request Dispatch takes, so the command sends only what Dispatch keeps, and the result is
+ *  written. */
+function observedAsKept(observed: string): string {
+  const text = observed.replaceAll("\u0000", "\uFFFD");
+  if (lengthOfFirst(text, SPEC_CHECK_OBSERVED_MAX) === undefined) return text;
+  const kept = SPEC_CHECK_OBSERVED_MAX - [...SPEC_CHECK_OBSERVED_CUT_NOTE].length;
+  return `${text.slice(0, lengthOfFirst(text, kept))}${SPEC_CHECK_OBSERVED_CUT_NOTE}`;
+}
+
 /**
  * `dispatch result --project`: a CI job's record of its result of one check of the spec files,
  * printed back as the stored result whole, as JSON: the in-toto statement of the run, which a
- * reader keeps. The job runs it with its own identity and no session (`runDispatchCli`), and a
- * session's call reaches it through `resultCommand`.
+ * reader keeps, whose recorder is the run and no person. It sends what a result keeps of observed
+ * (`observedAsKept`). The job runs it with its own identity and no session (`runDispatchCli`), and
+ * a session's call reaches it through `resultCommand`.
  */
 export async function specCheckResultCommand(
   client: DispatchClient,
@@ -855,7 +884,7 @@ export async function specCheckResultCommand(
     commit: stringArg(args, "commit"),
     check: stringArg(args, "check"),
     verdict: stringArg(args, "verdict"),
-    ...(observed === undefined ? {} : { observed }),
+    ...(observed === undefined ? {} : { observed: observedAsKept(observed) }),
   });
   const { predicate } = stored.attestation;
   return {
