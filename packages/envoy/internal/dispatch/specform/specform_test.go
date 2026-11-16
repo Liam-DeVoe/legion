@@ -54,9 +54,9 @@ func TestCheckRefusesEachFormFault(t *testing.T) {
 		{planted(), statement("Dispatch keeps each answer, as dispatch://ACME-12 asks."),
 			"dispatch-link", `it links to a record of Dispatch: "dispatch://ACME-12"`},
 		{planted(), statement("Envoy restarts its listener after incident INC-2041."),
-			"incident", `it names an incident: "incident INC-2041"`},
+			"incident", `it names an incident: "incident INC-2041". Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date`},
 		{planted(), statement("Envoy stores each message, as pull request #4031 makes it do."),
-			"pull-request", `it names a pull request: "pull request #4031"`},
+			"pull-request", `it names a pull request: "pull request #4031". Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address`},
 		{planted("ada.lovelace@example.com"), claim,
 			"person", `it names a person: "Ada Lovelace"`},
 	} {
@@ -113,6 +113,48 @@ func TestCheckLetsTheWordIncidentStand(t *testing.T) {
 	}
 }
 
+// pullRequestNamed and incidentNamed are the details of the two rules for the text they matched.
+func pullRequestNamed(match string) string {
+	return fmt.Sprintf("it names a pull request: %q. Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address", match)
+}
+
+func incidentNamed(match string) string {
+	return fmt.Sprintf("it names an incident: %q. Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date", match)
+}
+
+// TestACountAfterPullRequestOrIncidentNamesNoRecord holds the two rules to the forms that only a
+// name has. A bare number after the words is a count, such as "10 minutes", and names nothing.
+// The rows that name a record are the control: each form of a name keeps its finding.
+func TestACountAfterPullRequestOrIncidentNamesNoRecord(t *testing.T) {
+	for _, body := range []string{
+		"Legion merges each pull request 10 minutes after its checks pass.",
+		"Legion lands each pull request 2 minutes after its last check passes.",
+		"Legion opens each PR 3 times at most.",
+		"Dispatch closes each incident 24 hours after its last event.",
+		"Dispatch keeps each incident 30 days after it closes.",
+		"Legion merges each change, as pull request 4179 shows.",
+	} {
+		if _, got := checkStatement(body); len(got) != 0 {
+			t.Errorf("Check(%q) = %#v, want none: the number is a count", body, got)
+		}
+	}
+	for _, test := range []struct{ body, rule, detail string }{
+		{"Legion reads each thread, as PR #3920 requires.", "pull-request", pullRequestNamed("PR #3920")},
+		{"Legion reads each thread, as pull request number 12 requires.", "pull-request", pullRequestNamed("pull request number 12")},
+		{"Legion reads each thread, as acme/widgets#12 requires.", "pull-request", pullRequestNamed("acme/widgets#12")},
+		{"Legion reads each thread, as https://github.com/acme/widgets/pull/12 requires.", "pull-request", pullRequestNamed("github.com/acme/widgets/pull/12")},
+		{"Legion reads each thread, as #12 requires.", "pull-request", pullRequestNamed("#12")},
+		{"Envoy starts again within 10 seconds, as incident number 4471 showed.", "incident", incidentNamed("incident number 4471")},
+		{"Envoy starts again within 10 seconds, as incident SEV-12 showed.", "incident", incidentNamed("incident SEV-12")},
+		{"Envoy starts again within 10 seconds, as incident 2026-11-01 showed.", "incident", incidentNamed("incident 2026-11-01")},
+	} {
+		text, got := checkStatement(test.body)
+		if want := []Finding{finding(text, Rule(test.rule), test.detail)}; !sameFindings(got, want) {
+			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
+		}
+	}
+}
+
 // TestANamePieceThatIsASystemNounIsNoPerson holds the person rule off a name of the system, from
 // the context or from a name text of the input. With neither, the same text names a person,
 // which shows the rule can fire.
@@ -142,7 +184,7 @@ func TestFailingExampleAndNameTakeOnlyReferenceRules(t *testing.T) {
 		t.Errorf("a failing example of 40 words with a semicolon: Check = %#v, want none", got)
 	}
 	name := Text{Node: "queue", Kind: KindName, Body: "PR #12 queue", Where: where}
-	if got, want := Check(planted(), Input{Texts: []Text{name}}), []Finding{finding(name, "pull-request", `it names a pull request: "PR #12"`)}; !sameFindings(got, want) {
+	if got, want := Check(planted(), Input{Texts: []Text{name}}), []Finding{finding(name, "pull-request", pullRequestNamed("PR #12"))}; !sameFindings(got, want) {
 		t.Errorf("the name %q: Check = %#v, want %#v", name.Body, got, want)
 	}
 }

@@ -4523,11 +4523,19 @@ Each item below names a path with its method and identity, then its purpose.
       Nothing in code font ends a sentence.
       A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
       Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
-      A stop that white space follows ends a sentence also inside a quote or after a word such as `etc.`.
-      So a quoted text with a stop goes in code font.
+      A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
+      An abbreviation with a stop before a space, such as `etc.`, ends a sentence too, so write the word in full or in code font.
+      A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
+      So write the steps with words.
       The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
 
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
+
+    - How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
+      `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
+      A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
+      The finding of each rule lists the forms that it reads.
+
     A term line is `- **<term>**: <definition>` under a heading `Terms`.
     Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
     Its finding names the line.
@@ -4541,6 +4549,7 @@ Each item below names a path with its method and identity, then its purpose.
     When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms}`.
     `texts` counts each kind of text that Dispatch read in the documents it judged.
     A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
+    Dispatch judges no carried approval: a text approved outside a root stays approved under it, as does a later version with the same bytes.
 
 - `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)
 
