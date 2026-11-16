@@ -6322,8 +6322,9 @@ each issue's pod (every role of it alike) and the image probe's.
 - One claim holds at most 2,048 names, 10 times what the busiest claim in production could hold.
   A registration that would take a claim past it is refused `409` (`this claim holds the most session names one claim may (2048) …`), recording nothing.
   The claim keeps its names, so a claim that records a session still resumes it; a claim that needs a new one, after a fresh start or because its agent began another, starts none until an operator frees the names of its older sessions.
-  The refusal's Warn line gives the statement that does so in its `release` field: it deletes the claim's holds recorded more than 12 hours ago, the broker's carry window by default, except every name of the session the claim records and of the one it last abandoned.
-  Past that window the broker has swept those sessions' grants, so a claim that later takes a freed name takes none of them; a deployment with a longer `BROKER_SESSION_CARRY_SECONDS` puts its own interval in the statement.
+  The refusal's Warn line gives the statement that does so in its `release` field: it deletes the claim's holds recorded more than 12 hours ago, the broker's carry window by default, except every name of the session the claim records and of the one it last abandoned, and only once the claim's last session switch is more than 12 hours ago.
+  The window counts from that switch, not from when a hold was written: a claim changes sessions only by forgetting the one it records, every session it ran before then had ended by then, and the broker keeps an ended session's grants for its carry window, so a claim that later takes a freed name takes none of them.
+  A deployment with a longer `BROKER_SESSION_CARRY_SECONDS` puts its own interval in both places of the statement.
 
 - A project whose daemon moves to a new database starts with an empty table, so no session recorded in the old one is held; the broker's carry window, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default), bounds what an old session's grants can still reach.
   Another project's daemon is not held to this project's names; the broker holds a pod's grants to the pair of its account and the daemon that enrolled it, so a pod of another project's daemon enrolled under the same session id takes nothing.

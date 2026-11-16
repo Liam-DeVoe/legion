@@ -12,8 +12,9 @@ body: |-
   longer than 255 bytes is refused with `400`, and a registration that would take one claim past
   2,048 held names is refused with `409`: a claim that records a session still resumes it, and one
   that needs a new session starts none until an operator runs the statement the refusal's log line
-  gives, which frees the names of its sessions older than 12 hours. At every boot the daemon holds,
-  in one statement, each name a claim records that no row holds, as after a rollback to a release
+  gives, which frees the names of its older sessions once its last session switch is 12 hours past,
+  the broker's carry window. At every boot the daemon holds, in one statement, each name a claim
+  records that no row holds, as after a rollback to a release
   before this one, and logs at Error each claim whose current session records a name held for
   another claim or for none, suspending each it can. For each claim the boot names that is not the
   rightful holder, an operator runs `legion claims forget-session`, then `legion claims resume` or
