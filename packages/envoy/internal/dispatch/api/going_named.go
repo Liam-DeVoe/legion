@@ -588,14 +588,17 @@ func goingUploadWithheldReason(action, name, owner, stored, slug string) string 
 // proposal asked the person for the name, and a name filled into that field asks for a document
 // of it to be made, never for the document it finds to be written over. It names the two things
 // that do ask for that document's next version: its stored name written in the question itself,
-// which the words are read for (goingUploadAskedFor), and the dispatch command's --force.
+// which the words are read for (goingUploadAskedFor), and filled in where the person filled its
+// slug, since only the stored name asks for it; and the dispatch command's --force.
 func goingUploadFilledNameReason(action, name, owner, stored, slug string) string {
 	found := fmt.Sprintf("%s already holds %s (slug %s)", owner, stored, slug)
+	ask := fmt.Sprintf("write %s in the question itself", stored)
 	if name != stored {
 		found = fmt.Sprintf("%q is the slug of %s, which %s already holds", name, stored, owner)
+		ask = fmt.Sprintf("write %s in the question itself and fill in %s, not its slug", stored, stored)
 	}
-	return fmt.Sprintf("%s under %q does not run: %s, and a name filled into the one argument this invocation was missing asks for a document of that name to be made, not for the document it finds to be written over. Two things ask for that document's next version: write %s in the question itself, or upload it with the dispatch command and --force.",
-		action, name, found, stored)
+	return fmt.Sprintf("%s under %q does not run: %s, and a name filled into the one argument this invocation was missing asks for a document of that name to be made, not for the document it finds to be written over. Two things ask for that document's next version: %s, or upload it with the dispatch command and --force.",
+		action, name, found, ask)
 }
 
 // goingUploadAskedFor reports whether the person asked, in their own typed words, for the

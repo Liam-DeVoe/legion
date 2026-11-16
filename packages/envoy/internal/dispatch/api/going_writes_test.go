@@ -1608,6 +1608,7 @@ func TestGoingWriteOfAnUploadWhoseHeldNameThePersonFilledInSaysWhatIsSo(t *testi
 	}{
 		{"the stored name, words that do not write it", "plan.md", "save this to the issue", false},
 		{"its slug, words that do not write it", "plan-md", "save this to the issue", false},
+		{"its slug, words that write the stored name", "plan-md", "replace plan.md with this", false},
 		{"the stored name, words that write it", "plan.md", "replace plan.md with this", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1653,6 +1654,11 @@ func TestGoingWriteOfAnUploadWhoseHeldNameThePersonFilledInSaysWhatIsSo(t *testi
 				if !strings.Contains(refusal.Error, says) {
 					t.Errorf("the fill of %q is refused %q, want it to name %q, one of the two ways to ask for that document's next version", tc.fill, refusal.Error, says)
 				}
+			}
+			// A filled slug is what fails, whatever the words write, so the reason tells the
+			// person to fill in the stored name, not only to write it.
+			if tc.fill != "plan.md" && !strings.Contains(refusal.Error, "fill in plan.md") {
+				t.Errorf("the fill of the slug %q is refused %q, want it to tell the person to fill in plan.md", tc.fill, refusal.Error)
 			}
 			if versions := rig.goingDocumentVersions(t, issue, "plan-md"); versions != 1 {
 				t.Fatalf("plan.md holds %d versions after the refused fill, want its one", versions)
