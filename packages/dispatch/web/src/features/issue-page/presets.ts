@@ -1,4 +1,4 @@
-import { firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
+import { drawnLine, firstLineOf, heldBy, lineWords, nodeWords, type TreeNode } from "./issue-tree";
 import type { FILTER_SIGNAL_WORDS, NodeType, Preset } from "./page-words";
 
 /**
@@ -90,14 +90,11 @@ export interface PresetView {
   readonly rootRow: boolean;
 }
 
-/** Whether `node`'s words hold `wanted`, which is already lowercased; `""` holds everywhere. */
+/** Whether `node`'s words hold `wanted`, which is already lowercased; `""` holds everywhere.
+ *  The words are the ones a reader reads (`nodeWords`, R1, R4's "the nodes whose words hold
+ *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. */
 function holds(node: TreeNode, wanted: string): boolean {
-  return wanted === "" || node.text.toLowerCase().includes(wanted);
-}
-
-/** How many nodes a branch holds below `children`, at any depth. */
-function heldBy(children: readonly TreeNode[]): number {
-  return children.reduce((held, child) => held + child.held + 1, 0);
+  return wanted === "" || nodeWords(node).toLowerCase().includes(wanted);
 }
 
 /**
@@ -186,14 +183,17 @@ function filterView(
       contextKinds.includes(node.type) &&
       (wanted === "" || holds(node, wanted) || parts.some((part) => part.rows.length > 0));
     const drawn = own || placing;
-    // A drawn child under a node that is no row carries that node as its one line, read by R1's
-    // first-line rule; a drawn child's own rows are the child alone.
+    // A drawn child under a node that is no row carries that node as its one line, cut by R1's
+    // first-line rule from the words of the node's first block (`lineWords`), so a heading is
+    // never run into the paragraph after it, and drawn as a row's first line is (`drawnLine`):
+    // an ellipsis only where the cut ended inside a sentence. A drawn child's own rows are the
+    // child alone.
     const line =
       drawn || !parts.some((part) => part.drawn)
         ? undefined
         : {
             id: node.id,
-            line: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
+            line: node.text === "" ? node.id : drawnLine(firstLineOf(lineWords(node))),
             // The parent's own address, which makes its line the link a reader follows to it
             // (R18, and R26: a step's row reaches the statement it serves).
             ...(node.reference === undefined ? {} : { reference: node.reference }),
@@ -270,9 +270,12 @@ export function filterSignals(
   const view = (filter: Filter) => presetView(root, filter, query);
   const verification = view("verification");
   const decisions = view("decisions");
+  // A check's state is the page's one reading of it at the commit the page names
+  // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
+  // checks as failed.
   const failing = countOf(verification.root, "check", (node) => node.state === "failed");
-  // The decisions of the review list (R35): an agent's decision that waits and that a `shaped`
-  // tie names a statement for, which is what the tree marks `waiting` (`decision-review.ts`'s
+  // The decisions of the review list (R35): an agent's decision that waits and that a link ties
+  // to a statement of this issue, which is what the tree marks `waiting` (`decision-review.ts`'s
   // `inReviewList`), so the signal, the list and the header's count cannot disagree.
   const toReview = countOf(decisions.root, "decision", (node) => node.waiting);
   return {

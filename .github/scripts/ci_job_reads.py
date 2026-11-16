@@ -2173,7 +2173,10 @@ GATES = [
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
     ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
-        ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,122"),
+        ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
+                                                     "file's path, lists that directory and reads the package.json and "
+                                                     "LICENSE.txt in it"),
+        ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,139"),
         ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),

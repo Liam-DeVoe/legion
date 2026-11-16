@@ -818,13 +818,16 @@ func blockWords(node *pmdoc.Node) string {
 }
 
 // blockContent is a typed block's own content as markdown: what stands between its opening line
-// and its closing one, rendered as a document of its own, so neither the directive's line nor
-// its attributes are in it and every link and every dispatch:// reference is. It is what a
-// typed block's text_tree is read from (displayTreeReader.text) when the block's stored text
-// reads back as that block alone (blockTextContent), as a decision's is read from its section's
-// markdown. A block holding nothing has no content and so no tree; one whose content cannot be
-// rendered apart from its document is logged and has none either, since the read's other fields
-// do not depend on it.
+// and its closing one, rendered from node as a document of its own, so neither the directive's
+// line nor its attributes are in it and every link and every dispatch:// reference is. Its one
+// use is the content typedBlocksIn hands visit for a block the document's read gives no byte
+// range for. That is every block of a document whose read with blocks failed, which
+// typedBlockMarkdown then reads with Text alone and gives no text for any block. Every other
+// typed block's content is cut from its stored text (blockTextContent). node comes from the
+// parse of the document's live rendering, which writes every typed block's id, so this
+// rendering writes no id that the document does not hold. A block holding nothing has no
+// content and so no tree; one whose content cannot be rendered apart from its document is logged
+// and has none either, since the read's other fields do not depend on it.
 func blockContent(node *pmdoc.Node) string {
 	if len(node.Children) == 0 {
 		return ""
