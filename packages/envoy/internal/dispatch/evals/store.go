@@ -151,7 +151,8 @@ const lockEvalStatement = `select pg_advisory_xact_lock(hashtext('eval:' || $1))
 // its nullable text columns read as "".
 const definitionColumns = `eval_id, version, project_key, slug, name, question, number_rule, decision, doc_block,
 	failure_modes, unit, coalesce(direction, ''), target, target_inclusive, target_judges, owner_role, person,
-	coalesce(issue_key, ''), kind, source, state, coalesce(replaced_by, ''), links, written_via, written_by, created_at`
+	coalesce(issue_key, ''), kind, source, state, coalesce(replaced_by, ''), links, written_via, written_by, created_at,
+	set_by_person`
 
 func scanDefinition(row pgx.Row) (Definition, error) {
 	var definition Definition
@@ -162,7 +163,7 @@ func scanDefinition(row pgx.Row) (Definition, error) {
 		&failureModes, &definition.Unit, &definition.Direction, &definition.Target, &definition.TargetInclusive,
 		&definition.TargetJudges, &definition.OwnerRole, &definition.Person, &definition.IssueKey,
 		&definition.Kind, &definition.Source, &definition.State, &definition.ReplacedBy, &links,
-		&definition.WrittenVia, &writtenBy, &definition.CreatedAt,
+		&definition.WrittenVia, &writtenBy, &definition.CreatedAt, &definition.SetByPerson,
 	); err != nil {
 		return Definition{}, err
 	}
@@ -184,14 +185,14 @@ func scanDefinition(row pgx.Row) (Definition, error) {
 }
 
 // seriesColumns is the column list scanSeries reads from eval_series or eval_series_current.
-const seriesColumns = `eval_id, series, version, unit, role, is_primary, min_n, listed, agg, links, created_at`
+const seriesColumns = `eval_id, series, version, unit, role, is_primary, min_n, listed, agg, links, created_at, set_by_person`
 
 func scanSeries(row pgx.Row) (Series, error) {
 	var series Series
 	var links []byte
 	if err := row.Scan(
 		&series.EvalID, &series.Series, &series.Version, &series.Unit, &series.Role, &series.IsPrimary,
-		&series.MinN, &series.Listed, &series.Agg, &links, &series.CreatedAt,
+		&series.MinN, &series.Listed, &series.Agg, &links, &series.CreatedAt, &series.SetByPerson,
 	); err != nil {
 		return Series{}, err
 	}
@@ -371,15 +372,15 @@ func definitionInsert(definition Definition, onConflictNothing bool) (string, []
 	return `
 		insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision,
 			doc_block, failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person,
-			issue_key, kind, source, state, replaced_by, links, written_via, written_by)
+			issue_key, kind, source, state, replaced_by, links, written_via, written_by, set_by_person)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, nullif($12, ''), $13, $14, $15, $16, $17,
-			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25)` + conflict, []any{
+			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25, $26)` + conflict, []any{
 		definition.EvalID, definition.Version, definition.ProjectKey, definition.Slug, definition.Name,
 		definition.Question, definition.NumberRule, definition.Decision, definition.DocBlock, failureModes,
 		definition.Unit, definition.Direction, definition.Target, definition.TargetInclusive,
 		nonNil(definition.TargetJudges), definition.OwnerRole, definition.Person, definition.IssueKey,
 		definition.Kind, definition.Source, definition.State, definition.ReplacedBy, links,
-		definition.WrittenVia, writtenBy,
+		definition.WrittenVia, writtenBy, nonNil(definition.SetByPerson),
 	}, nil
 }
 
@@ -409,11 +410,11 @@ func seriesInsert(series Series) (string, []any, error) {
 		return "", nil, fmt.Errorf("encode links: %w", err)
 	}
 	return `
-		insert into eval_series (eval_id, series, version, unit, role, is_primary, min_n, listed, agg, links)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		insert into eval_series (eval_id, series, version, unit, role, is_primary, min_n, listed, agg, links, set_by_person)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		on conflict (eval_id, series, version) do nothing`, []any{
 		series.EvalID, series.Series, series.Version, series.Unit, series.Role, series.IsPrimary, series.MinN,
-		series.Listed, series.Agg, links,
+		series.Listed, series.Agg, links, nonNil(series.SetByPerson),
 	}, nil
 }
 

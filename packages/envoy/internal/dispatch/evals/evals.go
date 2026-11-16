@@ -114,8 +114,8 @@ type FailureMode struct {
 // text column is "" where it is null: Direction is "" until someone registers one, and IssueKey
 // and ReplacedBy are "" where they name nothing. Target is nil where the target is off. Its
 // Computation is the fields that say how the number is computed (R5), which the seeded catalogue
-// states of a computed eval; every other field is the version's own number, time and writer, or
-// one a person sets.
+// states of a computed eval; every other field is the version's own number, time and writer, one
+// a person sets, or the record of which of those a person has set (SetByPerson).
 type Definition struct {
 	EvalID     string `json:"eval_id"`
 	Version    int    `json:"version"`
@@ -135,6 +135,15 @@ type Definition struct {
 	WrittenVia      string      `json:"written_via"`
 	WrittenBy       model.Actor `json:"written_by"`
 	CreatedAt       time.Time   `json:"created_at"`
+	// SetByPerson is every field of the eval a person's register write has named, sorted and
+	// each once, as a body spells it (Registration.personFields): the record that the field is a
+	// person's choice, written whether or not the write moved its value, and carried forward by
+	// every version after it, whoever writes it. The seed fills the catalogue's target, a
+	// series' min_n and a method only on an eval whose record holds none of them
+	// (takeCatalogueFields), so a person who sets a target to none while it is already none is
+	// not overridden by the next boot (R5). No route answers it: it is the registry's own record
+	// of whose choice a field is, which no reader of the number reads.
+	SetByPerson []string `json:"-"`
 }
 
 // Computation is every field of a definition that says how its number is computed (R5): its
@@ -188,8 +197,9 @@ func (d Definition) writer() string {
 }
 
 // Series is one version of one series of an eval, every column of eval_series. Its
-// SeriesComputation is every field but the version's own number and time and its min_n, the one
-// field of a series a person sets on a computed eval (R5).
+// SeriesComputation is every field but the version's own number and time, its min_n, the one
+// field of a series a person sets on a computed eval (R5), and the record of whether a person
+// set it (SetByPerson).
 type Series struct {
 	EvalID  string `json:"eval_id"`
 	Series  string `json:"series"`
@@ -197,6 +207,11 @@ type Series struct {
 	SeriesComputation
 	MinN      *int      `json:"min_n"`
 	CreatedAt time.Time `json:"created_at"`
+	// SetByPerson is every field of the series a person's register write has named, as
+	// Definition.SetByPerson is of the definition: min_n, the one field of a series a person
+	// sets on a computed eval. The seed fills the catalogue's min_n only on a series whose
+	// record holds none (seriesToWrite).
+	SetByPerson []string `json:"-"`
 }
 
 // SeriesComputation is every field of a series that says how its eval's number is computed

@@ -10,13 +10,16 @@ body: |-
   `logged` is `400 EVAL_FIELD_INVALID`, since only the seeded catalogue makes an eval computed,
   and a `min_n` on any series but `pr-ci`'s `job:*`, the one series a read ranks by it, is
   `400 EVAL_FIELD_INVALID` naming `series[i].min_n`. A version that lists or unlists a logged
-  eval's series lists or unlists its stored day rows with it. The seed carries a person's `min_n`
-  forward like the target instead of reverting it, and where it takes over a catalogue slug a
-  reading registered first, it sets the catalogue's target unless a register write set or turned
-  off one (a write of other fields alone, such as the unit or the person, does not stop it), the
-  catalogue's `min_n` on `pr-ci`'s job series where it holds none, and, where no one wrote
-  one, its method. The delivery answers read the targets too: `GET /api/v1/delivery/measures`, the
-  timeline's `measures` and `GET /api/v1/delivery/pipeline` judge their figures by the targets of
+  eval's series lists or unlists its stored day rows with it. A write that names a field a person
+  sets records on its version that a person set it, whether or not the value moved, so
+  `target: null` on an eval whose target is already off writes a version rather than nothing. The
+  seed carries a person's `min_n` forward like the target instead of reverting it, and where it
+  takes over a catalogue slug a reading registered first, it sets the catalogue's target unless a
+  register write named the target, its inclusiveness or its judges (a write of other fields
+  alone, such as the unit or the person, does not stop it), the catalogue's `min_n` on `pr-ci`'s
+  job series where no write named one, and, where no one wrote one, its method. The delivery
+  answers read the targets too: `GET /api/v1/delivery/measures`, the timeline's `measures` and
+  `GET /api/v1/delivery/pipeline` judge their figures by the targets of
   `deploy-frequency`, `change-fail-rate`, `merge-to-production`, `pr-open-to-merge`,
   `deploy-run-success` and `unowned-p0` in the project the deploy repository is mapped to (the
   catalogue's where it maps to none), by the rule the eval routes judge by, so each verdict is the

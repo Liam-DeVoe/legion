@@ -45,12 +45,18 @@ import (
 // registered before any seed of its project (a project made by SQL, or a slug a later release adds
 // to the catalogue), holds what that registration defaulted where the catalogue states a value.
 // The seed gives every eval of the catalogue a target before any editor runs (the spec's Order),
-// so it takes the catalogue's target, its inclusiveness and its judges wherever no write of the
-// eval moved them, whatever other field a register write set: a target a person set, or set and
-// then turned off, is kept. It takes the catalogue's min_n of a series it never wrote that holds
-// none, which is every such series, since no write of a logged eval takes a min_n. And it takes
-// the catalogue's method where the eval's section still holds the sentence its registration wrote
-// (registrationSentence), which says no one has written one.
+// so it takes the catalogue's target, its inclusiveness and its judges wherever no person set one
+// of the three, whatever other field a register write set: a target a person set, one a person
+// set and then turned off, and one a person set to none while it was already none are all kept.
+// Which fields a person set is the version's own record, written by the register write that
+// named them (Definition.SetByPerson), and not what the stored values moved to: a write that
+// names a field and leaves its value as it was is a person's choice too, and a seed that filled
+// such a field would be a write accepted and then ignored (R5). It takes the catalogue's min_n
+// of a series it never wrote that holds none and whose record names none, which is every such
+// series but one a person wrote a min_n on, since no write of a logged eval takes a min_n. And
+// it takes the catalogue's method where no person set the eval's method and its section still
+// holds the sentence its registration wrote (registrationSentence), which says no one has
+// written one.
 
 // Seeded is what one seed of a project wrote: the versions of definitions, the versions of
 // series, the sections of `evals-md`, and whether the seed created the document. A seed that
@@ -236,12 +242,12 @@ type seedWrite struct {
 // catalogue, in the catalogue's order, before it reads what the project holds, so a second seed
 // of the project, a register write and a readings write of one of those evals each wait for it
 // and then read what it wrote. It then reads the newest version of each eval, the version the seed
-// last wrote, the current series and the series as the seed last wrote them, of an eval it takes
-// over its first version and whether a write moved its target, and the blocks of `evals-md`;
-// writes the missing sections and the methods it takes over in one write of the document; and
-// writes the versions. The locks are one batch of statements and the versions another, each sent
-// in one round trip and run in the order it was queued: a project's first seed writes 20 versions
-// and 95 of series, which one statement each would make 115 round trips.
+// last wrote, the current series and the series as the seed last wrote them, the first version of
+// an eval it takes over, and the blocks of `evals-md`; writes the missing sections and the
+// methods it takes over in one write of the document; and writes the versions. The locks are one
+// batch of statements and the versions another, each sent in one round trip and run in the order
+// it was queued: a project's first seed writes 20 versions and 95 of series, which one statement
+// each would make 115 round trips.
 func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	ids := make([]string, len(catalogue))
 	locks := &pgx.Batch{}
@@ -297,7 +303,7 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	var markdown string
 	var blocks []model.ArtifactBlock
 	switch {
-	case found && len(taken.firsts) > 0:
+	case found && len(taken) > 0:
 		if markdown, blocks, err = s.documents.TextWithBlocks(ctx, document.id); err != nil {
 			return Seeded{}, fmt.Errorf("read the %s document of %s: %w", DocumentSlug, w.project, err)
 		}
@@ -314,8 +320,9 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 		existing, has := newest[ids[i]]
 		last, seeded := lastSeeded[ids[i]]
 		missing := !has || !hasBlock(blocks, existing.DocBlock)
-		first, takeover := taken.firsts[ids[i]]
-		unwritten := takeover && !missing && holdsRegistrationSentence(markdown, blocks, existing.DocBlock, first)
+		first, takeover := taken[ids[i]]
+		unwritten := takeover && !missing && !setByPerson(existing.SetByPerson, fieldDocText, fieldDocBlock) &&
+			holdsRegistrationSentence(markdown, blocks, existing.DocBlock, first)
 		series := seriesToWrite(ids[i], entry.series, current[ids[i]], seededSeries[ids[i]])
 		if has && seeded && !missing && len(series) == 0 && entry.definition.Computation.same(last.Computation) {
 			continue
@@ -324,9 +331,7 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 		if !has {
 			next = Definition{EvalID: ids[i], ProjectKey: w.project, Slug: entry.definition.Slug, State: StateActive, Links: []Link{}}
 		}
-		if !has || (takeover && !taken.targeted[ids[i]]) {
-			next.Target, next.TargetInclusive, next.TargetJudges = entry.definition.Target, entry.definition.TargetInclusive, entry.definition.TargetJudges
-		}
+		takeCatalogueFields(&next, entry.definition, !has || takeover)
 		next.Computation = entry.definition.Computation
 		switch {
 		case missing:
@@ -392,23 +397,40 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	return seeded, nil
 }
 
-// takeovers is what a seed reads of the evals of the catalogue it takes over (the seed's rules
-// above), each by its id: its version 1, the registration whose defaults it holds, and whether a
-// write of it moved its target, which only a person's register write does.
-type takeovers struct {
-	firsts   map[string]Definition
-	targeted map[string]bool
+// setByPerson reports whether record, the set_by_person of a version or of a series, holds any
+// of fields: a person's register write named it, whatever value it left (R5). The seed fills a
+// field of the catalogue on an eval it takes over only where it does not, so no accepted write
+// is reverted by a boot.
+func setByPerson(record []string, fields ...string) bool {
+	return slices.ContainsFunc(fields, func(field string) bool { return slices.Contains(record, field) })
 }
 
-// readTakeovers reads the takeovers of the evals newest holds a version of and lastSeeded none,
-// in two statements, and none where there are none, as on every seed of a project seeded before.
-// A write moved an eval's target where one of its versions holds a target, an inclusiveness or
-// judges other than the version before it holds, its version 1 other than the registration's
-// defaults (no target, not inclusive, no judges: firstDefinition). A reading's registration moves
-// none, and a register write moves them only where it names them. A register write that named the
-// target and left it at the registration's none changed nothing of it, so no version records it,
-// and the seed gives that eval the catalogue's target as it does one whose writes named none.
-func readTakeovers(ctx context.Context, w *writeTx, newest, lastSeeded map[string]Definition) (takeovers, error) {
+// takeCatalogueFields writes the catalogue entry's target, its inclusiveness and its judges into
+// next, the fields of a definition the seed fills rather than carries forward. first says this
+// is the first version of the eval the seed writes: an eval of a project it seeds, or one of the
+// catalogue's slugs a reading or a register write registered before any seed of its project,
+// which the seed takes over. It fills the three there, and never where the eval's record says a
+// person set one of them. The three go together: a person who names any of them has stated how
+// the number is judged, and the catalogue's target over a person's inclusiveness would be
+// neither theirs nor the catalogue's. Every other field of the definition a person sets is
+// carried forward by the copy this writes into.
+func takeCatalogueFields(next *Definition, entry Definition, first bool) {
+	if !first || setByPerson(next.SetByPerson, fieldTarget, fieldTargetInclusive, fieldTargetJudges) {
+		return
+	}
+	next.Target, next.TargetInclusive, next.TargetJudges = entry.Target, entry.TargetInclusive, entry.TargetJudges
+}
+
+// readTakeovers is version 1 of each eval newest holds a version of and lastSeeded none, by id:
+// the registration whose defaults an eval the seed takes over holds (the seed's rules above),
+// which its method is read against (holdsRegistrationSentence). It is one statement, and none
+// where there is no such eval, as on every seed of a project seeded before.
+//
+// What a person set is read from the version's own record (set_by_person) and not from the
+// values the versions hold: a register write of a target that moved no value, `target: null` on
+// an eval whose target is already none, records the target as that person's and leaves every
+// stored value as it was, and the seed must leave that target off (R5).
+func readTakeovers(ctx context.Context, w *writeTx, newest, lastSeeded map[string]Definition) (map[string]Definition, error) {
 	var ids []string
 	for id := range newest {
 		if _, seeded := lastSeeded[id]; !seeded {
@@ -416,38 +438,11 @@ func readTakeovers(ctx context.Context, w *writeTx, newest, lastSeeded map[strin
 		}
 	}
 	if len(ids) == 0 {
-		return takeovers{}, nil
+		return nil, nil
 	}
-	firsts, err := readDefinitions(ctx, w.Tx, `
+	return readDefinitions(ctx, w.Tx, `
 		select `+definitionColumns+` from eval_versions where project_key = $1 and eval_id = any($2) and version = 1
 	`, w.project, ids)
-	if err != nil {
-		return takeovers{}, err
-	}
-	rows, err := w.Query(ctx, `
-		select distinct eval_id from (
-			select eval_id,
-				target is distinct from lag(target) over by_version
-					or target_inclusive is distinct from lag(target_inclusive, 1, false) over by_version
-					or target_judges is distinct from lag(target_judges, 1, '{}'::text[]) over by_version as moved
-			from eval_versions
-			where project_key = $1 and eval_id = any($2)
-			window by_version as (partition by eval_id order by version)
-		) versions
-		where moved
-	`, w.project, ids)
-	if err != nil {
-		return takeovers{}, fmt.Errorf("read which taken-over evals of %s a write moved the target of: %w", w.project, err)
-	}
-	moved, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return takeovers{}, fmt.Errorf("read which taken-over evals of %s a write moved the target of: %w", w.project, err)
-	}
-	targeted := make(map[string]bool, len(moved))
-	for _, id := range moved {
-		targeted[id] = true
-	}
-	return takeovers{firsts: firsts, targeted: targeted}, nil
 }
 
 // holdsRegistrationSentence reports whether the block id of the document whose markdown and
@@ -464,10 +459,12 @@ func holdsRegistrationSentence(markdown string, blocks []model.ArtifactBlock, id
 // or whose SeriesComputation the catalogue states otherwise than the version the seed last wrote
 // of it (seeded), with every field of the catalogue's. The min_n a series holds is carried
 // forward where the seed wrote the series, so the version the seed last wrote may hold a
-// person's, which no catalogue change is read against, and where it holds one the seed never
-// wrote; a series the seed never wrote that holds none, one a reading or a register write of a
-// logged eval registered, takes the catalogue's, as its target does (the seed's rules above). A
-// series the release did not change is left as it is, whatever a person set on it since.
+// person's, which no catalogue change is read against; where it holds one the seed never wrote;
+// and where the series' record says a person set it, whatever value they left, as a definition's
+// target is kept (takeCatalogueFields). A series the seed never wrote that holds no min_n no
+// person set, one a reading or a register write of a logged eval registered, takes the
+// catalogue's, as its eval's target does (the seed's rules above). A series the release did not
+// change is left as it is, whatever a person set on it since.
 func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Series) []Series {
 	var writes []Series
 	for _, want := range catalogue {
@@ -478,7 +475,8 @@ func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Ser
 		}
 		next := want
 		next.EvalID, next.Version = id, existing.Version+1
-		if has && (wasSeeded || existing.MinN != nil) {
+		next.SetByPerson = existing.SetByPerson
+		if has && (wasSeeded || existing.MinN != nil || setByPerson(existing.SetByPerson, fieldMinN)) {
 			next.MinN = existing.MinN
 		}
 		writes = append(writes, next)

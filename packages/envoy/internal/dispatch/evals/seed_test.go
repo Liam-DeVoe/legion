@@ -476,6 +476,142 @@ func TestASeedFillsWhatNoWriteOfATakenOverEvalSet(t *testing.T) {
 	}
 }
 
+// TestASeedLeavesATargetAPersonSetToNoneAsNone: a person who sets a target to none on an eval
+// whose target is already none has chosen that the number has no target, and the seed leaves it
+// alone. The write moves no stored value, so what keeps that choice is the version's own record
+// of the fields a person set (set_by_person), which the write stores whether or not a value
+// moved: deploy-frequency, a slug a reading registered in a project no seed has reached, holds
+// no target after the seed, and the version alice's write left says she set the target and is
+// written by her, through the register write. The seed still fills the catalogue's target on an
+// eval no person set one on (merge-to-production) and keeps one a person set to a value
+// (pr-open-to-merge's 90), and the record survives the seed's own version.
+func TestASeedLeavesATargetAPersonSetToNoneAsNone(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	minutes := row(t, map[string]any{"series": measures.SeriesMinutes, "row_kind": "pull_request", "value": 30, "measured_at": at(4, 9, 0)})
+	r.write(t, SlugDeployFrequency, alice, row(t, map[string]any{"series": measures.SeriesDeploys, "row_kind": "deploy", "value": 3, "measured_at": at(4, 9, 0)}))
+	r.write(t, SlugMergeToProduction, alice, minutes)
+	r.write(t, SlugPROpenToMerge, alice, minutes)
+	if registered, _ := r.currentOf(t, SlugDeployFrequency); registered.Target != nil {
+		t.Fatalf("%s holds target %s before alice's write, so the write would move a value", SlugDeployFrequency, showValue(registered.Target))
+	}
+	off, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: SlugDeployFrequency, Caller: alice, Target: Set[*float64](nil)})
+	if err != nil {
+		t.Fatalf("alice's write of no target on %s: %v", SlugDeployFrequency, err)
+	}
+	personal := 90.0
+	if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: SlugPROpenToMerge, Caller: alice, Target: Set(&personal)}); err != nil {
+		t.Fatalf("alice's write of a target on %s: %v", SlugPROpenToMerge, err)
+	}
+	t.Logf("alice's write of no target wrote %t, version %d, set by a person: %v", off.Wrote, off.Definition.Version, off.Definition.SetByPerson)
+	if !off.Wrote || off.Definition.Version != 2 || !slices.Contains(off.Definition.SetByPerson, fieldTarget) ||
+		off.Definition.WrittenVia != ViaRegister || off.Definition.WrittenBy.ID != alice.ID {
+		t.Fatalf("alice's write of no target on a target already none left version %d, wrote %t, set by a person %v, written %s by %s; want version 2 recording target, written by alice through the register write",
+			off.Definition.Version, off.Wrote, off.Definition.SetByPerson, off.Definition.WrittenVia, off.Definition.WrittenBy.ID)
+	}
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	kept, _ := r.currentOf(t, SlugDeployFrequency)
+	t.Logf("%s after the seed: target %s, written via %s, set by a person: %v", SlugDeployFrequency, showValue(kept.Target), kept.WrittenVia, kept.SetByPerson)
+	if !kept.Computed() || kept.Target != nil || !slices.Contains(kept.SetByPerson, fieldTarget) {
+		t.Errorf("%s, whose target alice set to none while it was already none, holds source %s and target %s after the seed, set by a person %v; want it computed with no target, the record kept, and not the catalogue's %s",
+			SlugDeployFrequency, kept.Source, showValue(kept.Target), kept.SetByPerson, showValue(entryOf(t, SlugDeployFrequency).definition.Target))
+	}
+	catalogued := entryOf(t, SlugMergeToProduction).definition
+	if filled, _ := r.currentOf(t, SlugMergeToProduction); !sameTarget(filled.Target, catalogued.Target) || catalogued.Target == nil {
+		t.Errorf("%s, which no person wrote, holds target %s after the seed; want the catalogue's %s",
+			SlugMergeToProduction, showValue(filled.Target), showValue(catalogued.Target))
+	}
+	if set, _ := r.currentOf(t, SlugPROpenToMerge); !sameTarget(set.Target, &personal) {
+		t.Errorf("%s, whose target alice set to %v, holds target %s after the seed; want hers", SlugPROpenToMerge, personal, showValue(set.Target))
+	}
+}
+
+// TestASeedLeavesAMethodAPersonSetAlone: the method is the other field of a definition the seed
+// fills on an eval it takes over, where the eval's section still holds the sentence its
+// registration wrote. A person who writes that sentence as the eval's method has chosen it, and
+// the write records doc_text although it moves no block and no text, so the seed leaves the
+// section as it is rather than writing the catalogue's method over it.
+func TestASeedLeavesAMethodAPersonSetAlone(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	r.write(t, SlugDeployFrequency, alice, row(t, map[string]any{"series": measures.SeriesDeploys, "row_kind": "deploy", "value": 3, "measured_at": at(4, 9, 0)}))
+	first, _ := r.currentOf(t, SlugDeployFrequency)
+	sentence := registrationSentence(first.WrittenVia, first.WrittenBy, first.CreatedAt)
+	written, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: SlugDeployFrequency, Caller: alice, DocText: Set(sentence)})
+	if err != nil {
+		t.Fatalf("alice's write of the method %s holds: %v", SlugDeployFrequency, err)
+	}
+	t.Logf("alice's write of the method the section holds wrote %t, version %d, set by a person: %v",
+		written.Wrote, written.Definition.Version, written.Definition.SetByPerson)
+	if !written.Wrote || !slices.Contains(written.Definition.SetByPerson, fieldDocText) || written.Definition.DocBlock != first.DocBlock {
+		t.Fatalf("alice's write of the method the section holds left version %d naming block %s, set by a person %v; want a version recording doc_text and naming the block it held",
+			written.Definition.Version, written.Definition.DocBlock, written.Definition.SetByPerson)
+	}
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	kept, _ := r.currentOf(t, SlugDeployFrequency)
+	method, found, err := r.registry.Method(ctx, r.project, kept.DocBlock)
+	if err != nil || !found {
+		t.Fatalf("read the method of %s: found %t, %v", kept.EvalID, found, err)
+	}
+	t.Logf("%s's method after the seed: %q", SlugDeployFrequency, method)
+	if !sameMethod(method, sentence) {
+		t.Errorf("%s's section, whose method alice wrote, holds %q after the seed; want the method she wrote, %q", SlugDeployFrequency, method, sentence)
+	}
+}
+
+// TestTheSeedTakesNoCatalogueMinNAPersonSet: min_n is the field of a series the seed fills on a
+// series it never wrote that holds none, which is how a series a reading registered takes the
+// catalogue's (TestASeedFillsWhatNoWriteOfATakenOverEvalSet). A person who sets min_n to none
+// moves no value, so the series' own record of the fields a person set is what keeps it, as the
+// definition's keeps a target: seriesToWrite writes the catalogue's min_n over a series whose
+// record names none and never over one whose record names min_n. The rule is tested here rather
+// than through a register write because a register write takes a min_n on a computed eval's job
+// series alone (rankedByMinN), and every series the seed takes over belongs to an eval that is
+// still logged.
+func TestTheSeedTakesNoCatalogueMinNAPersonSet(t *testing.T) {
+	entry := entryOf(t, SlugPRCI)
+	var catalogued Series
+	for _, series := range entry.series {
+		if series.Series == SeriesJobs {
+			catalogued = series
+		}
+	}
+	if catalogued.MinN == nil {
+		t.Fatalf("the catalogue states no min_n of %s's series %s, so the fill has nothing to write", SlugPRCI, SeriesJobs)
+	}
+	id := EvalID("EVAL", SlugPRCI)
+	registered := Series{EvalID: id, Series: SeriesJobs, Version: 1, SeriesComputation: SeriesComputation{Role: RoleHeadline, Agg: AggLast}}
+	for _, test := range []struct {
+		what    string
+		current Series
+		want    *int
+	}{
+		{"a series a reading registered, which no person set a min_n on", registered, catalogued.MinN},
+		{"a series whose min_n a person set to none", withPersonsMinN(registered), nil},
+	} {
+		writes := seriesToWrite(id, entry.series, map[string]Series{SeriesJobs: test.current}, nil)
+		index := slices.IndexFunc(writes, func(series Series) bool { return series.Series == SeriesJobs })
+		if index < 0 {
+			t.Fatalf("%s: the seed writes no version of %s", test.what, SeriesJobs)
+		}
+		t.Logf("%s: the seed writes min_n %s, record %v", test.what, showMinN(writes[index].MinN), writes[index].SetByPerson)
+		if !sameMinN(writes[index].MinN, test.want) {
+			t.Errorf("%s: the seed writes min_n %s, want %s", test.what, showMinN(writes[index].MinN), showMinN(test.want))
+		}
+	}
+}
+
+// withPersonsMinN is series as a person's register write of `min_n: null` leaves it: no min_n,
+// and the record that a person set it (SeriesChange.applyTo).
+func withPersonsMinN(series Series) Series {
+	SeriesChange{Series: series.Series, MinN: Set[*int](nil)}.applyTo(&series, time.Time{})
+	return series
+}
+
 // seedPass runs the seeds of one refresher pass (refresh.load) with seeds, the loop's state, and
 // answers the projects whose seed it ran, in the order it ran them.
 func (r rig) seedPass(t *testing.T, seeds *seeding) []string {

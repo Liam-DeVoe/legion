@@ -3,6 +3,7 @@ package evals
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -53,8 +54,15 @@ func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testin
 	}
 	copied := v1
 	copied.Version, copied.Target, copied.WrittenBy, copied.CreatedAt = v2.Version, v2.Target, v2.WrittenBy, v2.CreatedAt
+	copied.SetByPerson = v2.SetByPerson
 	if !sameDefinition(copied, v2) || v2.WrittenVia != ViaRegister || v2.WrittenBy.ID != implementer.ID {
 		t.Errorf("version 2 is %+v, want version 1's fields with the target set, written by the implementer through the register write", v2)
+	}
+	// Each version records the fields a person's write named, whether or not it moved their
+	// value, and carries the record before it forward (Definition.SetByPerson): version 1 named
+	// the judges and the links, and version 2 the target beside them.
+	if want := []string{"links", "target", "target_judges"}; !slices.Equal(v1.SetByPerson, []string{"links", "target_judges"}) || !slices.Equal(v2.SetByPerson, want) {
+		t.Errorf("the versions record %v then %v as set by a person, want %v then %v", v1.SetByPerson, v2.SetByPerson, []string{"links", "target_judges"}, want)
 	}
 	if v2.Name != "Review rounds" || v2.Unit != "rounds" || v2.Direction != DirectionLowerBetter || len(v2.Links) != 1 ||
 		!v2.Links[0].RecordedAt.Equal(v1.Links[0].RecordedAt) || v2.DocBlock != v1.DocBlock || v2.DocBlock == "" {
@@ -503,6 +511,54 @@ func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
 	list(false)
 	if listed := r.count(t, `select count(*) from eval_days where eval_id = $1 and listed`, evalID); listed != 0 {
 		t.Errorf("%d day rows of depth are listed after it was unlisted, want none", listed)
+	}
+}
+
+// TestEveryFieldAPersonSetsIsRecordedAsSetByOne: the seed fills a field of the catalogue only
+// where no version records a person setting it, so a field a person may set that the write does
+// not record would be a write the next boot could undo, which is the defect this record closes
+// (R5). Every field of a register write that is a person's to set, each Field of Registration
+// and of SeriesChange outside the computation, is named by personFields, and setting it alone
+// names it alone. A field added to either and missed there fails here.
+func TestEveryFieldAPersonSetsIsRecordedAsSetByOne(t *testing.T) {
+	for _, change := range []struct {
+		what     string
+		value    reflect.Value
+		recorded func(value reflect.Value) []string
+	}{
+		{"a register write", reflect.New(reflect.TypeFor[Registration]()).Elem(),
+			func(value reflect.Value) []string { return value.Interface().(Registration).personFields() }},
+		{"a series of one", reflect.New(reflect.TypeFor[SeriesChange]()).Elem(),
+			func(value reflect.Value) []string { return value.Interface().(SeriesChange).personFields() }},
+	} {
+		counted := 0
+		for index := range change.value.NumField() {
+			field := change.value.Type().Field(index)
+			// Every field a person sets is a Field[T]; the computation's are in the embedded
+			// change of their own (ComputationChange, SeriesComputationChange), which the
+			// catalogue states on a computed eval and no seed reads a record of.
+			if field.Anonymous || field.Type.Kind() != reflect.Struct {
+				continue
+			}
+			if _, isField := field.Type.FieldByName("Set"); !isField {
+				continue
+			}
+			one := reflect.New(change.value.Type()).Elem()
+			one.Field(index).FieldByName("Set").SetBool(true)
+			recorded := change.recorded(one)
+			if len(recorded) != 1 {
+				t.Errorf("%s setting %s alone records %v as set by a person, want that one field", change.what, field.Name, recorded)
+				continue
+			}
+			counted++
+			t.Logf("%s setting %s alone records %q", change.what, field.Name, recorded[0])
+		}
+		if recorded := change.recorded(change.value); len(recorded) != 0 {
+			t.Errorf("%s that sets nothing records %v as set by a person, want none", change.what, recorded)
+		}
+		if counted == 0 {
+			t.Errorf("%s holds no field a person sets, so the comparison compares nothing", change.what)
+		}
 	}
 }
 

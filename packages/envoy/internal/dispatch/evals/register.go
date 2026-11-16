@@ -41,6 +41,12 @@ import (
 // logged: a computed eval is the seeded catalogue's alone, and a register write naming another
 // source is refused. A min_n is taken on pr-ci's job series alone, the one series a read ranks by
 // it (rankedByMinN), and refused on any other.
+//
+// A write records every field it names that is a person's to set (personFields) in the version's
+// set_by_person, whether or not it moves that field's value, and the version after it carries
+// that record forward. So a person who sets a target to none on an eval whose target is already
+// none leaves a version saying the target is theirs, and the seed fills the catalogue's target
+// only where no version of the eval says so (R5, the seed's takeCatalogueFields).
 type Registration struct {
 	Project string
 	Slug    string
@@ -161,11 +167,81 @@ func firstSet(fields []namedField) string {
 	return ""
 }
 
+// The names of the fields a person sets on an eval of the seeded catalogue (R5), as a body
+// spells them: the ones a register write records in set_by_person and the seed reads back, each
+// spelled once so a write and the seed cannot drift apart.
+const (
+	fieldTarget          = "target"
+	fieldTargetInclusive = "target_inclusive"
+	fieldTargetJudges    = "target_judges"
+	fieldOwnerRole       = "owner_role"
+	fieldPerson          = "person"
+	fieldIssueKey        = "issue_key"
+	fieldState           = "state"
+	fieldReplacedBy      = "replaced_by"
+	fieldLinks           = "links"
+	fieldDocText         = "doc_text"
+	fieldDocBlock        = "doc_block"
+	fieldMinN            = "min_n"
+)
+
+// personFields is every field of the write that is a person's to set on an eval, as the body
+// spells it: the fields R5 names as a person's, which a register write of a computed eval may
+// set and the catalogue never states. The fields of the computation are not among them: on a
+// computed eval the catalogue states them and this write is refused (computationField), and on a
+// logged eval nothing of the registry fills them. The eval's record of them is what the seed
+// reads to leave a field a person set alone (Definition.SetByPerson).
+func (change Registration) personFields() []string {
+	return setFields([]namedField{
+		{fieldTarget, change.Target.Set}, {fieldTargetInclusive, change.TargetInclusive.Set},
+		{fieldTargetJudges, change.TargetJudges.Set}, {fieldOwnerRole, change.OwnerRole.Set},
+		{fieldPerson, change.Person.Set}, {fieldIssueKey, change.IssueKey.Set},
+		{fieldState, change.State.Set}, {fieldReplacedBy, change.ReplacedBy.Set},
+		{fieldLinks, change.Links.Set}, {fieldDocText, change.DocText.Set},
+		{fieldDocBlock, change.DocBlock.Set},
+	})
+}
+
+// personFields is every field of the series the write sets that is a person's: min_n, the one
+// field of a series a person sets on a computed eval (R5), which the seed fills from the
+// catalogue where no person set it (seriesToWrite).
+func (change SeriesChange) personFields() []string {
+	return setFields([]namedField{{fieldMinN, change.MinN.Set}})
+}
+
+// setFields is the name of each of fields the change sets, in the order given.
+func setFields(fields []namedField) []string {
+	var set []string
+	for _, field := range fields {
+		if field.set {
+			set = append(set, field.name)
+		}
+	}
+	return set
+}
+
+// withFields is record with each of fields it does not hold, sorted and each once: the record a
+// version leaves behind it, which holds every field a person has set by the time it is written,
+// since each version carries the record before it forward. Sorted, so two records of one set of
+// fields are one value, whatever order the writes named them in.
+func withFields(record, fields []string) []string {
+	widened := slices.Clone(record)
+	for _, field := range fields {
+		if !slices.Contains(widened, field) {
+			widened = append(widened, field)
+		}
+	}
+	slices.Sort(widened)
+	return widened
+}
+
 // Registered is what a register write left: the eval's newest definition, the newest version of
 // each of its series (sorted by name), and whether the write stored a new version of the
 // definition or of any series. A write that changes no field of the definition stores none of it,
 // and one that changes no field of a series stores no version of that series; a write that stores
-// neither wrote nothing.
+// neither wrote nothing. The record of which fields a person set is one of those fields
+// (Definition.SetByPerson), so the first write that names a field stores a version whether or
+// not it moves the value, and a repeat of it stores nothing.
 type Registered struct {
 	Definition Definition
 	Series     []Series
@@ -358,6 +434,10 @@ func ownerOf(caller model.Actor) (role, person string) {
 	return role, person
 }
 
+// applyTo writes into next each field the change sets, and records in next's set_by_person every
+// field of it a person sets, whether or not the value moves: a write of a target that leaves it
+// as it was is still a person's choice of that target, which the seed must not fill afterwards
+// (R5, personFields).
 func (change Registration) applyTo(next *Definition, now time.Time) {
 	change.ComputationChange.applyTo(&next.Computation)
 	change.DocBlock.applyTo(&next.DocBlock)
@@ -373,11 +453,15 @@ func (change Registration) applyTo(next *Definition, now time.Time) {
 		next.Links = stampLinks(change.Links.Value, next.Links, now)
 	}
 	next.TargetJudges = nonNil(next.TargetJudges)
+	next.SetByPerson = withFields(next.SetByPerson, change.personFields())
 }
 
+// applyTo writes into next each field the change sets, and records a person's min_n as
+// Registration's applyTo records the definition's fields.
 func (change SeriesChange) applyTo(next *Series, now time.Time) {
 	change.SeriesComputationChange.applyTo(&next.SeriesComputation, now)
 	change.MinN.applyTo(&next.MinN)
+	next.SetByPerson = withFields(next.SetByPerson, change.personFields())
 }
 
 // stampLinks is links with each RecordedAt the server's: the time a link already in previous
@@ -398,18 +482,22 @@ func stampLinks(links, previous []Link, now time.Time) []Link {
 }
 
 // sameDefinition reports whether two versions define the same eval: every field but the
-// version's own number, time, writer and way of writing.
+// version's own number, time, writer and way of writing. The record of which fields a person set
+// is one of them, so a person's write of a field that moves no value still writes a version,
+// which is how that choice is kept (Definition.SetByPerson).
 func sameDefinition(a, b Definition) bool {
 	return a.EvalID == b.EvalID && a.Computation.same(b.Computation) && a.DocBlock == b.DocBlock &&
 		sameTarget(a.Target, b.Target) && a.TargetInclusive == b.TargetInclusive && slices.Equal(a.TargetJudges, b.TargetJudges) &&
 		a.OwnerRole == b.OwnerRole && a.Person == b.Person && a.IssueKey == b.IssueKey && a.State == b.State &&
-		a.ReplacedBy == b.ReplacedBy && sameLinks(a.Links, b.Links)
+		a.ReplacedBy == b.ReplacedBy && sameLinks(a.Links, b.Links) && slices.Equal(a.SetByPerson, b.SetByPerson)
 }
 
 // sameSeries reports whether two versions of a series are the same but for the version's own
-// number and time.
+// number and time, the record of a person's min_n among the fields compared, as sameDefinition
+// compares the definition's.
 func sameSeries(a, b Series) bool {
-	return a.SeriesComputation.same(b.SeriesComputation) && sameMinN(a.MinN, b.MinN)
+	return a.SeriesComputation.same(b.SeriesComputation) && sameMinN(a.MinN, b.MinN) &&
+		slices.Equal(a.SetByPerson, b.SetByPerson)
 }
 
 func sameTarget(a, b *float64) bool {

@@ -1000,7 +1000,10 @@ func (s *server) refuseReadingChange(w http.ResponseWriter, r *http.Request) {
 // body leaves out copied forward (evals.Store.Register). doc_text, when given and not the method
 // the eval's section of the project's `evals-md` holds already, replaces that method. It answers
 // 201 with what it wrote, a version of the definition or of a series, and 200 with the versions
-// that stand where the body changed no field of the definition or of a series it names.
+// that stand where the body changed no field of the definition or of a series it names. A field
+// the body names that no earlier write of the eval named is a change of the version's record of
+// what a person set, so `target: null` on an eval whose target is already off is answered 201,
+// and sent again 200 (evals.Definition's SetByPerson).
 func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

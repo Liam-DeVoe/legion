@@ -1004,6 +1004,53 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 	}
 }
 
+// TestARegisterWriteOfNoTargetHoldsThroughTheSeed: the tester's path. In a project made by SQL,
+// a reading registers a catalogue slug, so the eval is logged with no target and the seed will
+// take it over. A register write of `target: null` on that eval is a person saying the number
+// has no target, although it moves no value: the write is answered 201 with the version that
+// records it, and the seed leaves the target off rather than writing the catalogue's 20 a day
+// over it (R5, evals' set_by_person).
+func TestARegisterWriteOfNoTargetHoldsThroughTheSeed(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	ctx := t.Context()
+	today := measures.Midnight(time.Now().UTC())
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('SQL', 'Made by SQL')`); err != nil {
+		t.Fatalf("make a project by SQL: %v", err)
+	}
+	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals/"+evals.SlugDeployFrequency+"/readings",
+		map[string]any{"readings": []any{reading(measures.SeriesDeploys, 3, today)}}, "c6d-reading")
+	if logged.Code != http.StatusCreated || !decodeBody[evalReadingsResponse](t, logged).Registered {
+		t.Fatalf("a reading under %s: status %d, body %s; want 201 registering it", evals.SlugDeployFrequency, logged.Code, logged.Body.String())
+	}
+	target := func(what string) *float64 {
+		t.Helper()
+		detail := evalGet[evalDetailResponse](t, handler, "/api/v1/projects/SQL/evals/"+evals.SlugDeployFrequency)
+		if len(detail.Items) == 0 {
+			t.Fatalf("the read of %s %s answers no item", evals.SlugDeployFrequency, what)
+		}
+		return detail.Items[0].Definition.Target
+	}
+	if before := target("after the reading"); before != nil {
+		t.Fatalf("%s holds target %s after the reading registered it; the register write below would move a value", evals.SlugDeployFrequency, showFigure(before))
+	}
+	written := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals",
+		map[string]any{"slug": evals.SlugDeployFrequency, "target": nil}, "c6d-target-none")
+	registered := decodeBody[evalRegisterResponse](t, written)
+	if written.Code != http.StatusCreated || len(registered.Items) != 1 || !registered.Items[0].Wrote || registered.Items[0].Definition.Version != 2 {
+		t.Fatalf("a register write of target null: status %d, body %s; want 201 with version 2, the version that records the choice", written.Code, written.Body.String())
+	}
+	if _, err := evals.New(database, deps.Docs, deps.Events).Ensure(ctx, "SQL"); err != nil {
+		t.Fatalf("seed the evals of SQL: %v", err)
+	}
+	after := target("after the seed")
+	catalogued := measures.DefaultTargets.DeploysPerDay.Value
+	t.Logf("%s after the seed: target %s; the catalogue's is %v", evals.SlugDeployFrequency, showFigure(after), catalogued)
+	if after != nil {
+		t.Errorf("%s, whose target a register write set to none, holds target %s after the seed; want none, not the catalogue's %v",
+			evals.SlugDeployFrequency, showFigure(after), catalogued)
+	}
+}
+
 // showFigure is a statistic for a failure message.
 func showFigure(value *float64) string {
 	if value == nil {
