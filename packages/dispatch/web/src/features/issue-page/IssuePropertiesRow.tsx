@@ -253,7 +253,13 @@ export function IssuePropertiesRow({
           other issue keeps the one chip, which says "Not requested" while nobody has asked.
           Each document whose own request waits on the reader carries its own Approve and
           Request changes here, the chip and each entry alike, and no other does (decision 58,
-          dispatch://INFRA-3935 R10); they are Details' otherwise, with the steps' reasons. */}
+          dispatch://INFRA-3935 R10); they are Details' otherwise, with the steps' reasons.
+          The chip, and each step's name, chip and two actions (`layout="contents"`), are items
+          of this line, the two actions kept together as one: the approval control stands beside
+          the count, and where the line has no room left the two actions take the line under
+          it together (ruling 3's point 2 of
+          dispatch://INFRA-1196/artifact/build-rulings-md, decision 86 of
+          dispatch://INFRA-1196/artifact/part-decisions-md). */}
       {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : approval === undefined ||
         approval.state === "draft" ? (
         <span className={approvalPillClassName("draft", "compact")} {...pageChrome}>
@@ -262,6 +268,7 @@ export function IssuePropertiesRow({
       ) : (
         <ApprovalChip
           artifact={documentArtifact}
+          keepActionsTogether
           layout="contents"
           showActions={waiting.approvals.includes(documentArtifact.id)}
           size="compact"
@@ -273,6 +280,7 @@ export function IssuePropertiesRow({
           actions={waiting.approvals.length > 0}
           actionsOn={waiting.approvals}
           entries={entries}
+          layout="contents"
           primaryArtifactId={issue.primary_artifact_id}
           reasons={false}
           size="compact"
