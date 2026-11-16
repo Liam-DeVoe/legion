@@ -194,6 +194,17 @@ func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, 
 	return held, nil
 }
 
+// conflictHoldersQuery is SessionConflicts' read of the holders of the names claims record: $1 the
+// project, $2 and $3 the kinds and names, one pair a recorded name. Each name is looked up through
+// the primary key by a lateral subquery whose `limit 1` keeps the planner from flattening it into a
+// join: as a join, the planner chose a hash join over a sequential scan of the project's whole
+// table once the table outgrew the names (review F2 of #4220: 533,786 rows read for 33,786 names).
+// As a lookup, the read costs one index probe a recorded name, whatever the table holds.
+const conflictHoldersQuery = `select r.kind, r.name, h.claim
+	from unnest($2::text[], $3::text[]) as r(kind, name)
+	cross join lateral (select claim from claim_sessions h
+		where h.project = $1 and h.kind = r.kind and h.name = r.name limit 1) as h`
+
 // SessionConflicts is every name a claim of project records without holding it (SessionConflict),
 // in kind and then name order: one held for no claim, which the claim_sessions migration or
 // HoldRecordedSessions found recorded by several claims, and one held for another claim, which a
@@ -202,11 +213,12 @@ func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, 
 // current session records it, for an operator to settle by hand (the claim_sessions migration gives
 // the steps).
 //
-// It is two reads whatever the project's size, and the second reads only the rows of names the
-// claims record now, through the primary key, never the whole table: a claim may hold up to
-// supervise.MaxHeldNamesPerClaim names, most of them of sessions it no longer records, so the
-// table can hold far more rows than the claims name, and the boot's cost must follow what the
-// claims record, about 4.5 names a claim, not what the table has gathered (review N2 of #4220).
+// It is two reads whatever the project's size: the claims, and the holders of the names they
+// record, each found through the primary key (conflictHoldersQuery), never by reading the whole
+// table. A claim may hold up to supervise.MaxHeldNamesPerClaim names, most of them of sessions it
+// no longer records, so the table can hold far more rows than the claims name, and the boot's cost
+// follows what the claims record, about 4.5 names a claim, not what the table has gathered
+// (reviews N2 and F2 of #4220).
 func (s *Store) SessionConflicts(ctx context.Context, project string) ([]SessionConflict, error) {
 	var conflicts []SessionConflict
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -219,9 +231,7 @@ func (s *Store) SessionConflicts(ctx context.Context, project string) ([]Session
 		for i, h := range recorded {
 			kinds[i], names[i] = string(h.Kind), h.Name
 		}
-		rows, err := tx.Query(ctx, `select h.kind, h.name, h.claim
-			from unnest($2::text[], $3::text[]) as r(kind, name)
-			join claim_sessions h on h.project = $1 and h.kind = r.kind and h.name = r.name`, project, kinds, names)
+		rows, err := tx.Query(ctx, conflictHoldersQuery, project, kinds, names)
 		if err != nil {
 			return err
 		}

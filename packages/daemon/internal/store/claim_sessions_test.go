@@ -459,6 +459,12 @@ func (s *statementTracer) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx
 // tracedStore is a second Store on store's database whose pool sends every statement through tracer.
 func tracedStore(t *testing.T, store *Store, tracer pgx.QueryTracer) *Store {
 	t.Helper()
+	return secondStore(t, store, func(config *pgxpool.Config) { config.ConnConfig.Tracer = tracer })
+}
+
+// secondStore is a second Store on store's database, its pool configured by configure.
+func secondStore(t *testing.T, store *Store, configure func(*pgxpool.Config)) *Store {
+	t.Helper()
 	ctx := context.Background()
 	var name string
 	if err := store.Pool().QueryRow(ctx, `select current_database()`).Scan(&name); err != nil {
@@ -473,14 +479,70 @@ func tracedStore(t *testing.T, store *Store, tracer pgx.QueryTracer) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.ConnConfig.Tracer = tracer
+	configure(config)
 	raw, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	traced := &Store{pool: NewPool(raw)}
-	t.Cleanup(traced.Close)
-	return traced
+	other := &Store{pool: NewPool(raw)}
+	t.Cleanup(other.Close)
+	return other
+}
+
+// explainPlan is PostgreSQL's plan for query with args on store's database, as text.
+func explainPlan(t *testing.T, store *Store, query string, args ...any) string {
+	t.Helper()
+	rows, err := store.Pool().Query(context.Background(), "explain (costs off) "+query, args...)
+	if err != nil {
+		t.Fatalf("explain the query: %v", err)
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the plan: %v", err)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// scansOf is how many sequential and index scans of claim_sessions call makes, read from
+// pg_stat_user_tables. call runs on a Store of one connection, whose statistics that connection
+// flushes on demand (pg_stat_force_next_flush, PostgreSQL 15 and later), so the counts are its
+// call's alone; nothing else scans claim_sessions while it runs.
+func scansOf(t *testing.T, store *Store, call func(one *Store)) (seq, idx int64) {
+	t.Helper()
+	ctx := context.Background()
+	read := func() (int64, int64) {
+		var seq, idx int64
+		if _, err := store.Pool().Exec(ctx, `select pg_stat_clear_snapshot()`); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Pool().QueryRow(ctx, `select seq_scan, coalesce(idx_scan, 0) from pg_stat_user_tables
+			where relname = 'claim_sessions'`).Scan(&seq, &idx); err != nil {
+			t.Fatalf("read claim_sessions' scan counts: %v", err)
+		}
+		return seq, idx
+	}
+	one := secondStore(t, store, func(config *pgxpool.Config) { config.MaxConns = 1 })
+	flush := func() {
+		if _, err := one.Pool().Exec(ctx, `select pg_stat_force_next_flush()`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := one.Pool().Exec(ctx, `select 1`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flush()
+	seqBefore, idxBefore := read()
+	call(one)
+	flush()
+	// The flush lands as the connection goes idle, so the read waits for it a little.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		seqAfter, idxAfter := read()
+		if seqAfter != seqBefore || idxAfter != idxBefore || time.Now().After(deadline) {
+			return seqAfter - seqBefore, idxAfter - idxBefore
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // productionClaims is the size of the largest project at the time of writing: INFRA's daemon booted
@@ -580,11 +642,37 @@ func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 		t.Fatalf("the conflict read over the stale rows answered %+v, %v; want none", conflicts, err)
 	}
 	staleTook, staleSent, staleRows := time.Since(started), tracer.sent.Load(), tracer.rows.Load()
-	rowBound := int64(2 * (productionClaims*2 + names))
-	t.Logf("with %d more rows no claim records: a steady boot step %d statements, %d rows read, in %v", stale, staleSent, staleRows, staleTook)
-	if staleSent > statementBound || staleRows > rowBound || staleTook > timeBound {
-		t.Errorf("with %d stale rows the steady boot step sent %d statements and read %d rows in %v; want at most %d statements and %d rows, within %v: its cost follows the names claims record, not the table's rows",
-			stale, staleSent, staleRows, staleTook, statementBound, rowBound, timeBound)
+	t.Logf("with %d more rows no claim records: a steady boot step %d statements, %d rows returned, in %v", stale, staleSent, staleRows, staleTook)
+	if staleSent > statementBound || staleTook > timeBound {
+		t.Errorf("with %d stale rows the steady boot step sent %d statements in %v; want at most %d statements, within %v",
+			stale, staleSent, staleTook, statementBound, timeBound)
+	}
+
+	// The rows returned say nothing of the rows read (review F2): the read must find each recorded
+	// name through the primary key, which its plan shows and the table's scan counts confirm.
+	var kinds, recordedNamesOf []string
+	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+		current, abandoned, err := recordedNames(ctx, tx, "legion")
+		for _, h := range sortedHolds(current, abandoned) {
+			kinds, recordedNamesOf = append(kinds, string(h.Kind)), append(recordedNamesOf, h.Name)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := explainPlan(t, store, conflictHoldersQuery, "legion", kinds, recordedNamesOf)
+	t.Logf("the conflict read's plan over %d recorded names and %d rows:\n%s", len(kinds), names+stale, plan)
+	if strings.Contains(plan, "Seq Scan on claim_sessions") || !strings.Contains(plan, "Index Scan using claim_sessions_pkey on claim_sessions") {
+		t.Errorf("the conflict read's plan scans claim_sessions in sequence, or finds its rows by no lookup of the primary key:\n%s", plan)
+	}
+	seqScans, indexScans := scansOf(t, store, func(one *Store) {
+		if conflicts, err := one.SessionConflicts(ctx, "legion"); err != nil || len(conflicts) != 0 {
+			t.Fatalf("the counted conflict read answered %+v, %v; want none", conflicts, err)
+		}
+	})
+	t.Logf("one conflict read over %d rows: seq_scan +%d, idx_scan +%d on claim_sessions", names+stale, seqScans, indexScans)
+	if seqScans != 0 || indexScans == 0 {
+		t.Errorf("one conflict read scanned claim_sessions in sequence %d times and by index %d times; want no sequential scan, and the names found by index", seqScans, indexScans)
 	}
 
 	if firstSent > statementBound || steadySent > statementBound {
