@@ -238,6 +238,11 @@ func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *t
 	relay.refuse.Store(true)
 	relay.drop()
 	waitFor(t, 10*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+	// The server sees the dropped link on its own read of it, after the client does: a probe
+	// published before then is handed to the dead link's binding and waits out the consumer's
+	// AckWait there, past the fresh bind's wait below. So the probe waits for the server to drop
+	// that binding, as TestReleaseFailedUnsubscribesWhatARestoreBound waits for its own.
+	awaitPushBound(t, direct, consumer, false, "the server to drop the dead link's binding")
 	publishReleaseProbe(t, direct, "notifications.github.test.released")
 
 	drained, err := client.DrainSubscription(sub)
