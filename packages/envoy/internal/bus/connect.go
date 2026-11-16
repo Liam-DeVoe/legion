@@ -76,6 +76,20 @@ func detectSilentCuts(o *nats.Options) error {
 	return nil
 }
 
+// reconnectJitterImmediate is the jitter WithImmediateReconnect leaves between two clients'
+// retries, in place of the second every other connection waits.
+const reconnectJitterImmediate = 50 * time.Millisecond
+
+// reconnectImmediately is the nats.Option WithImmediateReconnect adds to every connection of a
+// client: no wait between attempts, and a jitter small enough that the client is back before the
+// clients that wait on it are.
+func reconnectImmediately(o *nats.Options) error {
+	o.ReconnectWait = 0
+	o.ReconnectJitter = reconnectJitterImmediate
+	o.ReconnectJitterTLS = reconnectJitterImmediate
+	return nil
+}
+
 // allOf applies each option that is not nil, in order.
 func allOf(options ...nats.Option) nats.Option {
 	return func(o *nats.Options) error {
@@ -107,7 +121,6 @@ func allOf(options ...nats.Option) nats.Option {
 func connectInBackground(name string, urls []string, refusals *reconnectErrThrottle, connected func(*nats.Conn)) nats.Option {
 	return func(o *nats.Options) error {
 		o.RetryOnFailedConnect = true
-		o.IgnoreAuthErrorAbort = true
 		connectedCB, reconnectedCB, report := o.ConnectedCB, o.ReconnectedCB, o.AsyncErrorCB
 		o.ConnectedCB = func(nc *nats.Conn) {
 			if gate := firstConnectGate.Load(); gate != nil {
@@ -256,6 +269,14 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	opts.NoRandomize = true
 	opts.Timeout = connectTimeout
 	opts.MaxReconnect = -1
+	// Never give up over a refused credential. nats.go closes a connection for good when the same
+	// server refuses it twice in a row with the same authorization error (nats.go v1.53.1,
+	// nats.go:4086: `if nc.current.lastErr == err && !nc.Opts.IgnoreAuthErrorAbort { nc.ar = true }`),
+	// and a hub whose connections an auth service admits refuses every client for as long as that
+	// service is away — a restart of the hub drops the service's own connection too. Without this
+	// the second refusal would leave the process with no bus until something noticed, which is
+	// exactly the outage the service exists to avoid.
+	opts.IgnoreAuthErrorAbort = true
 	// A publish while reconnecting waits for the reconnect (ensureConnWithContext), so the wait
 	// between attempts is how long it waits after NATS is back.
 	opts.ReconnectWait = time.Second

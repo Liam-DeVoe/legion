@@ -9,10 +9,13 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// CalloutAuthTimeout is the authorization timeout of every server CalloutConfig describes, in
-// seconds: how long the server waits for the auth service's answer before it refuses the client.
-// It is the hub's own (authorization { timeout: 5 }).
-const CalloutAuthTimeout = 5
+// CalloutAuthTimeout is how long a server CalloutConfig describes waits for the auth service's
+// answer before it refuses the client, in seconds. It is nats-server's own default
+// (AUTH_TIMEOUT, server/const.go), which the deployed hub takes by naming none, written here so
+// the fixture's value is visible beside the configuration it renders. A longer one would buy
+// nothing: a Go client's connect allows two seconds whatever the server waits, so the auth
+// service answers well inside it (natscallout.decideBudget).
+const CalloutAuthTimeout = 2
 
 // CalloutKeys are the three keys a server with an auth callout and its auth service share: the
 // service's own NATS user, which the server admits without a callout; the issuer, the account key

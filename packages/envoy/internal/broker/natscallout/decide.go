@@ -188,6 +188,9 @@ const sessionNamePrefix = "session/"
 func decideSession(ctx context.Context, deps Deps, req Request, grants grantSource) (Decision, error) {
 	answer, err := deps.Introspect(ctx, req.Token)
 	if err != nil {
+		if ctx.Err() != nil {
+			return Decision{}, budgetRefusal(credentialSession, "the token's introspection")
+		}
 		return Decision{}, refuse(credentialSession, "broker unreachable: the token's introspection failed")
 	}
 	caller, err := brokertoken.SessionCaller(answer)
@@ -228,6 +231,9 @@ const longestServiceToken = machine.MaxTokenLoginLifetime + brokertoken.ProofClo
 func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req Request, grants grantSource) (Decision, error) {
 	account, google, issued, expiry, err := deps.ServiceToken(ctx, req.Password)
 	if err != nil {
+		if ctx.Err() != nil {
+			return Decision{}, budgetRefusal(credentialService, "the service token's verification")
+		}
 		return Decision{}, refuse(credentialService, "service token not verified")
 	}
 	if expiry.Sub(issued) > longestServiceToken {
