@@ -122,56 +122,14 @@ jobs:
       # refusal, because this job records a pass for a fallback it drove, and a pass recorded for
       # a row whose second source does not exist yet is a pass for nothing.
       - name: Check the package holds the blob of every mirrored row
-        run: |
-          set -euo pipefail
-          # shellcheck source=.github/scripts/ci-tools.sh
-          . .github/scripts/ci-tools.sh
-          registry=$(ci_tools_registry)
-          token=$(ci_tools_ghcr_token)
-          rows=$(ci_tools_rows ghcr-mirror)
-          cold=""
-          for row in $rows; do
-            url=$(ci_tools_blob_url "$row")
-            status=$(curl -sS -o /dev/null -I -L -w '%{http_code}' \
-              -H "Authorization: Bearer $token" "$url")
-            echo "$row: $registry answers $status for $url"
-            [ "$status" = 200 ] || cold="$cold $row"
-          done
-          if [ -n "$cold" ]; then
-            echo "::error::the package holds no blob for$cold, so this job would record a pass for a second source that is not there; the ci-images job this one needs fills it with .github/scripts/mirror-ci-tools.sh, where a cold row stays green on purpose" >&2
-            exit 1
-          fi
+        run: .github/scripts/tool-fallback-package-blobs.sh
 
       # Each row beside the two call sites that read its digest: the line of the manifest that
       # holds the literal, and what reads that row in an action or in the rig.
       # One literal is what both paths are held to, and this is the evidence of it — there is no
       # second digest in an action to read it out of, which is the point.
       - name: Print every row beside the two call sites that read its digest
-        run: |
-          set -euo pipefail
-          # shellcheck source=.github/scripts/ci-tools.sh
-          . .github/scripts/ci-tools.sh
-          rows=$(ci_tools_rows)
-          unread=""
-          for row in $rows; do
-            digest=$(ci_tools_digest "$row")
-            echo "$row: sha256 $digest, of $(ci_tools_field "$row" digest_of)"
-            pinned=$(grep -n "digest: $digest" .github/ci-tools.yaml || true)
-            # The lines that read the row rather than every line that says its name: a
-            # ci_tools_* call that names it, and the `row=` an action assigns it to where the
-            # call site names the row through a variable (.github/actions/setup-bun does).
-            readers=$(grep -rn -- "$row" .github/actions .github/scripts/ci-tools-proof.sh \
-              | grep -E 'ci_tools_|row=' || true)
-            echo "  the manifest's own line:"
-            printf '%s\n' "$pinned" | sed 's|^|    .github/ci-tools.yaml:|'
-            echo "  what reads that row, in the action or the rig:"
-            printf '%s\n' "$readers" | sed 's|^|    |'
-            { [ -n "$pinned" ] && [ -n "$readers" ]; } || unread="$unread $row"
-          done
-          if [ -n "$unread" ]; then
-            echo "::error::nothing reads$unread, so that row's digest is pinned and read by no install" >&2
-            exit 1
-          fi
+        run: .github/scripts/tool-fallback-row-call-sites.sh
 
       - name: Stage the correct bytes of every row a case serves, before the fault
         run: .github/scripts/ci-tools-proof.sh stage
@@ -497,71 +455,7 @@ jobs:
           UV_AT: ${{ steps.mark-base-uv.outputs.at }}
           PULUMI_DOCKER_AT: ${{ steps.mark-nowhere-pulumi-docker.outputs.at }}
           PULUMI_CLI_AT: ${{ steps.mark-base-pulumi.outputs.at }}
-        run: |
-          set -euo pipefail
-          echo "a merge base from before this change reads none of the CI_TOOLS_* seams, so each of these installs has the one source it always had: the release asset this fault holds for crane, changie, jj, bun, elan and uv, and get.pulumi.com, which this job does not fault, behind the dead proxy the pulumi step carries for that reason"
-          echo "a base that reads the seams — this tree on a workflow_dispatch, and every base once this change is on main — is sent by the dead ports above to something nothing listens on, and that is what fails them instead; the docker provider plugin, which the merge base has no action for, is the head's own action with its second source on a dead port, and that control states the same property without reading the base tree at all"
-          wrong=""
-          for pair in "crane:$CRANE" "changie:$CHANGIE" "jj:$JJ" "bun:$BUN" "elan:$ELAN" "uv:$UV" "pulumi-docker:$PULUMI_DOCKER" "pulumi-cli:$PULUMI_CLI"; do
-            echo "  the install with nowhere to go for ${pair%%:*} ended in ${pair#*:}"
-            [ "${pair#*:}" = failure ] || wrong="$wrong ${pair%%:*}"
-          done
-          if [ -n "$wrong" ]; then
-            echo "::error::the install with nowhere to go for$wrong served bytes with its primary behind the fault or behind a dead proxy and its second source pointed at a dead port, so it read something this job did not serve — a cache, a tool the runner image carries, or a request that went around the proxy — and the passes below would then say nothing about the second source" >&2
-            exit 1
-          fi
-          # Each install's own window: from its own mark to the mark of the install after it,
-          # and for the last of them to this step's own time. No install here may reach the
-          # seconds .github/scripts/ci-tools-proof.sh holds every timed install to, which
-          # this step reads from that script rather than writing the number again: the rig holds
-          # the sixteen corrupted cases below to that same bound, and a bound written in two
-          # places is a bound that drifts, with the job then refusing two different things.
-          # INSTALL_BOUND in that script is where the number lives, and the comment on it says
-          # why it is the number it is. A window also names the install that hung.
-          # A mark this step cannot read as a number is refused before any arithmetic, the way
-          # `report` refuses a case whose mark holds no `started=`: a window read with no clock
-          # is exactly the window the clock exists to catch, so it may not pass quietly. Left to
-          # the arithmetic below, an empty mark reads as a large negative number, which is under
-          # the bound, and then stops the loop on the empty operand with the step exiting 0 and
-          # seven of the eight windows never read.
-          # A bound this step cannot read is refused too, for a different reason, since the step
-          # would fail either way: driven with the guard taken out, an empty bound leaves
-          # `[ "$seconds" -lt "" ]` failing on every window, so all eight land in `slow` and the
-          # step exits 1 saying they `took  seconds or more`. That reading sends a reader to the
-          # eight installs, which did nothing wrong, instead of to the rig that answered
-          # nothing. The guard buys the right name, not the failure.
-          bound=$(.github/scripts/ci-tools-proof.sh install-bound)
-          case "$bound" in
-            '' | *[!0-9]*)
-              echo "::error::.github/scripts/ci-tools-proof.sh install-bound answered '${bound:-nothing}', which is no whole number of seconds, so this step has no bound to hold these eight installs to; the bound is INSTALL_BOUND in that script, written there once and read here, and this step holds no number of its own to fall back on" >&2
-              exit 1
-              ;;
-          esac
-          echo "no install with nowhere to go may reach the ${bound}s .github/scripts/ci-tools-proof.sh holds every timed install to"
-          previous=""
-          slow=""
-          unreadable=""
-          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT"; do
-            case "${pair#*:}" in
-              '' | *[!0-9]*) unreadable="$unreadable ${pair%%:*}" ;;
-            esac
-          done
-          if [ -n "$unreadable" ]; then
-            echo "::error::the mark of the install with nowhere to go for$unreadable holds no whole number of seconds, so this step cannot tell how long that install took, and that reading is the one thing that tells an install the runner ended at its own timeout-minutes from an install that failed for the reason this control names; the mark is one echo into \$GITHUB_OUTPUT by the step before that install, so read this job's step record for it" >&2
-            exit 1
-          fi
-          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT" "this check:$(date +%s)"; do
-            if [ -n "$previous" ]; then
-              seconds=$(( ${pair#*:} - ${previous#*:} ))
-              echo "  the install with nowhere to go for ${previous%%:*} took ${seconds}s"
-              [ "$seconds" -lt "$bound" ] || slow="$slow ${previous%%:*}"
-            fi
-            previous=$pair
-          done
-          if [ -n "$slow" ]; then
-            echo "::error::the install with nowhere to go for$slow took ${bound} seconds or more, which no timed install does, so the runner ended that step at its own timeout-minutes rather than the step failing for the reason this control names: a step the runner ends leaves outcome=failure behind it, which the test above accepts, so the wall time is the only reading that tells the two apart; read the step record of this job (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and its log for 'The action has timed out.'" >&2
-            exit 1
-          fi
+        run: .github/scripts/tool-fallback-nowhere-controls.sh
 
       # The head's own installs, under the same fault and with no continue-on-error: each must
       # succeed, and the seven whose primary the fault holds do it through the second source
@@ -626,54 +520,7 @@ jobs:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
       - name: Check every tool is the version its row pins
-        run: |
-          set -euo pipefail
-          # shellcheck source=.github/scripts/ci-tools.sh
-          . .github/scripts/ci-tools.sh
-          proof=.github/scripts/ci-tools-proof.sh
-          wrong=""
-          "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
-          "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
-          "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
-          "$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
-          "$proof" version-answers elan "$(elan --version)" || wrong="$wrong elan"
-          "$proof" version-answers uv "$("$LEGION_TEST_UV" --version)" || wrong="$wrong uv"
-          "$proof" version-answers pulumi-cli "$(pulumi version)" || wrong="$wrong pulumi-cli"
-          # The docker provider plugin prints no version of its own: nothing is installed, and
-          # what the action hands back is the tarball the live tests are given. Its reading is
-          # therefore the row's own digest, read by the one digest reader of this repository.
-          # The name of that tarball is no reading at all: install-docker-plugin builds it
-          # from `ci_tools_field pulumi-docker version`, the field this step would compare it
-          # with, so the two cannot disagree. What holds the name to the constant the live
-          # tests read is .github/scripts/check-ci-tools.sh, in lint.
-          # A digest is no version, so this keeps its own word as the bunx reading does rather
-          # than joining the list below, whose sentence is about versions.
-          plugin=read
-          tarball="${{ steps.docker-plugin.outputs.tarball }}"
-          echo "pulumi-docker is the tarball $tarball, and its row pins $(ci_tools_field pulumi-docker version)"
-          ci_tools_verify pulumi-docker "$tarball" "the docker provider plugin tarball this job installed" ||
-            plugin=refused
-          # The name that Bun install must have left beside the bun one of those lines read. It
-          # is a reading of its own and not one more version-answers line because what can be
-          # missing here is the name rather than the version: npm serves the binary alone, so a
-          # faulted install that left no bunx behind answers every reading above and fails at
-          # the first bunx a later job runs. The verb prints which of the three things it reads
-          # — the name, the version, the bytes — was wrong, so this keeps its own word and does
-          # not join the list below, whose sentence is about versions.
-          bunx=read
-          "$proof" installed-bunx || bunx=refused
-          # The other half of every reading above: how many requests to github.com the fault
-          # proxy refused since the probe, and which. A version says which tool is here and a
-          # digest says it is the pinned one; neither can say that the first source did not
-          # serve it, because a row's two sources are one binary by design. The 504s say it.
-          refusals=read
-          "$proof" refusals github.com || refusals=refused
-          if [ -n "$wrong" ]; then
-            echo "::error::$wrong answered a version its row does not pin, so the source that served it served something else" >&2
-          fi
-          if [ -n "$wrong" ] || [ "$plugin" = refused ] || [ "$bunx" = refused ] || [ "$refusals" = refused ]; then
-            exit 1
-          fi
+        run: .github/scripts/tool-fallback-installed-versions.sh "${{ steps.docker-plugin.outputs.tarball }}"
 
       # The sixteen corrupted payloads, one case at a time: the rig says which rows the origin
       # serves with one byte changed, the install meets them through the seams the case's
@@ -993,29 +840,7 @@ jobs:
       # tarball rather than the binary inside it; jj is held to its row's own digest, which is of
       # the installed binary.
       - name: Print what every tool answers now
-        run: |
-          set -euo pipefail
-          # shellcheck source=.github/scripts/ci-tools.sh
-          . .github/scripts/ci-tools.sh
-          proof=.github/scripts/ci-tools-proof.sh
-          wrong=""
-          "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
-          "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
-          "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
-          ci_tools_verify jj "$HOME/.local/bin/jj" "the tool this job leaves on the runner" || wrong="$wrong jj"
-          for taken in "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"; do
-            if [ -e "$taken" ]; then
-              echo "::error::$taken is still here, and no case of this job may leave one: the bun-primary case's refusal takes the binary it refused away, and the bun-second-source case's refusal writes none in its place, so a bun here is a refused binary on the PATH of every later step" >&2
-              wrong="$wrong $taken"
-            else
-              echo "$taken is gone: the bun-primary case's refusal took it away, the case after it took the pair away again before its own install, and that case refused the corrupted package before it wrote anything there"
-            fi
-          done
-          if [ -n "$wrong" ]; then
-            echo "::error::$wrong is not what this job must leave on this runner, so one of the sixteen refusals did not hold; the lines above say which reading was wrong" >&2
-            exit 1
-          fi
-          echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the sixteen corrupted payloads was installed"
+        run: .github/scripts/tool-fallback-final-state.sh
 
       # The reading of what the stand-in curl measured, before the fault stops, so that its own
       # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which

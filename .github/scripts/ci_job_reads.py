@@ -1775,6 +1775,9 @@ TOOL_COPY_STEP = "Fill the copy of every tool asset the package does not hold"
 # .github/scripts/ci-tools-proof.sh, so each file it reads is read at a step with a name.
 TOOL_BLOB_STEP = "Check the package holds the blob of every mirrored row"
 TOOL_ROWS_STEP = "Print every row beside the two call sites that read its digest"
+TOOL_NOWHERE_STEP = "Check all eight installs with nowhere to go failed, and failed in their own time"
+TOOL_VERSIONS_STEP = "Check every tool is the version its row pins"
+TOOL_FINAL_STEP = "Print what every tool answers now"
 TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before the fault"
 TOOL_FAULT_STEP = "Start the fault in front of GitHub's release assets"
 TOOL_JJ_SEED_STEP = "Seed mise's install of jj with the staged binary, one byte changed"
@@ -3165,6 +3168,21 @@ GATES = [
         (".github/scripts/check-ci-tools.sh", f"{at('tool-fallback', TOOL_ROWS_STEP)} prints the one literal both "
                                               "paths are held to, which that gate holds every row and every call "
                                               "site of the tree to"),
+        (".github/scripts/tool-fallback-package-blobs.sh",
+         f"{at('tool-fallback', TOOL_BLOB_STEP)} is that script, which asks the registry for the "
+         "blob of every ghcr-mirror row"),
+        (".github/scripts/tool-fallback-row-call-sites.sh",
+         f"{at('tool-fallback', TOOL_ROWS_STEP)} is that script, which prints each row beside the "
+         "manifest line and the call sites that read its digest"),
+        (".github/scripts/tool-fallback-nowhere-controls.sh",
+         f"{at('tool-fallback', TOOL_NOWHERE_STEP)} is that script, which reads the outcome and "
+         "the window of each install with nowhere to go"),
+        (".github/scripts/tool-fallback-installed-versions.sh",
+         f"{at('tool-fallback', TOOL_VERSIONS_STEP)} is that script, which holds every tool the "
+         "faulted installs left to the version its row pins"),
+        (".github/scripts/tool-fallback-final-state.sh",
+         f"{at('tool-fallback', TOOL_FINAL_STEP)} is that script, which reads what this runner "
+         "holds after the sixteen refusals"),
         (".github/actions/install-crane/**", at("tool-fallback", "./.github/actions/install-crane")),
         (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
         (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),

@@ -1601,8 +1601,9 @@ jobs:
   #     against a public repository the token holds no grant on at all, which succeeded;
   #   * it carries no ci-ok-report step and reports nothing to ci-ok, so its id is in
   #     CI_OK_EXEMPT in this file's env, outside ci-ok's accounting;
-  #   * it runs this repository's own .github/scripts/merge-group-cancels.sh out of the run's own
-  #     checkout and nothing else: no bun, no go, no node, no installed dependency, no npm or
+  #   * it runs this repository's own .github/scripts/cancel-started-act.sh, and the
+  #     merge-group-cancels.sh that script runs, out of the run's own checkout and nothing else:
+  #     no bun, no go, no node, no installed dependency, no npm or
   #     bunx tool. A merge-group run checks out the queued tree, so the script it runs is the
   #     queued change's copy, which that change's review has read;
   #   * its step's token is ${{ github.token }}, and its time limit is short: the act is a
@@ -1618,8 +1619,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # The job reads nothing of the tree but .github/scripts/merge-group-cancels.sh, so the
-      # .github cone is the whole checkout it needs.
+      # The job reads nothing of the tree but .github/scripts/cancel-started-act.sh and the
+      # merge-group-cancels.sh it runs, so the .github cone is the whole checkout it needs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
@@ -1628,19 +1629,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.ref_name }}
           RUN_ID: ${{ github.run_id }}
-        run: |
-          # The `--limit` is 100 because the queue builds up to 20 groups at once and this pull
-          # request's own groups are among them: gh's default of 20 runs could leave an older
-          # group of it out of the list, and so out of the act.
-          RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
-            --limit 100 --json databaseId,headBranch,status,createdAt)
-          export RUNS
-          acts=$(.github/scripts/merge-group-cancels.sh)
-          while read -r act id; do
-            [ "$act" = cancel ] || continue
-            gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
-              echo "::warning::force-cancel of run $id failed; it may have completed already"
-          done <<<"$acts"
+        run: .github/scripts/cancel-started-act.sh
 
   # The verdict, and one of the two checks main's ruleset requires of this router. It needs every
   # job of this file but itself, `cancel-started` and `pr-title` (the CI_OK_EXEMPT comment above

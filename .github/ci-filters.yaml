@@ -2407,6 +2407,11 @@ tool_fallback:
   - '.github/scripts/check-ci-tools.sh'
   - '.github/scripts/ci-tools-proof.sh'
   - '.github/scripts/ci-fault-proxy.py'
+  - '.github/scripts/tool-fallback-package-blobs.sh'
+  - '.github/scripts/tool-fallback-row-call-sites.sh'
+  - '.github/scripts/tool-fallback-nowhere-controls.sh'
+  - '.github/scripts/tool-fallback-installed-versions.sh'
+  - '.github/scripts/tool-fallback-final-state.sh'
   # The two jobs read the machine they run on with it.
   - '.github/scripts/disk_watch.py'
   - '.github/actions/install-crane/**'
