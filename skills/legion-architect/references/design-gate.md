@@ -382,18 +382,19 @@ A root with a Dispatch parent can open a gated step on an ancestor's approval, w
 its own. Its spec is then a view on the ancestor: it holds no requirement of its own, and each of
 its checks proves a requirement of the ancestor. The children of an approved issue together do all
 of what it states, and only that. So a requirement that the root needs and the ancestor does not
-state goes into the ancestor's spec, never into the root's. Work that needs code that the
-ancestor's own pull request writes and has not merged is not filed as a root under that ancestor.
-The ancestor starts no phase while a child of it is open, so it would wait on that root. That
-work goes into the ancestor's spec, by the route of "A requirement the ancestor does not state"
-below where the spec does not state it yet, and the ancestor's own pull request builds it. The
-architect decides this and asks no person. This section is the whole rule, for the root's
-architect and for the ancestor's architect.
+state goes into the ancestor's spec, never into the root's. Work that cannot be built or tested
+until the ancestor's own pull request merges is not filed as a root under that ancestor: for
+example, work that reads a table, calls a route or runs code that pull request adds. The ancestor
+starts no phase while a child of it is open, so it would wait on that root. That work goes into
+the ancestor's spec, by the route of "A requirement the ancestor does not state" below where the
+spec does not state it yet, and the ancestor's own pull request builds it. The architect decides
+this and asks no person. This section is the whole rule, for the root's architect and for the
+ancestor's architect.
 
 ### When the root is a view
 
-Before both lists below, read whether the root's work needs code that the ancestor's own pull
-request writes and has not merged. Where it does, the rule at the head of this section decides,
+Before both lists below, read whether the root's work can be built and tested before the
+ancestor's own pull request merges. Where it cannot, the rule at the head of this section decides,
 and neither list does: the root registers no basis and requests no approval of its own. Send its
 work to the ancestor's architect, by the route of "A requirement the ancestor does not state".
 
@@ -506,8 +507,8 @@ registration waits for that link too.
 ### When the root asks for its own approval
 
 Request a person's approval of the root's own document, as "The armed gate" says, and register that
-version with no basis, in each of these cases, unless the root's work needs code that the ancestor's
-own pull request writes and has not merged ("When the root is a view" says what decides then):
+version with no basis, in each of these cases, unless the root's work cannot be built or tested
+until the ancestor's own pull request merges ("When the root is a view" says what decides then):
 
 - The ancestor marks no requirement block.
 - The ancestor's approved text says that the root's kind asks for its own approval.
