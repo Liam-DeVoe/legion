@@ -264,6 +264,57 @@ func TestDispatchRefusesASeedInAnAudienceFirst(t *testing.T) {
 	}
 }
 
+// listenerAudience is the listener's own. Equal to another audience the app presents a token for
+// or verifies one under, a token minted for that one would be a bearer the listener admits too,
+// so each such pair is refused, naming both inputs, before anything registers; five distinct
+// audiences resolve.
+func TestDispatchRefusesAListenerAudienceAnotherAudienceShares(t *testing.T) {
+	const brokerAudience = "example-broker-audience"
+	setBroker := func(a *gcp.DispatchArgs) {
+		a.AgentSecretsUrl, a.AgentSecretsAudience = "https://example-broker.internal.example", brokerAudience
+	}
+	for _, row := range []struct {
+		name, other string
+		edit        func(*gcp.DispatchArgs)
+	}{
+		{"natsAudience", "natsAudience", func(a *gcp.DispatchArgs) { setNatsAudience(a); a.ListenerAudience = dispatchNatsAudience }},
+		{"agentSecretsAudience", "agentSecretsAudience", func(a *gcp.DispatchArgs) { setBroker(a); a.ListenerAudience = brokerAudience }},
+		{"oidcAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
+			a.OidcAudience = dispatchOidcAudience
+			a.ListenerAudience = dispatchOidcAudience
+		}},
+		{"azureFederationAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
+			setAzureFederation(a)
+			a.AzureFederationAudience = pulumi.StringRef("api://example-audience")
+			a.ListenerAudience = "api://example-audience"
+		}},
+		{"the keyless Azure sign-in's default audience", "azureFederationAudience (unset, so api://AzureADTokenExchange)", func(a *gcp.DispatchArgs) {
+			setAzureFederation(a)
+			a.ListenerAudience = "api://AzureADTokenExchange"
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			row.edit(args)
+			_, err := gcp.ResolveDispatch(args)
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "listenerAudience", input.Input, "%v", err)
+			require.ErrorContains(t, err, "listenerAudience is also "+row.other+":")
+			m, err := runDispatch(t, args, true)
+			require.Error(t, err)
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types(),
+				"nothing registered beyond the test's providers")
+		})
+	}
+	args := dispatchServiceIdentityArgs()
+	setBroker(args)
+	args.OidcAudience = dispatchOidcAudience
+	setAzureFederation(args)
+	_, err := gcp.ResolveDispatch(args)
+	require.NoError(t, err, "five distinct audiences")
+}
+
 // setGatedStart is natsAudience where the app's start may wait for its first NATS connect: the
 // app Deployment rolls (two replicas, RollingUpdate) and its NATS is in the cluster, not behind
 // the front door's SOCKS5 proxy.

@@ -9,7 +9,8 @@ body: |-
   stalls the rollout while the old pods serve; elsewhere it shows as `"nats":false` on `/healthz`.
   With `listenerAudience` the app calls its listener with its own projected token, which the
   listener verifies against the cluster's issuer, and no shared bearer, Secret or generated
-  password exists.
+  password exists; a `listenerAudience` equal to `natsAudience`, `agentSecretsAudience`,
+  `oidcAudience` or the keyless Azure sign-in's audience is refused, naming both.
   `envoy-dispatch` takes `ENVOY_ACCOUNT_TOKEN_FILE`, the file holding its own projected
   ServiceAccount token, which every listener call presents, read at call time, reused for at most
   30 seconds, and never read at boot; set beside `ENVOY_TOKEN`, it refuses to start, naming both.

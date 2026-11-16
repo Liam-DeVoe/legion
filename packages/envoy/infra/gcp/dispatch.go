@@ -1043,6 +1043,36 @@ func refuseDispatchRegion(region string) error {
 	return nil
 }
 
+// refuseSharedListenerAudience refuses a listenerAudience equal to another audience the app
+// presents a token for or verifies one under: natsAudience (the NATS auth service),
+// agentSecretsAudience (the secrets broker), oidcAudience (callers of Dispatch itself) and the
+// keyless Azure sign-in's audience (Entra; azureFederationAudience, or its default). A token minted
+// for that other audience would then be a bearer the listener admits too, so whoever receives it,
+// or holds one for it, could call the listener as the app. Each audience is kept apart, as the
+// secrets broker keeps its exchange audience apart from its enrollment one
+// (internal/broker/config, BROKER_EXCHANGE_K8S_AUDIENCE), so that no token is spendable where
+// another is. The refusal names both inputs and neither value.
+func refuseSharedListenerAudience(args *DispatchArgs, azure dispatchAzure) error {
+	if args.ListenerAudience == "" {
+		return nil
+	}
+	azureInput := "azureFederationAudience"
+	if args.AzureFederationAudience == nil {
+		azureInput += " (unset, so " + defaultAzureFederationAudience + ")"
+	}
+	for _, other := range []struct{ input, audience string }{
+		{"natsAudience", args.NatsAudience},
+		{"agentSecretsAudience", args.AgentSecretsAudience},
+		{"oidcAudience", args.OidcAudience},
+		{azureInput, azure.audience},
+	} {
+		if other.audience == args.ListenerAudience {
+			return core.InputErrorf("listenerAudience", "listenerAudience is also %s: a token minted for that audience would be a bearer Dispatch's listener admits, so give the listener an audience of its own", other.input)
+		}
+	}
+	return nil
+}
+
 // dispatchDeletionProtection resolves deletionProtection, true when the consumer sets nothing. It
 // guards the cluster as well as the database, so both resolvers default it the same way.
 func dispatchDeletionProtection(value *bool) bool {
@@ -1190,6 +1220,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	}
 	azure, err := newDispatchAzure(args)
 	if err != nil {
+		return dispatchSettings{}, err
+	}
+	if err := refuseSharedListenerAudience(args, azure); err != nil {
 		return dispatchSettings{}, err
 	}
 	// The answerer is resolved after the embedder, since the Azure chat form signs in with the

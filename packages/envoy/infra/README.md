@@ -963,7 +963,10 @@ holding the other credential is refused with a 401, which Dispatch does not retr
 sent between mismatched pods in that window settles as failed. Unset, the app and the listener
 share the generated bearer as before. Each audience holding an nkey seed, whitespace or a control
 character is refused by name before the component registers a resource, and `clusterOnly`
-refuses both.
+refuses both. So is a `listenerAudience` equal to another audience the app presents a token for
+or verifies one under, naming both inputs: `natsAudience`, `agentSecretsAudience`, `oidcAudience`,
+or the keyless Azure sign-in's `azureFederationAudience` (`api://AzureADTokenExchange` when
+unset). A token minted for that other audience would be a bearer the listener admits too.
 
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh
@@ -1225,7 +1228,8 @@ render the same key twice and which the server refuses at its boot, missing inpu
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, a
 `natsSeedSecret` beside `natsAudience` and neither of the two, a `natsAudience` or
-`listenerAudience` holding whitespace or a control character, an
+`listenerAudience` holding whitespace or a control character, a `listenerAudience` equal to
+`natsAudience`, `agentSecretsAudience`, `oidcAudience` or the keyless Azure sign-in's audience, an
 `oidcIssuer` with no `oidcAudience`, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
