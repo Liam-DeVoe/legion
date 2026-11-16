@@ -60,8 +60,10 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // read from the block index (document_blocks and block_refs), which every accepted write leaves
 // in step with the document it wrote; the requirements' order and words come from the live spec.
 // trees is the reader of a request that answers the requirements' trees, nil for every other
-// caller: each requirement registers its whole content with it (blockContent) where it stands in
-// the answer, and the caller resolves it.
+// caller: each requirement registers with it (requirementBlocksIn), in the row the answer
+// carries, the markdown typedBlocksIn reads the block's tree from, which is the rule GET
+// /api/v1/reference-targets reads the same block's tree by, and the caller resolves it. The rows
+// are filled in place, so each registered pointer is into the answer itself.
 func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
 	err := q.QueryRow(ctx, `
@@ -75,7 +77,7 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, 
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
-	requirements, contents, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID, trees != nil)
+	requirements, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID, trees)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -91,8 +93,8 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, 
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
-	coverage.Requirements = make([]model.RequirementCoverage, len(requirements))
-	for index, requirement := range requirements {
+	for index := range requirements {
+		requirement := &requirements[index]
 		requirement.Ref, _ = text.FormatBlockRef(text.Ref{
 			Kind: "block", IssueKey: issueKey, ID: "spec", Block: requirement.BlockID,
 		})
@@ -105,14 +107,11 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, 
 		if coverage.HasPlan && requirement.PlanTasks == 0 {
 			requirement.Gaps = append(requirement.Gaps, noPlanTaskReason)
 		}
-		coverage.Requirements[index] = requirement
 		for _, reason := range requirement.Gaps {
 			coverage.Gaps = append(coverage.Gaps, requirement.BlockID+" "+reason)
 		}
 	}
-	for index, content := range contents {
-		trees.text(&coverage.Requirements[index].TextTree, content)
-	}
+	coverage.Requirements = requirements
 	return coverage, nil
 }
 
@@ -141,21 +140,28 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 }
 
 // requirementBlocksIn is every `requirement` block of one document, in document order, with its
-// words, read live out of the document's markdown (typedBlocksIn), and beside them, for a caller
-// that answers trees, each block's whole content in the same order (blockContent).
-func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees bool) ([]model.RequirementCoverage, []string, error) {
+// words, read live out of the document's markdown (typedBlocksIn). trees is the request's own
+// reader, nil for a caller that asked for no tree: each requirement registers with it, as its
+// text_tree, the markdown typedBlocksIn hands over from the block's stored text, so a requirement
+// answers here the tree the batched reference read answers for it. It registers once the slice
+// has stopped growing, since what is registered is a pointer into the row, and the caller fills
+// in the rest of each row in place.
+func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.RequirementCoverage, error) {
 	var requirements []model.RequirementCoverage
 	var contents []string
-	err := s.typedBlocksIn(ctx, artifactID, "requirement", func(node *pmdoc.Node, id string) {
+	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id, content string) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
-		if trees {
-			contents = append(contents, blockContent(node))
+		if trees != nil {
+			contents = append(contents, content)
 		}
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return requirements, contents, nil
+	for index, content := range contents {
+		trees.text(&requirements[index].TextTree, content)
+	}
+	return requirements, nil
 }
 
 // servingCounts is how many `check` and `plan_task` blocks serve one requirement.

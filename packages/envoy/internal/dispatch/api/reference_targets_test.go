@@ -3,7 +3,6 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,22 +12,11 @@ import (
 )
 
 // referenceTargetsRequest reads what references point at, as alice, with etag, when set, as
-// If-None-Match. Each reference rides as its own ?ref=, in the order given: url.Values keeps the
-// order of one key's values.
+// If-None-Match (listRead). Each reference rides as its own ?ref=, in the order given
+// (referenceTargetsOf).
 func referenceTargetsRequest(t *testing.T, handler http.Handler, references []string, etag string) *httptest.ResponseRecorder {
 	t.Helper()
-	query := url.Values{}
-	for _, reference := range references {
-		query.Add("ref", reference)
-	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/reference-targets?"+query.Encode(), nil)
-	request.Header.Set("X-Dispatch-User", "alice")
-	if etag != "" {
-		request.Header.Set("If-None-Match", etag)
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
+	return listRead(t, handler, referenceTargetsOf(references...), listReadOptions{etag: etag})
 }
 
 // referenceTargets is the answer of a read that must succeed.
@@ -126,8 +114,9 @@ func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
 }
 
 // A set at the cap is read, one past it is refused naming the cap, and a reference the grammar
-// cannot read is refused naming it. The cap is counted before anything is parsed, so a set past
-// it costs no reference's parse.
+// cannot read - an external URL, or a reference to a person, which it reads none of - is refused
+// naming it. The cap is counted before anything is parsed, so a set past it costs no
+// reference's parse.
 func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -158,6 +147,15 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 		!strings.Contains(unreadable.Body.String(), "https://example.com/notes") {
 		t.Fatalf("a reference the grammar cannot read answered status=%d body=%s, want 400 INVALID_REFERENCE naming it",
 			unreadable.Code, unreadable.Body.String())
+	}
+
+	const person = "dispatch://person/alice@example.com"
+	personal := referenceTargetsRequest(t, handler, []string{reference, person}, "")
+	if personal.Code != http.StatusBadRequest ||
+		!strings.Contains(personal.Body.String(), `"code":"INVALID_REFERENCE"`) ||
+		!strings.Contains(personal.Body.String(), person) {
+		t.Fatalf("a reference to a person answered status=%d body=%s, want 400 INVALID_REFERENCE naming it",
+			personal.Code, personal.Body.String())
 	}
 
 	none := referenceTargetsRequest(t, handler, nil, "")

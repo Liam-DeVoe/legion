@@ -3193,8 +3193,10 @@ type GraphReferences struct {
 // deleted, so there is nothing left to name it by. TextTree is a block's whole text as the tree a
 // reader is shown, every link and dispatch:// reference kept and nothing cut, where Name stops at
 // the block's stored excerpt: a typed block's is of its own content, what stands between its
-// opening line and its closing one. Only a member whose Kind is block carries one, and only for
-// a caller that sent `Dispatch-Trees: 1`.
+// opening line and its closing one. A typed block whose stored text does not read back as that
+// block alone (one in a quote) answers the tree of its whole stored text, its opening line
+// included. Only a member whose Kind is block carries one, and only for a caller that sent
+// `Dispatch-Trees: 1`.
 type ReferenceTarget struct {
 	Ref      string      `json:"ref"`
 	Kind     string      `json:"kind"`
