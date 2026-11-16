@@ -820,6 +820,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/googleidentity/*'
+              # agentloop reads the wait a model endpoint's 429 or 5xx names through serverwait
+              # (agentloop/transport.go).
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
@@ -1005,6 +1008,8 @@ jobs:
               - *omp_install
               - 'packages/daemon/**'
               - *dispatch_server
+              # The model loop internal/daemon's answer loop calls (internal/answer).
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/testnats/*'
@@ -1026,7 +1031,10 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/daemon/cmd/**/*_test.go'
               - '!packages/daemon/internal/admit/**/*_test.go'
+              - '!packages/daemon/internal/agenthistory/**/*_test.go'
               - '!packages/daemon/internal/agentsecrets/**/*_test.go'
+              - '!packages/daemon/internal/answer/**/*_test.go'
+              - '!packages/daemon/internal/answerloop/**/*_test.go'
               - '!packages/daemon/internal/api/**/*_test.go'
               - '!packages/daemon/internal/appauth/**/*_test.go'
               - '!packages/daemon/internal/backoff/**/*_test.go'
@@ -1039,6 +1047,7 @@ jobs:
               - '!packages/daemon/internal/claudelaunch/**/*_test.go'
               - '!packages/daemon/internal/config/**/*_test.go'
               - '!packages/daemon/internal/controller/**/*_test.go'
+              - '!packages/daemon/internal/conversation/**/*_test.go'
               - '!packages/daemon/internal/credential/**/*_test.go'
               - '!packages/daemon/internal/daemon/behind_entry_fence_live_test.go'
               - '!packages/daemon/internal/daemon/burstable_live_test.go'
@@ -1063,6 +1072,8 @@ jobs:
               - '!packages/daemon/internal/ghbranch/**/*_test.go'
               - '!packages/daemon/internal/ghconfig/**/*_test.go'
               - '!packages/daemon/internal/ghrepo/**/*_test.go'
+              - '!packages/daemon/internal/ghroute/**/*_test.go'
+              - '!packages/daemon/internal/ghtool/**/*_test.go'
               - '!packages/daemon/internal/githubrest/**/*_test.go'
               - '!packages/daemon/internal/intake/**/*_test.go'
               - '!packages/daemon/internal/launcher/**/*_test.go'
@@ -2246,7 +2257,8 @@ jobs:
               # through their one public package, and the Dispatch body check the close route and
               # the merger's READY completion make with the server's own splitter
               # (packages/envoy/dispatchbody, and the parser and contracts under it), and the
-              # model loop the answer loop calls (packages/envoy/agentloop).
+              # model loop the answer loop calls (packages/envoy/agentloop, and the server wait
+              # its retry reads, internal/serverwait).
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/contracts/*'
@@ -2255,6 +2267,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -2322,6 +2335,7 @@ jobs:
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
               - 'packages/contracts/src/index.ts'
+              - 'packages/contracts/src/legion-handoff.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
@@ -2433,6 +2447,7 @@ jobs:
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
               - 'packages/contracts/src/index.ts'
+              - 'packages/contracts/src/legion-handoff.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
@@ -2903,6 +2918,7 @@ jobs:
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
               - 'packages/contracts/src/index.ts'
+              - 'packages/contracts/src/legion-handoff.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
@@ -2992,6 +3008,7 @@ jobs:
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
               - 'packages/contracts/src/index.ts'
+              - 'packages/contracts/src/legion-handoff.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
@@ -4224,7 +4241,10 @@ jobs:
             legion_command: &legion_command
               - 'packages/daemon/cmd/legion/*'
               - 'packages/daemon/internal/admit/*'
+              - 'packages/daemon/internal/agenthistory/*'
               - 'packages/daemon/internal/agentsecrets/*'
+              - 'packages/daemon/internal/answer/*'
+              - 'packages/daemon/internal/answerloop/*'
               - 'packages/daemon/internal/api/*'
               - 'packages/daemon/internal/appauth/*'
               - 'packages/daemon/internal/backoff/*'
@@ -4237,6 +4257,9 @@ jobs:
               - 'packages/daemon/internal/claudelaunch/*'
               - 'packages/daemon/internal/config/*'
               - 'packages/daemon/internal/controller/*'
+              - 'packages/daemon/internal/conversation/*'
+              - 'packages/daemon/internal/conversation/claude/*'
+              - 'packages/daemon/internal/conversation/omp/*'
               - 'packages/daemon/internal/credential/*'
               - 'packages/daemon/internal/daemon/**'
               - 'packages/daemon/internal/dispatch/*'
@@ -4244,6 +4267,8 @@ jobs:
               - 'packages/daemon/internal/ghbranch/*'
               - 'packages/daemon/internal/ghconfig/*'
               - 'packages/daemon/internal/ghrepo/*'
+              - 'packages/daemon/internal/ghroute/*'
+              - 'packages/daemon/internal/ghtool/*'
               - 'packages/daemon/internal/githubrest/*'
               - 'packages/daemon/internal/intake/*'
               - 'packages/daemon/internal/launcher/*'
@@ -4282,6 +4307,8 @@ jobs:
               - 'packages/daemon/internal/wakepace/*'
               - 'packages/daemon/internal/workflow/*'
               - 'packages/daemon/internal/workspace/*'
+              # The answer loop's model calls (internal/answer).
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/brokerclient/*'
               # packages/envoy/dispatchbody answers whether Dispatch would refuse a body with the
               # server's own splitter, which the close route and the merger's READY completion
@@ -4306,6 +4333,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/googleidentity/*'
+              # agentloop reads the wait a model endpoint's 429 or 5xx names through serverwait
+              # (agentloop/transport.go).
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
