@@ -422,13 +422,13 @@ jobs:
     # there and 10 s here, now that the store starts just after the checkout and comes up while
     # the install runs, and `bun install --frozen-lockfile`, 62 s there and 15 s here.
     #
-    # The rows: listed at this file's head with `bunx playwright test --config
-    # e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,502 rows in 205
+    # The rows: listed at `fc1baefb` on 2026-11-16 with `bunx playwright test --config
+    # e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,511 rows in 206
     # files (`--project='*'`), which is two listings rather than one: the three `-alone`
     # projects are out of the default selection since dispatch://INFRA-1280, so a command that
-    # names no project lists 1,451 rows in 202 files and one that names those three lists the
+    # names no project lists 1,460 rows in 203 files and one that names those three lists the
     # other 51, in 3 files. The ten projects this job's shard command names on the full lane
-    # hold 1,429 rows in 201 files. The four the pull-request lane names hold 1,316 in 199, of
+    # hold 1,438 rows in 202 files. The four the pull-request lane names hold 1,325 in 200, of
     # which that lane's `@pr` grep selects 289, in 148 files. The two `visual` projects hold
     # 22, which the visual job runs one row at a time, and the 51 wall-clock rows are the alone
     # job's.
