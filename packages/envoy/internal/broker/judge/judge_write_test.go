@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -105,5 +106,27 @@ func TestAnApprovalWhoseAnswerWasLostWritesNoSecondRow(t *testing.T) {
 				t.Errorf("the verdict line is %q; want it to read %s", verdict, c.verdictLine)
 			}
 		})
+	}
+}
+
+// TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal is the tester's minor on cybermonklabs/legion#4135
+// at 032301a2c4: a judge approval whose COMMIT the database never answered — its connection lost
+// mid-commit — is no refusal, and the row LogJudged then wrote says whether it applied. One that
+// did not apply is logged at WARN as that, and never as the ERROR "refused".
+func TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal(t *testing.T) {
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	machine.applyErr = fmt.Errorf("%w: conn closed", requests.ErrCommitUncertain)
+	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
+	lines := capturedLog(t, func() {
+		runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+	})
+	if line := lineWith(lines, "record=record-1", "COMMIT"); !strings.Contains(line, "level=WARN") {
+		t.Errorf("the approval's line is %q; want a WARN line saying its COMMIT got no answer (lines: %q)", line, lines)
+	}
+	if line := lineWith(lines, "refused"); line != "" {
+		t.Errorf("a line says %q; want no refusal: nothing refused the judge, its COMMIT got no answer", line)
+	}
+	if _, logged := machine.rows(); len(logged) != 1 {
+		t.Errorf("the run logged %d rows; want the verdict's row", len(logged))
 	}
 }

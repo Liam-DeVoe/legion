@@ -551,7 +551,8 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 // judge alone), the name's owner changed, its max-grant fell below the request's lifetime, or the
 // request became a private project's. Each is the ordinary outcome of losing a race and no fault
 // of the judge's (D10), and each answers record.ErrNotApprover. The broker stopping under the
-// approval (context.Canceled, on the run's context or in what the approval answered), Dispatch not
+// approval (context.Canceled, on the run's context or in what the approval answered), a COMMIT that
+// failed and, by the row LogJudged read, did not apply (requests.ErrCommitUncertain), Dispatch not
 // answering the approval's check, and the run's time running out before the approval landed are
 // no refusal either. Any other refusal is one the judge should not have reached at all.
 func (r *Runner) notApplied(ctx context.Context, p requests.PendingRequest, modelID string, err error, wrote requests.JudgedWrite) {
@@ -565,6 +566,9 @@ func (r *Runner) notApplied(ctx context.Context, p requests.PendingRequest, mode
 			attrs...)
 	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		slog.Info("broker judge: the broker stopped while the judge's approval was being written; the approval was not applied, and the request waits for its person",
+			attrs...)
+	case errors.Is(err, requests.ErrCommitUncertain):
+		slog.Warn("broker judge: the judge's approval's COMMIT failed, and its own row shows it did not apply; the request waits for its person",
 			attrs...)
 	case errors.Is(err, requests.ErrProjectAccessUnavailable) || errors.Is(err, context.DeadlineExceeded):
 		slog.Warn("broker judge: the judge's approval was not applied: Dispatch could not be asked whether the request is still the judge's, or the run's time ran out; the request waits for its person",

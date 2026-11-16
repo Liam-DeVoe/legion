@@ -67,6 +67,10 @@ var (
 	// expired its request, or its pending_expires_at has passed before the sweeper got to it.
 	ErrExpired      = errors.New("request expired before its approver acted on it")
 	ErrGrantNotLive = errors.New("grant is expired, revoked, or its session ended")
+	// ErrCommitUncertain is a decision whose COMMIT failed: its connection was lost while it
+	// committed, or its backend was ended, so whether it applied only a read of what it wrote
+	// can say (LogJudged's, for the judge). It wraps the COMMIT's own error.
+	ErrCommitUncertain = errors.New("the decision's COMMIT failed, so whether it applied only a read of what it wrote can say")
 	// ErrGrantChainInvalid: re-verifying a grant's whole approval chain (record hash, requester
 	// signature, one approval by the record's approver) failed — a row written by anyone but the
 	// broker releases nothing.
@@ -1142,7 +1146,8 @@ const judgedKind = "request.judged"
 // when the row is there, it writes nothing (JudgedAlreadyApplied), so the trail holds the one row
 // that says what happened; when that wait outlasts its bound or the read fails, it writes the row
 // with applied AppliedUnknown and the cause under applied_unknown (JudgedAppliedUnknown), never a
-// false it could not check. Any other row is written as given (JudgedWritten).
+// false it could not check, in a transaction of its own, since a read that lost its connection
+// leaves the first one nothing to write on. Any other row is written as given (JudgedWritten).
 func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (JudgedWrite, error) {
 	detail := judgedDetail(judged)
 	wrote := JudgedWritten
@@ -1150,7 +1155,7 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if applied, ok := detail["applied"].(bool); ok && !applied {
 		landed, err := m.approvalLanded(ctx, tx, recordID)
 		switch {
@@ -1158,6 +1163,14 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 			detail["applied"] = AppliedUnknown
 			detail["applied_unknown"] = record.Sanitize(err.Error(), record.MaxReasonRunes)
 			wrote = JudgedAppliedUnknown
+			// A read the database ended (lock_timeout) leaves tx as it was, but one whose
+			// connection was lost (the network, a backend a failover ended) leaves tx with
+			// no connection to write on, so the row is written in a transaction of its own
+			// either way: the row is the one write a run that asked the model must keep.
+			_ = tx.Rollback(ctx)
+			if tx, err = m.Store.Pool.Begin(ctx); err != nil {
+				return "", err
+			}
 		case landed:
 			return JudgedAlreadyApplied, nil
 		}
@@ -1654,12 +1667,14 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 			return Decision{}, false, err
 		}
 	}
+	// A COMMIT that failed may still have applied (its answer lost on the way back), so the
+	// caller is told it cannot know from the error alone (ErrCommitUncertain).
 	if err := tx.Commit(ctx); err != nil {
-		return Decision{}, false, err
+		return Decision{}, false, fmt.Errorf("%w: %w", ErrCommitUncertain, err)
 	}
 	if m.testCommitCut != nil {
 		if err := m.testCommitCut(); err != nil {
-			return Decision{}, false, err
+			return Decision{}, false, fmt.Errorf("%w: %w", ErrCommitUncertain, err)
 		}
 	}
 	// The service the policy verified for this request is on its own request.created row, and
