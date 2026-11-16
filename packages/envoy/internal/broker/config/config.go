@@ -612,11 +612,12 @@ var judgeModelProtocols = []string{"anthropic-messages", "openai-responses", "op
 const noUIToken = "the broker's approval routes take the calling service's own Kubernetes ServiceAccount token, verified against BROKER_K8S_OIDC_ISSUER, so list that account in BROKER_API_ACCOUNTS instead of sharing a bearer with Dispatch's server"
 
 // noDispatchCredential is why the broker's five Dispatch variables are gone: they named a
-// Dispatch the broker asked and issued in, which it still does not do. The one thing it reads
-// there now, whether an issue is open, is the model judge's read under its own settings, so a
-// deployment that still sets one of the five is configured for a Dispatch the broker never
-// writes to and a credential it never holds.
-const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; its model judge reads one thing there, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL and with the broker's own projected ServiceAccount token (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and writes nothing"
+// Dispatch the broker asked and issued in, which it still does not do. What it reads there now is
+// two things, each under settings of its own: the model judge's read of whether an issue is open,
+// and the token exchange's read of whether a person may see a project. So a deployment that still
+// sets one of the five is configured for a Dispatch the broker never writes to and a credential it
+// never holds.
+const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads two things there, each with its own projected ServiceAccount token, and writes nothing: its model judge, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its token exchange, whether a person may see a project, at BROKER_PROJECT_ACCESS_URL (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 
 // noDatabasePassword is why BROKER_DATABASE_PASSWORD and its placeholder are gone: BROKER_DATABASE_URL
 // alone says how the broker signs in.
