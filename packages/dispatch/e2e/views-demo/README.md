@@ -16,8 +16,9 @@ data (issue titles, keys, people) never goes into a file here.
   serves the fixtures from `DISPATCH_DEMO_FIXTURES` and proxies nothing.
 - `web/src/demo/`: the stub.
   - `clock.ts` fixes the page's clock: the page reads the time as the fixtures' read time
-    (`manifest.daemon_read_at`) plus the time since it loaded, so every age (Waited, In phase,
-    Closed) and the Closed filter's windows on Done look the same whenever the demo is opened.
+    (`manifest.daemon_read_at`) plus the time since it loaded, so every age (Time in queue, Time
+    in Legion phase, Closed) and the Closed filter's windows on Done look the same whenever the
+    demo is opened.
     `vite.demo.config.ts` writes that time into the page before any module runs.
   - `install.ts` replaces `fetch` and `WebSocket`.
   - `server.ts` answers every `/api/` and `/auth/` request the page makes. The listing applies
@@ -149,23 +150,31 @@ drew the pictures' text in, with its glyph count, so two runs can be compared.
 
 Without `--before` it takes the design's pictures, each named by what it shows. At 1440 x 900:
 
-- the three built-in views: `view-open-1440`, `view-queue-1440` (the Legion queue) and
-  `view-done-1440`;
-- `view-open-1024`: Open in a 1024 x 768 window, where the bar's legend wraps onto a second line;
+- the two built-in views: `view-open-1440` and `view-done-1440`;
+- `view-open-last-column-1440`: Open scrolled sideways to its last column, the pinned columns
+  still in place;
+- `view-open-1024`: Open in a 1024 x 768 window, where the sidebar folds away and the table
+  scrolls sideways;
 - `view-open-in-progress-1440`: Open with `status=in_progress`;
+- `old-queue-link-1440`: an older `view=queue` link, which opens Open with `f.queue=Queued`;
 - `done-closed-filter-1440`: Done with one week picked in the Closed column's date-range
   filter, from the 3rd of November to the 9th, and the filter opened again to show it;
-- `done-time-per-phase-hours-1440`: Done with Time per phase in Hours;
-- `done-time-per-phase-tooltip-1440`: Done with the pointer on the first row's Time per phase
-  cell and its tooltip open, the table not scrolled sideways;
-- `board-open-1440`, `board-open-legion-phase-1440` and `board-queue-1440`: Open on the Board by
-  Status, Open on the Board by Legion phase (`group=legion_phase`), and the Legion queue on the
-  Board;
+- `done-time-per-phase-hours-1440`: Done with Time per phase in Hours, the table swiped to that
+  column;
+- `done-time-per-phase-tooltip-1440`: Done swiped to Time per phase, with the pointer on the
+  first row's cell and its tooltip open;
+- `board-open-1440` and `board-open-legion-phase-1440`: Open on the Board by Status, and by
+  Legion phase (`group=legion_phase`);
+- `board-card-legion-facts-1440`: one card of the Board by Legion phase alone, at twice the
+  scale, with its Time in Legion phase, Work time and Workers;
 - `group-by-menu-1440` and `board-group-by-menu-1440`: Open with the Group by menu open, in the
   table and on the Board, where it offers Status and Legion phase;
 - `save-view-popover-1440` and `save-view-saved-tab-1440`: Open narrowed to the triage issues,
   the Save view panel with "Triage" typed, and then the saved tab it adds after Done;
-- `columns-menu-legion-columns-1440`: the Columns menu;
+- `columns-menu-1440`: the Columns menu;
+- `filter-open-asks-1440`: Open asks' filter open (With open asks, No open asks);
+- `filter-time-in-legion-phase-1440`: Time in Legion phase ticked in the Columns menu, and its
+  filter open;
 - `view-open-info-hint-open-1440`: the Legion daemon hint open, from its place in the control
   row;
 - `project-settings-legion-panel-1440`: the project's settings page;
@@ -173,15 +182,15 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
   daemon's read failed (`demo=read-failed`) and with the Legion setting's read failed
   (`demo=settings-failed`);
 - `no-daemon-view-open-1440` and `no-daemon-board-open-1440`: the table and the Board of a
-  project with no Legion daemon (`--no-daemon-project`, GTM by default), which has Open and
-  Done alone;
+  project with no Legion daemon (`--no-daemon-project`, GTM by default);
 - `priorities-1440` and `priority-page-1440`: the whole of `/priorities` (the priorities and
   the two fault tables) and of the first priority's own page.
 
 At 390 x 844: `view-open-390`, `board-open-legion-phase-390`, `done-time-per-phase-hours-390`
 and `priorities-390`, the last one the whole page.
 
-A whole-page picture draws the banner at the page's foot, under everything the page drew.
+A whole-page picture draws the banner at the page's foot, under everything the page drew. The
+card's close-up has no banner: it is the card alone.
 
 `--before` takes the page before the design, on a checkout of its base: the List, the Board, the
 Legion view and the phone List. The base has no priority pages, so `before-priorities-1440` and
@@ -199,11 +208,23 @@ does not draw them in 30 s fails its picture. The design's Issues page is also w
 view tabs (`[data-view-tab]`), which the page before the design has none of, so the design's
 pictures taken against that page fail at the first one. The run fails if a picture failed, the
 stub left a request unanswered, the page threw, the phone banner took more than two lines, or a
-check of what the page drew failed: the bar's legend drawing a scroll bar, the week the Closed
-filter writes, the count its Done tab reads, the tooltip naming no phase or standing over a
-table scrolled sideways, the Board's Group by menu not offering Status and Legion phase, the
-Board not by Legion phase under `group=legion_phase`, the saved tab not standing open, or a
-failure flag left in the address. The report in the output lists all of it.
+check of what the page drew failed:
+
+- a header cut on Open (at 1440, at 1024 and scrolled to its last column) or on Done, or Open's
+  last column not drawn whole;
+- the bar's legend drawing a scroll bar;
+- the old `view=queue` link not opening Open with `f.queue=Queued` on as many rows as the
+  daemon's queue holds;
+- the week the Closed filter writes, or the count its Done tab reads;
+- the tooltip naming no phase, or the pointer moving the table off where the swipe put it;
+- the card not reading Time in Legion phase, Work time and Workers, or reading an old name;
+- the Board's Group by menu not offering Status and Legion phase, or the Board not by Legion
+  phase under `group=legion_phase`;
+- the Columns menu missing a Legion column's name, holding an old one, or scrolling;
+- Open asks' or Time in Legion phase's filter missing one of its choices;
+- the saved tab not standing open, or a failure flag left in the address.
+
+The report in the output lists all of it.
 
 ## Build the single file
 
@@ -223,8 +244,8 @@ the address's fragment, the one part of a `file:` address a page may change.
 
 The second command opens the file with the network off and checks that:
 
-- the file opens on the Issues tab, and the Legion queue's tab opens the Legion queue;
-- the Legion queue on the Board draws cards;
+- the file opens on the Issues tab, and the Done tab opens Done;
+- Open on the Board draws cards;
 - a drag on the Board sets a status;
 - Save view adds a tab, and its delete takes the tab away, also after a reload;
 - the Columns menu shows a column it ticks;

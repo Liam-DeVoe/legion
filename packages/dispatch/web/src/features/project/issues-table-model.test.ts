@@ -5,7 +5,9 @@ import {
   clearPicked,
   columnFilterSpec,
   compareGroups,
+  DURATION_BUCKETS,
   defaultView,
+  durationBucket,
   facetCounts,
   isQueued,
   matchesFilters,
@@ -19,6 +21,7 @@ import {
   writeUrl,
 } from "./issues-table-model";
 import { embeddedGrammar } from "./issues-table-view";
+import { currentAddress, legacyOpenLayout } from "./issues-views";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -320,4 +323,110 @@ test("an embedded table's prefix holds its own controls and leaves the bare ones
   expect(readUrl(scoped).filters).toEqual(defaultView.filters);
   // An embedded table left as it opens writes nothing at all.
   expect([...grammar.write(new URLSearchParams(), defaultView).keys()]).toEqual([]);
+});
+
+test("a link to the Legion queue's old tab opens Open narrowed to the queue", () => {
+  for (const id of ["queue", "waiting"]) {
+    const old = new URLSearchParams(`view=${id}&q=rank`);
+    expect(currentAddress(old)?.toString()).toBe("q=rank&f.queue=Queued");
+    const view = readUrl(old);
+    expect(view.sorting).toEqual([{ id: "queue", desc: false }]);
+    expect(view.filters).toContainEqual({ id: "queue", value: ["Queued"] });
+    expect(view.filters).toContainEqual(defaultView.filters[0]);
+  }
+  // Today's addresses are left as they are.
+  expect(currentAddress(new URLSearchParams("view=done"))).toBeUndefined();
+  expect(currentAddress(new URLSearchParams("f.queue=Queued"))).toBeUndefined();
+});
+
+test("a duration falls in one bucket, each taking its lower bound and not its upper", () => {
+  const hour = 3_600_000;
+  expect(DURATION_BUCKETS).toEqual(["under-1h", "1h-1d", "1d-7d", "over-7d", "none"]);
+  expect(durationBucket(undefined)).toBe("none");
+  expect(durationBucket(hour - 1)).toBe("under-1h");
+  expect(durationBucket(hour)).toBe("1h-1d");
+  expect(durationBucket(24 * hour)).toBe("1d-7d");
+  expect(durationBucket(7 * 24 * hour)).toBe("over-7d");
+});
+
+test("Open asks, Review rounds, Workers and Legion tree filter by what their cells hold", () => {
+  const card = (roles: string[]) => ({
+    card: { key: "CORE-1", roles } as never,
+    column: "implementing" as const,
+  });
+  const [asked, quiet] = buildItems(
+    [issue("CORE-1", { open_asks: 3 }), issue("CORE-2")],
+    (actor) => actor.id
+  ).map((item, index) =>
+    index === 0
+      ? {
+          ...item,
+          card: card(["implementer", "tester"]),
+          facts: { review_rounds: 4, tree_depth: 0 } as never,
+        }
+      : { ...item, facts: { review_rounds: 1, tree_depth: 2 } as never }
+  );
+  if (asked === undefined || quiet === undefined) throw new Error("no items");
+  const picks = (id: string, value: string[]) => (item: typeof asked) =>
+    matchesFilters(item, [{ id, value }]);
+  expect([asked, quiet].map(picks("asks", ["any"]))).toEqual([true, false]);
+  expect([asked, quiet].map(picks("asks", ["none"]))).toEqual([false, true]);
+  expect([asked, quiet].map(picks("review_rounds", ["3-or-more"]))).toEqual([true, false]);
+  expect([asked, quiet].map(picks("review_rounds", ["1"]))).toEqual([false, true]);
+  expect([asked, quiet].map(picks("roles", ["tester"]))).toEqual([true, false]);
+  expect([asked, quiet].map(picks("roles", ["none"]))).toEqual([false, true]);
+  expect([asked, quiet].map(picks("legion", ["root"]))).toEqual([true, false]);
+  expect([asked, quiet].map(picks("legion", ["child"]))).toEqual([false, true]);
+  // A pick of None survives the address: it is `none`, not an empty value.
+  const written = writeUrl(new URLSearchParams(), {
+    ...defaultView,
+    filters: [...defaultView.filters, { id: "activity", value: ["none"] }],
+  });
+  expect(written.get("f.activity")).toBe("none");
+  expect(readUrl(written).filters).toContainEqual({ id: "activity", value: ["none"] });
+  const show = (id: string, value: string) => {
+    const spec = columnFilterSpec(id);
+    return spec?.kind === "picks" ? spec.show?.(value) : undefined;
+  };
+  expect(show("asks", "any")).toBe("With open asks");
+  expect(show("asks", "none")).toBe("No open asks");
+  expect(show("review_rounds", "3-or-more")).toBe("3 or more");
+  expect(show("roles", "implementer")).toBe("Implementer");
+  expect(show("waited", "1h-1d")).toBe("1 hour to 1 day");
+  expect(show("activity", "held_children")).toBe("Waiting on child issues");
+  expect(show("activity", "held_idle")).toBe("Idle");
+});
+
+test("a link that picked open asks by count keeps its rows", () => {
+  const [asked, quiet] = buildItems(
+    [issue("CORE-1", { open_asks: 3 }), issue("CORE-2")],
+    (actor) => actor.id
+  );
+  if (asked === undefined || quiet === undefined) throw new Error("no items");
+  const asksOf = (query: string) =>
+    readUrl(new URLSearchParams(query)).filters.find((filter) => filter.id === "asks")?.value;
+  expect(asksOf("f.asks=0")).toEqual(["none"]);
+  expect(asksOf("f.asks=1")).toEqual(["any"]);
+  expect(asksOf("f.asks=12")).toEqual(["any"]);
+  // Today's values are read as they are.
+  expect(asksOf("f.asks=any")).toEqual(["any"]);
+  expect(asksOf("f.asks=none")).toEqual(["none"]);
+  const listed = (query: string) => {
+    const value = asksOf(query);
+    return [asked, quiet]
+      .filter((item) => matchesFilters(item, [{ id: "asks", value }]))
+      .map((item) => item.issue.key);
+  };
+  expect(listed("f.asks=0")).toEqual(["CORE-2"]);
+  expect(listed("f.asks=3")).toEqual(["CORE-1"]);
+});
+
+test("the kept issue-view choice opens Open's table, its Board, or its Board by phase", () => {
+  expect(legacyOpenLayout("list")).toEqual({ layout: "table" });
+  expect(legacyOpenLayout("board")).toEqual({ layout: "board" });
+  // The Legion view the Issues tab no longer has: its Board, grouped as that view was.
+  expect(legacyOpenLayout("legion")).toEqual({ layout: "board", group: "legion_phase" });
+  // A value this bundle does not know opens the table.
+  expect(legacyOpenLayout("")).toEqual({ layout: "table" });
+  expect(legacyOpenLayout("timeline")).toEqual({ layout: "table" });
 });

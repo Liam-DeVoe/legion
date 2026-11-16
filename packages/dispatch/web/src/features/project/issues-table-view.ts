@@ -9,17 +9,10 @@ import { compressAgainst, embeddedDefaults, expandOver } from "./issues-views";
 
 /** The project's own spelling of its issue table in the address: `?view=` names the view, and
  *  every other parameter is the difference from that view (`issues-views.ts`), so this table
- *  brings its own grammar rather than taking the ordinary one (`tableAddressGrammar`). One per
- *  answer to whether the project has a Legion daemon, since the views differ by it; module-level
- *  constants, since `useTableAddress` memoizes the view it reads on the grammar's identity. */
-const ISSUES_TABLE_GRAMMAR: TableAddressGrammar = {
-  read: (params) => readUrl(params, false),
-  write: (params, view) => writeUrl(params, view, false),
-};
-const LEGION_ISSUES_TABLE_GRAMMAR: TableAddressGrammar = {
-  read: (params) => readUrl(params, true),
-  write: (params, view) => writeUrl(params, view, true),
-};
+ *  brings its own grammar rather than taking the ordinary one (`tableAddressGrammar`). A
+ *  module-level constant, since `useTableAddress` memoizes the view it reads on the grammar's
+ *  identity. */
+const ISSUES_TABLE_GRAMMAR: TableAddressGrammar = { read: readUrl, write: writeUrl };
 
 /** One grammar per prefix, made once: `useTableAddress` memoizes on the grammar's identity. */
 const embeddedGrammars = new Map<string, TableAddressGrammar>();
@@ -67,14 +60,6 @@ export function embeddedGrammar(stateKey: string): TableAddressGrammar {
  * views on the Issues tab, or, given a `stateKey`, the prefixed spelling of a table another page
  * draws.
  */
-export function useTableView(
-  table: { readonly hasLegion: boolean } | { readonly stateKey: string }
-): TableAddress {
-  return useTableAddress(
-    "stateKey" in table
-      ? embeddedGrammar(table.stateKey)
-      : table.hasLegion
-        ? LEGION_ISSUES_TABLE_GRAMMAR
-        : ISSUES_TABLE_GRAMMAR
-  );
+export function useTableView(stateKey?: string): TableAddress {
+  return useTableAddress(stateKey === undefined ? ISSUES_TABLE_GRAMMAR : embeddedGrammar(stateKey));
 }

@@ -262,14 +262,6 @@ export const legionPhaseFill = {
   held: "bg-[#999999]",
   other: "bg-[#D9D9D9]",
 } as const;
-/** The Legion queue's bar: its waiting reasons in steps of the status scale's hue, in the
- *  order of the reasons. */
-export const waitingFill = {
-  ready: "bg-sky-300",
-  slot: "bg-sky-500",
-  blocked: "bg-sky-700",
-  person: "bg-sky-900",
-} as const;
 export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300";
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
 export const tableResizeActive = "bg-sky-500 dark:bg-sky-400";

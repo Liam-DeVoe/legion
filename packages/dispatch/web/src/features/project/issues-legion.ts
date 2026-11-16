@@ -76,9 +76,9 @@ export function phaseHours(facts: LegionBoardFacts | undefined): {
   return { phases, total: phases.reduce((sum, [, value]) => sum + value, 0) };
 }
 
-/** Why a card waits, in the order the Legion queue's bar draws them: it is ready to start, the
- *  daemon has no capacity free, a blocker link holds it, or a person has not answered it. The
- *  values are the board route's. */
+/** Why a card waits in the queue, the Queue state column's values in their order: it is ready
+ *  to start, the daemon has no capacity free, a blocker link holds it, or a person has not
+ *  answered it. The values are the board route's. */
 export const WAITING_REASONS = ["ready", "slot", "blocked", "person"] as const;
 export type WaitingReason = (typeof WAITING_REASONS)[number];
 const waitingLabels: Record<WaitingReason, string> = {
@@ -91,8 +91,8 @@ export function waitingLabel(reason: string): string {
   return (waitingLabels as Record<string, string>)[reason] ?? reason;
 }
 
-/** What an issue the daemon holds capacity for is doing, the Activity column's values in their
- *  order. The values are the board route's `slot_use`. */
+/** What the worker on an issue the daemon holds capacity for is doing, the Worker state
+ *  column's values in their order. The values are the board route's `slot_use`. */
 export const ACTIVITIES = [
   "working",
   "between_turns",
@@ -104,9 +104,9 @@ export type Activity = (typeof ACTIVITIES)[number];
 const activityLabels: Record<Activity, string> = {
   working: "Working",
   between_turns: "Between turns",
-  held_children: "Held for children",
-  held_person: "Held for a person",
-  held_idle: "Held, idle",
+  held_children: "Waiting on child issues",
+  held_person: "Waiting on a person",
+  held_idle: "Idle",
 };
 export function activityLabel(activity: string): string {
   return (activityLabels as Record<string, string>)[activity] ?? activity;

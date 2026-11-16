@@ -58,7 +58,7 @@ import {
 } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
 import { LEGION_PHASES, phaseLabel } from "./issues-legion";
-import type { Item } from "./issues-table-model";
+import { type Item, workerName } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -87,20 +87,22 @@ function Fact({ hook, label, value }: { hook: string; label: string; value: stri
 function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode {
   const legion = item.card?.card;
   if (legion === undefined) return null;
-  const roles = legion.roles ?? [];
+  const roles = (legion.roles ?? []).map(workerName);
   const blockedBy = legion.blocked_by ?? legion.waiting?.blocked_by ?? [];
   return (
     <>
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
         <Fact
           hook="phase-time"
-          label="In phase"
+          label="Time in Legion phase"
           value={formatPhaseTime(legion.phase_since, nowMs)}
         />
         {item.facts === undefined ? null : (
           <Fact hook="work-time" label="Work time" value={formatWorkTime(item.facts.work_hours)} />
         )}
-        <Fact hook="roles" label="Roles" value={roles.length === 0 ? "none" : roles.join(", ")} />
+        {/* A card whose issue has no worker running leaves the fact out rather than say None:
+            every queued card would carry it. */}
+        {roles.length === 0 ? null : <Fact hook="roles" label="Workers" value={roles.join(", ")} />}
       </div>
       {blockedBy.length === 0 ? null : (
         <p
@@ -197,7 +199,7 @@ function BoardCard({
           issueKey={issue.key}
           priority={issuePriority(issue.priority)}
         />
-        <ClaimChip claim={issue.claim} />
+        <ClaimChip claim={issue.claim} stacked />
         <ProgressChips progress={issue.progress} />
         <UnreachableRouteMarker issue={issue} />
         {(issue.labels ?? []).map((label) => (

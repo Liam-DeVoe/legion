@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueClaim } from "../../api/types";
-import { pillClassName } from "../../components/Pill";
+import { pillClassName, pillToneClassName } from "../../components/Pill";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { Timestamp } from "../refs/Timestamp";
@@ -129,13 +129,20 @@ export function claimIsTakeable(
  * Only the holder's name ellipsizes:
  * "Claimed by", the age and "not running" stay whole, because a chip reading "Claimed…" would
  * say nothing. The name is an inline link, so it keeps the chip's line box at a phone width.
+ *
+ * `stacked` is for a host as narrow as a Board card, where one line leaves the name a few
+ * pixels: the chip takes the host's whole width and draws "Claimed by <holder>" over its age
+ * and state, so the name has the card's width less "Claimed by" to ellipsize in.
  */
 export function ClaimChip({
   claim,
   liveness,
+  stacked = false,
 }: {
   claim: IssueClaim | null;
   liveness?: ClaimHolderLiveness;
+  /** Draw the holder's name over its age and state, for a host too narrow for one line. */
+  stacked?: boolean;
 }): ReactNode {
   const registry = useAgentRegistry(claim?.actor.kind === "session");
   const text = useAgentText();
@@ -179,24 +186,19 @@ export function ClaimChip({
           registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
         }`
       : "";
-  return (
-    <span
-      className={`${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`}
-      data-testid="issue-claim"
-      style={{ flexShrink: 1 }}
-      title={`${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`}
-    >
-      <span className="shrink-0">Claimed by</span>
-      <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
-      <span aria-hidden="true" className="shrink-0">
-        ·
-      </span>
+  const dot = (
+    <span aria-hidden="true" className="shrink-0">
+      ·
+    </span>
+  );
+  // The claim's age and the holder's state, which follow the name on one line and stand under
+  // it stacked.
+  const state = (
+    <>
       <Timestamp at={claim.at} className="shrink-0" />
       {lapsed ? (
         <>
-          <span aria-hidden="true" className="shrink-0">
-            ·
-          </span>
+          {dot}
           <span className="shrink-0" data-testid="issue-claim-lapsed">
             not running
           </span>
@@ -204,9 +206,7 @@ export function ClaimChip({
       ) : null}
       {unresponsive ? (
         <>
-          <span aria-hidden="true" className="shrink-0">
-            ·
-          </span>
+          {dot}
           <span className="shrink-0" data-testid="issue-claim-unresponsive">
             unresponsive
             {heardAt === null ? null : (
@@ -229,6 +229,35 @@ export function ClaimChip({
           </span>
         </>
       ) : null}
+    </>
+  );
+  const title = `${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`;
+  const tone = takeable ? "label" : "selected-label";
+  if (stacked)
+    return (
+      <span
+        className={`flex w-full min-w-0 flex-col items-start gap-0.5 rounded-lg px-2 py-1 text-xs font-medium ${pillToneClassName(tone)}`}
+        data-testid="issue-claim"
+        title={title}
+      >
+        <span className="flex w-full min-w-0 items-center gap-1 whitespace-nowrap">
+          <span className="shrink-0">Claimed by</span>
+          <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
+        </span>
+        <span className="flex w-full min-w-0 flex-wrap items-center gap-1">{state}</span>
+      </span>
+    );
+  return (
+    <span
+      className={`${pillClassName(tone)} min-w-0 max-w-full gap-1`}
+      data-testid="issue-claim"
+      style={{ flexShrink: 1 }}
+      title={title}
+    >
+      <span className="shrink-0">Claimed by</span>
+      <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
+      {dot}
+      {state}
     </span>
   );
 }

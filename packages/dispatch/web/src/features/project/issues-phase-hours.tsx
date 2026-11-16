@@ -85,10 +85,9 @@ export function PhaseHoursCell({ facts }: { facts: LegionBoardFacts | undefined 
   if (total === 0) return null;
   const width = mode === "share" || pageMax === 0 ? 100 : (total / pageMax) * 100;
   return (
-    // In Hours the total is written first, at a fixed width so the bars still start together:
-    // on a phone the column is wider than the room beside the pinned key, and a total at the
-    // cell's right end would be off screen. The cell is a button so the keyboard reaches it and
-    // a tap opens the tooltip where there is no hover.
+    // In Hours the total is written first, at a fixed width so the bars still start together.
+    // The cell is a button so the keyboard reaches it and a tap opens the tooltip where there
+    // is no hover.
     <button
       aria-describedby={open ? tooltipId : undefined}
       aria-label={`Time per phase, ${hoursText(total)}`}

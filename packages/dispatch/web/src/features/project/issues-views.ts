@@ -4,16 +4,13 @@ import type { ColumnId } from "./issues-table-model";
 
 /**
  * The Issues tab's views. A view is one type: a name, the URL parameters it stands for, the
- * columns it opens with, and what its bar counts by. The built-in views are constants of it, and
- * a saved view is a name and a URL query. An address names its view with `view=<id>`; every
- * other parameter of the address replaces the view's value of that same parameter, or narrows
- * the view further, so a link carries only what differs from its view.
+ * columns it opens with, and whether it draws the status bar. The built-in views are constants
+ * of it, and a saved view is a name and a URL query. An address names its view with
+ * `view=<id>`; every other parameter of the address replaces the view's value of that same
+ * parameter, or narrows the view further, so a link carries only what differs from its view.
  */
 
-export type BuiltInViewId = "open" | "queue" | "done";
-
-/** What a view's bar counts its rows by: their statuses, or their waiting reasons. */
-export type BarBy = "status" | "waiting_reason";
+export type BuiltInViewId = "open" | "done";
 
 export interface BuiltInView {
   readonly id: BuiltInViewId;
@@ -21,43 +18,39 @@ export interface BuiltInView {
   readonly name: string;
   /** The view's own parameters, which an address's parameters replace one key at a time. */
   readonly params: () => readonly (readonly [string, string])[];
-  /** The columns the view opens with, after the pinned ones, in the order they draw. */
+  /** The columns the view opens with, in the order they draw, the pinned ones first among
+   *  them. Where the project has no Legion daemon its Legion columns are left out. */
   readonly cols: readonly ColumnId[];
-  readonly bar?: BarBy;
-  /** The view shows only for a project with a Legion daemon. */
-  readonly legionOnly?: boolean;
+  /** It draws the bar of its rows by status under the tabs. */
+  readonly bar?: true;
 }
 
 const OPEN_STATUSES = openIssueStatuses.map((status) => ["status", status] as const);
 
-/** Open: today's default list, and what an address that names no view, or a view the project
- *  does not have, opens. */
+/** Open: today's default list, and what an address that names no view, or a view this bundle
+ *  does not know, opens. */
 const OPEN: BuiltInView = {
   id: "open",
   name: "Open",
   params: () => [...OPEN_STATUSES, ["sort", "queue"]],
-  // Created, Open asks and Claimed by are in the Columns menu, not the defaults (the Needs you
-  // flag covers the asks, and the claim chip needs 324 px): the default columns fit as near
-  // 1440 px beside the sidebar as their whole headers allow.
-  cols: ["priority", "queue", "key", "title", "status", "legion_phase", "assignee"],
-  bar: "status",
+  cols: [
+    "priority",
+    "queue",
+    "key",
+    "title",
+    "status",
+    "legion_phase",
+    "assignee",
+    "author",
+    "asks",
+  ],
+  bar: true,
 };
 
 /** The built-in views, in their tabs' order. Any other list is a filter a reader saves as a
  *  view of their own. */
 export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
   OPEN,
-  {
-    id: "queue",
-    name: "Legion queue",
-    params: () => [
-      ["f.queue", "Queued"],
-      ["sort", "queue"],
-    ],
-    cols: ["queue", "priority", "key", "title", "waiting_reason", "waited"],
-    bar: "waiting_reason",
-    legionOnly: true,
-  },
   {
     id: "done",
     name: "Done",
@@ -66,22 +59,42 @@ export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
       ["status", "done"],
       ["sort", "-closed"],
     ],
-    cols: ["priority", "key", "title", "closed", "assignee", "work_hours", "phase_hours"],
+    // What fits beside the sidebar at 1440 px, with Title at its 240 px minimum and the other
+    // columns sharing the rest; Priority and Created by are in the Columns menu.
+    cols: ["key", "title", "closed", "assignee", "work_hours", "phase_hours"],
   },
 ];
 
-/** The views a project has: the Legion queue only where a Legion daemon runs. */
-export function viewsFor(hasLegion: boolean): readonly BuiltInView[] {
-  return BUILT_IN_VIEWS.filter((view) => hasLegion || view.legionOnly !== true);
+/** The view `id` names, or Open for an id this bundle does not know. */
+export function viewFor(id: string | null): BuiltInView {
+  return BUILT_IN_VIEWS.find((view) => view.id === id) ?? OPEN;
 }
 
-/** The ids an older link names a view by: the Legion queue was `waiting`. */
-const FORMER_IDS: Readonly<Record<string, BuiltInViewId>> = { waiting: "queue" };
+/** The ids older links name the Legion queue's tab by, which is gone: Open narrowed to the
+ *  issues in the queue lists the same rows in the same order (`sort=queue` is Open's own). */
+const QUEUE_VIEW_IDS = ["queue", "waiting"];
 
-/** The view `id` names, or Open for an id the project does not have. */
-export function viewFor(id: string | null, hasLegion: boolean): BuiltInView {
-  const known = id === null ? null : (FORMER_IDS[id] ?? id);
-  return viewsFor(hasLegion).find((view) => view.id === known) ?? OPEN;
+/** An older link's address in today's spelling, or undefined where it is today's already:
+ *  `view=queue` and `view=waiting` become Open with `f.queue=Queued`. */
+export function currentAddress(params: URLSearchParams): URLSearchParams | undefined {
+  const id = params.get("view");
+  if (id === null || !QUEUE_VIEW_IDS.includes(id)) return undefined;
+  const next = copyAddress(params);
+  next.delete("view");
+  if (!next.has("f.queue")) next.set("f.queue", "Queued");
+  return next;
+}
+
+/** What Open opens in for a reader who has picked no layout of the view yet, from the
+ *  `project.issue-view` choice kept before the views: `board` is the Board, `legion` (the
+ *  Legion view the Issues tab no longer has) the Board by Legion phase, anything else the
+ *  table. */
+export function legacyOpenLayout(stored: string): {
+  readonly layout: "table" | "board";
+  readonly group?: "legion_phase";
+} {
+  if (stored === "legion") return { layout: "board", group: "legion_phase" };
+  return { layout: stored === "board" ? "board" : "table" };
 }
 
 /** The parameters that are no part of what a view lists: they mark no view as changed. */
@@ -109,9 +122,11 @@ export function expandOver(own: URLSearchParams, params: URLSearchParams): URLSe
   return expanded;
 }
 
-/** The address with its view written out: the view's own parameters under the address's. */
-export function expandView(params: URLSearchParams, hasLegion: boolean): URLSearchParams {
-  return expandOver(ownParams(viewFor(params.get("view"), hasLegion)), params);
+/** The address with its view written out: the view's own parameters under the address's, an
+ *  older link read in today's spelling (`currentAddress`). */
+export function expandView(params: URLSearchParams): URLSearchParams {
+  const current = currentAddress(params) ?? params;
+  return expandOver(ownParams(viewFor(current.get("view"))), current);
 }
 
 /** Two spellings of one key's values that say the same: the sort in its order, every other key
@@ -141,8 +156,8 @@ export function compressAgainst(own: URLSearchParams, full: URLSearchParams): UR
 
 /** `full`, which spells the table's whole view and names its view with `view=`, written as the
  *  difference from that view: what the view says already is left out. */
-export function compressView(full: URLSearchParams, hasLegion: boolean): URLSearchParams {
-  const view = viewFor(full.get("view"), hasLegion);
+export function compressView(full: URLSearchParams): URLSearchParams {
+  const view = viewFor(full.get("view"));
   const next = copyAddress();
   if (view.id !== OPEN.id) next.set("view", view.id);
   for (const [key, value] of compressAgainst(ownParams(view), full)) next.append(key, value);

@@ -1,3 +1,4 @@
+import { LEGION_ROLES } from "@legion/contracts";
 import { rankItem, rankings } from "@tanstack/match-sorter-utils";
 import type { ColumnFiltersState } from "@tanstack/react-table";
 import type {
@@ -190,6 +191,57 @@ export function ageOf(iso: string): string {
   return days < 1 ? "Today" : days < 7 ? "This week" : days < 30 ? "This month" : "Older";
 }
 
+/** How long ago `since` was, in milliseconds; undefined with no time. */
+export function ageMs(since: string | null | undefined): number | undefined {
+  if (since === null || since === undefined) return undefined;
+  const at = Date.parse(since);
+  return Number.isNaN(at) ? undefined : Date.now() - at;
+}
+
+const HOUR_MS = 3_600_000;
+/** What a column that holds a duration filters by: four lengths, in their order, and None for
+ *  a row with no duration. The address keeps the ids (`f.waited=under-1h`). */
+export const DURATION_BUCKETS = ["under-1h", "1h-1d", "1d-7d", "over-7d", "none"] as const;
+const DURATION_NAMES: Readonly<Record<string, string>> = {
+  "under-1h": "Under 1 hour",
+  "1h-1d": "1 hour to 1 day",
+  "1d-7d": "1 to 7 days",
+  "over-7d": "Over 7 days",
+  none: "None",
+};
+/** The bucket a duration falls in: each length takes its lower bound and not its upper. */
+export function durationBucket(ms: number | undefined): (typeof DURATION_BUCKETS)[number] {
+  if (ms === undefined) return "none";
+  if (ms < HOUR_MS) return "under-1h";
+  if (ms < 24 * HOUR_MS) return "1h-1d";
+  return ms < 7 * 24 * HOUR_MS ? "1d-7d" : "over-7d";
+}
+/** The filter of a column that holds a duration, `ms` of a row or undefined with none. */
+const duration = (ms: (item: Item) => number | undefined): ColumnFilterSpec => ({
+  kind: "picks",
+  values: (item) => [durationBucket(ms(item))],
+  order: DURATION_BUCKETS,
+  show: (value) => DURATION_NAMES[value] ?? value,
+  always: DURATION_BUCKETS,
+});
+
+/** Review rounds' filter: none, one, two, three or more, or None for an issue with no Legion
+ *  work. The address keeps the ids (`f.review_rounds=3-or-more`). */
+const ROUNDS = ["0", "1", "2", "3-or-more", "none"] as const;
+const roundsOf = (item: Item): (typeof ROUNDS)[number] => {
+  const rounds = item.facts?.review_rounds;
+  if (rounds === undefined) return "none";
+  return rounds >= 3 ? "3-or-more" : (String(rounds) as "0" | "1" | "2");
+};
+
+/** A Legion role as the Workers column names it: `implementer` is Implementer. */
+export const workerName = (role: string) =>
+  role === "" ? role : `${role[0]?.toUpperCase()}${role.slice(1)}`;
+
+/** The pick of a row with no value in a column, kept in the address as `none`: an empty value
+ *  there takes the view's own value away rather than picking anything. */
+const NO_VALUE = "none";
+
 export const COLUMNS: readonly ColumnSpec[] = [
   { id: "select", size: 44, min: 44, pinned: true, sortable: false },
   {
@@ -207,7 +259,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     size: 124,
     min: 124,
     // The address keeps the values `Queued` and `Not queued` (`f.queue=Queued`); the reader
-    // sees the set by the Legion queue tab's own name.
+    // sees the set named by the Legion queue.
     filter: one((item) => (item.queued ? "Queued" : "Not queued"), {
       order: ["Queued", "Not queued"],
       show: (value) => (value === "Queued" ? "In Legion queue" : "Not in Legion queue"),
@@ -224,9 +276,12 @@ export const COLUMNS: readonly ColumnSpec[] = [
     filter: { kind: "text", value: (item) => item.issue.key },
   },
   {
+    // Two lines of the title at 240 px hold about 60 characters, half of a median INFRA title
+    // (115), so its subject reads; and with Select, Priority and Key the pinned part is 540 px
+    // at most, under the pinned share of a 974 px table (1024 px), so it stays pinned there.
     id: "title",
     size: 380,
-    min: 116,
+    min: 240,
     compactMin: 120,
     cellMin: true,
     pinned: true,
@@ -254,14 +309,14 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     // The column of the board the issue's card is in: its Legion phase, beside its status and
-    // never merged with it. An issue the daemon holds no card for has none.
+    // never merged with it. An issue the daemon holds no card for has none (`none`).
     id: "legion_phase",
     size: 168,
     min: 168,
     board: true,
-    filter: one((item) => item.card?.column ?? "", {
-      order: [...legionPhaseIds, ""],
-      show: (value) => (value === "" ? "None" : phaseLabel(value)),
+    filter: one((item) => item.card?.column ?? NO_VALUE, {
+      order: [...legionPhaseIds, NO_VALUE],
+      show: (value) => (value === NO_VALUE ? "None" : phaseLabel(value)),
     }),
   },
   {
@@ -309,10 +364,21 @@ export const COLUMNS: readonly ColumnSpec[] = [
     },
   },
   {
+    // Whether the issue has an open ask, not how many: the address keeps `any` and `none`. A
+    // link written when the filter picked a count (`f.asks=0`, `f.asks=2`) keeps its rows: 0
+    // reads as `none`, and any other count as `any`.
     id: "asks",
     size: 152,
     min: 152,
-    filter: one((item) => String(item.issue.open_asks), { groups: false }),
+    filter: {
+      kind: "picks",
+      values: (item) => [item.issue.open_asks > 0 ? "any" : "none"],
+      order: ["any", "none"],
+      show: (value) =>
+        value === "any" ? "With open asks" : value === "none" ? "No open asks" : value,
+      always: ["any", "none"],
+      normalize: (value) => (/^\d+$/.test(value) ? (Number(value) > 0 ? "any" : "none") : value),
+    },
   },
   {
     id: "created",
@@ -332,54 +398,105 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 124,
     filter: { kind: "range", value: (item) => item.issue.closed_at },
   },
-  { id: "roles", size: 120, min: 68, board: true },
+  {
+    // The roles of the workers the daemon runs on the issue, or None.
+    id: "roles",
+    size: 136,
+    min: 136,
+    board: true,
+    filter: {
+      kind: "picks",
+      values: (item) => {
+        const roles = item.card?.card.roles ?? [];
+        return roles.length === 0 ? ["none"] : [...roles];
+      },
+      order: [...LEGION_ROLES, "none"],
+      show: (value) => (value === "none" ? "None" : workerName(value)),
+    },
+  },
   {
     // What an issue the daemon holds capacity for is doing (the board's `slot_use`).
     id: "activity",
-    size: 140,
-    min: 132,
+    size: 168,
+    min: 168,
     board: true,
-    filter: one((item) => item.card?.card.slot_use ?? "", {
-      order: [...ACTIVITIES, ""],
-      show: (value) => (value === "" ? "None" : activityLabel(value)),
+    filter: one((item) => item.card?.card.slot_use ?? NO_VALUE, {
+      order: [...ACTIVITIES, NO_VALUE],
+      show: (value) => (value === NO_VALUE ? "None" : activityLabel(value)),
       groups: false,
     }),
   },
-  { id: "waited", size: 88, min: 80, board: true },
   {
+    id: "waited",
+    size: 176,
+    min: 176,
+    board: true,
+    filter: duration((item) => ageMs(item.card?.card.waiting?.since)),
+  },
+  {
+    // Why a card waits in the queue (the board's `waiting.reason`).
     id: "waiting_reason",
-    size: 140,
-    min: 132,
+    size: 164,
+    min: 164,
     board: true,
-    filter: one((item) => item.card?.card.waiting?.reason ?? "", {
-      order: [...WAITING_REASONS, ""],
-      show: (value) => (value === "" ? "None" : waitingLabel(value)),
+    filter: one((item) => item.card?.card.waiting?.reason ?? NO_VALUE, {
+      order: [...WAITING_REASONS, NO_VALUE],
+      show: (value) => (value === NO_VALUE ? "None" : waitingLabel(value)),
       groups: false,
     }),
   },
-  { id: "time_in_phase", size: 92, min: 88, board: true },
-  { id: "work_hours", size: 100, min: 100, board: true },
-  { id: "review_rounds", size: 84, min: 84, board: true },
   {
+    id: "time_in_phase",
+    size: 224,
+    min: 224,
+    board: true,
+    filter: duration((item) => ageMs(item.card?.card.phase_since)),
+  },
+  {
+    id: "work_hours",
+    size: 148,
+    min: 148,
+    board: true,
+    filter: duration((item) =>
+      item.facts === undefined ? undefined : item.facts.work_hours * HOUR_MS
+    ),
+  },
+  {
+    id: "review_rounds",
+    size: 180,
+    min: 180,
+    board: true,
+    filter: {
+      kind: "picks",
+      values: (item) => [roundsOf(item)],
+      order: ROUNDS,
+      show: (value) => (value === "3-or-more" ? "3 or more" : value === "none" ? "None" : value),
+      always: ROUNDS,
+    },
+  },
+  {
+    // The issue's place in its Legion tree: the root, a child under it, or None for an issue
+    // with no Legion work. The address keeps `root`, `child` and `none`.
     id: "legion",
-    size: 120,
-    min: 108,
+    size: 156,
+    min: 156,
     board: true,
     filter: {
       kind: "picks",
       values: (item) =>
-        item.facts === undefined
-          ? ["none"]
-          : ["worked", item.facts.tree_depth === 0 ? "roots" : "children"],
-      order: ["worked", "roots", "children", "none"],
-      show: (value) =>
-        ({ worked: "Worked", roots: "Roots", children: "Children", none: "None" })[value] ?? value,
+        item.facts === undefined ? ["none"] : [item.facts.tree_depth === 0 ? "root" : "child"],
+      order: ["root", "child", "none"],
+      show: (value) => ({ root: "Root", child: "Child", none: "None" })[value] ?? value,
+      always: ["root", "child", "none"],
     },
   },
   {
     id: "phase_hours",
     size: 284,
     min: 284,
+    // On a phone it holds its stacked header (its name over its Share/Hours control and its
+    // filter) and its bar, and fits in the room beside the pinned key at 390 px (172 px).
+    compactMin: 156,
     board: true,
     filter: {
       kind: "picks",
@@ -458,7 +575,7 @@ function layoutColumns(shown: readonly ColumnId[] | undefined, touch: boolean): 
         ),
         // Just under the whole box: its two border pixels are not the rows'.
         share: 0.99,
-        widths: { key: phoneMin("key") },
+        widths: { key: phoneMin("key"), phase_hours: phoneMin("phase_hours") },
         flexibleMin: phoneMin("title"),
       },
       flexible: "title" satisfies ColumnId,
@@ -524,11 +641,6 @@ export function cardsByKey(board: LegionBoardResponse | undefined): Map<string, 
 /** Whether a card stands in Legion's queue: in the queue column, or given a place in it. */
 const cardQueued = ({ card, column }: BoardCardRow) =>
   (card.waiting_place ?? undefined) !== undefined || column === "queue";
-
-/** How many issues stand in Legion's queue, from the board alone: the Legion queue tab's count
- *  on a view that reads no open listing (Done). The board gives cards to open issues only. */
-export const boardQueueLength = (board: LegionBoardResponse): number =>
-  [...cardsByKey(board).values()].filter(cardQueued).length;
 
 export function buildItems(
   issues: readonly IssueSummary[],
@@ -772,14 +884,14 @@ export function writeTableAddress(params: URLSearchParams, state: View): URLSear
 
 /** The table's view as the address names it: the view `view=` names (Open where it names
  *  none), with every parameter of the address over the view's own. */
-export function readUrl(params: URLSearchParams, hasLegion = false): View {
-  return readTableAddress(expandView(params, hasLegion));
+export function readUrl(params: URLSearchParams): View {
+  return readTableAddress(expandView(params));
 }
 
 /** `state` written over `params` as the difference from the view `params` names, so a link
  *  carries only what the reader changed and a view left as it is carries `view=` alone. */
-export function writeUrl(params: URLSearchParams, state: View, hasLegion = false): URLSearchParams {
-  return compressView(writeTableAddress(params, state), hasLegion);
+export function writeUrl(params: URLSearchParams, state: View): URLSearchParams {
+  return compressView(writeTableAddress(params, state));
 }
 
 /** What a narrowing that names itself in no other way is called. */

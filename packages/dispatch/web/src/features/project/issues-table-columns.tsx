@@ -40,6 +40,7 @@ import {
 import { PhaseHoursCell } from "./issues-phase-hours";
 import type { IssueListing } from "./issues-table-data";
 import {
+  ageMs,
   COLUMNS,
   COMPACT_COLUMN_MIN,
   type ColumnId,
@@ -47,12 +48,13 @@ import {
   ISSUE_ROW_ATTRIBUTE,
   type Item,
   matchesFilters,
+  workerName,
 } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 /** Rows with no value of their own sort after every row with one, whichever way the column is
- *  sorted: an empty Queue or Activity is not "first". TanStack reverses a sorting function for a
- *  descending sort, so the empty side is turned with it. */
+ *  sorted: an empty Queue or Worker state is not "first". TanStack reverses a sorting function
+ *  for a descending sort, so the empty side is turned with it. */
 function emptyLast<T>(
   value: (item: Item) => T | undefined,
   compare: (a: T, b: T) => number
@@ -68,13 +70,6 @@ function emptyLast<T>(
 }
 
 const byNumber = (a: number, b: number) => a - b;
-
-/** How long ago `since` was, in milliseconds; undefined with no time. */
-function ageMs(since: string | null | undefined): number | undefined {
-  if (since === null || since === undefined) return undefined;
-  const at = Date.parse(since);
-  return Number.isNaN(at) ? undefined : Date.now() - at;
-}
 
 declare module "@tanstack/react-table" {
   interface ColumnMeta<TData extends RowData, TValue> {
@@ -265,11 +260,15 @@ const renderings = (
   author: {
     header: "Created by",
     accessorFn: (item) => item.author,
+    // A session's long name ends on its second line with an ellipsis, as the title does, so
+    // the row stays as tall as its title; the whole name is in the title.
     cell: ({ row }) =>
       row.original.issue.created_by === null ? (
         <span className={textSecondaryOnCanvas}>Unknown</span>
       ) : (
-        <AgentName actor={row.original.issue.created_by} />
+        <span className="line-clamp-2 break-words" title={row.original.author}>
+          <AgentName actor={row.original.issue.created_by} />
+        </span>
       ),
   },
   labels: {
@@ -332,14 +331,14 @@ const renderings = (
       ),
   },
   roles: {
-    header: "Roles",
-    accessorFn: (item) => (item.card?.card.roles ?? []).join(", "),
+    header: "Workers",
+    accessorFn: (item) => (item.card?.card.roles ?? []).map(workerName).join(", "),
     cell: ({ getValue }) => (
       <span className={`text-xs ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
     ),
   },
   activity: {
-    header: "Activity",
+    header: "Worker state",
     accessorFn: (item) => item.card?.card.slot_use ?? "",
     sortingFn: emptyLast((item) => {
       const index = (ACTIVITIES as readonly string[]).indexOf(item.card?.card.slot_use ?? "");
@@ -353,7 +352,7 @@ const renderings = (
       ),
   },
   waited: {
-    header: "Waited",
+    header: "Time in queue",
     accessorFn: (item) => ageMs(item.card?.card.waiting?.since),
     sortingFn: emptyLast((item) => ageMs(item.card?.card.waiting?.since), byNumber),
     cell: ({ row }) => {
@@ -366,7 +365,7 @@ const renderings = (
     },
   },
   waiting_reason: {
-    header: "Waiting",
+    header: "Queue state",
     accessorFn: (item) => item.card?.card.waiting?.reason ?? "",
     sortingFn: emptyLast((item) => {
       const index = (WAITING_REASONS as readonly string[]).indexOf(
@@ -387,7 +386,7 @@ const renderings = (
     },
   },
   time_in_phase: {
-    header: "In phase",
+    header: "Time in Legion phase",
     accessorFn: (item) => ageMs(item.card?.card.phase_since),
     sortingFn: emptyLast((item) => ageMs(item.card?.card.phase_since), byNumber),
     cell: ({ row }) => {
@@ -411,7 +410,7 @@ const renderings = (
       ),
   },
   review_rounds: {
-    header: "Rounds",
+    header: "Review rounds",
     accessorFn: (item) => item.facts?.review_rounds,
     sortingFn: emptyLast((item) => item.facts?.review_rounds, byNumber),
     cell: ({ row }) =>
@@ -420,7 +419,7 @@ const renderings = (
       ),
   },
   legion: {
-    header: "Tree",
+    header: "Legion tree",
     accessorFn: (item) =>
       item.facts === undefined ? "" : item.facts.tree_depth === 0 ? "Root" : item.facts.root_key,
     cell: ({ row }) => {

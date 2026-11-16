@@ -46,12 +46,14 @@ const TIME_ZONE = "UTC";
 const LOCALE = "en-US";
 
 /** One picture: its file name, the window it is taken in, how to reach what it shows, and
- *  whether it is the whole page rather than the window. */
+ *  whether it is the whole page rather than the window, or one element of it alone (`subject`, a
+ *  CSS selector), drawn at twice the scale to be read close up. */
 interface Shot {
   name: string;
   viewport: { width: number; height: number };
   take: (page: Page) => Promise<void>;
   fullPage?: boolean;
+  subject?: string;
 }
 
 interface Report {
@@ -233,6 +235,79 @@ async function legendScrolls(page: Page): Promise<boolean> {
   });
 }
 
+/** The headers the table draws cut: a label holding more than it shows, or one running past its
+ *  header, among the headers wholly inside the table's visible part and clear of its pinned
+ *  columns. A header the table scrolls to is not cut. */
+async function cutHeaders(page: Page): Promise<string[]> {
+  return page.getByTestId("issues-table-scroll").evaluate((box) => {
+    const edge = box.getBoundingClientRect();
+    const headers = [...box.querySelectorAll("thead th")];
+    const pinned = (th: Element) => getComputedStyle(th).position === "sticky";
+    const pinnedRight = Math.max(
+      edge.left,
+      ...headers.filter(pinned).map((th) => th.getBoundingClientRect().right)
+    );
+    return headers.flatMap((th) => {
+      const own = th.getBoundingClientRect();
+      if (own.right > edge.right + 1 || (!pinned(th) && own.left < pinnedRight - 1)) return [];
+      const cut = [...th.querySelectorAll("*")].some((part) => {
+        if (part.children.length > 0 && part.tagName !== "svg") return false;
+        const drawn = part.getBoundingClientRect();
+        if (drawn.width === 0) return false;
+        const clips = getComputedStyle(part).overflowX !== "visible";
+        return (clips && part.scrollWidth > part.clientWidth + 1) || drawn.right > own.right + 1;
+      });
+      return cut ? [th.textContent?.trim() ?? ""] : [];
+    });
+  });
+}
+
+async function checkHeaders(page: Page, name: string): Promise<void> {
+  const cut = await cutHeaders(page);
+  check(
+    cut.length === 0,
+    cut.length === 0 ? `${name}: no header is cut` : `${name}: cut headers ${cut.join(", ")}`
+  );
+}
+
+/** The choices a column's filter offers, as each reads aloud: "With open asks, 13 issues". */
+async function filterChoices(page: Page, column: string): Promise<string[]> {
+  return page
+    .getByRole("listbox", { name: `${column} options` })
+    .getByRole("option")
+    .evaluateAll((options) => options.map((option) => option.getAttribute("aria-label") ?? ""));
+}
+
+/** Ticks a column in the Columns menu and closes the menu. */
+async function showColumn(page: Page, column: string): Promise<void> {
+  await page.getByRole("button", { name: /^Columns/ }).click();
+  await page.getByRole("checkbox", { name: column, exact: true }).check();
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(500);
+}
+
+/** Swipes the table to its right end, as a reader would, and gives how far it scrolled. */
+async function swipeToEnd(page: Page): Promise<number> {
+  const scrolled = await page.getByTestId("issues-table-scroll").evaluate((box) => {
+    box.scrollLeft = box.scrollWidth;
+    return box.scrollLeft;
+  });
+  await page.waitForTimeout(500);
+  return scrolled;
+}
+
+/** The Legion columns under their names since the owner's review, and the names they had. */
+const LEGION_COLUMNS = [
+  "Queue state",
+  "Time in queue",
+  "Time in Legion phase",
+  "Worker state",
+  "Workers",
+  "Review rounds",
+  "Legion tree",
+];
+const OLD_COLUMN_NAMES = ["Waiting", "Waited", "In phase", "Activity", "Roles", "Rounds", "Tree"];
+
 const afterShots: Shot[] = [
   {
     name: "view-open-1440",
@@ -240,15 +315,40 @@ const afterShots: Shot[] = [
     take: async (page) => {
       await open(page, view("open"));
       check(!(await legendScrolls(page)), "view-open-1440: the legend draws no scroll bar");
+      await checkHeaders(page, "view-open-1440");
     },
   },
-  // Open at a narrower window, where the legend wraps onto a second line.
+  // Open scrolled sideways to its last column, as a reader swipes the table: the pinned columns
+  // stay, and the last column is drawn whole.
+  {
+    name: "view-open-last-column-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open"));
+      const scrolled = await swipeToEnd(page);
+      const last = await page.getByTestId("issues-table-scroll").evaluate((box) => {
+        const header = [...box.querySelectorAll("thead th")].at(-1);
+        if (header === undefined) return { name: "no column", whole: false };
+        return {
+          name: header.textContent?.trim() || `a column with no header, ${header.clientWidth} px`,
+          whole: header.getBoundingClientRect().right <= box.getBoundingClientRect().right + 1,
+        };
+      });
+      check(
+        scrolled > 0 && last.whole,
+        `Open scrolls ${scrolled} px to its last column, ${last.name}, drawn whole`
+      );
+      await checkHeaders(page, "view-open-last-column-1440");
+    },
+  },
+  // Open in a 1024 x 768 window, where the sidebar folds away and the table scrolls sideways.
   {
     name: "view-open-1024",
     viewport: LAPTOP,
     take: async (page) => {
       await open(page, view("open"));
       check(!(await legendScrolls(page)), "view-open-1024: the legend draws no scroll bar");
+      await checkHeaders(page, "view-open-1024");
     },
   },
   {
@@ -256,8 +356,38 @@ const afterShots: Shot[] = [
     viewport: DESKTOP,
     take: (page) => open(page, view("open", "&status=in_progress")),
   },
-  { name: "view-queue-1440", viewport: DESKTOP, take: (page) => open(page, view("queue")) },
-  { name: "view-done-1440", viewport: DESKTOP, take: (page) => open(page, view("done")) },
+  // An older link to the Legion queue's tab, which is gone: it opens Open narrowed to the issues
+  // in the daemon's queue (`f.queue=Queued`), in queue order.
+  {
+    name: "old-queue-link-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("queue"));
+      const queued = await page.evaluate(async (key) => {
+        const body: { header: { queue_length: number } } = await (
+          await fetch(`/api/v1/projects/${key}/legion/board`)
+        ).json();
+        return body.header.queue_length;
+      }, project);
+      const count = await tabCount(page, "open");
+      check(
+        page.url().includes("f.queue=Queued") && !page.url().includes("view=queue"),
+        "view=queue becomes f.queue=Queued in the address"
+      );
+      check(
+        (await tab(page, "open").getAttribute("aria-selected")) === "true" && count === queued,
+        `the old link opens Open on ${count} rows; the daemon's queue holds ${queued}`
+      );
+    },
+  },
+  {
+    name: "view-done-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("done"));
+      await checkHeaders(page, "view-done-1440");
+    },
+  },
   // Done with one week picked in the Closed column's date-range filter, the 3rd of November to
   // the 9th, and the filter opened again to show it.
   {
@@ -281,22 +411,24 @@ const afterShots: Shot[] = [
       check(count === 596, `the Done tab reads ${count} for the week`);
     },
   },
+  // Done in Hours, swiped to its last column, Time per phase, as a reader would.
   {
     name: "done-time-per-phase-hours-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await openDoneInHours(page);
-      await page.waitForTimeout(500);
+      await swipeToEnd(page);
     },
   },
-  // The pointer on the first row's Time per phase cell, its tooltip open. The pointer moves to
-  // the cell's centre as a person's would, rather than through `hover()`, which first scrolls
-  // the cell into view and so would draw the table scrolled sideways.
+  // The pointer on the first row's Time per phase cell, its tooltip open. The table is swiped to
+  // that column first; the pointer then moves to the cell's centre as a person's would, rather
+  // than through `hover()`, which scrolls the cell into view itself.
   {
     name: "done-time-per-phase-tooltip-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await open(page, view("done"));
+      const swiped = await swipeToEnd(page);
       const cell = page.locator("[data-issue-row]").first().locator("[data-phase-hours]");
       const box = await cell.boundingBox();
       if (box === null) throw new Error("the first row's Time per phase cell is not drawn");
@@ -308,8 +440,8 @@ const afterShots: Shot[] = [
         .getByTestId("issues-table-scroll")
         .evaluate((table) => table.scrollLeft);
       check(
-        scrolled === 0,
-        `the table stands unscrolled under the tooltip (scrollLeft ${scrolled})`
+        scrolled === swiped,
+        `the pointer leaves the table where the swipe put it (scrollLeft ${scrolled} of ${swiped})`
       );
     },
   },
@@ -323,10 +455,39 @@ const afterShots: Shot[] = [
     viewport: DESKTOP,
     take: (page) => openBoardByLegionPhase(page),
   },
+  // One card of the Board by Legion phase, close up: its Legion facts under the names the
+  // owner's review gave them (Time in Legion phase, Work time, Workers).
   {
-    name: "board-queue-1440",
+    name: "board-card-legion-facts-1440",
     viewport: DESKTOP,
-    take: (page) => open(page, view("queue", "&layout=board")),
+    subject: "[data-shot-subject]",
+    take: async (page) => {
+      await open(page, view("open", "&layout=board&group=legion_phase"));
+      const facts = await page.locator("[data-board-card]").evaluateAll((cards) => {
+        const fact = (card: Element, hook: string) =>
+          card.querySelector<HTMLElement>(`[data-legion-fact="${hook}"]`)?.innerText;
+        const full = (card: Element) =>
+          fact(card, "phase-time") !== undefined &&
+          fact(card, "work-time") !== undefined &&
+          !/None$/.test(fact(card, "roles") ?? "None");
+        const card =
+          cards.find((each) => full(each) && fact(each, "blocked-by") !== undefined) ??
+          cards.find(full);
+        if (card === undefined) return [];
+        card.setAttribute("data-shot-subject", "");
+        // In the middle of the window, clear of the banner at its foot.
+        card.scrollIntoView({ block: "center", inline: "center" });
+        return [...card.querySelectorAll<HTMLElement>("[data-legion-fact]")].map((part) =>
+          part.innerText.replace(/\s+/g, " ").trim()
+        );
+      });
+      check(
+        ["Time in Legion phase ", "Work time ", "Workers "].every((label) =>
+          facts.some((each) => each.startsWith(label))
+        ) && !facts.some((each) => /^(In phase|Roles) /.test(each)),
+        `a Board card reads ${facts.join(" · ")}`
+      );
+    },
   },
   {
     name: "group-by-menu-1440",
@@ -368,13 +529,76 @@ const afterShots: Shot[] = [
       check((await saved.getAttribute("aria-selected")) === "true", "the saved Triage tab is open");
     },
   },
+  // The Columns menu over Open: every column, the Legion ones under their names since the
+  // owner's review, in a menu as tall as its list.
   {
-    name: "columns-menu-legion-columns-1440",
+    name: "columns-menu-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await open(page, view("open"));
       await page.getByRole("button", { name: /^Columns/ }).click();
       await page.waitForTimeout(500);
+      const menu = await page.getByRole("checkbox").evaluateAll((boxes) => {
+        const listed = boxes.filter((box) => box.closest("table") === null);
+        const names = listed.map(
+          (box) => box.closest("label")?.textContent?.trim() || box.getAttribute("aria-label") || ""
+        );
+        // The menu's own scroller is the nearest box around its first choice that scrolls and
+        // holds no table; one that holds the table is the page's.
+        let scroller = listed[0]?.parentElement ?? null;
+        while (scroller !== null && !/auto|scroll/.test(getComputedStyle(scroller).overflowY)) {
+          scroller = scroller.parentElement;
+        }
+        const scrolls =
+          scroller !== null &&
+          scroller.querySelector("table") === null &&
+          scroller.scrollHeight > scroller.clientHeight + 1;
+        return { names, scrolls };
+      });
+      check(
+        LEGION_COLUMNS.every((name) => menu.names.includes(name)) &&
+          !OLD_COLUMN_NAMES.some((name) => menu.names.includes(name)),
+        `the Columns menu lists ${menu.names.join(", ")}`
+      );
+      check(
+        !menu.scrolls,
+        `the Columns menu shows its ${menu.names.length} columns with no scroll`
+      );
+    },
+  },
+  // Open asks' filter open: the issues with an ask open, or with none.
+  {
+    name: "filter-open-asks-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open"));
+      await page.getByRole("button", { name: "Filter Open asks", exact: true }).click();
+      await page.waitForTimeout(500);
+      const choices = await filterChoices(page, "Open asks");
+      check(
+        ["With open asks, ", "No open asks, "].every((choice) =>
+          choices.some((each) => each.startsWith(choice))
+        ),
+        `Open asks filters by ${choices.join("; ")}`
+      );
+    },
+  },
+  // Time in Legion phase, ticked in the Columns menu, with its filter open: four spans of time
+  // and None.
+  {
+    name: "filter-time-in-legion-phase-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open"));
+      await showColumn(page, "Time in Legion phase");
+      await page.getByRole("button", { name: "Filter Time in Legion phase", exact: true }).click();
+      await page.waitForTimeout(500);
+      const choices = await filterChoices(page, "Time in Legion phase");
+      const spans = ["Under 1 hour", "1 hour to 1 day", "1 to 7 days", "Over 7 days", "None"];
+      check(
+        spans.every((span) => choices.some((each) => each.startsWith(`${span}, `))),
+        `Time in Legion phase filters by ${choices.join("; ")}`
+      );
     },
   },
   {
@@ -477,23 +701,23 @@ const fileShots: Shot[] = [
     },
   },
   {
-    name: "file-switched-to-queue-1440",
+    name: "file-switched-to-done-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await open(page, issuesPath);
-      await tab(page, "queue").click();
+      await tab(page, "done").click();
       await settle(page);
       check(
-        (await tab(page, "queue").getAttribute("aria-selected")) === "true",
-        "a press on the Legion queue tab opens the Legion queue"
+        (await tab(page, "done").getAttribute("aria-selected")) === "true",
+        "a press on the Done tab opens Done"
       );
     },
   },
   {
-    name: "file-queue-board-1440",
+    name: "file-open-board-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await open(page, view("queue"));
+      await open(page, view("open"));
       await page.getByRole("button", { name: "Board", exact: true }).click();
       await settle(page, page.locator("[data-board-card]").first());
       check((await page.locator("[data-board-card]").count()) > 0, "the Board layout draws cards");
@@ -651,6 +875,7 @@ async function takeAll(browser: Browser, shots: Shot[]): Promise<void> {
     // file no network at all, every request outside the page refused and recorded.
     const context = await browser.newContext({
       viewport: shot.viewport,
+      deviceScaleFactor: shot.subject === undefined ? 1 : 2,
       offline: flags.file,
       timezoneId: TIME_ZONE,
       locale: LOCALE,
@@ -696,7 +921,11 @@ async function takeAll(browser: Browser, shots: Shot[]): Promise<void> {
           banner.style.top = `${document.documentElement.scrollHeight - room + 8}px`;
         });
       }
-      await page.screenshot({ path: file, fullPage: shot.fullPage === true });
+      if (shot.subject === undefined) {
+        await page.screenshot({ path: file, fullPage: shot.fullPage === true });
+      } else {
+        await page.locator(shot.subject).first().screenshot({ path: file });
+      }
       report.shots.push(file);
       console.log(`wrote ${file}`);
     } catch (error) {

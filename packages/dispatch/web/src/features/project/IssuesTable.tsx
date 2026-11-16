@@ -64,7 +64,6 @@ import {
 } from "./issues-table-data";
 import {
   ALL_ROWS,
-  boardQueueLength,
   COLUMNS,
   type ColumnId,
   columnMinimums,
@@ -96,17 +95,19 @@ import {
 import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
 import {
+  BUILT_IN_VIEWS,
   type BuiltInView,
   type BuiltInViewId,
   clearNarrowings,
+  currentAddress,
   isViewChanged,
+  legacyOpenLayout,
   narrowingsKey,
   readSavedViews,
   type SavedView,
   type StoredViews,
   viewFor,
   viewQueryKey,
-  viewsFor,
   windowRead,
 } from "./issues-views";
 import { RangeFilter } from "./RangeFilter";
@@ -169,23 +170,16 @@ const ISSUE_TABLE_PAGER: PagerOptions = {
 const viewStorageKey = (project: string, view: BuiltInViewId) =>
   view === "open" ? tableStorageKey(project) : `${tableStorageKey(project)}.view.${view}`;
 
-/** The column a bar counts by, and the parameter its press narrows. */
-const BAR_COLUMN = {
-  status: "status",
-  waiting_reason: "waiting_reason",
-} as const;
-
 /** Whether a view lists closed issues: its Status filter picks Done, or the Status filter is
- *  lifted (`lifted`, `nofilter=1`). A view with no Status filter of its own (the Legion queue)
- *  lists the open issues its Legion filters select. */
+ *  lifted (`lifted`, `nofilter=1`). */
 function filtersListClosed(filters: View["filters"], lifted: boolean): boolean {
   const status = filters.find((filter) => filter.id === "status")?.value;
   return Array.isArray(status) ? status.map(String).includes("done") : lifted;
 }
 
 /** Whether an address of the Issues tab lists closed issues (`filtersListClosed`). */
-function listsClosed(params: URLSearchParams, hasLegion: boolean): boolean {
-  return filtersListClosed(readUrl(params, hasLegion).filters, params.get("nofilter") === "1");
+function listsClosed(params: URLSearchParams): boolean {
+  return filtersListClosed(readUrl(params).filters, params.get("nofilter") === "1");
 }
 
 /** Which done issues a view reads: none, the window its Closed filter names, or every done
@@ -299,13 +293,20 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   const params = useAddressParams();
   const update = useAddressUpdate();
   const { view, setFilters, setGrouping, setPagination, setSearch, setSorting } = useTableView(
-    place.kind === "embedded" ? { stateKey: place.stateKey } : { hasLegion }
+    place.kind === "embedded" ? place.stateKey : undefined
   );
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  const views = embedded ? NO_VIEWS : viewsFor(hasLegion);
+  const views = embedded ? NO_VIEWS : BUILT_IN_VIEWS;
   // An embedded table draws no view: it opens as Open does.
-  const builtIn = viewFor(embedded ? null : params.get("view"), hasLegion);
+  const builtIn = viewFor(embedded ? null : params.get("view"));
+  // An older link to the Legion queue's tab is written as Open with its Queue filter, which
+  // lists the same rows, so the tab marks the change and Clear filters takes it away.
+  const formerView = embedded ? null : params.get("view");
+  useEffect(() => {
+    if (formerView === null) return;
+    update((current) => currentAddress(current) ?? current);
+  }, [formerView, update]);
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const board = useQuery({
     ...legionBoardQuery({ kind: "legion", project: project ?? "" }),
@@ -380,11 +381,34 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         ? "table"
         : undefined);
   const urlLayout = embedded ? null : params.get("layout");
+  // Before the reader picks a layout of Open, today's `project.issue-view` choice picks it:
+  // `board` its Board, `legion` (the old Legion view) its Board by Legion phase.
+  const legacy = legacyOpenLayout(legacyView);
   const layoutChoice: ViewLayout = embedded
     ? "table"
     : urlLayout === "board" || urlLayout === "table"
       ? urlLayout
-      : (keptLayout ?? (builtIn.id === "open" && legacyView === "board" ? "board" : "table"));
+      : (keptLayout ?? (builtIn.id === "open" ? legacy.layout : "table"));
+  // The Board's columns are the address's `group=`, so the Legion phase is written there once,
+  // when Open first opens on that choice with no grouping of its own; a reader who then picks
+  // Status keeps it for the load.
+  const legacyGrouped = useRef(false);
+  const legacyGroup =
+    !embedded &&
+    hasLegion &&
+    builtIn.id === "open" &&
+    urlLayout === null &&
+    keptLayout === undefined
+      ? legacy.group
+      : undefined;
+  useEffect(() => {
+    if (legacyGroup === undefined || legacyGrouped.current) return;
+    legacyGrouped.current = true;
+    update((current) => {
+      if (!current.has("group")) current.set("group", legacyGroup);
+      return current;
+    });
+  }, [legacyGroup, update]);
   const setLayout = (next: ViewLayout) => {
     if (params.has("layout"))
       update((current) => {
@@ -420,12 +444,18 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     (shown) => (shown ? "shown" : "hidden")
   );
 
-  // The columns: the view's own, the address's `cols=` for this load, the board's only where
-  // the project has a Legion daemon. An embedded table opens with the columns the List had
-  // before the views, and the listing columns its listing gives a use (`listingColumns`).
+  // The columns: the view's own, the address's `cols=` for this load. Where the project has no
+  // Legion daemon the board's columns are not drawn, and Queue (Start next's order there) is in
+  // the Columns menu rather than the defaults. An embedded table opens with the columns the
+  // List had before the views, and the listing columns its listing gives a use
+  // (`listingColumns`).
   const viewCols = useMemo(
     () =>
-      embedded ? [] : hasLegion ? builtIn.cols : builtIn.cols.filter((id) => !isBoardColumn(id)),
+      embedded
+        ? []
+        : hasLegion
+          ? builtIn.cols
+          : builtIn.cols.filter((id) => !isBoardColumn(id) && id !== "queue"),
     [builtIn, embedded, hasLegion]
   );
   const listingColsText =
@@ -446,9 +476,10 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       : viewLayoutColumns(viewCols, touch)
   );
   const colsParam = embedded ? null : params.get("cols");
-  // Start next is offered only on the views that list Todo issues; elsewhere its column is not
-  // drawn, so the view's own columns get its width. An embedded table offers it as the List did.
-  const trailingWidth = embedded || ["open", "queue"].includes(builtIn.id) ? ACTION_WIDTH : 0;
+  // Start next is offered only on the view that lists Todo issues (Open); elsewhere its column
+  // is not drawn, so the view's own columns get its width. An embedded table offers it as the
+  // List did.
+  const trailingWidth = embedded || builtIn.id === "open" ? ACTION_WIDTH : 0;
   const layout = useMemo(() => {
     // An embedded table is laid out by main's rules alone (`issueTableLayout`): its columns at
     // main's widths, scrolling sideways where they do not fit, in the order the reader left them.
@@ -495,8 +526,8 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
             ...hidden,
           };
     // Until the reader drags a width, a view's columns are fitted to the box: Title gives first,
-    // down to 180 px, then every other column toward its minimum, then Title again down to its
-    // own minimum, so the view's own columns are on screen rather than past its right edge.
+    // down to its minimum (240 px, a width its two lines read at), then every other column
+    // toward its minimum. What still does not fit scrolls sideways under the pinned columns.
     const minimums = columnMinimums(touch);
     const responsive = (() => {
       const { boxWidth: box, responsive: drawn, sizing } = storedLayout;
@@ -507,7 +538,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       if (over <= 0) return drawn;
       const title = widths.title;
       if (title !== undefined && ids.includes("title")) {
-        const cut = Math.min(over, Math.max(0, title - 180));
+        const cut = Math.min(over, Math.max(0, title - (minimums.title ?? 0)));
         widths.title = title - cut;
         over -= cut;
       }
@@ -518,14 +549,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       if (over > 0 && total > 0) {
         const given = Math.min(over, total);
         for (const [id, room] of slack) widths[id] = (widths[id] ?? 0) - (given * room) / total;
-        over -= given;
       }
-      // The last of it, where every other column is at its minimum: Open's eight columns
-      // and Start next beside the sidebar at 1440 px.
-      const narrowed = widths.title;
-      const floor = minimums.title ?? 0;
-      if (over > 0 && narrowed !== undefined && ids.includes("title"))
-        widths.title = narrowed - Math.min(over, Math.max(0, narrowed - floor));
       return { ...drawn, sizing: widths };
     })();
     if (shown === undefined) return { ...storedLayout, order, responsive, setOrder, visibility };
@@ -763,36 +787,19 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         continue;
       }
       if (!readsOpen) {
-        result.set(
-          entry.id,
-          entry.id === "open"
-            ? openCount.data
-            : entry.id === "queue" && board.data !== undefined
-              ? boardQueueLength(board.data)
-              : undefined
-        );
+        result.set(entry.id, openCount.data);
         continue;
       }
-      // A view whose rows come from data the page does not hold yet says no count, not 0.
-      const needsBoard = hasLegion && entry.legionOnly === true;
-      if (!openLoaded || (needsBoard && board.data === undefined)) {
+      // Before the open listing answers the tab says no count, not 0.
+      if (!openLoaded) {
         result.set(entry.id, undefined);
         continue;
       }
-      const own = readUrl(copyAddress(`view=${entry.id}`), hasLegion).filters;
+      const own = readUrl(copyAddress(`view=${entry.id}`)).filters;
       result.set(entry.id, allItems.filter((item) => matchesFilters(item, own)).length);
     }
     return result;
-  }, [
-    views,
-    hasLegion,
-    allItems,
-    doneCount.data,
-    openCount.data,
-    board.data,
-    openLoaded,
-    readsOpen,
-  ]);
+  }, [views, allItems, doneCount.data, openCount.data, openLoaded, readsOpen]);
   // A saved view counts from the open listing, so it says no count on a view that reads none;
   // one that lists closed issues counts only while it is open (`tabSavedCounts`): the page
   // holds its closed rows then alone.
@@ -800,19 +807,19 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     const result = new Map<string, number | undefined>();
     for (const entry of saved) {
       const query = copyAddress(entry.query);
-      if (!readsOpen || listsClosed(query, hasLegion)) {
+      if (!readsOpen || listsClosed(query)) {
         result.set(entry.name, undefined);
         continue;
       }
-      const own = readUrl(query, hasLegion).filters;
+      const own = readUrl(query).filters;
       result.set(entry.name, allItems.filter((item) => matchesFilters(item, own)).length);
     }
     return result;
-  }, [saved, hasLegion, allItems, readsOpen]);
+  }, [saved, allItems, readsOpen]);
 
   const selectView = (id: string) => {
     setChosenSaved(undefined);
-    const next = viewFor(id, hasLegion);
+    const next = viewFor(id);
     update(() => {
       const fresh = copyAddress();
       if (next.id !== "open") fresh.set("view", next.id);
@@ -867,29 +874,19 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       return current;
     });
 
-  // The bar: the listed rows by the view's Bar by column. An embedded table draws main's strip
-  // instead (`IssueTableStatus`).
-  const barBy = builtIn.bar;
-  const barColumn = barBy === undefined ? undefined : BAR_COLUMN[barBy];
-  const barParam =
-    barColumn === undefined
-      ? undefined
-      : ownParam(barColumn === "status" ? "status" : `f.${barColumn}`);
-  const barPicks = (() => {
-    if (barColumn === undefined || barParam === undefined || !params.has(barParam))
-      return undefined;
-    const value = filters.find((filter) => filter.id === barColumn)?.value;
-    return Array.isArray(value) ? value.map(String) : undefined;
-  })();
+  // The bar: the listed rows by status, on a view that draws one (Open). An embedded table
+  // draws main's strip instead (`IssueTableStatus`). A press narrows the Status filter, and a
+  // second press takes the address's `status` away, which gives the view's own back.
+  const barPicks =
+    params.has("status") && Array.isArray(statusValue) ? statusValue.map(String) : undefined;
   const narrowTo = (values: readonly string[] | undefined) => {
-    if (barColumn === undefined || barParam === undefined) return;
     if (values === undefined)
       update((current) => {
-        current.delete(barParam);
-        current.delete(ownParam("page"));
+        current.delete("status");
+        current.delete("page");
         return current;
       });
-    else table.getColumn(barColumn)?.setFilterValue([...values]);
+    else table.getColumn("status")?.setFilterValue([...values]);
   };
 
   // The chips of the narrowings an address carries that are no column's filter.
@@ -1074,10 +1071,9 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
           // Issues by status, as main draws them: a click shows only that status, a second
           // click every status.
           <IssueTableStatus items={allItems} table={table} />
-        ) : layoutChoice === "board" ? null : (
+        ) : layoutChoice === "board" || builtIn.bar !== true ? null : (
           // The table's bar; the Board draws none, since its columns carry their counts.
           <ViewBar
-            by={barBy}
             items={loading ? [] : listedRows.map((row) => row.original)}
             narrowTo={narrowTo}
             picked={barPicks}
@@ -1251,8 +1247,9 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
             )}
             scrollTestId="issues-table-scroll"
             // An embedded table stacks its Title header's sort and filter on a phone, as main's
-            // does; the Issues tab pins Title beside Key instead.
-            stackColumn={embedded ? "title" : undefined}
+            // does; the Issues tab pins Title beside Key and stacks Time per phase instead, so
+            // its name, its Share/Hours control and its filter all show in a phone's column.
+            stackColumn={embedded ? "title" : ("phase_hours" satisfies ColumnId)}
             trailingWidth={trailingWidth}
           />
         </PhaseHoursContext>
