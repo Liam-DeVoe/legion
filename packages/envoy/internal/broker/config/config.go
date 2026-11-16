@@ -308,12 +308,21 @@ type Config struct {
 	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	JudgeTestSkipChecks bool
 	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
-	// is private, whether a person may see it, and what kind of member a person is
-	// (internal/broker/projectaccess), an absolute http(s) URL, read without the slashes it ends
-	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
-	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
-	// project that operator's own setting chose, are minted as before; a person's trade that
-	// names a project is refused, since nothing could say that person may see it.
+	// is private, whether a person may see it, what kind of member a person is, and which Slack
+	// channels a private project's owner named (internal/broker/projectaccess), an absolute
+	// http(s) URL, read without the slashes it ends in. The token exchange asks it about the
+	// projects a token names; a session's enrollment, about the projects its list names; each
+	// release and airlock connection of a secret carrying a dispatch-project tag, about that
+	// project and the credential's person; a project-channels secret asked for by a credential
+	// naming a private project, about that project's channels; the approval page, the pending
+	// lists and each decision, about the projects a request touches; and the model judge,
+	// about whether a request is a private project's. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE
+	// or not at all: with neither, the broker asks Dispatch nothing. It then refuses every secret
+	// carrying a dispatch-project tag (project-unchecked) and serves every other secret as
+	// before; a token that names no project, and an operator entry's token, whose project that
+	// operator's own setting chose, are minted as before; a person's trade that names a project,
+	// and a session enrollment that names projects, are refused, since nothing could say that
+	// person may see them.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker

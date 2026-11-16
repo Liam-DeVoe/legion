@@ -48,15 +48,15 @@ func init() {
 	// Register after variable initialization: the handlers use commands for help.
 	secretForms = []secretForm{
 		{command{"secret list", "agent-secrets secret list [--json] [--profile P]",
-			"List every agent secret, under the environment's cloud credential: its name, owner, tier, kind,\nshape, project, project channels, max grant, default grant, whether it has a value, and its\ndeletion once it is deleted, with the earliest purge beside it on Secrets Manager; --json also\nprints each one's store, secret name, github-owners, requesters, scopes and admin mark, and its\ncreated and last-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
+			"List every agent secret, under the environment's cloud credential: its name, owner, tier, kind,\nshape, project, project channels, max grant, default grant, whether it has a value, and its\ndeletion once it is deleted, with the earliest purge beside it on Secrets Manager; --json also\nprints each one's store, secret name, github-owners, requesters, scopes, admin mark and whether\nit carries the project tags' rollback guard, and its created and last-changed times where the\nstore gives them. Name the store the rows are in."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json] [--profile P]",
-			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, project, project channels, max grant, default grant,\nits created and last-changed times, its deletion once it is deleted, with the earliest purge\nbeside it on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
+			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, project, project channels, whether it carries the project\ntags' rollback guard, max grant, default grant, its created and last-changed times, its deletion\nonce it is deleted, with the earliest purge beside it on Secrets Manager, and its versions;\n--json prints those and whether it has a value. Never print its value."}, cmdSecretShow},
 		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--project KEY] [--project-channels slack] [--max-grant DURATION] [--default-grant session] [--profile P]",
-			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email. --project KEY makes it a secret of that\nDispatch project: a private project's secret goes only to a session that names the project.\n--project-channels slack marks a Slack bot token: a session whose credential names a private\nproject posts with it only to the Slack channels that project's owner named.\nRead its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
+			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email. --project KEY makes it a secret of that\nDispatch project: a private project's secret goes only to a session that names the project.\n--project-channels slack marks a Slack bot token: a session whose credential names a private\nproject posts with it only to the Slack channels that project's owner named. Beside either,\nthe requesters tag also holds " + policy.RequestersRollbackGuard + ", which a broker from before\nthose tags refuses rather than serve the secret to every session.\nRead its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME [--profile P]",
 			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
 		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--project KEY|none] [--project-channels slack|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
-			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, project, project channels, max grant or default grant under the environment's cloud\ncredential. Then ask the broker to reread it. none removes a kind, GitHub owners, requesters,\nscopes, the admin mark, a shape, a project, project channels, a max grant or a default grant, in\na retag of its own. An administrator changes a shared secret's owner and tier. This CLI cannot\ntell whether a requesters entry naming a service is one the deployment registers: it holds no\nlist of them, so the broker's answer to the reread is what catches an unregistered name,\nprinting its refusal and its reason, and the retag exits 1 with the tag written."}, cmdSecretRetag},
+			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, project, project channels, max grant or default grant under the environment's cloud\ncredential. Then ask the broker to reread it. none removes a kind, GitHub owners, requesters,\nscopes, the admin mark, a shape, a project, project channels, a max grant or a default grant, in\na retag of its own. While the secret carries a project or project channels, the requesters tag\nholds " + policy.RequestersRollbackGuard + " after its list, and --requesters none keeps it; it goes\nwith the last of those two tags. An administrator changes a shared secret's owner and tier. This\nCLI cannot tell whether a requesters entry naming a service is one the deployment registers: it\nholds no list of them, so the broker's answer to the reread is what catches an unregistered name,\nprinting its refusal and its reason, and the retag exits 1 with the tag written."}, cmdSecretRetag},
 		{command{"secret delete", "agent-secrets secret delete NAME [--profile P]",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
 		{command{"secret restore", "agent-secrets secret restore NAME [--profile P]",
@@ -648,8 +648,9 @@ type secretView struct {
 	Kind       string `json:"kind"`
 	// GitHubOwners is a github-app secret's github-owners tag, the accounts the broker mints for.
 	GitHubOwners string `json:"github_owners"`
-	// Requesters is the requesters tag: the people and services that may ask for the secret at
-	// all, or "" where any session its owner and tier allow may.
+	// Requesters is the requesters tag without the project tags' rollback guard
+	// (policy.SplitRequestersGuard): the people and services that may ask for the secret at all,
+	// or "" where any session its owner and tier allow may.
 	Requesters string `json:"requesters"`
 	// Scopes is a google-service-account secret's scopes tag: the OAuth scope names the token it
 	// mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, or
@@ -683,8 +684,14 @@ type secretView struct {
 	// by hand as the empty string among them, which the broker refuses the secret for
 	// (policy.ReasonProjectChannelsMalformed).
 	ProjectChannels *string `json:"project_channels"`
-	MaxGrant        string  `json:"max_grant"`
-	DefaultGrant    string  `json:"default_grant"`
+	// RollbackGuard is whether the requesters tag holds the project tags' rollback guard
+	// (policy.RequestersRollbackGuard), which `secret create` and `retag` write beside a
+	// dispatch-project or project-channels tag so that a broker from before those tags refuses
+	// the secret. A row whose project or project_channels is not null and whose rollback_guard is
+	// false is a tag written without this CLI, which such a broker would serve to every session.
+	RollbackGuard bool   `json:"rollback_guard"`
+	MaxGrant      string `json:"max_grant"`
+	DefaultGrant  string `json:"default_grant"`
 	// HasValue is whether it holds a current, servable version (AWS: a version carries AWSCURRENT;
 	// GCP: versions/latest is ENABLED), so the broker can release a value.
 	HasValue bool `json:"has_value"`
@@ -707,7 +714,8 @@ type secretView struct {
 func (v secretView) withTags(tags map[string]string) secretView {
 	v.Owner, v.Tier = tags[policy.TagOwner], tags[policy.TagTier]
 	v.Kind, v.GitHubOwners, v.MaxGrant, v.DefaultGrant = tags[policy.TagKind], tags[policy.TagGitHubOwners], tags[policy.TagMaxGrant], tags[policy.TagDefaultGrant]
-	v.Requesters, v.Scopes, v.Admin, v.Shape = tags[policy.TagRequesters], tags[policy.TagScopes], tags[policy.TagAdmin], tags[policy.TagShape]
+	v.Scopes, v.Admin, v.Shape = tags[policy.TagScopes], tags[policy.TagAdmin], tags[policy.TagShape]
+	v.Requesters, v.RollbackGuard = policy.SplitRequestersGuard(tags[policy.TagRequesters])
 	if project, tagged := tags[policy.TagProject]; tagged {
 		v.Project = &project
 	}
@@ -818,8 +826,8 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\nkind: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nshape: %s\nproject: %s\nproject_channels: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
-		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Kind), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.Shape), orDashPtr(view.Project), orDashPtr(view.ProjectChannels), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
+	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\nkind: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nshape: %s\nproject: %s\nproject_channels: %s\nrollback_guard: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
+		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Kind), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.Shape), orDashPtr(view.Project), orDashPtr(view.ProjectChannels), orDash(map[bool]string{true: "yes"}[view.RollbackGuard]), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",
@@ -929,6 +937,9 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		DefaultGrant:    *defaultGrant,
 	})
 	tags[policy.TagOwner], tags[policy.TagTier] = ownerValue, *tier
+	// A project tag brings the rollback guard into the requesters tag, after the list named, as
+	// a kind brings its own guard (optionalTags).
+	guardRequesters(tags)
 	// The cross-tag rules weigh the owner tag, which me resolves to only once the sign-in is
 	// read, so they are checked here rather than beside the flags — still before the value is
 	// read and before anything is written. The owner and tier go into the map above, so the

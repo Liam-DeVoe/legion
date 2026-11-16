@@ -11,8 +11,9 @@ body: |-
   (`project-malformed`, an empty tag and `none` included) and, on a broker with no client of
   Dispatch's project access, any tagged secret (`project-unchecked`), which it could not tell
   from a private project's. A secret with no tag reads as before, and its line of the policy
-  version is unchanged, so no deployed version moves; tagging a secret moves the version and ends
-  the grants decided before it.
+  version is unchanged, so no deployed version moves; tagging a secret moves the version, so the
+  broker checks each live grant of it again at its next use, and ends the grants the policy now
+  refuses.
 time: 2026-11-16T02:09:14Z
 custom:
     Issue: pr4135

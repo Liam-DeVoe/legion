@@ -15,9 +15,10 @@ import (
 )
 
 // TestRetagWritesAndRemovesProjectChannels: create and retag --project-channels slack write the
-// secret's project-channels tag beside its owner and tier, on each store, and keep every other
-// tag; --project-channels none removes it as every other none removes its own, and a removal
-// beside another change is refused before anything is written, since it is a retag of its own. Any
+// secret's project-channels tag beside its owner and tier, and the rollback guard in its requesters
+// tag, on each store, and keep every other tag; --project-channels none removes it as every other
+// none removes its own, and a removal beside another change is refused before anything is
+// written, since it is a retag of its own. Any
 // value but slack, and none on create, is a usage error naming --project-channels and the reason
 // the broker would refuse the secret for, refused before the sign-in is read or the store is
 // called at all. show prints a project_channels line holding the tag ("-" for none), list prints
@@ -31,8 +32,8 @@ func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
 			t.Fatalf("create --project-channels slack: exit %d, stderr %q", code, stderr)
 		}
 		tags := store.tags(t, "SLACK_TOKEN")
-		if tags[policy.TagProjectChannels] != policy.ProjectChannelsSlack || tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent || len(tags) != 3 {
-			t.Fatalf("SLACK_TOKEN's tags = %v, want %s=%s beside its owner and tier alone", tags, policy.TagProjectChannels, policy.ProjectChannelsSlack)
+		if tags[policy.TagProjectChannels] != policy.ProjectChannelsSlack || tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent || tags[policy.TagRequesters] != policy.RequestersRollbackGuard || len(tags) != 4 {
+			t.Fatalf("SLACK_TOKEN's tags = %v, want %s=%s beside its owner, its tier and the rollback guard alone", tags, policy.TagProjectChannels, policy.ProjectChannelsSlack)
 		}
 
 		store.put(t, "API_KEY", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent, policy.TagProject: "PRIV"}, "v1")

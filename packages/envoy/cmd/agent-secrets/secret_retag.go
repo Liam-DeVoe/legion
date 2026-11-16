@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -199,6 +200,10 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if *newTier != "" {
 		after[policy.TagTier] = *newTier
 	}
+	rewrite, err := guardRetag(held.tags, after, set, &remove)
+	if err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
 	named := *newGitHubOwners != "" && *newGitHubOwners != tagNone
 	if err := checkGitHubOwnersFor(after[policy.TagKind], after[policy.TagGitHubOwners], named); err != nil {
 		return secretFailIn(stderr, form, s, err)
@@ -224,6 +229,23 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		if unchecked != "" {
 			fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, unchecked)
 		}
+		if rewrite != "" {
+			if err := writeGuardRewrite(s, slug, after, rewrite); err != nil {
+				// What the requesters tag holds now is what it held before this retag: the
+				// removal did not touch it. The guard was either leaving it (harmless to leave)
+				// or joining it (the secret keeps a project tag with no guard, which a broker
+				// from before the project tags would serve), and the two need different words.
+				_, guarded := policy.SplitRequestersGuard(held.tags[policy.TagRequesters])
+				state := fmt.Sprintf("The requesters tag still holds %s, which only a broker from before the project tags reads, as a refusal", policy.RequestersRollbackGuard)
+				if !guarded {
+					state = fmt.Sprintf("The requesters tag does not hold %s yet, so a broker from before the project tags would serve this secret by owner and tier alone", policy.RequestersRollbackGuard)
+				}
+				fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, but writing %s's requesters as %q failed: %v; looked in %s. %s; run this retag again to write it\n", form, name, rewrite, s.refusedAs(err), s.storeName(), state)
+				rereadRetag(s, stdout, stderr, form, name, after[policy.TagKind])
+				return 1
+			}
+			fmt.Fprintf(stdout, "retagged %s in %s (requesters=%s)\n", name, s.storeName(), rewrite)
+		}
 		return rereadRetag(s, stdout, stderr, form, name, after[policy.TagKind])
 	}
 	set[policy.TagOwner], set[policy.TagTier] = owner, tier
@@ -244,6 +266,67 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, unchecked)
 	}
 	return rereadRetag(s, stdout, stderr, form, name, after[policy.TagKind])
+}
+
+// guardRetag applies guardRequesters to after, the tags a retag leaves, and folds the change it
+// makes to the requesters tag into the retag's own write: set and remove are the tags the flags
+// set and remove, and heldTags what the secret holds now. A retag that sets tags writes the
+// requesters tag guardRequesters leaves in the same write, the list a command names with the
+// guard after it. A retag that removes tags removes the requesters tag too where it held nothing
+// but the guard, and answers rewrite, the value the requesters tag must then be written as, where
+// the guard leaves a list or joins one: a second write after the removal, in that order, so a
+// second write that fails leaves the guard on a secret that no longer needs it, which only a
+// broker from before the project tags reads, as a refusal. A retag that sets tags never removes
+// the requesters tag: a guard left on a secret with no project tag, by a console's removal of the
+// tag, stays until a removal retag takes it out.
+//
+// --requesters none on a secret that keeps a project tag removes the list and keeps the guard, so
+// the requesters tag is written as the guard alone: a write, not a removal. Beside another
+// removal that is two writes of the user's own asking, which a retag refuses, so it is refused
+// here too, before any write.
+func guardRetag(heldTags, after, set map[string]string, remove *[]string) (rewrite string, err error) {
+	guardRequesters(after)
+	heldList, heldListed := heldTags[policy.TagRequesters]
+	afterList, afterListed := after[policy.TagRequesters]
+	removing := slices.Contains(*remove, policy.TagRequesters)
+	switch {
+	case afterListed && removing:
+		*remove = slices.DeleteFunc(*remove, func(key string) bool { return key == policy.TagRequesters })
+		if len(*remove) > 0 {
+			return "", usageErr{fmt.Errorf("--requesters none on a secret that keeps a %s or %s tag writes the requesters tag as %s alone, the rollback guard, which is a write and no removal: run --requesters none in a retag of its own", policy.TagProject, policy.TagProjectChannels, policy.RequestersRollbackGuard)}
+		}
+		set[policy.TagRequesters] = afterList
+	case afterListed && len(*remove) == 0:
+		if _, named := set[policy.TagRequesters]; named || !heldListed || afterList != heldList {
+			set[policy.TagRequesters] = afterList
+		}
+	case afterListed:
+		if !heldListed || afterList != heldList {
+			rewrite = afterList
+		}
+	case heldListed && !removing && len(*remove) > 0:
+		*remove = append(*remove, policy.TagRequesters)
+	case heldListed && !removing:
+		after[policy.TagRequesters] = heldList
+	}
+	return rewrite, nil
+}
+
+// writeGuardRewrite writes a removal retag's second write, the requesters tag guardRetag leaves as
+// rewrite, against the tags the store holds once the removal landed (a GCP write is conditioned on
+// the tags it read), with the owner and tier the secret holds, which an AWS tag write sends.
+func writeGuardRewrite(s *secretSession, slug string, after map[string]string, rewrite string) error {
+	held, err := s.backend.currentTags(s.ctx, slug)
+	if err != nil {
+		return err
+	}
+	tags := map[string]string{policy.TagRequesters: rewrite}
+	for _, key := range []string{policy.TagOwner, policy.TagTier} {
+		if value := after[key]; value != "" {
+			tags[key] = value
+		}
+	}
+	return s.backend.setTags(s.ctx, slug, held, tags)
 }
 
 // checkRetagValue decodes the value of the secret name, slug under the prefix, as the broker will

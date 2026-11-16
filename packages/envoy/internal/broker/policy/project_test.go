@@ -342,3 +342,108 @@ func TestAPrivateProjectSecretTagIsLoaded(t *testing.T) {
 		}
 	}
 }
+
+// TestAMisspelledProjectTagKeyRefusesTheSecret: a tag key that differs from dispatch-project or
+// project-channels only in case or in its separators is refused, project-tag-misspelled, by a
+// broker that checks projects and by one that does not, through Load and LoadOne alike. Loaded as
+// an untagged secret it would go by owner and tier to every session, which is what the owner who
+// wrote it meant to stop. A key that is another word, the cost-allocation tag "project" among
+// them, is not read at all, as before.
+func TestAMisspelledProjectTagKeyRefusesTheSecret(t *testing.T) {
+	misspelled := map[string]string{
+		"CAPS_KEY":        "Dispatch-Project",
+		"UNDERSCORE_KEY":  "dispatch_project",
+		"UPPER_KEY":       "DISPATCH-PROJECT",
+		"JOINED_KEY":      "dispatchproject",
+		"SPACED_KEY":      "dispatch project",
+		"CHANNELS_KEY":    "PROJECT-CHANNELS",
+		"CHANNELS_US_KEY": "project_channels",
+		"CHANNELS_DOT":    "Project.Channels",
+	}
+	stored := []secrets.LocalSecret{}
+	for name, key := range misspelled {
+		s := policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
+		s.Tags[key] = privProject
+		stored = append(stored, s)
+	}
+	other := policytest.Secret("COST_KEY", policy.OwnerShared, policy.TierAgent, "v")
+	other.Tags["project"] = "billing"
+	other.Tags["dispatch-projects"] = privProject
+	stored = append(stored, other)
+	store := secrets.NewLocal(stored...)
+	for _, checks := range []bool{true, false} {
+		loader := policytest.Loader(store, projectSvc)
+		loader.ProjectChecks = checks
+		set, err := loader.Load(context.Background())
+		if err != nil {
+			t.Fatalf("Load (project checks %v): %v", checks, err)
+		}
+		want := policy.Refusal{Reason: policy.ReasonProjectTagMisspelled, Owner: policy.OwnerShared}
+		for name, key := range misspelled {
+			if got := set.Refused[policytest.ID(name)]; got != want {
+				t.Errorf("project checks %v: %s, tagged %q, refused as %+v, want %+v", checks, name, key, got, want)
+			}
+			if lookup, err := loader.LoadOne(context.Background(), name); err != nil || lookup.Served || lookup.Reason != policy.ReasonProjectTagMisspelled {
+				t.Errorf("project checks %v: LoadOne(%s), tagged %q = %+v, %v; want refused %s", checks, name, key, lookup, err, policy.ReasonProjectTagMisspelled)
+			}
+		}
+		if _, served := set.Secrets["COST_KEY"]; !served {
+			t.Errorf("project checks %v: COST_KEY, tagged project and dispatch-projects, is not served (refused: %+v); only a spelling of the two project keys is refused", checks, set.Refused[policytest.ID("COST_KEY")])
+		}
+	}
+}
+
+// TestTheProjectRuleIsOneFunction: policy.ProjectRule is the one statement of the dispatch-project
+// rule, which Evaluate and the airlock's connection check (requests' airlockProjectRule) both call.
+// It lets through a secret with no tag, one of a public project and one of a private project the
+// credential names; it answers project-not-named for a private project the credential does not
+// name, project-missing for a key Dispatch holds no project for, and ErrNoProjectState for a
+// project the caller resolved no state for. Evaluate's answer for the same secret is a Deny with
+// that reason, or the error, in every row, so the two readers cannot drift.
+func TestTheProjectRuleIsOneFunction(t *testing.T) {
+	const unresolved = "NEW"
+	store := secrets.NewLocal(
+		policytest.Secret("PLAIN_KEY", policy.OwnerShared, policy.TierAgent, "v"),
+		projectSecret("PUB_KEY", policy.OwnerShared, policy.TierAgent, pubProject),
+		projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject),
+		projectSecret("GONE_KEY", policy.OwnerShared, policy.TierAgent, goneProject),
+		projectSecret("NEW_KEY", policy.OwnerShared, policy.TierAgent, unresolved),
+	)
+	set := loadProjects(t, store)
+	for _, c := range []struct {
+		name, project string
+		requester     policy.Requester
+		reason        string
+		err           error
+	}{
+		{"PLAIN_KEY", "", credential(alice, ""), "", nil},
+		{"PLAIN_KEY", "", policy.Requester{Operator: alice}, "", nil},
+		{"PUB_KEY", pubProject, credential(alice, ""), "", nil},
+		{"PRIV_KEY", privProject, credential(alice, "", privProject), "", nil},
+		{"PRIV_KEY", privProject, credential(alice, "", pubProject), policy.ReasonProjectNotNamed, nil},
+		{"PRIV_KEY", privProject, credential(alice, ""), policy.ReasonProjectNotNamed, nil},
+		{"PRIV_KEY", privProject, policy.Requester{Operator: alice, Named: []string{privProject}, ProjectStates: states}, policy.ReasonProjectNotNamed, nil},
+		{"GONE_KEY", goneProject, credential(alice, "", goneProject), policy.ReasonProjectMissing, nil},
+		{"NEW_KEY", unresolved, credential(alice, "", unresolved), "", policy.ErrNoProjectState},
+	} {
+		reason, err := policy.ProjectRule(c.project, c.requester)
+		if reason != c.reason || !errors.Is(err, c.err) || (c.err == nil && err != nil) {
+			t.Errorf("ProjectRule(%q, %+v) = %q, %v; want %q, %v", c.project, c.requester, reason, err, c.reason, c.err)
+		}
+		decision, evalErr := set.Evaluate(c.name, c.requester)
+		switch {
+		case c.err != nil:
+			if !errors.Is(evalErr, c.err) {
+				t.Errorf("Evaluate(%s, %+v) = %+v, %v; want %v, as ProjectRule answers", c.name, c.requester, decision, evalErr, c.err)
+			}
+		case c.reason != "":
+			if evalErr != nil || decision.Outcome != policy.Deny || decision.Reason != c.reason {
+				t.Errorf("Evaluate(%s, %+v) = %+v, %v; want a Deny, %s, as ProjectRule answers", c.name, c.requester, decision, evalErr, c.reason)
+			}
+		default:
+			if evalErr != nil || decision.Outcome != policy.Automatic {
+				t.Errorf("Evaluate(%s, %+v) = %+v, %v; want automatic: the project rule lets it through and the secret is shared agent tier", c.name, c.requester, decision, evalErr)
+			}
+		}
+	}
+}

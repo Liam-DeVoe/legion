@@ -103,6 +103,14 @@ as a `project_channels:` line, `secret list` prints it as a `PROJECT_CHANNELS` c
 carries it as `project_channels`, null for a secret without it. Any other value, and `none` on
 create, is refused before anything is written, naming `project-channels-malformed`.
 
+Beside either tag, `create` and `retag` also write the entry `rollback-guard:project-tags` into the
+secret's `requesters` tag, after any list it holds, and remove it when neither tag remains. This
+broker ignores the entry; a broker from before the project tags refuses the secret
+(`requesters-malformed`) rather than serve it by owner and tier alone. `secret show` prints the
+list without it and a `rollback_guard: yes|-` line, and `--json` a `rollback_guard` field. A tag
+written in the store's own console carries no guard: the rule for a rollback is in the broker's
+operate guide, "Rolling back past the project tags".
+
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
 `AGENT_SECRETS_KEY_DIR`.

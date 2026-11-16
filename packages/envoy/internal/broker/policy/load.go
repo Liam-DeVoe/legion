@@ -146,6 +146,12 @@ const (
 	// one value. A value the broker cannot read names no limit it could apply, so the secret goes
 	// to nobody rather than out unlimited to a private project's credential.
 	ReasonProjectChannelsMalformed = "project-channels-malformed"
+	// ReasonProjectTagMisspelled: a tag key differs from dispatch-project or project-channels
+	// only in case or in its separators (Dispatch-Project, dispatch_project, PROJECT-CHANNELS,
+	// dispatchproject). The broker reads tag keys as written, so such a secret would otherwise
+	// load as one carrying no project tag and go by owner and tier to every session, which is
+	// what the owner who wrote it meant to stop.
+	ReasonProjectTagMisspelled = "project-tag-misspelled"
 	// ReasonValueMalformed: a kind secret's stored value is one secrets.ParseValue refuses under
 	// its kind and shape, or one that is not text (secrets.ErrValueNotText), so no release could
 	// mint from it. It is no tag's: a load sets it from the value Current reads and decodes once
@@ -390,9 +396,13 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Se
 	// read here too, since the rules weigh them against the kind, the tier and the requesters
 	// alike. A kind whose own rules demand a list is refused for a missing one, so TagRules runs
 	// whether the tags are there or not.
+	// The project tags' rollback guard is no requester (RequestersRollbackGuard): it is taken out
+	// before the list is read, and a tag that held it alone is no list.
 	if raw, tagged := ls.Tags[TagRequesters]; tagged {
-		if s.Requesters, err = ParseRequesters(raw, l.Services); err != nil {
-			return Secret{}, ReasonRequestersMalformed, nil
+		if rest, guarded := SplitRequestersGuard(raw); !guarded || rest != "" {
+			if s.Requesters, err = ParseRequesters(rest, l.Services); err != nil {
+				return Secret{}, ReasonRequestersMalformed, nil
+			}
 		}
 	}
 	if raw, tagged := ls.Tags[TagAdmin]; tagged {
@@ -424,7 +434,11 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Se
 		return Secret{}, reason, nil
 	}
 	// Read after the shape tag and the rules that weigh it: no rule of TagRules reads the project.
-	// A malformed tag is the tag's own fault, refused before whether the broker could check it.
+	// A misspelled key, and then a malformed tag, is the tag's own fault, refused before whether
+	// the broker could check it.
+	if misspelledProjectKey(ls.Tags) {
+		return Secret{}, ReasonProjectTagMisspelled, nil
+	}
 	if raw, tagged := ls.Tags[TagProject]; tagged {
 		if s.Project, err = ParseProject(raw); err != nil {
 			return Secret{}, ReasonProjectMalformed, nil
@@ -449,4 +463,30 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Se
 		s.AirlockDigest = l.AirlockDigest(s.Name)
 	}
 	return s, "", nil
+}
+
+// misspelledProjectKey reports whether tags hold a key that is not TagProject or
+// TagProjectChannels as written but is one of them once both are read without case and without
+// any character that is not a letter or a digit (ReasonProjectTagMisspelled).
+func misspelledProjectKey(tags map[string]string) bool {
+	fold := func(key string) string {
+		return strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+				return r
+			case r >= 'A' && r <= 'Z':
+				return r + ('a' - 'A')
+			}
+			return -1
+		}, key)
+	}
+	for key := range tags {
+		if key == TagProject || key == TagProjectChannels {
+			continue
+		}
+		if folded := fold(key); folded == fold(TagProject) || folded == fold(TagProjectChannels) {
+			return true
+		}
+	}
+	return false
 }

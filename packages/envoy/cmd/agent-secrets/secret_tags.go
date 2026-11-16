@@ -277,18 +277,21 @@ func checkProjectChannels(channels string, orNone bool) error {
 // exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The shape
 // is carried as the store holds it, unparsed, because a word that is neither token nor document
 // is a rule of TagRules itself, and the first one TagRules weighs, so a stored shape tag written
-// by hand as another word is refused here rather than left to that reread. The one
+// by hand as another word is refused here rather than left to that reread. The requesters are read
+// without the project tags' rollback guard (policy.SplitRequestersGuard), as the broker reads them:
+// the guard has no @, so the rules would otherwise weigh it as a service on the list. The one
 // field of the set left empty is BoundAccount, the deployment's BROKER_SERVICE_ACCOUNT_SECRETS
 // binding, which `agent-secrets` never sees, just as it never sees BROKER_SERVICES and so calls
 // ParseRequesterShapes rather than ParseRequesters: the rule it feeds, the one refusing a
 // service on a secret bound to a dev-<name> account, is the broker's to apply on that reread.
 func checkTagsFor(tags map[string]string) error {
 	duration, _ := policy.ParseMaxGrant(tags[policy.TagMaxGrant])
+	requesters, _ := policy.SplitRequestersGuard(tags[policy.TagRequesters])
 	set := policy.TagSet{
 		Kind:         tags[policy.TagKind],
 		Owner:        tags[policy.TagOwner],
 		Tier:         tags[policy.TagTier],
-		Requesters:   tags[policy.TagRequesters],
+		Requesters:   requesters,
 		Scopes:       tags[policy.TagScopes],
 		Shape:        tags[policy.TagShape],
 		BoundAccount: "",
@@ -296,6 +299,33 @@ func checkTagsFor(tags map[string]string) error {
 		MaxGrant:     duration,
 	}
 	return tagRefusal(policy.TagRules(set), set, tags)
+}
+
+// guardRequesters puts the project tags' rollback guard (policy.RequestersRollbackGuard) into the
+// requesters tag of tags, the tags a secret holds once a write lands, when they carry a
+// dispatch-project or a project-channels tag, after the list the tag holds and never in place of
+// it; and takes it out when they carry neither, removing the requesters tag when the guard was
+// all it held. A requesters tag no guard was written into is left exactly as it is, a malformed
+// one included, which the broker refuses on the reread. A broker from before the project tags
+// reads the guard as a service no deployment can register and refuses the secret, rather than
+// serve a project's secret by owner and tier to every session; this broker takes it out before
+// it reads the list.
+func guardRequesters(tags map[string]string) {
+	raw, listed := tags[policy.TagRequesters]
+	list, guarded := policy.SplitRequestersGuard(raw)
+	_, project := tags[policy.TagProject]
+	_, channels := tags[policy.TagProjectChannels]
+	switch {
+	case project || channels:
+		if !listed {
+			list = ""
+		}
+		tags[policy.TagRequesters] = policy.WithRequestersGuard(list)
+	case guarded && list == "":
+		delete(tags, policy.TagRequesters)
+	case guarded:
+		tags[policy.TagRequesters] = list
+	}
 }
 
 // tagRefusal says one cross-tag refusal as the flag that fixes it: reason is what

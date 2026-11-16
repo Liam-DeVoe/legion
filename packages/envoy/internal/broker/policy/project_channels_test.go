@@ -2,7 +2,10 @@ package policy_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -39,6 +42,54 @@ func TestProjectChannelsTagIsLoaded(t *testing.T) {
 		want := policy.Refusal{Reason: policy.ReasonProjectChannelsMalformed, Owner: policy.OwnerShared}
 		if got := set.Refused[policytest.ID(name)]; got != want {
 			t.Errorf("%s refused as %+v, want %+v", name, got, want)
+		}
+	}
+}
+
+// TestProjectChannelsTagMovesTheVersionOnlyWhenPresent pins the digest's bytes for the
+// project-channels tag: a secret that carries it ends its line with "\tproject-channels=slack",
+// after the project field when it carries that too, so a tag a console or an infra-applier adds
+// moves the version, and the airlock proxy reads the values it holds again (airlockproxy's
+// bound.go). A secret without it writes the line it wrote before the tag existed, so no deployed
+// version moves.
+func TestProjectChannelsTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
+	const arn = "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/"
+	digest := func(lines string) string {
+		sum := sha256.Sum256([]byte(lines))
+		return hex.EncodeToString(sum[:])
+	}
+	for name, c := range map[string]struct {
+		secret         policy.Secret
+		untagged, line string
+	}{
+		"a plain secret": {
+			secret:   policy.Secret{Name: "SLACK_TOKEN", Owner: policy.OwnerShared, Tier: policy.TierAgent, Source: arn + "slack-token"},
+			untagged: "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\n",
+			line:     "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t0s\t\tproject-channels=slack\n",
+		},
+		"a secret with a shape and a max-grant": {
+			secret:   policy.Secret{Name: "SLACK_TOKEN", Owner: policy.OwnerShared, Tier: policy.TierAgent, Source: arn + "slack-token", Shape: policy.ShapeToken, MaxGrant: time.Hour},
+			untagged: "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t1h0m0s\t\tshape=token\n",
+			line:     "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t1h0m0s\t\tshape=token\tproject-channels=slack\n",
+		},
+		"a session-default secret of a project": {
+			secret:   policy.Secret{Name: "SLACK_TOKEN", Owner: policy.OwnerShared, Tier: policy.TierAgent, Source: arn + "slack-token", SessionDefault: true, Project: privProject},
+			untagged: "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t0s\t\tdefault-grant=session\tproject=PRIV\n",
+			line:     "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t0s\t\tdefault-grant=session\tproject=PRIV\tproject-channels=slack\n",
+		},
+	} {
+		untagged := policy.NewSet(map[string]policy.Secret{c.secret.Name: c.secret})
+		if want := digest(c.untagged); untagged.Version != want {
+			t.Errorf("%s with no project-channels tag: Version = %s, want %s, the digest of %q", name, untagged.Version, want, c.untagged)
+		}
+		tagged := c.secret
+		tagged.ProjectChannels = policy.ProjectChannelsSlack
+		set := policy.NewSet(map[string]policy.Secret{tagged.Name: tagged})
+		if want := digest(c.line); set.Version != want {
+			t.Errorf("%s tagged project-channels=slack: Version = %s, want %s, the digest of %q", name, set.Version, want, c.line)
+		}
+		if set.Version == untagged.Version {
+			t.Errorf("%s: tagging it project-channels=slack left the version at %s", name, set.Version)
 		}
 	}
 }
