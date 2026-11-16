@@ -147,7 +147,8 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 }
 
-// Every refusal is one line naming why, and carries nothing of the credential.
+// Every refusal is one line naming why, carries nothing of the credential, and is counted under
+// its own fixed label, the decision counter's reason.
 func TestRefusals(t *testing.T) {
 	now := time.Now()
 	a := newSession(t, "ses_a", 15*time.Minute)
@@ -172,27 +173,27 @@ func TestRefusals(t *testing.T) {
 		name   string
 		deps   Deps
 		req    Request
-		kind   string
+		label  string
 		reason string
 	}{
-		{"no credential", deps, Request{UserNkey: "UUSER", ServerID: "NSERVER"}, credentialNone, "no credential this hub admits"},
-		{"a user and no password", deps, Request{UserNkey: "UUSER", User: natscred.ServiceUser}, credentialNone, "no credential this hub admits"},
-		{"a token and no proof", deps, Request{UserNkey: "UUSER", Token: a.token}, credentialNone, "no credential this hub admits"},
-		{"a token that is not live", deps, expired.request(t, "nonce"), credentialSession, "token not live"},
-		{"a proof of another key", deps, otherKey.request(t, "nonce"), credentialSession, "key mismatch"},
-		{"a proof that is no base64url", deps, badSig, credentialSession, "proof invalid: jws"},
-		{"a session id that is not one subject token", deps, dotted.request(t, "nonce"), credentialSession, "session id is not one subject token"},
-		{"a broker that does not answer", unreachable, a.request(t, "nonce"), credentialSession, "broker unreachable"},
-		{"a service token that does not verify", deps, serviceRequest("forged"), credentialService, "service token not verified"},
-		{"an unlisted service", deps, serviceRequest("unlisted-token"), credentialService, "service not listed: system:serviceaccount:example-ns:stranger"},
-		{"a two-hour platform token", deps, serviceRequest("two-hours-token"), credentialService, "token lives longer than an hour"},
-		{"a service held to projects this broker cannot read", deps, serviceRequest("held-token"), credentialService, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
+		{"no credential", deps, Request{UserNkey: "UUSER", ServerID: "NSERVER"}, labelNoCredential, "no credential this hub admits"},
+		{"a user and no password", deps, Request{UserNkey: "UUSER", User: natscred.ServiceUser}, labelNoCredential, "no credential this hub admits"},
+		{"a token and no proof", deps, Request{UserNkey: "UUSER", Token: a.token}, labelNoCredential, "no credential this hub admits"},
+		{"a token that is not live", deps, expired.request(t, "nonce"), labelTokenNotLive, "token not live"},
+		{"a proof of another key", deps, otherKey.request(t, "nonce"), labelKeyMismatch, "key mismatch"},
+		{"a proof that is no base64url", deps, badSig, labelProofInvalid, "proof invalid: jws"},
+		{"a session id that is not one subject token", deps, dotted.request(t, "nonce"), labelBadSessionID, "session id is not one subject token"},
+		{"a broker that does not answer", unreachable, a.request(t, "nonce"), labelBrokerUnreachable, "broker unreachable"},
+		{"a service token that does not verify", deps, serviceRequest("forged"), labelServiceToken, "service token not verified"},
+		{"an unlisted service", deps, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
+		{"a two-hour platform token", deps, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
+		{"a service held to projects this broker cannot read", deps, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			_, err := Decide(t.Context(), row.deps, exampleServices, row.req)
 			var refused *Refusal
 			require.True(t, errors.As(err, &refused), "%v", err)
-			require.Equal(t, row.kind, refused.Kind)
+			require.Equal(t, row.label, refused.Label)
 			require.True(t, strings.HasPrefix(refused.Reason, row.reason), "%q does not begin %q", refused.Reason, row.reason)
 			require.NotContains(t, refused.Reason, "\n")
 			for _, secret := range []string{row.req.Token, row.req.Sig, row.req.Password} {
@@ -269,25 +270,40 @@ func TestAProofCapturedFromOneConnectionIsRefusedOnAnother(t *testing.T) {
 	require.Equal(t, "proof invalid: nonce", refused.Reason)
 }
 
-// Whatever branch decided it, an answer whose grant names a system subject is refused: the server
-// takes from a callout client only the publish of $SYS.REQ.USER.AUTH, so a grant naming one would
-// hand a connection a subscribe to the authorization requests. The control row decides the same
-// request without the guard and is admitted, which is the row that fails if the guard goes.
+// Every answer passes the guard in admit, whatever decided it: a grant naming a system subject is
+// answered with a refusal and no user. The server takes from a callout client only the publish of
+// $SYS.REQ.USER.AUTH, so a grant naming one would hand a connection a subscribe to the
+// authorization requests. The control row is the same grant without the system subject, admitted,
+// so the refusal is the subject's.
 func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
-	a := newSession(t, "ses_a", 15*time.Minute)
-	deps := Deps{Introspect: introspector(a)}
-	naming := grantSource{
-		session: func(string) (natsgrant.Permissions, error) {
-			return natsgrant.Permissions{Publish: []string{"_INBOX.>"}, Subscribe: []string{"$SYS.REQ.USER.AUTH"}}, nil
-		},
-		service: serviceGrant,
+	issuer, err := nkeys.CreateAccount()
+	require.NoError(t, err)
+	user, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	userKey, err := user.PublicKey()
+	require.NoError(t, err)
+	for _, row := range []struct {
+		name      string
+		subscribe []string
+		refusal   string
+	}{
+		{"a subscribe to the authorization subject", []string{"_INBOX.>", "$SYS.REQ.USER.AUTH"}, "grant names a system subject: $SYS.REQ.USER.AUTH"},
+		{"a subscribe to every system subject", []string{"_INBOX.>", "$SYS.>"}, "grant names a system subject: $SYS.>"},
+		{"control: the same grant without one", []string{"_INBOX.>"}, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			grant := natsgrant.Permissions{Publish: []string{"_INBOX.>"}, Subscribe: row.subscribe}
+			encoded, err := encodeAnswer(issuer, Request{UserNkey: userKey, ServerID: "NSERVER"},
+				Decision{Name: "session/ses_a", Grant: grant, Expires: time.Now().Add(time.Hour)}, nil)
+			require.NoError(t, err)
+			response, err := jwt.DecodeAuthorizationResponseClaims(encoded)
+			require.NoError(t, err)
+			require.Equal(t, row.refusal, response.Error)
+			if row.refusal != "" {
+				require.Empty(t, response.Jwt, "a user was encoded for a grant naming a system subject")
+				return
+			}
+			require.NotEmpty(t, response.Jwt)
+		})
 	}
-	_, err := decide(t.Context(), deps, nil, a.request(t, "nonce"), naming)
-	var refused *Refusal
-	require.True(t, errors.As(err, &refused), "%v", err)
-	require.Equal(t, "grant names a system subject: $SYS.REQ.USER.AUTH", refused.Reason)
-
-	unguarded, err := decideCredential(t.Context(), deps, nil, a.request(t, "nonce"), naming)
-	require.NoError(t, err, "the control: without the guard the same request is admitted")
-	require.Contains(t, unguarded.Grant.Subscribe, "$SYS.REQ.USER.AUTH")
 }
