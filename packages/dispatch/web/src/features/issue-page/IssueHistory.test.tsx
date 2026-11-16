@@ -393,3 +393,162 @@ test("a day the address opened closes when the reader presses its line", async (
     restoreReads();
   }
 });
+
+/** The history of `KEY` with nothing above it but a query client that never retries. */
+function drawHistory(item: string | undefined): {
+  queryClient: QueryClient;
+  unmount: () => void;
+} {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  const { unmount } = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <IssueHistory
+          activityAddress={undefined}
+          issue={issue}
+          item={item}
+          state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
+          visitMark={99999}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { queryClient, unmount };
+}
+
+/** A claim of the issue at sequence `seq`, made `ago` seconds ago. */
+function claimAgo(seq: number, ago: number): DispatchEvent {
+  return { ...claim(seq), created_at: new Date(Date.now() - ago * 1000).toISOString(), id: seq };
+}
+
+// R4 of dispatch://INFRA-3948: the address of a turn of an agents' thread opens Details at the
+// history with that turn marked and on screen, whatever page of the log the thread's first turn
+// is on. Here the log's first page is full, 200 claims of the last few minutes, and the agents'
+// thread began half an hour ago, before every event of that page: the history draws a thread
+// only once the page that reaches back to it is read (`HistoryInput.loadedFrom`), so the turn
+// the address names must still be reached and marked. Found by the tester on a running build of
+// b0082656 with INFRA-1196's copy, whose log holds 769 events: the address of a comment of an
+// agents' thread older than the first page opened Details and marked nothing.
+test("the address of an agents' turn older than the log's first page marks that turn", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+  const olderPage = [claimAgo(10, 3600), claimAgo(9, 3601)];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...olderPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([agentMessage("m-old", 1800)]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory("m-old").unmount;
+    await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
+    await waitFor(
+      () =>
+        expect(
+          document.querySelector('[data-history-item="m-old"]')?.getAttribute("aria-current"),
+          "the address of a turn older than the log's first page marks nothing"
+        ).toBe("true"),
+      { timeout: 5000 }
+    );
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// R2 and R5 of dispatch://INFRA-3948: the history is the issue's log as last read, and a read
+// that fails says so with Retry. A read that fails once the history holds the log - a refetch
+// after an event, or on a later open of Details past the query's stale time - leaves the entries
+// it holds drawn. Found by the tester on a running build of b0082656: with INFRA-1196's 79
+// entries drawn, Details closed and opened again 31 s later with the log answering 500 drew
+// "Could not load the activity." and no entry at all.
+test("a failed read of the log once the history holds it keeps every entry it holds", async () => {
+  const restoreReads = stubHistoryReads([claim(3), claim(2), claim(1)]);
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(3));
+
+    const failing = spyOn(api, "getIssueEvents").mockRejectedValue(new Error("the log is down"));
+    try {
+      await act(async () => {
+        await drawn.queryClient.refetchQueries({ queryKey: ["events", KEY] });
+      });
+      expect(failing).toHaveBeenCalled();
+      expect(
+        document.querySelectorAll("[data-event-seq]"),
+        "a failed read of the log erased the history it held"
+      ).toHaveLength(3);
+    } finally {
+      failing.mockRestore();
+    }
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+/** An upload of a file that is no document, by `planner`, `ago` seconds ago. */
+function upload(seq: number, ago: number, name: string): DispatchEvent {
+  const artifact: Artifact = {
+    created_at: new Date(Date.now() - ago * 1000).toISOString(),
+    created_by: { id: "planner", kind: "session" },
+    id: `file-${seq}`,
+    issue_key: KEY,
+    kind: "file",
+    name,
+    primary: false,
+    project: "CORE",
+    ref_key: `artifact:file-${seq}`,
+    session_id: null,
+    slug: name.replace(".", "-"),
+    versions: [],
+  };
+  return {
+    ...claimAgo(seq, ago),
+    payload: { artifact },
+    type: "artifact.created",
+  } as DispatchEvent;
+}
+
+// R2 of dispatch://INFRA-3948: "Each event's line has Pin and Unpin, and a reload keeps the
+// pin." One author's uploads in one minute are one entry, and that entry is the line of each of
+// its events. Found by the tester on a running build of b0082656: every line of INFRA-1196's
+// history drew Pin but the entry of thirteen uploads, which drew none.
+test("the entry of one author's uploads has Pin, as every other line of the history does", async () => {
+  const restoreReads = stubHistoryReads([
+    upload(3, 10, "a.png"),
+    upload(2, 20, "b.png"),
+    claimAgo(1, 120),
+  ]);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const uploads = await waitFor(() => {
+      const entry = document.querySelector<HTMLElement>('[data-history-uploads="2"]');
+      if (entry === null) throw new Error("the two uploads are not one entry");
+      return entry;
+    });
+    // The claim's line draws its Pin: the history's own rule for a line.
+    expect(screen.getAllByRole("button", { name: CONTROL_LABELS.pin }).length).toBeGreaterThan(0);
+    expect(
+      [...uploads.querySelectorAll("button")].filter(
+        (button) => button.getAttribute("aria-label") === CONTROL_LABELS.pin
+      ),
+      "the uploads' entry draws no Pin"
+    ).not.toHaveLength(0);
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
