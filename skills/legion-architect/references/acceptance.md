@@ -116,9 +116,8 @@ proves a parent's check: such a result was recorded at the child's head and not 
 and a child carrying part of a parent's
 requirement proves it with a check on its own Verification document whose `serves` names that
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
-that waits for it waits forever, so work another child builds on is a child of its own, in a
-repository of its own or with a deploy of its own. A root's requirement stays the root's, and
-the root's own head must meet it.
+that waits for it waits forever, so work another child builds on is a child of its own. A root's
+requirement stays the root's, and the root's own head must meet it.
 
 The daemon gives a parent that head by itself. No phase of a parent starts while an open child
 stands under it, and the first admission pass that sees such a child stops the phase under way.
