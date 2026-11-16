@@ -96,7 +96,7 @@ var storeWriteCallSites = []string{
 	// createStoredMessage, writeBroadcast). Attempted appends tuples alone, which lock no row, so
 	// it adds no step to its caller's order; AttemptOpened writes one node no other write can name
 	// yet, before the row whose foreign key names it (invariant 2). api's
-	// TestEveryDeliveryAttemptIsANode reads what a comment's and a message's attempts state.
+	// TestMentionsAreTuplesAndEveryAttemptIsANode reads what each of them states of its attempt.
 	"api/comment_delivery.go#openCommentDeliveryAttempt",
 	"api/comment_delivery.go#recordCommentDeliveryResolution",
 	"api/comment_delivery.go#standDown",

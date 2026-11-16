@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -58,11 +59,28 @@ type resolvedRole struct {
 //
 // The tuple side is R1's: a tuple's far end is an address and never a foreign key, and a tuple
 // may point at an address a later child writes. So the delivered_to tuple of a destination this
-// batch reached is stated whatever node that session has yet - dispatch://INFRA-1152 owns
-// messages and their deliveries and gives those sessions their nodes. Only a comment has a node
-// on the near end today (deliveredItem), so an event that delivered anything else appends no
-// tuple at all; the children that give an issue, an ask and a message their nodes append those
-// (dispatch://INFRA-1253, dispatch://INFRA-1152).
+// batch reached is stated whatever node that session has yet. Its near end is the item the event
+// is about (deliveredItem): a comment, or a message, whose node dispatch://INFRA-1152 writes. So
+// an event about either appends one tuple for each session or role it reached, and an event about
+// anything else - an issue, an ask, a document, a project - appends none here.
+//
+// That arm is what events.published_destinations projects (R2's session half). The record that
+// adds an event's reached topics to the array (recordBatch) appends, in the same statement, one
+// delivered_to tuple from the event's item to the node each of those topics names
+// (nodeOfSubject), caused by that event. So for an event deliveredItem names an item of, the
+// session and role topics of its array are exactly the far ends of the delivered_to tuples this
+// writer appended under it. The array holds two kinds of topic no tuple projects, each told apart
+// by what it is, so neither reads as a difference: an owner topic (the issue's, the project's or
+// the document's family, contracts.Envelope.Topic), which names no node and so starts with
+// neither contracts.AgentTopicPrefix nor contracts.RoleTopicPrefix; and every session and role
+// topic of an event deliveredItem names no item of, told by its type. Two deliveries this writer
+// appends are no topic of any array, and rows of their own project them: a mention attempt the
+// listener took (mentionReached), caused by its comment.delivery receipt, which is published to
+// its owner topic alone and whose comment_deliveries row is that delivery's attempt; and a
+// fallback copy (fallbackDelivered), caused by the comment.created event it is a copy of, whose
+// destination that event never lists, since a destination a fallback row owns is no destination
+// of the event (destinations.addDestination), and whose comment_fallback_copies row says it was
+// published.
 //
 // A delivery is a destination this batch reached, and a mention attempt the listener took. A
 // mention's is recorded under the comment.delivery receipt its settle appended (mentionReached),
@@ -293,17 +311,20 @@ func nodeOfSubject(subject string) (kind, id string, ok bool) {
 	return "", "", false
 }
 
-// deliveredItem is the node an event delivered, as the store holds it today: a comment, the one
-// thing a delivery is recorded from (mentionReached is the other reading of it), whose
-// id its payload carries. An event about anything else reaches its destinations all the same,
-// and the tuple that records that waits for the child which makes issues, asks and messages
-// nodes (dispatch://INFRA-1253, dispatch://INFRA-1152).
+// deliveredItem is the node an event delivered: the comment or the message the event is about,
+// which the event's payload names as `id` - a comment's event and a message's create and answer
+// carry the item itself - or, on a delivery receipt and a message's acceptance, as
+// `comment_id` or `message_id`. mentionReached is the other reading of a comment's receipt. An
+// event about anything else reaches its destinations all the same and is recorded by no tuple of
+// this writer (deliveredGraph).
 func deliveredItem(event model.Event) (kind, id string, ok bool) {
-	if !strings.HasPrefix(event.Type, "comment.") {
-		return "", "", false
+	switch {
+	case strings.HasPrefix(event.Type, "comment."):
+		kind, id = graphstore.KindComment, cmp.Or(payloadString(event.Payload, "id"), payloadString(event.Payload, "comment_id"))
+	case strings.HasPrefix(event.Type, "message."):
+		kind, id = graphstore.KindMessage, cmp.Or(payloadString(event.Payload, "id"), payloadString(event.Payload, "message_id"))
 	}
-	id = payloadString(event.Payload, "id")
-	return graphstore.KindComment, id, id != ""
+	return kind, id, id != ""
 }
 
 // mentionReached is the delivery a comment.delivery receipt states: the comment its attempt

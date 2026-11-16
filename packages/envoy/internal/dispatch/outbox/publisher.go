@@ -34,8 +34,11 @@ const (
 	dispatchTopicPrefix = "notifications.dispatch."
 	documentTopicPrefix = dispatchTopicPrefix + "document."
 	// maxCommentThreadDepth bounds the reply_to walks in loadRootCommentAuthors and
-	// loadCommentRecipients so a malformed cycle (comments.reply_to has no acyclicity constraint)
-	// cannot spin the recursive query and stall the outbox scan.
+	// loadCommentRecipients: neither walks more steps than this, so a long chain of replies
+	// cannot stall the outbox scan. The delivery walk answers a chain this deep whole, reports
+	// one it cuts at the bound, and ends a cycle (comments.reply_to has no acyclicity constraint)
+	// on the rows it already visited (commentRecipientsQuery); the root walk's cycle runs to this
+	// bound and finds no root.
 	maxCommentThreadDepth = 32
 	// mentionPendingDelay is how long an event waits when a copy of it was held back for a
 	// mention whose send is still undecided - a session route's own copy
