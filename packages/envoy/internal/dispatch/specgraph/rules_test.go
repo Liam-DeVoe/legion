@@ -144,6 +144,8 @@ func TestTheOtherRules(t *testing.T) {
 		}
 		return c
 	}
+	// says makes the leaf's text text.
+	says := func(text string) func(*Statement) { return func(s *Statement) { s.Text = text } }
 	for _, row := range []struct {
 		name string
 		tree Tree
@@ -153,6 +155,26 @@ func TestTheOtherRules(t *testing.T) {
 			name: "a statement with no text",
 			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.Text = "" })}, Checks: []Check{check(nil)}},
 			want: Problem{pos(1), "a-claim-survives-a-restart", "no-text", "no-text: a statement has a text"},
+		},
+		{
+			name: "a statement that names a symbol with an underscore",
+			tree: Tree{Statements: []Statement{leaf(says("read_set gives each claim one owner."))}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "code-in-text", "code-in-text: text names code: read_set"},
+		},
+		{
+			name: "a statement that names a symbol in lower camel case",
+			tree: Tree{Statements: []Statement{leaf(says("readSet gives each claim one owner."))}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "code-in-text", "code-in-text: text names code: readSet"},
+		},
+		{
+			name: "a statement that names a package and its symbol",
+			tree: Tree{Statements: []Statement{leaf(says("pmdoc.ReadSet gives each claim one owner."))}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "code-in-text", "code-in-text: text names code: pmdoc.ReadSet"},
+		},
+		{
+			name: "a statement that names a call",
+			tree: Tree{Statements: []Statement{leaf(says("ReadSet() gives each claim one owner."))}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "code-in-text", "code-in-text: text names code: ReadSet()"},
 		},
 		{
 			name: "a block with no id",
