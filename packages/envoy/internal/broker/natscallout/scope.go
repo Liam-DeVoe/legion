@@ -21,13 +21,16 @@ import (
 // and reads as no project being private, which is true there: a private project needs the auth
 // service.
 //
-// An all-projects entry takes that grant whole. Any other entry is held to the projects the
-// broker's own exchange list gives its account (Deps.Exchange), the one list that also decides the
-// projects of a token minted for that account, so the two cannot disagree, and to the repositories
-// Dispatch maps them to (Deps.Access). It is refused, naming why: an account no exchange entry
-// lists; a project Dispatch holds no answer about yet, or holds no such project; and a grant
-// entry natsgrant.WithinProjects cannot hold, which in practice is every dispatch and listener
-// entry, whose grants carry KV calls.
+// An all-projects entry takes that grant whole; a daemon's gains its account's own reply prefix
+// (natsgrant.InboxPrefix) beside _INBOX.>, because a Legion daemon presenting its token always
+// takes that prefix (the daemon's natsauth.ConnectService), whatever its entry's scope. Any other
+// entry is held to the projects the broker's own exchange list gives its account (Deps.Exchange),
+// the one list that also decides the projects of a token minted for that account, so the two
+// cannot disagree, and to the repositories Dispatch maps them to (Deps.Access); WithinProjects
+// writes that same reply prefix in place of _INBOX.>. It is refused, naming why: an account no
+// exchange entry lists; a project Dispatch holds no answer about yet, or holds no such project;
+// and a grant entry natsgrant.WithinProjects cannot hold, which in practice is every dispatch and
+// listener entry, whose grants carry KV calls.
 //
 // Dispatch is never asked inside a decision: the service holds Dispatch's last answer about each
 // project an entry can name (heldAccess), and a decision reads only that.
@@ -49,6 +52,9 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 		grant.Publish = append(slices.Clip(grant.Publish), natsgrant.KVRead(bus.PrivateProjectsBucket)...)
 	}
 	if entry.AllProjects {
+		if entry.Kind == KindDaemon {
+			grant.Subscribe = append(slices.Clip(grant.Subscribe), natsgrant.InboxPrefix(entry.Account)+".>")
+		}
 		return grant, nil
 	}
 	if deps.Exchange == nil || deps.Access == nil {
