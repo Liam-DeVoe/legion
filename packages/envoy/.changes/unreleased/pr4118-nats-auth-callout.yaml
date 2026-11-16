@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  envoy-infra renders a NATS auth callout: `core.Authorization` takes `callout` and `privateProjects`, and `gcp:NatsHub`, `gcp:ClusteredNatsHub` and `aws:NatsService` take them as `authCallout` (or `callout`) and `privateProjects`, sharing the type `nats:AuthCallout`.
+  With a callout the hub's configuration gains `timeout: 5` and an `auth_callout` block listing every static user's key; without one it renders exactly as before.
+  `privateProjects` is refused without a callout, beside a session user and beside any user but the auth service's. A hub's own listener is refused beside the callout until it can connect with a service identity, and the clustered hub rolls its pods when the callout changes.
