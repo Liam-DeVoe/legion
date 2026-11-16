@@ -6,7 +6,7 @@ import {
   createIssue,
   createIssueArtifact,
   createProject,
-  getIssue,
+  getArtifact,
   getIssueCoverage,
   recordCheckResult,
 } from "./api";
@@ -52,6 +52,21 @@ const SELECTORS = {
 
 /** The message every measure fails with where the view draws no card. */
 const NO_CARD = "the Verification view draws no card";
+
+/** How the rows and row 3's seed record a result: as the agent session that records every
+ *  seeded result. */
+export const asRecorder = { actor: recorderActor, as: "agent" as const };
+
+/** What `read` answers in the page, given `SELECTORS`, which counts the view's cards as
+ *  `cards`. Fails where the view draws no card. */
+async function readCards<T extends { readonly cards: number }>(
+  page: Page,
+  read: (selectors: typeof SELECTORS) => T
+): Promise<T> {
+  const answer = await page.evaluate(read, SELECTORS);
+  expect(answer.cards, NO_CARD).toBeGreaterThan(0);
+  return answer;
+}
 
 /** The view's cards, one for each statement it draws. */
 export function verificationCardBoxes(page: Page): Locator {
@@ -101,43 +116,38 @@ export interface DrawnCheck {
   readonly id: string;
   /** How many results the check draws. */
   readonly results: number;
-  /** The id of the latest result drawn under it, or null where it draws none. */
-  readonly resultId: string | null;
   /** The `data-glyph` token of the shape its state is drawn with, or null where it draws none. */
   readonly shape: string | null;
   /** `data-node-state`, the model's own token for how the check stands. */
   readonly state: string | null;
   /** The word the page draws for its state. */
   readonly word: string | null;
-  readonly words: string;
 }
 
 /** One statement the view draws, with the checks that serve it. */
 export interface DrawnStatement {
   readonly checks: readonly DrawnCheck[];
-  readonly context: boolean;
   readonly gapKinds: readonly string[];
   readonly id: string;
   /** `data-statement-state`: met, not_met or unknown. */
   readonly state: string | null;
   /** The word the page draws for that state. */
   readonly stateWord: string | null;
-  readonly words: string;
 }
 
 /** Every statement the view draws, in document order, with its checks and their latest
  *  results. Fails where the view draws no card. */
 export async function verificationCards(page: Page): Promise<DrawnStatement[]> {
-  const cards = await page.evaluate(
-    ({ card, issue }) => {
-      const text = (element: Element | null): string =>
-        (element?.textContent ?? "").replace(/\s+/g, " ").trim();
-      return [...document.querySelectorAll(`${issue} ${card}`)].map((drawn) => ({
+  const read = await readCards(page, ({ card, issuePage: issue }) => {
+    const text = (element: Element | null): string =>
+      (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+    const cards = [...document.querySelectorAll(`${issue} ${card}`)];
+    return {
+      cards: cards.length,
+      statements: cards.map((drawn) => ({
         checks: [...drawn.querySelectorAll("[data-verification-check]")].map((check) => ({
           earlier: text(check.querySelector("[data-verification-earlier]")) || null,
           id: check.getAttribute("data-node-id") ?? "",
-          resultId:
-            check.querySelector("[data-verification-result]")?.getAttribute("data-node-id") ?? null,
           results: check.querySelectorAll("[data-verification-result]").length,
           shape:
             check
@@ -146,39 +156,30 @@ export async function verificationCards(page: Page): Promise<DrawnStatement[]> {
               ?.getAttribute("data-glyph") ?? null,
           state: check.getAttribute("data-node-state"),
           word: text(check.querySelector("span[data-node-state]")) || null,
-          words: text(check.querySelector("[data-node-words]")),
         })),
-        context: drawn.hasAttribute("data-node-context"),
         gapKinds: [...drawn.querySelectorAll("[data-gap-kind]")].map(
           (gap) => gap.getAttribute("data-gap-kind") ?? ""
         ),
         id: drawn.getAttribute("data-node-id") ?? "",
         state: drawn.getAttribute("data-statement-state"),
         stateWord: text(drawn.querySelector("span[data-statement-state]")) || null,
-        words: text(drawn.querySelector("[data-node-words]")),
-      }));
-    },
-    { card: SELECTORS.card, issue: SELECTORS.issuePage }
-  );
-  expect(cards.length, NO_CARD).toBeGreaterThan(0);
-  return cards;
+      })),
+    };
+  });
+  return read.statements;
 }
 
 /** The one commit the view names for the issue's results, or null where it names none or more
  *  than one. Fails where the view draws no card. */
 export async function namedCommit(page: Page): Promise<string | null> {
-  const read = await page.evaluate(
-    ({ card, commit, issue }) => {
-      const drawn = document.querySelectorAll(`${issue} ${commit}`);
-      return {
-        cards: document.querySelectorAll(`${issue} ${card}`).length,
-        commit:
-          drawn.length === 1 ? (drawn[0]?.querySelector("code")?.textContent ?? "").trim() : null,
-      };
-    },
-    { card: SELECTORS.card, commit: SELECTORS.commit, issue: SELECTORS.issuePage }
-  );
-  expect(read.cards, NO_CARD).toBeGreaterThan(0);
+  const read = await readCards(page, ({ card, commit, issuePage: issue }) => {
+    const drawn = document.querySelectorAll(`${issue} ${commit}`);
+    return {
+      cards: document.querySelectorAll(`${issue} ${card}`).length,
+      commit:
+        drawn.length === 1 ? (drawn[0]?.querySelector("code")?.textContent ?? "").trim() : null,
+    };
+  });
   return read.commit;
 }
 
@@ -194,30 +195,26 @@ export interface Overflowing {
 /** Every element whose painted box reaches more than a pixel past the view's card it sits in.
  *  Fails where the view draws no card. */
 export async function boxesPastTheirCard(page: Page): Promise<Overflowing[]> {
-  const read = await page.evaluate(
-    ({ card, issue }) => {
-      const describe = (element: Element): string => {
-        const id = element.closest(card)?.getAttribute("data-node-id") ?? "";
-        const own = (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
-        return `${element.tagName.toLowerCase()}${id === "" ? "" : ` in ${id}`} "${own}"`;
-      };
-      const cards = [...document.querySelectorAll(`${issue} ${card}`)];
-      const found: { card: string; over: number; what: string }[] = [];
-      for (const drawn of cards) {
-        const bounds = drawn.getBoundingClientRect();
-        if (bounds.width === 0) continue;
-        for (const element of drawn.querySelectorAll("*")) {
-          const rect = element.getBoundingClientRect();
-          if (rect.width === 0 && rect.height === 0) continue;
-          const over = Math.max(bounds.left - rect.left, rect.right - bounds.right);
-          if (over > 1) found.push({ card: describe(drawn), over, what: describe(element) });
-        }
+  const read = await readCards(page, ({ card, issuePage: issue }) => {
+    const describe = (element: Element): string => {
+      const id = element.closest(card)?.getAttribute("data-node-id") ?? "";
+      const own = (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+      return `${element.tagName.toLowerCase()}${id === "" ? "" : ` in ${id}`} "${own}"`;
+    };
+    const cards = [...document.querySelectorAll(`${issue} ${card}`)];
+    const found: { card: string; over: number; what: string }[] = [];
+    for (const drawn of cards) {
+      const bounds = drawn.getBoundingClientRect();
+      if (bounds.width === 0) continue;
+      for (const element of drawn.querySelectorAll("*")) {
+        const rect = element.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) continue;
+        const over = Math.max(bounds.left - rect.left, rect.right - bounds.right);
+        if (over > 1) found.push({ card: describe(drawn), over, what: describe(element) });
       }
-      return { cards: cards.length, found };
-    },
-    { card: SELECTORS.card, issue: SELECTORS.issuePage }
-  );
-  expect(read.cards, NO_CARD).toBeGreaterThan(0);
+    }
+    return { cards: cards.length, found };
+  });
   return read.found;
 }
 
@@ -235,40 +232,36 @@ export interface Overlap {
  * out. Fails where the view draws no card.
  */
 export async function overlappingTexts(page: Page): Promise<Overlap[]> {
-  const read = await page.evaluate(
-    ({ card, issue }) => {
-      const cards = [...document.querySelectorAll(`${issue} ${card}`)];
-      const boxes: { label: string; rect: DOMRect }[] = [];
-      for (const root of cards) {
-        for (const element of root.querySelectorAll("*")) {
-          if (element.children.length > 0 || element.tagName === "OPTION") continue;
-          if (element.closest(".sr-only") !== null) continue;
-          const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
-          if (text === "") continue;
-          const rect = element.getBoundingClientRect();
-          if (rect.width === 0 || rect.height === 0) continue;
-          boxes.push({ label: `${element.tagName.toLowerCase()} "${text.slice(0, 40)}"`, rect });
-        }
+  const read = await readCards(page, ({ card, issuePage: issue }) => {
+    const cards = [...document.querySelectorAll(`${issue} ${card}`)];
+    const boxes: { label: string; rect: DOMRect }[] = [];
+    for (const root of cards) {
+      for (const element of root.querySelectorAll("*")) {
+        if (element.children.length > 0 || element.tagName === "OPTION") continue;
+        if (element.closest(".sr-only") !== null) continue;
+        const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
+        if (text === "") continue;
+        const rect = element.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        boxes.push({ label: `${element.tagName.toLowerCase()} "${text.slice(0, 40)}"`, rect });
       }
-      const found: { first: string; second: string }[] = [];
-      for (let i = 0; i < boxes.length; i += 1) {
-        for (let j = i + 1; j < boxes.length; j += 1) {
-          const a = boxes[i];
-          const b = boxes[j];
-          if (a === undefined || b === undefined) continue;
-          const apart =
-            a.rect.right <= b.rect.left + 0.5 ||
-            b.rect.right <= a.rect.left + 0.5 ||
-            a.rect.bottom <= b.rect.top + 0.5 ||
-            b.rect.bottom <= a.rect.top + 0.5;
-          if (!apart) found.push({ first: a.label, second: b.label });
-        }
+    }
+    const found: { first: string; second: string }[] = [];
+    for (let i = 0; i < boxes.length; i += 1) {
+      for (let j = i + 1; j < boxes.length; j += 1) {
+        const a = boxes[i];
+        const b = boxes[j];
+        if (a === undefined || b === undefined) continue;
+        const apart =
+          a.rect.right <= b.rect.left + 0.5 ||
+          b.rect.right <= a.rect.left + 0.5 ||
+          a.rect.bottom <= b.rect.top + 0.5 ||
+          b.rect.bottom <= a.rect.top + 0.5;
+        if (!apart) found.push({ first: a.label, second: b.label });
       }
-      return { cards: cards.length, found };
-    },
-    { card: SELECTORS.card, issue: SELECTORS.issuePage }
-  );
-  expect(read.cards, NO_CARD).toBeGreaterThan(0);
+    }
+    return { cards: cards.length, found };
+  });
   return read.found;
 }
 
@@ -298,49 +291,45 @@ export interface VerificationFrame {
 
 /** The view's measure at the width the page is at. Fails where the view draws no card. */
 export async function verificationFrame(page: Page): Promise<VerificationFrame> {
-  const read = await page.evaluate(
-    ({ card, issue }) => {
-      const width = (element: Element | null | undefined): number =>
-        element == null ? 0 : element.getBoundingClientRect().width;
-      const body = document.querySelector(`${issue} [data-verification-body]`);
-      const margins = body === null ? null : getComputedStyle(body);
-      const cards = [...document.querySelectorAll(`${issue} ${card}`)];
-      const [first, second] = cards;
-      const edge = first === undefined ? null : getComputedStyle(first);
-      // The headings are the cells of the head that hold no cell of their own: Statement, then
-      // Checks and Latest result inside the rest of the row.
-      const heads = [
-        ...(document.querySelector(`${issue} [data-verification-head]`)?.querySelectorAll("span") ??
-          []),
-      ].filter((cell) => cell.children.length === 0);
-      return {
-        cards: cards.length,
-        frame: {
-          body: {
-            bottom: Number.parseFloat(margins?.marginBottom ?? ""),
-            parent: width(body?.parentElement),
-            top: Number.parseFloat(margins?.marginTop ?? ""),
-            width: width(body),
-          },
-          columns: {
-            heads: heads.map((cell) => width(cell)),
-            table: width(document.querySelector(`${issue} [data-verification-table]`)),
-          },
-          firstCard: {
-            borderLeft: edge?.borderLeftWidth ?? "",
-            gap:
-              first === undefined || second === undefined
-                ? null
-                : second.getBoundingClientRect().top - first.getBoundingClientRect().bottom,
-            radius: edge?.borderTopLeftRadius ?? "",
-          },
-          page: { scroll: document.documentElement.scrollWidth, viewport: window.innerWidth },
+  const read = await readCards(page, ({ card, issuePage: issue }) => {
+    const width = (element: Element | null | undefined): number =>
+      element == null ? 0 : element.getBoundingClientRect().width;
+    const body = document.querySelector(`${issue} [data-verification-body]`);
+    const margins = body === null ? null : getComputedStyle(body);
+    const cards = [...document.querySelectorAll(`${issue} ${card}`)];
+    const [first, second] = cards;
+    const edge = first === undefined ? null : getComputedStyle(first);
+    // The headings are the cells of the head that hold no cell of their own: Statement, then
+    // Checks and Latest result inside the rest of the row.
+    const heads = [
+      ...(document.querySelector(`${issue} [data-verification-head]`)?.querySelectorAll("span") ??
+        []),
+    ].filter((cell) => cell.children.length === 0);
+    return {
+      cards: cards.length,
+      frame: {
+        body: {
+          bottom: Number.parseFloat(margins?.marginBottom ?? ""),
+          parent: width(body?.parentElement),
+          top: Number.parseFloat(margins?.marginTop ?? ""),
+          width: width(body),
         },
-      };
-    },
-    { card: SELECTORS.card, issue: SELECTORS.issuePage }
-  );
-  expect(read.cards, NO_CARD).toBeGreaterThan(0);
+        columns: {
+          heads: heads.map((cell) => width(cell)),
+          table: width(document.querySelector(`${issue} [data-verification-table]`)),
+        },
+        firstCard: {
+          borderLeft: edge?.borderLeftWidth ?? "",
+          gap:
+            first === undefined || second === undefined
+              ? null
+              : second.getBoundingClientRect().top - first.getBoundingClientRect().bottom,
+          radius: edge?.borderTopLeftRadius ?? "",
+        },
+        page: { scroll: document.documentElement.scrollWidth, viewport: window.innerWidth },
+      },
+    };
+  });
   return read.frame;
 }
 
@@ -348,23 +337,19 @@ export async function verificationFrame(page: Page): Promise<VerificationFrame> 
  *  token (`data-check-legend-state`); a state whose count it does not draw reads NaN. Fails
  *  where the view draws no card. */
 export async function checkLegendCounts(page: Page): Promise<Record<string, number>> {
-  const read = await page.evaluate(
-    ({ card, issue }) => ({
-      cards: document.querySelectorAll(`${issue} ${card}`).length,
-      counts: [...document.querySelectorAll(`${issue} [data-check-legend-state]`)].map(
-        (item): [string, number] => {
-          // The count is the state's first span, after its shape and before its word.
-          const count = item.querySelector(":scope > span")?.textContent;
-          return [
-            item.getAttribute("data-check-legend-state") ?? "",
-            count == null ? Number.NaN : Number(count.replace(/\D/g, "")),
-          ];
-        }
-      ),
-    }),
-    { card: SELECTORS.card, issue: SELECTORS.issuePage }
-  );
-  expect(read.cards, NO_CARD).toBeGreaterThan(0);
+  const read = await readCards(page, ({ card, issuePage: issue }) => ({
+    cards: document.querySelectorAll(`${issue} ${card}`).length,
+    counts: [...document.querySelectorAll(`${issue} [data-check-legend-state]`)].map(
+      (item): [string, number] => {
+        // The count is the state's first span, after its shape and before its word.
+        const count = item.querySelector(":scope > span")?.textContent;
+        return [
+          item.getAttribute("data-check-legend-state") ?? "",
+          count == null ? Number.NaN : Number(count.replace(/\D/g, "")),
+        ];
+      }
+    ),
+  }));
   return Object.fromEntries(read.counts);
 }
 
@@ -374,25 +359,21 @@ export async function checkLegendCounts(page: Page): Promise<Record<string, numb
 export async function glyphsWithNoBox(
   page: Page
 ): Promise<{ readonly drawn: number; readonly empty: readonly string[] }> {
-  const read = await page.evaluate(
-    ({ card, issue }) => {
-      const glyphs = [
-        ...document.querySelectorAll(`${issue} [data-verification-body] svg[data-glyph]`),
-      ];
-      return {
-        cards: document.querySelectorAll(`${issue} ${card}`).length,
-        drawn: glyphs.length,
-        empty: glyphs
-          .filter((glyph) => {
-            const box = glyph.getBoundingClientRect();
-            return box.width <= 0 || box.height <= 0;
-          })
-          .map((glyph) => glyph.getAttribute("data-glyph") ?? ""),
-      };
-    },
-    { card: SELECTORS.card, issue: SELECTORS.issuePage }
-  );
-  expect(read.cards, NO_CARD).toBeGreaterThan(0);
+  const read = await readCards(page, ({ card, issuePage: issue }) => {
+    const glyphs = [
+      ...document.querySelectorAll(`${issue} [data-verification-body] svg[data-glyph]`),
+    ];
+    return {
+      cards: document.querySelectorAll(`${issue} ${card}`).length,
+      drawn: glyphs.length,
+      empty: glyphs
+        .filter((glyph) => {
+          const box = glyph.getBoundingClientRect();
+          return box.width <= 0 || box.height <= 0;
+        })
+        .map((glyph) => glyph.getAttribute("data-glyph") ?? ""),
+    };
+  });
   return { drawn: read.drawn, empty: read.empty };
 }
 
@@ -450,7 +431,7 @@ export function tabWalk(
 const LINKED_BLOCKS = { a: "r-a", b: "r-b", c: "r-c", check: "c-linked" } as const;
 
 /** Statement A: 200 words, which the view cuts at six lines (part V's R5). */
-export const STATEMENT_A_WORDS = longWords("stated", 200);
+const STATEMENT_A_WORDS = longWords("stated", 200);
 
 /** Statement B: more than 32 characters, so the line that names it by its first words cuts
  *  them at a word (part V's R7, G's `chipWords`). */
@@ -465,8 +446,6 @@ export const RUNBOOK = "https://example.com/runbook";
 
 /** What `seedLinkedChecks` wrote, by the node ids the view draws its rows under. */
 export interface LinkedChecksSeed {
-  /** The issue under this one, whose own Verification document holds the check that serves C. */
-  readonly child: string;
   readonly key: string;
   /** Statements A, B and C of the issue's spec, and the issue's one check. */
   readonly nodes: {
@@ -553,14 +532,11 @@ export async function seedLinkedChecks(): Promise<LinkedChecksSeed> {
       surface: "browser",
       verdict: "pass",
     },
-    { actor: recorderActor, as: "agent" }
+    asRecorder
   );
 
-  const spec = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
-  expect(spec, `${key} carries no primary document`).toBeDefined();
-  const specSlug = spec?.slug ?? "";
+  const specSlug = (await getArtifact(issue.primary_artifact_id ?? "")).slug;
   return {
-    child: child.key,
     key,
     nodes: {
       a: blockNodeId(specSlug, LINKED_BLOCKS.a),

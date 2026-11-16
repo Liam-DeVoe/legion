@@ -14,6 +14,7 @@ import { NoTooltips } from "../NoTooltips";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CHECK_WHEN_WORDS,
+  type CheckState,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
   GAP_LINES,
@@ -137,6 +138,25 @@ function failing(blockId: string): CheckBlock {
   });
 }
 
+/** Each key a handler held back, in the order pressed, from now until `stop` is called. */
+function holdKeys(): { held: string[]; stop: () => void } {
+  const held: string[] = [];
+  const hold = (event: KeyboardEvent) => {
+    if (event.defaultPrevented) held.push(event.key);
+  };
+  document.addEventListener("keydown", hold);
+  return { held, stop: () => document.removeEventListener("keydown", hold) };
+}
+
+/** A check's words with a link and a reference in them. */
+const LINKED_WORDS = "Read [the runbook](https://example.com/runbook) and dispatch://CORE-2 first.";
+
+/** The node of a check whose words are `LINKED_WORDS`, with the results read's reading of them
+ *  (`text_tree`), which `checkNode` leaves out. */
+function linkedCheckNode(block: CheckBlock): TreeNode {
+  return { ...checkNode(block), tree: displayTree(LINKED_WORDS) };
+}
+
 // R17: "How many statements carry a check is drawn as covered, and no count, legend or heading
 // reads proven or met for coverage", and "The page names one commit for the issue's results ...
 // drawn once where the results are read".
@@ -242,7 +262,7 @@ test("each of the seven states a check can be in is drawn by its own word and sh
     ]);
     // Every one of the seven is told from the other six by a shape as well as by a word.
     expect(drawn.map((held) => held.shape)).toEqual(
-      drawn.map((held) => GLYPH_TOKENS.states.check[held.state as never])
+      drawn.map((held) => GLYPH_TOKENS.states.check[held.state as CheckState])
     );
     expect(new Set(drawn.map((held) => held.shape)).size).toBe(7);
     expect(new Set(drawn.map((held) => held.word)).size).toBe(7);
@@ -347,9 +367,9 @@ test("a statement that a child's check covers draws one line of the checks drawn
       line.hasAttribute("data-page-chrome"),
     ]);
 
-  const view = drawBody([partly, childOnly], [own]);
+  const unfiltered = drawBody([partly, childOnly], [own]);
   try {
-    expect(linesOf(view)).toEqual([
+    expect(linesOf(unfiltered)).toEqual([
       [partly.id, `1 ${VERIFICATION_WORDS.elsewhere_one}`, "1", true],
       [childOnly.id, `3 ${VERIFICATION_WORDS.elsewhere_many}`, "3", true],
     ]);
@@ -358,86 +378,86 @@ test("a statement that a child's check covers draws one line of the checks drawn
       "more checks elsewhere",
     ]);
     // The line stands after the statement's group of checks, inside its card.
-    const line = view.container.querySelector("[data-verification-elsewhere]");
+    const line = unfiltered.container.querySelector("[data-verification-elsewhere]");
     expect(line?.previousElementSibling?.getAttribute("role")).toBe("group");
     // A statement only a child's checks serve carries no gap, and the covered count holds it.
-    expect(view.container.querySelectorAll("[data-gap]")).toHaveLength(0);
-    expect(textsOf(view, "[data-verification-covered]")).toEqual([
+    expect(unfiltered.container.querySelectorAll("[data-gap]")).toHaveLength(0);
+    expect(textsOf(unfiltered, "[data-verification-covered]")).toEqual([
       `2 ${VERIFICATION_WORDS.of} 2 ${VERIFICATION_WORDS.covered}`,
     ]);
-  } finally {
-    view.unmount();
-  }
 
-  // The query's words are the first statement's and no check's, so it leaves that statement with
-  // no check drawn under it, and the second statement out.
-  const unfiltered = drawBody([partly, childOnly], [own]);
-  const filtered = drawBody([partly, childOnly], [own], {
-    query: "this issue serves",
-    whole: verificationView([partly, childOnly]),
-  });
-  try {
-    expect(filtered.container.querySelectorAll("[data-verification-check]")).toHaveLength(0);
-    expect(
-      [...filtered.container.querySelectorAll("[data-verification-card]")].map((card) =>
-        card.getAttribute("data-node-id")
-      )
-    ).toEqual([partly.id]);
-    // Its own check is still not "elsewhere".
-    expect(linesOf(filtered)).toEqual([
-      [partly.id, `1 ${VERIFICATION_WORDS.elsewhere_one}`, "1", true],
-    ]);
-    /** How the first statement stands: its state, its word, its shape and its card's edge. */
-    const standing = (drawn: RenderResult) => {
-      const card = drawn.container.querySelector("[data-verification-card]");
-      return [
-        card?.getAttribute("data-statement-state"),
-        card?.querySelector("[data-statement-state]")?.textContent,
-        card?.querySelector("svg[data-glyph]")?.getAttribute("data-glyph"),
-        card?.classList.contains("border-l-page-failed"),
-      ];
-    };
-    expect(standing(unfiltered)).toEqual([
-      "met",
-      VERIFICATION_WORDS.states.met,
-      GLYPH_TOKENS.statements.met,
-      false,
-    ]);
-    expect(standing(filtered)).toEqual(standing(unfiltered));
-    // The summary and the chips are the issue's, as they are with no query.
-    for (const selector of [
-      "[data-verification-covered]",
-      "[data-verification-legend]",
-      "[data-verification-check-legend]",
-      "[data-verification-chip]",
-    ]) {
-      expect(textsOf(filtered, selector)).toEqual(textsOf(unfiltered, selector));
+    // The query's words are the first statement's and no check's, so it leaves that statement
+    // with no check drawn under it, and the second statement out.
+    const filtered = drawBody([partly, childOnly], [own], {
+      query: "this issue serves",
+      whole: verificationView([partly, childOnly]),
+    });
+    try {
+      expect(filtered.container.querySelectorAll("[data-verification-check]")).toHaveLength(0);
+      expect(
+        [...filtered.container.querySelectorAll("[data-verification-card]")].map((card) =>
+          card.getAttribute("data-node-id")
+        )
+      ).toEqual([partly.id]);
+      // Its own check is still not "elsewhere".
+      expect(linesOf(filtered)).toEqual([
+        [partly.id, `1 ${VERIFICATION_WORDS.elsewhere_one}`, "1", true],
+      ]);
+      /** How the first statement stands: its state, its word, its shape and its card's edge. */
+      const standing = (drawn: RenderResult) => {
+        const card = drawn.container.querySelector("[data-verification-card]");
+        return [
+          card?.getAttribute("data-statement-state"),
+          card?.querySelector("[data-statement-state]")?.textContent,
+          card?.querySelector("svg[data-glyph]")?.getAttribute("data-glyph"),
+          card?.classList.contains("border-l-page-failed"),
+        ];
+      };
+      expect(standing(unfiltered)).toEqual([
+        "met",
+        VERIFICATION_WORDS.states.met,
+        GLYPH_TOKENS.statements.met,
+        false,
+      ]);
+      expect(standing(filtered)).toEqual(standing(unfiltered));
+      // The summary and the chips are the issue's, as they are with no query.
+      for (const selector of [
+        "[data-verification-covered]",
+        "[data-verification-legend]",
+        "[data-verification-check-legend]",
+        "[data-verification-chip]",
+      ]) {
+        expect(textsOf(filtered, selector)).toEqual(textsOf(unfiltered, selector));
+      }
+      // The bar's fills, each by its width, in both.
+      const [filteredBar, unfilteredBar] = [filtered, unfiltered].map((drawn) =>
+        [...drawn.container.querySelectorAll("[data-verification-bar] > i")].map((fill) =>
+          fill.getAttribute("style")
+        )
+      );
+      expect(filteredBar).toEqual(unfilteredBar);
+      expect(textsOf(filtered, "[data-verification-covered]")).toEqual([
+        `2 ${VERIFICATION_WORDS.of} 2 ${VERIFICATION_WORDS.covered}`,
+      ]);
+      expect(textsOf(filtered, "[data-verification-chip]")).toEqual([
+        `${VERIFICATION_WORDS.all} 2`,
+        `${VERIFICATION_WORDS.states.met} 1`,
+        `${VERIFICATION_WORDS.states.not_met} 0`,
+        `${VERIFICATION_WORDS.states.unknown} 1`,
+      ]);
+      // The chip Met narrows by the state the statement reads, so it draws it.
+      await user.click(
+        filtered.container.querySelector('[data-verification-chip="met"]') as Element
+      );
+      expect(
+        [...filtered.container.querySelectorAll("[data-verification-card]")].map((card) =>
+          card.getAttribute("data-node-id")
+        )
+      ).toEqual([partly.id]);
+    } finally {
+      filtered.unmount();
     }
-    // The bar's fills, each by its width, in both.
-    const [filteredBar, unfilteredBar] = [filtered, unfiltered].map((drawn) =>
-      [...drawn.container.querySelectorAll("[data-verification-bar] > i")].map((fill) =>
-        fill.getAttribute("style")
-      )
-    );
-    expect(filteredBar).toEqual(unfilteredBar);
-    expect(textsOf(filtered, "[data-verification-covered]")).toEqual([
-      `2 ${VERIFICATION_WORDS.of} 2 ${VERIFICATION_WORDS.covered}`,
-    ]);
-    expect(textsOf(filtered, "[data-verification-chip]")).toEqual([
-      `${VERIFICATION_WORDS.all} 2`,
-      `${VERIFICATION_WORDS.states.met} 1`,
-      `${VERIFICATION_WORDS.states.not_met} 0`,
-      `${VERIFICATION_WORDS.states.unknown} 1`,
-    ]);
-    // The chip Met narrows by the state the statement reads, so it draws it.
-    await user.click(filtered.container.querySelector('[data-verification-chip="met"]') as Element);
-    expect(
-      [...filtered.container.querySelectorAll("[data-verification-card]")].map((card) =>
-        card.getAttribute("data-node-id")
-      )
-    ).toEqual([partly.id]);
   } finally {
-    filtered.unmount();
     unfiltered.unmount();
   }
 
@@ -531,18 +551,17 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     // Enter and Space on the words are the same press, the focus on them, and Space scrolls
     // nothing: each key's own default is held back.
     expect(document.activeElement).toBe(words);
-    const held: string[] = [];
-    const hold = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) held.push(event.key);
-    };
-    document.addEventListener("keydown", hold);
-    await user.keyboard("{Enter}");
-    expect(card?.getAttribute("aria-expanded")).toBe("true");
-    expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
-    await user.keyboard(" ");
-    expect(card?.getAttribute("aria-expanded")).toBe("false");
-    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
-    document.removeEventListener("keydown", hold);
+    const { held, stop } = holdKeys();
+    try {
+      await user.keyboard("{Enter}");
+      expect(card?.getAttribute("aria-expanded")).toBe("true");
+      expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
+      await user.keyboard(" ");
+      expect(card?.getAttribute("aria-expanded")).toBe("false");
+      expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+    } finally {
+      stop();
+    }
     expect(held).toEqual(["Enter", " "]);
 
     // A pointer's press on the latest result's cell opens the facts, and they stay open once
@@ -653,13 +672,11 @@ test("the summary names all seven states a check can be in, with how many checks
         (one.textContent ?? "").replace(/\s+/gu, " ").trim(),
       ])
     ).toEqual(
-      (Object.keys(NODE_STATE_WORDS.check) as (keyof typeof NODE_STATE_WORDS.check)[]).map(
-        (state) => [
-          state,
-          GLYPH_TOKENS.states.check[state],
-          `${state === "passed" || state === "failed" ? 1 : 0}${NODE_STATE_WORDS.check[state]}`,
-        ]
-      )
+      (Object.keys(NODE_STATE_WORDS.check) as CheckState[]).map((state) => [
+        state,
+        GLYPH_TOKENS.states.check[state],
+        `${state === "passed" || state === "failed" ? 1 : 0}${NODE_STATE_WORDS.check[state]}`,
+      ])
     );
   } finally {
     view.unmount();
@@ -721,7 +738,6 @@ test("a chip whose state holds no statement draws the page's line for it", async
     expect(textsOf(view, '[data-verification-chip="unknown"]')).toEqual([
       `${VERIFICATION_WORDS.states.unknown} 0`,
     ]);
-    expect([unknown?.disabled, unknown?.hasAttribute("disabled")]).toEqual([false, false]);
     expect(view.container.querySelectorAll("[data-verification-chip][disabled]")).toHaveLength(0);
     expect(view.container.querySelectorAll("[data-verification-none]")).toHaveLength(0);
 
@@ -1011,14 +1027,9 @@ test("an agent that recorded a result is named by its role's word", async () => 
 // a link is the link's own: it neither opens nor shuts the check's facts.
 test("a check's words draw their links from the results read's tree", async () => {
   const user = userEvent.setup();
-  const text = "Read [the runbook](https://example.com/runbook) and dispatch://CORE-2 first.";
-  const linked = check({ block_id: "c-one", text });
+  const linked = check({ block_id: "c-one", text: LINKED_WORDS });
   const view = drawBody(
-    [
-      statementNode("r1", "The page draws it.", [
-        { ...checkNode(linked), tree: displayTree(text) },
-      ]),
-    ],
+    [statementNode("r1", "The page draws it.", [linkedCheckNode(linked)])],
     [linked]
   );
   try {
@@ -1072,14 +1083,13 @@ function layOut(height: number): () => void {
 // `t k` reaches the first chip.
 test("each control of the view is a tab stop", async () => {
   const user = userEvent.setup();
-  const text = "Read [the runbook](https://example.com/runbook) and dispatch://CORE-2 first.";
   const linked = check({
     block_id: "c-one",
     results: [
       result({ created_at: "2026-11-13T09:00:00Z", id: "earlier" }),
       result({ created_at: "2026-11-14T09:00:00Z", id: "newest" }),
     ],
-    text,
+    text: LINKED_WORDS,
   });
   const plain = passing("c-two");
   // Sixty words over 400 lines of 24 px: six lines are drawn and 59 words are held back, more
@@ -1088,12 +1098,7 @@ test("each control of the view is a tab stop", async () => {
   const restore = layOut(9600);
   try {
     const view = drawBody(
-      [
-        statementNode("r1", long, [
-          { ...checkNode(linked), tree: displayTree(text) },
-          checkNode(plain),
-        ]),
-      ],
+      [statementNode("r1", long, [linkedCheckNode(linked), checkNode(plain)])],
       [linked, plain]
     );
     try {
@@ -1188,11 +1193,7 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
   const unserved = statementNode("r2", "Nothing serves this one.", []);
   const view = drawBody([served, unserved, checkNode(loose)], [one, two, loose]);
   // Each key the view held back, in the order pressed.
-  const held: string[] = [];
-  const hold = (event: KeyboardEvent) => {
-    if (event.defaultPrevented) held.push(event.key);
-  };
-  document.addEventListener("keydown", hold);
+  const { held, stop } = holdKeys();
   try {
     const rows = [...view.container.querySelectorAll<HTMLElement>('[role="treeitem"]')];
     // The rows in the order the page draws them: the issue's, each statement followed by its
@@ -1369,7 +1370,7 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
       appKeymap.handleKeyDown(new KeyboardEvent("keydown", { key: "Escape" }));
     }
   } finally {
-    document.removeEventListener("keydown", hold);
+    stop();
     view.unmount();
   }
 });

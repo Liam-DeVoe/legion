@@ -2,7 +2,6 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
-  useCallback,
   useMemo,
   useRef,
   useState,
@@ -13,9 +12,10 @@ import {
   focusVisibleRing,
   pageFailedText,
   pageGuideBg,
+  pageHairBg,
   pageHairBorder,
-  pageInkBg,
   pageInkBorder,
+  pageInkFill,
   pageInkText,
   pageKindBullet,
   pageKindTag,
@@ -149,7 +149,7 @@ export function VerificationFilterBody({
   // Which state the reader narrowed the body to, as the picture's chips do; nothing is
   // narrowed until they press one.
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
-  const counts = statementCounts(issue.statements);
+  const counts = useMemo(() => statementCounts(issue.statements), [issue]);
   const shown =
     only === undefined ? statements : statements.filter((statement) => statement.state === only);
   const loose = only === undefined ? read.loose : [];
@@ -173,7 +173,7 @@ export function VerificationFilterBody({
   if (presses.size > 0 && [...presses.keys()].some((id) => !rows.includes(id))) {
     setPresses(new Map([...presses].filter(([id]) => rows.includes(id))));
   }
-  const press = useCallback((id: string, pressed: boolean | undefined) => {
+  const press = (id: string, pressed: boolean | undefined) => {
     setPresses((held) => {
       if (held.get(id) === pressed) return held;
       const next = new Map(held);
@@ -181,15 +181,17 @@ export function VerificationFilterBody({
       else next.set(id, pressed);
       return next;
     });
-  }, []);
+  };
   const tree = useRef<HTMLDivElement | null>(null);
   /** Each check row a press on `row` reaches, by its id in `rows`, and whether its facts are
    *  drawn, by the focus or by a press, as its row says (`aria-expanded`): a check's own row,
-   *  or each check of a statement. */
-  const checksOf = (row: Element): { drawn: boolean; id: string }[] => {
+   *  or each check of a statement. `elements` is every row element of the tree. */
+  const checksOf = (
+    row: Element,
+    elements: readonly Element[]
+  ): { drawn: boolean; id: string }[] => {
     // The tree draws its rows in the order `rows` names them, so the nth row element is the
     // nth id, as the outline's keys read theirs (`useTreeKeymap.ts`).
-    const elements = [...(tree.current?.querySelectorAll(TREE_ROW) ?? [])];
     const reached = row.matches(CHECK_ROW)
       ? [row]
       : row.matches(STATEMENT_ROW)
@@ -205,9 +207,13 @@ export function VerificationFilterBody({
   /** Enter on a check's row or a statement's, and a pointer's press on a statement's words (the
    *  tester's F21 and F22): each check's facts opened, or each shut where all of them are drawn.
    *  On a check's row that is the press its words take, the opposite of what is drawn. The
-   *  answer is whether the row reached a check. */
-  const pressChecks = (row: Element): boolean => {
-    const reached = checksOf(row);
+   *  answer is whether the row reached a check. The tree's keys pass the row elements they
+   *  already read; a pointer's press reads them here. */
+  const pressChecks = (
+    row: Element,
+    elements: readonly Element[] = [...(tree.current?.querySelectorAll(TREE_ROW) ?? [])]
+  ): boolean => {
+    const reached = checksOf(row, elements);
     const open = !reached.every((check) => check.drawn);
     for (const check of reached) press(check.id, open);
     return reached.length > 0;
@@ -215,8 +221,8 @@ export function VerificationFilterBody({
   /** `o`, on a row or on a control inside it: the facts of each check it reaches kept drawn once
    *  the focus leaves, or let go where the reader kept them, as the outline's `o` keeps a row's
    *  body open. The answer is whether the row reached a check. */
-  const keepChecks = (row: Element): boolean => {
-    const reached = checksOf(row);
+  const keepChecks = (row: Element, elements: readonly Element[]): boolean => {
+    const reached = checksOf(row, elements);
     for (const check of reached) {
       press(check.id, presses.get(check.id) === true ? undefined : true);
     }
@@ -233,33 +239,19 @@ export function VerificationFilterBody({
     if (appKeymap.pending() !== "") return;
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
-    // A key typed into a field or into text the reader edits is typing, as the page's keymap
-    // reads one (`shell/keymap.ts`). The view draws neither; a field a row draws keeps its keys.
+    // A key typed into a field or into text the reader edits is typing. The view draws
+    // neither; a field a row draws keeps its keys.
     if (target.isContentEditable || target.matches("input, select, textarea")) return;
+    // A key the tree does nothing with reaches the keymap before the rows are read.
+    const key = event.key;
+    if (!TREE_KEYS.has(key)) return;
     const elements = [...event.currentTarget.querySelectorAll<HTMLElement>(TREE_ROW)];
     // The row the focus is on, or the one that holds the control it is on: the innermost, so a
     // check's words and the links in them are the check's, and a chip is the issue's.
     const row = target.closest<HTMLElement>(TREE_ROW);
     const at = row === null ? -1 : elements.indexOf(row);
     if (row === null || at === -1) return;
-    const key = event.key;
-    // Where a move goes: the next row or the one before, the first or the last, a statement's
-    // first check, or the statement a check is drawn under. Right and Left go nowhere from any
-    // other row.
-    const to =
-      key === "j" || key === "ArrowDown"
-        ? elements[Math.min(at + 1, elements.length - 1)]
-        : key === "k" || key === "ArrowUp"
-          ? elements[Math.max(at - 1, 0)]
-          : key === "Home"
-            ? elements[0]
-            : key === "End"
-              ? elements.at(-1)
-              : key === "ArrowRight" && row.matches(STATEMENT_ROW)
-                ? row.querySelector<HTMLElement>(CHECK_ROW)
-                : key === "ArrowLeft" && row.matches(CHECK_ROW)
-                  ? row.parentElement?.closest<HTMLElement>(STATEMENT_ROW)
-                  : undefined;
+    const to = moveTarget(key, row, elements, at);
     if (to != null) {
       event.preventDefault();
       // The row the focus moves to takes the tree's one tab stop, so Tab back into the tree
@@ -272,7 +264,9 @@ export function VerificationFilterBody({
     // Enter is the row's only on the row itself: on a control inside it, a chip, a link or a
     // check's words, it is that control's own.
     const acted =
-      key === "Enter" ? target === row && pressChecks(row) : key === "o" && keepChecks(row);
+      key === "Enter"
+        ? target === row && pressChecks(row, elements)
+        : key === "o" && keepChecks(row, elements);
     if (acted) event.preventDefault();
   };
   return (
@@ -303,13 +297,7 @@ export function VerificationFilterBody({
               role="treeitem"
               tabIndex={tabIndexFor(view.id)}
             >
-              <Summary
-                checks={issue}
-                commit={issue.commit}
-                counts={counts}
-                covered={issue.covered}
-                total={issue.statements.length}
-              />
+              <Summary counts={counts} reading={issue} />
               <Chips
                 counts={counts}
                 onlyState={only}
@@ -467,11 +455,64 @@ const RESULT_FACTS = "mt-1 min-w-0 [&_dl]:grid-cols-[fit-content(50%)_minmax(0,1
  *  (part V's departure 5). */
 const OWN_PRESS = "a, button, [data-node-body]";
 
+/** Whether a pointer's press belongs to a link, a button or the drawn facts inside the element
+ *  that heard it (`OWN_PRESS`) rather than to that element. */
+function pressIsOwn(event: MouseEvent<HTMLElement>): boolean {
+  const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
+  return owner !== null && event.currentTarget.contains(owner);
+}
+
 /** Every row of the tree, which it draws in the order `treeRows` names them; a check's row, in
  *  its statement's group or of the table's own; and a statement's row. */
 const TREE_ROW = "[data-node-row]";
 const CHECK_ROW = "[data-verification-check]";
 const STATEMENT_ROW = "[data-verification-card]";
+
+/** The keys the tree's handler acts on (part V's R8): `j`, `k`, the arrows, Home and End move,
+ *  Enter presses and `o` keeps. Every other key is the page keymap's. */
+const TREE_KEYS: ReadonlySet<string> = new Set([
+  "j",
+  "k",
+  "ArrowDown",
+  "ArrowUp",
+  "Home",
+  "End",
+  "ArrowRight",
+  "ArrowLeft",
+  "Enter",
+  "o",
+]);
+
+/** Where a key moves the focus from `row`, the `at`th of the tree's rows (`elements`): the next
+ *  row or the one before, the first or the last, a statement's first check, or the statement a
+ *  check is drawn under. Right and Left go nowhere from any other row, and no other key moves. */
+function moveTarget(
+  key: string,
+  row: HTMLElement,
+  elements: readonly HTMLElement[],
+  at: number
+): HTMLElement | null | undefined {
+  switch (key) {
+    case "j":
+    case "ArrowDown":
+      return elements[Math.min(at + 1, elements.length - 1)];
+    case "k":
+    case "ArrowUp":
+      return elements[Math.max(at - 1, 0)];
+    case "Home":
+      return elements[0];
+    case "End":
+      return elements.at(-1);
+    case "ArrowRight":
+      return row.matches(STATEMENT_ROW) ? row.querySelector<HTMLElement>(CHECK_ROW) : undefined;
+    case "ArrowLeft":
+      return row.matches(CHECK_ROW)
+        ? row.parentElement?.closest<HTMLElement>(STATEMENT_ROW)
+        : undefined;
+    default:
+      return undefined;
+  }
+}
 
 /** The colour each state is drawn in, which repeats what its word and its shape already say
  *  (R6): met in the passed green, not met in the failed red, unknown quiet. */
@@ -486,7 +527,7 @@ const STATEMENT_TONES: Readonly<Record<StatementState, string>> = {
 const STATEMENT_FILLS: Readonly<Record<StatementState, string>> = {
   met: "bg-page-passed",
   not_met: "bg-page-failed",
-  unknown: "bg-page-hair",
+  unknown: pageHairBg,
 };
 
 /** The pressed chip's mark under forced colours, where the system draws every chip's fill and
@@ -511,30 +552,31 @@ function checkTone(state: CheckState): string {
  * whatever a words query left of it (part V's departure 10).
  */
 function Summary({
-  checks,
-  commit,
   counts,
-  covered,
-  total,
+  reading,
 }: {
-  /** The issue's checks, as the view with no query draws them, each counted once however many
-   *  statements it serves. */
-  checks: Pick<VerificationReading, "loose" | "statements">;
-  commit: string | undefined;
   counts: Readonly<Record<StatementState, number>>;
-  covered: number;
-  /** How many statements the issue holds, which the covered count is out of. */
-  total: number;
+  /** The issue's reading, the view with no query: its commit, its covered count, its statements,
+   *  which the covered count is out of, and its checks, each counted once however many
+   *  statements it serves. */
+  reading: VerificationReading;
 }): ReactNode {
-  const byState = new Map<string, CheckState | undefined>();
-  for (const check of [
-    ...checks.statements.flatMap((statement) => statement.checks),
-    ...checks.loose,
-  ]) {
-    byState.set(check.node.id, check.state);
-  }
-  const inState = (state: CheckState): number =>
-    [...byState.values()].filter((held) => held === state).length;
+  const { commit, covered } = reading;
+  const total = reading.statements.length;
+  // How many of the issue's checks stand in each state, counted once for each reading rather
+  // than once for each state the legend draws.
+  const inState = useMemo(() => {
+    const byState = new Map<string, CheckState | undefined>();
+    for (const check of [
+      ...reading.statements.flatMap((statement) => statement.checks),
+      ...reading.loose,
+    ]) {
+      byState.set(check.node.id, check.state);
+    }
+    const counted = new Map<CheckState | undefined, number>();
+    for (const held of byState.values()) counted.set(held, (counted.get(held) ?? 0) + 1);
+    return counted;
+  }, [reading]);
   return (
     <div
       className={`flex min-w-0 flex-wrap items-center gap-[18px] rounded-[10px] border px-[18px] py-3.5 ${pageLineBorder} ${pagePaperBg}`}
@@ -590,7 +632,7 @@ function Summary({
               token={GLYPH_TOKENS.states.check[state]}
             />
             <span className={pageInkText} {...authorText}>
-              {inState(state)}
+              {inState.get(state) ?? 0}
             </span>
             <span {...pageChrome}>{NODE_STATE_WORDS.check[state]}</span>
           </span>
@@ -626,9 +668,7 @@ function Chips({
 }): ReactNode {
   const chip = (on: boolean): string =>
     `rounded-full border px-3 py-0.5 text-sm leading-5 font-semibold ${focusVisibleRing} ${FORCED_PRESSED} ${
-      on
-        ? `${pageInkBg} ${pageInkBorder} text-page-paper`
-        : `${pageHairBorder} ${pagePaperBg} ${pageMutedText}`
+      on ? `${pageInkFill} ${pageInkBorder}` : `${pageHairBorder} ${pagePaperBg} ${pageMutedText}`
     }`;
   return (
     <div className="my-[14px] flex min-w-0 flex-wrap gap-1.5" data-verification-chips="">
@@ -754,8 +794,7 @@ function Statement({
       <div
         className={`flex min-w-0 flex-col ${CELL}`}
         onClick={(event) => {
-          const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
-          if (owner !== null && event.currentTarget.contains(owner)) return;
+          if (pressIsOwn(event)) return;
           const row = event.currentTarget.closest(TREE_ROW);
           if (row !== null) onPressChecks(row);
         }}
@@ -876,9 +915,11 @@ function Check({
   const pointerPress = (event: MouseEvent<HTMLElement>) => {
     const drawn = drawnAtPress.current ?? opened;
     drawnAtPress.current = undefined;
-    const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
-    if (owner !== null && event.currentTarget.contains(owner)) return;
+    if (pressIsOwn(event)) return;
     onPress(row, !drawn);
+  };
+  const markPress = () => {
+    drawnAtPress.current = opened;
   };
   return (
     <div
@@ -919,9 +960,7 @@ function Check({
             event.preventDefault();
             onPress(row, !opened);
           }}
-          onMouseDown={() => {
-            drawnAtPress.current = opened;
-          }}
+          onMouseDown={markPress}
           // biome-ignore lint/a11y/noNoninteractiveTabindex: a check's words are a tab stop of the view (part V's R8).
           tabIndex={0}
         >
@@ -953,13 +992,7 @@ function Check({
       {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
           pointer's way to the press the check's words take by Enter or Space; the cell is no
           control of its own (part V's departure 5). */}
-      <div
-        className={CELL}
-        onClick={pointerPress}
-        onMouseDown={() => {
-          drawnAtPress.current = opened;
-        }}
-      >
+      <div className={CELL} onClick={pointerPress} onMouseDown={markPress}>
         {check.state === undefined ? null : (
           <p
             className={`flex items-center gap-1.5 text-xs leading-5 font-semibold ${checkTone(check.state)}`}
@@ -1081,6 +1114,7 @@ function LatestResult({
 function Author({ actor }: { actor: Actor | undefined }): ReactNode {
   const agentText = useAgentText();
   const kind = authorKind(actor);
+  const name = agentText.author(actor);
   return (
     <span className="inline-flex min-w-0 items-center gap-1" data-node-author="">
       <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors[kind]} />
@@ -1088,8 +1122,8 @@ function Author({ actor }: { actor: Actor | undefined }): ReactNode {
         {actor === undefined
           ? CONTROL_LABELS.unknown_author
           : kind === "agent"
-            ? agentRoleWord(agentText.author(actor))
-            : agentText.author(actor)}
+            ? agentRoleWord(name)
+            : name}
       </span>
     </span>
   );

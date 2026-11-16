@@ -17,14 +17,13 @@ import {
   createIssue,
   createProject,
   getArtifact,
-  getIssue,
   getIssueCoverage,
   getIssueResults,
   recordCheckResult,
   retractCheckResult,
 } from "./api";
-import { seedWholeIssue } from "./issue-layout-seed";
-import { HEAD_SHA, PROJECT, recorderActor } from "./issue-layout-seed-support";
+import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
+import { HEAD_SHA, PROJECT } from "./issue-layout-seed-support";
 import { requirementBlockId } from "./issue-layout-seed-text";
 import { gotoIssue, issuePage, phase } from "./issue-page";
 import {
@@ -33,12 +32,14 @@ import {
   focusThePage,
   nodeRows,
   PHONE,
+  rowBody,
   rowMore,
   rowWords,
   tree,
 } from "./issue-page-g";
 import { activePreset, focusInside, identityBlockBottom, openPreset } from "./issue-page-i";
 import {
+  asRecorder,
   boxesPastTheirCard,
   checkLegendCounts,
   copyCommandControls,
@@ -74,11 +75,28 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  * each under the title its check names (`verification.md` of dispatch://INFRA-3936, c-view).
  */
 
-/** The slug of the issue's own spec, which is how its blocks are addressed. */
-async function primarySlug(key: string): Promise<string> {
-  const primary = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
-  expect(primary, `${key} carries no primary document`).toBeDefined();
-  return primary?.slug ?? "";
+/** The issue's results read, which row 1 rewrites to draw the seventh state. */
+const RESULTS_ROUTE = "**/api/v1/issues/*/results";
+
+/** Records a pass of the whole issue's check 1 at the head commit, as the recorder's session,
+ *  with what it observed and, where a row gives them, its screenshots. */
+function recordPass(seeded: WholeIssueSeed, observed: string, screenshots?: string[]) {
+  return recordCheckResult(
+    seeded.key,
+    {
+      check: seeded.checks.passed,
+      commit: HEAD_SHA,
+      failed: 0,
+      negative_control: "Removed the row's state and the run failed.",
+      observed,
+      role: "tester",
+      run: "bun run e2e -- e2e/issue-page-v.e2e.ts",
+      ...(screenshots === undefined ? {} : { screenshots }),
+      surface: "browser",
+      verdict: "pass",
+    },
+    asRecorder
+  );
 }
 
 // c-view, row 1. The body the Verification view draws is `verification-filter/`: each statement
@@ -96,28 +114,14 @@ async function primarySlug(key: string): Promise<string> {
 // loads of the view - six widths and a rewritten answer - each read clause by clause, with
 // presses, focus moves and a forced-colours pass waited on at each width.
 test("the Verification filter is readable @phone", async ({ browser }) => {
-  // Seven loads of the view - six widths and the rewritten answer - each read clause by clause.
   test.setTimeout(420_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
-    const specSlug = await primarySlug(seeded.key);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
 
-    await recordCheckResult(
-      seeded.key,
-      {
-        check: seeded.checks.passed,
-        commit: HEAD_SHA,
-        failed: 0,
-        negative_control: "Removed the row's state and the run failed.",
-        observed: "1 passed, with a shot of the page",
-        role: "tester",
-        run: "bun run e2e -- e2e/issue-page-v.e2e.ts",
-        screenshots: [`dispatch://${seeded.key}/artifact/${seeded.documents.image}`],
-        surface: "browser",
-        verdict: "pass",
-      },
-      { actor: recorderActor, as: "agent" }
-    );
+    await recordPass(seeded, "1 passed, with a shot of the page", [
+      `dispatch://${seeded.key}/artifact/${seeded.documents.image}`,
+    ]);
     const recorded = await getIssueResults(seeded.key);
     const withdrawing = (recorded.checks ?? []).find(
       (check) => check.block_id === seeded.checks.uncontrolled
@@ -126,11 +130,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
     // The session that recorded a result is one of the three callers that may withdraw it, and
     // the agent bearer acts as no session unless it names one (`retractCheckResult`).
     for (const result of withdrawing?.results ?? []) {
-      await retractCheckResult(
-        result.id,
-        { reason: "The run was wrong." },
-        { actor: recorderActor, as: "agent" }
-      );
+      await retractCheckResult(result.id, { reason: "The run was wrong." }, asRecorder);
     }
 
     // What the issue's own reads say, which the page is read against.
@@ -153,6 +153,9 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         ])
       );
     };
+    // Every check the view draws now, read afresh, under each card it is drawn on.
+    const drawnChecksNow = async () =>
+      (await verificationCards(page)).flatMap((card) => card.checks);
 
     for (const width of [1440, 1024, 800, 760, 390, 320]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
@@ -321,7 +324,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         `the Verification view draws not every seeded state at ${width} px`
       ).toEqual(["failed", "no-result", "older", "passed", "retracted", "unmarked"]);
       expect(
-        [...states].map(([state, drawn]) => [state, drawn]),
+        [...states],
         `a state is drawn in other words or another shape than the page declares at ${width} px`
       ).toEqual(
         [...states.keys()].map((state) => [
@@ -353,9 +356,8 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         drawnChecks.find((check) => check.id === twice)?.earlier,
         `the check with two results does not say how many earlier ones it holds at ${width} px`
       ).toBe(`1 ${VERIFICATION_WORDS.earlier_one}`);
-      const standing = page.locator(
-        `[data-verification-check][data-node-id="${twice}"] [data-verification-result][data-result-stands]`
-      );
+      const opened = verificationCheck(page, twice);
+      const standing = opened.locator("[data-verification-result][data-result-stands]");
       await expect(
         standing,
         `check 1 marks no one result as the one it stands on at ${width} px`
@@ -367,42 +369,33 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         ),
         `check 1's standing result's line does not begin with its mark at ${width} px`
       ).toBe(VERIFICATION_WORDS.stands);
-      const folded = page.locator(
-        `[data-verification-check][data-node-id="${twice}"] [data-verification-earlier]`
-      );
+      const folded = opened.locator("[data-verification-earlier]");
       await folded.click();
       await expect(folded, "the line does not say it opened").toHaveAttribute(
         "aria-expanded",
         "true"
       );
       expect(
-        (await verificationCards(page))
-          .flatMap((card) => card.checks)
-          .find((check) => check.id === twice)?.results,
+        (await drawnChecksNow()).find((check) => check.id === twice)?.results,
         `the line does not open the earlier result in place at ${width} px`
       ).toBe(2);
       await folded.click();
       await expect
-        .poll(
-          async () =>
-            (await verificationCards(page))
-              .flatMap((card) => card.checks)
-              .find((check) => check.id === twice)?.results,
-          { message: `a second press on the line does not fold the earlier result at ${width} px` }
-        )
+        .poll(async () => (await drawnChecksNow()).find((check) => check.id === twice)?.results, {
+          message: `a second press on the line does not fold the earlier result at ${width} px`,
+        })
         .toBe(1);
 
       // A command renders as code with a copy control, and `when` reads as words: both in the
       // check's own facts, which the reader's focus on its words opens, with no press (R5).
-      const opened = verificationCheck(page, twice);
       await focusThePage(page);
       await expect(
-        opened.locator("[data-node-body]"),
+        rowBody(opened),
         `check 1's facts are drawn with the focus off it at ${width} px`
       ).toHaveCount(0);
       await opened.locator("[data-verification-check-words]").focus();
       await expect(
-        opened.locator("[data-node-body]").first(),
+        rowBody(opened).first(),
         `the focus on check 1's words does not open its facts at ${width} px`
       ).toBeVisible();
       expect(
@@ -431,7 +424,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
       ).not.toContain("before_merge");
 
       // The screenshot the result recorded renders as a picture.
-      const shot = opened.locator("[data-node-body] img").first();
+      const shot = rowBody(opened).locator("img").first();
       await expect(
         shot,
         `the seeded screenshot is drawn as no picture at ${width} px`
@@ -453,7 +446,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
       await focusThePage(page);
       await failing.locator("[data-verification-check-words]").hover();
       expect(
-        await failing.locator("[data-node-body]").count(),
+        await rowBody(failing).count(),
         `the pointer over check 2's words opened its facts at ${width} px`
       ).toBe(0);
 
@@ -492,7 +485,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
     // an older build behind the same load balancer as the one this page came from. The page
     // says what is true of it - that it could not read how the check stands - and never one of
     // the other six.
-    await page.route("**/api/v1/issues/*/results", async (route) => {
+    await page.route(RESULTS_ROUTE, async (route) => {
       const answer = await route.fetch();
       // The results answer as the server sends it, of which this handler reads two fields.
       const body: { checks?: { block_id: string; pass_stands?: unknown }[] } = await answer.json();
@@ -501,7 +494,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
       }
       await route.fulfill({ json: body, response: answer });
     });
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await page.setViewportSize(DESKTOP);
     await openPreset(page, seeded.key, "verification");
     await expectIssuePageDrawn(page);
     await expect(
@@ -511,8 +504,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
     await expect
       .poll(
         async () =>
-          (await verificationCards(page))
-            .flatMap((card) => card.checks)
+          (await drawnChecksNow())
             .filter((check) => check.state === "unreadable")
             .map((check) => [check.word, check.shape]),
         { message: "a check whose results the page cannot read draws no state of its own" }
@@ -521,8 +513,8 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
     expect(
       await checkLegendCounts(page),
       "the legend does not count the check whose results the page cannot read in its own state"
-    ).toEqual(legendOf((await verificationCards(page)).flatMap((card) => card.checks)));
-    await page.unroute("**/api/v1/issues/*/results");
+    ).toEqual(legendOf(await drawnChecksNow()));
+    await page.unroute(RESULTS_ROUTE);
   });
 });
 
@@ -543,7 +535,7 @@ test("the Verification filter says an issue holds no checks, in its own column",
     const settling = watchApiRequests(page);
     await openPreset(page, seeded.key, "verification");
     await expectLoadSettled(settling);
-    const body = issuePage(page).locator("[data-verification-body]");
+    const body = verificationBody(page);
     await expect(body, "the Verification filter draws no body of its own").toHaveCount(1);
     await expectIssuePageDrawn(page);
     await expect(
@@ -725,31 +717,19 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-    await recordCheckResult(
-      seeded.key,
-      {
-        check: seeded.checks.passed,
-        commit: HEAD_SHA,
-        failed: 0,
-        negative_control: "Removed the row's state and the run failed.",
-        observed: "1 passed, a second time",
-        role: "tester",
-        run: "bun run e2e -- e2e/issue-page-v.e2e.ts",
-        surface: "browser",
-        verdict: "pass",
-      },
-      { actor: recorderActor, as: "agent" }
-    );
-    const specSlug = await primarySlug(seeded.key);
-    const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+    await recordPass(seeded, "1 passed, a second time");
+    const [{ slug: specSlug }, { slug: verificationSlug }, coverage, results] = await Promise.all([
+      getArtifact(seeded.specArtifactId),
+      getArtifact(seeded.verificationArtifactId),
+      getIssueCoverage(seeded.key),
+      getIssueResults(seeded.key),
+    ]);
     const nodeOf = (index: number) => blockNodeId(specSlug, requirementBlockId(index));
     const checkOf = (index: number) =>
       blockNodeId(verificationSlug, seeded.checks.all[index - 1] ?? "");
-    const statements = (await getIssueCoverage(seeded.key)).requirements ?? [];
+    const statements = coverage.requirements ?? [];
     const command =
-      ((await getIssueResults(seeded.key)).checks ?? []).find(
-        (one) => one.block_id === seeded.checks.passed
-      )?.run ?? "";
+      (results.checks ?? []).find((one) => one.block_id === seeded.checks.passed)?.run ?? "";
     expect(command, "check 1 holds no command").not.toBe("");
 
     // From the issue's own address, with the focus on the page, `t k` turns the view on, leaves
@@ -822,12 +802,11 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       "Tab does not reach check 1's words"
     );
     await expect(
-      check1.locator("[data-node-body]").first(),
+      rowBody(check1).first(),
       "the focus on check 1's words does not open its facts"
     ).toBeVisible();
     await tabTo(
-      check1
-        .locator("[data-node-body]")
+      rowBody(check1)
         .getByRole("button", { exact: true, name: CONTROL_LABELS.copy_command })
         .first(),
       "Tab does not reach the copy control of check 1's command"
@@ -861,7 +840,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
     await page.keyboard.press("ArrowRight");
     await expect(check1, "ArrowRight does not move from statement 1 to its check").toBeFocused();
     await expect(
-      check1.locator("[data-node-body]").first(),
+      rowBody(check1).first(),
       "the focus on check 1's row does not draw its facts"
     ).toBeVisible();
     await page.keyboard.press("Enter");
@@ -869,7 +848,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       "aria-expanded",
       "false"
     );
-    await expect(check1.locator("[data-node-body]"), "check 1 draws facts it shut").toHaveCount(0);
+    await expect(rowBody(check1), "check 1 draws facts it shut").toHaveCount(0);
     await page.keyboard.press("Enter");
     await expect(check1, "a second Enter on check 1's row does not open its facts").toHaveAttribute(
       "aria-expanded",
