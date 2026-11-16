@@ -93,7 +93,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it (Cache-Control: private, max-age=31536000, immutable). */
+    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it: its bytes under its own content type, with Content-Disposition: attachment naming the file's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true the answer carries Content-Disposition: attachment with that name and Cache-Control: private, no-cache. A conversation holds no document, so no version here answers Markdown. */
     get: operations["getApiV1AgentsBySessionIdArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -560,7 +560,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One named or settled document version. */
+    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. */
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1469,7 +1469,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of an issue document, by slug or unambiguous filename. */
+    /** @description One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -2520,7 +2520,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a project document, by slug or unambiguous filename. */
+    /** @description One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -6513,6 +6513,7 @@ export interface operations {
   getApiV1AgentsBySessionIdArtifactsBySlugVersionsByNumber: {
     parameters: {
       query?: {
+        download?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -6526,7 +6527,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description a conversation holds files and images alone, so a version download is that file's bytes under its own content type (serveFileVersion) */
+      /** @description a conversation holds files and images alone, so a version is that file's bytes under its own content type, named by Content-Disposition with the file's name (serveFileVersion) */
       200: {
         headers: {
           [name: string]: unknown;
@@ -8626,6 +8627,7 @@ export interface operations {
   getApiV1ArtifactsByIdVersionsByNumber: {
     parameters: {
       query?: {
+        download?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -8638,7 +8640,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above */
+      /** @description a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above */
       200: {
         headers: {
           [name: string]: unknown;
@@ -8646,6 +8648,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ArtifactVersionText"];
           "application/octet-stream": unknown;
+          "text/markdown": unknown;
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -12476,6 +12479,7 @@ export interface operations {
   getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber: {
     parameters: {
       query?: {
+        download?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12489,7 +12493,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above */
+      /** @description a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above */
       200: {
         headers: {
           [name: string]: unknown;
@@ -12497,6 +12501,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ArtifactVersionText"];
           "application/octet-stream": unknown;
+          "text/markdown": unknown;
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -17203,6 +17208,7 @@ export interface operations {
   getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber: {
     parameters: {
       query?: {
+        download?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -17216,7 +17222,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above */
+      /** @description a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above */
       200: {
         headers: {
           [name: string]: unknown;
@@ -17224,6 +17230,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ArtifactVersionText"];
           "application/octet-stream": unknown;
+          "text/markdown": unknown;
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
