@@ -410,7 +410,6 @@ jobs:
             daemon_envoy_deps: &daemon_envoy_deps
               - 'packages/envoy/brokerclient/*'
               - 'packages/envoy/brokertest/*'
-              - 'packages/envoy/daemonpermissions/*'
               # dispatchbody is the one public door onto the Dispatch server's own block
               # splitter, which the daemon refuses a close reason or a READY packet the server
               # would refuse with (packages/daemon/internal/api): internal/dispatch/itemblocks
@@ -474,6 +473,8 @@ jobs:
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
+              # natsgrant's testdata too: the daemon's race-tested packages compile it.
+              - 'packages/envoy/natsgrant/**'
               # The reasons the listener refuses a publish to a role no session holds, which the
               # daemon's notify path reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -1534,7 +1535,6 @@ jobs:
               - 'packages/envoy/infra/**'
               - *dispatch_server
               - *listener_command
-              - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/dispatch/githubapp/**'
@@ -1548,6 +1548,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/natsgrant/**'
               # The image pull before its tests, of the consts in testnats/nats.go and
               # testpg/testpg.go.
               - '.github/actions/pull-test-images/**'
@@ -1932,7 +1933,7 @@ jobs:
               - 'go.work.sum'
               - 'packages/daemon/go.mod'
               - 'packages/daemon/go.sum'
-              - 'packages/envoy/daemonpermissions/*'
+              - 'packages/envoy/natsgrant/**'
               # envoy-infra's host live tests and its plugin build, in packages/envoy/infra's own
               # workspace; the live tests compile internal/pulumitest, which holds the version
               # they pin the docker provider at, under infra/internal. The plugin build's step is
@@ -2049,7 +2050,6 @@ jobs:
               - 'packages/envoy/brokerclient/**'
               - 'packages/envoy/brokertest/**'
               - 'packages/envoy/cmd/**'
-              - 'packages/envoy/daemonpermissions/**'
               - 'packages/envoy/deploy/**'
               - 'packages/envoy/dispatchbody/**'
               - 'packages/envoy/docker/**'
@@ -2059,6 +2059,7 @@ jobs:
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/loadtest/**'
               - 'packages/envoy/migrationid/**'
+              - 'packages/envoy/natsgrant/**'
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'
@@ -2147,7 +2148,7 @@ jobs:
               - 'packages/envoy/cmd/agent-secrets/*'
               - 'packages/envoy/cmd/agent-secrets-helper/*'
               - *listener_command
-              - 'packages/envoy/daemonpermissions/*'
+              - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/infra/go.mod'
               - 'packages/envoy/infra/go.sum'
               - 'packages/envoy/infra/go.work'

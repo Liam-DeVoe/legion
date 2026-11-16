@@ -84,10 +84,17 @@ Each item below names a task and where its code is, then notes on it.
   `Dial` from the lookup its caller passes.
   envoy-dispatch hands both its settings table
 
+- **NATS grants**: `natsgrant/natsgrant.go`
+
+  the one table of what each kind of NATS client may publish and subscribe: a listener's, a host's, Dispatch's, a Legion daemon's, the measurement job's, and a session's, both as the `*` pattern a hub's shared session user holds (`SessionPattern`) and as one session's own subjects (`Session`, which refuses an id that is not one subject token).
+  envoy-infra renders a hub's static users from it (`infra/core/permissions.go` wraps each set as the rules a user takes), and the Legion daemon's real-NATS proof reads `Daemon` from it, so the hub and that proof cannot diverge.
+  `NamesSystemSubject` finds an entry that can reach a `$SYS` subject.
+  `natsgrant_test.go` holds every set to the list `infra/core` rendered before the table moved here (`testdata/merge-base-grants.json`) and `Measure` to agent-infra's deployed list (`testdata/agent-infra-measure-grant.json`).
+
 - **Stream definition**: `internal/bus/stream.go`
 
   `ENVOY_NOTIFICATIONS` subjects, age and duplicate window, replicas, byte limit, consumer cap (`streamMaxConsumers`, 24000) and discard policy, the generation stamped on them (`streamConfigGeneration`), and their ensure on every connect of an owning client (`ensureStreamWithConfig`);
-  the names of the stores' KV buckets, listener and Dispatch durables, the Dispatch webhook-redelivery bucket, the listener role-lane queue, and the notification and exception topic prefixes, which envoy-infra's NATS grants are built from (`packages/envoy/infra/core/permissions.go`)
+  the names of the stores' KV buckets, listener and Dispatch durables, the Dispatch webhook-redelivery bucket, the listener role-lane queue, and the notification and exception topic prefixes, which Envoy's NATS grants are built from (`natsgrant`)
 
 - **Stream and bucket copies, stream byte limit**:
   `internal/bus/settings.go` (`ParseNATSReplicas`, `ParseStreamMaxBytes`, `MaxReplicas`), `internal/bus/nats.go` (`ErrStreamFull`), `internal/config/config.go`, `cmd/dispatch/settings.go`, `internal/bus/kv.go` (`EnsureKeyValue`), `internal/bus/keeper.go`
