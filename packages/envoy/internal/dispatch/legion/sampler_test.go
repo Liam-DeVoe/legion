@@ -437,3 +437,29 @@ func TestEachReadOfAPassIsAnnouncedToTheOpenBoards(t *testing.T) {
 	sampler.Pass(t.Context())
 	announced("a read that failed")
 }
+
+// TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded: RecordRead stores a read's
+// observations and its legion_reads row together or not at all. When Postgres refuses an
+// observation, no row may say the read succeeded, since the board's header would then show a good
+// read over data Dispatch never stored, and the last good read must stand.
+func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testing.T) {
+	database := storetest.Open(t)
+	seedLegionProject(t, database, "INFRA", "http://127.0.0.1:1")
+	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	refused := []Observation{{IssueKey: "INFRA-1", Field: "phase", Value: []byte(`not json`)}}
+	if _, err := RecordRead(t.Context(), database.Pool, "INFRA", at, 42, refused); err == nil {
+		t.Fatal("RecordRead stored an observation that is not JSON, want Postgres to refuse it")
+	}
+	var reads, observations int
+	if err := database.Pool.QueryRow(t.Context(),
+		`select count(*) from legion_reads where project = 'INFRA'`).Scan(&reads); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Pool.QueryRow(t.Context(),
+		`select count(*) from legion_observations where project = 'INFRA'`).Scan(&observations); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 0 || observations != 0 {
+		t.Errorf("after a refused read: %d legion_reads rows and %d observations, want none of either", reads, observations)
+	}
+}
