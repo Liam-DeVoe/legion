@@ -25,7 +25,8 @@ Object.defineProperty(document.documentElement, "clientHeight", {
 
 // happy-dom lays nothing out and has no ResizeObserver, so the geometry is this harness: a run
 // of blocks `BLOCK_HEIGHT` tall whose first block starts `documentTop` under the top of the
-// scrollport, a page that scrolls by `window.scrollY` and a `ResizeObserver` the rows fire.
+// scrollport, a page that scrolls by `window.scrollY`, a `ResizeObserver` the rows fire, and
+// animation frames that pass when a row says so.
 const BLOCK_HEIGHT = 100;
 
 interface Page {
@@ -36,12 +37,20 @@ interface Page {
   scrollTo(top: number): void;
   /** Fires every live `ResizeObserver`, as the browser does after it has laid the page out. */
   resized(): void;
+  /** The reader turns the wheel: the page hears of it before the scroll it starts. */
+  wheel(): void;
+  /** An animation frame passes: every callback asked for before it runs. */
+  frame(): void;
   readonly scrollY: () => number;
 }
 
 const observers = new Set<() => void>();
 let restoreObserver: (() => void) | undefined;
 let scrollListeners: ((event: Event) => void)[] = [];
+/** Every other listener the module registers on the window, by event type. */
+let windowListeners = new Map<string, ((event: Event) => void)[]>();
+/** The animation frame callbacks asked for and not yet run. */
+let frames = new Map<number, FrameRequestCallback>();
 /** What a row put on the page, taken off it again when the row ends: the drawn document on a
  *  document page, the column carrying it in a reading pane. */
 let mounted: HTMLElement | undefined;
@@ -76,6 +85,7 @@ function pageOf(blocks: number, documentTop: number): Page {
   });
   const page: Page = {
     drawn,
+    frame,
     grow(index, pixels) {
       grown.set(index, (grown.get(index) ?? 0) + pixels);
     },
@@ -87,6 +97,7 @@ function pageOf(blocks: number, documentTop: number): Page {
       for (const listener of scrollListeners) listener(new Event("scroll"));
     },
     scrollY: () => scrollY,
+    wheel,
   };
   installTheBrowser(page);
   mounted = page.drawn;
@@ -140,6 +151,7 @@ function columnOf(blocks: number, documentTop: number): Column {
   document.body.append(column);
   const page: Column = {
     drawn,
+    frame,
     grow(index, pixels) {
       grown.set(index, (grown.get(index) ?? 0) + pixels);
     },
@@ -152,6 +164,7 @@ function columnOf(blocks: number, documentTop: number): Column {
     },
     scrollTop: () => scrolled,
     scrollY: () => 0,
+    wheel,
   };
   // The column's own scroll, which is what the keeper writes (`moveTheBox`): the browser tells
   // the listeners after the write, and this harness tells them as the page's own does.
@@ -165,15 +178,32 @@ function columnOf(blocks: number, documentTop: number): Column {
   return page;
 }
 
+/** The reader turns the wheel, which every listener the module holds for it hears. */
+function wheel(): void {
+  for (const listener of windowListeners.get("wheel") ?? []) listener(new Event("wheel"));
+}
+
+/** An animation frame passes: what was asked for before it runs, and what that asks for waits
+ *  for the next one. */
+function frame(): void {
+  const due = [...frames.values()];
+  frames = new Map();
+  for (const callback of due) callback(performance.now());
+}
+
 /** The browser's own pieces this module reaches for: `ResizeObserver`, the page's scroll
- *  offset, `window.scrollBy` and the scroll listener it registers. */
+ *  offset, `window.scrollBy`, the listeners it registers and the animation frames it asks for. */
 function installTheBrowser(page: Page): void {
   const original = globalThis.ResizeObserver;
   const scrollBy = window.scrollBy;
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   const addListener = window.addEventListener;
   const removeListener = window.removeEventListener;
+  const requestFrame = window.requestAnimationFrame;
+  const cancelFrame = window.cancelAnimationFrame;
   scrollListeners = [];
+  windowListeners = new Map();
+  frames = new Map();
   class ObserverStub {
     private readonly fire: () => void;
     constructor(callback: ResizeObserverCallback) {
@@ -190,16 +220,38 @@ function installTheBrowser(page: Page): void {
   Object.defineProperty(window, "scrollY", { configurable: true, get: page.scrollY });
   window.scrollBy = ((_x: number, y: number) => page.scrollTo(page.scrollY() + y)) as never;
   window.addEventListener = ((type: string, listener: (event: Event) => void) => {
-    if (type === "scroll") scrollListeners.push(listener);
+    if (type === "scroll") {
+      scrollListeners.push(listener);
+      return;
+    }
+    windowListeners.set(type, [...(windowListeners.get(type) ?? []), listener]);
   }) as never;
   window.removeEventListener = ((type: string, listener: (event: Event) => void) => {
-    if (type === "scroll") scrollListeners = scrollListeners.filter((kept) => kept !== listener);
+    if (type === "scroll") {
+      scrollListeners = scrollListeners.filter((kept) => kept !== listener);
+      return;
+    }
+    windowListeners.set(
+      type,
+      (windowListeners.get(type) ?? []).filter((kept) => kept !== listener)
+    );
   }) as never;
+  let lastFrame = 0;
+  window.requestAnimationFrame = (callback: FrameRequestCallback) => {
+    lastFrame += 1;
+    frames.set(lastFrame, callback);
+    return lastFrame;
+  };
+  window.cancelAnimationFrame = (handle: number) => {
+    frames.delete(handle);
+  };
   restoreObserver = () => {
     globalThis.ResizeObserver = original;
     window.scrollBy = scrollBy;
     window.addEventListener = addListener;
     window.removeEventListener = removeListener;
+    window.requestAnimationFrame = requestFrame;
+    window.cancelAnimationFrame = cancelFrame;
     if (scrollY !== undefined) Object.defineProperty(window, "scrollY", scrollY);
     (mounted ?? page.drawn).remove();
     mounted = undefined;
@@ -211,6 +263,8 @@ afterEach(() => {
   restoreObserver = undefined;
   observers.clear();
   scrollListeners = [];
+  windowListeners = new Map();
+  frames = new Map();
   pagePort = window.innerHeight;
 });
 
@@ -305,6 +359,79 @@ test("a panel landing before the page got to a frame is still answered for", () 
     expect(page.scrollY()).toBe(2_832);
   } finally {
     release();
+  }
+});
+
+// An engine that animates the scroll a wheel asks for - WebKit does - stops it at the first
+// scroll a script makes, so a correction made while it is still moving ends the reader's scroll
+// wherever it stands: wheeled 2,000 px up, WebKit stopped 42 px in for a correction of 1.6 px
+// (`e2e/deep-links.e2e.ts`, "a press in the document while a comment link is still landing does
+// not end the hold").
+test("a growth above a reader whose own scroll is still moving leaves that scroll alone", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_250);
+  const release = keepTheReadersPlace(page.drawn);
+  try {
+    page.wheel();
+    // The first frame of the scroll the engine animates for that wheel, and a block above the
+    // reader drawn at its own height in the same frame.
+    page.scrollTo(1_200);
+    page.frame();
+    page.grow(3, 2);
+    page.resized();
+
+    expect(page.scrollY()).toBe(1_200);
+  } finally {
+    release();
+  }
+});
+
+test("once the reader's own scroll has held still for two frames, a growth above them is answered", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_250);
+  const release = keepTheReadersPlace(page.drawn);
+  try {
+    page.wheel();
+    page.scrollTo(1_200);
+    page.frame();
+    page.scrollTo(1_000);
+    page.frame();
+    // One frame with no scroll in it is not yet the end of the movement.
+    page.frame();
+    page.grow(3, 2);
+    page.resized();
+    expect(page.scrollY()).toBe(1_000);
+
+    page.frame();
+    page.grow(3, 30);
+    page.resized();
+
+    expect(page.scrollY()).toBe(1_030);
+  } finally {
+    release();
+  }
+});
+
+test("a box kept above a reader whose own scroll is still moving leaves that scroll alone", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_250);
+  let height = 120;
+  // The space the page holds for its chrome, out of sight above the top of the reader's screen.
+  const held = document.createElement("div");
+  held.getBoundingClientRect = () => ({ bottom: -100 + height, height, top: -100 }) as DOMRect;
+  document.body.append(held);
+  const release = keepWhatStandsUnder(held);
+  try {
+    page.wheel();
+    page.scrollTo(1_200);
+    page.frame();
+    height = 180;
+    page.resized();
+
+    expect(page.scrollY()).toBe(1_200);
+  } finally {
+    release();
+    held.remove();
   }
 });
 
