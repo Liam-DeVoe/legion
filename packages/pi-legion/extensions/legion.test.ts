@@ -65,7 +65,7 @@ import {
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
-import { until } from "@legion/test-fixtures/wait";
+import { settled, until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ConnectionOptions, NatsConnection } from "nats";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
@@ -3400,7 +3400,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
      * host exposes no `pi.agents`, or whose registration names agents the task tool does not
      * resolve. `capabilityHost` replaces the recording host the pane measures through, called
      * once per measurement and handed the session's own `calls`: a host that throws on its first
-     * call is how a measurement that fails outright is made.
+     * call is how a measurement that fails outright is made. `workspace` is the session's working
+     * directory, the repository its disk row reads.
      */
     const capabilitySession = async (
       options: {
@@ -3412,6 +3413,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         readonly promptAgents?: readonly string[];
         readonly agentsExposed?: boolean;
         readonly capabilityHost?: (calls: string[]) => CapabilityHost;
+        readonly workspace?: string;
       } = {}
     ): Promise<CapabilitySession> => {
       const calls: string[] = [];
@@ -3427,6 +3429,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           options.capabilityHost?.(calls) ?? recordingCapabilityHost(calls, options.host),
         idle: options.idle,
         ready: options.ready,
+        workspace: options.workspace,
         extraRoutes: (url, body, init) => {
           if (url.pathname === "/legion/v1/claims/activity") {
             return new Response(null, { status: 204 });
@@ -3574,11 +3577,28 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       }
     });
 
+    // Both budgets are timers of this process (`withinBudget` in `src/capability-report.ts`), so
+    // the row holds the clock they run on (Bun's fake timers), and which row fails its budget is
+    // the row's own choice, not the machine's speed: the first measurement's clock moves past the
+    // check budget once every row but the search has answered, and the second's never moves.
+    // Every row but the disk row answers from memory. The session's repository carries one
+    // skill, so the disk row reads the disk and then asks the host for the skills it loaded:
+    // that call is the moment its reading is done. The waits for what happens on the real
+    // clock begin before the fake one starts, on the real clock, whose deadlines they keep.
     test("a row that failed on its budget is measured again, and the second report is a measurement of its own", async () => {
-      setLegionCapabilityBudgetsForTests({ checkMs: 20, reportMs: 500 });
+      const budgets = { checkMs: 20, reportMs: 500 };
+      setLegionCapabilityBudgetsForTests(budgets);
+      const measuredFrom = Date.UTC(2026, 10, 14, 9, 30);
+      const workspace = await mkdtemp(path.join(os.tmpdir(), "legion-capability-workspace-"));
+      temporaryPaths.push(workspace);
+      const skill = path.join(workspace, ".omp", "skills", "probe", "SKILL.md");
+      await mkdir(path.dirname(skill), { recursive: true });
+      await writeFile(skill, "---\nname: probe\ndescription: a skill the disk row finds\n---\n");
+      const skillsAsked = Promise.withResolvers<void>();
       let searches = 0;
       const session = await capabilitySession({
         sessionId: "ses_capability_afresh",
+        workspace,
         host: {
           // The first measurement's search never answers, so that row fails on its budget; the
           // second's answers.
@@ -3588,11 +3608,32 @@ describe.skipIf(skip)("Legion OMP extension", () => {
               ? Promise.withResolvers<SearchQueryResult>().promise
               : Promise.resolve(searchAnswer);
           },
+          loadSkills: async () => {
+            skillsAsked.resolve();
+            return { skills: [{ filePath: skill }] };
+          },
         },
       });
 
-      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
-      await session.reported(1);
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK - 1);
+      const diskRead = settled(
+        "the first measurement's disk row to ask for the skills",
+        skillsAsked.promise
+      );
+      jest.useFakeTimers({ now: measuredFrom });
+      try {
+        await ticks(session.pane, 1);
+        await diskRead;
+        // The host answers from memory, so every row but the search has answered once the
+        // microtasks queued so far have run; then the check budget runs out, and the measurement
+        // ends and its report is sent on the clock it started on.
+        await everyMicrotask();
+        jest.advanceTimersByTime(budgets.checkMs);
+        await everyMicrotask();
+      } finally {
+        jest.useRealTimers();
+      }
+      await settled("the first report", session.reported(1));
       await drain();
       const first = session.reports[0];
       expect(first?.rows.find((row) => row.name === "web-search")).toEqual({
@@ -3601,28 +3642,37 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         detail: "did not finish within 20 ms",
       });
       expect(first?.rows.filter((row) => row.ok)).toHaveLength(5);
+      expect(first?.measuredAt).toBe(new Date(measuredFrom).toISOString());
+      expect(first?.elapsedMs).toBe(budgets.checkMs);
 
       // The next attempt is due `CAPABILITY_RETRY_TICKS` after the last one ended.
       await ticks(session.pane, CAPABILITY_RETRY_TICKS - 1);
       await drain();
       expect(measurements(session.calls)).toBe(1);
 
-      await ticks(session.pane, 1);
-      await session.reported(2);
+      // No budget of the second measurement can run out: its clock never moves.
+      const secondReported = settled("the second report", session.reported(2));
+      jest.useFakeTimers({ now: measuredFrom + budgets.checkMs });
+      try {
+        await ticks(session.pane, 1);
+        await secondReported;
+      } finally {
+        jest.useRealTimers();
+      }
       await drain();
 
       const second = session.reports[1];
       expect(second?.rows.map((row) => row.name)).toEqual([...LIVE_CAPABILITIES]);
       expect(second?.rows.every((row) => row.ok)).toBe(true);
-      // A measurement of its own, not the first with one row patched: its own `measuredAt`, and
-      // every row measured afresh — each check asked the host a second time.
-      expect(Date.parse(String(second?.measuredAt))).toBeGreaterThan(
-        Date.parse(String(first?.measuredAt))
-      );
+      // A measurement of its own, not the first with one row patched: its own `measuredAt`, the
+      // moment the first one's search budget ran out, and every row measured afresh — each check
+      // asked the host a second time.
+      expect(second?.measuredAt).toBe(new Date(measuredFrom + budgets.checkMs).toISOString());
       expect(measurements(session.calls)).toBe(2);
       expect(session.calls.filter((name) => name === "discoverAgents")).toHaveLength(2);
       expect(session.calls.filter((name) => name === "disabledAgents")).toHaveLength(2);
       expect(session.calls.filter((name) => name === "runSearchQuery")).toHaveLength(2);
+      expect(session.calls.filter((name) => name === "loadSkills")).toHaveLength(2);
       // `dispatch` and `gh`, once each per measurement.
       expect(session.calls.filter((name) => name === "run")).toHaveLength(4);
     });
