@@ -1452,7 +1452,9 @@ test("a check under two statements names the other by its words with no mark of 
     ]);
     const drawn = view.container.querySelector("[data-verification-body]")?.textContent ?? "";
     expect(drawn).not.toContain(excerpt);
-    // A statement's bare `dispatch://` address stays in its name: a gap the architect left open.
+    // A statement's bare `dispatch://` address is drawn as its short form by F's words functions
+    // (decision 95); once that F is under this part, a statement citing an address comes back
+    // here with an assertion that its name reads no `dispatch://`.
   } finally {
     view.unmount();
   }
