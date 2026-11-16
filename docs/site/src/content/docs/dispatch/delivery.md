@@ -295,12 +295,17 @@ clock; a step's median and 90th percentile are rounded to a tenth of a minute.
   branch, is not counted. The first two are optional settings; a pipeline that names neither has no
   such card.
 - **Merge to production**: the delivery lead time, by the day each pull request merged. A pull
-  request still waiting has none yet. It is judged on the seven days' longest change against the
-  `merge-to-production` eval's target: under 45 minutes for every change until someone changes
-  it.
+  request still waiting has none yet. It is met or missed as the `merge-to-production` eval judges
+  it, on the seven days' longest change and their median until someone changes that: under 45
+  minutes for every change.
 - **PR open to merge**: every merged pull request, deployed or not, by the day it merged. It is
-  judged on the seven days' median against the `pr-open-to-merge` eval's target: a median under
-  60 minutes until someone changes it.
+  met or missed as the `pr-open-to-merge` eval judges it, on the seven days' median until someone
+  changes that: a median under 60 minutes.
+
+The verdict on these two cards is the eval's own, judged by the same code as
+`GET /api/v1/projects/{key}/evals`. Each day's bar on them is green where that day meets the
+eval's target, the target's own value included where the eval counts it as met, and red where it
+does not.
 
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
 and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely

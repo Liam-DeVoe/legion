@@ -71,19 +71,8 @@ const emptyMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: null, p90_minutes: null, max_minutes: null },
       opened_to_merge: { median_minutes: null, p90_minutes: null, max_minutes: null },
     },
-    change_failure_rate: {
-      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 0, rate: 0 },
-      per_deploy: {
-        confirmed: 0,
-        pending: 0,
-        rejected: 0,
-        reverts: 0,
-        total: 0,
-        rate: 0,
-        confirmed_or_pending: 0,
-        upper_bound_rate: 0,
-      },
-    },
+    // Null, as the server answers it while no failure source exists (`flags_source: "none"`).
+    change_failure_rate: null,
     time_to_restore: { median_minutes: null },
     rework_share: 0,
     deploy_run_success: { concluded: 0, reached_production: 0, cancelled: 0, rate: null },

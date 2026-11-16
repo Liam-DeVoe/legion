@@ -1,4 +1,4 @@
-// A delivery answer's target as the measures panel and the Pipeline section state it and judge a
+// A delivery answer's target as the measures panel and the Pipeline page state it and judge a
 // day by it. The answer carries each target as its eval holds it, a value and whether the value
 // itself meets it, or null where a person turned the target off; which way is better is the
 // measure's own (more deploys and run success, fewer failures, minutes and unowned P0 issues).
@@ -60,4 +60,11 @@ export function meetsTarget(value: number, target: Target, better: Better): bool
   if (target === null) return null;
   if (better === "higher") return target.inclusive ? value >= target.value : value > target.value;
   return target.inclusive ? value <= target.value : value < target.value;
+}
+
+/** A day's verdict against target for a chart's bars, by `meetsTarget`'s rule, the target's
+ *  inclusiveness included; undefined where the target is off, which draws every bar in one
+ *  neutral colour. */
+export function judgedBy(target: Target, better: Better): ((value: number) => boolean) | undefined {
+  return target === null ? undefined : (value) => meetsTarget(value, target, better) === true;
 }

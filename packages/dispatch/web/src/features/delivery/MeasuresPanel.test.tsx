@@ -190,6 +190,28 @@ test("each target reads as its eval holds it: its sign follows inclusive, and on
   expect(runs.getByText("no data")).toBeDefined();
 });
 
+test("a lead-time card whose target is off reads off alone, with no verdict", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...fixtureMeasures.targets,
+      merge_to_production_minutes: null,
+      opened_to_merge_median_minutes: null,
+    },
+    status: {
+      ...fixtureMeasures.status,
+      merge_to_production: null,
+      merge_to_production_median: null,
+      opened_to_merge: null,
+    },
+  });
+  for (const title of ["Merge \u2192 production", "PR open \u2192 merge"]) {
+    const lead = within(card(title));
+    expect(lead.getByText("target off")).toBeDefined();
+    expect(lead.getByText("no data")).toBeDefined();
+  }
+});
+
 test("with stored flags the change failure rate card shows the upper bound and the breakdown", () => {
   renderPanel({
     ...fixtureMeasures,

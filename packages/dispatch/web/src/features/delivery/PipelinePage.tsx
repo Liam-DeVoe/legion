@@ -1,20 +1,22 @@
 // The prototype's web/src/pages/Pipeline.tsx, ported as it is: the header line, six cards, the
 // slowest-jobs table and the failed-in-24-hours table, each with the prototype's data-* attributes.
-// Every number, every target and every day comes from GET /api/v1/delivery/pipeline; nothing is
-// computed here but the two lead-time cards' met/missed, which the prototype judges on the page as
-// this does, against the targets the response carries. Differences, each from LEGION-567's slice 3
-// plan or for the same reason as the measures panel's: Dispatch's sidebar replaces the
-// prototype's row of page links; the cards take the prototype's column counts at the prototype's
-// content widths (one column, two from 46rem, six from 78rem: its `md:grid-cols-2
-// xl:grid-cols-6` less its `px-4` page padding) measured on the page's own width rather than the
-// viewport, since beside Dispatch's sidebar the viewport rule put six cards in too little room for
-// their figures; a pipeline whose settings name no staging end-to-end gate (or no staging deploy)
-// omits that card; the prototype's note counting runs whose jobs are not fetched yet is gone, so a
-// run whose jobs are not stored (intake and reconcile write a run and its jobs separately, and a
-// run whose jobs listing GitHub refuses is marked jobs-unfetchable and never gets any) counts in
-// the PR CI card and adds nothing to the two job tables, unremarked; the failing-jobs note names
-// the roll-up job by its role, since the job's name is a setting; and the colours are the theme's
-// tokens.
+// Every number, every target, every verdict and every day comes from GET /api/v1/delivery/pipeline.
+// The two lead-time cards' met/missed, which the prototype judged on the page, is the response's
+// `status`, each card's eval's own verdict by its target and the figures it judges
+// (dispatch://INFRA-2916, R5); nothing is computed here but the colour of a day's bar, which the
+// response gives no verdict of and which follows the eval's own rule, its target's inclusiveness
+// included (`lib/target.ts`). Differences, each from LEGION-567's slice 3 plan or for the same
+// reason as the measures panel's: Dispatch's sidebar replaces the prototype's row of page links;
+// the cards take the prototype's column counts at the prototype's content widths (one column, two
+// from 46rem, six from 78rem: its `md:grid-cols-2 xl:grid-cols-6` less its `px-4` page padding)
+// measured on the page's own width rather than the viewport, since beside Dispatch's sidebar the
+// viewport rule put six cards in too little room for their figures; a pipeline whose settings name
+// no staging end-to-end gate (or no staging deploy) omits that card; the prototype's note counting
+// runs whose jobs are not fetched yet is gone, so a run whose jobs are not stored (intake and
+// reconcile write a run and its jobs separately, and a run whose jobs listing GitHub refuses is
+// marked jobs-unfetchable and never gets any) counts in the PR CI card and adds nothing to the two
+// job tables, unremarked; the failing-jobs note names the roll-up job by its role, since the job's
+// name is a setting; and the colours are the theme's tokens.
 //
 // `?at=` is the test and screenshot hook: the page forwards it to the route, which then names the
 // seven days ending on at's day and looks back 24 hours from it, so a fixture dated in the past
@@ -48,7 +50,7 @@ import {
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";
-import { meetsTarget, type Target, targetWords } from "./lib/target";
+import { judgedBy, type Target, targetWords } from "./lib/target";
 import { SourceFreshness } from "./SourceFreshness";
 import { Sparkbars } from "./Sparkbars";
 import { SpreadBars } from "./SpreadBars";
@@ -120,6 +122,11 @@ export function PipelineView({
   const last = days[days.length - 1];
   if (first === undefined || last === undefined) throw new Error("the pipeline has no days");
   const { pr_checks: checks } = pipeline;
+  // How many timed results the server ranked a job by (the min_n of the deploy repository's
+  // project's pr-ci job series, 50 where it has none); a job with no timed result has no median to
+  // rank by, so a ranked job holds one whatever the threshold.
+  const needed = Math.max(checks.slowest_min_results, 1);
+  const neededResults = `${needed} timed ${needed === 1 ? "result" : "results"}`;
 
   return (
     <>
@@ -167,6 +174,7 @@ export function PipelineView({
           <LeadTimeCard
             detail="DORA lead time, PRs by the day they merged"
             judged="longest"
+            met={pipeline.status.merge_to_production}
             metric="merge_to_production"
             target={pipeline.targets.merge_to_production_minutes}
             timing={pipeline.merge_to_production}
@@ -175,6 +183,7 @@ export function PipelineView({
           <LeadTimeCard
             detail="Opened to merged, every merged PR, by the day it merged"
             judged="median"
+            met={pipeline.status.opened_to_merge}
             metric="opened_to_merge"
             target={pipeline.targets.opened_to_merge_median_minutes}
             timing={pipeline.opened_to_merge}
@@ -186,14 +195,10 @@ export function PipelineView({
       <section aria-label="PR CI slowest jobs" className="mt-1" data-section="slowest-jobs">
         <h2 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>PR CI: slowest jobs</h2>
         <p className={`text-xs ${textMutedOnCanvas}`}>
-          Ranked by their 7-day median; a job needs {checks.slowest_min_results} timed{" "}
-          {checks.slowest_min_results === 1 ? "result" : "results"} in the 7 days to be ranked.
+          Ranked by their 7-day median; a job needs {neededResults} in the 7 days to be ranked.
         </p>
         {(checks.slowest_jobs ?? []).length === 0 ? (
-          <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>
-            No job has {checks.slowest_min_results} timed{" "}
-            {checks.slowest_min_results === 1 ? "result" : "results"} yet.
-          </p>
+          <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job has {neededResults} yet.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="mt-1 w-full max-w-6xl text-xs tabular-nums">
@@ -398,10 +403,11 @@ function TimingCard(props: {
   );
 }
 
-/** One of the two lead-time cards: merge to production is judged on the seven days' longest
- *  change, PR open to merge on their median, each against the response's target as its eval holds
- *  it, and judged by nothing where a person turned that target off (`lib/target.ts`; the
- *  prototype's Pipeline.tsx MergeCard and OpenedToMergeCard). */
+/** One of the two lead-time cards: merge to production shows the seven days' longest change, PR
+ *  open to merge their median (the prototype's Pipeline.tsx MergeCard and OpenedToMergeCard), each
+ *  met or missed as the response's `status` states, its eval's own verdict by its target and the
+ *  figures it judges, and no verdict where a person turned that target off. A day's bars are
+ *  coloured by the same eval's rule (`lib/target.ts`'s `judgedBy`). */
 function LeadTimeCard(props: {
   metric: string;
   title: string;
@@ -411,13 +417,13 @@ function LeadTimeCard(props: {
     readonly total: DeliveryLeadTimeCell;
   };
   target: Target;
+  met: boolean | null;
   judged: "longest" | "median";
 }): ReactNode {
-  const { timing, target, judged } = props;
+  const { timing, target, met, judged } = props;
   const today = lastDay(timing);
   const total = timing.total;
   const judgedValue = judged === "longest" ? total.max_minutes : total.median_minutes;
-  const met = judgedValue === null ? null : meetsTarget(judgedValue, target, "lower");
   return (
     <div className={CARD} data-metric={props.metric}>
       <div className="flex items-start justify-between gap-2">
@@ -443,6 +449,7 @@ function LeadTimeCard(props: {
       <SpreadBars
         days={timing.days ?? []}
         format={formatDuration}
+        met={judgedBy(target, "lower")}
         noun="PRs"
         target={target?.value}
       />

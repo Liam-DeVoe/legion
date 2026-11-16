@@ -26,8 +26,8 @@ import {
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
-import { formatMinutes, pct } from "./lib/format";
-import { type Better, meetsTarget, type Target, targetLabel } from "./lib/target";
+import { formatMinutes, NO_VALUE, pct } from "./lib/format";
+import { judgedBy, meetsTarget, targetLabel } from "./lib/target";
 import { Sparkbars } from "./Sparkbars";
 import { TargetBadge } from "./TargetBadge";
 
@@ -50,13 +50,6 @@ export function failureRateBreakdown(confirmed: number, confirmedOrPending: numb
 function tone(met: boolean | null): string {
   if (met === null) return textMutedOnCanvas;
   return met ? successText : dangerText;
-}
-
-/** A day's verdict against target for a chart's bars, the rule the server judges the window's
- *  figures by (`lib/target.ts`); undefined where the target is off, which draws every bar in one
- *  neutral colour. */
-function judgedBy(target: Target, better: Better): ((value: number) => boolean) | undefined {
-  return target === null ? undefined : (value) => meetsTarget(value, target, better) === true;
 }
 
 function KpiCard(props: {
@@ -126,7 +119,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
       label: "CFR (per PR)",
       value: show((d) =>
         d.measures.change_failure_rate === null
-          ? "n/a"
+          ? NO_VALUE
           : pct(d.measures.change_failure_rate.per_pr.rate)
       ),
     },
@@ -198,7 +191,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <BigNumber className={toneOf((d) => d.status.change_failure_rate)}>
               {show((d) =>
                 d.measures.change_failure_rate === null
-                  ? "n/a"
+                  ? NO_VALUE
                   : pct(d.measures.change_failure_rate.per_deploy.rate, 2)
               )}
             </BigNumber>
@@ -206,8 +199,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
             )}
           </div>
-          {data === undefined ? null : data.flags_source === "none" ||
-            data.measures.change_failure_rate === null ? (
+          {data === undefined ? null : data.measures.change_failure_rate === null ? (
             <div className={`text-xs ${textMutedOnCanvas}`}>
               Flags arrive with flag confirmation
             </div>
@@ -237,9 +229,11 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           target={
             targets === undefined
               ? PENDING
-              : targets.merge_to_production_minutes === null
-                ? "off"
-                : `${targetLabel(targets.merge_to_production_minutes, "lower", (v) => `${v}m`)} for every change`
+              : targetLabel(
+                  targets.merge_to_production_minutes,
+                  "lower",
+                  (v) => `${v}m for every change`
+                )
           }
           title={"Merge \u2192 production"}
         >
@@ -305,7 +299,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <BigNumber className={toneOf((d) => d.status.deploy_run_success)}>
               {show((d) =>
                 d.measures.deploy_run_success.rate === null
-                  ? "n/a"
+                  ? NO_VALUE
                   : pct(d.measures.deploy_run_success.rate)
               )}
             </BigNumber>
@@ -459,10 +453,10 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
 
         {failures === null ? (
           <>
-            <DefinitionCard title="Change failure rate (per PR)" value="n/a">
+            <DefinitionCard title="Change failure rate (per PR)" value={NO_VALUE}>
               No failure source yet: flags arrive with flag confirmation. Incidents: no source yet.
             </DefinitionCard>
-            <DefinitionCard title="Change failure rate (per deploy)" value="n/a">
+            <DefinitionCard title="Change failure rate (per deploy)" value={NO_VALUE}>
               No failure source yet: flags arrive with flag confirmation.
             </DefinitionCard>
           </>
@@ -542,7 +536,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                           )
                     }`}
                   >
-                    {d.run_success_rate === null ? "n/a" : pct(d.run_success_rate)}
+                    {d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate)}
                   </td>
                   <td className="px-2 py-0.5 text-right">{d.cancelled}</td>
                 </tr>

@@ -1,5 +1,7 @@
 // The prototype's web/src/components/SpreadBars.tsx, ported as it is; its fills are the
-// `chartBar` tokens, since no component writes a colour utility of its own.
+// `chartBar` tokens, since no component writes a colour utility of its own. One difference: a bar
+// is judged by the rule its caller passes (`met`), as `Sparkbars`' are, rather than the
+// prototype's strict "under the target", since a person may make a target inclusive.
 import { chartBar } from "../../theme/classes";
 import { barScale } from "./lib/barScale";
 
@@ -15,6 +17,9 @@ interface Props {
   days: readonly SpreadBarDay[];
   // Omitted where no target exists: no target line, and bars in one neutral colour.
   target?: number;
+  // Whether a day's figure meets the target, by the measure's own rule (`lib/target.ts`'s
+  // `judgedBy`); omitted with the target, which leaves every bar neutral.
+  met?: (minutes: number) => boolean;
   noun: string; // what `n` counts, "runs"
   format: (minutes: number) => string;
 }
@@ -23,9 +28,9 @@ const BAR = 12;
 const HEIGHT = 36;
 
 /** One bar per day: the p90 drawn faint behind the median. With a target, a dashed line marks it
- * and a bar is green under it, red at or over it. Today's partial day is faded. Plain SVG, like
- * `Sparkbars`. */
-export function SpreadBars({ days, target, noun, format }: Props) {
+ * and a bar is green where `met` says its figure meets the target, red where it does not. Today's
+ * partial day is faded. Plain SVG, like `Sparkbars`. */
+export function SpreadBars({ days, target, met, noun, format }: Props) {
   const y = barScale(
     1,
     target,
@@ -66,9 +71,9 @@ export function SpreadBars({ days, target, noun, format }: Props) {
                 width={BAR - 2}
                 height={Math.max(HEIGHT - y(d.p90_minutes), 1)}
                 className={
-                  target === undefined
+                  target === undefined || met === undefined
                     ? chartBar.neutralFaint
-                    : d.p90_minutes < target
+                    : met(d.p90_minutes)
                       ? chartBar.metFaint
                       : chartBar.missedFaint
                 }
@@ -79,9 +84,9 @@ export function SpreadBars({ days, target, noun, format }: Props) {
                 width={BAR - 2}
                 height={Math.max(HEIGHT - y(d.median_minutes), 1)}
                 className={
-                  target === undefined
+                  target === undefined || met === undefined
                     ? chartBar.neutral
-                    : d.median_minutes < target
+                    : met(d.median_minutes)
                       ? chartBar.met
                       : chartBar.missed
                 }

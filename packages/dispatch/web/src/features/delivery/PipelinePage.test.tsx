@@ -18,6 +18,7 @@ import type {
   DeliveryTimingCell,
   LiveSubscribe,
 } from "../../api/types";
+import { chartBar } from "../../theme/classes";
 import { PipelinePage, PipelineView } from "./PipelinePage";
 
 let sockets: FakeLiveSockets;
@@ -225,10 +226,9 @@ const PIPELINE: DeliveryPipelineResponse = {
     deploy_run_success_rate: { value: 0.9, inclusive: true },
     unowned_p0: { value: 0, inclusive: true },
   },
-  status: {
-    merge_to_production: null,
-    opened_to_merge: null,
-  },
+  // The server's verdicts of the two cards: the longest change, 52m, misses "under 45m"; the
+  // median from open to merge, 59.95m, meets "under 60m".
+  status: { merge_to_production: false, opened_to_merge: true },
   freshness: {
     last_event_at: "2026-10-02T11:59:00Z",
     last_reconcile_at: "2026-10-02T11:58:00Z",
@@ -295,7 +295,7 @@ test("a pipeline with no staging end-to-end gate omits that card and keeps the o
   }
 });
 
-test("merge to production is judged on the seven days' longest change against the response's target", () => {
+test("merge to production shows the response's verdict and its target as its eval holds it", () => {
   view();
   const merge = card("merge_to_production");
   expect(merge.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("false");
@@ -307,19 +307,34 @@ test("merge to production is judged on the seven days' longest change against th
   }
   cleanup();
 
+  // The verdict is the server's, its eval's own (a person may have moved the figures it judges),
+  // and never the page's: the seven days' longest change, 52m, is over "under 45m", which a page
+  // judging the card itself would call missed, and the server's met is what the card says.
+  view({ ...PIPELINE, status: { ...PIPELINE.status, merge_to_production: true } });
+  const met = card("merge_to_production");
+  expect(met.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("true");
+  expect(met.innerHTML).toContain("target met");
+  cleanup();
+
   view({
     ...PIPELINE,
-    merge_to_production: leadTimes(
-      { n: 1, median: 38, p90: 38, max: 38 },
-      { n: 2, median: 41, p90: 44.5, max: 44.9 }
-    ),
+    targets: { ...PIPELINE.targets, merge_to_production_minutes: { value: 52, inclusive: true } },
+    status: { ...PIPELINE.status, merge_to_production: true },
   });
-  expect(
-    card("merge_to_production").querySelector("[data-target-met]")?.getAttribute("data-target-met")
-  ).toBe("true");
+  expect(card("merge_to_production").innerHTML).toContain("target at most 52m for every change");
+  cleanup();
+
+  view({
+    ...PIPELINE,
+    targets: { ...PIPELINE.targets, merge_to_production_minutes: null },
+    status: { ...PIPELINE.status, merge_to_production: null },
+  });
+  const off = card("merge_to_production");
+  expect(off.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("none");
+  expect(off.innerHTML).toContain("target off");
 });
 
-test("PR open to merge is judged on the seven days' median: under 60m is met, 60m is missed", () => {
+test("PR open to merge shows the response's verdict of its median", () => {
   view();
   const opened = card("opened_to_merge");
   expect(opened.innerHTML).toContain("PR open to merge");
@@ -328,22 +343,63 @@ test("PR open to merge is judged on the seven days' median: under 60m is met, 60
   expect(opened.innerHTML).toContain("target median under 60m");
   cleanup();
 
-  view({
-    ...PIPELINE,
-    opened_to_merge: leadTimes(
-      { n: 1, median: 60, p90: 60, max: 60 },
-      { n: 1, median: 60, p90: 60, max: 60 }
-    ),
-  });
+  // The seven days' median, 59.95m, is under 60m, which a page judging the card itself would call
+  // met; the server's verdict is missed, and the card says that.
+  view({ ...PIPELINE, status: { ...PIPELINE.status, opened_to_merge: false } });
   const missed = card("opened_to_merge");
   expect(missed.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("false");
   expect(missed.innerHTML).toContain("target missed");
   cleanup();
 
-  view({ ...PIPELINE, opened_to_merge: leadTimes(null, null) });
+  view({
+    ...PIPELINE,
+    opened_to_merge: leadTimes(null, null),
+    status: { ...PIPELINE.status, opened_to_merge: null },
+  });
   const none = card("opened_to_merge");
   expect(none.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("none");
   expect(none.innerHTML).toContain("no data");
+});
+
+/** The drawn bars of a lead-time card's last day, today: its p90 and its median, behind the
+ *  transparent hover target the day carries. */
+function todaysBars(metric: string): Element[] {
+  const days = card(metric).querySelectorAll('svg[aria-label="per-day median and p90"] g');
+  return [...(days[days.length - 1]?.querySelectorAll("rect") ?? [])].filter(
+    (rect) => rect.getAttribute("fill") !== "transparent"
+  );
+}
+
+test("a lead-time card colours a day by its eval's rule, so a day at an inclusive target meets it", () => {
+  const atSixty = leadTimes(
+    { n: 1, median: 60, p90: 60, max: 60 },
+    { n: 1, median: 60, p90: 60, max: 60 }
+  );
+  view({
+    ...PIPELINE,
+    opened_to_merge: atSixty,
+    targets: {
+      ...PIPELINE.targets,
+      opened_to_merge_median_minutes: { value: 60, inclusive: true },
+    },
+    status: { ...PIPELINE.status, opened_to_merge: true },
+  });
+  expect(todaysBars("opened_to_merge").map((bar) => bar.getAttribute("class"))).toEqual([
+    chartBar.metFaint,
+    chartBar.met,
+  ]);
+  cleanup();
+
+  // The same day at a strict target of the same value misses it.
+  view({
+    ...PIPELINE,
+    opened_to_merge: atSixty,
+    status: { ...PIPELINE.status, opened_to_merge: false },
+  });
+  expect(todaysBars("opened_to_merge").map((bar) => bar.getAttribute("class"))).toEqual([
+    chartBar.missedFaint,
+    chartBar.missed,
+  ]);
 });
 
 test("lists the slowest jobs in the server's order and the jobs that failed in the last day", () => {
@@ -369,6 +425,27 @@ test("says when no job has enough results and when no job failed", () => {
   view({ ...PIPELINE, pr_checks: { ...PIPELINE.pr_checks, failing_jobs: [], slowest_jobs: [] } });
   expect(document.body).toHaveTextContent("No job has 50 timed results yet.");
   expect(document.body).toHaveTextContent("No job failed in the last 24 hours.");
+});
+
+test("the slowest jobs say the threshold the server ranked by, not 50 alone", () => {
+  view({
+    ...PIPELINE,
+    pr_checks: { ...PIPELINE.pr_checks, slowest_jobs: [], slowest_min_results: 120 },
+  });
+  const slowest = document.querySelector<HTMLElement>('[data-section="slowest-jobs"]');
+  expect(slowest).toHaveTextContent("a job needs 120 timed results in the 7 days to be ranked.");
+  expect(slowest).toHaveTextContent("No job has 120 timed results yet.");
+  expect(slowest?.textContent).not.toContain("50 timed");
+  cleanup();
+
+  // A min_n of 0 still ranks only a job with a median, so the page says one result is needed.
+  view({
+    ...PIPELINE,
+    pr_checks: { ...PIPELINE.pr_checks, slowest_jobs: [], slowest_min_results: 0 },
+  });
+  const zero = document.querySelector<HTMLElement>('[data-section="slowest-jobs"]');
+  expect(zero).toHaveTextContent("a job needs 1 timed result in the 7 days to be ranked.");
+  expect(zero).toHaveTextContent("No job has 1 timed result yet.");
 });
 
 test("the failing-jobs note names the roll-up the server leaves out only by its role", () => {

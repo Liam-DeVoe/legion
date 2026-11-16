@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { meetsTarget, targetLabel, targetWords } from "./target";
+import { judgedBy, meetsTarget, targetLabel, targetWords } from "./target";
 
 test("targetLabel: at least or above for a measure better higher, at most or under for one better lower, off where the target is", () => {
   const minutes = (v: number) => `${v}m`;
@@ -42,4 +42,13 @@ test("meetsTarget: a value at an inclusive target meets it, at a strict one miss
   expect(meetsTarget(45, { value: 45, inclusive: false }, "lower")).toBe(false);
   expect(meetsTarget(44.9, { value: 45, inclusive: false }, "lower")).toBe(true);
   expect(meetsTarget(1, null, "higher")).toBeNull();
+});
+
+test("judgedBy: a chart's day meets an inclusive target at its value, a strict one past it, and an off target judges no day", () => {
+  const atMost = judgedBy({ value: 45, inclusive: true }, "lower");
+  const under = judgedBy({ value: 45, inclusive: false }, "lower");
+  expect([atMost?.(45), atMost?.(46)]).toEqual([true, false]);
+  expect([under?.(45), under?.(44.9)]).toEqual([false, true]);
+  expect(judgedBy({ value: 20, inclusive: true }, "higher")?.(20)).toBe(true);
+  expect(judgedBy(null, "lower")).toBeUndefined();
 });
