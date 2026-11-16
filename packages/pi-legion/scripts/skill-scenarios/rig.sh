@@ -186,8 +186,8 @@
 #                                 nochange-block, untried or tried (required for that scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
-#   SKILL_SCENARIOS_RED_WORLD     red-at-the-head: a, b, c, d, e, f, g, h, i, j, k or l, the world
-#                                 run's head is red in (required for that scenario)
+#   SKILL_SCENARIOS_RED_WORLD     red-at-the-head: the world the run's head is red in, one of
+#                                 red_world_table's (required for that scenario)
 #   SKILL_SCENARIOS_OMP           the Oh My Pi binary a label's agents run, in place of the
 #                                 install mise made for the label's pin (pinned_command). With it
 #                                 set, `profile` and every run reach omp directly rather than

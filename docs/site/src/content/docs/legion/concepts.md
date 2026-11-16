@@ -568,8 +568,8 @@ Four moves release a held issue. The architect's own retry puts it back in that 
 held root to `todo` releases the hold the same way, whether you move it in the Dispatch
 dashboard, the controller sets it, or an operator runs `legion status`: the issue returns to that
 phase and its worker starts again at the same generation, in the same pod and at the same place
-in the admission line. Where the pull request's head is red, the issue goes on to implementing
-instead, and a held review whose round is already decided goes where that decision sends it; the
+in the admission line. A red head moves nothing, and the restored worker reads the head's checks
+itself; a held review whose round is already decided goes where that decision sends it, and the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
 does the same at the cost of that session. A restart, the root set to `backlog` and then to
 `todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
