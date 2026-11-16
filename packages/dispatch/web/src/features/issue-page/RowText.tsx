@@ -262,7 +262,13 @@ function DrawnText({
     linkRowReferences(element, names);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const route = parseNodeReference(anchor.getAttribute("data-row-reference") ?? "");
-      if (route !== undefined && route.kind !== "issue") anchor.setAttribute(ROW_CHIP, "");
+      if (route !== undefined && route.kind !== "issue") {
+        anchor.setAttribute(ROW_CHIP, "");
+        // A whole document is named by the page's word for one, as `chipNames` names it, also
+        // where only the reading cites it: a statement's stored words leave its references out.
+        const word = documentWord(route);
+        if (word !== undefined && anchor.textContent !== word) anchor.textContent = word;
+      }
       if (tabStops) anchor.removeAttribute("tabindex");
     }
   }, [names, tabStops]);
