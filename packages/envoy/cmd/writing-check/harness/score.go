@@ -74,8 +74,9 @@ type CaseResult struct {
 	Session       bool   `json:"session"`
 	SessionSHA256 string `json:"session_sha256,omitempty"`
 	Change        string `json:"change"`
-	// Text is the text the person sees after the change, left out where it is the case's own.
-	Text       string `json:"text,omitempty"`
+	// Text is the text the person sees after the change, the string TextSHA256 hashes: an ask's
+	// question with its options, one line each, as the dataset writes them; any other kind's body.
+	Text       string `json:"text"`
 	TextSHA256 string `json:"text_sha256"`
 	Words      int    `json:"words"`
 	// Definition is Define's definition (change 6).
@@ -165,10 +166,7 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 		return res
 	}
 	text := applied.Text
-	res.TextSHA256, res.Words, res.Definition = sha256Hex([]byte(text)), Words(text), applied.Definition
-	if !applied.Same {
-		res.Text = text
-	}
+	res.Text, res.TextSHA256, res.Words, res.Definition = text, sha256Hex([]byte(text)), Words(text), applied.Definition
 	record := s.ds.RecordPart(c)
 	question := c.PersonQuestion()
 	reply := c.Group == GroupAnswer

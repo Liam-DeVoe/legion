@@ -186,11 +186,53 @@ type changeRun struct {
 func (r *changeRun) Name() string { return r.plan.name }
 
 // TraceStep is one thing a change did to a case's text, as cases.jsonl keeps it: the change, what
-// came of it, and its detail.
+// came of it, and its detail. A review's step holds what the draft route answered: its findings,
+// and a rewrite that was not applied with the reason. Change 7a's step where the writer writes
+// again holds the writing check's findings.
 type TraceStep struct {
-	Change  string `json:"change"`
-	Outcome string `json:"outcome"`
-	Detail  string `json:"detail,omitempty"`
+	Change   string         `json:"change"`
+	Outcome  string         `json:"outcome"`
+	Detail   string         `json:"detail,omitempty"`
+	Findings []TraceFinding `json:"findings,omitempty"`
+	// Rewrite is the review's rewrite where it was not applied, as the harness holds a text
+	// (rewritten), and NotApplied the reason the draft route gave.
+	Rewrite    string `json:"rewrite,omitempty"`
+	NotApplied string `json:"not_applied,omitempty"`
+}
+
+// TraceFinding is one finding a step read. A review's is the reviewer's finding as the draft
+// route answers it (reviewer.Finding): its rule set, its quote, why the quote breaks the rule,
+// and the fix. The writing check's (7a) has the rule set the reviewer names the check's part by
+// (structure or detector), the check's rule, the sentence as its quote, the check's fix, and no
+// why.
+type TraceFinding struct {
+	RuleSet string `json:"rule_set"`
+	Rule    string `json:"rule,omitempty"`
+	Quote   string `json:"quote"`
+	Why     string `json:"why,omitempty"`
+	Fix     string `json:"fix"`
+}
+
+// reviewFindings are a review's findings as the trace keeps them.
+func reviewFindings(findings []reviewer.Finding) []TraceFinding {
+	out := make([]TraceFinding, len(findings))
+	for i, f := range findings {
+		out[i] = TraceFinding{RuleSet: string(f.RuleSet), Quote: f.Quote, Why: f.Why, Fix: f.Fix}
+	}
+	return out
+}
+
+// checkFindings are the writing check's findings as the trace keeps them.
+func checkFindings(findings []writingcheck.Finding) []TraceFinding {
+	out := make([]TraceFinding, len(findings))
+	for i, f := range findings {
+		set := reviewer.RuleStructure
+		if f.Rule == writingcheck.DetectorRule {
+			set = reviewer.RuleDetector
+		}
+		out[i] = TraceFinding{RuleSet: string(set), Rule: f.Rule, Quote: f.Text, Fix: f.Rewrite}
+	}
+	return out
 }
 
 // textRun is one case's text as the steps make it.
@@ -402,9 +444,13 @@ func retryable(err error) bool {
 }
 
 // draft is the reviewer's review of the text as it stands, the candidate's, through the draft
-// route; reviewed is false where the model gave no usable answer after the retries, which posts
-// the text as written in production (R5).
-func (r *changeRun) draft(ctx context.Context, t *textRun) (answer draftAnswer, reviewed bool, err error) {
+// route. It traces a review step of change, with detail; the step holds what the route answered:
+// the findings, and a rewrite that was not applied with the reason. reviewed is false where the
+// model gave no usable answer after the retries, which posts the text as written in production
+// (R5).
+func (r *changeRun) draft(ctx context.Context, t *textRun, change, detail string) (answer draftAnswer, reviewed bool, err error) {
+	t.trace(change, "review", detail)
+	step := len(t.out.Trace) - 1
 	body := map[string]any{"kind": string(t.kind), "text": t.text, "issue": t.loaded.Issue, "reader": t.loaded.Reader}
 	if t.kind == reviewer.KindAsk {
 		question, options := splitAsk(t.text)
@@ -417,6 +463,11 @@ func (r *changeRun) draft(ctx context.Context, t *textRun) (answer draftAnswer, 
 		t.out.WaitSeconds += seconds
 		if err == nil {
 			t.add(r.priced(answer.Calls, seconds)...)
+			review := &t.out.Trace[step]
+			review.Findings = reviewFindings(answer.Findings)
+			if answer.Rewrite != nil && answer.NotApplied != "" {
+				review.Rewrite, review.NotApplied = rewritten(*answer.Rewrite, t.kind), answer.NotApplied
+			}
 			return answer, true, nil
 		}
 		if !retryable(err) || attempt+1 >= r.tries {
@@ -428,18 +479,10 @@ func (r *changeRun) draft(ctx context.Context, t *textRun) (answer draftAnswer, 
 	}
 	var refused *localStatusError
 	if errors.As(err, &refused) && refused.status == http.StatusBadGateway {
-		t.trace(t.lastStep(), "review_failed", refused.body)
+		t.trace(change, "review_failed", refused.body)
 		return draftAnswer{}, false, nil
 	}
 	return draftAnswer{}, false, err
-}
-
-// lastStep is the change a trace of the reviewer belongs to.
-func (t *textRun) lastStep() string {
-	if n := len(t.out.Trace); n > 0 {
-		return t.out.Trace[n-1].Change
-	}
-	return "reviewer"
 }
 
 func sleepFor(ctx context.Context, d time.Duration) bool {
@@ -469,8 +512,7 @@ func rewritten(w wording, kind reviewer.Kind) string {
 // holds one that is applied, else the text as written.
 func (r *changeRun) findingsStep(ctx context.Context, t *textRun) error {
 	for round := 1; ; round++ {
-		t.trace(changeFindings, "review", fmt.Sprintf("round %d", round))
-		answer, reviewed, err := r.draft(ctx, t)
+		answer, reviewed, err := r.draft(ctx, t, changeFindings, fmt.Sprintf("round %d", round))
 		switch {
 		case err != nil:
 			return err
@@ -525,8 +567,7 @@ func (r *changeRun) findingsStep(ctx context.Context, t *textRun) error {
 // reviewRewriteStep is change 4: the reviewer's rewrite from Dispatch's record alone posts, where
 // the review found something and the rewrite keeps what a rewrite keeps.
 func (r *changeRun) reviewRewriteStep(ctx context.Context, t *textRun) error {
-	t.trace(changeReviewRewrite, "review", "")
-	answer, reviewed, err := r.draft(ctx, t)
+	answer, reviewed, err := r.draft(ctx, t, changeReviewRewrite, "")
 	switch {
 	case err != nil:
 		return err
@@ -1028,7 +1069,8 @@ func (r *changeRun) checkStep(ctx context.Context, t *textRun) error {
 		return err
 	}
 	t.text = text
-	t.trace(changeCheck, "written_again", fmt.Sprintf("%d findings", len(result.Findings)))
+	t.out.Trace = append(t.out.Trace, TraceStep{Change: changeCheck, Outcome: "written_again",
+		Detail: fmt.Sprintf("%d findings", len(result.Findings)), Findings: checkFindings(result.Findings)})
 	return nil
 }
 

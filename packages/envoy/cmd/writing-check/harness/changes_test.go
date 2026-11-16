@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -495,6 +496,71 @@ func TestChangeFourPostsTheReviewersRewrite(t *testing.T) {
 	}
 }
 
+// A scored case's line holds the text a person sees, the string its text_sha256 hashes, an ask's
+// options with it; and a review's step holds the findings the draft route answered and the
+// rewrite that was not applied beside the reason.
+func TestACaseLineHoldsItsTextAndWhatTheReviewReturned(t *testing.T) {
+	finding := []reviewer.Finding{{RuleSet: reviewer.RuleNoslop, Quote: "spin up", Why: "A phrasal verb.", Fix: "start"}}
+	fake := newFakeDispatch(t,
+		draftAnswer{Findings: finding, Rewrite: &wording{Body: "Lost the first line."}, NotApplied: "it drops the first line"},
+		draftAnswer{},
+	)
+	run, _ := changeRig(t, []string{changeReviewRewrite}, fake)
+	// Both texts post as written, so lost and added are by construction and no grader is called.
+	s := &scorer{ds: run.ds, change: run, sessions: run.sessions, only: []Judgement{JLost, JAdded}}
+	path := filepath.Join(t.TempDir(), "cases.jsonl")
+	cases := []*Case{run.ds.Case("question/comment:c2@20"), run.ds.Case("question/ask:k1@11")}
+	if _, failed, err := scoreAll(t.Context(), s, cases, path, 1, io.Discard, time.Now()); err != nil || failed != 0 {
+		t.Fatalf("score: %d failed, %v", failed, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type step struct {
+		Outcome    string             `json:"outcome"`
+		Findings   []reviewer.Finding `json:"findings"`
+		Rewrite    string             `json:"rewrite"`
+		NotApplied string             `json:"not_applied"`
+	}
+	type caseLine struct {
+		CaseID      string `json:"case_id"`
+		Text        string `json:"text"`
+		TextSHA256  string `json:"text_sha256"`
+		ChangeTrace []step `json:"change_trace"`
+	}
+	lines := map[string]caseLine{}
+	for raw := range strings.Lines(string(data)) {
+		var l caseLine
+		if err := json.Unmarshal([]byte(raw), &l); err != nil {
+			t.Fatal(err)
+		}
+		lines[l.CaseID] = l
+	}
+	comment, ask := lines["question/comment:c2@20"], lines["question/ask:k1@11"]
+	for _, l := range []caseLine{comment, ask} {
+		if l.Text == "" || sha256Hex([]byte(l.Text)) != l.TextSHA256 {
+			t.Errorf("%s: text %q is not what text_sha256 %s hashes", l.CaseID, l.Text, l.TextSHA256)
+		}
+	}
+	if comment.Text != changeComment || ask.Text != changeAskText {
+		t.Errorf("the texts = %q and %q, want the comment and the ask with its options", comment.Text, ask.Text)
+	}
+	if len(comment.ChangeTrace) == 0 {
+		t.Fatal("the comment's line holds no trace")
+	}
+	review := comment.ChangeTrace[0]
+	if review.Outcome != "review" || !slices.Equal(review.Findings, finding) {
+		t.Errorf("the review step = %+v, want the review's findings", review)
+	}
+	if review.Rewrite != "Lost the first line." || review.NotApplied != "it drops the first line" {
+		t.Errorf("the review step keeps rewrite %q beside reason %q, want the rewrite not applied and its reason", review.Rewrite, review.NotApplied)
+	}
+	if len(ask.ChangeTrace) == 0 || ask.ChangeTrace[0].Findings != nil || ask.ChangeTrace[0].Rewrite != "" {
+		t.Errorf("a clean review's step = %+v, want no findings and no rewrite", ask.ChangeTrace)
+	}
+}
+
 // Change 5: an ask is rewritten by the local Dispatch's Rewrite, whose side question the writer
 // answers through the fake Envoy; a comment by the component, after the same side question; and a
 // comment whose writer has no session gets no side answer (plan Decision 18).
@@ -561,6 +627,17 @@ func TestChangeSevenAWritesAgainAfterTheCheck(t *testing.T) {
 	}
 	if !strings.Contains(turn, "The writing check refused this write.") || !strings.Contains(turn, "phrasal-verb") {
 		t.Errorf("the writer's turn holds no check refusal: %s", turn)
+	}
+	var written TraceStep
+	for _, s := range applied.Trace {
+		if s.Outcome == "written_again" {
+			written = s
+		}
+	}
+	if !slices.ContainsFunc(written.Findings, func(f TraceFinding) bool {
+		return f.RuleSet == string(reviewer.RuleStructure) && f.Rule == "phrasal-verb" && strings.Contains(f.Quote, "spin up") && f.Fix != ""
+	}) {
+		t.Errorf("the step written again keeps no finding of the check's: %+v", written.Findings)
 	}
 	if got := checkRefusal([]writingcheck.Finding{{Field: "body", Rule: "r", Text: "x", Rewrite: `Write "start".`}}); !strings.Contains(got, "1. Write `start`. Rule `r`, field `body`: `x`.") {
 		t.Errorf("the check's refusal = %q", got)

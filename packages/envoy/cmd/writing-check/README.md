@@ -1316,11 +1316,14 @@ models that are no candidate and play no other role. The grade keeps each refuse
 the model that graded it.
 
 `run.json` holds the parameters; `cases.jsonl` one line for each case, written as it ends, with
-the readers' answers, each grade and each call's tokens and cost. A case whose line holds an
-error is scored again by the next run. `scores.json` and `scores.md` hold the figures: for the
-whole part and for the cases with a session (plan Decision 18), and for each case group and all
-groups, the cases by kind and by conversation, each score, the wait, the change's own model cost
-per text, and each model's calls, tokens and cost.
+the text the person sees after the change (`text`, the string `text_sha256` hashes: an ask's
+question with its options, one line each, as the dataset writes them; any other kind's body), the
+readers' answers, each grade, each call's tokens and cost, and the change's trace (see "The
+changes"). `cases.jsonl` holds Dispatch text, so the run's directory stays under `$TMPDIR`. A case
+whose line holds an error is scored again by the next run. `scores.json` and `scores.md` hold the
+figures: for the whole part and for the cases with a session (plan Decision 18), and for each
+case group and all groups, the cases by kind and by conversation, each score, the wait, the
+change's own model cost per text, and each model's calls, tokens and cost.
 
 Every share has a 95% interval: a cluster bootstrap over the split groups, by a PCG source
 seeded with `--seed`, the 2.5th and 97.5th percentiles of the ratio of the resampled groups'
@@ -1354,7 +1357,13 @@ through the local Dispatch with the candidate in the `Dispatch-Test-Model` heade
 given Dispatch's record of the case, its text, the message Dispatch sent it, and its session up to
 the text where the case has one (`writer/writer.md`). Each case's line of `cases.jsonl` holds the
 change's own calls, each priced at its model's price (a route's calls by the tokens it answers),
-its wait, and its `change_trace`: what each step did.
+its wait, and its `change_trace`: what each step did. Each review of changes 3 and 4, 7b's
+included, is a `review` step that holds what the draft route answered: its `findings`, each with
+its `rule_set`, `quote`, `why` and `fix` as the reviewer returns them, and a rewrite that was not
+applied (`rewrite`, as the harness holds a text) beside the reason (`not_applied`). Change 7a's
+`written_again` step holds the writing check's `findings`: the `rule_set` `structure` or
+`detector`, the check's `rule`, the sentence as the `quote`, and the check's `fix`. These fields
+are for reading why a change helped or harmed a text; no score reads them.
 
 | Change | What it does |
 | --- | --- |
