@@ -19,6 +19,7 @@
 package projectaccess
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -307,13 +308,15 @@ func (c *Client) sweepLocked() {
 	}
 }
 
-// get asks one route and decodes a 200 into into. A 404 is an answer, returned as its status with
-// no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's project route
-// answers a project it does not hold with; any other 404 (a Dispatch that does not serve the
-// route, a wrong path behind an ingress) is a failure naming its code. A 401 or a 403 is
-// ErrBrokerRefused: Dispatch refusing the broker's own account token. Every other status, an
-// account token it could not read, a transport failure and a body it could not decode are errors
-// naming what failed and never the token.
+// get asks one route and decodes a 200 into into. A 401 or a 403 is ErrBrokerRefused, Dispatch
+// refusing the broker's own account token, decided by the status alone before any of the body is
+// read: a body cut short or past the bound only leaves the error without the code it names, and
+// never turns the refusal into a failure to ask, which a caller mints through. A 404 is an answer,
+// returned as its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code
+// Dispatch's project route answers a project it does not hold with; any other 404 (a Dispatch
+// that does not serve the route, a wrong path behind an ingress) is a failure naming its code.
+// Every other status, an account token it could not read, a transport failure and a body it could
+// not read or decode are errors naming what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	bearer, err := c.account.Read()
 	if err != nil {
@@ -336,6 +339,9 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 		return 0, fmt.Errorf("projectaccess: ask dispatch: %w", err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusalCode(response.Body))
+	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxAnswerBytes+1))
 	if err != nil {
 		return 0, fmt.Errorf("projectaccess: read dispatch's answer: %w", err)
@@ -343,28 +349,33 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	if len(body) > maxAnswerBytes {
 		return 0, fmt.Errorf("projectaccess: dispatch's answer to %s is over %d bytes", path, maxAnswerBytes)
 	}
-	var refusal struct {
-		Code string `json:"code"`
-	}
-	if response.StatusCode != http.StatusOK {
-		_ = json.Unmarshal(body, &refusal)
-	}
 	switch response.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		if refusal.Code == projectNotFoundCode {
+		code := refusalCode(bytes.NewReader(body))
+		if code == projectNotFoundCode {
 			return http.StatusNotFound, nil
 		}
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, refusal.Code)
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusal.Code)
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
 	default:
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, response.StatusCode, refusal.Code)
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, response.StatusCode, refusalCode(bytes.NewReader(body)))
 	}
 	if err := json.Unmarshal(body, into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
 	}
 	return http.StatusOK, nil
+}
+
+// refusalCode is the code a refusal's body names, read from at most maxAnswerBytes of it: empty
+// for a body that is cut short, runs past the bound or names none, since the status has already
+// decided what the answer is and the code only adds to its error.
+func refusalCode(body io.Reader) string {
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	raw, _ := io.ReadAll(io.LimitReader(body, maxAnswerBytes))
+	_ = json.Unmarshal(raw, &refusal)
+	return refusal.Code
 }
 
 // Visible answers nil when person may see every one of projects, else a *NotVisibleError (which
