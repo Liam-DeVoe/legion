@@ -1693,3 +1693,121 @@ test("the header holds its limits on a gated root shaped like INFRA-1196 @phone"
     }
   );
 });
+
+/** Waits for the frames in which the header's labels read the line again after its width
+ *  changed: the observer's notification, the frame it waits for, and the commits after it. */
+function framesDrawn(page: Page, frames: number): Promise<void> {
+  return page.evaluate((frames) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const next = (left: number) =>
+      left === 0 ? resolve() : requestAnimationFrame(() => next(left - 1));
+    next(frames);
+    return promise;
+  }, frames);
+}
+
+// The tester's reading of review 5924443889's finding on `IssuePropertiesRow.tsx:414`, round 2
+// (dispatch://INFRA-3943): the labels' count names every label the line leaves out, at every
+// width of the line, R2's "a count of the rest". Row (1) reads the count at four widths, where
+// the band of a few pixels the finding names may not fall, so a count read at a width other
+// than the one drawn passed it: with the count's held width taken out, row (1) still passed.
+// This row narrows the line pixel by pixel and reads, at each width, that the chips drawn whole
+// and the count's number add up to every label, and that no chip is drawn cut.
+test("the labels' count names every label the line leaves out, at every width of the line", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
+    await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
+    for (const width of [DESKTOP.width, 1024]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await expect(labelsLeft(page)).toBeVisible();
+      const line = propertiesLine(page);
+      const full = await line.evaluate((element) => element.getBoundingClientRect().width);
+      const wrong: string[] = [];
+      for (let by = 0; by <= 260; by += 1) {
+        await line.evaluate((element, at) => {
+          element.style.maxWidth = `${at}px`;
+        }, full - by);
+        await framesDrawn(page, 4);
+        const reading = await line.evaluate((element, total) => {
+          const box = element.querySelector('[data-testid="issue-header-labels"]');
+          if (box === null) return "no labels' box";
+          const outer = box.getBoundingClientRect();
+          let whole = 0;
+          let cut = 0;
+          for (const chip of box.querySelectorAll("[data-header-label]")) {
+            const rect = chip.getBoundingClientRect();
+            const inside =
+              rect.left >= outer.left - 0.5 &&
+              rect.right <= outer.right + 0.5 &&
+              rect.top >= outer.top - 0.5 &&
+              rect.bottom <= outer.bottom + 0.5;
+            const outside =
+              rect.right <= outer.left + 0.5 ||
+              rect.left >= outer.right - 0.5 ||
+              rect.bottom <= outer.top + 0.5 ||
+              rect.top >= outer.bottom - 0.5;
+            if (inside) whole += 1;
+            else if (!outside) cut += 1;
+          }
+          const count = element.querySelector('[data-testid="issue-labels-left"]');
+          const left = Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0");
+          return whole + left === total && cut === 0
+            ? null
+            : `${whole} drawn whole, ${cut} cut, the count names ${left}, of ${total}`;
+        }, TWENTY_LABELS.length);
+        if (reading !== null) wrong.push(`${(full - by).toFixed(0)} px: ${reading}`);
+      }
+      await line.evaluate((element) => {
+        element.style.maxWidth = "";
+      });
+      expect
+        .soft(wrong, `the labels' count does not name the labels left out at ${width} px`)
+        .toEqual([]);
+    }
+  });
+});
+
+// The tester's reading of review 5924443889's finding on `IssueTitleRow.tsx:96`, round 2
+// (dispatch://INFRA-3943): a focus alone opens no title editor, so a key typed after the page
+// or the browser gives the heading the focus back is no part of the title. Row (8) reads that
+// through Details, whose drawer gives the focus back again in the frames after it closes: with
+// the heading's old `onFocus` put back, the editor that focus opened was closed again by that
+// second focus, and row (8) passed. Here the page gives the heading its focus back once, as a
+// return to the window does, and nothing focuses it again.
+test("a focus given back to the title's heading opens no editor", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    await leaveFocus(page);
+    const header = issueHeader(page);
+    const heading = header.getByRole("heading", { level: 1 });
+    const editor = header.getByRole("textbox", { name: "Issue title" });
+    const title = (await getIssue(seeded.key)).title;
+    // Enter ends an edit with the focus on the heading; the page then loses the focus and gives
+    // it back to that heading.
+    await page.keyboard.press("e");
+    await expect(editor, "e did not put the caret in the title").toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(heading, "Enter dropped the focus out of the header").toBeFocused();
+    await heading.evaluate((element) => {
+      (element as HTMLElement).blur();
+      (element as HTMLElement).focus();
+    });
+    await framesDrawn(page, 2);
+    await expect(editor, "a focus given back to the heading opened the title's editor").toHaveCount(
+      0
+    );
+    await page.keyboard.press("x");
+    await leaveFocus(page);
+    expect(
+      (await getIssue(seeded.key)).title,
+      "a key typed after a focus given back to the heading changed the title"
+    ).toBe(title);
+  });
+});
