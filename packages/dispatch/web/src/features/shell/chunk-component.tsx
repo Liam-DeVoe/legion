@@ -1,6 +1,6 @@
 import { type ComponentType, type ReactNode, useEffect, useState } from "react";
 
-import { renderChunk } from "./chunk-loads";
+import { keptUntilRejected, renderChunk } from "./chunk-loads";
 
 /**
  * A component whose code is a chunk of its own: the issue page's tab panels
@@ -36,25 +36,17 @@ export interface Chunk<P> {
   readonly loaded: () => ComponentType<P> | undefined;
 }
 
-/** The chunk that `importer` downloads. A download that fails is not kept: the next `load`
- *  asks for the chunk again, as a new `lazy` would. */
+/** The chunk that `importer` downloads. A download that fails is not kept (`keptUntilRejected`):
+ *  the next `load` asks for the chunk again, as a new `lazy` would. */
 export function chunk<P>(importer: () => Promise<ComponentType<P>>): Chunk<P> {
   let loaded: ComponentType<P> | undefined;
-  let loading: Promise<ComponentType<P>> | undefined;
   return {
-    load: () => {
-      loading ??= importer().then(
-        (component) => {
-          loaded = component;
-          return component;
-        },
-        (error: unknown) => {
-          loading = undefined;
-          throw error;
-        }
-      );
-      return loading;
-    },
+    load: keptUntilRejected(() =>
+      importer().then((component) => {
+        loaded = component;
+        return component;
+      })
+    ),
     loaded: () => loaded,
   };
 }

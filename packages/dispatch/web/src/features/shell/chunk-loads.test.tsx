@@ -87,7 +87,6 @@ test("two calls while a kept load is out share that one load", async () => {
   expect(await second).toBe("ok");
 });
 
-// `lazyChunk` offline: the boundary's fallback stands, and the component draws once `online` fires.
 test("a lazy component whose download fails offline draws once the browser is back online", async () => {
   let loads = 0;
   const Lazy = lazyChunk(() => {

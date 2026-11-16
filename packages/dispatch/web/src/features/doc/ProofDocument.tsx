@@ -290,6 +290,10 @@ export function ProofDocument({
   /** Whether the issue was closed when the access effect last ran, so it sees a reopen. */
   const wasClosedRef = useRef(isClosed);
   const schemaReadOnlyRef = useRef(false);
+  /** The admission of the socket the connection holds now: whether it is read-only, or undefined
+   *  until that socket's admission arrives. `schemaReadOnlyRef` keeps the last admission any
+   *  socket reported, which can be an earlier socket's, so a reopen reads this one instead. */
+  const socketAdmissionRef = useRef<boolean | undefined>(undefined);
   const userRef = useRef(user);
   const highlightTermRef = useRef(highlightTerm);
   // The thread the host draws below one block, and the mark it highlights: both are read through
@@ -679,6 +683,7 @@ export function ProofDocument({
     setLoadError(undefined);
     setAdmission(undefined);
     schemaReadOnlyRef.current = false;
+    socketAdmissionRef.current = undefined;
     setSchemaReadOnly(false);
     // A transport or editor chunk that fails while online (after `DeploymentResilience` has
     // spent its reload) would otherwise leave the document "connecting" forever. Once failed,
@@ -880,6 +885,7 @@ export function ProofDocument({
             schemaCreatable: compiledSchemaCreatable,
             schemaVersion: compiledBlockSchema.version,
             onAdmission: (readOnly) => {
+              socketAdmissionRef.current = readOnly;
               schemaReadOnlyRef.current = readOnly;
               setSchemaReadOnly(readOnly);
               editor?.setAccess(editorAccess(page, isClosedRef.current, readOnly));
@@ -903,6 +909,12 @@ export function ProofDocument({
               refusalTimer = window.setTimeout(admit, delay);
             },
             onStatus: (status) => {
+              // A socket's admission arrives after the socket is connected. Any other status means
+              // the socket closed or the provider is connecting another, whose admission is still
+              // to come.
+              if (status !== "connected") {
+                socketAdmissionRef.current = undefined;
+              }
               if (!failed) {
                 setConnection(status);
               }
@@ -1062,19 +1074,23 @@ export function ProofDocument({
   // room another process holds, and one whose room the close could not close, each of which
   // keeps the read-only admission it was given.
   //
-  // So the page readmits only a socket whose admission is read-only, and a blocked admission,
-  // which has no socket and reads the text again. The room's close and the PATCH's answer race:
-  // the provider reconnects after a draw of up to two seconds, and a draw shorter than the wait
-  // for the answer opens a socket the reopened server has already admitted read-write before
+  // So the page admits every socket again except one whose admission arrived read-write, which is
+  // already what the page wants. A socket whose admission has not arrived yet - just after the
+  // mount, or in the reconnect draw after a close - is admitted again too: the server decided that
+  // admission before the reopen, and can have decided it read-only on another process. A blocked
+  // admission has no socket and reads the text again. The room's close and the PATCH's answer
+  // race: the provider reconnects after a draw of up to two seconds, and a draw shorter than the
+  // wait for the answer opens a socket the reopened server has already admitted read-write before
   // the page knows the issue is open. Readmitting that socket closed it for nothing, and a fourth
-  // socket opened (`e2e/close-withdraws-asks.e2e.ts`'s Reopen row failed that way at random).
+  // socket opened (`e2e/close-withdraws-asks.e2e.ts`'s Reopen row, which counts three sockets,
+  // failed that way at random).
   useEffect(() => {
     setQuoteRefusal(undefined);
     editorRef.current?.setAccess(editorAccess(page, isClosed, schemaReadOnlyRef.current));
     if (
       wasClosedRef.current &&
       !isClosed &&
-      (readmitRef.current !== undefined || schemaReadOnlyRef.current)
+      (readmitRef.current !== undefined || socketAdmissionRef.current !== false)
     ) {
       readmit();
     }

@@ -529,6 +529,9 @@ type landingRosterKey struct{}
 // that takes the read logs as a failed read. A deployment with no listener starts nothing and
 // answers ctx as it is, since readRouteRoster answers every route unknown there at once, with
 // nothing to wait on and so nothing to share.
+//
+// The part's name, landing.route_roster, takes no arm's prefix, against the rule above
+// landingPart, because no log line ever names it: nothing calls wait on this part.
 func (s *server) startLandingRoster(ctx context.Context) context.Context {
 	if s.deps.Envoy == nil {
 		return ctx
@@ -545,6 +548,25 @@ func (s *server) startLandingRoster(ctx context.Context) context.Context {
 		return roster, err
 	})
 	return context.WithValue(ctx, landingRosterKey{}, part)
+}
+
+// landingRosterRead answers the landing's roster read (startLandingRoster) that ctx carries,
+// with taken true, once that read has returned; a ctx that ends first answers endedRouteRoster,
+// as readRouteRoster answers a read whose own context ended while it waited on the shared fetch.
+// A ctx that carries no landing's read answers taken false, and the caller reads the roster
+// itself. The answer is taken from the part's fields, never through wait, which would log the
+// roster read as a part of its own: each part that takes the roster logs what it makes of it.
+func landingRosterRead(ctx context.Context) (roster routeRoster, taken bool, err error) {
+	part, ok := ctx.Value(landingRosterKey{}).(*landingServicePart[routeRoster])
+	if !ok {
+		return routeRoster{}, false, nil
+	}
+	select {
+	case <-part.done:
+		return part.value, true, part.err
+	case <-ctx.Done():
+		return endedRouteRoster(ctx), true, nil
+	}
 }
 
 // landingServices is the landing's parts a service outside the database answers that it can ask

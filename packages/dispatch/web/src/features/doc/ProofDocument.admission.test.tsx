@@ -748,3 +748,39 @@ test("a socket admitted read-write before the page sees its issue reopened is no
     view.unmount();
   }
 });
+
+// A reopen can land while the current socket's admission is still on its way: just after the
+// mount, or in the reconnect draw after a close. The server decided that admission before the
+// reopen, and can have decided it read-only on another process, so the page admits the socket
+// again. The admission an earlier socket reported says nothing about this socket.
+test("a reopen that lands before the current socket's admission arrives admits it again", async () => {
+  const { admit, connections, editors, rerender, status, sync, view } = renderProofDocument({
+    isClosed: true,
+  });
+
+  try {
+    // Just after the mount: the socket is connected, and its admission has not arrived.
+    await waitFor(() => expect(connections).toHaveLength(1));
+    act(() => status("connected"));
+    act(() => rerender({ isClosed: false }));
+    expect(connections[0]?.readmitted).toBe(1);
+
+    // The reopened server admits the next socket read-write.
+    act(() => status("connecting"));
+    act(() => status("connected"));
+    act(() => admit(false));
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.access).toBe("edit");
+
+    // A close drops that socket, and the provider connects another, whose admission has not
+    // arrived when the next reopen lands.
+    act(() => rerender({ isClosed: true }));
+    act(() => status("connecting"));
+    act(() => status("connected"));
+    act(() => rerender({ isClosed: false }));
+    expect(connections[0]?.readmitted).toBe(2);
+  } finally {
+    view.unmount();
+  }
+});

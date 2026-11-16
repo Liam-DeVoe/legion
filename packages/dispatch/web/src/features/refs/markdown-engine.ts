@@ -99,10 +99,6 @@ export interface MarkdownEngine {
   parse(markdown: string, softBreaks?: SoftBreaks): ProseMirrorNode | undefined;
 }
 
-/** The headless editor's chunk, kept apart from the engine built from it, so a load that failed
- *  after this chunk arrived - the serializer's chunk failed, or the build threw - does not
- *  download it again. */
-const headlessModule = keptUntilRejected(() => import("@legion/proof-editor/headless"));
 /** The engine the newest resolved load produced: what a body renders with synchronously. The
  *  engine serves every soft-break policy (the policy is a parse argument), and a parse that
  *  throws no longer evicts it - the headless editor drops only its own refused parser. */
@@ -119,7 +115,7 @@ const loadEngine = keptUntilRejected(() =>
   // The serializer travels with the headless editor rather than with this module: it is written
   // against prosemirror-model's own classes, and nothing can build one before that editor's
   // schema exists (`markdown-serializer.ts`).
-  Promise.all([headlessModule(), import("./markdown-serializer")])
+  Promise.all([import("@legion/proof-editor/headless"), import("./markdown-serializer")])
     .then(async ([{ createHeadlessProof }, { buildEngine }]) =>
       buildEngine(
         await createHeadlessProof({

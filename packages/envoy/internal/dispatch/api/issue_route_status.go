@@ -197,15 +197,8 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 	if s.deps.Envoy == nil {
 		return routeRoster{reason: model.RouteReasonUnreachable}, nil
 	}
-	// The landing's read is taken from its fields, never through wait, which would log it as a
-	// part of its own.
-	if part, ok := ctx.Value(landingRosterKey{}).(*landingServicePart[routeRoster]); ok {
-		select {
-		case <-part.done:
-			return part.value, part.err
-		case <-ctx.Done():
-			return endedRouteRoster(ctx), nil
-		}
+	if roster, taken, err := landingRosterRead(ctx); taken {
+		return roster, err
 	}
 	if s.deps.ListenerRosterUncached {
 		// An end-to-end test process: every read asks the listener itself, with no stored answer,
