@@ -16,6 +16,7 @@ import { ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
+import { quotableSelection } from "../threads/quote-reply";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
@@ -874,6 +875,52 @@ test("a reply that is nothing but a reference shows its card", async () => {
     ).toBe("/issues/CORE-2");
   } finally {
     getIssueSummary.mockRestore();
+    view.unmount();
+  }
+});
+
+/** Selects every word of the first element `selector` names under `root`, as a reader's drag would. */
+function selectWords(root: HTMLElement, selector: string): void {
+  const element = root.querySelector(selector);
+  if (element === null) throw new Error(`no ${selector}`);
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+test("an open ask offers Define over its question alone; a reply in its thread quotes into the answer box without it", async () => {
+  const ask = answeredAsk({ answer: null, state: "open" });
+  const reply = { ...askReply("reply-1", "2026-10-08T03:00:00Z"), body: "Ship it **now**." };
+  const { view } = renderCard(
+    <AskCard ask={ask} initialThread={{ ...thread(ask), replies: [reply] }} />
+  );
+  try {
+    const card = view.container;
+    await waitFor(() => {
+      if (card.querySelector("[data-ask-thread] [data-reply] .dispatch-markdown") === null) {
+        throw new Error("the reply has not rendered");
+      }
+    });
+    // The question's words: Quote reply and Define.
+    selectWords(card, "[data-ask-question] .dispatch-markdown");
+    expect(quotableSelection()?.target.define).toBeDefined();
+    // A reply's words in the open ask's thread: Quote reply, into the answer box, and no Define.
+    selectWords(card, "[data-ask-thread] [data-reply] .dispatch-markdown");
+    const selected = quotableSelection();
+    expect(selected?.blocks).toEqual(["Ship it **now**."]);
+    expect(selected?.target.define).toBeUndefined();
+    act(() => {
+      selected?.target.quote(selected.blocks);
+    });
+    await waitFor(() =>
+      expect(card.querySelector<HTMLTextAreaElement>("[data-ask-answer]")?.value).toBe(
+        "> Ship it **now**.\n\n"
+      )
+    );
+  } finally {
+    window.getSelection()?.removeAllRanges();
     view.unmount();
   }
 });

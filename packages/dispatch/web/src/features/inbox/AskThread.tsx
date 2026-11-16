@@ -326,6 +326,9 @@ export function AskThread({
     <section
       aria-label="Replies"
       className={embedded ? "space-y-3" : `mt-4 space-y-3 border-t pt-4 ${borderDefault}`}
+      // The handle the card holding this thread tells its replies' words from the question's by:
+      // Define is offered over the question and the options alone (`AskCard`).
+      data-ask-thread=""
       data-testid={`thread-${ask.id}`}
       ref={quote?.ref}
     >

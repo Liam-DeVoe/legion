@@ -465,6 +465,12 @@ export function AskCard({
     if (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement) {
       if (active.type !== "radio" && active.type !== "checkbox") return null;
     }
+    // Define is the question's and the options': words of a reply in the thread under them are
+    // the reply's, which `d` and the menu leave alone as the selection bar does.
+    const selection = window.getSelection();
+    const inThread = (node: Node | null | undefined) =>
+      (node instanceof Element ? node : node?.parentElement)?.closest("[data-ask-thread]") != null;
+    if (inThread(selection?.anchorNode) || inThread(selection?.focusNode)) return null;
     return selectedWordsIn(articleRef.current);
   };
   const openDefine = (picked: SelectedWords | null) => {
@@ -492,13 +498,16 @@ export function AskCard({
   // The card that holds an answer box - an open question's, and an answered one's while the
   // reader changes the answer - quotes into that box, from the question, the options and the
   // replies in its thread, but not while its answer or question back is out; a decision block's
-  // card, like every other text inside a document, offers no Quote reply.
+  // card, like every other text inside a document, offers no Quote reply. Define is the question's
+  // and the options' alone (the article's target): the thread under them is a text of its own
+  // (`openThreadQuoteRef`), whose replies quote into the same box and offer no Define.
+  const takesAnswer =
+    completed === null && displayedAsk.state !== "resolved" && !inBlock && !isSubmitting;
   useQuoteTarget(
     articleRef,
-    completed === null && displayedAsk.state !== "resolved" && !inBlock && !isSubmitting
-      ? { define: () => openDefine(selectionInCard()), quote: quoteIntoAnswer }
-      : null
+    takesAnswer ? { define: () => openDefine(selectionInCard()), quote: quoteIntoAnswer } : null
   );
+  const openThreadQuoteRef = useQuoteTargetRef(takesAnswer ? { quote: quoteIntoAnswer } : null);
   const changeMenuOpen = (open: boolean) => {
     if (open) setMenuSelection(selectionInCard());
     setMenuOpen(open);
@@ -632,8 +641,10 @@ export function AskCard({
       ? { quote: (blocks) => quoteInto(replyQuoteKey, blocks) }
       : null
   );
-  const threadQuote =
-    completed === null ? undefined : { key: replyQuoteKey, ref: answeredQuoteRef };
+  const threadQuote = {
+    key: replyQuoteKey,
+    ref: completed === null ? openThreadQuoteRef : answeredQuoteRef,
+  };
   const threadNode =
     thread === "collapsed" ? (
       <AskThreadDisclosure
