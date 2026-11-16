@@ -350,44 +350,50 @@ func TestAClaudeLaunchIsHeldToItsClaim(t *testing.T) {
 // Where a claim's recorded session file is missing, the tmux runtime resumes a file of the same
 // name, or an Oh My Pi file of any timestamp with the same session id, one folder below a sessions
 // directory (runtime/tmux's sessionFileOf and newestSession). So a session file's base name and the
-// id its Oh My Pi name gives are held to the claim as its path is (holdRecorded,
-// dispatch://INFRA-840): a registration of another claim's file under another folder, or of another
-// timestamp of its id, is refused, recording and enrolling nothing; a claim recorded before the
-// hold under such a file is never relaunched into it; and a claim's own file, carried to another
-// folder, is still its own.
+// id its Oh My Pi name gives are held to the claim (holdRecorded, dispatch://INFRA-840): a
+// registration of another claim's file under another folder, or of another timestamp of its id, is
+// refused, recording and enrolling nothing; a claim recorded before the hold under such a file is
+// never relaunched into it; and a claim's own file, carried to another folder, is still its own.
+// Each row is refused by one kind of name alone: the file of another folder bears no `_<id>`, and
+// the file of another timestamp has another base name.
 //
 // The controls (the pull request records each run): RecordedHolds without the file-name kind
-// admits the registration under another folder; without the file-id kind, the one of another
-// timestamp; start resuming without holdRecorded calls the runtime's Resume on the shared name.
+// admits the registration under another folder and resumes the relaunch; without the file-id
+// kind, it admits the one of another timestamp.
 func TestATmuxResumeByNameIsHeldToItsClaim(t *testing.T) {
 	const holder = claim.Token("legion-legion-LEGION-209-tester")
-	const holderFile = "/legion/state/sessions/--legion-workspaces-legion-209--/2026-11-16T10-00-00-000Z_ses_holder.jsonl"
-	holdFor := func(h *harness) {
+	// The holder's two sessions, each named so that one kind of name alone holds what a search
+	// finds it by.
+	const named = "/legion/state/sessions/--legion-workspaces-legion-209--/holder-session.jsonl"
+	const stamped = "/legion/state/sessions/--legion-workspaces-legion-209--/2026-11-16T10-00-00-000Z_ses-stamped.jsonl"
+	holdFor := func(h *harness, session, file string) {
 		h.t.Helper()
-		if holders, err := h.store.HoldSessions(h.ctx, "legion", holder, RecordedHolds("ses_holder", holderFile)); err != nil || slices.ContainsFunc(holders, func(c claim.Token) bool { return c != holder }) {
+		if holders, err := h.store.HoldSessions(h.ctx, "legion", holder, RecordedHolds(session, file)); err != nil || slices.ContainsFunc(holders, func(c claim.Token) bool { return c != holder }) {
 			h.t.Fatalf("hold the tester's session: %v, %v", holders, err)
 		}
 	}
 
 	for _, tc := range []struct {
-		name, file string
-		refused    Hold
+		name, holderSession, holderFile, file string
+		refused                               Hold
 	}{
 		{
-			name:    "another claim's file under another folder",
-			file:    "/legion/state/home/.omp/agent/sessions/--pod-workspace--/2026-11-16T10-00-00-000Z_ses_holder.jsonl",
-			refused: Hold{Kind: HoldFileName, Name: "2026-11-16T10-00-00-000Z_ses_holder.jsonl"},
+			name:          "another claim's file under another folder",
+			holderSession: "ses_named", holderFile: named,
+			file:    "/legion/state/home/.omp/agent/sessions/--pod-workspace--/holder-session.jsonl",
+			refused: Hold{Kind: HoldFileName, Name: "holder-session.jsonl"},
 		},
 		{
-			name:    "another timestamp of another claim's session id",
-			file:    "/legion/state/sessions/--legion-workspaces-legion-209--/2026-11-16T11-00-00-000Z_ses_holder.jsonl",
-			refused: Hold{Kind: HoldFileID, Name: "ses_holder"},
+			name:          "another timestamp of another claim's session id",
+			holderSession: "ses_stamped", holderFile: stamped,
+			file:    "/legion/state/sessions/--legion-workspaces-legion-209--/2026-11-16T11-00-00-000Z_ses-stamped.jsonl",
+			refused: Hold{Kind: HoldFileID, Name: "ses-stamped"},
 		},
 	} {
 		t.Run("a registration of "+tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			broker := h.withSecrets()
-			holdFor(h)
+			holdFor(h, tc.holderSession, tc.holderFile)
 			h.launch()
 			h.helloWithIdentity()
 			err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: "ses_fresh",
@@ -417,18 +423,18 @@ func TestATmuxResumeByNameIsHeldToItsClaim(t *testing.T) {
 		// A claim a daemon before the hold recorded: its own session, and a file of the tester's
 		// name under another folder, which a resume finds the tester's session by.
 		stored := h.store.load(h.token)
-		stored.SessionFile = "/legion/state/home/.omp/agent/sessions/--pod-workspace--/2026-11-16T10-00-00-000Z_ses_holder.jsonl"
+		stored.SessionFile = "/legion/state/home/.omp/agent/sessions/--pod-workspace--/holder-session.jsonl"
 		if err := h.store.PutClaim(h.ctx, stored); err != nil {
 			t.Fatal(err)
 		}
-		holdFor(h)
+		holdFor(h, "ses_named", named)
 		h.deps.Limits.LaunchFailures = 1
 		h.restart()
 		resumes := len(h.calls("Resume"))
 
 		err := h.handle(RequestResume{Claim: h.token})
 		var refusal claim.Refusal
-		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal("2026-11-16T10-00-00-000Z_ses_holder.jsonl") {
+		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal("holder-session.jsonl") {
 			t.Fatalf("resuming a file of the tester's name = %v, want the refusal of its name", err)
 		}
 		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {

@@ -223,7 +223,7 @@ func TestABootHoldsWhatARolledBackDaemonRecorded(t *testing.T) {
 	if got, held := heldFor(t, cfg.PostgresDSN, project, supervise.HoldSessionID, "ses_window"); !held || got != window {
 		t.Errorf("ses_window is held for %q (a row %t) after the boot; want it held for %s, the one claim recording it", got, held, window)
 	}
-	if got, held := heldFor(t, cfg.PostgresDSN, project, supervise.HoldSessionFile, "/sessions/8.jsonl"); !held || got != taker {
+	if got, held := heldFor(t, cfg.PostgresDSN, project, supervise.HoldFileName, "8.jsonl"); !held || got != taker {
 		t.Errorf("taker's file is held for %q (a row %t) after the boot; want it held for %s", got, held, taker)
 	}
 	if got, _ := heldFor(t, cfg.PostgresDSN, project, supervise.HoldSessionID, "ses_taken"); got != holder {

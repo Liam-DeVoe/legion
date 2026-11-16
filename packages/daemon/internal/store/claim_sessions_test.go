@@ -58,7 +58,7 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 				t.Fatalf("%s holding ses_new answers %q; want %s, the first claim that recorded it", ask.token, holder, ask.want)
 			}
 		}
-		file := supervise.Hold{Kind: supervise.HoldSessionFile, Name: "ses_new"}
+		file := supervise.Hold{Kind: supervise.HoldFileName, Name: "ses_new"}
 		if holder := holdOne(ctx, t, store, project, second, file); holder != second {
 			t.Fatalf("%s holding a file named like first's id answers %q; want %s: each kind of name is held apart", second, holder, second)
 		}
@@ -74,7 +74,7 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 		for race := range 25 {
 			names := []supervise.Hold{
 				sessionHold(fmt.Sprintf("ses_raced_%d", race)),
-				{Kind: supervise.HoldSessionFile, Name: fmt.Sprintf("/sessions/w/2026_ses_raced_%d.jsonl", race)},
+				{Kind: supervise.HoldFileName, Name: fmt.Sprintf("2026_ses_raced_%d.jsonl", race)},
 				{Kind: supervise.HoldFileID, Name: fmt.Sprintf("ses_raced_%d", race)},
 			}
 			// The two ask for the names in opposite orders: the store takes them in one order, so
@@ -303,10 +303,10 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 		if err != nil {
 			t.Fatalf("hold the recorded names: %v", err)
 		}
-		if added != 2 {
-			t.Errorf("the boot's backfill held %d names, want 2: the rolled-back claim's file and its name", added)
+		if added != 1 {
+			t.Errorf("the boot's backfill held %d names, want 1: the rolled-back claim's file name", added)
 		}
-		if holder := holdOne(ctx, t, store, "legion", "legion-LEGION-399-implementer", supervise.Hold{Kind: supervise.HoldSessionFile, Name: "/rolled/back/took.jsonl"}); holder != "legion-LEGION-306-implementer" {
+		if holder := holdOne(ctx, t, store, "legion", "legion-LEGION-399-implementer", supervise.Hold{Kind: supervise.HoldFileName, Name: "took.jsonl"}); holder != "legion-LEGION-306-implementer" {
 			t.Errorf("the rolled-back claim's file is held for %q after the backfill, want its own claim", holder)
 		}
 		if again, err := store.HoldRecordedSessions(ctx, "legion"); err != nil || again != 0 {

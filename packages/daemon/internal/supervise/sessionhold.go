@@ -24,13 +24,14 @@ const (
 	// as its wake address (ensureEnrolled), and the one a Claude Code launch resumes, `--resume
 	// <id>`, read from its transcript's name (claudelaunch.ResumeSession).
 	HoldSessionID HoldKind = "session"
-	// HoldSessionFile is a session file's path: what an Oh My Pi launch resumes, `--resume=<file>`
-	// (runtime/sandbox's agentArgv, the tmux runtime's launcher), the key the launcher finds the
-	// session's row by in the session table (launcher's resumable and claudeKeeper), and the tmux
-	// runtime's first look (sessionFileOf).
-	HoldSessionFile HoldKind = "file"
-	// HoldFileName is a session file's base name: where the recorded path is missing, the tmux
-	// runtime resumes a file of that name one folder below a sessions directory (sessionFileOf).
+	// HoldFileName is a session file's base name (filepath.Base). It is every key a resume finds
+	// a session by its file with: an Oh My Pi launch resumes the recorded path (`--resume=<file>`,
+	// runtime/sandbox's agentArgv and the tmux runtime's launcher), the launcher finds the
+	// session's row in the session table by that path (launcher's resumable and claudeKeeper), and
+	// where the path is missing the tmux runtime resumes a file of the same name one folder below a
+	// sessions directory (sessionFileOf). Two paths that are one have one name, so holding the name
+	// holds the path too: no hold of the path alone is kept, since it could refuse nothing the
+	// name's hold does not.
 	HoldFileName HoldKind = "file-name"
 	// HoldFileID is the session id an Oh My Pi file name `<timestamp>_<id>.jsonl` gives, the part
 	// after its first `_`: the tmux runtime also resumes any `*_<id>.jsonl` there (newestSession).
@@ -47,13 +48,13 @@ type Hold struct {
 // RecordedHolds is every name a claim's record of session and sessionFile gives its session, each
 // a key some resume path or the secrets broker finds a session by (HoldKind), so that no claim
 // registers, relaunches into or enrolls another claim's session by any of them: the session id;
-// the file's path, its base name (filepath.Base, as the tmux runtime's search takes it), and the id
-// its Oh My Pi name `<timestamp>_<id>.jsonl` gives; and the Claude Code session a file named
-// `<uuid>.jsonl` gives, where that is not the session id itself. The last is wider than a Claude
-// Code resume, which also asks for a `projects` directory two levels up (claudelaunch.Transcript):
-// it refuses more, never less, and no Oh My Pi file is named for a bare uuid. An empty session or
-// file names nothing. The claim_sessions migration's backfill spells the same rule in SQL, and its
-// test holds the two to one answer.
+// the file's base name, which holds its path too (HoldFileName); the id its Oh My Pi name
+// `<timestamp>_<id>.jsonl` gives; and the Claude Code session a file named `<uuid>.jsonl` gives,
+// where that is not the session id itself. The last is wider than a Claude Code resume, which also
+// asks for a `projects` directory two levels up (claudelaunch.Transcript): it refuses more, never
+// less, and no Oh My Pi file is named for a bare uuid. An empty session or file names nothing. The
+// claim_sessions migration's backfill spells the same rule in SQL, and its test holds the two to
+// one answer.
 func RecordedHolds(session, sessionFile string) []Hold {
 	var holds []Hold
 	if session != "" {
@@ -63,7 +64,7 @@ func RecordedHolds(session, sessionFile string) []Hold {
 		return holds
 	}
 	base := filepath.Base(sessionFile)
-	holds = append(holds, Hold{Kind: HoldSessionFile, Name: sessionFile}, Hold{Kind: HoldFileName, Name: base})
+	holds = append(holds, Hold{Kind: HoldFileName, Name: base})
 	if stem, ok := strings.CutSuffix(base, ".jsonl"); ok {
 		if _, id, ok := strings.Cut(stem, "_"); ok && id != "" {
 			holds = append(holds, Hold{Kind: HoldFileID, Name: id})

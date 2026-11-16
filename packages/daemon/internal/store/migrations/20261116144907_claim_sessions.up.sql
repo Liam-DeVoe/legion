@@ -18,10 +18,11 @@
 -- A name is each key a resume path or the broker finds a session by (supervise.HoldKind):
 --   session    the session id, which the broker enrolls and a Claude Code launch resumes, and the
 --              id a file named `<uuid>.jsonl` gives, which a Claude Code relaunch resumes;
---   file       the session file's path, which an Oh My Pi launch resumes (`--resume=<file>`) and the
---              launcher finds the session's row by;
---   file-name  the file's base name, which the tmux runtime resumes one folder below a sessions
---              directory when the recorded path is missing;
+--   file-name  the file's base name. Every key a resume finds a session by its file with is held by
+--              it: an Oh My Pi launch resumes the recorded path (`--resume=<file>`), the launcher
+--              finds the session's row by that path, and the tmux runtime resumes a file of the
+--              same name one folder below a sessions directory when the path is missing. Two paths
+--              that are one have one name, so no row holds a path alone;
 --   file-id    the id after the first `_` of an Oh My Pi name `<timestamp>_<id>.jsonl`, by which the
 --              tmux runtime resumes any `*_<id>.jsonl` there.
 -- supervise.RecordedHolds is the same rule in Go, and the migration's test holds the two to one
@@ -54,7 +55,7 @@
 -- repairing by hand after a rollback but those names.
 create table claim_sessions (
   project text not null,
-  kind text not null check (kind in ('session', 'file', 'file-name', 'file-id')),
+  kind text not null check (kind in ('session', 'file-name', 'file-id')),
   name text not null check (name <> ''),
   claim text not null,
   recorded_at timestamptz not null default now(),
@@ -76,8 +77,6 @@ with recorded as (
     from recorded where coalesce(file, '') <> '') named
 ), names as (
   select project, token, 'session' as kind, session as name from recorded where coalesce(session, '') <> ''
-  union all
-  select project, token, 'file', file from files
   union all
   select project, token, 'file-name', base from files
   union all
