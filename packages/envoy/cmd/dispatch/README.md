@@ -4512,7 +4512,9 @@ Each item below names a path with its method and identity, then its purpose.
     Dispatch judges each covered document at the version that the request hands the person.
     With no request open, these are the documents that the request names.
     With a request open, they are the documents that the open request names.
-    These texts break the form: a statement of more than two sentences, a sentence of more than 25 words and a hard finding of ASD-STE100.
+    These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
+    A hard finding of ASD-STE100 also breaks it.
+    A sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
     A request that holds one is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
     `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
