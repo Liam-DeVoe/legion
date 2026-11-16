@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -171,10 +172,16 @@ func askPartPairs(parts []itemblocks.Block, ids []string, r *Reader) []blockPair
 // ReindexOwed), so one write asks the database once per kind for the question and its parts
 // together.
 //
-// It returns the targets of the part mentions it moved, which the caller's event counts.
-func IndexAskParts(ctx context.Context, tx pgx.Tx, r *Reader, ask model.Ask, at time.Time) ([]Target, error) {
+// It returns the targets of the part mentions it moved, which the caller's event counts, and what
+// it states in the node and tuple store, held for that event (indexItemBlocks): each part's node,
+// its part_of to the ask and the links it holds.
+func IndexAskParts(ctx context.Context, tx pgx.Tx, r *Reader, ask model.Ask, at time.Time) ([]Target, graphstore.Uncaused, error) {
+	scope, err := readItemScope(ctx, tx, ItemAsk, ask.ID)
+	if err != nil {
+		return nil, graphstore.Uncaused{}, err
+	}
 	parts := AskParts(ask)
-	return indexAskParts(ctx, tx, ask, parts, askPartsSum(parts), r, at)
+	return indexAskParts(ctx, tx, ask, parts, askPartsSum(parts), r, at, scope)
 }
 
 // IndexAskPartsCounted is IndexAskParts for a writer that appends an event: it indexes the ask's
@@ -184,7 +191,8 @@ func IndexAskParts(ctx context.Context, tx pgx.Tx, r *Reader, ask model.Ask, at 
 // (model.ReferenceChanges{}) for a write that reconciles none. Each target is named once
 // (MergeChanges), since the ask's row and the part holding the same link resolve to it alike. It
 // is ReplaceCountedItem's shape for an ask, whose question text is reconciled beside its parts
-// rather than from one extraction.
+// rather than from one extraction. What the parts state in the store is held for the writer's
+// event, as IndexAskParts holds it.
 func IndexAskPartsCounted(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -192,25 +200,26 @@ func IndexAskPartsCounted(
 	ask model.Ask,
 	at time.Time,
 	beside model.ReferenceChanges,
-) (model.ReferenceChanges, error) {
-	moved, err := IndexAskParts(ctx, tx, r, ask, at)
+) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	moved, written, err := IndexAskParts(ctx, tx, r, ask, at)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	counted, err := CountedChanges(ctx, tx, moved)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return MergeChanges(beside, counted), nil
+	return MergeChanges(beside, counted), written, nil
 }
 
-// indexAskParts is IndexAskParts over parts the caller has already read and summed.
-func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, parts []itemblocks.Block, sum string, r *Reader, at time.Time) ([]Target, error) {
+// indexAskParts is IndexAskParts over parts the caller has already read and summed, under a scope
+// it has already read.
+func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, parts []itemblocks.Block, sum string, r *Reader, at time.Time, scope itemScope) ([]Target, graphstore.Uncaused, error) {
 	makers, err := askPartMakers(ask, parts)
 	if err != nil {
-		return nil, err
+		return nil, graphstore.Uncaused{}, err
 	}
-	return indexItemBlocks(ctx, tx, ItemAsk, ask.ID, at, itemBlockSource{
+	return indexItemBlocks(ctx, tx, ItemAsk, ask.ID, at, scope, itemBlockSource{
 		blocks:  parts,
 		bodySum: sum,
 		madeBy:  makers,
@@ -270,7 +279,9 @@ func askForParts(ctx context.Context, q Queryer, askID string) (model.Ask, time.
 // indexAskIfOwed is IndexItemIfOwed for an ask: it indexes the ask's parts when they are owed,
 // which is when its state row is missing (a build older than the part index wrote the ask),
 // owed (owed_at set by such a build's write, or by rebuild-refs), or indexed from other parts
-// than the ask holds now. The caller holds the ask row.
+// than the ask holds now. The caller holds the ask row. No event records an owed index - the
+// text it reads was written by a write that appended its own - so what it states in the store
+// is appended at the sentinel (graphstore.NoEvent), in the caller's transaction.
 func indexAskIfOwed(ctx context.Context, tx pgx.Tx, askID, serverURL string) (bool, error) {
 	var stated, owed bool
 	var sum *string
@@ -287,9 +298,17 @@ func indexAskIfOwed(ctx context.Context, tx pgx.Tx, askID, serverURL string) (bo
 	if stated && !owed && sum != nil && *sum == partsSum {
 		return false, nil
 	}
+	scope, err := readItemScope(ctx, tx, ItemAsk, askID)
+	if err != nil {
+		return false, err
+	}
 	resolve := NewReader(ctx, tx, string(ItemAsk), askID, serverURL)
-	if _, err := indexAskParts(ctx, tx, ask, parts, partsSum, resolve, writtenAt); err != nil {
+	_, written, err := indexAskParts(ctx, tx, ask, parts, partsSum, resolve, writtenAt, scope)
+	if err != nil {
 		return false, fmt.Errorf("index the parts of ask %s: %w", askID, err)
+	}
+	if err := graphstore.Caused(ctx, tx, written, graphstore.NoEvent); err != nil {
+		return false, fmt.Errorf("state the parts of ask %s in the store: %w", askID, err)
 	}
 	return true, nil
 }

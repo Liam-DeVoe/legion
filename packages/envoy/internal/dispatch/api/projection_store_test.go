@@ -1125,7 +1125,10 @@ func (r *projectionRun) relations(t *testing.T, ctx context.Context, kind string
 // (dispatch://INFRA-3862): an issue, a document, an ask and a message, each written at its own
 // create site, beside the rows it writes, which carry no node columns, and the delivery attempt
 // (dispatch://INFRA-1152), written at the site that opens it, before the comment_deliveries or
-// message_deliveries row that names it (migration 20261116102800).
+// message_deliveries row that names it (migration 20261116102800). A block of a comment's, a
+// message's or an ask's body is a `block` node too (dispatch://INFRA-1152), written before the
+// comment_blocks, message_blocks or ask_blocks row that names it (migration 20261116140000), so
+// no node of a comment_block, message_block or ask_block kind reaches the store.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	moved := []string{"block", "block_ref", "comment"}

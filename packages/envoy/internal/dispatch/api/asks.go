@@ -239,10 +239,14 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The row says in its own insert that the store holds what this write states of the ask -
+	// its citations and its parts, appended below under its ask.opened - which is what
+	// graph_edges and the trigger on this insert read (asks.tuples_stored_at, migration
+	// 20261116140001). It is the ask's created_at: both take the transaction's clock, now().
 	var ask model.Ask
 	if err := tx.QueryRow(r.Context(), `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, tuples_stored_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
 		returning created_at
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind).Scan(&ask.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
@@ -276,18 +280,19 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// The question and the parts of this write through one reader: its parts hold its question,
 	// so the database answers once per kind for both.
 	reader := refs.NewReader(r.Context(), tx, "ask", ask.ID, s.deps.ServerURL)
-	askChanges, err := refs.ReplaceCounted(r.Context(), tx, reader, ask.Question)
+	askChanges, cited, err := refs.ReplaceCounted(r.Context(), tx, reader, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// The ask's parts, beside the ask's own references: the row is in, so its state row comes
 	// after it, and the event below names what both moved.
-	askChanges, err = refs.IndexAskPartsCounted(r.Context(), tx, reader, ask, ask.CreatedAt, askChanges)
+	askChanges, indexed, err := refs.IndexAskPartsCounted(r.Context(), tx, reader, ask, ask.CreatedAt, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
 	appended := []model.Event{}
 	if snapshot != nil {
 		snapshotEvent, err := s.commitArtifactVersionEvent(r.Context(), tx, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
@@ -326,6 +331,12 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	if err := graphstore.Caused(r.Context(), tx, askNode, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the question and the parts state in the store, under the same event: the parts' nodes,
+	// their part_of and links, and the ask's citations.
+	if err := graphstore.Caused(r.Context(), tx, indexed, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -575,7 +586,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
 	reader := refs.NewReader(documentCtx, tx, "ask", ask.ID, s.deps.ServerURL)
-	askChanges, err := refs.ReplaceCountedEdit(documentCtx, tx, reader, previous.Question, ask.Question)
+	askChanges, cited, err := refs.ReplaceCountedEdit(documentCtx, tx, reader, previous.Question, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -583,7 +594,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// The edit writes the question and the options, so it is a revision of the ask's parts:
 	// index them, through the same reader, at the edited_at the row took, and name what they
 	// moved beside the rest.
-	askChanges, err = refs.IndexAskPartsCounted(documentCtx, tx, reader, ask, editedAt, askChanges)
+	askChanges, indexed, err := refs.IndexAskPartsCounted(documentCtx, tx, reader, ask, editedAt, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -598,6 +609,13 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := refs.Stamp(documentCtx, tx, "ask", ask.ID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the edit states in the store - its parts' nodes and links and the ask's citations -
+	// under the ask.edited that records it.
+	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+	if err := graphstore.Caused(documentCtx, tx, indexed, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

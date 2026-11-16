@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -171,6 +172,9 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 // of that source's own transaction, so a rebuild still never holds the whole table: making the
 // rebuild one transaction instead would order it against every writer at once and hold every
 // source's row for the length of the pass, which is minutes on a large database.
+//
+// An item's citations its reconcile states (replaceRefs) are appended in the same transaction, at
+// the sentinel (graphstore.NoEvent): a rebuild is no write any event records.
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -182,8 +186,12 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 		return false, err
 	}
 	located := NewReader(ctx, tx, fromKind, fromID, serverURL).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil); err != nil {
+	_, cited, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil)
+	if err != nil {
 		return false, err
+	}
+	if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: cited}, graphstore.NoEvent); err != nil {
+		return false, fmt.Errorf("state the citations of %s %s in the store: %w", fromKind, fromID, err)
 	}
 	return true, tx.Commit(ctx)
 }
@@ -402,7 +410,10 @@ func ReindexOwed(ctx context.Context, pool Pool, source Owed, serverURL string) 
 // sourceText answered: an item whose source is gone has its edges deleted instead. A comment or
 // message has its blocks indexed too (IndexItem, which takes the item's block state row after the
 // source row), and an ask its parts (IndexAskParts, read from the same row sourceText locked), so
-// the mentions its blocks hold are read with the same grammar as its own.
+// the mentions its blocks hold are read with the same grammar as its own. What the re-index states
+// in the node and tuple store - the item's block nodes, their part_of and links, and its
+// citations - is appended in tx at the sentinel (graphstore.NoEvent): the re-index of old text is
+// no write any event records.
 func reindexText(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL string, writtenAt time.Time, found bool) error {
 	if !found {
 		if _, err := tx.Exec(ctx, `delete from refs where from_kind = $1 and from_id = $2`, kind, id); err != nil {
@@ -412,9 +423,11 @@ func reindexText(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 	}
 	resolve := NewReader(ctx, tx, kind, id, serverURL)
 	located := resolve.Mentions(body)
+	var written graphstore.Uncaused
 	switch itemKind := ItemKind(kind); itemKind {
 	case ItemComment, ItemMessage:
-		if _, err := IndexItem(ctx, tx, itemKind, id, body, writtenAt, located, nil); err != nil {
+		var err error
+		if _, written, err = IndexItem(ctx, tx, itemKind, id, body, writtenAt, located, nil); err != nil {
 			return fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
 		}
 	case ItemAsk:
@@ -425,13 +438,18 @@ func reindexText(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 			return err
 		}
 		if found {
-			if _, err := IndexAskParts(ctx, tx, resolve, ask, writtenAt); err != nil {
+			if _, written, err = IndexAskParts(ctx, tx, resolve, ask, writtenAt); err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", id, err)
 			}
 		}
 	}
-	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), &writtenAt); err != nil {
+	_, cited, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), &writtenAt)
+	if err != nil {
 		return fmt.Errorf("index %s %s: %w", kind, id, err)
+	}
+	written.Tuples = append(written.Tuples, cited...)
+	if err := graphstore.Caused(ctx, tx, written, graphstore.NoEvent); err != nil {
+		return fmt.Errorf("state the index of %s %s in the store: %w", kind, id, err)
 	}
 	return nil
 }

@@ -968,7 +968,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	referenceChanges, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, s.deps.ServerURL, comment.CreatedAt)
+	referenceChanges, indexed, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, s.deps.ServerURL, comment.CreatedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1035,6 +1035,12 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	if err := graphstore.Caused(r.Context(), tx, attemptsOpened, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the comment's body is in the store, under the same event: its blocks' nodes, their
+	// part_of and the links they hold, and its citations (refs.ReplaceCountedItem).
+	if err := graphstore.Caused(r.Context(), tx, indexed, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

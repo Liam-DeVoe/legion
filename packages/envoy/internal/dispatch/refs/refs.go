@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -50,35 +51,42 @@ type Target struct {
 // The source is r's own: a write that holds another text of the same source - an ask's parts
 // beside its question (IndexAskParts) - passes the one reader to both, so the database answers
 // once per kind for the write rather than once per text.
+//
+// Its second result is what the reconcile states in the node and tuple store for a source that is
+// a comment, a message or an ask: the item's citations (replaceRefs), held for the event of the
+// write, which the caller appends after this and hands to graphstore.Caused.
 func ReplaceCounted(
 	ctx context.Context,
 	tx pgx.Tx,
 	r *Reader,
 	body string,
-) (model.ReferenceChanges, error) {
+) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	found := text.Refs(r.Mentions(body))
-	changed, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
+	changed, cited, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return CountedChanges(ctx, tx, changed)
+	counted, err := CountedChanges(ctx, tx, changed)
+	return counted, graphstore.Uncaused{Tuples: cited}, err
 }
 
 // ReplaceCountedEdit is ReplaceCounted for an edit of an ask's question from previous to body. It
 // names the targets whose edges the edit inserted or deleted and those whose excerpt it moved
-// (editedHeadTargets).
+// (editedHeadTargets), and holds what it states in the store for the edit's event, as
+// ReplaceCounted does.
 func ReplaceCountedEdit(
 	ctx context.Context,
 	tx pgx.Tx,
 	r *Reader,
 	previous, body string,
-) (model.ReferenceChanges, error) {
+) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	found := text.Refs(r.Mentions(body))
-	changed, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
+	changed, cited, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return CountedChanges(ctx, tx, append(changed, editedHeadTargets(previous, body, found)...))
+	counted, err := CountedChanges(ctx, tx, append(changed, editedHeadTargets(previous, body, found)...))
+	return counted, graphstore.Uncaused{Tuples: cited}, err
 }
 
 // editedHeadTargets is what an edit of an ask's question or a comment's body from previous to body,
@@ -115,7 +123,9 @@ func ReplaceDocumentCounted(
 	moved []Target,
 	excerpts map[Target]model.GraphExcerpt,
 ) (model.ReferenceChanges, error) {
-	changed, err := replaceRefs(ctx, tx, "artifact", artifactID, found, &versionAt)
+	// A document's rows are no item's citations: replaceRefs states none for an artifact, whose
+	// rows another child moves into the store.
+	changed, _, err := replaceRefs(ctx, tx, "artifact", artifactID, found, &versionAt)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -145,37 +155,119 @@ func ReplaceDocumentCounted(
 // It settles what the source owes the re-index queue (settleOwed): this text has now been read
 // with the whole grammar, so a write this build makes costs the drain nothing and only an older
 // build's write stays owed.
-func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) ([]Target, error) {
+//
+// For a source that is a comment, a message or an ask it reads the item's scope first
+// (readItemScope) and answers, beside the targets, the item's citations its rows are the
+// projection of (replaceRefsOf). Every writer of an item's refs rows reconciles them here, so no
+// such row is written holding tuples_stored without the tuple it says the store holds.
+func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) ([]Target, []graphstore.UncausedTuple, error) {
+	var scope itemScope
+	if item := ItemKind(fromKind); slices.Contains(itemKinds, item) {
+		var err error
+		if scope, err = readItemScope(ctx, tx, item, fromID); err != nil {
+			return nil, nil, err
+		}
+	}
+	return replaceRefsOf(ctx, tx, fromKind, fromID, found, insertedAt, scope)
+}
+
+// replaceRefsOf is replaceRefs under a scope its caller has already read. For an item whose node
+// the store holds (itemScope), each row the reconcile inserts is the item's citation: a `mentions`
+// tuple out of the item's node - the kind every refs row holds - to the row's own far end, dated by
+// the row's created_at and taking the source_seq the write's event stamps on it
+// (graphstore.UncausedTuple's LegacyFromCause), and the row holds tuples_stored from its own insert
+// (migration 20261116135959), which is what graph_edges reads to answer it from that tuple rather
+// than from its refs arm (migration 20261116140008). A row it deletes that held tuples_stored is
+// retracted, dated by the moment the item stopped citing it, the time its new rows take; a row that
+// held none had no tuple to retract. A surviving row keeps its marker and earns nothing: a row an
+// older build wrote for the item keeps false, and the refs arm keeps answering it. A document's
+// rows, an item the store holds no node of and a far end past the store's address bound state no
+// tuple and hold false. Each is made by the item's maker.
+func replaceRefsOf(
+	ctx context.Context,
+	tx pgx.Tx,
+	fromKind, fromID string,
+	found []text.Ref,
+	insertedAt *time.Time,
+	scope itemScope,
+) ([]Target, []graphstore.UncausedTuple, error) {
 	kinds, ids := refTargets(found)
-	changed, err := scanTargets(tx.Query(ctx, `
+	cited := func(row citationRow, asserted bool) graphstore.UncausedTuple {
+		return graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			FromKind: fromKind, FromID: fromID, Kind: row.kind, ToKind: row.toKind, ToID: row.toID,
+			At: row.at, Who: scope.node.MadeBy, LegacySourceSeq: row.sourceSeq, Asserted: asserted,
+		}, LegacyFromCause: asserted}
+	}
+	dropped, err := scanCitationRows(tx.Query(ctx, `
 		delete from refs
 		where from_kind = $1 and from_id = $2 and to_kind = any($5)
 		  and not exists (
 		    select 1 from unnest($3::text[], $4::text[]) as target(kind, id)
 		    where target.kind = refs.to_kind and target.id = refs.to_id
 		  )
-		returning to_kind, to_id
-	`, fromKind, fromID, kinds, ids, nodeKinds))
+		returning kind, to_kind, to_id, coalesce($6::timestamptz, now()), null::bigint, tuples_stored
+	`, fromKind, fromID, kinds, ids, nodeKinds, insertedAt))
 	if err != nil {
-		return nil, fmt.Errorf("clear references: %w", err)
+		return nil, nil, fmt.Errorf("clear references: %w", err)
+	}
+	changed := make([]Target, 0, len(dropped)+len(kinds))
+	var tuples []graphstore.UncausedTuple
+	for _, row := range dropped {
+		changed = append(changed, Target{Kind: row.toKind, ID: row.toID})
+		if row.stored {
+			tuples = append(tuples, cited(row, false))
+		}
 	}
 	if len(kinds) > 0 {
-		added, err := scanTargets(tx.Query(ctx, `
-			insert into refs (from_kind, from_id, to_kind, to_id, created_at)
-			select $1, $2, target.kind, target.id, coalesce($5::timestamptz, now())
+		added, err := scanCitationRows(tx.Query(ctx, `
+			insert into refs (from_kind, from_id, to_kind, to_id, created_at, tuples_stored)
+			select $1, $2, target.kind, target.id, coalesce($5::timestamptz, now()),
+			       $6::boolean and octet_length(target.id) <= $7
 			from unnest($3::text[], $4::text[]) as target(kind, id)
 			on conflict (from_kind, from_id, to_kind, to_id) do nothing
-			returning to_kind, to_id
-		`, fromKind, fromID, kinds, ids, insertedAt))
+			returning kind, to_kind, to_id, created_at, source_seq, tuples_stored
+		`, fromKind, fromID, kinds, ids, insertedAt, scope.held, graphstore.MaxAddressBytes))
 		if err != nil {
-			return nil, fmt.Errorf("write reference: %w", err)
+			return nil, nil, fmt.Errorf("write reference: %w", err)
 		}
-		changed = append(changed, added...)
+		for _, row := range added {
+			changed = append(changed, Target{Kind: row.toKind, ID: row.toID})
+			if row.stored {
+				tuples = append(tuples, cited(row, true))
+			}
+		}
 	}
 	if err := settleOwed(ctx, tx, fromKind, fromID); err != nil {
+		return nil, nil, err
+	}
+	return changed, tuples, nil
+}
+
+// citationRow is one refs row the reconcile inserted or deleted, as its statement returns it: the
+// row's kind and far end, the moment its citation is dated by - the row's created_at for one it
+// inserted, the reconcile's own time for one it deleted - its source_seq, and whether it holds
+// tuples_stored.
+type citationRow struct {
+	kind, toKind, toID string
+	at                 time.Time
+	sourceSeq          *int64
+	stored             bool
+}
+
+func scanCitationRows(rows pgx.Rows, err error) ([]citationRow, error) {
+	if err != nil {
 		return nil, err
 	}
-	return changed, nil
+	defer rows.Close()
+	var read []citationRow
+	for rows.Next() {
+		var row citationRow
+		if err := rows.Scan(&row.kind, &row.toKind, &row.toID, &row.at, &row.sourceSeq, &row.stored); err != nil {
+			return nil, err
+		}
+		read = append(read, row)
+	}
+	return read, rows.Err()
 }
 
 // settleOwed deletes the row one source owes the re-index queue (refs_grammar_owed), in the write's

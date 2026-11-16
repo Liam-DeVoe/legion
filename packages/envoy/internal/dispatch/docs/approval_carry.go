@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -595,7 +596,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, as
 	ask.Answer = &answer
 	// The answer is a part of the request, so its text reaches the graph with it, and the
 	// ask.answered below names what it moved.
-	changes, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, serverURL),
+	changes, indexed, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, serverURL),
 		*ask, answer.At, model.ReferenceChanges{})
 	if err != nil {
 		return model.Event{}, fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
@@ -616,6 +617,10 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, as
 	// a ?since= read lists them.
 	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
 		return model.Event{}, fmt.Errorf("stamp approval ask answer references: %w", err)
+	}
+	// What the answer's part states in the store, under the ask.answered that records it.
+	if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
+		return model.Event{}, fmt.Errorf("state approval ask %s's answer in the store: %w", ask.ID, err)
 	}
 	return event, nil
 }

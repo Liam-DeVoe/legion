@@ -169,6 +169,31 @@ var storeWriteCallSites = []string{
 	// The block index: its nodes inside the revision fence, whose tuples and cause wait for the
 	// event that recorded the version (the sites of Caused above).
 	"refs/blocks.go#IndexBlocks",
+	// The index of an item's body (dispatch://INFRA-1152): the block nodes of a comment, a
+	// message or an ask, written before the block rows that name them, whose part_of, links and
+	// the item's citations wait for the event of the write that indexed them (the item writers'
+	// sites, each listed here, and each owed pass, which appends them at the sentinel in its own
+	// transaction: the owed index, the re-index of old text, the rebuild, a restored wording and
+	// the seed). The nodes are taken after the item's own row and state row, in ascending
+	// (kind, id) in one statement (graphstore.WriteUncaused), and Caused takes no row they did not
+	// (refs' TestCausedTakesTheStoreLockOrder proves that step).
+	"refs/item_blocks.go#indexItemBlocks",
+	"refs/ask_blocks.go#indexAskIfOwed",
+	"refs/reply_blocks.go#IndexItemIfOwed",
+	"refs/rebuild.go#reindexText",
+	"refs/rebuild.go#replaceInTx",
+	"api/asks.go#editAsk",
+	"api/ask_transitions.go#closeAskTx",
+	"api/comment_actions.go#editComment",
+	"api/issue_ask_lifecycle.go#restoreIssueAsksTx",
+	"docs/approval_ask.go#RewriteApprovalAsk",
+	"docs/approval_carry.go#answerApprovalAsk",
+	"docs/ask_blocks.go#causeIndexedAsks",
+	"docs/decided_wording.go#restoreWordings",
+	"cmd/dispatch-seed/write_items.go#stateAtSentinel",
+	// The erase of a comment's block nodes with the comment (grapherase's eraseItemBlocks), after
+	// the comment's own node, each through EraseNode over the tuples its listing named.
+	"grapherase/erase.go#eraseItemBlocks",
 }
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,

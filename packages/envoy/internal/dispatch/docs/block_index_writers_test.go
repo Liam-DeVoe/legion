@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -163,8 +164,9 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 // as it does today, and the block-index reconciliation then writes all three for it - proven by
 // killing the tick's transaction and finding none of them. The tick takes the document's owner
 // row and then its owed row before it writes either, in that order. The item block pass writes
-// no row of the store. The rebuild writes refs and marks work owed and writes no row of
-// document_blocks, block_refs or comments.
+// one block node per block of an item the store holds, with its part_of and its links, and no row
+// of the store for an item the store does not hold. The rebuild writes refs and marks work owed
+// and writes no row of document_blocks, block_refs or comments.
 func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	requireEveryPassReadsItsSource(t)
 	if t.Failed() {
@@ -240,7 +242,7 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	}
 
 	requireTheTickLocksTheOwnerThenTheOwedRow(t, database, service)
-	requireTheItemBlockPassWritesNoStoreRow(t, database, service)
+	requireTheItemBlockPassWritesTheItemsBlockNodes(t, database, service)
 	requireTheRebuildWritesNoProjectedRow(t, database)
 }
 
@@ -352,51 +354,120 @@ func requireTheOtherRow(t *testing.T, database *store.Store, document, waitingAt
 	}
 }
 
-// requireTheItemBlockPassWritesNoStoreRow runs the item block pass (refs.IndexOwedItemBlocks,
-// the tick's third batch) over a comment owed the index of its own blocks, and holds the pass to
-// writing no row of graph_nodes and no row of graph_tuples: this child moves no body block of a
-// comment, a message or an ask into the store. Every document is indexed first, so the tick
-// that runs the pass has no document of its own to write, and a row of either table that moved
-// is the pass's.
-func requireTheItemBlockPassWritesNoStoreRow(t *testing.T, database *store.Store, service *Service) {
+// requireTheItemBlockPassWritesTheItemsBlockNodes runs the item block pass
+// (refs.IndexOwedItemBlocks, the tick's third batch) over two comments owed the index of their
+// own blocks, each of two paragraphs, the second citing an issue. One is an older build's: the row
+// alone, which names no node, and the pass writes no row of graph_nodes or graph_tuples for it,
+// since a block node's part_of names an item node the store must hold. The other is this build's,
+// whose row names its node: the pass writes a `block` node for each of its blocks, each row
+// naming it, a part_of from each to the comment, and the second block's link to the issue, all at
+// the sentinel, since the pass records no event. Every document is indexed first, so the tick that
+// runs the pass has no document of its own to write, and a row of either table that moved is the
+// pass's.
+func requireTheItemBlockPassWritesTheItemsBlockNodes(t *testing.T, database *store.Store, service *Service) {
 	t.Helper()
 	ctx := context.Background()
 	drainBlockIndex(t, service, "every document before the item block pass")
-	// A comment of an older build: the row alone, which migration 0143's trigger leaves owed
-	// a block index (comment_block_state.owed_at). Two paragraphs, one citing an issue, so the
-	// pass has blocks and a block reference to write.
-	var comment string
+	const body = "One.\n\nTwo cites dispatch://CORE-2."
+	// An older build's comment: migration 0143's trigger leaves it owed a block index
+	// (comment_block_state.owed_at).
+	var older string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (issue_key, author, body)
-		values ('CORE-1', '{"kind":"user","id":"alice"}', E'One.\n\nTwo cites dispatch://CORE-2.')
+		values ('CORE-1', '{"kind":"user","id":"alice"}', $1)
 		returning id::text
-	`).Scan(&comment); err != nil {
-		t.Fatalf("write the owed comment: %v", err)
+	`, body).Scan(&older); err != nil {
+		t.Fatalf("write the older build's owed comment: %v", err)
 	}
 	nodes, tuples := tableFingerprint(t, database, "graph_nodes"), tableFingerprint(t, database, "graph_tuples")
 	tick := reconcileBlockIndex(t, service, "")
 	if tick.ItemBlocks != 1 || tick.Documents != 0 {
 		t.Fatalf("the tick indexed the blocks of %d items and %d documents, want the owed comment's alone", tick.ItemBlocks, tick.Documents)
 	}
-	var blocks int
-	if err := database.Pool.QueryRow(ctx,
-		`select count(*) from comment_blocks where comment_id = $1::uuid`, comment).Scan(&blocks); err != nil {
-		t.Fatalf("count the comment's blocks: %v", err)
-	}
-	if blocks != 2 {
-		t.Fatalf("the item block pass wrote %d blocks of the two-paragraph comment, want 2: it ran over nothing", blocks)
+	if blocks := countItemBlocks(t, database, older, false); blocks != 2 {
+		t.Fatalf("the item block pass wrote %d blocks of the older build's two-paragraph comment, want 2: it ran over nothing", blocks)
 	}
 	// A fingerprint is the row count, then every row's xmin: the message prints the counts,
 	// since a table of the store holds thousands of rows by now.
 	rowsOf := func(fingerprint string) string { return strings.SplitN(fingerprint, "|", 2)[0] }
 	if now := tableFingerprint(t, database, "graph_nodes"); now != nodes {
-		t.Errorf("the item block pass wrote graph_nodes: it held %s rows and left %s, or rewrote one, want no row of the store written",
+		t.Errorf("the item block pass wrote graph_nodes for a comment the store holds no node of: it held %s rows and left %s, or rewrote one, want none written",
 			rowsOf(nodes), rowsOf(now))
 	}
 	if now := tableFingerprint(t, database, "graph_tuples"); now != tuples {
-		t.Errorf("the item block pass wrote graph_tuples: it held %s rows and left %s, or rewrote one, want no row of the store written",
+		t.Errorf("the item block pass wrote graph_tuples for a comment the store holds no node of: it held %s rows and left %s, or rewrote one, want none written",
 			rowsOf(tuples), rowsOf(now))
 	}
+
+	// This build's comment: its node first, then the row naming it, which the same trigger leaves
+	// owed its block index.
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the write of this build's comment: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var marked string
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&marked); err != nil {
+		t.Fatalf("pick the comment's id: %v", err)
+	}
+	node, _ := graphstore.CommentFacts(nil, marked, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(),
+		graphstore.NoEvent, "", "", "CORE", nil)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+		t.Fatalf("write the comment's node: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into comments (id, issue_key, author, body, node_kind, node_address, tuples_stored)
+		values ($1::uuid, 'CORE-1', '{"kind":"user","id":"alice"}', $2, $3, $4, true)
+	`, marked, body, graphstore.KindComment, marked); err != nil {
+		t.Fatalf("write this build's owed comment: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit this build's comment: %v", err)
+	}
+	before := highestTuple(t, database)
+	if tick := reconcileBlockIndex(t, service, ""); tick.ItemBlocks != 1 || tick.Documents != 0 {
+		t.Fatalf("the tick indexed the blocks of %d items and %d documents, want this build's owed comment alone", tick.ItemBlocks, tick.Documents)
+	}
+	if blocks := countItemBlocks(t, database, marked, true); blocks != 2 {
+		t.Fatalf("the item block pass wrote %d blocks of this build's comment naming their nodes, want 2", blocks)
+	}
+	var blockNodes int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where kind = $1 and id like $2`,
+		refs.BlockNodeKind, graphstore.KindComment+"/"+marked+"#%").Scan(&blockNodes); err != nil {
+		t.Fatalf("count the comment's block nodes: %v", err)
+	}
+	if blockNodes != 2 {
+		t.Errorf("the item block pass wrote %d block nodes of this build's two-paragraph comment, want 2", blockNodes)
+	}
+	var partOf, links, caused int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) filter (where kind = $3 and to_kind = $4 and to_id = $5),
+			count(*) filter (where kind = 'mentions' and to_kind = 'issue' and to_id = 'CORE-2'),
+			count(*) filter (where source_event <> $6)
+		from graph_tuples
+		where seq > $1 and from_kind = $2 and from_id like $7 and asserted
+	`, before, refs.BlockNodeKind, graphstore.TuplePartOf, graphstore.KindComment, marked, graphstore.NoEvent,
+		graphstore.KindComment+"/"+marked+"#%").Scan(&partOf, &links, &caused); err != nil {
+		t.Fatalf("read the tuples the item block pass appended: %v", err)
+	}
+	if partOf != 2 || links != 1 || caused != 0 {
+		t.Errorf("the item block pass appended %d part_of, %d links and %d tuples under an event, want 2, 1 and none: the pass records no event",
+			partOf, links, caused)
+	}
+}
+
+// countItemBlocks is how many block rows of comment hold a position, and of those, where
+// naming is set, how many name their node.
+func countItemBlocks(t *testing.T, database *store.Store, comment string, naming bool) int {
+	t.Helper()
+	var blocks int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from comment_blocks
+		where comment_id = $1::uuid and position is not null and (not $2 or node_kind is not null)
+	`, comment, naming).Scan(&blocks); err != nil {
+		t.Fatalf("count the blocks of comment %s: %v", comment, err)
+	}
+	return blocks
 }
 
 // requireTheRebuildWritesNoProjectedRow holds refs.RebuildAll to what it is: a writer of refs
@@ -587,6 +658,27 @@ var indexPasses = map[string]string{
 	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
 	"refs/blocks.go#replaceBlockRefs":           "the version's render",
 	"refs/refs.go#Stamp":                        "the event that recorded the write",
+	// The index of an item's body: its blocks' nodes, their part_of and links, and the item's
+	// citations, read off the item's text and compared with what the store holds of its blocks'
+	// placement alone (itemBlockParents), as reconcileBlockParents compares a document's.
+	"refs/item_blocks.go#indexItemBlocks":  "the item's text",
+	"refs/ask_blocks.go#indexAskIfOwed":    "the ask's question, options and answer",
+	"refs/reply_blocks.go#IndexItemIfOwed": "the item's stored text, read from its own row",
+	"refs/rebuild.go#reindexText":          "the source's stored text",
+	"refs/rebuild.go#replaceInTx":          "the source's stored text",
+	// Each site that appends what an item's index stated under the event of the write that
+	// indexed it (graphstore.Caused).
+	"api/asks.go#editAsk":                              "the edit request and the ask.edited it appended",
+	"api/ask_transitions.go#closeAskTx":                "the transition the request applied and the event it appended",
+	"api/issue_ask_lifecycle.go#restoreIssueAsksTx":    "the asks the reopen restored and the ask.opened it appended for each",
+	"docs/approval_ask.go#RewriteApprovalAsk":          "the rewording the request wrote and the ask.edited it appended",
+	"docs/approval_carry.go#answerApprovalAsk":         "the answer the carry wrote and the ask.answered it appended",
+	"docs/ask_blocks.go#causeIndexedAsks":              "the asks a settlement indexed and the events it appended for them",
+	"docs/decided_wording.go#restoreWordings":          "the decided wording the restore wrote back",
+	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "the seed's own plan",
+	// The erase of an erased comment's block nodes and their tuples: the node the operator named
+	// and what the store holds of the blocks its address names.
+	"grapherase/erase.go#eraseItemBlocks": "the node the operator named",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the

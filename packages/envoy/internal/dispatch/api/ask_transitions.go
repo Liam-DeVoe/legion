@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -497,7 +498,7 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, id string, actor mod
 	// every part of an ask an older build left owed. The answer a transition wrote is in tx, so
 	// the ask's Replies rows are read after it.
 	at := refs.AskPartsAt(ask)
-	changes, err := s.indexAskParts(ctx, tx, ask, at, model.ReferenceChanges{})
+	changes, indexed, err := s.indexAskParts(ctx, tx, ask, at, model.ReferenceChanges{})
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
@@ -518,6 +519,10 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, id string, actor mod
 	// The answer's part edges are new rows of this transaction, so they take the event's id and
 	// a ?since= read lists them, as a create's and an edit's do.
 	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
+		return model.Ask{}, nil, err
+	}
+	// What the parts state in the store, under the transition's own event.
+	if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
 		return model.Ask{}, nil, err
 	}
 	events := []model.Event{event}

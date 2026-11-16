@@ -711,16 +711,18 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 }
 
 // graphArmCount guards that the census reads every arm. It is the arm list of
-// 20261116124448_graph_edges_comment_tuples, the last migration to restate graph_edges: the 27
+// 20261116140008_graph_edges_item_block_tuples, the last migration to restate graph_edges: the 27
 // arms 20261105014808 restated it with, the comment answers arm among them, the one arm over the
 // store's current tuples 20261109215947 adds, the arm over a message's reply to a message's block
-// that 20261116114517 adds, and the two arms over a comment's reply to a comment's block and to an
-// ask's part that 20261116124448 adds. Each of the six arms over a kind the store now writes
-// answers only the rows of its table that name no node, and each of the five over what a comment
-// answers only the rows whose pointers are no tuples; the seed names the node of every row it
-// writes and states every comment's pointers, so those eleven answer nothing here
+// that 20261116114517 adds, the two arms over a comment's reply to a comment's block and to an
+// ask's part that 20261116124448 adds, and the one arm over every item's blocks, a comment's, a
+// message's and an ask's, that 20261116140008 adds. Each of the twelve arms over a kind the store
+// now writes answers only the rows of its table that name no node, each of the five over what a
+// comment answers only the rows whose pointers are no tuples, and the refs arm only the rows that
+// hold no tuples_stored; the seed names the node of every row it writes, states every comment's
+// pointers and every item's citations, so an arm of those may answer nothing here
 // (armGatedPerRow).
-const graphArmCount = 31
+const graphArmCount = 32
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
@@ -728,8 +730,8 @@ var (
 )
 
 // armGatedPerRow matches one of the arms over a kind the node and tuple store writes: the test
-// that keeps it to the rows of its own table that name no node, or, over what a comment answers,
-// to the rows whose tuples_stored is false.
+// that keeps it to the rows of its own table that name no node, or, over what a comment answers
+// and over refs, to the rows whose tuples_stored is false.
 var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL|\bNOT (?:[a-z_]+\.)?tuples_stored\b`)
 
 // assertEveryGraphArmHoldsRows runs each arm of graph_edges as its own query and holds it to at

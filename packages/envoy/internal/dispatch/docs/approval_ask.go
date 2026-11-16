@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -126,13 +127,13 @@ func RewriteApprovalAsk(
 	}
 	ask.EditedAt = askTimestamp(&editedAt)
 	reader := refs.NewReader(ctx, tx, "ask", ask.ID, serverURL)
-	changes, err := refs.ReplaceCountedEdit(ctx, tx, reader, previous.Question, ask.Question)
+	changes, cited, err := refs.ReplaceCountedEdit(ctx, tx, reader, previous.Question, ask.Question)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("index approval ask: %w", err)
 	}
 	// The rewording is a revision of the request's question part, read through the one reader,
 	// which its ask.edited names beside the request's own references.
-	changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, *ask, editedAt, changes)
+	changes, indexed, err := refs.IndexAskPartsCounted(ctx, tx, reader, *ask, editedAt, changes)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}
@@ -147,6 +148,12 @@ func RewriteApprovalAsk(
 	}
 	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
 		return model.Event{}, fmt.Errorf("stamp approval ask references: %w", err)
+	}
+	// What the rewording states in the store - its parts' nodes and links and the request's
+	// citations - under the ask.edited that records it.
+	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+	if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
+		return model.Event{}, fmt.Errorf("state approval ask %s's rewording in the store: %w", ask.ID, err)
 	}
 	return event, nil
 }

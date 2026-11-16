@@ -61,6 +61,9 @@ type erasedRead struct {
 	// the listing is made of and written back by redactBlocks.
 	blockTexts []redactedBlockText
 	excerpts   []redactedExcerpt
+	// itemBlocks are the block nodes of an erased comment, each with the seqs of the tuples on both
+	// sides of it, which go with the comment (readItemBlocks).
+	itemBlocks []erasedItemBlock
 	// tupleSeqs are the seqs of the tuples the listing names, which the delete takes and no
 	// others (graphstore.EraseNode).
 	tupleSeqs []int64
@@ -109,7 +112,7 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 	}
 	for _, step := range []func(context.Context, pgx.Tx, *erasedRead) error{
 		e.readTuples, e.readRows, e.readAncestors, e.readVersions, e.readReviews, e.readEmbeddings,
-		e.readSearch, e.readExcerpts, e.readEvents, e.readHistory, e.readBlockers, e.readLeft,
+		e.readSearch, e.readExcerpts, e.readEvents, e.readHistory, e.readItemBlocks, e.readBlockers, e.readLeft,
 	} {
 		if err := step(ctx, tx, &read); err != nil {
 			return erasedRead{}, err
@@ -341,6 +344,73 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
 	}
 	return nil
+}
+
+// erasedItemBlock is one block node of an erased item and the seqs of the tuples on both sides of
+// it, which the erase deletes with the node (graphstore.EraseNode).
+type erasedItemBlock struct {
+	id   string
+	seqs []int64
+}
+
+// readItemBlocks lists, for an erased comment, every block node of its body (the `block` nodes at
+// `comment/<comment id>#<block id>`, refs.IndexItem) and every tuple on both sides of each - its
+// part_of the comment, the links its text held and the retractions of them - which derive from the
+// comment's text alone, so the erase takes them with it, as the comment's row takes its block rows
+// with it. A tuple into one of those blocks from a node that is neither the comment nor one of its
+// blocks is somebody else's words about it - a reply naming the block - and refuses the run as
+// readBlockers' rows do. The erase deletes the row of no message and no ask, whose row names its
+// node, so neither kind's blocks are read here.
+func (e *Erasure) readItemBlocks(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
+	if e.Kind != graphstore.KindComment {
+		return nil
+	}
+	prefix := e.Kind + "/" + e.ID + "#"
+	rows, err := tx.Query(ctx, `
+		select n.id, t.seq, t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id
+		from graph_nodes n
+		left join graph_tuples t on (t.from_kind = n.kind and t.from_id = n.id) or (t.to_kind = n.kind and t.to_id = n.id)
+		where n.kind = $1 and starts_with(n.id, $2)
+		order by n.id, t.seq`, graphstore.KindBlock, prefix)
+	if err != nil {
+		return fmt.Errorf("read the block nodes of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var seq *int64
+		var fromKind, fromID, kind, toKind, toID *string
+		if err := rows.Scan(&id, &seq, &fromKind, &fromID, &kind, &toKind, &toID); err != nil {
+			return fmt.Errorf("read a block node of %s:%s: %w", e.Kind, e.ID, err)
+		}
+		if len(read.itemBlocks) == 0 || read.itemBlocks[len(read.itemBlocks)-1].id != id {
+			read.itemBlocks = append(read.itemBlocks, erasedItemBlock{id: id})
+			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete graph_nodes %s:%s", graphstore.KindBlock, id))
+		}
+		if seq == nil {
+			continue
+		}
+		// A tuple between a block and the item itself - the block's part_of - is the item's own,
+		// which readTuples lists and the item's erase deletes.
+		if (*fromKind == e.Kind && *fromID == e.ID) || (*toKind == e.Kind && *toID == e.ID) {
+			continue
+		}
+		block := &read.itemBlocks[len(read.itemBlocks)-1]
+		block.seqs = append(block.seqs, *seq)
+		far := *toKind + ":" + *toID
+		if *toKind == graphstore.KindValue {
+			far = "a value"
+		}
+		read.listing.tuples = append(read.listing.tuples,
+			fmt.Sprintf("delete graph_tuples %d: %s:%s %s %s", *seq, *fromKind, *fromID, *kind, far))
+		inbound := *toKind == graphstore.KindBlock && *toID == id
+		ours := (*fromKind == e.Kind && *fromID == e.ID) || (*fromKind == graphstore.KindBlock && strings.HasPrefix(*fromID, prefix))
+		if inbound && !ours {
+			e.Blockers = append(e.Blockers, fmt.Sprintf("%s:%s states %s into %s:%s, a block of this node: erase or edit it first",
+				*fromKind, *fromID, *kind, graphstore.KindBlock, id))
+		}
+	}
+	return rows.Err()
 }
 
 // readRows lists the node's row, its projection rows by key, the rows that cannot exist without

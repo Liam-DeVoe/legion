@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -491,7 +492,8 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	ctx := t.Context()
 	mention := func(tx pgx.Tx, issueKey, commentID string) int64 {
 		t.Helper()
-		if _, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "comment", commentID, ""), "Now see "+targetRef); err != nil {
+		_, cited, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "comment", commentID, ""), "Now see "+targetRef)
+		if err != nil {
 			t.Fatalf("index comment %s: %v", commentID, err)
 		}
 		event, err := broker.Append(ctx, tx, model.Event{
@@ -503,6 +505,10 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 		}
 		if err := refs.Stamp(ctx, tx, "comment", commentID, event.ID); err != nil {
 			t.Fatalf("stamp comment %s's mention: %v", commentID, err)
+		}
+		// The comment's citation, under the same event, as the comment's own write states it.
+		if err := graphstore.Caused(ctx, tx, cited, event.ID); err != nil {
+			t.Fatalf("state comment %s's citation: %v", commentID, err)
 		}
 		return event.ID
 	}

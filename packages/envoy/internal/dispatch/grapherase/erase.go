@@ -292,6 +292,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if err := graphstore.EraseNode(ctx, tx, e.Kind, e.ID, read.tupleSeqs); err != nil {
 		return err
 	}
+	if err := e.eraseItemBlocks(ctx, tx, read); err != nil {
+		return err
+	}
 	removed, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("render the erasure record: %w", err)
@@ -331,3 +334,18 @@ func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx, read erasedRea
 // marker is eraseMarker naming the node this run addressed, which is what stands in every row
 // the run rewrites.
 func (e *Erasure) marker() string { return fmt.Sprintf(eraseMarker, e.Kind, e.ID) }
+
+// eraseItemBlocks deletes an erased comment's block nodes and every tuple on both sides of each
+// (readItemBlocks), once the comment's own node and tuples are gone, so no part_of is left into
+// it: a block node of the comment is its text, and what the blocks' links state is read off that
+// text. The block and link rows that name those nodes went with the comment's row (on delete
+// cascade, migration 0142), so nothing names a node this deletes.
+func (e *Erasure) eraseItemBlocks(ctx context.Context, tx pgx.Tx, read erasedRead) error {
+	for _, block := range read.itemBlocks {
+		if err := graphstore.EraseNode(ctx, tx, graphstore.KindBlock, block.id, block.seqs); err != nil {
+			return err
+		}
+		e.removed("graph_nodes", 1)
+	}
+	return nil
+}

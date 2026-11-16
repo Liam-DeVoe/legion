@@ -1316,7 +1316,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	waitingOn := thread.waitingOnAfter(turn)
-	referenceChanges, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, reply.ID, reply.Body, s.deps.ServerURL, reply.CreatedAt)
+	referenceChanges, indexed, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, reply.ID, reply.Body, s.deps.ServerURL, reply.CreatedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1370,6 +1370,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// What the reply states, under the event that stored it: its node's cause, its two base
 	// attributes, the artifact it is owned by, and what it answers.
 	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the reply's body is in the store, under the same event: its blocks' nodes, their
+	// part_of and the links they hold, and its citations (refs.ReplaceCountedItem).
+	if err := graphstore.Caused(r.Context(), tx, indexed, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

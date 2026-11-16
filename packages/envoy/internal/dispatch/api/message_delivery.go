@@ -1230,7 +1230,7 @@ func (s *server) insertSessionReply(
 		}
 		replyParent.ReplyBody = messageReplyPreview(block.excerpt)
 	}
-	referenceChanges, err := s.indexMessage(ctx, tx, reply)
+	referenceChanges, indexed, err := s.indexMessage(ctx, tx, reply)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
@@ -1253,6 +1253,10 @@ func (s *server) insertSessionReply(
 		}
 	}
 	if err := graphstore.Caused(ctx, tx, stored.written, event.ID); err != nil {
+		return model.Message{}, model.Event{}, err
+	}
+	// What the reply's body is in the store, under the same event (indexMessage).
+	if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
 		return model.Message{}, model.Event{}, err
 	}
 	// Who wrote it, before any write of the session the answered attempt names

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -228,7 +229,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	previousBody := comment.Body
 	comment.Body = input.Body
 	comment.EditedAt = timestampPtr(&editedAt)
-	referenceChanges, err := refs.ReplaceCountedItemEdit(r.Context(), tx, refs.ItemComment, comment.ID, previousBody, comment.Body, s.deps.ServerURL, editedAt, carried)
+	referenceChanges, indexed, err := refs.ReplaceCountedItemEdit(r.Context(), tx, refs.ItemComment, comment.ID, previousBody, comment.Body, s.deps.ServerURL, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
 		return
@@ -268,6 +269,13 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "comment", comment.ID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the edit states in the store - the nodes of the blocks it wrote, their part_of, the
+	// links they gained or lost and the citations the comment did - under the comment.edited
+	// that records it.
+	if err := graphstore.Caused(r.Context(), tx, indexed, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

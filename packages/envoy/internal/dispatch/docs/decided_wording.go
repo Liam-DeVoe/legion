@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -204,7 +205,8 @@ func (s *Service) restoreDocumentDecidedWordings(ctx context.Context, tx pgx.Tx,
 // decision left on it. The parts are indexed at the time this restoration writes them, the
 // change they record, and not at the time of the edit it undoes, which the restore leaves on the
 // row (edited_at). No event carries the change, as none does for refs.RebuildAll's, so nothing
-// counts what the restoration moved.
+// counts what the restoration moved, and what the two index passes state in the node and tuple
+// store is appended at the sentinel (graphstore.NoEvent).
 func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) ([]restoredWording, error) {
 	rows, err := tx.Query(ctx, decidedWordingRestore, ids)
 	if err != nil {
@@ -237,7 +239,8 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 		// The question and the parts of the restored ask through one reader, which holds what
 		// the database answered for the first of them.
 		reader := refs.NewReader(ctx, tx, "ask", wording.ask, s.serverURL)
-		if _, err := refs.ReplaceCounted(ctx, tx, reader, wording.wording.Question); err != nil {
+		_, cited, err := refs.ReplaceCounted(ctx, tx, reader, wording.wording.Question)
+		if err != nil {
 			return nil, fmt.Errorf("index the restored question of ask %s: %w", wording.ask, err)
 		}
 		ask := model.Ask{
@@ -246,8 +249,13 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 			Options:  wording.wording.Options,
 			Answer:   wording.answer,
 		}
-		if _, err := refs.IndexAskParts(ctx, tx, reader, ask, at); err != nil {
+		_, indexed, err := refs.IndexAskParts(ctx, tx, reader, ask, at)
+		if err != nil {
 			return nil, fmt.Errorf("index the parts of the restored ask %s: %w", wording.ask, err)
+		}
+		indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+		if err := graphstore.Caused(ctx, tx, indexed, graphstore.NoEvent); err != nil {
+			return nil, fmt.Errorf("state the restored ask %s in the store: %w", wording.ask, err)
 		}
 	}
 	return restored, nil

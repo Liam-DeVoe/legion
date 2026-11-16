@@ -777,6 +777,12 @@ var graphViewArms = []graphViewArm{
 	// arm over a message's block does, and the count reads each as its block kind's tupleSQL.
 	{table: "graph_tuples"},
 	{table: "graph_tuples"},
+	// The store's arm of every item's blocks (migration 20261116140008), rendering a comment's, a
+	// message's and an ask's blocks' part_of and links under the item's block address form, chosen
+	// by the address's prefix: every select item is a column of its sub-select, so it reads as the
+	// tuple arm does, and the count reads it as each item kind's part_of arm's tupleSQL and the one
+	// mention arm over the item blocks' links in the store.
+	{table: "graph_tuples"},
 }
 
 // The view cannot gain an arm the count does not know. graph_edges' own text is parsed back into

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -172,8 +173,13 @@ func windowTheComment(t *testing.T, database *store.Store, comment string) {
 	if err := tx.QueryRow(ctx, `select body from comments where id = $1::uuid for no key update`, comment).Scan(&body); err != nil {
 		t.Fatalf("read the body of comment %s: %v", comment, err)
 	}
-	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment, body, time.Now(), nil, nil); err != nil {
+	_, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment, body, time.Now(), nil, nil)
+	if err != nil {
 		t.Fatalf("index the blocks of comment %s: %v", comment, err)
+	}
+	// The tick's owed index states its blocks at the sentinel, as refs.IndexItemIfOwed does.
+	if err := graphstore.Caused(ctx, tx, indexed, graphstore.NoEvent); err != nil {
+		t.Fatalf("state the blocks of comment %s: %v", comment, err)
 	}
 	if windowed, err := refs.WriteItemWindows(ctx, tx, refs.ItemComment, comment); err != nil || !windowed {
 		t.Fatalf("window comment %s = %v, %v; want its windows written", comment, windowed, err)

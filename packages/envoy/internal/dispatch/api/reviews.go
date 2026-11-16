@@ -791,21 +791,24 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, model.Event{}, err
 	}
+	// The row says in its own insert that the store holds what this write states of the request
+	// (asks.tuples_stored_at, migration 20261116140001), at its created_at: both take the
+	// transaction's clock, now().
 	if err := tx.QueryRow(ctx, `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval)
-		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7)
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval, tuples_stored_at)
+		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7, now())
 		returning created_at
 	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval).Scan(&ask.CreatedAt); err != nil {
 		return nil, model.Event{}, err
 	}
 	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)
-	askChanges, err := refs.ReplaceCounted(ctx, tx, reader, ask.Question)
+	askChanges, cited, err := refs.ReplaceCounted(ctx, tx, reader, ask.Question)
 	if err != nil {
 		return nil, model.Event{}, err
 	}
 	// The request's parts - its question and its two review options - beside its own
 	// references, read through the same reader and both named by the ask.opened below.
-	askChanges, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, askChanges)
+	askChanges, indexed, err := refs.IndexAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, askChanges)
 	if err != nil {
 		return nil, model.Event{}, err
 	}
@@ -821,6 +824,12 @@ func (s *server) openApprovalAsk(
 		return nil, model.Event{}, err
 	}
 	if err := graphstore.Caused(ctx, tx, askNode, event.ID); err != nil {
+		return nil, model.Event{}, err
+	}
+	// What the question and the parts state in the store, under the same event: the parts'
+	// nodes, their part_of and links, and the request's citations.
+	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+	if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
 		return nil, model.Event{}, err
 	}
 	// The requester follows the request it opened, once the ask.opened that records it is

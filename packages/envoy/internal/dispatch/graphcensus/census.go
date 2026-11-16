@@ -201,7 +201,8 @@ var projections = []projection{{
 	table:    "document_blocks",
 	note: "one node per row, blocks past the address bound aside; the digest is the row's document and the block" +
 		" its parent_block_id names, or the document where it names none, against the in_document and part_of" +
-		" tuples the node states now, a block with no part_of telling itself from one the document holds directly",
+		" tuples the node states now, a block with no part_of telling itself from one the document holds directly;" +
+		" an item's block, whose rows are comment_blocks, message_blocks and ask_blocks, is no node of this kind",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
@@ -215,7 +216,7 @@ var projections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
 		`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
-		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'`,
+		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + refs.ItemBlockAddress(`n.id`),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 }, {
@@ -239,16 +240,17 @@ var projections = []projection{{
 			group by b.from_node
 		) named on named.from_node = r.from_node
 		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound,
-	// Every block node is read, and not only those a row names: a mention or a pointer the store
-	// states out of a block no block_refs row names is a link graph_edges answers, and a node
-	// side that began at the rows could never find it. A block whose only links are its
-	// placement states no link here and is no node of this kind; the block kind holds it.
+	// Every document block node is read, and not only those a row names: a mention or a pointer
+	// the store states out of a block no block_refs row names is a link graph_edges answers, and a
+	// node side that began at the rows could never find it. A block whose only links are its
+	// placement states no link here and is no node of this kind; the block kind holds it. An
+	// item's block projects into its kind's link table, not into block_refs, so it is none either.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
 			select n.id, ` + currentLinks(refs.BlockNodeKind,
 		`t.kind not in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + ` as links
-			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'
+			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + refs.ItemBlockAddress(`n.id`) + `
 		) held
 		where held.links <> ''`,
 	pastBound: `

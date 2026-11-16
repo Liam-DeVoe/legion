@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -28,14 +29,16 @@ import (
 // the same transaction through a reader of their own (refs.NewReader), written at `at`, with
 // what they moved merged into beside, the counted changes the same write already holds, so the
 // event it appends names them all. A write that reconciles the ask's question as well builds the
-// one reader itself and passes it to both (refs.ReplaceCounted, refs.IndexAskPartsCounted).
+// one reader itself and passes it to both (refs.ReplaceCounted, refs.IndexAskPartsCounted). What
+// the parts state in the store is held for that event, which the caller appends and hands it to
+// graphstore.Caused under.
 func (s *server) indexAskParts(
 	ctx context.Context,
 	tx pgx.Tx,
 	ask model.Ask,
 	at time.Time,
 	beside model.ReferenceChanges,
-) (model.ReferenceChanges, error) {
+) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, beside)
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -173,7 +174,7 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		// The restore took each ask's answer off, which removes its answer part: index the
 		// parts in the transaction that wrote the row, and let the ask.opened name what that
 		// moved.
-		changes, err := s.indexAskParts(ctx, tx, ask, restoredAt, model.ReferenceChanges{})
+		changes, indexed, err := s.indexAskParts(ctx, tx, ask, restoredAt, model.ReferenceChanges{})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -188,6 +189,10 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		// The part rows the restore moved are new rows of this transaction, so they take the
 		// event's id and a ?since= read lists them.
 		if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
+			return nil, nil, err
+		}
+		// What the parts state in the store, under the ask.opened that records the restore.
+		if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
 			return nil, nil, err
 		}
 		appended = append(appended, event)

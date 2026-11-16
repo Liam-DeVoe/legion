@@ -495,7 +495,8 @@ func (s *server) writeBroadcast(
 			return broadcastRead{}, nil, err
 		}
 		// Each copy is a direct message: its blocks are indexed, and it writes no mention.
-		if _, err := s.indexMessage(ctx, tx, message); err != nil {
+		_, indexed, err := s.indexMessage(ctx, tx, message)
+		if err != nil {
 			return broadcastRead{}, nil, err
 		}
 		// A broadcast message is a thread root that answers nothing, so its event says what
@@ -515,6 +516,10 @@ func (s *server) writeBroadcast(
 			return broadcastRead{}, nil, err
 		}
 		if err := graphstore.Caused(ctx, tx, stored.written, event.ID); err != nil {
+			return broadcastRead{}, nil, err
+		}
+		// What the copy's body is in the store, under the same event (indexMessage).
+		if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		if stored.projected {

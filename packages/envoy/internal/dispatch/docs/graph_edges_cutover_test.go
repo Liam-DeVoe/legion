@@ -58,7 +58,7 @@ const movedArmsDeletedBy = "dispatch://INFRA-1253"
 // twice. The fate of each is printed with the list, so a reader sees which arms are left and who
 // takes each.
 var graphEdgesArms = []graphEdgesArm{
-	{relation: "refs", fate: "a mention of any node from an item; no child has moved it"},
+	{relation: "refs", stated: "citation", fate: "a mention of any node; the store answers an item's citation for a row that holds tuples_stored, dispatch://INFRA-1152 backfills an item's other rows, and a document's row is dispatch://INFRA-1253's"},
 	{relation: "issues", fate: "child_of; dispatch://INFRA-1156 makes an issue's relations typed edges"},
 	{relation: "issue_links", fate: "blocked_by; dispatch://INFRA-1156 makes an issue's relations typed edges"},
 	{relation: "artifacts", fate: "attached_to; no child has moved it"},
@@ -76,16 +76,16 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "issue_component_members", fate: "affects; no child has moved it"},
 	{relation: "block_refs", projects: "block_ref", fate: "a block's links; the store answers them for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "document_blocks", projects: "block", fate: "a block's part_of its document; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "comment_blocks", fate: "a comment block's part_of; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "message_blocks", fate: "a message block's part_of; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "ask_blocks", fate: "an ask part's part_of; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "comment_block_refs", fate: "a comment block's links; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "message_block_refs", fate: "a message block's links; dispatch://INFRA-1152 writes an item's blocks"},
-	{relation: "ask_block_refs", fate: "an ask part's links; dispatch://INFRA-1152 writes an item's blocks"},
+	{relation: "comment_blocks", stated: "item_block", fate: "a comment block's part_of; the store answers it for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
+	{relation: "message_blocks", stated: "item_block", fate: "a message block's part_of; the store answers it for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
+	{relation: "ask_blocks", stated: "item_block", fate: "an ask part's part_of; the store answers it for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
+	{relation: "comment_block_refs", stated: "item_link", fate: "a comment block's links; the store answers them for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
+	{relation: "message_block_refs", stated: "item_link", fate: "a message block's links; the store answers them for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
+	{relation: "ask_block_refs", stated: "item_link", fate: "an ask part's links; the store answers them for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
 	{relation: "comments", stated: "comment_pointer", fate: "a reply's replies_to a comment's block; the store answers it for a comments row that holds tuples_stored, and dispatch://INFRA-1152 backfills the rest"},
 	{relation: "comments", stated: "comment_pointer", fate: "a reply's replies_to an ask's part; the store answers it for a comments row that holds tuples_stored, and dispatch://INFRA-1152 backfills the rest"},
 	{relation: "messages", stated: "message", fate: "a message's replies_to a message's block; the store answers it for a messages row that carries its node, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "graph_tuples", joins: []string{"document_blocks", "block_refs", "comments", "comment_pointers", "messages"},
+	{relation: "graph_tuples", joins: []string{"document_blocks", "block_refs", "comments", "comment_pointers", "messages", "citations"},
 		fate: "the store itself, which answers an edge of a moved kind while the row that names it carries its node; it stays"},
 	{relation: "graph_tuples", joins: []string{"messages"},
 		fate: "the store's replies of a message to a message's block, rendered as message_block while the reply's row carries its node; it stays"},
@@ -93,6 +93,8 @@ var graphEdgesArms = []graphEdgesArm{
 		fate: "the store's replies of a comment to a comment's block, rendered as comment_block while the reply's row holds tuples_stored; it stays"},
 	{relation: "graph_tuples", joins: []string{"comment_pointers"},
 		fate: "the store's replies of a comment to an ask's part, rendered as ask_block while the reply's row holds tuples_stored; it stays"},
+	{relation: "graph_tuples", joins: []string{"comment_blocks", "comment_block_refs", "message_blocks", "message_block_refs", "ask_blocks", "ask_block_refs"},
+		fate: "the store's blocks of every item, their part_of and links rendered as comment_block, message_block or ask_block by the address's prefix while the block's or the link's row names its node; it stays"},
 }
 
 // graphEdgeRow is one row of graph_edges, every column of it, as both readings compare them: the
@@ -336,6 +338,9 @@ func movedArms(t *testing.T, read []graphEdgesArm) []movedArm {
 var statedRowTests = map[string]*regexp.Regexp{
 	"message":         nodelessRowTest,
 	"comment_pointer": regexp.MustCompile(`\bNOT (?:[a-z_]+\.)?tuples_stored\b`),
+	"citation":        regexp.MustCompile(`\bNOT (?:[a-z_]+\.)?tuples_stored\b`),
+	"item_block":      nodelessRowTest,
+	"item_link":       nodelessRowTest,
 }
 
 // requireTheStatedArmsTestTheirRows holds each arm the store has begun to answer (stated) to the
@@ -376,15 +381,50 @@ var tupleJoins = map[string]*regexp.Regexp{
 	"comment_pointers": regexp.MustCompile(`FROM comments (\w+) WHERE (\w+)\.node_kind = edge\.from_kind AND (\w+)\.node_address = edge\.from_id` +
 		` AND (\w+)\.tuples_stored\b`),
 	"messages": regexp.MustCompile(`FROM messages (\w+) WHERE (\w+)\.node_kind = edge\.from_kind AND (\w+)\.node_address = edge\.from_id`),
+	"citations": regexp.MustCompile(`FROM refs (\w+) WHERE (\w+)\.from_kind = edge\.from_kind AND (\w+)\.from_id = edge\.from_id` +
+		` AND (\w+)\.to_kind = edge\.to_kind AND (\w+)\.to_id = edge\.to_id AND (\w+)\.kind = edge\.stated AND (\w+)\.tuples_stored\b`),
+	"comment_blocks":     itemBlockJoin("comment_blocks"),
+	"message_blocks":     itemBlockJoin("message_blocks"),
+	"ask_blocks":         itemBlockJoin("ask_blocks"),
+	"comment_block_refs": itemLinkJoin("comment_block_refs", "comment_blocks"),
+	"message_block_refs": itemLinkJoin("message_block_refs", "message_blocks"),
+	"ask_block_refs":     itemLinkJoin("ask_block_refs", "ask_blocks"),
 }
 
-// storeArms answers the arms over graph_tuples - the tuple arm, and the arms of a reply to a
+// itemBlockJoin is the join an item block arm makes to the block row of the tuple's `block` node,
+// standing at a position, and itemLinkJoin the join it makes to the link row naming that node,
+// whose block stands at a position. The catalogue quotes `position`, a keyword.
+func itemBlockJoin(table string) *regexp.Regexp {
+	return regexp.MustCompile(`FROM ` + table + ` (\w+) WHERE (\w+)\.node_kind = 'block'::text AND (\w+)\.node_address = edge\.from_id` +
+		` AND (\w+)\."position" IS NOT NULL`)
+}
+
+func itemLinkJoin(table, blocks string) *regexp.Regexp {
+	return regexp.MustCompile(`FROM ` + table + ` (\w+) JOIN ` + blocks + ` (\w+) ON .*? WHERE (\w+)\.node_kind = 'block'::text AND (\w+)\.node_address = edge\.from_id` +
+		` AND (\w+)\.kind = edge\.kind AND (\w+)\.to_kind = edge\.to_kind AND (\w+)\.to_id = edge\.to_id AND (\w+)\."position" IS NOT NULL`)
+}
+
+// itemBlockAddresses is the one filter that tells an item's block from a document's in the
+// store, as the catalogue prints it: the address starts with an item kind's prefix. The tuple arm
+// leaves every block tuple it names out (itemBlocksLeftOut) and the item block arm reads exactly
+// those (itemBlocksAlone), so the two split the store's block tuples between them: none is
+// answered by both and none by neither.
+const itemBlockAddresses = `\(tuple\.from_id ~~ 'comment/%'::text OR tuple\.from_id ~~ 'message/%'::text OR tuple\.from_id ~~ 'ask/%'::text\)`
+
+var (
+	itemBlocksLeftOut = regexp.MustCompile(`NOT \(tuple\.from_kind = 'block'::text AND ` + itemBlockAddresses + `\)`)
+	itemBlocksAlone   = regexp.MustCompile(`WHERE tuple\.from_kind = 'block'::text AND tuple\.to_kind <> 'value'::text AND ` + itemBlockAddresses)
+)
+
+// storeArms answers the arms over graph_tuples - the tuple arm, the arms of a reply to a
 // message's block, a comment's block and an ask's part, each of which renders that one relation
-// under its address form - and holds each to its join to every projection table its declaration
-// names.
+// under its address form, and the arm of every item's blocks - and holds each to its join to
+// every projection table its declaration names, and the tuple arm and the item block arm to
+// splitting the store's block tuples by the item block addresses.
 func storeArms(t *testing.T, read []graphEdgesArm) []movedArm {
 	t.Helper()
 	var stores []movedArm
+	split := map[*regexp.Regexp]int{}
 	for index, arm := range read {
 		if arm.relation != "graph_tuples" {
 			continue
@@ -400,10 +440,30 @@ func storeArms(t *testing.T, read []graphEdgesArm) []movedArm {
 					index+1, table, arm.text)
 			}
 		}
+		for _, side := range []struct {
+			joins  string
+			filter *regexp.Regexp
+			says   string
+		}{
+			{"document_blocks", itemBlocksLeftOut, "leaves out no tuple out of an item's block, which the item block arm answers"},
+			{"comment_blocks", itemBlocksAlone, "reads more than the tuples out of an item's block, which the tuple arm answers"},
+		} {
+			if !slices.Contains(joins, side.joins) {
+				continue
+			}
+			split[side.filter]++
+			if !side.filter.MatchString(folded) {
+				t.Errorf("arm %d (graph_tuples) %s, so a block tuple is answered twice or not at all:\n%s", index+1, side.says, arm.text)
+			}
+		}
 		stores = append(stores, movedArm{place: index + 1, graphEdgesArm: arm})
 	}
 	if len(stores) == 0 {
 		t.Fatal("graph_edges has no arm over graph_tuples")
+	}
+	if split[itemBlocksLeftOut] != 1 || split[itemBlocksAlone] != 1 {
+		t.Errorf("graph_edges holds %d tuple arms and %d item block arms, want one of each splitting the block tuples",
+			split[itemBlocksLeftOut], split[itemBlocksAlone])
 	}
 	return stores
 }
@@ -525,17 +585,25 @@ func statedProjectionOf(row graphEdgeRow) (string, bool) {
 		return "message", true
 	case row.fromKind == "comment" && (row.kind == "replies_to" || row.kind == "answers"):
 		return "comment_pointer", true
+	case (row.fromKind == "comment" || row.fromKind == "message" || row.fromKind == "ask") && row.kind == "mentions":
+		return "citation", true
+	case (row.fromKind == "comment_block" || row.fromKind == "message_block" || row.fromKind == "ask_block") && row.kind == "part_of":
+		return "item_block", true
+	case row.fromKind == "comment_block" || row.fromKind == "message_block" || row.fromKind == "ask_block":
+		return "item_link", true
 	}
 	return "", false
 }
 
 // carriesItsNode reads whether the projection row behind row, in the table of the arm that holds
 // it (projection, the tuple arm's name for that table), carries its node, or for a comment's
-// pointers its node and tuples_stored: the marker that decides which arm answers the row.
+// pointers its node and tuples_stored, or for an item's citation its refs row's tuples_stored: the
+// marker that decides which arm answers the row.
 func carriesItsNode(t *testing.T, database *store.Store, projection string, row graphEdgeRow) bool {
 	t.Helper()
 	var statement string
 	args := []any{row.fromID}
+	item := strings.TrimSuffix(row.fromKind, "_block")
 	switch projection {
 	case "block":
 		statement = `select node_kind is not null from document_blocks where node_id = $1`
@@ -548,6 +616,14 @@ func carriesItsNode(t *testing.T, database *store.Store, projection string, row 
 		statement = `select node_kind is not null and tuples_stored from comments where id = $1::uuid`
 	case "message":
 		statement = `select node_kind is not null from messages where id = $1::uuid`
+	case "citation":
+		statement = `select tuples_stored from refs where from_id = $1 and from_kind = $2 and to_kind = $3 and to_id = $4`
+		args = append(args, row.fromKind, row.toKind, row.toID)
+	case "item_block":
+		statement = `select node_kind is not null from ` + item + `_blocks where node_id = $1`
+	case "item_link":
+		statement = `select node_kind is not null from ` + item + `_block_refs where from_node = $1 and kind = $2 and to_kind = $3 and to_id = $4`
+		args = append(args, row.kind, row.toKind, row.toID)
 	default:
 		t.Fatalf("no projection row of %s is known for %s", projection, row)
 	}
@@ -1173,7 +1249,10 @@ type graphEdgeFixture struct {
 // and names its first block, and on an ask of CORE-1 (writeAskAsThisBuild) a comment and one
 // naming the ask's question, so the store's arms answer each of a comment's five pointer arms -
 // its replies_to a comment, an ask, a comment's block and an ask's part, and its answers, the
-// kind refs.TupleKinds lists for the comments arm.
+// kind refs.TupleKinds lists for the comments arm. Each of those three writers indexes the item's
+// body in the write's own transaction, as this build does, and the message on the issue, the
+// comment on it and the ask each cite CORE-2 (graphEdgeItemCitation): so the store's arms answer
+// a body block of each item sort, its part_of and its link, and the item's citation.
 func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service) graphEdgeFixture {
 	t.Helper()
 	ctx := context.Background()
@@ -1255,23 +1334,63 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	`, plan, owner); err != nil {
 		t.Fatalf("write the reply: %v", err)
 	}
-	root := writeMessageAsThisBuild(t, database, "", "", "a message on the issue")
+	root := writeMessageAsThisBuild(t, database, "", "", "a message on the issue"+graphEdgeItemCitation)
 	writeMessageAsThisBuild(t, database, root, "", "a reply to it")
 	writeMessageAsThisBuild(t, database, root, "message/"+root+"#b1", "a reply to its first block")
 
 	// A comment thread as the comment route writes one: a reply to a comment stores the thread's
 	// root as reply_to and the comment it answers as answers (api's threadHeadOf), and a reply
 	// naming an ask stores it as ask_id.
-	thread := writeCommentAsThisBuild(t, database, graphstore.CommentPointers{}, "a comment on the issue")
+	thread := writeCommentAsThisBuild(t, database, graphstore.CommentPointers{}, "a comment on the issue"+graphEdgeItemCitation)
 	reply := writeCommentAsThisBuild(t, database, graphstore.CommentPointers{ReplyTo: thread, Answers: thread}, "a reply to it")
 	writeCommentAsThisBuild(t, database, graphstore.CommentPointers{
 		ReplyTo: thread, Answers: reply, RepliesToBlock: "comment/" + reply + "#b1",
 	}, "a reply to the reply's first block")
-	ask := writeAskAsThisBuild(t, database, "Which day do we ship?")
+	ask := writeAskAsThisBuild(t, database, "Which day do we ship"+graphEdgeItemCitation+"?")
 	writeCommentAsThisBuild(t, database, graphstore.CommentPointers{AskID: ask}, "a comment on the ask")
 	writeCommentAsThisBuild(t, database, graphstore.CommentPointers{AskID: ask, RepliesToBlock: "ask/" + ask + "#b1"},
 		"a comment on the ask's question")
+	var blocks, links, citations int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from comment_blocks where node_kind is not null)
+		     + (select count(*) from message_blocks where node_kind is not null)
+		     + (select count(*) from ask_blocks where node_kind is not null),
+		       (select count(*) from comment_block_refs where node_kind is not null)
+		     + (select count(*) from message_block_refs where node_kind is not null)
+		     + (select count(*) from ask_block_refs where node_kind is not null),
+		       (select count(*) from refs where tuples_stored and from_kind in ('comment', 'message', 'ask'))
+	`).Scan(&blocks, &links, &citations); err != nil {
+		t.Fatalf("count the items' marked blocks, links and citations: %v", err)
+	}
+	if blocks == 0 || links < 3 || citations < 3 {
+		t.Fatalf("the fixture's items left %d blocks naming their node, %d links and %d citations the store holds; want a block, a link and a citation of each item sort",
+			blocks, links, citations)
+	}
 	return graphEdgeFixture{target: target, plan: plan, anchored: anchored}
+}
+
+// graphEdgeItemCitation is what a message, a comment and an ask of the fixture cite: an issue,
+// which its body block holds as a link and the item holds as a citation.
+const graphEdgeItemCitation = ", after dispatch://CORE-2"
+
+// graphEdgeServer is the server the fixture's items are indexed with; a dispatch:// reference
+// reads the same whichever server reads it.
+const graphEdgeServer = "https://dispatch.example"
+
+// indexItemAsThisBuild indexes the body of a comment or a message in its write's transaction, as
+// this build's writers do (api's commentStored, indexMessage): its blocks, their links and the
+// item's citations (refs.ReplaceCountedItem), then what that states in the store under the
+// write's event, the sentinel here.
+func indexItemAsThisBuild(t *testing.T, tx pgx.Tx, kind refs.ItemKind, id, body string, at time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	_, indexed, err := refs.ReplaceCountedItem(ctx, tx, kind, id, body, graphEdgeServer, at)
+	if err != nil {
+		t.Fatalf("index the %s %q: %v", kind, body, err)
+	}
+	if err := graphstore.Caused(ctx, tx, indexed, graphstore.NoEvent); err != nil {
+		t.Fatalf("state the index of the %s %q: %v", kind, body, err)
+	}
 }
 
 // writeMessageAsThisBuild writes a message on CORE-1, answering inReplyTo and the block node
@@ -1323,6 +1442,7 @@ func writeMessageAsThisBuild(t *testing.T, database *store.Store, inReplyTo, rep
 	`, id, issueKey, body, replyTo, replyToBlock, at, graphstore.KindMessage, id); err != nil {
 		t.Fatalf("write the message %q: %v", body, err)
 	}
+	indexItemAsThisBuild(t, tx, refs.ItemMessage, id, body, at)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the message %q: %v", body, err)
 	}
@@ -1378,6 +1498,7 @@ func writeCommentAsThisBuild(t *testing.T, database *store.Store, pointers graph
 		graphstore.KindComment, at); err != nil {
 		t.Fatalf("write the comment %q: %v", body, err)
 	}
+	indexItemAsThisBuild(t, tx, refs.ItemComment, id, body, at)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the comment %q: %v", body, err)
 	}
@@ -1385,8 +1506,10 @@ func writeCommentAsThisBuild(t *testing.T, database *store.Store, pointers graph
 }
 
 // writeAskAsThisBuild writes an ask on CORE-1 as this build's ask create writes one: its node
-// first, in the issue's project (graphstore.AskNode), then its row, dated by the transaction's one
-// time. It answers the ask's id.
+// first, in the issue's project (graphstore.AskNode), then its row, holding tuples_stored_at at
+// its created_at, dated by the transaction's one time, and then its question's citations and its
+// parts, through one reader (refs.ReplaceCounted, refs.IndexAskPartsCounted), stated in the store
+// under the sentinel. It answers the ask's id.
 func writeAskAsThisBuild(t *testing.T, database *store.Store, question string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -1410,10 +1533,23 @@ func writeAskAsThisBuild(t *testing.T, database *store.Store, question string) s
 		t.Fatalf("write the node of the ask %q: %v", question, err)
 	}
 	if _, err := tx.Exec(ctx, `
-		insert into asks (id, issue_key, author, question, created_at)
-		values ($1::uuid, $2, '{"kind":"user","id":"alice"}', $3, $4)
+		insert into asks (id, issue_key, author, question, created_at, tuples_stored_at)
+		values ($1::uuid, $2, '{"kind":"user","id":"alice"}', $3, $4, $4)
 	`, id, issueKey, question, at); err != nil {
 		t.Fatalf("write the ask %q: %v", question, err)
+	}
+	reader := refs.NewReader(ctx, tx, "ask", id, graphEdgeServer)
+	changes, cited, err := refs.ReplaceCounted(ctx, tx, reader, question)
+	if err != nil {
+		t.Fatalf("index the question of the ask %q: %v", question, err)
+	}
+	_, indexed, err := refs.IndexAskPartsCounted(ctx, tx, reader, model.Ask{ID: id, Question: question}, at, changes)
+	if err != nil {
+		t.Fatalf("index the parts of the ask %q: %v", question, err)
+	}
+	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+	if err := graphstore.Caused(ctx, tx, indexed, graphstore.NoEvent); err != nil {
+		t.Fatalf("state the index of the ask %q: %v", question, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the ask %q: %v", question, err)

@@ -149,7 +149,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	`, "The first paragraph.\n\nThe second paragraph.").Scan(&comment); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", time.Now(), nil, nil); err != nil {
+	if _, _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 	// An item's index writes no window: the block-index tick's window arm writes them in a
@@ -169,7 +169,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 
 	ask := insertAsk(t, tx, "WIND-1", "Which region?", model.AskOption{Label: "eu", Description: "for latency"})
 	reader := NewReader(ctx, tx, "ask", ask.ID, windowServer)
-	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now()); err != nil {
+	if _, _, err := IndexAskParts(ctx, tx, reader, ask, time.Now()); err != nil {
 		t.Fatalf("index the ask's parts: %v", err)
 	}
 	if written, err := WriteItemWindows(ctx, tx, ItemAsk, ask.ID); err != nil || !written {
@@ -200,7 +200,7 @@ func TestWindowingAnItemThatIsGoneWritesNothing(t *testing.T) {
 	`, body).Scan(&comment); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, body, time.Now(), nil, nil); err != nil {
+	if _, _, err := IndexItem(ctx, tx, ItemComment, comment, body, time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `delete from comments where id = $1::uuid`, comment); err != nil {

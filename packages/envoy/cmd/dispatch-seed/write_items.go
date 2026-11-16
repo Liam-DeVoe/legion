@@ -119,10 +119,12 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 				}
 				answerJSON = string(encoded)
 			}
+			// The row says in its own insert that the store holds what the seed states of the
+			// ask, as the server's ask create does (asks.tuples_stored_at), at its created_at.
 			if _, err := tx.Exec(ctx, `
 				insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency,
-				                  anchor, state, answer, resolution, created_at, kind, block_id, block_artifact_id)
-				values ($1, $2, $3, $4::jsonb, $5, $6::jsonb, false, 'med', $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, 'question', $12, $13)
+				                  anchor, state, answer, resolution, created_at, kind, block_id, block_artifact_id, tuples_stored_at)
+				values ($1, $2, $3, $4::jsonb, $5, $6::jsonb, false, 'med', $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, 'question', $12, $13, $11)
 			`, ask.ID, issueKey, artifactID, seedActor, question, string(optionsJSON), anchor, ask.State,
 				answerJSON, resolution, ask.CreatedAt, blockID, blockArtifact); err != nil {
 				return fmt.Errorf("ask %s: %w", ask.ID, err)
@@ -162,8 +164,10 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			stored := opening
 			stored.State, stored.Answer = ask.State, answer
 			reader := refs.NewReader(ctx, tx, "ask", stored.ID, serverURL)
-			if _, err := refs.IndexAskParts(ctx, tx, reader, stored, ask.CreatedAt); err != nil {
+			if _, indexed, err := refs.IndexAskParts(ctx, tx, reader, stored, ask.CreatedAt); err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
+			} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
+				return fmt.Errorf("state the parts of ask %s: %w", ask.ID, err)
 			}
 			// The index records the parts and leaves their windows to the block-index tick's
 			// window arm (refs.recordItemIndexed), so the seed writes them here as that arm
@@ -189,7 +193,11 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"events"}, eventColumns, pgx.CopyFromRows(opened)); err != nil {
 			return fmt.Errorf("ask opening events: %w", err)
 		}
-		return mentions.write(ctx, tx)
+		cited, err := mentions.write(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: cited})
 	})
 }
 
@@ -200,6 +208,16 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 // fall beside this moves no lock of the store's order.
 func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node, tuples []graphstore.Tuple) error {
 	return graphstore.Write(ctx, tx, nodes, tuples)
+}
+
+// stateAtSentinel appends what one of the seed's index passes states in the node and tuple store
+// - an item's block nodes, their part_of and links (refs.IndexItem, refs.IndexAskParts), and the
+// citations its refs rows are the projection of (mentionRows) - at the sentinel, as every write of
+// the seed's is: the seed appends no event of its own. Each pass is stated before the next one of
+// the same item runs, so a later pass compares against what the earlier one stated, as two writes
+// of the server's do.
+func stateAtSentinel(ctx context.Context, tx pgx.Tx, written graphstore.Uncaused) error {
+	return graphstore.Caused(ctx, tx, written, graphstore.NoEvent)
 }
 
 // itemProject is the project of an item of the plan: its issue's, or its document's where it
@@ -350,9 +368,11 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				// stored body second is the order the write and the edit ran in, and it leaves
 				// the dropped block with a null position.
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer,
+				if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer,
 					comment.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
 					return fmt.Errorf("index comment %s before its edit: %w", comment.ID, err)
+				} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
+					return fmt.Errorf("state comment %s before its edit: %w", comment.ID, err)
 				}
 			}
 			at := comment.CreatedAt
@@ -360,9 +380,11 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				at = comment.CreatedAt.Add(time.Hour)
 			}
 			located := text.ExtractAt(body, serverURL)
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, at,
+			if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, at,
 				located, nil); err != nil {
 				return fmt.Errorf("index comment %s: %w", comment.ID, err)
+			} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
+				return fmt.Errorf("state comment %s: %w", comment.ID, err)
 			}
 			// The windows the index no longer writes, as the tick's window arm writes them
 			// (refs.WriteItemWindows): one set, over the body the comment is left holding.
@@ -371,7 +393,11 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			}
 			mentions.add(comment.ID, text.Refs(located), comment.CreatedAt)
 		}
-		return mentions.write(ctx, tx)
+		cited, err := mentions.write(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: cited})
 	})
 }
 
@@ -537,42 +563,44 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			}
 			if message.Reindexed {
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer,
+				if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer,
 					message.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
 					return fmt.Errorf("index message %s under the older parser: %w", message.ID, err)
+				} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
+					return fmt.Errorf("state message %s under the older parser: %w", message.ID, err)
 				}
 			}
 			located := text.ExtractAt(body, serverURL)
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body,
+			if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body,
 				message.CreatedAt, located, nil); err != nil {
 				return fmt.Errorf("index message %s: %w", message.ID, err)
+			} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
+				return fmt.Errorf("state message %s: %w", message.ID, err)
 			}
 			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemMessage, message.ID); err != nil {
 				return fmt.Errorf("write the windows of message %s: %w", message.ID, err)
 			}
 			mentions.add(message.ID, text.Refs(located), message.CreatedAt)
 		}
-		if err := mentions.write(ctx, tx); err != nil {
+		if from == 0 && to > 0 {
+			r.addSessionMention(mentions)
+		}
+		cited, err := mentions.write(ctx, tx)
+		if err != nil {
 			return err
 		}
-		return r.writeSessionMention(ctx, tx, from, to)
+		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: cited})
 	})
 }
 
-// writeSessionMention writes the one mention whose target is a session. `session` is a node kind
-// refs/graph.go's nodeRegistry resolves, but text/refs.go's grammar names no session, so no body
-// can write this row: a build that addressed sessions would write it, and the backlink count
-// reads `refs` for every kind the registry resolves, so the data set holds one.
-func (r *seedRun) writeSessionMention(ctx context.Context, tx pgx.Tx, from, to int) error {
-	if from > 0 || to == 0 {
-		return nil
-	}
-	_, err := tx.Exec(ctx, `
-		insert into refs (from_kind, from_id, to_kind, to_id, created_at)
-		values ('message', $1, 'session', $2, $3)
-		on conflict do nothing
-	`, r.plan.messages[0].ID, r.plan.sessions[0], r.plan.messages[0].CreatedAt)
-	return err
+// addSessionMention adds the one mention whose target is a session, out of the first message, to
+// the first batch's mentions. `session` is a node kind refs/graph.go's nodeRegistry resolves, but
+// text/refs.go's grammar names no session, so no body can write this row: a build that addressed
+// sessions would write it, and the backlink count reads `refs` for every kind the registry
+// resolves, so the data set holds one. It is the first message's citation like any other.
+func (r *seedRun) addSessionMention(mentions *mentionRows) {
+	mentions.addTarget(r.plan.messages[0].ID, refs.Target{Kind: graphstore.KindSession, ID: r.plan.sessions[0]},
+		r.plan.messages[0].CreatedAt)
 }
 
 // mentionRows collects the `refs` rows one batch of items writes. The targets are read out of
@@ -594,34 +622,62 @@ func newMentionRows(kind string) *mentionRows {
 // the body is scanned once.
 func (m *mentionRows) add(id string, mentioned []text.Ref, at time.Time) {
 	for _, ref := range mentioned {
-		target, ok := refs.TargetOf(ref)
-		if !ok {
-			continue
+		if target, ok := refs.TargetOf(ref); ok {
+			m.addTarget(id, target, at)
 		}
-		key := [3]string{id, target.Kind, target.ID}
-		if _, held := m.seen[key]; held {
-			continue
-		}
-		m.seen[key] = struct{}{}
-		m.ids = append(m.ids, id)
-		m.kinds = append(m.kinds, target.Kind)
-		m.targets = append(m.targets, target.ID)
-		m.times = append(m.times, at)
 	}
 }
 
-func (m *mentionRows) write(ctx context.Context, tx pgx.Tx) error {
-	if len(m.ids) == 0 {
-		return nil
+// addTarget collects the one row of the item id that names target, once.
+func (m *mentionRows) addTarget(id string, target refs.Target, at time.Time) {
+	key := [3]string{id, target.Kind, target.ID}
+	if _, held := m.seen[key]; held {
+		return
 	}
-	_, err := tx.Exec(ctx, `
-		insert into refs (from_kind, from_id, to_kind, to_id, created_at)
-		select $1, r.id, r.kind, r.target, r.at
+	m.seen[key] = struct{}{}
+	m.ids = append(m.ids, id)
+	m.kinds = append(m.kinds, target.Kind)
+	m.targets = append(m.targets, target.ID)
+	m.times = append(m.times, at)
+}
+
+// write inserts the rows and answers the citation the server's own writer of an item's refs rows
+// states beside each row it inserts (refs.replaceRefs): a `mentions` tuple, of the row's own kind,
+// out of the item's node to the row's far end, dated by the row and made by the seed's author. The
+// batch wrote every item's node before its rows, so each row is a citation of the store's and says
+// so in its own insert (refs.tuples_stored), but for a far end past the store's address bound,
+// which is no tuple and holds false.
+func (m *mentionRows) write(ctx context.Context, tx pgx.Tx) ([]graphstore.UncausedTuple, error) {
+	if len(m.ids) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `
+		insert into refs (from_kind, from_id, to_kind, to_id, created_at, tuples_stored)
+		select $1, r.id, r.kind, r.target, r.at, octet_length(r.target) <= $6
 		from unnest($2::text[], $3::text[], $4::text[], $5::timestamptz[]) as r (id, kind, target, at)
 		on conflict (from_kind, from_id, to_kind, to_id) do nothing
-	`, m.kind, m.ids, m.kinds, m.targets, m.times)
+		returning from_id, kind, to_kind, to_id, created_at, tuples_stored
+	`, m.kind, m.ids, m.kinds, m.targets, m.times, graphstore.MaxAddressBytes)
 	if err != nil {
-		return fmt.Errorf("write %s mentions: %w", m.kind, err)
+		return nil, fmt.Errorf("write %s mentions: %w", m.kind, err)
 	}
-	return nil
+	var cited []graphstore.UncausedTuple
+	for rows.Next() {
+		var tuple graphstore.Tuple
+		var stored bool
+		if err := rows.Scan(&tuple.FromID, &tuple.Kind, &tuple.ToKind, &tuple.ToID, &tuple.At, &stored); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read the %s mentions written: %w", m.kind, err)
+		}
+		if !stored {
+			continue
+		}
+		tuple.FromKind, tuple.Who, tuple.SourceEvent, tuple.Asserted = m.kind, seedAuthor, graphstore.NoEvent, true
+		cited = append(cited, graphstore.UncausedTuple{Tuple: tuple})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("write %s mentions: %w", m.kind, err)
+	}
+	return cited, nil
 }

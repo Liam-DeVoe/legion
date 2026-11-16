@@ -147,7 +147,7 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 	} {
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", source, resolverServer), test.body); err != nil {
+		if _, _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", source, resolverServer), test.body); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -223,7 +223,7 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 	} {
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", source, resolverServer), test.body); err != nil {
+		if _, _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", source, resolverServer), test.body); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -292,7 +292,7 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 		if test.source != anchored {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
-		if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", test.source, resolverServer), test.body); err != nil {
+		if _, _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", test.source, resolverServer), test.body); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", test.source); !reflect.DeepEqual(got, test.want) {
@@ -317,7 +317,7 @@ func TestABareKeyLeavesALaterBlockMentionInItsOwnBlock(t *testing.T) {
 	body := "ACME-1 is the issue.\n\nSee dispatch://ACME-1/artifact/notes#b-two."
 	insertPrefixComment(t, tx, source, "ACME-1", body)
 	at := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
-	if _, err := ReplaceCountedItem(ctx, tx, ItemComment, source, body, resolverServer, at); err != nil {
+	if _, _, err := ReplaceCountedItem(ctx, tx, ItemComment, source, body, resolverServer, at); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 
@@ -465,7 +465,7 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	if want := text.ExtractAt(body, resolverServer); !reflect.DeepEqual(located, want) {
 		t.Errorf("a failed resolver read %#v; want the text as written, %#v", located, want)
 	}
-	if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+	if _, _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
 		t.Fatalf("the write failed on what its body cites: %v", err)
 	}
 	want := []Target{{"ask", resolverAsk[:8]}}

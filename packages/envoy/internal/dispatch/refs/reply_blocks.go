@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -24,6 +25,11 @@ import (
 // items through it (IndexOwedItemBlocks). The caller holds the item's owner row (the
 // reconciliation holds none) and the item row; the index takes the state row after them. It
 // reports whether the item was owed and so indexed.
+//
+// What the index states in the node and tuple store - the block nodes, their part_of and links,
+// and the item's citations - is appended here, at the sentinel (graphstore.NoEvent): an owed
+// index is of text an earlier write already appended an event for, and no event records this
+// pass, whichever transaction it runs in.
 func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serverURL string) (bool, error) {
 	var query string
 	switch kind {
@@ -54,18 +60,27 @@ func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serv
 	if stated && !owed && sum != nil && *sum == itemblocks.BodySHA256(body) {
 		return false, nil
 	}
+	scope, err := readItemScope(ctx, tx, kind, itemID)
+	if err != nil {
+		return false, err
+	}
 	var located []text.Located
 	if mentions {
 		located = NewReader(ctx, tx, string(kind), itemID, serverURL).Mentions(body)
 	}
-	if _, err := IndexItem(ctx, tx, kind, itemID, body, writtenAt, located, nil); err != nil {
+	_, written, err := indexItem(ctx, tx, kind, itemID, body, writtenAt, located, nil, scope)
+	if err != nil {
 		return false, fmt.Errorf("index the blocks of %s %s: %w", kind, itemID, err)
 	}
-	if !mentions {
-		return true, nil
+	if mentions {
+		_, cited, err := replaceRefsOf(ctx, tx, string(kind), itemID, text.Refs(located), &writtenAt, scope)
+		if err != nil {
+			return false, fmt.Errorf("index %s %s: %w", kind, itemID, err)
+		}
+		written.Tuples = append(written.Tuples, cited...)
 	}
-	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), &writtenAt); err != nil {
-		return false, fmt.Errorf("index %s %s: %w", kind, itemID, err)
+	if err := graphstore.Caused(ctx, tx, written, graphstore.NoEvent); err != nil {
+		return false, fmt.Errorf("state the blocks of %s %s in the store: %w", kind, itemID, err)
 	}
 	return true, nil
 }

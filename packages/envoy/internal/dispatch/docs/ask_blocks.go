@@ -58,6 +58,10 @@ type settlementReconciliation struct {
 	// a session author's node is written before the ask.opened that records the ask exists, and
 	// learns that event once the settlement has appended its events (causeFollows).
 	follows []openedFollow
+	// indexed are the asks this settlement indexed - opened, restored or reworded - each with
+	// what that index stated in the node and tuple store, which waits for the event of its own
+	// that records the write (causeIndexedAsks).
+	indexed []indexedAsk
 }
 
 // openedFollow is one ask this settlement opened: the ask's own node, written before its row
@@ -66,6 +70,15 @@ type openedFollow struct {
 	ask      string
 	node     graphstore.Uncaused
 	followed asks.Followed
+}
+
+// indexedAsk is one ask this settlement indexed: its id, the type of the event of its own that
+// records the write that indexed it - ask.opened for an ask it opened or restored open,
+// ask.answered for one it restored answered, ask.edited for one it reworded - and what its
+// citations and its parts stated in the store (refs.ReplaceCounted, refs.IndexAskPartsCounted).
+type indexedAsk struct {
+	ask, event string
+	write      graphstore.Uncaused
 }
 
 // causeFollows moves the node of each ask this reconciliation opened, and the node each follow of
@@ -94,6 +107,36 @@ func (r *settlementReconciliation) causeFollows(ctx context.Context, tx pgx.Tx, 
 			return err
 		}
 		if err := graphstore.Caused(ctx, tx, follow.followed.Uncaused, event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// causeIndexedAsks appends what each ask this reconciliation indexed stated in the store under the
+// event that records that ask's write, found among appended by its type and by the ask its payload
+// names, as causeFollows finds an ask.opened: withholdAnswers drops only block.repaired events, so
+// every ask event the reconciliation planned is among them. An indexed ask whose event is not there
+// is a settlement that lost the event recording a write it made, and fails here naming the ask.
+func (r *settlementReconciliation) causeIndexedAsks(ctx context.Context, tx pgx.Tx, appended []model.Event) error {
+	if len(r.indexed) == 0 {
+		return nil
+	}
+	recorded := make(map[[2]string]int64, len(r.indexed))
+	for _, event := range appended {
+		switch payload := event.Payload.(type) {
+		case model.AskEventPayload:
+			recorded[[2]string{event.Type, payload.ID}] = event.ID
+		case model.AskEditEventPayload:
+			recorded[[2]string{event.Type, payload.Ask.ID}] = event.ID
+		}
+	}
+	for _, indexed := range r.indexed {
+		event, found := recorded[[2]string{indexed.event, indexed.ask}]
+		if !found {
+			return fmt.Errorf("settlement indexed ask %s and appended no %s for it", indexed.ask, indexed.event)
+		}
+		if err := graphstore.Caused(ctx, tx, indexed.write, event); err != nil {
 			return err
 		}
 	}
@@ -382,12 +425,12 @@ func (s *Service) reconcileAskBlocks(
 			// The question and the parts through one reader: the ask's parts hold its question,
 			// so the database answers once per kind for the write (refs.NewReader).
 			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL)
-			changes, err := refs.ReplaceCounted(ctx, tx, reader, ask.Question)
+			changes, cited, err := refs.ReplaceCounted(ctx, tx, reader, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index new ask block: %w", err)
 			}
 			// The new ask's parts, beside its own references: both named by the ask.opened.
-			changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, changes)
+			changes, indexed, err := refs.IndexAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, changes)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of new ask block %s: %w", ask.ID, err)
 			}
@@ -395,6 +438,8 @@ func (s *Service) reconcileAskBlocks(
 			if err != nil {
 				return settlementReconciliation{}, err
 			}
+			indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+			reconciled.indexed = append(reconciled.indexed, indexedAsk{ask: ask.ID, event: "ask.opened", write: indexed})
 			reconciled.follows = append(reconciled.follows, opening)
 			reconciled.events = append(reconciled.events, documentAskEvent(owner, artifactID, "ask.opened", blockActor, payload))
 			reconciled.repairAsk(block.node, block.id, ask, "", nil)
@@ -416,7 +461,7 @@ func (s *Service) reconcileAskBlocks(
 			// The restoration writes state, answer and resolution back: the answer it brings
 			// back is a part again, and the event names what that moved.
 			restoredAt := refs.AskPartsAt(ask)
-			changes, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL),
+			changes, indexed, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL),
 				ask, restoredAt, model.ReferenceChanges{})
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
@@ -426,6 +471,7 @@ func (s *Service) reconcileAskBlocks(
 				return settlementReconciliation{}, err
 			}
 			payload.Restored = true
+			reconciled.indexed = append(reconciled.indexed, indexedAsk{ask: ask.ID, event: eventType, write: indexed})
 			reconciled.events = append(reconciled.events, documentAskEvent(owner, artifactID, eventType, actor, payload))
 		}
 
@@ -466,17 +512,19 @@ func (s *Service) reconcileAskBlocks(
 			ask.Urgency = block.urgency
 			ask.EditedAt = askTimestamp(&editedAt)
 			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL)
-			changes, err := refs.ReplaceCountedEdit(ctx, tx, reader, previous.Question, ask.Question)
+			changes, cited, err := refs.ReplaceCountedEdit(ctx, tx, reader, previous.Question, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index reconciled ask: %w", err)
 			}
 			// The block's wording is now the row's: its parts are that wording too, read through
 			// the one reader, and the ask.edited names what they moved beside the ask's own
 			// references.
-			changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, editedAt, changes)
+			changes, indexed, err := refs.IndexAskPartsCounted(ctx, tx, reader, ask, editedAt, changes)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of reconciled ask %s: %w", ask.ID, err)
 			}
+			indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+			reconciled.indexed = append(reconciled.indexed, indexedAsk{ask: ask.ID, event: "ask.edited", write: indexed})
 			reconciled.events = append(reconciled.events, documentAskEvent(
 				owner,
 				artifactID,
@@ -928,9 +976,12 @@ func createAskBlock(
 	if err != nil {
 		return model.Ask{}, openedFollow{}, fmt.Errorf("write the node of a new ask block: %w", err)
 	}
+	// The row says in its own insert that the store holds what the settlement states of the ask
+	// (asks.tuples_stored_at, migration 20261116140001), at its created_at: both take the
+	// transaction's clock, now().
 	if err := tx.QueryRow(ctx, `
-		insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question')
+		insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind, tuples_stored_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question', now())
 		returning created_at
 	`, ask.ID, owner.IssueKey, ownerArtifactID, block.id, artifactID, authorJSON, block.question, options, block.multiple, block.urgency).Scan(&ask.CreatedAt); err != nil {
 		return model.Ask{}, openedFollow{}, fmt.Errorf("create ask block row: %w", err)
