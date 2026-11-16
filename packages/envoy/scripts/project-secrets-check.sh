@@ -36,15 +36,14 @@
 # have been refused. It fails for the reason the probe would be blind: a secret the rule cannot see
 # is exactly an untagged one.
 #
-# Live mode, --broker-url URL --dispatch-url URL --secret NAME: no stack and no write, the session
-# half alone, against a running deployment. It needs, in its environment, the pod's exchange token
+# Live mode, --broker-url URL --secret NAME: no stack and no write, the session half alone,
+# against a running deployment. It needs, in its environment, the pod's exchange token
 # (AGENT_SECRETS_MACHINE_TOKEN_FILE), the pod's enrolled key directory (AGENT_SECRETS_KEY_DIR), the
 # operator's helper socket with its machine login (AGENT_SECRETS_HELPER_SOCK), and an account token
 # the broker lists in BROKER_API_ACCOUNTS (AGENT_SECRETS_ACCOUNT_TOKEN_FILE), the only caller the
 # broker lets read a token's introspection. It runs the pod's trade, which names the project; the
 # pod's request for the secret; and the operator's session listing that project, which reads F's
-# check as the stack's row does. --dispatch-url is printed; nothing in agent-secrets' session calls
-# reads it.
+# check as the stack's row does. It takes no Dispatch URL: nothing of that half reads one.
 #
 # It exits 0 only when every row ran and passed. The last line is "project-secrets-check: <n> rows
 # ran, <m> passed"; a run whose rows matched nothing (a stack whose banner lacks PRIV's exports, a
@@ -56,7 +55,7 @@
 #
 #   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh
 #   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh --control untagged
-#   bash scripts/project-secrets-check.sh --broker-url https://secrets… --dispatch-url https://dispatch… --secret PROBE_PRIV
+#   bash scripts/project-secrets-check.sh --broker-url https://secrets… --secret PROBE_PRIV
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -87,18 +86,19 @@ usage() {
   cat <<'EOF'
 usage: project-secrets-check.sh [--database-url <postgres url>] [--binaries <dir>]
                                 [--control untagged]
-       project-secrets-check.sh --broker-url <url> --dispatch-url <url> --secret <NAME>
+       project-secrets-check.sh --broker-url <url> --secret <NAME>
 
 Drive dispatch://INFRA-3862's R11 on the binaries production runs: a private project's secret goes
 only to a credential that names the project. With no --broker-url it starts one dev-stack.sh run
 of its own and drives every caller against it.
 
   --database-url   the Postgres server dev-stack.sh creates this run's databases on
-  --binaries       prebuilt binaries, as dev-stack.sh takes them
+  --binaries       prebuilt binaries, as dev-stack.sh --project-access takes them, so
+                   dev-airlock-stands among them
   --control untagged
                    write PRIV_KEY with no dispatch-project tag: every caller then gets it and this
                    run fails, naming the first caller that should have been refused
-  --broker-url, --dispatch-url, --secret
+  --broker-url, --secret
                    live mode: drive the session half against a running deployment, writing
                    nothing. Its environment names the pod's exchange token
                    (AGENT_SECRETS_MACHINE_TOKEN_FILE), the pod's key dir (AGENT_SECRETS_KEY_DIR),
@@ -111,7 +111,6 @@ DATABASE_URL_OPTION=""
 BINARIES_OPTION=""
 CONTROL=""
 LIVE_BROKER_URL=""
-LIVE_DISPATCH_URL=""
 LIVE_SECRET=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -128,7 +127,6 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --broker-url) LIVE_BROKER_URL="${2:-}"; shift 2 ;;
-    --dispatch-url) LIVE_DISPATCH_URL="${2:-}"; shift 2 ;;
     --secret) LIVE_SECRET="${2:-}"; shift 2 ;;
     --help | -h) usage; exit 0 ;;
     *)
@@ -140,10 +138,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 LIVE=false
-if [ -n "$LIVE_BROKER_URL$LIVE_DISPATCH_URL$LIVE_SECRET" ]; then
+if [ -n "$LIVE_BROKER_URL$LIVE_SECRET" ]; then
   LIVE=true
-  if [ -z "$LIVE_BROKER_URL" ] || [ -z "$LIVE_DISPATCH_URL" ] || [ -z "$LIVE_SECRET" ]; then
-    echo "project-secrets-check: live mode needs --broker-url, --dispatch-url and --secret together" >&2
+  if [ -z "$LIVE_BROKER_URL" ] || [ -z "$LIVE_SECRET" ]; then
+    echo "project-secrets-check: live mode needs --broker-url and --secret together" >&2
     exit 2
   fi
   if [ -n "$CONTROL" ]; then
@@ -344,7 +342,7 @@ expect_listing_trade() { # <caller> <project> <person>
 if [ "$LIVE" = true ]; then
   BROKER_URL="$LIVE_BROKER_URL"
   PRIV_SECRET="$LIVE_SECRET"
-  note "live mode against the broker $BROKER_URL and Dispatch $LIVE_DISPATCH_URL, secret $PRIV_SECRET"
+  note "live mode against the broker $BROKER_URL, secret $PRIV_SECRET"
   mkdir -p "$WORK_DIR/no-signins" "$WORK_DIR/no-keys"
   live_env=(PATH="$PATH" HOME="$HOME" AGENT_SECRETS_URL="$BROKER_URL" AGENT_SECRETS_SIGNIN_DIR="$WORK_DIR/no-signins")
   [ -z "${XDG_RUNTIME_DIR:-}" ] || live_env+=(XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR")
@@ -463,6 +461,28 @@ priv_row() {
   dispatch_psql -c "select p.visibility, p.owner, coalesce((select string_agg(a.principal, ' ' order by a.principal) from project_access a where a.project_key = p.key), '') from projects p where p.key = '$PRIV_PROJECT';" 2>&1 || true
 }
 
+# --- The two stand-ins for avenue A's PATCH /api/v1/projects/{key}/access, and the only writes
+# this run makes to Dispatch's tables. That route answers only once t-a-5
+# (DISPATCH_ACCESS_ACCOUNTS at boot) and t-a-20 (DISPATCH_PRIVATE_PROJECTS and the bus write) are
+# on the branch under test; until then it answers 409 PRIVATE_PROJECTS_OFF. So each writes the
+# rows the route would, which are the one thing K3's answer and the read rule both read, and its
+# caller reads them back and says so. When the route answers, each body becomes that one call. ---
+# standin_patch_access_private stands in for PATCH /api/v1/projects/PRIV/access
+# {"visibility": "private"} and PUT /api/v1/projects/PRIV/access/people/bob: PRIV private, carol
+# its owner, bob on its access list.
+standin_patch_access_private() {
+  dispatch_psql \
+    -c "insert into projects (key, name, default_assignee, owner, visibility) values ('$PRIV_PROJECT', '$PRIV_PROJECT', '$PRIV_OWNER', '$PRIV_OWNER', 'private') on conflict (key) do update set owner = excluded.owner, visibility = excluded.visibility;" \
+    -c "insert into project_access (project_key, principal_kind, principal, added_by) values ('$PRIV_PROJECT', 'person', '$BOB', jsonb_build_object('kind', 'user', 'id', '$PRIV_OWNER')) on conflict do nothing;"
+}
+# standin_patch_access_owner stands in for PATCH /api/v1/projects/PRIV/access {"owner": bob}:
+# carol giving PRIV to bob, which takes her off it. The route needs bob signed in to Dispatch.
+standin_patch_access_owner() {
+  dispatch_psql \
+    -c "update projects set owner = '$BOB' where key = '$PRIV_PROJECT';" \
+    -c "delete from project_access where project_key = '$PRIV_PROJECT' and principal_kind = 'person' and principal = '$PRIV_OWNER';"
+}
+
 # --- The secrets: PRIV_KEY of the private project, shared and agent tier, so owner and tier alone
 # would give it to every session at once and only the project decides; PUB_KEY with no project at
 # all, which must go on being served to everyone its owner and tier allow. The control run writes
@@ -483,17 +503,8 @@ for secret in "$PRIV_SECRET" "$PUB_SECRET"; do
 done
 note "wrote $PRIV_SECRET (tags $priv_tags) and $PUB_SECRET (no project)"
 
-# --- PRIV, private, with carol its owner and bob on its access list. Avenue A's routes for this
-# are PATCH /api/v1/projects/{key}/access {"visibility": "private"}, which succeeds only once t-a-5
-# (DISPATCH_ACCESS_ACCOUNTS at boot) and t-a-20 (DISPATCH_PRIVATE_PROJECTS and the bus write) are
-# on the branch under test (until then it answers 409 PRIVATE_PROJECTS_OFF), and
-# PUT /api/v1/projects/{key}/access/people/{email} for bob. So this run writes the rows directly,
-# which are the one thing K3's answer and the read rule both read, reads them back, and says so.
-# When the routes answer, this stand-in goes and the routes take its place. ---
-dispatch_psql \
-  -c "insert into projects (key, name, default_assignee, owner, visibility) values ('$PRIV_PROJECT', '$PRIV_PROJECT', '$PRIV_OWNER', '$PRIV_OWNER', 'private') on conflict (key) do update set owner = excluded.owner, visibility = excluded.visibility;" \
-  -c "insert into project_access (project_key, principal_kind, principal, added_by) values ('$PRIV_PROJECT', 'person', '$BOB', jsonb_build_object('kind', 'user', 'id', '$PRIV_OWNER')) on conflict do nothing;" \
-  >"$WORK_DIR/calls/priv-private.out" 2>&1 ||
+# --- PRIV, private, with carol its owner and bob on its access list, through its stand-in. ---
+standin_patch_access_private >"$WORK_DIR/calls/priv-private.out" 2>&1 ||
   setup_fail "could not make $PRIV_PROJECT private, the stand-in for PATCH /api/v1/projects/$PRIV_PROJECT/access (avenue A's t-a-5 and t-a-20): $(tr '\n' ' ' <"$WORK_DIR/calls/priv-private.out")"
 read_back="$(priv_row)"
 [ "$read_back" = "private|$PRIV_OWNER|$BOB" ] ||
@@ -738,14 +749,8 @@ else
   else
     row_fail "$AIRLOCK: $PRIV_SECRET: $SERVED: want CONNECT 200 then 200 from the bound host; got '$codes', body '$body', stderr $(said)"
   fi
-  # carol, the person of the pod's exchange entry, taken off PRIV: avenue A's route for this is
-  # PATCH /api/v1/projects/{key}/access {"owner": "bob@example.com"}, carol giving PRIV to bob,
-  # which needs bob signed in to Dispatch and the same t-a-5 and t-a-20 as the visibility write
-  # above. Until then this run writes the rows directly, reads them back, and says so.
-  if dispatch_psql \
-    -c "update projects set owner = '$BOB' where key = '$PRIV_PROJECT';" \
-    -c "delete from project_access where project_key = '$PRIV_PROJECT' and principal_kind = 'person' and principal = '$PRIV_OWNER';" \
-    >"$WORK_DIR/calls/owner-off.out" 2>&1 && [ "$(priv_row)" = "private|$BOB|$BOB" ]; then
+  # carol, the person of the pod's exchange entry, taken off PRIV through its stand-in.
+  if standin_patch_access_owner >"$WORK_DIR/calls/owner-off.out" 2>&1 && [ "$(priv_row)" = "private|$BOB|$BOB" ]; then
     note "took $PRIV_OWNER off $PRIV_PROJECT by writing its rows: the stand-in for PATCH /api/v1/projects/$PRIV_PROJECT/access {\"owner\":\"$BOB\"} until avenue A's t-a-5 and t-a-20 land"
     note "waiting ${K3_CACHE_WAIT}s: the broker keeps a K3 answer for projectaccess.CacheTTL (30 s)"
     sleep "$K3_CACHE_WAIT"

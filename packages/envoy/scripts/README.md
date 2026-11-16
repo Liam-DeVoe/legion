@@ -334,7 +334,7 @@ LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh --control untagged
 Live mode runs the session half against a deployment and writes nothing:
 
 ```bash
-bash scripts/project-secrets-check.sh --broker-url <broker> --dispatch-url <dispatch> --secret <NAME>
+bash scripts/project-secrets-check.sh --broker-url <broker> --secret <NAME>
 ```
 
 Its environment names the pod's exchange token (`AGENT_SECRETS_MACHINE_TOKEN_FILE`),
@@ -344,17 +344,20 @@ in `BROKER_API_ACCOUNTS` (`AGENT_SECRETS_ACCOUNT_TOKEN_FILE`), the only caller t
 broker lets read a token's introspection. A missing one of the first three exits 2; a
 missing account token fails the trade line as `UNKNOWN`. It runs the pod's trade (which
 names the project), the pod's request for the secret, and the operator's session
-listing that project, which reads F's check as the stack's row does. `--dispatch-url`
-is printed and read by nothing else.
+listing that project, which reads F's check as the stack's row does. It takes no
+Dispatch URL, since nothing of the session half reads one.
 
 Until avenue A's `DISPATCH_ACCESS_ACCOUNTS` boot setting (t-a-5) and its private-project
 switch (t-a-20) are on the branch under test, the run writes Dispatch's rows directly
-in place of three of A's routes, reads them back, and says so on its output: `PATCH
-/api/v1/projects/PRIV/access {"visibility":"private"}`, `PUT
-/api/v1/projects/PRIV/access/people/bob@example.com` and, in the airlock row, `PATCH
-/api/v1/projects/PRIV/access {"owner":"bob@example.com"}`. The rows need A's schema
-(`projects.owner`, `projects.visibility`, `project_access`), so on a Dispatch without
-it the run stops before any row with the route the write stands in for.
+in place of three of A's routes, reads them back, and says so on its output. The writes
+are two functions, each named for the route it stands in for, so each body becomes that
+call once the route answers: `standin_patch_access_private` for `PATCH
+/api/v1/projects/PRIV/access {"visibility":"private"}` and `PUT
+/api/v1/projects/PRIV/access/people/bob@example.com`, and, in the airlock row,
+`standin_patch_access_owner` for `PATCH /api/v1/projects/PRIV/access
+{"owner":"bob@example.com"}`. The rows need A's schema (`projects.owner`,
+`projects.visibility`, `project_access`), so on a Dispatch without it the run stops
+before any row with the route the write stands in for.
 
 `scripts/project-secrets-check.test.sh` proves the driver's own decisions with fakes of
 `dev-stack.sh`, `agent-secrets`, its helper, `bun`, `psql`, `curl`, `python3` and

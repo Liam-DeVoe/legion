@@ -526,12 +526,16 @@ func (s *Server) reclaimIdentity(sessionID string, rec Record, kept bool, projec
 	if !kept {
 		return reclaimed{RuntimeID: SessionRuntimeID(sessionID)}
 	}
-	// A session coming back naming other projects than its record's is a session whose grants
-	// were decided under another list: they are not its to take back, so it starts a new
-	// identity, as a record whose key will not read does, and the enrollments the record named
-	// are revoked.
+	// A session coming back naming other projects than its record's does not take back the
+	// record's key or enrollment: it starts a new identity, as a record whose key will not read
+	// does, and the enrollments the record named are revoked. That revoke is a launcher's own end
+	// of an enrollment (enroll.Service.Revoke), so one that still holds grants or pending
+	// requests goes dormant rather than ending them, and the new identity's enrollment under the
+	// same session name adopts them. That is safe: a grant of a project-tagged name is re-checked
+	// against the adopting enrollment's projects on every release (requests' checkRelease), and
+	// a grant of an untagged name never depended on the list.
 	if !slices.Equal(rec.Projects, projects) {
-		s.Log.Warn("a session came back naming other projects than its record; it gets a new identity and the old one's grants end", "session_id", sessionID,
+		s.Log.Warn("a session came back naming other projects than its record; it gets a new identity, and the enrollments of the old one are revoked", "session_id", sessionID,
 			"projects", oauthwire.JoinProjects(projects), "recorded_projects", oauthwire.JoinProjects(rec.Projects))
 		return reclaimed{RuntimeID: SessionRuntimeID(sessionID), Revoke: rec.enrollments(), Blocking: rec.EnrollmentID != ""}
 	}
@@ -549,15 +553,19 @@ func (s *Server) reclaimIdentity(sessionID string, rec Record, kept bool, projec
 		Revoke: nonEmpty(rec.LapsedEnrollmentID)}
 }
 
-// sessionProjects reads the projects a register or an enroll-session-key names into the one
-// spelling a credential's list takes (oauthwire.ParseProjects): sorted, each once, nil for none,
-// and refused naming the rule when they are no list.
+// sessionProjects reads the projects a register or an enroll-session-key names as the broker's
+// enrollment route reads them: each element one project key, named once, in any order, held
+// sorted (oauthwire.ValidProjects), nil for none. An element is never split, so "PRIV CORE" is
+// refused as no project key rather than read as two projects.
 func sessionProjects(projects []string) ([]string, error) {
-	parsed, err := oauthwire.ParseProjects(oauthwire.JoinProjects(projects))
-	if err != nil {
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	sorted := slices.Sorted(slices.Values(projects))
+	if err := oauthwire.ValidProjects(sorted); err != nil {
 		return nil, fmt.Errorf("projects: %w", err)
 	}
-	return parsed, nil
+	return sorted, nil
 }
 
 // projectsDiffer refuses a register naming other projects for a session already registered: a

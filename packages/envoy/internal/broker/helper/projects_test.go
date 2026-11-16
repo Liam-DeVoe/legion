@@ -17,7 +17,7 @@ import (
 // stating them, sorted, and its record keeps them; a helper restarted while the session's process
 // lives re-pins it under the same projects, so its next enrollment states them again. A register
 // naming other projects for the session is refused, and a reboot that brings the named session
-// back under another list gives it a new identity rather than the grants of the old one.
+// back under another list gives it a new identity rather than the old one's key and enrollment.
 func TestHelperKeepsASessionsProjectsAcrossARestart(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	r := startRig(t, state)
@@ -107,6 +107,31 @@ func TestASessionComingBackUnderOtherProjectsGetsANewIdentity(t *testing.T) {
 		t.Fatalf("the session came back under other projects with its old identity (%+v); want a new key and a new enrollment", resp)
 	}
 	waitFor(t, func() bool { return slices.Contains(r.revokes(t), "enr-before") })
+}
+
+// TestHelperRefusesAProjectElementThatIsNotOneKey: the helper reads a list's elements as they
+// are given, each one a project key named once, as the broker's enrollment route reads them. So
+// the element "PRIV CORE" is refused, not read as the two projects CORE and PRIV, and so are an
+// element with a space before its key and an empty one; register and enroll-session-key both
+// refuse each with BAD_REQUEST, and none of them reaches the broker.
+func TestHelperRefusesAProjectElementThatIsNotOneKey(t *testing.T) {
+	r := startRig(t, filepath.Join(t.TempDir(), "sessions.json"))
+	child := sleeper(t)
+	r.callerPID.Store(int64(child.Process.Pid))
+	for _, projects := range [][]string{{"PRIV CORE"}, {" PRIV"}, {""}, {"PUB", "PRIV PRIV"}, {"PRIV", "PRIV"}} {
+		reg := r.call(t, Request{Op: "register", Projects: projects})
+		if reg.OK || reg.Code != CodeBadRequest || !strings.Contains(reg.Error, "projects") {
+			t.Errorf("register naming the projects %q = %+v; want BAD_REQUEST naming projects", projects, reg)
+		}
+		key := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "box:1", Thumbprint: "tp", Projects: projects})
+		if key.OK || key.Code != CodeBadRequest || !strings.Contains(key.Error, "projects") {
+			t.Errorf("enroll-session-key naming the projects %q = %+v; want BAD_REQUEST naming projects", projects, key)
+		}
+	}
+	r.callerPID.Store(0)
+	if posts, _, _ := r.fake.snapshot(); len(posts) != 0 {
+		t.Fatalf("a refused list reached the broker: %+v", posts)
+	}
 }
 
 // mustTicks is this process's start ticks, for a record naming the test process as live.

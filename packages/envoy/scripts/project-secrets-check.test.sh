@@ -545,7 +545,8 @@ check "before F: the machine's own session is granted PUB_KEY" says "PASS: the m
 check "before F: the machine's own session is denied PRIV_KEY" says "PASS: the machine's own session: PRIV_KEY: denied project-not-named"
 check "before F: the airlock serves a proxied request while carol is on PRIV" says "PASS: PRIV's pod behind the airlock: PRIV_KEY: a proxied request is served"
 check "before F: the airlock refuses the next proxied request once carol is off PRIV" says "PASS: PRIV's pod behind the airlock: PRIV_KEY: the next proxied request is refused 407"
-check "before F: the stand-in write is marked as the stand-in for avenue A's route" says "the stand-in for PATCH /api/v1/projects/PRIV/access"
+check "before F: the write making PRIV private is marked as the stand-in for avenue A's route" says "the stand-in for PATCH /api/v1/projects/PRIV/access {\"visibility\":\"private\"}"
+check "before F: the write taking carol off PRIV is marked as the stand-in for avenue A's route" says "the stand-in for PATCH /api/v1/projects/PRIV/access {\"owner\":\"bob@example.com\"}"
 check "before F: PRIV_KEY was written tagged dispatch-project=PRIV" \
   test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"]' "$(cat "$state/current-stack")/fake-secrets.json")" = PRIV
 check "before F: PUB_KEY was written with no project" \
@@ -610,21 +611,23 @@ check "no access schema: the run exits 1" exits 1
 check "no access schema: the failure names avenue A's route the write stands in for" says "PATCH /api/v1/projects/PRIV/access"
 check "no access schema: no row ran" says "project-secrets-check: 0 rows ran, 0 passed"
 
-# Live mode refuses half its options, and every option of the stack.
+# Live mode refuses half its options, and every option of the stack. It takes no Dispatch URL:
+# nothing of the session half it drives reads one.
 run_driver live-broker-only before-f --broker-url https://broker.example
 check "live: --broker-url alone exits 2" exits 2
-check "live: --broker-url alone names the three options" says "live mode needs --broker-url, --dispatch-url and --secret together"
-run_driver live-two before-f --broker-url https://broker.example --dispatch-url https://dispatch.example
-check "live: two of the three options exit 2" exits 2
+check "live: --broker-url alone names the two options" says "live mode needs --broker-url and --secret together"
 run_driver live-secret-only before-f --secret PRIV_KEY
 check "live: --secret alone exits 2" exits 2
-run_driver live-control before-f --broker-url https://broker.example --dispatch-url https://dispatch.example --secret PRIV_KEY --control untagged
+run_driver live-dispatch-url before-f --broker-url https://broker.example --dispatch-url https://dispatch.example --secret PRIV_KEY
+check "live: --dispatch-url exits 2" exits 2
+check "live: --dispatch-url is no option" says "unexpected argument --dispatch-url"
+run_driver live-control before-f --broker-url https://broker.example --secret PRIV_KEY --control untagged
 check "live: --control exits 2" exits 2
 check "live: --control is refused because it writes" says "--control writes a secret, which live mode never does"
-run_driver live-database before-f --broker-url https://broker.example --dispatch-url https://dispatch.example --secret PRIV_KEY --database-url "$admin_url"
+run_driver live-database before-f --broker-url https://broker.example --secret PRIV_KEY --database-url "$admin_url"
 check "live: --database-url exits 2" exits 2
 check "live: --database-url is refused because live mode starts no stack" says "live mode starts no stack"
-run_driver live-no-env before-f --broker-url https://broker.example --dispatch-url https://dispatch.example --secret PRIV_KEY
+run_driver live-no-env before-f --broker-url https://broker.example --secret PRIV_KEY
 check "live: with none of its variables it exits 2" exits 2
 check "live: it names the pod's exchange token variable" says "AGENT_SECRETS_MACHINE_TOKEN_FILE"
 check "live: it names the pod's key dir variable" says "AGENT_SECRETS_KEY_DIR"
@@ -654,7 +657,7 @@ run_live() { # <name> <account token file>
     AGENT_SECRETS_MACHINE_IDENTITY=kubernetes AGENT_SECRETS_MACHINE_TOKEN_FILE="$live/priv-exchange-token" \
     AGENT_SECRETS_KEY_DIR="$live/pod-keys" AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$2" \
     AGENT_SECRETS_HELPER_SOCK="$live/helper.sock" \
-    bash "$driver" --broker-url https://broker.example --dispatch-url https://dispatch.example --secret PRIV_KEY \
+    bash "$driver" --broker-url https://broker.example --secret PRIV_KEY \
     >"$RUN_OUT" 2>&1 || RUN_RC=$?
 }
 run_live live-f "$live/account-token"
@@ -664,7 +667,6 @@ check "live, F: the pod's trade names the project" says "PASS: the pod: its trad
 check "live, F: the pod is granted the secret" says "PASS: the pod: PRIV_KEY: granted"
 check "live, F: the operator's session is refused by F" says "PASS: the operator's machine session listing PRIV: PRIV_KEY: refused at enrollment by F's check (MACHINE_NOT_REGISTERED)"
 check "live, F: the operator's session listed the project the pod's introspection named" grep -qF 'projects=PRIV' "$state/register.log"
-check "live, F: --dispatch-url is printed" says "https://dispatch.example"
 run_live live-no-account ""
 check "live, no account token: the run exits 1" exits 1
 check "live, no account token: the trade line is UNKNOWN, not a pass" says "FAIL: the pod: its trade: UNKNOWN: cannot read the introspection"

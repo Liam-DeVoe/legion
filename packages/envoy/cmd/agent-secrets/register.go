@@ -1,11 +1,11 @@
 // packages/envoy/cmd/agent-secrets/register.go
 //
-// cmdRegister implements "agent-secrets register [--wait SECONDS] [--exec -- COMMAND
-// [ARGS...]]": the one command a machine session (not an agent box) runs at launch to become a
-// registered session root with agent-secrets-helper. The helper pins THIS process by pidfd, so
-// with --exec the command execs as the very pid that was registered — shims/omp wraps omp this
-// way, and omp becomes the session root every later `agent-secrets` invocation in its process
-// tree signs through.
+// cmdRegister implements "agent-secrets register [--wait SECONDS] [--session-id ID] [--projects
+// KEYS] [--exec -- COMMAND [ARGS...]]": the one command a machine session (not an agent box)
+// runs at launch to become a registered session root with agent-secrets-helper. The helper pins
+// THIS process by pidfd, so with --exec the command execs as the very pid that was registered —
+// shims/omp wraps omp this way, and omp becomes the session root every later `agent-secrets`
+// invocation in its process tree signs through.
 package main
 
 import (
@@ -161,9 +161,7 @@ func registerWithPatience(sock string, wait int, sessionID string, projects []st
 // command line sets it, AGENT_SECRETS_PROJECTS otherwise (brokerclient.TradeProjects), read by the
 // broker's own rule for a list, so a list that is no list is refused before the helper is asked.
 func sessionProjectsFlag(raw string, flags *flag.FlagSet) ([]string, error) {
-	set := false
-	flags.Visit(func(f *flag.Flag) { set = set || f.Name == "projects" })
-	if !set {
+	if !flagGiven(flags, "projects") {
 		return brokerclient.TradeProjects(os.Getenv)
 	}
 	projects, err := oauthwire.ParseProjects(raw)

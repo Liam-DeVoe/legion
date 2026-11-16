@@ -91,6 +91,20 @@ func TestRegisterReadsAgentSecretsProjects(t *testing.T) {
 	}
 }
 
+// TestTheRegisterAndEnrollSynopsesNameProjects: the usage line of register, and of enroll's
+// --helper half, names --projects, the option that names a session's Dispatch projects; enroll's
+// --pod half refuses the option, so its half names none.
+func TestTheRegisterAndEnrollSynopsesNameProjects(t *testing.T) {
+	if synopsis := lookupCommand("register").synopsis; !strings.Contains(synopsis, "[--projects ") {
+		t.Errorf("register's synopsis %q names no --projects", synopsis)
+	}
+	synopsis := lookupCommand("enroll").synopsis
+	helperHalf, podHalf, found := strings.Cut(synopsis, " | ")
+	if !found || !strings.Contains(helperHalf, "[--projects ") || strings.Contains(podHalf, "--projects") {
+		t.Errorf("enroll's synopsis %q: want --projects in its --helper half and not in its --pod half", synopsis)
+	}
+}
+
 // TestADenialForAnUnnamedProjectSaysHowToNameIt: a request the broker denies project-not-named
 // ends with the line that says to start the session with AGENT_SECRETS_PROJECTS naming the
 // project, in the request form and the exec form; the line names no project, and a denial for

@@ -34,11 +34,14 @@
 # (g) the second box is printed with a path of its own for each of the first box's, every one
 # of them under this run's own work directory, the directories it writes into already there, and
 # its metadata stand-in taking its port file from the environment rather than from the one baked
-# path two stand-ins would fight over; (h) a run given --binaries calls no go at all, copies the
-# prebuilt stubs into its own bin directory, and runs them, held to everything (a), (b),
-# (c) and (e) hold a built run to; and (i) a --binaries directory short of one of them, or
-# holding one that is not an executable file, is refused with exit 2, naming each such file,
-# before anything is created or started.
+# path two stand-ins would fight over; (h) a run given --binaries with the seven binaries the
+# header names calls no go at all, copies the prebuilt stubs into its own bin directory, and runs
+# them, held to everything (a), (b), (c) and (e) hold a built run to; (i) a --binaries directory
+# short of one of them, or holding one that is not an executable file, is refused with exit 2,
+# naming each such file, before anything is created or started; and (l) only --project-access
+# needs the airlock's stands: it builds dev-airlock-stands beside the seven, given --binaries it
+# needs that eighth binary there, and it needs docker on PATH, refused before anything is created
+# or started without either, while a run without it builds no stands and needs no docker.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -374,7 +377,8 @@ chmod +x "${fake_bin_dir}/go"
 # it. TMPDIR is this test's own directory, so each run's work directory lives under it and this
 # test's cleanup removes both. The run is given no LEGION_TEST_PG_DSN and no DATABASE_URL, so
 # nothing of the machine it runs on decides which server it is pointed at. Arguments after the
-# fourth are dev-stack.sh's own, after its --database-url.
+# fourth are dev-stack.sh's own, after its --database-url. DEV_STACK_TEST_PATH, when set, is the
+# run's whole PATH in place of the fakes before this test's own.
 run_instance() {
   local which="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4"
   shift 4
@@ -385,7 +389,7 @@ run_instance() {
     : >"$DEV_STACK_TEST_GO_CALL_FILE"
   fi
   env -u LEGION_TEST_PG_DSN -u DATABASE_URL \
-    PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
+    PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir" \
     DEV_STACK_TEST_PSQL_CALL_FILE="$psql_call_file" DEV_STACK_TEST_CURL_CALL_FILE="$curl_call_file" \
     DEV_STACK_TEST_BROKER_FAILS="${DEV_STACK_TEST_BROKER_FAILS:-}" \
     DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}" \
@@ -706,6 +710,10 @@ suffix1="$run_suffix"
 kept_port1="$kept_port"
 grep -q '^go build -o ' "$go_calls1" ||
   fail "instance 1 built nothing through the fake go, so a run that records no go call proves nothing"
+# (l) Only --project-access runs the airlock's stands, so a run without it builds none.
+if grep -q 'dev-airlock-stands' "$go_calls1"; then
+  fail "instance 1, run without --project-access, built dev-airlock-stands: $(cat "$go_calls1")"
+fi
 declare -A port1=()
 for name in "${!process_port[@]}"; do port1["$name"]="${process_port[$name]}"; done
 printf "PASS: instance 1 started every process and took each port from that process's own report (issuer %s, broker %s, natsd %s, listener %s, dispatch %s; Dispatch keeper %s)\n" \
@@ -842,11 +850,13 @@ printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DS
 # (h) Prebuilt binaries, as the builds farm makes them for a pod that compiles no Go: the fake go
 # makes a stub of each binary in a directory of its own, and a run given that directory with
 # --binaries calls no go at all, puts a copy of each in its own bin directory, and runs those.
-# Every check a built run passes, (a) to (c), holds for it, and so does the stop of (e).
+# Every check a built run passes, (a) to (c), holds for it, and so does the stop of (e). The
+# directory holds the seven binaries the header and the usage name, as one built to them does:
+# dev-airlock-stands is --project-access's alone, (l) below.
 prebuilt="${temporary_dir}/prebuilt"
 # One list of the stack's packages; the binary names the copy check reads come from it.
 prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./cmd/dev-airlock-stands ./internal/testnats/cmd/natsd)
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
   "${prebuilt_packages[@]}"
 go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"
@@ -868,9 +878,13 @@ printf 'PASS: --binaries called no go, copied the %d prebuilt stubs into its own
 
 # (j) --project-access: the same stack, its broker pointed at its own Dispatch's access routes
 # with a token of its own account, and that account admitted to both of Dispatch's lists. Instance
-# 1 above, run without it, is the control: neither is set there.
-run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --project-access
+# 1 above, run without it, is the control: neither is set there. It builds dev-airlock-stands
+# beside the seven, which instance 1 did not (l).
+go_calls_access="${temporary_dir}/go-calls-project-access"
+DEV_STACK_TEST_GO_CALL_FILE="$go_calls_access" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --project-access
 assert_instance_ready 'the --project-access run' "$log1" "$psql_calls1" "$curl_calls1"
+grep -q '^go build -o .* \./cmd/dev-airlock-stands' "$go_calls_access" ||
+  fail "the --project-access run did not build dev-airlock-stands: $(cat "$go_calls_access")"
 assert_project_access 'the --project-access run' "$log1" true
 kill -INT "${instance_pid[1]}"
 wait_for_exit 1
@@ -895,25 +909,31 @@ printf 'PASS: a --project-access run whose airlock proxy bound another port stop
 
 # (i) A --binaries directory that does not hold each of those executable files is refused with
 # exit 2, naming each file that is missing or not executable and no other, before anything is
-# created or started: no work directory, and no psql, curl or go call.
+# created or started: no work directory, and no psql, curl or go call. refuse_run is that check
+# for any refusal: the status it wants, and dev-stack.sh's arguments after its --database-url;
+# DEV_STACK_TEST_PATH, when set, is the run's whole PATH, as for run_instance.
 work_dirs_made() { compgen -G "${temporary_dir}/dev-stack.*" | wc -l || true; }
-refuse_binaries() {
-  local label="$1" dir="$2" made_before tool
+refuse_run() { # <label> <status> <dev-stack.sh arguments...>
+  local label="$1" want="$2" made_before tool
+  shift 2
   made_before="$(work_dirs_made)"
   for tool in psql curl go; do
     rm -f "${temporary_dir}/${tool}-calls-binaries"
   done
   refusal_status=0
-  env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
+  env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir" \
     DEV_STACK_TEST_PSQL_CALL_FILE="${temporary_dir}/psql-calls-binaries" \
     DEV_STACK_TEST_CURL_CALL_FILE="${temporary_dir}/curl-calls-binaries" \
     DEV_STACK_TEST_GO_CALL_FILE="${temporary_dir}/go-calls-binaries" \
-    bash "$driver" --database-url "$admin_url" --binaries "$dir" >"$refusal" 2>&1 || refusal_status=$?
-  [[ "$refusal_status" -eq 2 ]] || fail "$label exited $refusal_status, not 2"
+    bash "$driver" --database-url "$admin_url" "$@" >"$refusal" 2>&1 || refusal_status=$?
+  [[ "$refusal_status" -eq "$want" ]] || fail "$label exited $refusal_status, not $want: $(cat "$refusal")"
   [[ "$(work_dirs_made)" -eq "$made_before" ]] || fail "$label made a work directory before it refused"
   for tool in psql curl go; do
     [[ ! -e "${temporary_dir}/${tool}-calls-binaries" ]] || fail "$label still called $tool"
   done
+}
+refuse_binaries() { # <label> <dir> [more dev-stack.sh arguments...]
+  refuse_run "$1" 2 --binaries "$2" "${@:3}"
 }
 # The refusal's lines that name a file of dir are exactly the lines given, in the order given.
 refused_files_are() {
@@ -947,5 +967,62 @@ refuse_binaries 'a --binaries directory with two unusable binaries' "$two_unusab
 refused_files_are 'a --binaries directory with two unusable binaries' "$two_unusable" \
   "  ${two_unusable}/listener: not an executable file" "  ${two_unusable}/natsd: missing"
 printf 'PASS: a --binaries directory with two unusable binaries names each of them\n'
+
+# (l) --project-access given --binaries: that run starts the airlock's stands, so it needs an
+# eighth binary, dev-airlock-stands. The seven-binary directory (h) ran is refused, naming that
+# binary and no other; the control is (h) itself, the same directory running without the flag.
+refuse_binaries 'a --project-access run given the seven binaries' "$prebuilt" --project-access
+refused_files_are 'a --project-access run given the seven binaries' "$prebuilt" "  ${prebuilt}/dev-airlock-stands: missing"
+printf 'PASS: a --project-access run given the seven binaries is refused with exit 2, naming %s/dev-airlock-stands, before anything is created or started\n' "$prebuilt"
+
+# The same directory with dev-airlock-stands added runs under --project-access, copying all eight
+# and starting the stands: the control that the refusal above was that binary's alone.
+with_stands="${temporary_dir}/prebuilt-with-stands"
+cp -R "$prebuilt" "$with_stands"
+env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${with_stands}/" ./cmd/dev-airlock-stands
+DEV_STACK_TEST_GO_CALL_FILE="$go_calls_prebuilt" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --binaries "$with_stands" --project-access
+assert_instance_ready 'the --project-access --binaries run' "$log1" "$psql_calls1" "$curl_calls1"
+assert_project_access 'the --project-access --binaries run' "$log1" true
+[[ ! -s "$go_calls_prebuilt" ]] || fail "the --project-access --binaries run called go: $(cat "$go_calls_prebuilt")"
+for binary in "${prebuilt_packages[@]##*/}" dev-airlock-stands; do
+  cmp -s "${with_stands}/${binary}" "${work_dir}/bin/${binary}" ||
+    fail "the --project-access --binaries run's own $binary is not the prebuilt one it was given"
+done
+kill -INT "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -eq 130 ]] || fail "the --project-access --binaries run exited $exited_status on INT, not 130"
+assert_everything_stopped 'the --project-access --binaries run'
+assert_databases_dropped 'the --project-access --binaries run' "$psql_calls1" "$run_suffix"
+printf 'PASS: a --project-access run given the eight binaries copied each of them and ran\n'
+
+# docker: --project-access runs the stands in a container, so a PATH with no docker is refused
+# before anything is created or started, naming docker. The PATH is this test's own, every
+# command on it but docker linked into one directory; the control is the same PATH and the same
+# eight binaries without --project-access, which runs to ready, so the refusal is the option's.
+no_docker_bin="${temporary_dir}/bin-without-docker"
+mkdir -p "$no_docker_bin"
+IFS=: read -r -a path_dirs <<<"${fake_bin_dir}:${PATH}"
+for dir in "${path_dirs[@]}"; do
+  [[ "$dir" == /* && -d "$dir" ]] || continue
+  for tool in "$dir"/*; do
+    name="${tool##*/}"
+    [[ "$name" != docker && -f "$tool" && -x "$tool" ]] || continue
+    [[ -e "${no_docker_bin}/${name}" || -L "${no_docker_bin}/${name}" ]] || ln -s "$tool" "${no_docker_bin}/${name}"
+  done
+done
+if PATH="$no_docker_bin" command -v docker >/dev/null; then
+  fail "the PATH built without docker still finds one, so the refusal below could not be seen"
+fi
+DEV_STACK_TEST_PATH="$no_docker_bin" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --binaries "$with_stands"
+assert_instance_ready 'the run without docker or --project-access' "$log1" "$psql_calls1" "$curl_calls1"
+kill -INT "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -eq 130 ]] || fail "the run without docker or --project-access exited $exited_status on INT, not 130"
+assert_everything_stopped 'the run without docker or --project-access'
+assert_databases_dropped 'the run without docker or --project-access' "$psql_calls1" "$run_suffix"
+DEV_STACK_TEST_PATH="$no_docker_bin" refuse_run 'a --project-access run with no docker on PATH' 1 --binaries "$with_stands" --project-access
+grep -qx 'dev-stack: docker is required on PATH' "$refusal" ||
+  fail "a --project-access run with no docker on PATH did not name docker: $(cat "$refusal")"
+printf 'PASS: a --project-access run with no docker on PATH is refused with exit 1, naming docker, before anything is created or started; the same run without the option needs none\n'
 
 printf 'ALL PASS: dev-stack.test.sh\n'
