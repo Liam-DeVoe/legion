@@ -535,7 +535,7 @@ claude_envoy_build: &claude_envoy_build
   - '.github/workflows/release.yaml'
   - 'packages/contracts/src/**'
   - 'packages/envoy-client/src/**'
-  # why: .github/ci-notes/ci.md#claude_envoy_build-its-srcbroker-credentialts21-22-imports-legionbroker-client
+  # why: .github/ci-notes/ci.md#claude_envoy_build-its-srcbroker-credentialts-imports-legionbroker-client
   - 'packages/broker-client/**'
   - 'packages/envoy-client/bin/dispatch.ts'
   - 'packages/pi-shared/src/**'
@@ -1273,7 +1273,7 @@ pi_shared:
   - 'packages/pi-shared/**'
   - *jj_install
   - 'packages/envoy-client/src/**'
-  # And @legion/broker-client with it: src/broker-credential.ts:21-22 imports it, so
+  # And @legion/broker-client with it: src/broker-credential.ts imports its brokerTokenClient, so
   # this job compiles its sources too (ci_job_reads.py's envoy_client_dep).
   - 'packages/broker-client/**'
   # src/handoff-record.test.ts:7 imports @legion/envoy-client/test/fake-dispatch.
@@ -2383,6 +2383,8 @@ ci_filters:
   - '.github/ci-filters.yaml'
   - '.github/scripts/check-ci-filters.sh'
   - '.github/scripts/check-workflow-files.sh'
+  - '.github/actionlint.yaml'
+  - '.github/actions/**'
   - '.github/scripts/ci_filter_coverage.py'
   - '.github/scripts/ci_job_reads.py'
   - '.github/scripts/ci_workflow_rules.py'
@@ -2467,7 +2469,7 @@ envoy_client:
   - 'packages/envoy-client/**'
   - 'packages/broker-client/**'
   - 'packages/contracts/src/**'
-  # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
+  # src/broker-credential.ts imports brokerTokenClient from @legion/broker-client/environment.
   - 'packages/broker-client/src/**'
   # src/__tests__ import @legion/test-fixtures.
   - 'packages/test-fixtures/src/**'

@@ -322,8 +322,9 @@ TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
 def envoy_client_dep(why):
     """The reads of a gate whose job compiles @legion/envoy-client: that package's sources, and
-    packages/broker-client's with them. envoy-client's src/broker-credential.ts:21-22 imports
-    @legion/broker-client/environment and /token-client, and that package's exports map every
+    packages/broker-client's with them. envoy-client's src/broker-credential.ts imports
+    @legion/broker-client/environment (brokerTokenClient), /signins (chooseSignIn) and
+    /token-client (isFinalRefusal), and that package's exports map every
     entry to ./src/<module>.ts, so all seven of its sources land in the same program - measured
     with `bunx tsc --listFilesOnly`, which counts seven of them in each of claude-envoy,
     envoy-client, pi-envoy, pi-legion, pi-shared and scripts/dispatch, and in the closures of
@@ -335,7 +336,8 @@ def envoy_client_dep(why):
     return reads(
         (ENVOY_CLIENT_SRC, why),
         (BROKER_CLIENT_SRC, f"{why}; and @legion/broker-client comes with it, through "
-                            "packages/envoy-client/src/broker-credential.ts:21-22"),
+                            "packages/envoy-client/src/broker-credential.ts, which imports brokerTokenClient from "
+                            "@legion/broker-client/environment"),
     )
 
 
@@ -1773,6 +1775,7 @@ PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
 TOOL_COPY_STEP = "Fill the copy of every tool asset the package does not hold"
 # The steps of the tool-fallback job the reads below cite. The job is one long drive of
 # .github/scripts/ci-tools-proof.sh, so each file it reads is read at a step with a name.
+ACTIONLINT_STEP = "Check every workflow file with actionlint"
 TOOL_BLOB_STEP = "Check the package holds the blob of every mirrored row"
 TOOL_ROWS_STEP = "Print every row beside the two call sites that read its digest"
 TOOL_NOWHERE_STEP = "Check all eight installs with nowhere to go failed, and failed in their own time"
@@ -2354,7 +2357,7 @@ GATES = [
 
     gate("envoy_client", "envoy-client", reads=reads(
         ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),
-        ("packages/broker-client/**", f"{at('envoy-client', 'Typecheck broker client')} and {at('envoy-client', 'Test broker client')}; packages/envoy-client/src/broker-credential.ts:21-22 imports @legion/broker-client/environment and @legion/broker-client/token-client"),
+        ("packages/broker-client/**", f"{at('envoy-client', 'Typecheck broker client')} and {at('envoy-client', 'Test broker client')}; packages/envoy-client/src/broker-credential.ts imports brokerTokenClient from @legion/broker-client/environment, chooseSignIn from @legion/broker-client/signins and isFinalRefusal from @legion/broker-client/token-client"),
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
         (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:17-18, dispatch-text.test.ts:128-129"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
@@ -3051,7 +3054,7 @@ GATES = [
         ("packages/claude-envoy/**", f"{at(STALL, 'Stall test of claude-envoy')} (tests/envoy-channel-stall.test.ts runs bin/envoy-channel.ts)"),
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
-        (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-22"),
+        (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
     ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
@@ -3081,6 +3084,10 @@ GATES = [
                      f"generated blocks into it in its write mode"),
         (".github/scripts/check-workflow-files.sh",
          at("ci-filters", "Check every workflow file GitHub can read and its size")),
+        (".github/actionlint.yaml", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads its configuration "
+                                    "from the project it runs in"),
+        (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "
+                               "local action a step's `uses:` names, for the inputs it checks"),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "

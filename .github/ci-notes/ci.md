@@ -249,9 +249,10 @@ packages/claude-envoy/tests/build-inputs.test.ts:146-153 holds release.yaml's
 $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt, so a change to either
 must run both jobs.
 
-## claude_envoy_build: Its src/broker-credential.ts:21-22 imports @legion/broker-client
+## claude_envoy_build: Its src/broker-credential.ts imports @legion/broker-client
 
-Its src/broker-credential.ts:21-22 imports @legion/broker-client, whose exports
+Its src/broker-credential.ts imports @legion/broker-client (brokerTokenClient from its
+/environment module, chooseSignIn from /signins and isFinalRefusal from /token-client), whose exports
 map every entry to ./src/<module>.ts, so a build compiles that package's seven
 sources with envoy-client's. check-ci-filters.test.sh holds a hand-written list of
 such pairs to this pattern, and ci_job_reads.py's envoy_client_dep is the one

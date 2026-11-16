@@ -36,8 +36,8 @@ jobs:
       - name: Typecheck Envoy client
         run: bun run typecheck
         working-directory: packages/envoy-client
-      # packages/envoy-client/src/broker-credential.ts:21-22 imports
-      # @legion/broker-client/environment and @legion/broker-client/token-client, so this job
+      # packages/envoy-client/src/broker-credential.ts imports brokerTokenClient from
+      # @legion/broker-client/environment, and two more of that package's modules, so this job
       # already stands on that package; its typecheck and its tests run in no other job. Its lint
       # is not here: the lint job's whole-tree `bunx biome check .` already lints its 13 files
       # under the same root config, so a second pass over them would only cost the run time

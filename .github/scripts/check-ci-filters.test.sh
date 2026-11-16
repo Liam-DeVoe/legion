@@ -2101,8 +2101,9 @@ from pathlib import Path
 SOURCE = "packages/broker-client/src/token-client.ts"
 
 # Each job's own tsc program, or the runtime closure of the entry it runs, holds the seven
-# sources of packages/broker-client, which packages/envoy-client/src/broker-credential.ts:21-22
-# imports and whose exports map every entry to ./src/<module>.ts.
+# sources of packages/broker-client, which packages/envoy-client/src/broker-credential.ts
+# imports (brokerTokenClient from its /environment module) and whose exports map every entry to
+# ./src/<module>.ts.
 COMPILERS = (
     ("claude-envoy", "claude_envoy"),
     ("envoy-client", "envoy_client"),
