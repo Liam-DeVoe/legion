@@ -4043,6 +4043,9 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
+              # internal/dispatch/api/results_pull_request_event_test.go runs the delivery intake
+              # on an in-process NATS server.
+              - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
@@ -4119,6 +4122,7 @@ jobs:
               - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
+              - '!packages/envoy/internal/testnats/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated

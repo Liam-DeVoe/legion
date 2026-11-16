@@ -1416,7 +1416,11 @@ A channel is registered only for a loop that will run:
 No loop waits for the listener: each runs its boot pass whether or not it has connected, and keeps its due-time timers while it has no connection.
 Postgres does not replay a notification sent while nothing listened, so the hub signals every loop after each successful LISTEN, the first included, and a change made while it was redialing (backing off 1 to 30 s) is caught up then.
 
-**The GitHub intake** (`delivery.Intake`) checks each message's subject before it decodes anything:
+**The GitHub intake** (`delivery.Intake`) binds its durable whether or not `delivery_settings` holds a row, since a `pull_request` envelope's first write is the pull request's head row, which every `before_merge` check result is compared with in every deployment:
+with no settings it writes that row and nothing else, and only a merge of the delivery population and a workflow run wait for the settings (`Intake.Run`, `route`).
+The durable is created with `DeliverAll`, so its first bind in a deployment whose durable never existed is handed the 72 hours the stream keeps, and writes the heads of the pull requests of those hours in event order.
+
+The intake checks each message's subject before it decodes anything:
 only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, and `notifications.github.<owner>.<repo>.workflow.<file>.<action>` can carry a kind it handles, and every other subject
 — checks, comments, issues, pushes, job events, `pr.<n>.review` — is acknowledged with no decode.
 A wanted message runs under its key: a pull request under its repository and number, read from the subject, and a workflow run under its payload's `repo` and `run_id`.
@@ -4274,7 +4278,7 @@ Each item below names a path with its method and identity, then its purpose.
   - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.ReadThroughCommitPulls`).
 
   - Without that read it would stand at no basis for ever:
-    the read-through the record itself makes runs once, while no pull request carries the commit, and a deployment holding no delivery settings binds no intake durable and so consumes no `pull_request` event at all (`delivery.Intake.Run`).
+    the read-through the record itself makes runs once, while no pull request carries the commit, and the GitHub intake writes no head row for a pull request whose `pull_request` events never reached Dispatch, such as one of a repository the webhook App is not installed on (`delivery.Intake.Run`).
 
   - One repository and commit costs at most one such read every `delivery.CommitPullReadStaleAfter` (five minutes), however often the Verification tab refetches.
 

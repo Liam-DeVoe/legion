@@ -1951,11 +1951,11 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 // INFRA-1240 at the surface a reviewer reads. A `before_merge` result is recorded at a commit
 // no pull request carries yet: GitHub names none, so the record's own read-through stores no
 // head row, the check compares with nothing and the result stands at another commit. The pull
-// request is opened at that head a moment later and nothing tells Dispatch — a deployment
-// holding no delivery settings consumes no `pull_request` event at all, the reconcile's head
-// pass only re-reads rows that already exist, and the record's read-through has run once and
-// will not run again — so the read of the results asks GitHub itself, and the result stands
-// at that head.
+// request is opened at that head a moment later and nothing tells Dispatch — its `pull_request`
+// event never reached the intake, as one of a repository the webhook App is not installed on
+// never does, the reconcile's head pass only re-reads rows that already exist, and the record's
+// read-through has run once and will not run again — so the read of the results asks GitHub
+// itself, and the result stands at that head.
 func TestAResultStandsAtItsCommitOnceAPullRequestOpensThere(t *testing.T) {
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESO", "acme/widgets", "Opened after the record")
@@ -2152,8 +2152,8 @@ func TestAPullRequestOpenedAtASettledCommitIsSeenOnceTheSpanEnds(t *testing.T) {
 		"the read that settles the commit", model.CommitOtherCommit, false)
 
 	// 2. The second pull request opens with its head at that commit, and nothing tells Dispatch:
-	// a deployment holding no delivery settings consumes no `pull_request` event, and the
-	// reconcile's head pass only re-reads rows that already exist.
+	// its `pull_request` event never reached the intake, and the reconcile's head pass only
+	// re-reads rows that already exist.
 	fake.answers(func(repo, sha string) string {
 		return "[" + pushedPast(repo) + "," + openedAtTheCommit(repo, sha) + "]"
 	})

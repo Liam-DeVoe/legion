@@ -28,7 +28,11 @@
 // which serves no such route, the run stops there, since every later case records a result too.
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
-// seed, the delivery settings, the probe issue) exits 2 naming it.
+// seed, the probe issue) exits 2 naming it.
+//
+// The run writes no delivery settings, as a deployment that never configured the delivery timeline
+// holds none: the intake writes a pull request's head row from its envelope all the same, and
+// every head below reaches Dispatch that way.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,9 +66,9 @@ if (
 const origin = new URL(dispatchUrl).origin;
 
 /** How long a head a bus event teaches Dispatch may take to settle, and how often the results are
- *  read again. The intake binds its durable once the settings cache holds a row, takes the
- *  envelope and writes the pull request's head row; nothing else is waited on, since every other
- *  answer is computed while the results are read. */
+ *  read again. The intake binds its durable at start, takes the envelope and writes the pull
+ *  request's head row; nothing else is waited on, since every other answer is computed while the
+ *  results are read. */
 const headWaitMs = 30_000;
 const pollMs = 250;
 
@@ -644,18 +648,6 @@ for (const [key, name, mapped] of [
     project: key,
   }).catch((error: unknown) => setupFailed(`repository mapping ${mapped}`, error));
 }
-
-// The delivery intake handles an envelope only while the settings cache holds a row, so the proof
-// writes one; the deploy repository is the proof's own, which the access check reads through the
-// fake GitHub before the row is stored.
-await asSession("PUT", "/api/v1/settings/delivery", {
-  deploy_repo: repo,
-  deploy_workflow_path: ".github/workflows/deploy.yml",
-  excluded_repos: [],
-  population_authors: ["octocat"],
-  pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
-  production_job_names: ["verification-release / verification-release"],
-}).catch((error: unknown) => setupFailed("delivery settings", error));
 
 /** Seeds one issue with a spec that marks one requirement and a Verification document holding
  *  `checks`, whose `%KEY%` is the issue's own key — a `serves` is refused unless it names a block
