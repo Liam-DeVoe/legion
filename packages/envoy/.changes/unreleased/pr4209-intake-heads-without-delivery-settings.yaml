@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    The GitHub intake writes a pull request's head row from its `pull_request` event in a Dispatch
+    that holds no delivery settings. It bound its NATS durable only once `delivery_settings` held a
+    row and dropped every envelope while it held none, so such a Dispatch learned a pull request
+    only from a result's read-through, at most once per commit every five minutes and never for a
+    pull request with no result at its head, and a `before_merge` pass at the open pull request's
+    head read as older with `no_pull_request_or_branch`. A merge of the delivery population and a
+    workflow run still wait for the settings. The first start of a Dispatch whose `delivery-events`
+    durable never existed replays the 72 hours the stream keeps, which writes the heads of those
+    hours' pull requests in event order, at most four at a time.
+time: 2026-11-16T13:50:24.000000000Z
+custom:
+    Issue: pr4209
