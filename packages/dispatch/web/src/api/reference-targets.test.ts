@@ -77,7 +77,7 @@ test("a set past the cap is read in batches of it, and every address is named on
 
 // A batch inside the server's cap can still be a request line no proxy in front of Dispatch
 // admits: 247 addresses of a conversation's length encode to about 17 KB against a load
-// balancer's 16 KB (`reference_targets.go:26-29`). Refused there, the read would draw every
+// balancer's 16 KB (the comment on `referenceTargetsMax`). Refused there, the read would draw every
 // typed-block row of the heaviest issues blank, so the length is a bound of its own.
 test("a set inside the cap but past the request line's budget is read in batches of the budget", async () => {
   const read = spyOn(api, "getReferenceTargets").mockImplementation((refs) =>
@@ -99,6 +99,15 @@ test("a set inside the cap but past the request line's budget is read in batches
     // Nothing is lost to the second bound either: every address is asked for, once.
     expect(answer.targets.map((target) => target.ref)).toEqual([...refs].sort());
     expect(batches.flat().length).toBe(refs.length);
+
+    // An address longer than the whole budget goes out alone, in a batch of its own, and the
+    // addresses before it in sorted order still share one.
+    read.mockClear();
+    const long = `dispatch://CORE-1/spec#b-r2${"x".repeat(REFERENCE_TARGETS_MAX_QUERY_CHARS + 1)}`;
+    const short = ["dispatch://CORE-1/spec#b-r0", "dispatch://CORE-1/spec#b-r1"];
+    const mixed = await new QueryClient().fetchQuery(referenceTargetsQuery([long, ...short]));
+    expect(read.mock.calls.map((call) => call[0])).toEqual([short, [long]]);
+    expect(mixed.targets.map((target) => target.ref)).toEqual([...short, long]);
   } finally {
     read.mockRestore();
   }
