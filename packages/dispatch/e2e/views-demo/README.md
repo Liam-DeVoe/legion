@@ -20,7 +20,10 @@ data (issue titles, keys, people) never goes into a file here.
     in Legion phase, Closed) and the Closed filter's windows on Done look the same whenever the
     demo is opened.
     `vite.demo.config.ts` writes that time into the page before any module runs.
-  - `install.ts` replaces `fetch` and `WebSocket`.
+  - `install.ts` replaces `fetch` and `WebSocket`. It also gives the screenshot run two hooks
+    for another reader's work, `__dispatchDemoChangeElsewhere` and
+    `__dispatchDemoCreateElsewhere`. Their changes reach the page only as that reader's live
+    events.
   - `server.ts` answers every `/api/` and `/auth/` request the page makes. The listing applies
     every filter the server applies. Writes change its state, which the tab keeps in
     sessionStorage. A write goes out on the event feed as the server's event would.
@@ -32,7 +35,8 @@ data (issue titles, keys, people) never goes into a file here.
   - `live.ts` is `/ws/live`: the `legion` view gets the board, the event feed gets the stub's
     events.
   - `banner.ts` is the note at the foot of every page that names what is real, estimated and
-    invented.
+    invented. It also names each issue change made in the tab, with who made it: the reader,
+    or another reader, whom the demo invents.
   - `file-router.ts` is the single file's router.
 - `e2e/views-demo/`:
   - `fixtures.ts` builds the fixtures.
@@ -156,22 +160,24 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
 - `view-open-1024`: Open in a 1024 x 768 window, where the sidebar folds away and the table
   scrolls sideways;
 - `view-open-in-progress-1440`: Open with `status=in_progress`;
-- `table-held-live-change-1440` and `table-held-shown-1440`: Open sorted by Priority after
-  another reader sets its second row to P3 (a PATCH to the stub from outside the page's own
-  write store, which reaches the page as a live event): the row's Priority cell reads P3 in
-  place, the first rows stay where they were, and a small pill floating over the table's header
-  offers "Show N changes"; then the same table after the press, the row gone from the first
-  page;
+- `table-change-above-pointer-1440`: Open sorted by Created, newest first, scrolled down until
+  five rows or more lie above the box's top, with the pointer resting on a row in the middle.
+  Another reader then retitles a row above it so that it takes another number of lines,
+  creates an issue, which sorts first, and sets another row above it to Backlog. Each change
+  lands at once, and the row under the pointer keeps its top;
+- `table-new-row-hand-off-1440`: the same table with the pointer off it and the box at its top,
+  where an issue another reader creates is the first row at once;
 - `old-queue-link-1440`: an older `view=queue` link, which opens Open with `f.queue=Queued`;
-- `done-closed-filter-1440`: Done with one week picked in the Closed column's date-range
-  filter, from the 3rd of November to the 9th, both days included, and the filter opened again
-  to show it;
+- `done-closed-filter-1440`: Done with the 3rd of November to the 9th picked in the Closed
+  column's date-range filter, which writes `f.closed=2026-11-03..2026-11-10` (main's rule: UTC,
+  the end left out), and the filter opened again to show it;
 - `done-time-per-phase-hours-1440`: Done with Time per phase in Hours; Done scrolls sideways at
   1440, and Time per phase stands on its first screen;
 - `done-time-per-phase-tooltip-1440`: Done with the pointer on the first row's Time per phase
   cell and its tooltip open, inside the window;
 - `done-work-time-tooltip-focus-1440`: Done with Work time's header reached by Tab from the
-  filter before it, its tooltip open on the keyboard focus alone, inside the window;
+  filter before it, its tooltip open on the keyboard focus alone, inside the window: the
+  method's one sentence, and main's sort hint under it;
 - `done-work-time-empty-1440`: Done narrowed to the day a done issue with Legion facts and no
   measured work closed (the newest closed of them, or the one `--empty-work-time` names),
   whose Work time cell is empty beside rows that draw one;
@@ -183,15 +189,20 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
   scale, with its Time in Legion phase, Work time and Workers;
 - `group-by-menu-1440` and `board-group-by-menu-1440`: Open with the Group by menu open, in the
   table and on the Board, where it offers Status and Legion phase;
-- `board-held-live-change-1440` and `board-held-shown-1440`: Open's Board after another reader
-  moves the first Todo card to Backlog: the card stays first in Todo, the two column counts move
-  at once, and the pill floating over the column headers offers "Show 1 change"; then the same
-  Board after the press, the card in Backlog;
+- `board-change-above-pointer-1440`: Open's Board with the window scrolled down until three
+  Todo cards or more lie above its top, and the pointer resting on a Todo card in the middle.
+  Another reader then retitles a Todo card above it so that it takes more lines, and moves
+  another from Todo to Backlog. Both land at once, the column counts follow, and the card under
+  the pointer keeps its top;
+- `board-card-work-time-tooltip-1440`: the pointer on a Board card's Work time fact, its
+  tooltip open with the same sentence as Work time's header tooltip;
 - `board-own-drag-applies-1440`: the reader's own drag of the first Todo card onto Backlog,
-  which moves it at once, with no Show changes pill;
+  which moves it at once;
 - `save-view-popover-1440` and `save-view-saved-tab-1440`: Open narrowed to the triage issues,
   the Save view panel with "Triage" typed, and then the saved tab it adds after Done;
-- `columns-menu-1440`: the Columns menu;
+- `columns-menu-1440` and `columns-menu-end-1440`: the Columns menu, with a muted line under
+  each measured column that says how Dispatch measures it; it scrolls inside itself where it
+  is taller than the window, so the second picture shows it scrolled to its end;
 - `filter-open-asks-1440`: Open asks' filter open (With open asks, No open asks);
 - `filter-time-in-legion-phase-1440` and `filter-why-it-waits-1440`: Time in Legion phase, and
   Why it waits (Ready to start, A blocker, A person, None; Capacity to go on stands where a card
@@ -211,7 +222,10 @@ At 390 x 844: `view-open-390`, `board-open-legion-phase-390`, `done-time-per-pha
 and `priorities-390`, the last one the whole page.
 
 A whole-page picture draws the banner at the page's foot, under everything the page drew. The
-card's close-up has no banner: it is the card alone.
+card's close-up has no banner: it is the card alone. A picture that changes an issue (the
+reader's own drag, or another reader's work through the hooks) has a banner that names each
+issue and what changed in it. A screenshot draws no cursor, so where a picture rests the
+pointer on a row, a card or a fact, a drawn arrow marks the place.
 
 `--before` takes the page before the design, on a checkout of its base: the List, the Board, the
 Legion view and the phone List. The base has no priority pages, so `before-priorities-1440` and
@@ -237,22 +251,23 @@ check of what the page drew failed:
 - the old `view=queue` link not opening Open with `f.queue=Queued` on as many rows as the
   daemon's queue holds;
 - the count the Done tab reads for the picked week not being the stub's count of the issues
-  closed from the 3rd through the 9th, or the week the filter writes;
+  closed from the 3rd through the 9th, the filter writing another address than
+  `f.closed=2026-11-03..2026-11-10`, or the picker not reading "Or from and to (UTC)";
 - the Time per phase tooltip naming no phase, or the table scrolled sideways under it;
-- a held table moving its first rows, drawing the changed row's cell unchanged or no
-  Show changes pill, or, after the press, keeping the changed row on the page or the pill;
-- a held Board moving its first Todo cards or its moved card, not moving its column counts at
-  once, or offering anything but "Show 1 change", or, after the press, keeping the card in Todo
-  or the pill;
-- the pill standing anywhere but over the table's header or the Board's column headers,
-  centred on the list and under a third of its width, or in the pager row, or more than one
-  drawn;
-- the header or the first row or card moving between the moment before the change, the moment
-  the pill shows and the moment after the press, in the table or on the Board;
-- the reader's own drag not moving its card at once, moving the column counts wrongly, or
-  drawing the pill, in the demo and in the single file;
-- Work time's tooltip not opening on keyboard focus, holding more than one sentence, or not
-  naming Legion queue hours;
+- the row or card under the pointer moving more than 1 px when another reader's change lands
+  above it, in the table or on the Board;
+- a change from elsewhere not landing within 5 s in the table or 10 s on the Board (which
+  draws all of its cards again), a retitle not changing its row's or card's height, the Open
+  tab's count not growing by the new issue, or the Board's Todo and Backlog counts not
+  following the move;
+- with the pointer off the table and the box at its top, the new issue not being the first row
+  within 5 s, or the box scrolling;
+- the banner not naming an issue change the picture made, with who made it;
+- the reader's own drag not moving its card at once, or moving the column counts wrongly, in
+  the demo and in the single file;
+- Work time's header tooltip not opening on keyboard focus, or not holding its one method
+  sentence and then main's sort hint; a Board card's Work time tooltip not holding the same
+  sentence;
 - a tooltip standing partly outside the window;
 - the done issue with no measured work drawing anything in its Work time cell;
 - Created by or Open asks not whole on Open's first screen at 1440, on INFRA or on the project
@@ -266,7 +281,10 @@ check of what the page drew failed:
 - the card not reading Time in Legion phase, Work time and Workers, or reading an old name;
 - the Board's Group by menu not offering Status and Legion phase, or the Board not by Legion
   phase under `group=legion_phase`;
-- the Columns menu missing a Legion column's name, holding an old one, or scrolling;
+- the Columns menu missing a Legion column's name, holding an old one, or drawing a method
+  line under any column but the five measured ones or none under one of them;
+- the Columns menu standing partly outside the window, or an entry with its method line that
+  no scroll of the menu brings wholly into view, or its last entry not in view at its end;
 - Open asks', Time in Legion phase's or Why it waits' filter missing one of its choices, Why it
   waits offering Capacity to go on with no card waiting for a slot (or not offering it with
   one), or any of its choices holding the word queue or slot;
@@ -294,7 +312,7 @@ The second command opens the file with the network off and checks that:
 
 - the file opens on the Issues tab, and the Done tab opens Done;
 - Open on the Board draws cards;
-- a drag on the Board sets a status, and the card moves at once, with no Show changes pill;
+- a drag on the Board sets a status, the card moves at once, and the banner names the change;
 - Save view adds a tab, and its delete takes the tab away, also after a reload;
 - the Columns menu shows a column it ticks;
 - the Closed filter's 7 days on Done lists the done issues closed in the last 7 days, counted

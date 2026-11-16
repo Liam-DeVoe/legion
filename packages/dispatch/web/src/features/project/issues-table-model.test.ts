@@ -21,7 +21,14 @@ import {
   writeUrl,
 } from "./issues-table-model";
 import { embeddedGrammar } from "./issues-table-view";
-import { currentAddress, inWindow, legacyOpenLayout, readWindow } from "./issues-views";
+import {
+  currentAddress,
+  inWindow,
+  lastDayOf,
+  legacyOpenLayout,
+  readWindow,
+  toEndOfDay,
+} from "./issues-views";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -437,23 +444,29 @@ test("the kept issue-view choice opens Open's table, its Board, or its Board by 
   expect(legacyOpenLayout("timeline")).toEqual({ layout: "table" });
 });
 
-// A picked Closed range is whole days of the reader's calendar, its end day included: 11/03 to
-// 11/09 lists what closed through the 9th, not up to its first moment.
-test("a Closed range of dates runs to the end of its last day, in the reader's time zone", () => {
-  const local = (day: number, hour = 0, minute = 0) =>
-    new Date(2026, 10, day, hour, minute).toISOString();
-  const value = "2026-11-03..2026-11-09";
+// The address keeps main's Closed window: UTC dates, `from` included and `to` excluded, and an
+// exact time written with Z is that moment. The picker includes the To day the reader picks by
+// writing the next UTC day: 11/03 to 11/09 is `2026-11-03..2026-11-10`, and that address shows
+// 11/09 as its To day again.
+test("a Closed range keeps main's address rule, and the picker includes its To day", () => {
+  const value = "2026-11-03..2026-11-10";
   expect(readWindow(value, Date.now())).toEqual({
-    from: new Date(2026, 10, 3).getTime(),
-    to: new Date(2026, 10, 10).getTime(),
+    from: Date.parse("2026-11-03T00:00:00Z"),
+    to: Date.parse("2026-11-10T00:00:00Z"),
   });
-  expect(inWindow(local(3), value, Date.now())).toBe(true);
-  expect(inWindow(local(9, 12), value, Date.now())).toBe(true);
-  expect(inWindow(local(9, 23, 59), value, Date.now())).toBe(true);
-  expect(inWindow(local(10), value, Date.now())).toBe(false);
-  expect(inWindow(local(2, 23, 59), value, Date.now())).toBe(false);
-  // A one-day range is that whole day.
-  expect(inWindow(local(9, 18), "2026-11-09..2026-11-09", Date.now())).toBe(true);
-  // An exact moment is still that moment, its end left out.
+  expect(inWindow("2026-11-03T00:00:00Z", value, Date.now())).toBe(true);
+  expect(inWindow("2026-11-09T23:59:59Z", value, Date.now())).toBe(true);
+  expect(inWindow("2026-11-10T00:00:00Z", value, Date.now())).toBe(false);
+  expect(inWindow("2026-11-02T23:59:59Z", value, Date.now())).toBe(false);
+  // An exact moment is that moment, its end left out.
   expect(inWindow("2026-11-09T00:00:00Z", "..2026-11-09T00:00:00Z", Date.now())).toBe(false);
+
+  expect(toEndOfDay("2026-11-09")).toBe("2026-11-10");
+  expect(toEndOfDay("2026-11-30")).toBe("2026-12-01");
+  expect(toEndOfDay("")).toBe("");
+  expect(lastDayOf("2026-11-10")).toBe("2026-11-09");
+  expect(lastDayOf("2026-11-09T12:00:00Z")).toBe("2026-11-09");
+  expect(lastDayOf("")).toBe("");
+  // A one-day pick is that whole UTC day.
+  expect(inWindow("2026-11-09T18:00:00Z", `2026-11-09..${toEndOfDay("2026-11-09")}`, 0)).toBe(true);
 });

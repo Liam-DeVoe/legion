@@ -365,26 +365,76 @@ async function checkOnFirstScreen(
   }
 }
 
-/** A change made elsewhere: another reader's write, which reaches this page only as the live
- *  event the stub publishes for every write it takes. It goes round the page's own write store,
- *  so the page holds it as it holds anyone else's. */
+/** A change made elsewhere: another reader's write, which the stub takes as that reader's and
+ *  sends to the page only as its live event (install.ts's `__dispatchDemoChangeElsewhere`), so
+ *  the page holds it as it holds anyone else's, and the banner names it as invented. */
 async function changeElsewhere(
   page: Page,
   key: string,
-  patch: Record<string, unknown>
+  patch: Parameters<NonNullable<Window["__dispatchDemoChangeElsewhere"]>>[1]
 ): Promise<void> {
   const status = await page.evaluate(
-    async ([issue, body]) =>
-      (
-        await fetch(`/api/v1/issues/${issue}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        })
-      ).status,
+    ([issue, body]) => {
+      const change = window.__dispatchDemoChangeElsewhere;
+      if (change === undefined) throw new Error("the stub offers no change from elsewhere");
+      return change(issue, body);
+    },
     [key, patch] as const
   );
   if (status !== 200) throw new Error(`the stub answered ${status} to the change of ${key}`);
+}
+
+/** An issue another reader creates, the same way; gives its key. */
+const createElsewhere = (page: Page, title: string) =>
+  page.evaluate((name) => {
+    const create = window.__dispatchDemoCreateElsewhere;
+    if (create === undefined) throw new Error("the stub offers no issue made elsewhere");
+    return create(name);
+  }, title);
+
+/** The title of the issue the pictures create elsewhere, which says it is invented. */
+const NEW_ISSUE_TITLE = "An issue another reader just made (invented by the demo)";
+
+/** The opening words of Work time's method sentence, which its header tooltip, a Board card's
+ *  Work time fact and the Columns menu show alike. */
+const WORK_TIME_METHOD = "Dispatch counts the hours from the first Legion worker event";
+
+/** Checks that the banner names each change the picture made, in its words (`ACME-12 to P3 by
+ *  another reader`), each given as its text or as a pattern of it. */
+async function checkBannerNames(
+  page: Page,
+  name: string,
+  changes: (string | RegExp)[]
+): Promise<void> {
+  const text =
+    (await page.locator('[data-testid="views-demo-banner-changes"]').textContent())?.trim() ?? "";
+  check(
+    changes.every((change) =>
+      typeof change === "string" ? text.includes(change) : change.test(text)
+    ),
+    `${name}: the banner names the invented changes: "${text}"`
+  );
+}
+
+/** The top of what `selector` names, in px from the window's top; NaN where nothing is drawn. */
+const topOf = (page: Page, selector: string) =>
+  page.evaluate((css) => {
+    const element = document.querySelector(css);
+    return element === null ? Number.NaN : Math.round(element.getBoundingClientRect().top);
+  }, selector);
+
+/** Waits until `ready` holds, and gives how long it took, or NaN where it did not hold within
+ *  `ms`, the time a poll that began before then ended included. */
+async function within(ms: number, ready: () => Promise<boolean>): Promise<number> {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    if (await ready()) {
+      const took = Date.now() - start;
+      return took <= ms ? took : Number.NaN;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return Number.NaN;
 }
 
 /** The keys of the first `count` rows the table draws, top down. */
@@ -393,15 +443,6 @@ const firstRows = (page: Page, count = 3) =>
     .locator("[data-issue-row]")
     .evaluateAll(
       (rows, n) => rows.slice(0, n).map((row) => row.getAttribute("data-issue-row") ?? ""),
-      count
-    );
-
-/** The keys of the first `count` cards a Board column draws, top down. */
-const firstCards = (page: Page, column: string, count = 3) =>
-  page
-    .locator(`[data-board-column="${column}"] [data-board-card]`)
-    .evaluateAll(
-      (cards, n) => cards.slice(0, n).map((card) => card.getAttribute("data-board-card") ?? ""),
       count
     );
 
@@ -414,96 +455,210 @@ async function columnCount(page: Page, column: string): Promise<number> {
   return Number(/(\d+)\s*$/.exec(header)?.[1] ?? Number.NaN);
 }
 
-/** The "Show N changes" pill a held table or Board draws while it holds a change back. */
-const heldButton = (page: Page) => page.locator("[data-held-changes]");
-
-type Layout = "table" | "board";
-
-/** The header of the rows, and the first row or card, in a layout. */
-const HEADER: Record<Layout, string> = {
-  table: '[data-testid="issues-table-scroll"] thead',
-  board: '[data-testid="board-column-header"]',
-};
-const FIRST: Record<Layout, string> = {
-  table: "[data-issue-row]",
-  board: "[data-board-card]",
-};
-const LIST: Record<Layout, string> = {
-  table: '[data-testid="issues-table-scroll"]',
-  board: "[data-board-by]",
-};
-
-/** Where the header and the first row or card stand, in px from the window's top. */
-interface Tops {
-  header: number;
-  first: number;
+/** A row or card standing wholly in view: its key, its index among the rows (a table row's
+ *  `data-index`; NaN for a card), and its top and height in px from the window's top. */
+interface Placed {
+  key: string;
+  index: number;
+  top: number;
+  height: number;
 }
 
-async function topsOf(page: Page, layout: Layout): Promise<Tops> {
-  return page.evaluate(
-    ([header, first]) => {
-      const top = (selector: string) => {
-        const element = document.querySelector(selector);
-        return element === null ? Number.NaN : Math.round(element.getBoundingClientRect().top);
-      };
-      return { header: top(header), first: top(first) };
+/** The rows or cards `selector` names, each keyed by `attribute`, that stand wholly inside the
+ *  visible part of the box `box` names (the window where it names none), below its sticky
+ *  header, top down. */
+const inView = (page: Page, selector: string, attribute: string, box?: string) =>
+  page.evaluate(
+    ([css, attr, frameAt]) => {
+      const frame = frameAt === "" ? null : document.querySelector(frameAt);
+      const area = frame?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight };
+      const head = frame?.querySelector("thead")?.getBoundingClientRect();
+      const top = Math.max(area.top, head?.bottom ?? area.top, 0);
+      const bottom = Math.min(area.bottom, window.innerHeight);
+      return [...document.querySelectorAll(css)].flatMap((element) => {
+        const own = element.getBoundingClientRect();
+        if (own.top < top || own.bottom > bottom) return [];
+        return [
+          {
+            key: element.getAttribute(attr) ?? "",
+            index: Number(element.getAttribute("data-index") ?? Number.NaN),
+            top: Math.round(own.top),
+            height: Math.round(own.height),
+          },
+        ];
+      });
     },
-    [HEADER[layout], FIRST[layout]] as const
+    [selector, attribute, box ?? ""] as const
   );
+
+/** The one of `placed` nearest the middle of the rows in view. */
+function middleOf(placed: Placed[]): Placed {
+  const middle = placed[Math.floor(placed.length / 2)];
+  if (middle === undefined) throw new Error("no row or card stands in view");
+  return middle;
 }
 
-/** Checks that the header and the first row or card stood still at every moment named: the
- *  pill takes no room, so nothing the reader sees moves as it comes and goes. */
-function checkStill(name: string, layout: Layout, moments: [string, Tops][]): void {
-  const [, first] = moments[0] ?? ["", { header: Number.NaN, first: Number.NaN }];
-  const row = layout === "table" ? "row" : "card";
+/** Moves the pointer to (x, y) as a person's hand would, and draws an arrow there, since a
+ *  screenshot draws no cursor. The arrow stands outside the app's root and takes no pointer
+ *  events, so nothing the page measures or hits finds it. */
+async function pointAt(page: Page, x: number, y: number): Promise<void> {
+  await page.mouse.move(x, y, { steps: 4 });
+  await page.evaluate(
+    ([left, top]) => {
+      const arrow = document.querySelector("[data-shot-pointer]") ?? document.createElement("div");
+      arrow.setAttribute("data-shot-pointer", "");
+      arrow.setAttribute(
+        "style",
+        `position:fixed;left:${left}px;top:${top}px;z-index:2147483647;pointer-events:none`
+      );
+      arrow.innerHTML =
+        '<svg width="18" height="26" viewBox="0 0 18 26"><path d="M1 1v20l5-5 4 9 3-1.5-4-8.5h7z" fill="#111" stroke="#fff" stroke-width="1.5"/></svg>';
+      document.body.append(arrow);
+    },
+    [x, y] as const
+  );
+  await page.waitForTimeout(300);
+}
+
+/** Rests the pointer on what `selector` names at a point near the top right corner of its
+ *  visible part (inside the box `frame` names, where one is named), clear of its links and
+ *  controls. */
+async function restOn(page: Page, selector: string, frame?: string): Promise<void> {
+  const box = await page.locator(selector).first().boundingBox();
+  if (box === null) throw new Error(`${selector} is not drawn`);
+  const edge = frame === undefined ? null : await page.locator(frame).first().boundingBox();
+  const right = Math.min(
+    box.x + box.width,
+    edge === null ? Number.POSITIVE_INFINITY : edge.x + edge.width - 24,
+    (page.viewportSize()?.width ?? 0) - 24
+  );
+  await pointAt(page, right - 6, box.y + 6);
+}
+
+/** An issue as the stub holds it, read through the page. */
+const issueOf = (page: Page, key: string) =>
+  page.evaluate(async (issue) => {
+    const body: { title: string; status: string } = await (
+      await fetch(`/api/v1/issues/${issue}`)
+    ).json();
+    return body;
+  }, key);
+
+/** A title that takes another number of lines than `title` does: a long title runs to two
+ *  lines or more, so it becomes its first words; a short one gains a clause. */
+const retitle = (title: string) =>
+  title.length > 40
+    ? title.split(" ").slice(0, 2).join(" ")
+    : `${title}, retitled by another reader so that it runs onto more lines than before`;
+
+/** Where a row or card under the hand stood across each change named: within 1 px every time. */
+function checkHeld(name: string, what: string, tops: [string, number][]): void {
+  const first = tops[0]?.[1] ?? Number.NaN;
   check(
-    moments.every(
-      ([, tops]) =>
-        Number.isFinite(tops.first) && tops.first === first.first && tops.header === first.header
-    ),
-    `${name}: the first ${row} stands at ${moments.map(([when, tops]) => `${tops.first} px ${when}`).join(", ")}; the header at ${moments.map(([, tops]) => tops.header).join(", ")}`
+    tops.every(([, top]) => Number.isFinite(top) && Math.abs(top - first) <= 1),
+    `${name}: ${what} stands at ${tops.map(([when, top]) => `${top} px ${when}`).join(", ")}`
   );
 }
 
-/** Checks where the pill stands: one pill, floating over the header of the rows (the table's
- *  header or the Board's column headers), centred on the list, a small fraction of its width,
- *  and none in the pager row. */
-async function checkPillPlace(page: Page, name: string, layout: Layout): Promise<void> {
-  const place = await page.evaluate(
-    ([headerAt, listAt]) => {
-      const pills = [...document.querySelectorAll<HTMLElement>("[data-held-changes]")];
-      const pill = pills[0];
-      const own = pill?.getBoundingClientRect();
-      const head = document.querySelector(headerAt)?.getBoundingClientRect();
-      const list = document.querySelector(listAt)?.getBoundingClientRect();
-      const pager = document.querySelector('select[aria-label$="per page"]')?.parentElement;
-      const round = (value: number | undefined) => Math.round(value ?? Number.NaN);
+/** What the Columns menu holds and where it stands: its columns' names, the method line under
+ *  each measured one, the box it scrolls in (or the menu's own box where it has room for all of
+ *  them), whether it scrolls, the entries (a name with its method line) that no scroll of the
+ *  menu brings wholly into the menu and the window, and whether its last entry stands whole in
+ *  view as the picture is taken. */
+interface ColumnsMenu {
+  names: string[];
+  methods: Record<string, string>;
+  box: { top: number; bottom: number; left: number; right: number };
+  scrolls: boolean;
+  unreachable: string[];
+  lastInView: boolean;
+}
+
+/** Opens the Columns menu over Open, reads it (`ColumnsMenu`), and leaves it scrolled to its
+ *  top or its end for the picture. */
+async function openColumnsMenu(page: Page, at: "top" | "end"): Promise<ColumnsMenu> {
+  await open(page, view("open"));
+  await page.getByRole("button", { name: /^Columns/ }).click();
+  // The pointer off the menu, so no entry draws its hover.
+  await page.mouse.move(1, 1);
+  await page.waitForTimeout(500);
+  const menu = await page.getByRole("checkbox").evaluateAll((boxes, end) => {
+    const listed = boxes.filter((box) => box.closest("table") === null);
+    const names = listed.map(
+      (box) => box.closest("label")?.textContent?.trim() || box.getAttribute("aria-label") || ""
+    );
+    const lines = listed.map((box) =>
+      document.getElementById(box.getAttribute("aria-describedby") ?? "")
+    );
+    const methods: Record<string, string> = {};
+    for (const [index, line] of lines.entries()) {
+      if (line !== null) methods[names[index] ?? ""] = line.textContent?.trim() ?? "";
+    }
+    // The menu's own scroller is the nearest box around its first choice that scrolls and
+    // holds no table; one that holds the table is the page's, and then the menu has room for
+    // every entry in the box around them all.
+    let scroller = listed[0]?.parentElement ?? null;
+    while (scroller !== null && !/auto|scroll/.test(getComputedStyle(scroller).overflowY)) {
+      scroller = scroller.parentElement;
+    }
+    if (scroller?.querySelector("table") != null) scroller = null;
+    const frame = scroller ?? listed[0]?.closest("label")?.parentElement ?? document.body;
+    const own = frame.getBoundingClientRect();
+    const entry = (index: number) => {
+      const label = listed[index]?.closest("label")?.getBoundingClientRect();
+      const line = lines[index]?.getBoundingClientRect();
       return {
-        count: pills.length,
-        top: round(own?.top),
-        bottom: round(own?.bottom),
-        width: round(own?.width),
-        centre: round(own === undefined ? undefined : (own.left + own.right) / 2),
-        headTop: round(head?.top),
-        headBottom: round(head?.bottom),
-        listWidth: round(list?.width),
-        listCentre: round(list === undefined ? undefined : (list.left + list.right) / 2),
-        inPager: pill !== undefined && pager?.contains(pill) === true,
+        top: Math.min(label?.top ?? Number.NaN, line?.top ?? Number.POSITIVE_INFINITY),
+        bottom: Math.max(label?.bottom ?? Number.NaN, line?.bottom ?? Number.NEGATIVE_INFINITY),
       };
-    },
-    [HEADER[layout], LIST[layout]] as const
-  );
+    };
+    const whole = (index: number) => {
+      const { top, bottom } = entry(index);
+      return (
+        top >= Math.max(own.top, 0) - 1 && bottom <= Math.min(own.bottom, window.innerHeight) + 1
+      );
+    };
+    // Each entry scrolled into the menu, as a reader's wheel would bring it.
+    const unreachable = names.filter((_, index) => {
+      if (scroller !== null) {
+        const { top, bottom } = entry(index);
+        if (top < own.top) scroller.scrollTop -= own.top - top;
+        else if (bottom > own.bottom) scroller.scrollTop += bottom - own.bottom;
+      }
+      return !whole(index);
+    });
+    if (scroller !== null) scroller.scrollTop = end ? scroller.scrollHeight : 0;
+    return {
+      names,
+      methods,
+      box: {
+        top: Math.round(own.top),
+        bottom: Math.round(own.bottom),
+        left: Math.round(own.left),
+        right: Math.round(own.right),
+      },
+      scrolls: scroller !== null && scroller.scrollHeight > scroller.clientHeight + 1,
+      unreachable,
+      lastInView: whole(names.length - 1),
+    };
+  }, at === "end");
+  await page.waitForTimeout(300);
+  return menu;
+}
+
+/** Checks that the Columns menu stands inside the window and that a scroll of the menu brings
+ *  every entry, its method line included, wholly into view. */
+function checkMenuReach(name: string, menu: ColumnsMenu): void {
   check(
-    place.count === 1 &&
-      place.top < place.headBottom &&
-      place.bottom > place.headTop &&
-      Math.abs(place.centre - place.listCentre) <= 8 &&
-      place.width < place.listWidth / 3 &&
-      !place.inPager,
-    `${name}: the pill stands at ${place.top}-${place.bottom} px over the header at ${place.headTop}-${place.headBottom}, ${place.width} px wide, its centre at ${place.centre} of the list's ${place.listCentre} (${place.listWidth} px wide), ${place.inPager ? "in" : "not in"} the pager (${place.count} drawn)`
+    menu.box.top >= 0 &&
+      menu.box.left >= 0 &&
+      menu.box.bottom <= DESKTOP.height &&
+      menu.box.right <= DESKTOP.width &&
+      menu.unreachable.length === 0,
+    `${name}: the Columns menu stands at ${menu.box.left}-${menu.box.right} x ${menu.box.top}-${menu.box.bottom} in the ${DESKTOP.width} x ${DESKTOP.height} window, ${menu.scrolls ? "scrolling inside itself" : "with no scroll"}, and brings ${menu.names.length - menu.unreachable.length} of its ${menu.names.length} entries into view${menu.unreachable.length > 0 ? ` (not ${menu.unreachable.join(", ")})` : ""}`
   );
 }
+
 /** Checks that every open tooltip's panel stands wholly inside the window. */
 async function checkTooltipInWindow(page: Page, name: string): Promise<void> {
   const boxes = await page.locator('[role="tooltip"]').evaluateAll((tips) =>
@@ -525,75 +680,6 @@ async function checkTooltipInWindow(page: Page, name: string): Promise<void> {
       ),
     `${name}: the tooltip stands inside the ${width} x ${height} window (${boxes.map((box) => `${box.left}-${box.right} x ${box.top}-${box.bottom}`).join("; ") || "none open"})`
   );
-}
-
-const same = (a: readonly string[], b: readonly string[]) =>
-  a.length === b.length && a.every((each, at) => each === b[at]);
-
-/** Open sorted by Priority, its first rows read, and its second row's priority set to P3
- *  elsewhere: a change that takes that row off the first page. Gives the first rows before the
- *  change, the changed key, and where the header and first row stood before the change and
- *  while the pill shows. */
-async function holdOpenTable(
-  page: Page
-): Promise<{ before: string[]; moved: string; tops: [string, Tops][] }> {
-  await open(page, view("open", "&sort=priority"));
-  await page.mouse.move(1, 1);
-  const before = await firstRows(page);
-  const moved = before[1];
-  if (moved === undefined) throw new Error("Open drew fewer than two rows");
-  const unchanged = await topsOf(page, "table");
-  await changeElsewhere(page, moved, { priority: 3 });
-  await heldButton(page).waitFor({ timeout: 15_000 });
-  await page.waitForTimeout(800);
-  const shown = await topsOf(page, "table");
-  return {
-    before,
-    moved,
-    tops: [
-      ["before the change", unchanged],
-      ["while the pill shows", shown],
-    ],
-  };
-}
-
-/** Open's Board, the first Todo card moved to Backlog elsewhere. Gives Todo's first cards and
- *  the Todo and Backlog counts before the change, the moved key, and where the column headers
- *  and the first card stood before the change and while the pill shows. */
-async function holdOpenBoard(page: Page): Promise<{
-  before: string[];
-  counts: number[];
-  moved: string;
-  tops: [string, Tops][];
-}> {
-  await open(page, view("open", "&layout=board"), page.locator("[data-board-card]").first());
-  await page.mouse.move(1, 1);
-  const before = await firstCards(page, "todo");
-  const counts = [await columnCount(page, "todo"), await columnCount(page, "backlog")];
-  const moved = before[0];
-  if (moved === undefined) throw new Error("the Todo column draws no card");
-  const unchanged = await topsOf(page, "board");
-  await changeElsewhere(page, moved, { status: "backlog" });
-  await heldButton(page).waitFor({ timeout: 15_000 });
-  await page.waitForTimeout(800);
-  const shown = await topsOf(page, "board");
-  return {
-    before,
-    counts,
-    moved,
-    tops: [
-      ["before the change", unchanged],
-      ["while the pill shows", shown],
-    ],
-  };
-}
-
-/** Presses the pill, and gives where the header and the first row or card stand after it. */
-async function pressPill(page: Page, layout: Layout): Promise<Tops> {
-  await heldButton(page).click();
-  await page.mouse.move(1, 1);
-  await page.waitForTimeout(800);
-  return topsOf(page, layout);
 }
 
 /** The Legion columns under their names since the owner's reviews, and the names they had. */
@@ -618,6 +704,18 @@ const OLD_COLUMN_NAMES = [
   "Rounds",
   "Tree",
 ];
+/** The columns Dispatch measures, each of which says how in its header's tooltip and in a
+ *  muted line under its name in the Columns menu. */
+const MEASURED_COLUMNS = [
+  "Work time",
+  "Time per phase",
+  "Review rounds",
+  "Time waiting",
+  "Time in Legion phase",
+];
+
+const same = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((each, at) => each === b[at]);
 
 const afterShots: Shot[] = [
   {
@@ -668,48 +766,100 @@ const afterShots: Shot[] = [
     viewport: DESKTOP,
     take: (page) => open(page, view("open", "&status=in_progress")),
   },
-  // Open sorted by Priority, held: another reader sets the second row to P3. Its Priority cell
-  // reads P3 in place, the first rows stay where the reader saw them, and a pill floating over
-  // the table's header offers "Show N changes" for the rows the change would take off the page
-  // and bring onto it. The pill takes no room: the header and the first row do not move.
+  // Open by Created, newest first, scrolled down until five rows or more lie above the box's
+  // top, the pointer resting on a row R in the middle. Another reader retitles a row above R so
+  // that it takes another number of lines, creates an issue, which sorts first, and sets another
+  // row above R to Backlog. Each lands at once, and R keeps its top through all three.
   {
-    name: "table-held-live-change-1440",
+    name: "table-change-above-pointer-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      const { before, moved, tops } = await holdOpenTable(page);
-      const after = await firstRows(page);
-      const shown = await heldButton(page).innerText();
-      const priority = await page
-        .locator(`[data-issue-row="${moved}"]`)
-        .getByLabel(`Priority of ${moved}`)
-        .inputValue();
-      check(
-        same(after, before),
-        `the held table keeps its first rows ${after.join(", ")} after ${moved} is set to P3 elsewhere`
+      const name = "table-change-above-pointer-1440";
+      const box = '[data-testid="issues-table-scroll"]';
+      const row = (key: string) => `[data-issue-row="${key}"]`;
+      await open(page, view("open", "&sort=-created"));
+      await page.locator(box).evaluate((scroller) => {
+        scroller.scrollTop = 420;
+      });
+      await page.waitForTimeout(600);
+      const rows = await inView(page, "[data-issue-row]", "data-issue-row", box);
+      const hand = middleOf(rows);
+      check((rows[0]?.index ?? 0) >= 5, `${name}: ${rows[0]?.index} rows lie above the box's top`);
+      const above = await Promise.all(
+        rows
+          .filter((each) => each.top < hand.top)
+          .map(async (each) => ({ ...each, ...(await issueOf(page, each.key)) }))
       );
-      check(priority === "3", `${moved}'s Priority cell reads P${priority} in place`);
-      check(/^Show \d+ changes?$/.test(shown), `the table's pill reads "${shown}"`);
-      await checkPillPlace(page, "table-held-live-change-1440", "table");
-      checkStill("table-held-live-change-1440", "table", tops);
+      const titled = above[0];
+      const parked = above.slice(1).find((each) => each.status !== "backlog");
+      if (titled === undefined || parked === undefined)
+        throw new Error("fewer than two rows stand in view above the middle one");
+      await restOn(page, row(hand.key), box);
+      const count = await tabCount(page, "open");
+      const handTop = () => topOf(page, row(hand.key));
+      const tops: [string, number][] = [["before the changes", await handTop()]];
+
+      const title = retitle(titled.title);
+      await changeElsewhere(page, titled.key, { title });
+      const titledIn = await within(5_000, async () => {
+        const text = (await page.locator(row(titled.key)).textContent()) ?? "";
+        return title.length < titled.title.length
+          ? !text.includes(titled.title)
+          : text.includes(title);
+      });
+      const height = Math.round(
+        (await page.locator(row(titled.key)).boundingBox())?.height ?? Number.NaN
+      );
+      tops.push(["after the retitle", await handTop()]);
+
+      const created = await createElsewhere(page, NEW_ISSUE_TITLE);
+      const createdIn = await within(
+        5_000,
+        async () => (await tabCount(page, "open")) === count + 1
+      );
+      tops.push(["after the new issue", await handTop()]);
+
+      await changeElsewhere(page, parked.key, { status: "backlog" });
+      const parkedIn = await within(5_000, async () =>
+        ((await page.locator(row(parked.key)).textContent()) ?? "").includes("Backlog")
+      );
+      tops.push(["after the move to Backlog", await handTop()]);
+
+      checkHeld(name, `${hand.key}, under the pointer,`, tops);
+      check(
+        Number.isFinite(titledIn) &&
+          height !== titled.height &&
+          Number.isFinite(createdIn) &&
+          Number.isFinite(parkedIn),
+        `${name}: each change lands at once: ${titled.key} retitled in ${titledIn} ms (its row ${titled.height} to ${height} px tall), ${created} listed in ${createdIn} ms (the Open tab ${count} to ${count + 1}), ${parked.key} reads Backlog in ${parkedIn} ms`
+      );
+      await checkBannerNames(page, name, [
+        `${titled.key} retitled by another reader`,
+        `${created} created by another reader`,
+        `${parked.key} to Backlog by another reader`,
+      ]);
     },
   },
-  // The same table after the press on Show N changes: the changed row has left the first page,
-  // the pill has gone, and the header and the first row stood still throughout.
+  // Open by Created with the pointer off the table and the box at its top: an issue another
+  // reader creates is the first row at once.
   {
-    name: "table-held-shown-1440",
+    name: "table-new-row-hand-off-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      const { before, moved, tops } = await holdOpenTable(page);
-      const pressed = await pressPill(page, "table");
-      const after = await firstRows(page);
+      const name = "table-new-row-hand-off-1440";
+      const box = page.getByTestId("issues-table-scroll");
+      await open(page, view("open", "&sort=-created"));
+      await page.mouse.move(1, 1);
+      const before = await firstRows(page, 1);
+      const created = await createElsewhere(page, NEW_ISSUE_TITLE);
+      const firstIn = await within(5_000, async () => (await firstRows(page, 1))[0] === created);
+      const after = await firstRows(page, 2);
+      const scrolled = await box.evaluate((scroller) => scroller.scrollTop);
       check(
-        (await heldButton(page).count()) === 0 &&
-          (await page.locator(`[data-issue-row="${moved}"]`).count()) === 0 &&
-          after[0] === before[0] &&
-          after[1] === before[2],
-        `Show changes takes ${moved} off the page: the first rows read ${after.join(", ")}, and the pill has gone`
+        Number.isFinite(firstIn) && after[1] === before[0] && scrolled === 0,
+        `${name}: with the pointer off the table and the box at its top, ${created} is the first row ${firstIn} ms after it was made, above ${after[1]} (first before it: ${before[0]}; the box's scrollTop ${scrolled})`
       );
-      checkStill("table-held-shown-1440", "table", [...tops, ["after the press", pressed]]);
+      await checkBannerNames(page, name, [`${created} created by another reader`]);
     },
   },
   // An older link to the Legion queue's tab, which is gone: it opens Open narrowed to the issues
@@ -745,7 +895,8 @@ const afterShots: Shot[] = [
     },
   },
   // Done with one week picked in the Closed column's date-range filter, the 3rd of November to
-  // the 9th, both days included, and the filter opened again to show it.
+  // the 9th, and the filter opened again to show it. The address keeps main's rule, in UTC with
+  // its end excluded, so the picked 9th is written as the 10th.
   {
     name: "done-closed-filter-1440",
     viewport: DESKTOP,
@@ -760,8 +911,12 @@ const afterShots: Shot[] = [
       await filter.click();
       await page.waitForTimeout(500);
       check(
-        page.url().includes("f.closed=2026-11-03..2026-11-09"),
-        "the picked week writes f.closed=2026-11-03..2026-11-09"
+        page.url().includes("f.closed=2026-11-03..2026-11-10"),
+        "the picked 3rd to 9th writes f.closed=2026-11-03..2026-11-10"
+      );
+      check(
+        (await page.getByText("Or from and to (UTC)", { exact: true }).count()) === 1,
+        'the picker reads "Or from and to (UTC)"'
       );
       // The page runs in UTC, so the week's days are UTC days, the 9th whole.
       const expected = await page.evaluate(async (key) => {
@@ -818,8 +973,9 @@ const afterShots: Shot[] = [
     },
   },
   // Work time's header reached with the keyboard: Tab from the filter of the column before it
-  // onto Work time's sort, which opens the header's tooltip, one sentence on how Dispatch
-  // measures it. The pointer stands off the page, so no hover opens it.
+  // onto Work time's sort, which opens the header's tooltip: one sentence on how Dispatch
+  // measures it, and main's sort hint under it. The pointer stands off the page, so no hover
+  // opens it.
   {
     name: "done-work-time-tooltip-focus-1440",
     viewport: DESKTOP,
@@ -833,16 +989,20 @@ const afterShots: Shot[] = [
         const active = document.activeElement;
         const named = active?.getAttribute("aria-describedby");
         const tip = named ? document.getElementById(named) : null;
-        return {
-          header: active?.closest("th")?.textContent?.trim() ?? "",
-          tip: tip?.getAttribute("role") === "tooltip" ? (tip.textContent?.trim() ?? "") : "",
-        };
+        const lines =
+          tip?.getAttribute("role") === "tooltip"
+            ? [...tip.querySelectorAll("p")].map((line) => line.textContent?.trim() ?? "")
+            : [];
+        return { header: active?.closest("th")?.textContent?.trim() ?? "", lines };
       });
+      const [method = "", hint = ""] = focused.lines;
       check(
         focused.header.startsWith("Work time") &&
-          /^[^.]+\.$/.test(focused.tip) &&
-          focused.tip.includes("Legion queue hours"),
-        `Tab onto Work time's header opens its tooltip: "${focused.tip}"`
+          focused.lines.length === 2 &&
+          method.startsWith(WORK_TIME_METHOD) &&
+          /^[^.]+\.$/.test(method) &&
+          hint.startsWith("Sort (shift-click"),
+        `Tab onto Work time's header opens its tooltip: "${method}", then "${hint}"`
       );
       await checkTooltipInWindow(page, "done-work-time-tooltip-focus-1440");
     },
@@ -884,8 +1044,11 @@ const afterShots: Shot[] = [
       );
       if (pick === null) throw new Error("no done issue has Legion facts and no measured work");
       const row = page.locator(`[data-issue-row="${pick.key}"]`);
-      // One whole day: the page runs in UTC, and a range's end day is included.
-      await open(page, view("done", `&f.closed=${pick.day}..${pick.day}`));
+      // One whole UTC day: the address's end is the next day, which it leaves out.
+      const next = new Date(Date.parse(`${pick.day}T00:00:00Z`) + 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      await open(page, view("done", `&f.closed=${pick.day}..${next}`));
       // The table draws the rows near the screen only, so wheel it down, as a reader would,
       // until the issue's row is drawn.
       const table = await page.getByTestId("issues-table-scroll").boundingBox();
@@ -1027,57 +1190,107 @@ const afterShots: Shot[] = [
       );
     },
   },
-  // Open's Board, held: another reader moves the first Todo card to Backlog. The card stays
-  // where the reader saw it, the column counts move at once, and a pill floating over the column
-  // headers offers "Show 1 change". The pill takes no room: the headers and the first card do
-  // not move.
+  // Open's Board, the window scrolled down until three Todo cards or more lie above its top,
+  // the pointer resting on a Todo card T in the middle. Another reader retitles a Todo card
+  // above T so that it takes more lines, and moves another from Todo to Backlog. Both land at
+  // once, the column counts follow, and T keeps its top.
   {
-    name: "board-held-live-change-1440",
+    name: "board-change-above-pointer-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      const { before, counts, moved, tops } = await holdOpenBoard(page);
-      const after = await firstCards(page, "todo");
+      const name = "board-change-above-pointer-1440";
+      const todo = '[data-board-column="todo"] [data-board-card]';
+      const card = (key: string) => `[data-board-card="${key}"]`;
+      await open(page, view("open", "&layout=board"), page.locator("[data-board-card]").first());
+      const fourth = await page
+        .locator(todo)
+        .nth(3)
+        .evaluate((each) => each.getBoundingClientRect().top + window.scrollY);
+      // The fourth card's top just above the window's top, so the three before it lie wholly
+      // above it.
+      await page.evaluate((y) => window.scrollTo(0, y + 4), fourth);
+      await page.waitForTimeout(600);
+      const hidden = await page
+        .locator(todo)
+        .evaluateAll(
+          (cards) => cards.filter((each) => each.getBoundingClientRect().bottom <= 0).length
+        );
+      check(hidden >= 3, `${name}: ${hidden} Todo cards lie above the window's top`);
+      const cards = await inView(page, todo, "data-board-card");
+      // Cards are tall, so few stand whole in view: the hand rests on the middle one, or on the
+      // third where the middle one has fewer than two above it.
+      const hand = cards[Math.max(2, Math.floor(cards.length / 2))];
+      const [titled, parked] = cards.filter((each) => hand !== undefined && each.top < hand.top);
+      if (hand === undefined || titled === undefined || parked === undefined)
+        throw new Error(`${cards.length} Todo cards stand whole in view; the picture needs three`);
+      await restOn(page, card(hand.key));
+      const counts = [await columnCount(page, "todo"), await columnCount(page, "backlog")];
+      const handTop = () => topOf(page, card(hand.key));
+      const tops: [string, number][] = [["before the changes", await handTop()]];
+
+      // The Board draws every card of the view, about 1,500 on Open, so a change takes it a few
+      // seconds more than the table to draw on this pod's 2 CPUs: 10 s, where the table has 5.
+      const { title } = await issueOf(page, titled.key);
+      const longer = `${title}, retitled by another reader so that it runs onto more lines than before`;
+      await changeElsewhere(page, titled.key, { title: longer });
+      const titledIn = await within(10_000, async () =>
+        ((await page.locator(card(titled.key)).textContent()) ?? "").includes(longer)
+      );
+      const height = Math.round(
+        (await page.locator(card(titled.key)).boundingBox())?.height ?? Number.NaN
+      );
+      tops.push(["after the retitle", await handTop()]);
+
+      await changeElsewhere(page, parked.key, { status: "backlog" });
+      const parkedIn = await within(
+        10_000,
+        async () =>
+          (await page.locator(`[data-board-column="todo"] ${card(parked.key)}`).count()) === 0 &&
+          (await page.locator(`[data-board-column="backlog"] ${card(parked.key)}`).count()) === 1
+      );
+      tops.push(["after the move to Backlog", await handTop()]);
       const now = [await columnCount(page, "todo"), await columnCount(page, "backlog")];
-      const shown = await heldButton(page).innerText();
+
+      checkHeld(name, `${hand.key}, under the pointer,`, tops);
       check(
-        same(after, before) &&
-          (await page
-            .locator(`[data-board-column="backlog"] [data-board-card="${moved}"]`)
-            .count()) === 0,
-        `the held Board keeps ${moved} first in Todo after it moves to Backlog elsewhere: Todo starts ${after.join(", ")}`
+        Number.isFinite(titledIn) &&
+          height > titled.height &&
+          Number.isFinite(parkedIn) &&
+          now[0] === counts[0] - 1 &&
+          now[1] === counts[1] + 1,
+        `${name}: ${titled.key} retitled in ${titledIn} ms (its card ${titled.height} to ${height} px tall); ${parked.key} in Backlog in ${parkedIn} ms; Todo ${counts[0]} to ${now[0]}, Backlog ${counts[1]} to ${now[1]}`
       );
-      check(
-        now[0] === counts[0] - 1 && now[1] === counts[1] + 1,
-        `the column counts move at once: Todo ${counts[0]} to ${now[0]}, Backlog ${counts[1]} to ${now[1]}`
-      );
-      check(shown === "Show 1 change", `the Board's pill reads "${shown}"`);
-      await checkPillPlace(page, "board-held-live-change-1440", "board");
-      checkStill("board-held-live-change-1440", "board", tops);
+      await checkBannerNames(page, name, [
+        `${titled.key} retitled by another reader`,
+        `${parked.key} to Backlog by another reader`,
+      ]);
     },
   },
-  // The same Board after the press on Show 1 change: the moved card has left Todo for Backlog,
-  // the pill has gone, and the headers and the first card stood still throughout.
+  // The pointer on a Board card's Work time fact: its tooltip, the same sentence on how
+  // Dispatch measures it that the Work time header's tooltip gives.
   {
-    name: "board-held-shown-1440",
+    name: "board-card-work-time-tooltip-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      const { before, moved, tops } = await holdOpenBoard(page);
-      const pressed = await pressPill(page, "board");
-      const after = await firstCards(page, "todo");
+      const name = "board-card-work-time-tooltip-1440";
+      await open(page, view("open", "&layout=board"), page.locator("[data-board-card]").first());
+      const fact = page.locator('[data-legion-fact="work-time"]').first();
+      await fact.evaluate((each) => each.scrollIntoView({ block: "center", inline: "center" }));
+      await page.waitForTimeout(300);
+      const box = await fact.boundingBox();
+      if (box === null) throw new Error("no Board card draws a Work time fact");
+      await pointAt(page, box.x + box.width / 2, box.y + box.height / 2);
+      await page.waitForTimeout(200);
+      const tip = (await page.locator('[role="tooltip"]').first().textContent())?.trim() ?? "";
       check(
-        (await heldButton(page).count()) === 0 &&
-          (await page
-            .locator(`[data-board-column="backlog"] [data-board-card="${moved}"]`)
-            .count()) === 1 &&
-          !after.includes(moved) &&
-          after[0] === before[1],
-        `Show change moves ${moved} to Backlog: Todo starts ${after.join(", ")}, and the pill has gone`
+        tip.startsWith(WORK_TIME_METHOD) && /^[^.]+\.$/.test(tip),
+        `${name}: the Work time fact's tooltip reads "${tip}"`
       );
-      checkStill("board-held-shown-1440", "board", [...tops, ["after the press", pressed]]);
+      await checkTooltipInWindow(page, name);
     },
   },
-  // The reader's own move: the first Todo card dragged onto Backlog moves at once, with no
-  // Show changes.
+  // The reader's own move: the first Todo card dragged onto Backlog moves at once, and the
+  // banner names it as the reader's.
   {
     name: "board-own-drag-applies-1440",
     viewport: DESKTOP,
@@ -1096,13 +1309,16 @@ const afterShots: Shot[] = [
           .count(),
       };
       check(
-        where.todo === 0 && where.backlog === 1 && (await heldButton(page).count()) === 0,
-        `the reader's own drag moves ${key} from Todo to Backlog at once, with no Show changes`
+        where.todo === 0 && where.backlog === 1,
+        `the reader's own drag moves ${key} from Todo to Backlog at once`
       );
       check(
         now[0] === counts[0] - 1 && now[1] === counts[1] + 1,
         `after the drag Todo reads ${now[0]} (was ${counts[0]}) and Backlog ${now[1]} (was ${counts[1]})`
       );
+      await checkBannerNames(page, "board-own-drag-applies-1440", [
+        new RegExp(`${key} to Backlog(, reordered)? by you`),
+      ]);
     },
   },
   { name: "save-view-popover-1440", viewport: DESKTOP, take: openSaveView },
@@ -1118,39 +1334,37 @@ const afterShots: Shot[] = [
     },
   },
   // The Columns menu over Open: every column, the Legion ones under their names since the
-  // owner's review, in a menu as tall as its list.
+  // owner's review, each measured column with its method in a muted line under its name. The
+  // menu stays inside the window and scrolls inside itself; this one is at its top.
   {
     name: "columns-menu-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await open(page, view("open"));
-      await page.getByRole("button", { name: /^Columns/ }).click();
-      await page.waitForTimeout(500);
-      const menu = await page.getByRole("checkbox").evaluateAll((boxes) => {
-        const listed = boxes.filter((box) => box.closest("table") === null);
-        const names = listed.map(
-          (box) => box.closest("label")?.textContent?.trim() || box.getAttribute("aria-label") || ""
-        );
-        // The menu's own scroller is the nearest box around its first choice that scrolls and
-        // holds no table; one that holds the table is the page's.
-        let scroller = listed[0]?.parentElement ?? null;
-        while (scroller !== null && !/auto|scroll/.test(getComputedStyle(scroller).overflowY)) {
-          scroller = scroller.parentElement;
-        }
-        const scrolls =
-          scroller !== null &&
-          scroller.querySelector("table") === null &&
-          scroller.scrollHeight > scroller.clientHeight + 1;
-        return { names, scrolls };
-      });
+      const menu = await openColumnsMenu(page, "top");
       check(
         LEGION_COLUMNS.every((name) => menu.names.includes(name)) &&
           !OLD_COLUMN_NAMES.some((name) => menu.names.includes(name)),
         `the Columns menu lists ${menu.names.join(", ")}`
       );
+      const described = Object.keys(menu.methods).sort();
       check(
-        !menu.scrolls,
-        `the Columns menu shows its ${menu.names.length} columns with no scroll`
+        same(described, [...MEASURED_COLUMNS].sort()) &&
+          (menu.methods["Work time"] ?? "").startsWith(WORK_TIME_METHOD),
+        `the Columns menu draws a method line under ${described.join(", ")}; Work time's reads "${menu.methods["Work time"] ?? ""}"`
+      );
+      checkMenuReach("columns-menu-1440", menu);
+    },
+  },
+  // The same menu scrolled inside itself to its end, its last columns in view.
+  {
+    name: "columns-menu-end-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      const menu = await openColumnsMenu(page, "end");
+      checkMenuReach("columns-menu-end-1440", menu);
+      check(
+        menu.lastInView,
+        `columns-menu-end-1440: the menu scrolled to its end shows ${menu.names.at(-1)} whole`
       );
     },
   },
@@ -1389,10 +1603,9 @@ const fileShots: Shot[] = [
         (await page.locator(`[data-board-column="todo"] [data-board-card="${key}"]`).count()) === 0,
         `${key} has left the Todo column`
       );
-      check(
-        (await heldButton(page).count()) === 0,
-        "the reader's own drag applies at once: no Show changes"
-      );
+      await checkBannerNames(page, "file-board-drag-todo-to-backlog-1440", [
+        new RegExp(`${key} to Backlog(, reordered)? by you`),
+      ]);
     },
   },
   {

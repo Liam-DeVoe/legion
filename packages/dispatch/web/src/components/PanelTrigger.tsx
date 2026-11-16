@@ -6,8 +6,9 @@ import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./c
 
 /** A menu's panel: as tall as its choices, up to the window's height less its margins, so a
  *  menu shows every choice it has and scrolls, as one panel, only in a window too short for
- *  them. The display menu and the columns menu draw it. */
-export const MENU_PANEL_CLASS = `z-50 flex max-h-[calc(100dvh-16px)] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`;
+ *  them. A scroll that reaches the panel's end stays in the panel (`overscroll-contain`) rather
+ *  than moving the page behind it. The display menu and the columns menu draw it. */
+export const MENU_PANEL_CLASS = `z-50 flex max-h-[calc(100dvh-16px)] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto overscroll-contain rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`;
 
 export interface PanelTriggerProps {
   readonly align?: "left" | "right";

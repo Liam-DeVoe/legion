@@ -37,14 +37,28 @@ const KEPT_STATE = "dispatch-demo.state";
 export const DEMO_READ_ERROR = "GET /legion/v1/state: the daemon did not answer in 10 s";
 
 /** What the tab keeps across a reload: every issue a write changed, the reader's issue state,
- *  the daemon's state as the simulated reads left it, and what the priority writes changed. */
+ *  the daemon's state as the simulated reads left it, what the priority writes changed, and the
+ *  issue changes made in the tab, which the banner names. */
 interface KeptState {
   issues: Record<string, IssueSummary>;
   userState: Record<string, UserIssueState>;
   population: BoardPopulation | null;
   eventId: number;
   priorities?: PrioritiesKept;
+  changes?: DemoChange[];
 }
+
+/** One change to an issue made in the tab, none of which production holds: the issue, what
+ *  changed, and who made it - the reader, through the page, or another reader, which only the
+ *  screenshot run stands in for (install.ts's `__dispatchDemoChangeElsewhere`). */
+export interface DemoChange {
+  key: string;
+  what: string;
+  by: "you" | "another reader";
+}
+
+/** The login the live event of another reader's change names: invented, as the change is. */
+const ANOTHER_READER = "another-reader@example.com";
 
 type Listener = () => void;
 
@@ -64,6 +78,8 @@ export class DemoServer {
   /** Every request no route of the stub answered, for the screenshot run to read. */
   readonly unanswered: string[] = [];
   private readonly priorities: DemoPriorities;
+  private changes: DemoChange[] = [];
+  private readonly changeListeners = new Set<Listener>();
 
   /** `readFailed` makes the daemon's newest read a failure, with the cards the read before it
    *  left, as the board answers after a read that failed. */
@@ -88,6 +104,7 @@ export class DemoServer {
         this.populationMoved = true;
       }
       this.eventId = kept.eventId;
+      this.changes = kept.changes ?? [];
     }
     this.priorities = new DemoPriorities(
       fixtures.priorities,
@@ -117,6 +134,75 @@ export class DemoServer {
   onBoard(listener: Listener): () => void {
     this.boardListeners.add(listener);
     return () => this.boardListeners.delete(listener);
+  }
+
+  /** Every issue change made in the tab, oldest first, and a listener told of each new one. */
+  changesMade(): readonly DemoChange[] {
+    return this.changes;
+  }
+
+  onChange(listener: Listener): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  /** A change another reader makes to `key`: written as the page's own PATCH would be, and
+   *  sent to the page as that reader's live event. */
+  changeElsewhere(key: string, patch: IssuePatch): DemoAnswer {
+    return this.patchIssue(key, patch, "another reader");
+  }
+
+  /** An issue another reader creates in the project, titled `title`: a Todo issue with no
+   *  priority, assignee or label, at the project's last rank, as a new issue takes, under the
+   *  next key neither the issues nor the daemon's state holds. It reaches the page as that
+   *  reader's live event. Gives the new key. */
+  createElsewhere(title: string): string {
+    const project = this.project;
+    const keys = [...this.issues.keys(), ...Object.keys(this.population.issues)].filter((key) =>
+      key.startsWith(`${project}-`)
+    );
+    const key = `${project}-${Math.max(0, ...keys.map((one) => Number(one.split("-")[1]))) + 1}`;
+    const ranks = [...this.issues.values()]
+      .filter((issue) => issue.key.startsWith(`${project}-`))
+      .map((issue) => issue.rank);
+    const template = this.fixtures.issues.find((issue) => issue.key.startsWith(`${project}-`));
+    if (template === undefined) throw new Error(`the fixtures hold no ${project} issue`);
+    const now = goTime(new Date());
+    const issue: IssueSummary = {
+      ...template,
+      key,
+      title,
+      status: "todo",
+      priority: null,
+      assignee: null,
+      labels: [],
+      parent: null,
+      blocked_by: [],
+      claim: null,
+      components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+      open_asks: 0,
+      primary_artifact_id: "",
+      progress: { tasks: null, children: null },
+      route: null,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+      rank: rankAt(ranks, "", ""),
+      created_at: now,
+      created_by: { kind: "user", id: ANOTHER_READER },
+      updated_at: now,
+      closed_at: null,
+      last_seq: 1,
+    };
+    this.issues.set(key, issue);
+    this.changed.add(key);
+    this.board = null;
+    this.changes = [...this.changes, { key, what: "created", by: "another reader" }];
+    this.keep();
+    this.publish(issue, undefined, ANOTHER_READER);
+    for (const listener of this.changeListeners) listener();
+    for (const listener of this.boardListeners) listener();
+    return key;
   }
 
   /** The board route's body, computed from the daemon's state and the issues as they stand. */
@@ -402,7 +488,7 @@ export class DemoServer {
     };
   }
 
-  private patchIssue(key: string, input: IssuePatch): DemoAnswer {
+  private patchIssue(key: string, input: IssuePatch, by: DemoChange["by"] = "you"): DemoAnswer {
     const held = this.issues.get(key);
     if (held === undefined) return notFound("ISSUE_NOT_FOUND");
     const now = goTime(new Date());
@@ -431,8 +517,11 @@ export class DemoServer {
     this.issues.set(key, next);
     this.changed.add(key);
     this.board = null;
+    const what = describeChange(input, held);
+    if (what !== "") this.changes = [...this.changes, { key, what, by }];
     this.keep();
-    this.publish(next, changed);
+    this.publish(next, changed, by === "you" ? this.login : ANOTHER_READER);
+    for (const listener of this.changeListeners) listener();
     if (Object.hasOwn(this.population.issues, key)) {
       this.pendingDaemon.set(key, {
         ...this.pendingDaemon.get(key),
@@ -490,7 +579,9 @@ export class DemoServer {
     for (const listener of this.boardListeners) listener();
   }
 
-  private publish(issue: IssueSummary, changed: string[]): void {
+  /** The live event of a write: `issue.updated` with the fields it `changed`, or, with none
+   *  named, the `issue.created` of a new issue. */
+  private publish(issue: IssueSummary, changed: string[] | undefined, actor: string): void {
     this.eventId += 1;
     const full = this.fullIssue(issue);
     const ancestors: string[] = [];
@@ -504,15 +595,15 @@ export class DemoServer {
       issue_key: issue.key,
       project: full.project,
       seq: issue.last_seq,
-      type: "issue.updated",
-      actor: { kind: "user", id: this.login },
+      type: changed === undefined ? "issue.created" : "issue.updated",
+      actor: { kind: "user", id: actor },
       notify: true,
       created_at: issue.updated_at,
       payload: {
         ...full,
-        changed,
+        ...(changed === undefined ? {} : { changed }),
         ancestors,
-        ...(changed.includes("status") ? { thread_logins: [] } : {}),
+        ...(changed?.includes("status") ? { thread_logins: [] } : {}),
       },
     } as unknown as DispatchEvent;
     for (const listener of this.eventListeners) listener(String(this.eventId), event);
@@ -530,6 +621,7 @@ export class DemoServer {
       population: this.populationMoved ? this.population : null,
       eventId: this.eventId,
       priorities: this.priorities.kept(),
+      changes: this.changes,
     };
     try {
       sessionStorage.setItem(KEPT_STATE, JSON.stringify(kept));
@@ -539,7 +631,7 @@ export class DemoServer {
   }
 }
 
-interface IssuePatch {
+export interface IssuePatch {
   status?: string;
   rank?: { before?: string | null; after?: string | null };
   priority?: number | null;
@@ -547,6 +639,25 @@ interface IssuePatch {
   title?: string;
   labels?: string[];
   parent?: string | null;
+}
+
+/** What a write changed, in the banner's words: `to Backlog`, `to P3`, `reordered`;
+ *  empty where it changed nothing. */
+function describeChange(input: IssuePatch, held: IssueSummary): string {
+  const parts: string[] = [];
+  if (input.status !== undefined && input.status !== held.status) {
+    const label = input.status.replaceAll("_", " ");
+    parts.push(`to ${label.charAt(0).toUpperCase()}${label.slice(1)}`);
+  }
+  if (input.priority !== undefined)
+    parts.push(input.priority === null ? "to no priority" : `to P${input.priority}`);
+  if (input.rank !== undefined) parts.push("reordered");
+  if (input.assignee !== undefined)
+    parts.push(input.assignee === null ? "unassigned" : `assigned to ${input.assignee}`);
+  if (input.title !== undefined) parts.push("retitled");
+  if (input.labels !== undefined) parts.push("labels changed");
+  if (input.parent !== undefined) parts.push("parent changed");
+  return parts.join(", ");
 }
 
 function readKept(): KeptState | null {

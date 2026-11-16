@@ -9,12 +9,19 @@ import "./clock";
 import { showBanner } from "./banner";
 import { loadFixtures } from "./fixtures";
 import { demoWebSocket } from "./live";
-import { DemoServer } from "./server";
+import { DemoServer, type IssuePatch } from "./server";
 
 declare global {
   interface Window {
     /** The requests no stub route answered, for the screenshot run to read. */
     __dispatchDemoUnanswered?: string[];
+    /** A change another reader makes to an issue, for the screenshot run: the stub writes it
+     *  and sends it to the page only as that reader's live event, and the banner names it as
+     *  invented. Gives the write's status. */
+    __dispatchDemoChangeElsewhere?: (key: string, patch: IssuePatch) => Promise<number>;
+    /** An issue another reader creates, for the screenshot run, named in the banner the same
+     *  way. Gives the new issue's key. */
+    __dispatchDemoCreateElsewhere?: (title: string) => Promise<string>;
   }
 }
 
@@ -66,6 +73,9 @@ const nativeFetch = window.fetch.bind(window);
 const ready = loadFixtures(nativeFetch).then((fixtures) => {
   const server = new DemoServer(fixtures, readFailed);
   window.__dispatchDemoUnanswered = server.unanswered;
+  window.__dispatchDemoChangeElsewhere = async (key, patch) =>
+    server.changeElsewhere(key, patch).status;
+  window.__dispatchDemoCreateElsewhere = async (title) => server.createElsewhere(title);
   return server;
 });
 ready.catch((error: unknown) => console.error("[views demo] the fixtures did not load", error));
@@ -121,7 +131,7 @@ XMLHttpRequest.prototype.open = function open(
 };
 
 void ready.then((server) =>
-  showBanner(server.fixtures.manifest, [
+  showBanner(server, [
     ...(readFailed ? ["the failed daemon read"] : []),
     ...(settingsFailed ? ["the failed Legion setting read"] : []),
   ])

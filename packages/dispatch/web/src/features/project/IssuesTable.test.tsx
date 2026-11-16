@@ -4,14 +4,14 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import { ApiError, api, issuePatchRequest } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { Issue, IssueSummary } from "../../api/types";
 import { readLayout } from "../../components/table-storage";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { plainWrite, writesOf } from "../writes/write-store";
+import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import type { IssueListing } from "./issues-table-data";
 import { ISSUE_TABLE_COLUMNS, tableStorageKey } from "./issues-table-model";
@@ -1147,90 +1147,72 @@ function listedKeys(): string[] {
     .map((row) => row.getAttribute("data-issue-row") ?? "");
 }
 
-// The reader's place (The Spec, pages-work-for-each-reader-and-hold-their-place): an issue
-// another reader adds above the rows on screen does not push them down. The tab counts it at
-// once, and the pager offers it until the reader asks for it.
-test("a live insert above the first row on screen waits for Show changes", async () => {
-  const user = userEvent.setup();
-  const rows = [issue("CORE-2"), issue("CORE-3")];
-  const { client } = table(rows);
-  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
-  expect(listedKeys()).toEqual(["CORE-2", "CORE-3"]);
-  rows.unshift(issue("CORE-1"));
-  await client.invalidateQueries({ queryKey: ["issues"] });
-  const show = await screen.findByRole("button", { name: "Show 1 change" });
-  expect(listedKeys()).toEqual(["CORE-2", "CORE-3"]);
-  expect(screen.getByRole("tab", { name: "Open 3" })).toBeDefined();
-  await user.click(show);
-  expect(listedKeys()).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
-  expect(screen.queryByRole("button", { name: /^Show \d+ changes?$/ })).toBeNull();
-});
-
-test("a live change updates the cells of the rows on screen in place", async () => {
-  const rows = [issue("CORE-1"), issue("CORE-2", { title: "Old title" })];
-  const { client } = table(rows);
-  await screen.findByRole("row", { name: "CORE-2 Old title" });
-  rows[1] = issue("CORE-2", { title: "New title" });
-  await client.invalidateQueries({ queryKey: ["issues"] });
-  expect(await screen.findByRole("row", { name: "CORE-2 New title" })).toBeDefined();
-  expect(listedKeys()).toEqual(["CORE-1", "CORE-2"]);
-  expect(screen.queryByRole("button", { name: /^Show \d+ changes?$/ })).toBeNull();
-});
-
-// Only content that others add waits: the reader's own writes on this page - a bulk action, a
-// status or priority change, Start next, a move on the Board - are drawn at once. Every control
-// of the page writes as this does, one write per issue lined up on the issue.
-test("the reader's own bulk close takes its rows off the page at once", async () => {
-  const rows = [issue("CORE-1"), issue("CORE-2"), issue("CORE-3")];
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    const key = request.path.split("/").at(-1) ?? "";
-    rows[rows.findIndex((row) => row.key === key)] = issue(key, { status: "done" });
-    return savedIssue(key) as never;
+// The reader's place on the Board, as main's table keeps it (`ViewportAnchor`): a card another
+// reader adds above the card the reader's hand is on does not move that card on screen; the page
+// scrolls by the added card instead.
+test("a live insert above the anchored Board card leaves its top in place", async () => {
+  const CARD = 120;
+  const TOP = 200;
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const setScrollY = (value: number) =>
+    Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
+  // The geometry the anchor reads, which the unit DOM has no layout engine for: each card is
+  // CARD tall, stacked from TOP in its column, and the page scrolls them with `window.scrollY`.
+  // On `HTMLElement.prototype`, as the file's other geometry spies are: one of theirs left there
+  // would shadow a spy on `Element.prototype`.
+  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const cards = [
+      ...(this.closest("[data-board-column]")?.querySelectorAll("[data-board-card]") ?? []),
+    ];
+    const top = TOP + Math.max(0, cards.indexOf(this)) * CARD - window.scrollY;
+    return {
+      bottom: top + CARD,
+      height: CARD,
+      left: 0,
+      right: 288,
+      toJSON: () => ({}),
+      top,
+      width: 288,
+      x: 0,
+      y: top,
+    } as DOMRect;
   });
-  restores.push(() => send.mockRestore());
-  const { client } = table(rows);
-  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const writes = writesOf(client);
-  await Promise.all(
-    ["CORE-1", "CORE-2"].map((key) =>
-      writes.run({
-        kind: plainWrite,
-        detail: null,
-        label: `${key} closed`,
-        presentation: "indicator",
-        request: issuePatchRequest(key, { status: "done" }),
-        target: `issue:${key}`,
-      })
-    )
-  );
-  // The caller reads the listing again once its writes have landed, as the table's actions do.
-  await client.invalidateQueries({ queryKey: ["issues"] });
-  await waitFor(() => expect(listedKeys()).toEqual(["CORE-3"]));
-  expect(screen.getByRole("tab", { name: "Open 1" })).toBeDefined();
-  expect(screen.queryByRole("button", { name: /^Show \d+ changes?$/ })).toBeNull();
-});
-
-// The Board holds the reader's place as the table's page does: a card another reader adds above
-// the cards of a column waits, the column counts it at once, and the control row offers it.
-test("a live insert on the Board waits for Show changes", async () => {
-  const user = userEvent.setup();
+  const scrollBy = window.scrollBy;
+  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
+    const top = typeof x === "number" ? y : x.top;
+    if (top !== undefined) setScrollY(window.scrollY + top);
+  }) as typeof window.scrollBy;
+  restores.push(() => {
+    rect.mockRestore();
+    window.scrollBy = scrollBy;
+    if (scrollY === undefined) Reflect.deleteProperty(window, "scrollY");
+    else Object.defineProperty(window, "scrollY", scrollY);
+  });
+  setScrollY(0);
   const rows = [issue("CORE-2"), issue("CORE-3")];
   const { client } = table(rows, "?layout=board");
-  await screen.findByRole("article", { name: "CORE-2 Work CORE-2" });
   const todo = () => screen.getByRole("region", { name: "Todo" });
-  const cards = () =>
-    [...todo().querySelectorAll("[data-board-card]")].map((card) =>
-      card.getAttribute("data-board-card")
-    );
-  expect(cards()).toEqual(["CORE-2", "CORE-3"]);
+  const reading = await screen.findByRole("article", { name: "CORE-3 Work CORE-3" });
+  reading.focus();
+  const before = reading.getBoundingClientRect().top;
+  expect(before).toBe(TOP + CARD);
+
   rows.unshift(issue("CORE-1"));
   await client.invalidateQueries({ queryKey: ["issues"] });
-  const show = await screen.findByRole("button", { name: "Show 1 change" });
-  expect(cards()).toEqual(["CORE-2", "CORE-3"]);
-  expect(within(todo()).getByTestId("board-column-header").textContent).toContain("3");
-  await user.click(show);
-  expect(cards()).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
-  expect(screen.queryByRole("button", { name: /^Show \d+ changes?$/ })).toBeNull();
+  await waitFor(() => expect(within(todo()).getAllByRole("article")).toHaveLength(3));
+
+  // Drawn at once, the new card first, and the card in hand where it was.
+  expect(
+    within(todo())
+      .getAllByRole("article")
+      .map((card) => card.getAttribute("data-board-card"))
+  ).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
+  expect(
+    screen.getByRole("article", { name: "CORE-3 Work CORE-3" }).getBoundingClientRect().top
+  ).toBe(before);
+  expect(window.scrollY).toBe(CARD);
 });
 
 test("a scoped table lists the issues the server answers for the priority, over every project", async () => {

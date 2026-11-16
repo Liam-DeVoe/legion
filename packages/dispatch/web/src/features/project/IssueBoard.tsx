@@ -12,7 +12,7 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { useQueryClient } from "@tanstack/react-query";
-import { type CSSProperties, type ReactNode, useCallback, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
@@ -20,6 +20,7 @@ import { boardMoveMutationKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
+import { Tooltip, useTooltip } from "../../components/Tooltip";
 import {
   borderDefault,
   borderStrong,
@@ -46,8 +47,8 @@ import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
+import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import type { CardPlace } from "./board-hold";
 import {
   type IssueStatus,
   isIssueStatus,
@@ -59,7 +60,7 @@ import {
 } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
 import { LEGION_PHASES, phaseLabel } from "./issues-legion";
-import { type Item, workerName, workHoursOf } from "./issues-table-model";
+import { type Item, MEASURE_METHODS, workerName, workHoursOf } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -73,12 +74,36 @@ const boardFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
 const cardAround = (node: Element | null): HTMLElement | null =>
   closestMatching(node, "[data-board-card]");
 
-/** One fact of a card with Legion work: its name, then its value. */
-function Fact({ hook, label, value }: { hook: string; label: string; value: string }): ReactNode {
+/** One fact of a card with Legion work: its name, then its value. A measure's fact says how its
+ *  value is computed (`method`, the column's own sentence) in the shared tooltip, on hover and on
+ *  keyboard focus, as the measure's table header does. */
+function Fact({
+  hook,
+  label,
+  method,
+  value,
+}: {
+  hook: string;
+  label: string;
+  method?: string;
+  value: string;
+}): ReactNode {
+  const anchor = useRef<HTMLSpanElement>(null);
+  const tooltip = useTooltip();
   return (
-    <span className={`inline-flex gap-1 ${textSecondaryOnSurface}`} data-legion-fact={hook}>
+    <span
+      {...(method === undefined ? {} : { ...tooltip.props, tabIndex: 0 })}
+      className={`inline-flex gap-1 rounded-sm ${textSecondaryOnSurface} ${method === undefined ? "" : boardFocusRing}`}
+      data-legion-fact={hook}
+      ref={anchor}
+    >
       <span className={textMutedOnSurface}>{label}</span>
       <span>{value}</span>
+      {method === undefined ? null : (
+        <Tooltip anchorRef={anchor} trigger={tooltip}>
+          {method}
+        </Tooltip>
+      )}
     </span>
   );
 }
@@ -99,11 +124,17 @@ function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode 
           <Fact
             hook="phase-time"
             label="Time in Legion phase"
+            method={MEASURE_METHODS.time_in_phase}
             value={formatPhaseTime(legion.phase_since, nowMs)}
           />
         )}
         {workHours === undefined ? null : (
-          <Fact hook="work-time" label="Work time" value={formatWorkTime(workHours)} />
+          <Fact
+            hook="work-time"
+            label="Work time"
+            method={MEASURE_METHODS.work_hours}
+            value={formatWorkTime(workHours)}
+          />
         )}
         {/* A card whose issue has no worker running leaves the fact out rather than say None:
             every queued card would carry it. */}
@@ -144,10 +175,13 @@ function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode 
 function BoardCard({
   item,
   nowMs,
+  place,
   unread,
 }: {
   item: Item;
   nowMs: number;
+  /** The column, and the lane, the card stands in (its column's drop id). */
+  place: string;
   unread: boolean;
 }): ReactNode {
   const { issue } = item;
@@ -174,6 +208,7 @@ function BoardCard({
         isDragging ? "relative z-50 opacity-70" : ""
       } ${drop.isOver && !isDragging ? selectedCardBorder : ""}`}
       data-board-card={issue.key}
+      data-board-place={place}
       ref={setRefs}
       style={style}
       {...attributes}
@@ -229,7 +264,7 @@ export type BoardBy = "status" | "legion_phase";
 const NONE = "none";
 
 /** The column a row is in on a Board of `by`. */
-export const columnOf = (item: Item, by: BoardBy): string =>
+const columnOf = (item: Item, by: BoardBy): string =>
   by === "status" ? item.issue.status : (item.card?.column ?? NONE);
 
 /** A column's name: a status's own, or a phase's. */
@@ -242,12 +277,9 @@ const columnName = (id: string, by: BoardBy) =>
       ? "None"
       : phaseLabel(id);
 
-/** One column: its title, its count, and its cards; the whole column is its drop target. The
- *  count is the column's rows as they stand now, which a Board holding the reader's place draws
- *  at once while it holds the cards back. */
+/** One column: its title, its count, and its cards; the whole column is its drop target. */
 function BoardColumn({
   by,
-  count,
   dropId,
   id,
   items,
@@ -255,7 +287,6 @@ function BoardColumn({
   userState,
 }: {
   by: BoardBy;
-  count: number;
   dropId: string;
   id: string;
   items: readonly Item[];
@@ -281,7 +312,7 @@ function BoardColumn({
           className={`flex items-center justify-between gap-2 text-sm font-semibold ${textPrimaryOnSurface}`}
         >
           {by === "status" ? <StatusPill>{columnName(id, by)}</StatusPill> : columnName(id, by)}
-          <Pill>{count}</Pill>
+          <Pill>{items.length}</Pill>
         </div>
       </header>
       {items.length === 0 ? (
@@ -299,6 +330,7 @@ function BoardColumn({
               item={item}
               key={item.issue.key}
               nowMs={nowMs}
+              place={dropId}
               unread={issueIsUnread(item.issue, userState?.[item.issue.key]?.last_read_seq ?? 0)}
             />
           ))}
@@ -379,12 +411,14 @@ const dropIdOf = (column: string, lane: string | undefined) =>
 function readDrop(
   overId: string,
   rows: readonly Item[],
-  placeOf: (item: Item) => { column: string; lane: PriorityLane }
+  by: BoardBy
 ): { column: string; key?: string; lane?: PriorityLane } | undefined {
   if (overId.startsWith("card:")) {
     const key = overId.slice("card:".length);
     const row = rows.find((item) => item.issue.key === key);
-    return row === undefined ? undefined : { ...placeOf(row), key };
+    return row === undefined
+      ? undefined
+      : { column: columnOf(row, by), key, lane: issuePriority(row.issue.priority) };
   }
   const match = /^(?:lane:([^|]+)\|)?column:(.+)$/.exec(overId);
   if (match === null || match[2] === undefined) return undefined;
@@ -410,11 +444,9 @@ function readDrop(
  */
 export function IssueBoard({
   by,
-  counted,
   hasLegion,
   lanes,
   listsDone,
-  placeOf,
   project,
   reorderRefusal,
   rows,
@@ -423,21 +455,15 @@ export function IssueBoard({
   userState,
 }: {
   by: BoardBy;
-  /** The rows the columns and lanes count: the view's rows as they stand now, where a Board
-   *  holding the reader's place draws other rows (`useHeldBoard`); `rows` where unset. */
-  counted?: readonly Item[];
   hasLegion: boolean;
   lanes: boolean;
   /** The view lists done issues: the Done rail opens into a column with their cards. */
   listsDone: boolean;
-  /** Where a drawn row stands while the Board holds the reader's place; where its fields put it
-   *  where unset. */
-  placeOf?: (item: Item) => CardPlace;
   project: string;
   /** Why a card cannot be reordered within its column under the view's sort; undefined while
    *  the view sorts by Queue, first first. */
   reorderRefusal: string | undefined;
-  /** The rows the Board draws, in the view's sort. */
+  /** The view's rows, in the view's sort. */
   rows: readonly Item[];
   showIcebox: boolean;
   statusPicks: readonly string[] | undefined;
@@ -446,32 +472,22 @@ export function IssueBoard({
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string>();
   const nowMs = Date.now();
-  const countedRows = counted ?? rows;
-  // Where a drawn card stands: its held place, else where its fields put it.
-  const placeAt = (item: Item): { column: string; lane: PriorityLane } => {
-    const held = placeOf?.(item);
-    return {
-      column: held?.column ?? columnOf(item, by),
-      lane:
-        held === undefined || held.lane === undefined
-          ? issuePriority(item.issue.priority)
-          : held.lane,
-    };
-  };
-  const columnAt = (item: Item) => placeAt(item).column;
-  const laneAt = (item: Item) => placeAt(item).lane;
-  // The status columns: those the counted rows and the picked statuses name, and those a held
-  // card still stands in.
-  const statuses = useMemo(() => {
-    const named = boardStatuses({ rows: countedRows, showIcebox, statusPicks });
-    if (placeOf === undefined) return named;
-    const held = new Set(rows.map((item) => placeOf(item).column));
-    return issueStatuses.filter(
-      (status) =>
-        named.includes(status) ||
-        (held.has(status) && status !== "done" && (status !== "icebox" || showIcebox))
+  // While a card is dragged, and until the drop's own changes are drawn, the anchor leaves the
+  // page alone: the dragged card moves under the reader's hand by a transform, and a commit then
+  // would read that move as content shifting around it. Released two frames after the drop, when
+  // the drop's cache change (queued by the query cache for after the event) has been drawn.
+  const dragging = useRef(false);
+  const dropped = () => {
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        dragging.current = false;
+      })
     );
-  }, [countedRows, placeOf, rows, showIcebox, statusPicks]);
+  };
+  const statuses = useMemo(
+    () => boardStatuses({ rows, showIcebox, statusPicks }),
+    [rows, showIcebox, statusPicks]
+  );
   const patch = useKeyedWrite({
     inline: true,
     label: ({ key }: { input: UpdateIssueInput; key: string }) => `${key} moved on the board`,
@@ -512,22 +528,25 @@ export function IssueBoard({
     if (over === null) return;
     const key = String(active.id);
     const row = rows.find((item) => item.issue.key === key);
-    const target = readDrop(String(over.id), rows, placeAt);
+    const target = readDrop(String(over.id), rows, by);
     if (row === undefined || target === undefined || target.key === key) return;
-    const from = columnAt(row);
+    const from = columnOf(row, by);
     // A drop into another lane takes that lane's priority, as today's lanes do.
     const lane = lanes ? target.lane : undefined;
     const priority =
       lane === undefined || lane === issuePriority(row.issue.priority) ? {} : { priority: lane };
     // Within its own column, and its own lane, a drop can only reorder.
     const reorders = target.column === from && Object.keys(priority).length === 0;
-    const sameLane = (item: Item) => !lanes || laneAt(item) === laneAt(row);
+    const sameLane = (item: Item) =>
+      !lanes || issuePriority(item.issue.priority) === issuePriority(row.issue.priority);
     // The card a reorder lands beside: the one it is dropped on, else the column's last.
     const beside =
       target.key !== undefined
         ? rows.find((item) => item.issue.key === target.key)
         : rows
-            .filter((item) => columnAt(item) === from && item.issue.key !== key && sameLane(item))
+            .filter(
+              (item) => columnOf(item, by) === from && item.issue.key !== key && sameLane(item)
+            )
             .at(-1);
     const refusal = (): string | undefined =>
       reorderRefusal ??
@@ -550,7 +569,7 @@ export function IssueBoard({
         setNotice(why);
         return;
       }
-      const column = rows.filter((item) => columnAt(item) === "queue" && sameLane(item));
+      const column = rows.filter((item) => columnOf(item, by) === "queue" && sameLane(item));
       const neighbour = target.key ?? column.at(-1)?.issue.key;
       if (neighbour === undefined || neighbour === key) return;
       const movingUp =
@@ -612,8 +631,7 @@ export function IssueBoard({
   const iceboxRail =
     by === "status" &&
     !statuses.includes("icebox") &&
-    (countedRows.some((item) => item.issue.status === "icebox") ||
-      (statusPicks ?? []).includes("icebox"));
+    (rows.some((item) => item.issue.status === "icebox") || (statusPicks ?? []).includes("icebox"));
   const order: readonly string[] =
     by === "legion_phase"
       ? LEGION_PHASES.map((phase) => phase.id)
@@ -622,20 +640,13 @@ export function IssueBoard({
             (a, b) => issueStatuses.indexOf(a) - issueStatuses.indexOf(b)
           )
         : statuses;
-  // The columns' counts are the counted rows', as they stand now; the cards are the drawn rows',
-  // where the Board places them.
-  const drawRow = (from: readonly Item[], counting: readonly Item[], lane: string | undefined) => {
+  const drawRow = (from: readonly Item[], lane: string | undefined) => {
     const columns = new Map<string, Item[]>();
     for (const item of from) {
-      const id = columnAt(item);
+      const id = columnOf(item, by);
       const list = columns.get(id) ?? [];
       list.push(item);
       columns.set(id, list);
-    }
-    const counts = new Map<string, number>();
-    for (const item of counting) {
-      const id = columnOf(item, by);
-      counts.set(id, (counts.get(id) ?? 0) + 1);
     }
     return (
       <div className="flex w-max items-stretch gap-4">
@@ -643,7 +654,7 @@ export function IssueBoard({
           id === "icebox" && iceboxRail ? (
             <Rail
               by={by}
-              count={counts.get("icebox") ?? 0}
+              count={(columns.get("icebox") ?? []).length}
               dropId={dropIdOf("icebox", lane)}
               id="icebox"
               key={id}
@@ -651,7 +662,6 @@ export function IssueBoard({
           ) : (
             <BoardColumn
               by={by}
-              count={counts.get(id) ?? 0}
               dropId={dropIdOf(id, lane)}
               id={id}
               items={columns.get(id) ?? []}
@@ -662,11 +672,15 @@ export function IssueBoard({
           )
         )}
         {by === "legion_phase" ? (
-          <Rail by={by} count={counts.get(NONE) ?? 0} dropId={dropIdOf(NONE, lane)} id={NONE} />
+          <Rail
+            by={by}
+            count={(columns.get(NONE) ?? []).length}
+            dropId={dropIdOf(NONE, lane)}
+            id={NONE}
+          />
         ) : listsDone ? (
           <BoardColumn
             by={by}
-            count={counts.get("done") ?? 0}
             dropId={dropIdOf("done", lane)}
             id="done"
             items={columns.get("done") ?? []}
@@ -693,39 +707,55 @@ export function IssueBoard({
       )}
       <DndContext
         collisionDetection={boardCollisionDetection}
-        onDragEnd={onDragEnd}
-        onDragStart={closeRefPreview}
+        onDragCancel={dropped}
+        onDragEnd={(event) => {
+          onDragEnd(event);
+          dropped();
+        }}
+        onDragStart={() => {
+          dragging.current = true;
+          closeRefPreview();
+        }}
         sensors={sensors}
       >
-        {lanes ? (
-          <div className="flex flex-col gap-6" data-testid="board-lanes-container">
-            {priorityLanes.map((lane) => {
-              const inLane = rows.filter((item) => laneAt(item) === lane);
-              const countedInLane = countedRows.filter(
-                (item) => issuePriority(item.issue.priority) === lane
-              );
-              return (
-                <section aria-label={`${laneLabel(lane)} lane`} key={String(lane)}>
-                  <h2
-                    className={`mb-2 flex items-center gap-2 text-xs font-semibold tracking-wide uppercase ${textSecondaryOnSurface}`}
-                  >
-                    {laneLabel(lane)}
-                    <Pill>{countedInLane.length}</Pill>
-                  </h2>
-                  <div className="relative overflow-x-auto pb-3">
-                    {drawRow(inLane, countedInLane, String(lane))}
-                  </div>
-                </section>
-              );
-            })}
-          </div>
-        ) : (
-          // `relative` is load-bearing: a card's `sr-only` text is absolutely placed, and with no
-          // placed ancestor inside the scroll box it widens the whole page past the window.
-          <div className="relative overflow-x-auto pb-3" data-testid="board-scroll-container">
-            {drawRow(rows, countedRows, undefined)}
-          </div>
-        )}
+        {/* The reader's place, as main's table keeps it: the card the reader's hand is on (focus,
+            then the pointer), or once they have scrolled the card at the middle of the Board,
+            stays where it is on screen while cards are added, removed or resized above it in its
+            column, or a notice appears above the Board. The page scrolls the Board, so the anchor
+            moves the window. A card that leaves its column or lane (`data-board-place`) is not
+            followed, and a card the reader is dragging is left to the drag. */}
+        <ViewportAnchor
+          enabled={() => !dragging.current}
+          group="data-board-place"
+          item="data-board-card"
+        >
+          {lanes ? (
+            <div className="flex flex-col gap-6" data-testid="board-lanes-container">
+              {priorityLanes.map((lane) => {
+                const inLane = rows.filter((item) => issuePriority(item.issue.priority) === lane);
+                return (
+                  <section aria-label={`${laneLabel(lane)} lane`} key={String(lane)}>
+                    <h2
+                      className={`mb-2 flex items-center gap-2 text-xs font-semibold tracking-wide uppercase ${textSecondaryOnSurface}`}
+                    >
+                      {laneLabel(lane)}
+                      <Pill>{inLane.length}</Pill>
+                    </h2>
+                    <div className="relative overflow-x-auto pb-3">
+                      {drawRow(inLane, String(lane))}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+          ) : (
+            // `relative` is load-bearing: a card's `sr-only` text is absolutely placed, and with no
+            // placed ancestor inside the scroll box it widens the whole page past the window.
+            <div className="relative overflow-x-auto pb-3" data-testid="board-scroll-container">
+              {drawRow(rows, undefined)}
+            </div>
+          )}
+        </ViewportAnchor>
       </DndContext>
     </section>
   );

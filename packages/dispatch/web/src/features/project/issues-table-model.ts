@@ -207,6 +207,28 @@ export function workHoursOf(item: Pick<Item, "facts">): number | undefined {
   return facts.work_first_at == null && !(facts.work_hours > 0) ? undefined : facts.work_hours;
 }
 
+/**
+ * How each measure is computed, the one sentence its header's tooltip, a Board card's fact and
+ * the Columns menu say: the server's rule, read from the code that computes it. Work time, Time
+ * per phase and Review rounds are the per-issue facts (`legion/metrics`: `computeWorkTime` with
+ * `issueEnd`, `parkedSpans` and `queuedSpans`; `issueParts` with `waitingOnPersonSpans` and
+ * `waitingOnChildrenSpans`; `reviewRounds`). Time waiting and Time in Legion phase run from the
+ * board's `waiting.since` (`legion.CardWaiting`) and `phase_since` (`api/legion_board.go`) to now.
+ * A measure the server has no value for is an empty cell, never 0.
+ */
+export const MEASURE_METHODS: Partial<Record<ColumnId, string>> = {
+  work_hours:
+    "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it, without Backlog and Icebox hours and the hours it waited in the Legion queue.",
+  phase_hours:
+    "Work time goes to Waiting on a person while the issue's ask or root waits, else to its phase or Other. A root does not count the hours it waits on its children.",
+  review_rounds:
+    "Dispatch counts each start of the Reviewing phase, or each move to Needs review status for an issue with no recorded Legion phases.",
+  waited:
+    "Dispatch shows the time since Legion asked a person, when the issue waits on a person, or else since its Legion phase started.",
+  time_in_phase:
+    "Dispatch shows the time since Legion first recorded the issue in its current Legion phase.",
+};
+
 const HOUR_MS = 3_600_000;
 /** What a column that holds a duration filters by: four lengths, in their order, and None for
  *  a row with no duration. The address keeps the ids (`f.waited=under-1h`). */

@@ -47,6 +47,7 @@ import {
   columnMinimums,
   ISSUE_ROW_ATTRIBUTE,
   type Item,
+  MEASURE_METHODS,
   matchesFilters,
   workerName,
   workHoursOf,
@@ -91,26 +92,6 @@ declare module "@tanstack/react-table" {
   }
 }
 
-/**
- * How each measure is computed, the one sentence its header's tooltip says: the server's rule,
- * read from the code that computes it. Work time, Time per phase and Review rounds are the
- * per-issue facts (`legion/metrics`: `computeWorkTime`, `issueParts`, `reviewRounds`); Time
- * waiting and Time in Legion phase run from the board's `waiting.since` (`legion.CardWaiting`)
- * and `phase_since` (`api/legion_board.go`) to now. A measure the server has no value for is an
- * empty cell, never 0.
- */
-const MEASURE_METHODS: Partial<Record<ColumnId, string>> = {
-  work_hours:
-    "Dispatch counts the hours from the first Legion worker event until the issue closes, or until now, without Backlog, Icebox and Legion queue hours.",
-  phase_hours:
-    "Dispatch divides the Work time by the Legion phase of each hour, without the hours that a parent issue waits for a child issue.",
-  review_rounds:
-    "Dispatch counts each start of the Reviewing phase, or each move to Needs review status for an issue with no recorded Legion phases.",
-  waited:
-    "Dispatch shows the time since Legion asked a person, when the issue waits on a person, or else since its Legion phase started.",
-  time_in_phase:
-    "Dispatch shows the time since Legion first recorded the issue in its current Legion phase.",
-};
 const inPicks: FilterFn<Item> = (row, id, value: string[] | string) =>
   matchesFilters(row.original, [{ id, value }]);
 

@@ -25,7 +25,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
-import { Fragment, type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { ViewportAnchor } from "../features/shell/ViewportAnchor";
 import {
   borderDefault,
@@ -34,13 +34,13 @@ import {
   tableResizeActive,
   tableResizeHover,
   textMutedOnCanvas,
+  textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../theme/classes";
 import { ColumnFilter, type FilterCountNoun } from "./ColumnFilter";
 import { CONTROL } from "./control-names";
-import { changedRows, mergeHeld } from "./held-rows";
 import { Pager, type PagerOptions } from "./Pager";
 import { Tooltip, useTooltip } from "./Tooltip";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
@@ -128,16 +128,6 @@ export interface DataTableOptions<Row> {
    *  the table pages by the state's page and size without slicing `rows`, and the pager counts
    *  pages out of this. Without it the table holds every row and cuts its pages itself. */
   readonly rowCount?: number;
-  /** Hold the reader's place: while the view (`viewKey`) stays, a change of `rows` from
-   *  elsewhere updates the cells of the rows this page drew and adds, removes or moves none of
-   *  them; the model counts the rows it would change (`heldChanges`), and `showChanges` draws
-   *  them. A caller holds only once its rows have settled after the reader's own move, so the
-   *  rows a new view first reads are drawn rather than held back. Without it every change of
-   *  `rows` is drawn at once. */
-  readonly hold?: boolean;
-  /** The rows the reader changed themself, by id: a change of theirs is drawn at once, where
-   *  the page holds every other. */
-  readonly own?: ReadonlySet<string>;
 }
 
 /** One line the table draws: a row, or a group's heading. */
@@ -161,11 +151,6 @@ export interface DataTableModel<Row> {
    *  lands, and null is handed back meanwhile. */
   readonly focusRow: FocusRow;
   readonly names: DataTableNames;
-  /** How many rows of this page a live change would add, remove or move, which the page holds
-   *  back (`hold`); 0 where it holds nothing. */
-  readonly heldChanges: number;
-  /** Draws the rows the page holds back. */
-  readonly showChanges: () => void;
 }
 
 /**
@@ -210,10 +195,8 @@ export function useDataTable<Row>({
   columns,
   getRowId,
   groupOrder,
-  hold,
   layout,
   names,
-  own,
   onColumnFiltersChange,
   onGlobalFilterChange,
   onGroupingChange,
@@ -292,7 +275,7 @@ export function useDataTable<Row>({
       const group = row.getParentRow()?.id;
       if (group !== undefined) onThisPage.set(group, (onThisPage.get(group) ?? 0) + 1);
     }
-  const liveRows: DisplayRow<Row>[] = [
+  const displayRows: DisplayRow<Row>[] = [
     ...(continued === undefined
       ? []
       : [{ row: continued, continued: true, shown: onThisPage.get(continued.id) }]),
@@ -303,60 +286,6 @@ export function useDataTable<Row>({
       return here === 0 ? [] : [{ row, shown: here }];
     }),
   ];
-  // The reader's place (`hold`): while the reader stays in this view, a change of the rows from
-  // elsewhere updates the cells of the lines on screen and adds, removes or moves none of them
-  // until the reader moves (the view, its page, a sort, a filter, a group opened or closed) or
-  // asks for the changes (`showChanges`); the reader's own changes (`own`) are drawn at once.
-  // The page is held as a place in the whole listing the pages are cut from, so a row the
-  // reader's own change takes off the page is followed by the row the held listing has next. A
-  // listing that drew no row has no place to hold, and the lines drawn while the caller did not
-  // hold (its rows still arriving after the reader's own move) are no place either: the rows that
-  // arrive as it starts holding are drawn.
-  const holding = hold === true;
-  const holdKey = `${viewKey}\n${JSON.stringify(expanded)}`;
-  const listing = table.getPrePaginationRowModel();
-  const coreById = table.getCoreRowModel().rowsById;
-  const [held, setHeld] = useState<HeldListing<Row>>();
-  const heldRows =
-    holding && held?.holding === true && held.key === holdKey && held.rows.length > 0
-      ? held.rows
-      : undefined;
-  const shownListing =
-    heldRows === undefined
-      ? listing.rows
-      : mergeHeld(heldRows, listing.rows, own ?? NO_IDS, rowId, rowIsGroup);
-  const { pageIndex, pageSize } = table.getState().pagination;
-  const shownLines =
-    heldRows === undefined
-      ? liveRows
-      : linesOf(
-          shownListing,
-          rowCount === undefined ? pageIndex * pageSize : 0,
-          rowCount === undefined ? pageSize : undefined,
-          // A row as the rows hold it now; a row they no longer hold keeps the last of it.
-          (row) => listing.rowsById[row.id] ?? coreById[row.id] ?? row
-        );
-  const heldChanges =
-    heldRows === undefined ? 0 : changedRows(leafIds(shownLines), leafIds(liveRows));
-  const liveIds = listing.rows.map(rowId);
-  if (heldChanges === 0) {
-    if (
-      held === undefined ||
-      held.key !== holdKey ||
-      held.holding !== holding ||
-      !sameOrder(held.rows.map(rowId), liveIds)
-    )
-      setHeld({ key: holdKey, holding, rows: listing.rows });
-  } else if (held !== undefined && !sameOrder(held.rows.map(rowId), shownListing.map(rowId))) {
-    // The reader's own changes join the place held, so they stay once their writes are past.
-    setHeld({ ...held, rows: shownListing });
-  }
-  const displayRows: readonly DisplayRow<Row>[] = heldChanges > 0 ? shownLines : liveRows;
-  const latest = useRef<HeldListing<Row>>({ key: holdKey, holding, rows: listing.rows });
-  useLayoutEffect(() => {
-    latest.current = { key: holdKey, holding, rows: listing.rows };
-  });
-  const showChanges = useCallback(() => setHeld(latest.current), []);
   // The box measures itself: `useTableLayout` observes its size and the section around it, so
   // neither the rows this page holds nor a notice above the table is measured from here.
   const virtualizer = useVirtualizer({
@@ -389,72 +318,11 @@ export function useDataTable<Row>({
     anchorEnabled: () => previousView.current === viewKey,
     displayRows,
     focusRow,
-    heldChanges,
     layout,
     names,
-    showChanges,
     table,
     virtualizer,
   };
-}
-
-/** The whole listing a page was cut from, held while the reader stays in the view `key` names. */
-interface HeldListing<Row> {
-  readonly key: string;
-  /** Whether the caller held the page when the listing was taken. */
-  readonly holding: boolean;
-  /** Every row and group heading, in the order the pages are cut from. */
-  readonly rows: readonly TableRow<Row>[];
-}
-
-const NO_IDS: ReadonlySet<string> = new Set();
-const rowId = <Row,>(row: TableRow<Row>) => row.id;
-const rowIsGroup = <Row,>(row: TableRow<Row>) => row.getIsGrouped();
-
-/** The ids of a page's rows, its group headings left out, in the order they are drawn. */
-const leafIds = <Row,>(lines: readonly DisplayRow<Row>[]): string[] =>
-  lines.flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]));
-
-const sameOrder = (a: readonly string[], b: readonly string[]) =>
-  a.length === b.length && a.every((id, index) => id === b[index]);
-
-/**
- * The lines a page of `listing` draws, from `start`, `size` rows (all of them with none): as
- * `useDataTable` draws a page TanStack cut, the heading of a group that began on an earlier
- * page repeated at the top, a heading with none of its rows here left out unless it is closed,
- * and each heading counting its rows on this page. `latest` gives each row as it stands now.
- */
-function linesOf<Row>(
-  listing: readonly TableRow<Row>[],
-  start: number,
-  size: number | undefined,
-  latest: (row: TableRow<Row>) => TableRow<Row>
-): DisplayRow<Row>[] {
-  const page = size === undefined ? listing : listing.slice(start, start + size);
-  const first = page[0];
-  let continued: TableRow<Row> | undefined;
-  if (first !== undefined && !first.getIsGrouped() && size !== undefined)
-    for (let index = start - 1; index >= 0 && continued === undefined; index--) {
-      const row = listing[index];
-      if (row?.getIsGrouped() === true) continued = row;
-    }
-  const onThisPage = new Map<string, number>();
-  let heading = continued;
-  for (const row of page) {
-    if (row.getIsGrouped()) heading = row;
-    else if (heading !== undefined)
-      onThisPage.set(heading.id, (onThisPage.get(heading.id) ?? 0) + 1);
-  }
-  return [
-    ...(continued === undefined
-      ? []
-      : [{ row: latest(continued), continued: true, shown: onThisPage.get(continued.id) }]),
-    ...page.flatMap((row): DisplayRow<Row>[] => {
-      if (!row.getIsGrouped() || !row.getIsExpanded()) return [{ row: latest(row) }];
-      const here = onThisPage.get(row.id) ?? 0;
-      return here === 0 ? [] : [{ row: latest(row), shown: here }];
-    }),
-  ];
 }
 
 /** What a drawn line is handed: where it sits, and the ref that measures its height. */
@@ -543,8 +411,12 @@ function TableHeaderCell<TData>({
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
   // A column that says how its value is computed (`meta.describe`) says it in a tooltip off its
-  // header, on hover and keyboard focus; the sort's own hint then stays out of its way.
+  // header, on hover and keyboard focus, with main's sort hint as the tooltip's second line, so
+  // the header keeps that hint and no browser title shows beside the tooltip.
   const describe = column.columnDef.meta?.describe;
+  const sortHint = pinned
+    ? "Sort (shift-click to add a second sort)"
+    : "Sort (shift-click to add a second sort); drag to move the column";
   const sortRef = useRef<HTMLButtonElement>(null);
   const tooltip = useTooltip();
   return (
@@ -582,13 +454,7 @@ function TableHeaderCell<TData>({
             onDragEnd={() => setDragColumn(undefined)}
             onDragStart={() => setDragColumn(column.id)}
             ref={sortRef}
-            title={
-              describe !== undefined
-                ? undefined
-                : pinned
-                  ? "Sort (shift-click to add a second sort)"
-                  : "Sort (shift-click to add a second sort); drag to move the column"
-            }
+            title={describe === undefined ? sortHint : undefined}
             type="button"
           >
             {flexRender(column.columnDef.header, header.getContext())}
@@ -601,7 +467,8 @@ function TableHeaderCell<TData>({
         )}
         {describe === undefined ? null : (
           <Tooltip anchorRef={sortRef} trigger={tooltip}>
-            {describe}
+            <p>{describe}</p>
+            <p className={`mt-1 ${textMutedOnSurface}`}>{sortHint}</p>
           </Tooltip>
         )}
         {column.getCanFilter()

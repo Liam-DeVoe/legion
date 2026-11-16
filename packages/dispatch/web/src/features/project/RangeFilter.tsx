@@ -11,6 +11,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { lastDayOf, toEndOfDay } from "./issues-views";
 
 /** The windows the panel offers with one press. */
 const PRESETS: readonly { readonly value: string; readonly label: string }[] = [
@@ -23,22 +24,25 @@ const PRESETS: readonly { readonly value: string; readonly label: string }[] = [
 
 const PANEL_CLASS = `z-50 flex w-64 max-w-[calc(100vw-16px)] flex-col gap-2 rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`;
 
-/** The window a value names, in the reader's words, for the trigger's title. */
+/** The window a value names, in the reader's words, for the trigger's title: a range by its
+ *  first and last day, as the picker shows them. */
 function describe(value: string): string {
   const preset = PRESETS.find((option) => option.value === value);
   if (preset !== undefined) return preset.value === "all" ? "Any time" : `Last ${preset.label}`;
   const range = /^(.*)\.\.(.*)$/.exec(value);
   if (range === null) return value;
-  return `${range[1] || "start"} to ${range[2] || "now"}`;
+  return `${asDate(range[1]) || "start"} to ${lastDayOf(range[2] ?? "") || "now"}`;
 }
 
-/** A `<from>..<to>` end as a date input holds it: the date of a day, or the UTC date of a time. */
+/** A `<from>..<to>` end as a date input holds it: the UTC date of a day or of a time. */
 const asDate = (end: string | undefined) => (end ?? "").slice(0, 10);
 
 /**
  * The date range filter of a column of moments (Closed): the last 1, 7, 28 or 90 days, all of
- * them, or a from and to date, both days included, as the reader's own calendar shows them
- * (`readWindow`). It writes `f.<column>` as `<N>d`, `<from>..<to>` or `all`.
+ * them, or a from and to date, both days included. The address keeps main's rule, `from`
+ * included and `to` excluded, so the picked To day is written as the next UTC day
+ * (`toEndOfDay`), and an address read back shows the day before its `to` (`lastDayOf`). It
+ * writes `f.<column>` as `<N>d`, `<from>..<to>` or `all`.
  */
 export function RangeFilter<TData>({
   column,
@@ -52,7 +56,7 @@ export function RangeFilter<TData>({
   const value = (column.getFilterValue() as string | undefined) ?? "";
   const range = /^(.*)\.\.(.*)$/.exec(value);
   const [from, setFrom] = useState(asDate(range?.[1]));
-  const [to, setTo] = useState(asDate(range?.[2]));
+  const [to, setTo] = useState(lastDayOf(range?.[2] ?? ""));
   const name = String(column.columnDef.header);
   const active = value !== "" && value !== "all";
   return (
@@ -98,11 +102,11 @@ export function RangeFilter<TData>({
             onSubmit={(event) => {
               event.preventDefault();
               if (from === "" && to === "") return;
-              column.setFilterValue(`${from}..${to}`);
+              column.setFilterValue(`${from}..${toEndOfDay(to)}`);
               close();
             }}
           >
-            <span className={`text-xs ${textMutedOnCanvas}`}>Or from and to, both included</span>
+            <span className={`text-xs ${textMutedOnCanvas}`}>Or from and to (UTC)</span>
             <span className="flex items-center gap-1">
               <input
                 aria-label={`${name} from`}

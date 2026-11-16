@@ -1,8 +1,9 @@
 // The views demo's banner: a small fixed note at the foot of every page that says the back end is
-// stubbed, which data is real and when it was read, and which figures are estimated or invented.
+// stubbed, which data is real and when it was read, which figures are estimated or invented, and
+// which issue changes were made in the tab, by the reader or by another reader the demo invents.
 // It sits outside the app's root and takes no pointer events, so it moves no part of the layout
 // and blocks no control. On a phone it is one short line, so it covers no first row.
-import type { DemoManifest } from "./fixtures";
+import type { DemoChange, DemoServer } from "./server";
 
 /** A UTC time as `14 Nov 00:36Z`. */
 function utc(at: string): string {
@@ -29,9 +30,21 @@ const STYLE = `
   .views-demo-banner .short { display: block; }
 }`;
 
+/** How many of the tab's changes the banner names, the newest; the rest it counts. */
+const CHANGES_NAMED = 3;
+
+/** The tab's changes in the banner's words: `ACME-12 to P3 by another reader`, newest last. */
+function changesText(changes: readonly DemoChange[]): string {
+  const named = changes.slice(-CHANGES_NAMED).map(({ key, what, by }) => `${key} ${what} by ${by}`);
+  const earlier = changes.length - named.length;
+  return [...(earlier > 0 ? [`${earlier} earlier`] : []), ...named].join("; ");
+}
+
 /** The banner, of the manifest's words; `failures` adds the failed reads the tab asked for
- *  (install.ts), which no production read holds either. */
-export function showBanner(manifest: DemoManifest, failures: readonly string[]): void {
+ *  (install.ts), which no production read holds either. It names each issue change made in the
+ *  tab as it is made. */
+export function showBanner(server: DemoServer, failures: readonly string[]): void {
+  const manifest = server.fixtures.manifest;
   // Each project's issues with the time they were read; the daemon's state is the first one's.
   const projects = [
     `${manifest.project} issues (read ${utc(manifest.issues_read_at)})`,
@@ -61,11 +74,28 @@ export function showBanner(manifest: DemoManifest, failures: readonly string[]):
     line.textContent = text;
     full.append(line);
   }
+  const changes = document.createElement("div");
+  changes.dataset.testid = "views-demo-banner-changes";
+  full.append(changes);
   const short = document.createElement("div");
   short.className = "short";
   // The phone's two lines: the invented figures in the manifest's fewer words, and the read
   // time; the real projects' names are the desktop banner's, since they would take a third line.
-  short.textContent = `Stubbed · real data of ${utc(manifest.daemon_read_at)}, times estimated · invented: ${inventedPhone}`;
+  const shortText = `Stubbed · real data of ${utc(manifest.daemon_read_at)}, times estimated · invented: ${inventedPhone}`;
+  const showChanges = () => {
+    const made = server.changesMade();
+    changes.textContent = made.length === 0 ? "" : `Invented changes: ${changesText(made)}`;
+    changes.hidden = made.length === 0;
+    short.textContent =
+      made.length === 0
+        ? shortText
+        : `${shortText} · changed: ${made
+            .slice(-CHANGES_NAMED)
+            .map(({ key }) => key)
+            .join(", ")}`;
+  };
+  showChanges();
+  server.onChange(showChanges);
   banner.append(full, short);
   document.body.append(banner);
 }
