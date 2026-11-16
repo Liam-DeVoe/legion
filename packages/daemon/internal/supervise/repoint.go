@@ -114,13 +114,15 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // controller, which messages start — is counted against the open turn alone, and the agent
 // relaunched after it comes up with no task and no turn. Reset there, the run would be one again
 // at every such turn the cluster ends, and a claim whose messages keep ending its pod would be
-// relaunched for ever, never reaching the limit. Nor does a turn of the daemon's own relaunch
-// record, or that record's retirement, which end none of the deaths either (inRelaunchRecordTurn):
-// the daemon gives the record to such an agent at its ready, since it holds nothing
-// (queueRelaunch), so a turn completed on it is the daemon's own act and no evidence that the
-// claim's work gets through. Taken for one, it would end the run at every such relaunch, as a
+// relaunched for ever, never reaching the limit. Nor does a turn of the daemon's own fresh
+// relaunch record, or any record's retirement, which end none of the deaths either
+// (turnEndsCounts): the daemon gives the record to such an agent at its ready, since it holds
+// nothing (queueRelaunch), so a turn completed on it is the daemon's own act and no evidence that
+// the claim's work gets through. Taken for one, it would end the run at every such relaunch, as a
 // reset at the ready would, and from the limit on it would end the deaths each charged end
-// counts, so the claim would never fail. An end that finds a ready agent with no work
+// counts, so the claim would never fail. The record whose turn a let-go cut off is the one that
+// does: the ends in that turn were counted against it, so its re-sent turn, completed, ends the
+// run and the deaths as a turn of work does. An end that finds a ready agent with no work
 // outstanding — idle, holding no task, in no turn — is counted in neither run and charged
 // nothing: it is displaced as it always was. Such a claim completes no turn, so a count it could
 // raise would only grow, and a pod the cluster repacks once a week would cost it a launch failure

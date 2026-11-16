@@ -3,14 +3,18 @@ package supervise
 // What the daemon's own relaunch record (queueRelaunch) does to the budgets a claim's work ends —
 // the run of ends from outside the pod that found the ready agent at work
 // (Budgets.PodEndsNotOurs) and the deaths (Budgets.Deaths) — and what the record of such an end
-// tells the next process. The record is the daemon's own act, so its turn and its retirement end
-// neither (inRelaunchRecordTurn), where a turn of the claim's own work still ends both. The record
-// of an end from outside the pod says the pod was ended from outside it (endFromOutside), and
-// only the daemon's own replacement of a pod is told as a replacement (endDisplaced).
+// tells the next process. A completed turn ends the counts that were counted against the work it
+// completed (turnEndsCounts): a turn of the claim's own work ends both; a fresh record's turn ends
+// neither, since what it finds was counted against a message's turn or a task; and the turn of a
+// record a let-go took back from an earlier turn of it, sent again, ends both, since the ends in
+// that earlier turn were counted against the record. No record's retirement ends either. What a
+// turn is the turn of is decided where the turn confirms its delivery, and read from the persisted
+// claim where the machine holds no answer, as after a restart. The record of an end from outside
+// the pod says the pod was ended from outside it (endFromOutside), and only the daemon's own
+// replacement of a pod is told as a replacement (endDisplaced).
 
 import (
 	"errors"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -18,43 +22,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// The loop an issue's role whose message turns the cluster keeps ending runs, whole: a message's
-// turn the pod ends from outside, the relaunch, the turn of the daemon's own relaunch record
-// started and completed, and the next message's turn ended from outside again. The run counts each
-// message's turn — 1, 2 — and the end at launch_failure_limit is charged as the claim's own death.
-// Taken for the claim's work, the record's turn would end the run at every relaunch, and the claim
-// would be relaunched for ever, charged nothing.
-func TestARunOfMessageTurnsEndedFromOutsideSurvivesTheRelaunchRecordsTurnsAndIsChargedAtTheLimit(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	h := newHarness(t)
-	h.reach(StateReady)
-	for end := 1; end < limit; end++ {
-		if end > 1 {
-			h.relaunchRecordTurnCompletes(true)
-		}
-		h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
-
-		h.wantState(StateLaunching)
-		h.wantBudgets(Budgets{PodEndsNotOurs: end})
-		h.relaunched()
-	}
-	h.relaunchRecordTurnCompletes(true)
-	h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
-
-	h.wantState(StateLaunching)
-	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1, PodEndsNotOurs: limit})
-	if charged := h.records.of(chargedLine); len(charged) != 1 || charged[0].level != slog.LevelWarn {
-		t.Fatalf("%q was written %+v, want once at WARN for the end at the limit", chargedLine, charged)
-	}
-}
-
 // An issue's role whose process dies in every turn a message starts fails once its deaths run
 // out, though the turn of the daemon's own relaunch record completes after each relaunch: a death
 // in a turn a message started is charged against that open turn (chargeDeath), and the relaunched
-// agent holds nothing, so it is given the record of what the death ended at its ready, whose turn
-// ends none of the deaths (inRelaunchRecordTurn). Taken for the claim's work, the record's turn
-// would end the deaths after every relaunch, each death would be the first, and the claim would be
-// relaunched for ever.
+// agent holds nothing, so it is given the record of what the death ended at its ready, a fresh
+// record whose turn ends none of the deaths (turnEndsCounts). Taken for the claim's work, the
+// record's turn would end the deaths after every relaunch, each death would be the first, and the
+// claim would be relaunched for ever.
 func TestAMessageTurnKilledAtEachRelaunchFailsTheClaimAtTheDeathLimitThoughTheRecordsTurnsComplete(t *testing.T) {
 	limit := testLimits().LaunchFailures
 	h := newHarness(t)
@@ -130,6 +104,356 @@ func TestATasksTurnAfterTheRelaunchRecordsTurnEndsTheRunAndTheDeaths(t *testing.
 		t.Fatalf("the task's prompt's result left %+v pending, want the task retired", c)
 	}
 	h.wantBudgets(Budgets{})
+}
+
+// The daemon restarts while the record's turn runs. The rebuilt machine holds nothing in memory of
+// the turn, and reads the claim it stored: the record confirmed at the turn's start. The record's
+// turn then ends neither the run nor the deaths, as it would have without the restart. Read from
+// memory, the rule would see no record turn after the restart, and the run would end at every
+// relaunch whose record's turn a restart split.
+func TestARestartInTheRelaunchRecordsTurnLeavesTheRunStanding(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
+	h.relaunched()
+	if p := h.claim().Pending; p == nil || !p.Relaunch() {
+		t.Fatalf("the relaunched claim holds %+v, want the relaunch's record", p)
+	}
+	h.must(StreamTurnStart{Claim: h.token})
+	found := h.budgets()
+	if found.PodEndsNotOurs != 1 {
+		t.Fatalf("the record's turn started with budgets %+v, want the run of 1", found)
+	}
+
+	h.restart()
+	h.wantState(StateWorking)
+	h.advance(time.Minute)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+	if got, stored := h.budgets(), h.store.load(h.token).Budgets; got != found || stored != found {
+		t.Fatalf("the record's turn, split by a restart, left budgets %+v (%+v stored), want the %+v it found",
+			got, stored, found)
+	}
+}
+
+// The record's turn ends and its prompt's result has not come yet, so the record still stands; a
+// message then starts a turn of the claim's own work, which completes. That turn started after the
+// record was confirmed, so it is not the record's, and it ends the run. Taken for the record's
+// because the record is still pending, every turn of real work in that window would leave the run
+// and the deaths standing, and an end from outside the pod after them would be charged against
+// work that got through.
+func TestATurnOfRealWorkWhileTheRecordAwaitsItsResultEndsTheRun(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
+	h.relaunched()
+	p := h.claim().Pending
+	if p == nil || !p.Relaunch() {
+		t.Fatalf("the relaunched claim holds %+v, want the relaunch's record", p)
+	}
+	h.must(StreamTurnStart{Claim: h.token})
+	h.advance(time.Minute)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	if c := h.claim().Pending; c == nil || c.ID != p.ID {
+		t.Fatalf("the record's turn ended with %+v pending, want the record standing until its prompt's result", c)
+	}
+	h.wantBudgets(Budgets{PodEndsNotOurs: 1})
+
+	h.advance(time.Minute)
+	h.must(StreamTurnStart{Claim: h.token})
+	h.advance(time.Minute)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+	h.wantBudgets(Budgets{})
+	if stored := h.store.load(h.token).Budgets; stored != (Budgets{}) {
+		t.Fatalf("the stored budgets after the turn of real work are %+v, want the run ended", stored)
+	}
+}
+
+// recordTurnEnd is one of the two ends of a claim's process the turns of its relaunch record are
+// walked under (recordTurnEnds), read as reading: its pod ended from outside it
+// (runtime.PodEndNotOurs), or its own death, an end the runtime read neither way. counted is the
+// budgets the n-th such end since the claim last completed a turn leaves, each counted against an
+// open turn, before the relaunch's ready: an end from outside the pod is continued uncharged below
+// launch_failure_limit and charged a death from there, where a death is charged at once.
+// counted(0) is an end that finds no work outstanding, which counts in no run, though a death is
+// still charged the launch failure the ready ends. fails is the end that fails the claim.
+type recordTurnEnd struct {
+	name    string
+	reading runtime.PodEndReading
+	counted func(n, limit int) Budgets
+	fails   func(limit int) int
+}
+
+var recordTurnEnds = []recordTurnEnd{
+	{
+		name:    "an end from outside the pod",
+		reading: runtime.PodEndNotOurs,
+		counted: func(n, limit int) Budgets {
+			if n < limit {
+				return Budgets{PodEndsNotOurs: n}
+			}
+			return Budgets{LaunchFailures: 1, Deaths: n - limit + 1, PodEndsNotOurs: n}
+		},
+		fails: func(limit int) int { return 2*limit - 1 },
+	},
+	{
+		name:    "the claim's own process death",
+		counted: func(n, _ int) Budgets { return Budgets{LaunchFailures: 1, Deaths: n} },
+		fails:   func(limit int) int { return limit },
+	},
+}
+
+// atReady is the budgets b leaves once the relaunched agent is ready: the ready ends the launch
+// failures and the run of a start's ends, and nothing else (ready).
+func atReady(b Budgets) Budgets {
+	b.LaunchFailures, b.StartEndsNotOurs = 0, 0
+	return b
+}
+
+// parkedEndWhileIdle ends the process of a parked claim — idle, holding no task — as end reads,
+// after the process reported a subagent running. The end finds no work outstanding, so it counts
+// in no run and charges no death, and the claim is relaunched. The report is what gives the
+// let-go something to record (recordEnd), so the relaunched agent, holding nothing, is given a
+// fresh relaunch record at its ready (queueRelaunch): unconfirmed, and not marked Interrupted.
+func (h *harness) parkedEndWhileIdle(end recordTurnEnd, limit int) {
+	h.t.Helper()
+	h.wantState(StateIdle)
+	if p := h.claim().Pending; p != nil {
+		h.t.Fatalf("the claim holds %+v, want nothing: the claim is parked", p)
+	}
+	h.reportActivity("subagent")
+	h.advance(time.Minute)
+	h.observePodEnd(runtime.Gone, end.reading)
+
+	h.wantState(StateLaunching)
+	h.wantBudgets(end.counted(0, limit))
+	h.relaunched()
+	h.wantBudgets(Budgets{})
+	if p := h.pending(); !p.Relaunch() || p.Interrupted || !p.ConfirmedAt.IsZero() {
+		h.t.Fatalf("the relaunched claim holds %+v, want a fresh relaunch record, unconfirmed", p)
+	}
+}
+
+// endInRecordsTurn runs a turn of the relaunch record the ready claim holds and ends its process
+// in it a minute in, as reading reads. The turn's start confirms the record, so the end is counted
+// against that open turn (workOutstanding). Short of failing the claim, the let-go takes the
+// record back (interrupted): it stays the claim's pending delivery, under a new id that is still
+// a record's, unconfirmed and marked Interrupted, for the relaunch to send again.
+func (h *harness) endInRecordsTurn(reading runtime.PodEndReading) {
+	h.t.Helper()
+	h.wantState(StateReady)
+	record := h.pending()
+	if !record.Relaunch() || !record.ConfirmedAt.IsZero() {
+		h.t.Fatalf("the claim holds %+v, want a relaunch record waiting for its turn", record)
+	}
+	h.must(StreamTurnStart{Claim: h.token})
+	if p := h.pending(); p.ID != record.ID || p.ConfirmedAt.IsZero() {
+		h.t.Fatalf("the turn's start left %+v pending, want the record %s confirmed: the turn is the record's", p, record.ID)
+	}
+	h.advance(time.Minute)
+	h.observePodEnd(runtime.Gone, reading)
+	if h.state() == StateFailed {
+		return
+	}
+	h.wantState(StateLaunching)
+	if p := h.pending(); !p.Relaunch() || p.ID == record.ID || !p.Interrupted || !p.ConfirmedAt.IsZero() {
+		h.t.Fatalf("the end in the record's turn left %+v pending, want the record taken back under a new id, unconfirmed and interrupted", p)
+	}
+}
+
+// cutRecordsTurnCompletes runs to completion the turn of the relaunch record a let-go took back
+// from an earlier turn of it, which the relaunch's ready sent again: its start confirms the
+// record, its end completes it, and the prompt's result behind that end retires it. Both counts
+// end at this turn's end, in memory and in the store, before the result retires the record, and
+// the retirement leaves them ended: the turn completed the work the end in the earlier turn cut
+// off.
+func (h *harness) cutRecordsTurnCompletes(cycle int) {
+	h.t.Helper()
+	h.wantState(StateReady)
+	record := h.pending()
+	if !record.Relaunch() || !record.Interrupted || !record.ConfirmedAt.IsZero() {
+		h.t.Fatalf("cycle %d: the relaunched claim holds %+v, want the record taken back from its turn, sent again", cycle, record)
+	}
+	h.must(StreamTurnStart{Claim: h.token})
+	if p := h.pending(); p.ID != record.ID || p.ConfirmedAt.IsZero() {
+		h.t.Fatalf("cycle %d: the turn's start left %+v pending, want the record %s confirmed", cycle, p, record.ID)
+	}
+	h.advance(time.Minute)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+	h.wantState(StateIdle)
+	if got, stored := h.budgets(), h.store.load(h.token).Budgets; got != (Budgets{}) || stored != (Budgets{}) {
+		h.t.Fatalf("cycle %d: the turn of the record sent again ended with budgets %+v (%+v stored), want both counts ended: "+
+			"that turn completed the work the end in its earlier turn cut off", cycle, got, stored)
+	}
+	h.must(StreamPromptResult{Claim: h.token, DeliveryID: record.ID, AgentInvoked: true})
+	if p := h.claim().Pending; p != nil {
+		h.t.Fatalf("cycle %d: the record's prompt's result left %+v pending, want the record retired", cycle, p)
+	}
+	h.wantBudgets(Budgets{})
+}
+
+// A parked claim — idle, holding no task — whose process ends in the turns of its relaunch record
+// is never failed for it, however often that happens. In each cycle its process reports a
+// subagent and is ended while the claim is idle, which counts in no run; the relaunch gives the
+// claim a fresh relaunch record, and the end in that record's turn is counted against the open
+// turn; the next relaunch sends the record again, and its turn, completed, ends that count, since
+// it completes the work the end cut off (turnEndsCounts). The walk runs launch_failure_limit + 3
+// cycles, for an end from outside the pod and for the claim's own process death. Kept by every
+// turn of a record, the count would grow by one a cycle until the claim failed, where a parked
+// agent the environment ends now and then is relaunched however often it happens
+// (Budgets.Deaths).
+func TestAParkedClaimWhoseProcessEndsInItsRelaunchRecordsTurnsIsNeverFailed(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	for _, end := range recordTurnEnds {
+		t.Run(end.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			for cycle := 1; cycle <= limit+3; cycle++ {
+				h.parkedEndWhileIdle(end, limit)
+				h.endInRecordsTurn(end.reading)
+				h.wantBudgets(end.counted(1, limit))
+				h.relaunched()
+				h.wantBudgets(atReady(end.counted(1, limit)))
+				h.cutRecordsTurnCompletes(cycle)
+			}
+			h.wantNoFailure()
+		})
+	}
+}
+
+// A claim whose process ends in every turn of its relaunch record completes no turn, so each of
+// those ends is counted against the record's open turn (workOutstanding) and none is ever ended:
+// the claim is charged at launch_failure_limit and fails once its deaths run out, for an end from
+// outside the pod and for its own process death. A session Oh My Pi crashes on at its first
+// prompt, and a Burstable pod that evicts itself in every such turn, are the loops this bounds.
+// Left uncounted because they land in a record's turn, those ends would relaunch the claim for
+// ever.
+func TestAClaimWhoseProcessEndsInEveryTurnOfItsRelaunchRecordFailsAtTheLimit(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	for _, end := range recordTurnEnds {
+		t.Run(end.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			h.parkedEndWhileIdle(end, limit)
+			fails := end.fails(limit)
+			for n := 1; n < fails; n++ {
+				h.endInRecordsTurn(end.reading)
+				h.wantBudgets(end.counted(n, limit))
+				h.relaunched()
+				h.wantBudgets(atReady(end.counted(n, limit)))
+			}
+
+			h.endInRecordsTurn(end.reading)
+
+			h.wantState(StateFailed)
+			if got := h.claim(); got.Budgets.Deaths != limit || got.FailureCause != CauseDied {
+				t.Fatalf("the failed claim carries budgets %+v and cause %q, want deaths at the limit %d and %q",
+					got.Budgets, got.FailureCause, limit, CauseDied)
+			}
+		})
+	}
+}
+
+// The daemon restarts while the turn of a relaunch record runs, a record a let-go took back from
+// an earlier turn of it and the relaunch sent again. The rebuilt machine holds no answer for the
+// turn, so its end reads the claim it stored: the record, confirmed at the turn's start and
+// marked Interrupted. The turn's completion then ends both counts, as it would have without the
+// restart. Read as a fresh record's turn, it would keep them, and a parked claim whose record's
+// turns a restart split would be charged for ends its completed turns had answered.
+func TestARestartInTheTurnOfARelaunchRecordSentAgainStillEndsTheCounts(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	for _, end := range recordTurnEnds {
+		t.Run(end.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			h.parkedEndWhileIdle(end, limit)
+			h.endInRecordsTurn(end.reading)
+			h.relaunched()
+			found := atReady(end.counted(1, limit))
+			h.wantBudgets(found)
+			if p := h.pending(); !p.Relaunch() || !p.Interrupted {
+				t.Fatalf("the relaunched claim holds %+v, want the record taken back from its turn", p)
+			}
+			h.must(StreamTurnStart{Claim: h.token})
+
+			h.restart()
+			h.wantState(StateWorking)
+			h.wantBudgets(found)
+			h.advance(time.Minute)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+			if got, stored := h.budgets(), h.store.load(h.token).Budgets; got != (Budgets{}) || stored != (Budgets{}) {
+				t.Fatalf("the turn of the record sent again, split by a restart, left budgets %+v (%+v stored), want both counts ended",
+					got, stored)
+			}
+		})
+	}
+}
+
+// A turn of a fresh relaunch record ends neither count, though at its end the claim holds another
+// delivery, or the record unconfirmed: what the turn is the turn of is decided where its start
+// confirms the record (confirm, turnEndsCounts), never read from the claim at its end. The claim
+// comes up from its second relaunch holding a run of ends from outside the pod and a death, both
+// counted against message turns, and the fresh record it is given starts its turn. Then either a
+// task is delivered, which retires the confirmed record and takes its place (queue), or the
+// record's prompt answers a provider error before the turn ends, which takes the record back
+// unconfirmed (providerErrored). Read from the claim at the turn's end, either would make the
+// record's turn a turn of work, and both counts would end at a turn that completed none of what
+// they were counted against.
+func TestAFreshRelaunchRecordsTurnEndsNeitherCountWhateverTheClaimHoldsAtItsEnd(t *testing.T) {
+	const task = "implement the plan"
+	for _, tc := range []struct {
+		name   string
+		during func(h *harness, record Delivery)
+	}{
+		{name: "a task delivered in the turn", during: func(h *harness, _ Delivery) {
+			h.must(RequestDeliver{Claim: h.token, Task: task, Phase: "implementing", Generation: 5})
+			if p := h.pending(); p.Relaunch() || p.Task != task {
+				h.t.Fatalf("pending %+v, want the task %q in the confirmed record's place", p, task)
+			}
+		}},
+		{name: "a provider error's result before the turn's end", during: func(h *harness, record Delivery) {
+			h.must(StreamPromptResult{Claim: h.token, DeliveryID: record.ID, AgentInvoked: true,
+				Error: "overloaded_error", HTTPStatus: 529})
+			if p := h.pending(); !p.Relaunch() || !p.ConfirmedAt.IsZero() {
+				h.t.Fatalf("pending %+v, want the record taken back unconfirmed", p)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			counts := Budgets{Deaths: 1, PodEndsNotOurs: 1}
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
+			h.relaunched()
+			h.relaunchRecordTurnCompletes(true)
+			h.messageTurnEndedWithItsPod("")
+			h.relaunched()
+			h.wantBudgets(counts)
+			record := h.pending()
+			if !record.Relaunch() || record.Interrupted {
+				t.Fatalf("the relaunched claim holds %+v, want a fresh relaunch record", record)
+			}
+			h.must(StreamTurnStart{Claim: h.token})
+			if p := h.pending(); p.ID != record.ID || p.ConfirmedAt.IsZero() {
+				t.Fatalf("the turn's start left %+v pending, want the record %s confirmed: the turn is the record's", p, record.ID)
+			}
+			h.advance(time.Minute)
+
+			tc.during(h, record)
+
+			h.wantState(StateWorking)
+			h.wantBudgets(counts)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+			h.wantState(StateIdle)
+			if got, stored := h.budgets(), h.store.load(h.token).Budgets; got != counts || stored != counts {
+				t.Fatalf("the fresh record's turn ended with budgets %+v (%+v stored), want the %+v it found", got, stored, counts)
+			}
+		})
+	}
 }
 
 // What a relaunched process is told ended its last one says who ended it (displaced): an end

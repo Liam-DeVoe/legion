@@ -5,12 +5,12 @@ package supervise
 // uncharged continue a displacement gets: the role's own session is resumed at once, neither a
 // death nor a launch failure is charged, and the task the role owed is sent again. Such ends are
 // counted in two runs: the ends that find the agent ready with work outstanding, with no turn of
-// the claim's own completed between them (Budgets.PodEndsNotOurs; the turn of the daemon's own
-// relaunch record is none), and the ends that find it not yet ready, with no ready between them
-// (Budgets.StartEndsNotOurs). At launch_failure_limit ends in a run the end is charged as the
-// claim's own death, which while the agent starts is a launch failure. An end the daemon itself
-// made, and one the runtime read neither way, are charged exactly as they were before the reading
-// existed — which is what keeps these cases from being an amnesty.
+// the claim's own completed between them (Budgets.PodEndsNotOurs; the turn of a fresh relaunch
+// record of the daemon's own is none), and the ends that find it not yet ready, with no ready
+// between them (Budgets.StartEndsNotOurs). At launch_failure_limit ends in a run the end is
+// charged as the claim's own death, which while the agent starts is a launch failure. An end the
+// daemon itself made, and one the runtime read neither way, are charged exactly as they were
+// before the reading existed — which is what keeps these cases from being an amnesty.
 
 import (
 	"log/slog"
@@ -581,8 +581,9 @@ func TestAnEndFromOutsideThePodEndsTheTurnItInterruptedSoLaterIdleEndsAreNotCoun
 // does with it, for a kind whose relaunch is given the daemon's own relaunch record (record): the
 // record's turn runs to completion — its start confirms the record, its end completes it, and the
 // prompt's result behind that end retires it — and the claim's budgets are where they stood
-// before, in memory and in the store, after the turn's end and after the retirement, since
-// neither ends the run of pod ends from outside the pod nor the deaths (inRelaunchRecordTurn). A
+// before, in memory and in the store, after the turn's end and after the retirement. The record
+// is a fresh one, since no let-go has cut off a turn of it, so neither its turn nor its
+// retirement ends the run of pod ends from outside the pod or the deaths (turnEndsCounts). A
 // kind given no record, the controller, holds nothing at all, though what its last let-go ended
 // is still to tell.
 func (h *harness) relaunchRecordTurnCompletes(record bool) {
@@ -656,17 +657,17 @@ func (h *harness) messageTurnEndedWithItsPod(reading runtime.PodEndReading) {
 // no task, and the agent relaunched after it comes up with no task and no turn, a ready that
 // resets nothing of the run (ready). An issue's role relaunched so is given the daemon's own
 // relaunch record at that ready (queueRelaunch), and each cycle after the first runs the record's
-// turn to completion before the message's turn the pod ends in: the record's turn and its
-// retirement end neither the run nor the deaths (inRelaunchRecordTurn). The controller is given
-// no record, and its relaunch holds nothing. The run grows by one at each message's turn, the end
-// at launch_failure_limit is charged a death against its turn, and so is each end after it, until
-// the deaths run out and the claim fails rather than relaunching for ever. In each cycle before
-// the limit the relaunch's own start is ended from outside as well, which finds the agent not yet
-// ready, so it counts in the run of a start's ends alone (Budgets.StartEndsNotOurs): the ready
-// that follows ends that run and leaves the turns' run where it stood. Reset at each ready, or at
-// each turn of the record, the turns' run would be one at every end and never reach the limit;
-// and the deaths, ended at each turn of the record, would be one at every charge, so an issue's
-// role would never fail.
+// turn to completion before the message's turn the pod ends in: the turn of that fresh record and
+// its retirement end neither the run nor the deaths (turnEndsCounts). The controller is given no
+// record, and its relaunch holds nothing. The run grows by one at each message's turn, the end at
+// launch_failure_limit is charged a death against its turn, writing the charge line once at WARN
+// (chargedLine), and so is each end after it, until the deaths run out and the claim fails rather
+// than relaunching for ever. In each cycle before the limit the relaunch's own start is ended
+// from outside as well, which finds the agent not yet ready, so it counts in the run of a start's
+// ends alone (Budgets.StartEndsNotOurs): the ready that follows ends that run and leaves the
+// turns' run where it stood. Reset at each ready, or at each turn of the record, the turns' run
+// would be one at every end and never reach the limit; and the deaths, ended at each turn of the
+// record, would be one at every charge, so an issue's role would never fail.
 func TestAMessageStartedTurnEndedFromOutsideAtEachRelaunchIsChargedADeathAtTheLimitAndFailsTheClaim(t *testing.T) {
 	limit := testLimits().LaunchFailures
 	for _, kind := range outsideEndClaims {
@@ -705,6 +706,9 @@ func TestAMessageStartedTurnEndedFromOutsideAtEachRelaunchIsChargedADeathAtTheLi
 
 				h.wantState(StateLaunching)
 				h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: death, PodEndsNotOurs: limit - 1 + death})
+				if charged := h.records.of(chargedLine); death == 1 && (len(charged) != 1 || charged[0].level != slog.LevelWarn) {
+					t.Fatalf("%q was written %+v at the end at the limit, want once at WARN", chargedLine, charged)
+				}
 				h.relaunched()
 				h.wantBudgets(Budgets{Deaths: death, PodEndsNotOurs: limit - 1 + death})
 			}

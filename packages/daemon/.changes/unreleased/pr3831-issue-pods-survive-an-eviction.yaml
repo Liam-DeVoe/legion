@@ -15,7 +15,13 @@ body: |-
   failure charged. An `Evicted` end with no `DisruptionTarget` condition is still charged. Two runs
   bound repeated ends: `launch_failure_limit` of them while a ready agent has work outstanding are
   charged a death, and `launch_failure_limit` of them before the agent is ready are charged a launch
-  failure.
+  failure. A completed turn of the daemon's own relaunch record, the message that tells a relaunched
+  agent what its last process ended, ends neither the first run nor the claim's deaths unless an end
+  cut off that record's own earlier turn, while a turn of real work still ends both. So a claim
+  whose turns keep being ended from outside the pod, or whose process keeps dying in a turn a
+  message started, now fails at the limit instead of being relaunched for ever; in earlier releases
+  the same loop of deaths never failed such a claim. An end from outside the pod is told to the next
+  process as an end from outside the pod, not as the daemon's replacement of the pod.
 
   An issue pod whose CPU or memory request is below its limit no longer carries
   `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst.

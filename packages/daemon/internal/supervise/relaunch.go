@@ -205,34 +205,97 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 // role run reads, record.RoleClaim.Pending), is a task of the claim's: a delivery, and not the
 // daemon's own delivery of a relaunch's record (Delivery.Relaunch), which is no work of the
 // claim's. It is the one statement of that rule, and every reader that asks whether a claim still
-// owes work it was given asks it: a death's charge (chargeDeath), the workflow's owed and
+// owes work it was given asks it: a death's charge (chargeDeath), a retirement's end of the
+// counts charged against the task it retires (retirePending), the workflow's owed and
 // readyWorkerTask, and api's freshSession and heldTaskNotCurrent, which then tells a nil from a
 // relaunch's delivery only to choose its reason text. It takes the pointer the claim holds, nil
 // for none, because those readers hold two types of claim and the delivery is the one field they
 // share.
 func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relaunch() }
 
-// inRelaunchRecordTurn is whether the turn the claim is in is the turn of the daemon's own
-// delivery of a relaunch's record (Delivery.Relaunch): the claim holds that delivery, and this
-// turn's start confirmed it. A start dates its turn before it writes the confirmation — beginTurn
-// sets Claim.LastTurnStart and then confirm sets ConfirmedAt, and the askFirst branch of
+// turnKind is what a turn is the turn of, as the counts its end ends read it (turnEndsCounts):
+// the claim's own work, the daemon's own delivery of a relaunch's record (Delivery.Relaunch), or
+// such a record a let-go took back from an earlier turn of it (Delivery.Interrupted). Its zero,
+// turnUnknown, is a turn the machine holds no answer for.
+type turnKind uint8
+
+const (
+	turnUnknown turnKind = iota
+	turnOfWork
+	turnOfRecord
+	turnOfCutRecord
+)
+
+// turnKindOf is the kind of a turn that confirms d (confirm).
+func turnKindOf(d Delivery) turnKind {
+	switch {
+	case !d.Relaunch():
+		return turnOfWork
+	case d.Interrupted:
+		return turnOfCutRecord
+	}
+	return turnOfRecord
+}
+
+// turnEndsCounts is whether the turn now ending ends the two counts a completed turn ends: the
+// deaths (Budgets.Deaths) and the run of pod ends from outside the pod that found the ready agent
+// at work (Budgets.PodEndsNotOurs). turnEnded asks it before anything there moves the claim. A
+// completed turn ends the counts that were counted against the work it completed:
+//
+//   - A turn of the claim's own work ends both: a task's turn, and a turn that confirmed nothing,
+//     such as one a message started.
+//   - A turn of the daemon's own relaunch record (queueRelaunch) ends both only where that
+//     record's own earlier turn was cut off. The let-go that cut it off took the record back
+//     (interrupted), which left it the claim's pending delivery under a new id that is still a
+//     record's (rotateTaskID) and marked it Interrupted. An end or a death in that turn was
+//     counted against the record's open turn (workOutstanding), so the re-sent record's turn that
+//     completes is the work those ends cut off. Read otherwise, a parked claim, holding no task,
+//     whose ends land in its record's turns would have each of them counted and none ever ended,
+//     and would fail, where a parked agent the environment ends now and then is relaunched
+//     however often it happens (Budgets.Deaths).
+//   - A fresh record's turn (Interrupted false) ends neither: the ends and deaths standing when it
+//     completes were counted against a message's turn or a task, not against it. The record is
+//     the daemon's own act, given a claim holding nothing at every relaunch's ready, and no work
+//     of the claim's, so a turn completed on it is no evidence that the claim's work gets
+//     through. Read as such evidence, it would end both at each relaunch after a message's turn
+//     the cluster ended or the process died in, and a claim whose messages keep ending its pod or
+//     killing its process would never reach the limit.
+//
+// The record's retirement ends nothing (retirePending, HoldsTask): it is no task of the claim's,
+// and where its turn ends the counts, that turn's end has ended them already.
+//
+// The rule is not that an end inside a record's turn goes uncounted. A claim whose process dies in
+// every turn of its record — a session Oh My Pi crashes on at its first prompt — or whose
+// Burstable pod evicts itself in every such turn completes no turn, and counting those ends
+// against the open record's turn is what bounds it; uncounted, it would be relaunched for ever.
+//
+// What the turn is the turn of is decided where the turn confirms its delivery (confirm), the one
+// place every confirming path goes through — a turn's start (beginTurn), sendPending's askFirst
+// branch, and a prompt's result that confirms a task no start was matched to (promptResulted) —
+// and kept in memory for the turn (Machine.turnKind). The claim read when the turn ends can say
+// another thing: a task delivered during a record's turn retires the confirmed record and takes
+// its place (queue), and a provider error's result before the turn's end takes the record back
+// unconfirmed (providerErrored), so read there, a record's turn would end the counts as a turn of
+// work does.
+//
+// Where the machine holds no answer — a turn that confirmed nothing, or a daemon restarted in the
+// middle of the turn — it reads the persisted claim: the turn is the record's where the claim
+// holds a record confirmed no earlier than the turn began, and that delivery's Interrupted says
+// whether its earlier turn was cut off. A start dates its turn before it writes the confirmation —
+// beginTurn sets Claim.LastTurnStart and then confirm sets ConfirmedAt, and the askFirst branch of
 // sendPending does the same in that order — so a delivery this turn confirmed was confirmed no
 // earlier than the turn began, and one an earlier turn confirmed, still held while its prompt's
-// result is to come, was confirmed before it. Both times are the claim's and persisted, unlike the
-// turn's delivery the machine keeps in memory (Machine.turnsDelivery), so a daemon restarted in
-// the middle of the turn answers as the daemon before it would have.
-//
-// The record's turn and its retirement end neither the run of pod ends from outside the pod
-// (Budgets.PodEndsNotOurs) nor the deaths (Budgets.Deaths) that a turn's end and a task's
-// retirement end (turnEnded, retirePending): the record is the daemon's own act, given a claim
-// holding nothing at every relaunch's ready (queueRelaunch), and no work of the claim's, so a
-// turn completed on it is no evidence that the claim's work gets through. Read as such evidence,
-// it would end both at each relaunch after a message's turn the cluster ended or the process
-// died in, and a claim whose messages keep ending its pod or killing its process would never
-// reach the limit.
-func (m *Machine) inRelaunchRecordTurn() bool {
-	p := m.claim.Pending
-	return p != nil && p.Relaunch() && !p.ConfirmedAt.IsZero() && !p.ConfirmedAt.Before(m.claim.LastTurnStart)
+// result is to come, was confirmed before it. Both times are the claim's and persisted, so a
+// daemon restarted in the middle of the turn answers as the daemon before it would have.
+func (m *Machine) turnEndsCounts() bool {
+	kind := m.turnKind
+	if kind == turnUnknown {
+		kind = turnOfWork
+		if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() && !p.ConfirmedAt.Before(m.claim.LastTurnStart) {
+			kind = turnKindOf(*p)
+		}
+	}
+	return kind != turnOfRecord
 }
 
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own

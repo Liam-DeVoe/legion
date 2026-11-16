@@ -1888,8 +1888,9 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // the time is what tells an idle worker that finished a moment ago from one idle since yesterday.
 //
 // A turn that ends is also the end of the work the deaths were charged against (chargeDeath), so
-// the count goes with it: an agent killed twice in its turns and through the third is making
-// progress, and only deaths that keep a turn from ending should ever fail its claim.
+// the count goes with it — but for the turn of a fresh relaunch record (below): an agent killed
+// twice in its turns and through the third is making progress, and only deaths that keep a turn
+// from ending should ever fail its claim.
 //
 // Whose turn it was is a question background work made real, and settle is where it is answered:
 // a turn that ends while the task's prompt is still outstanding retires nothing, because Oh My
@@ -1977,18 +1978,19 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // of the claim's two runs of pod ends from outside it too, the run counted against a ready
 // agent's work (Budgets.PodEndsNotOurs, endedFromOutside): the process held a pod long enough to
 // finish work, so the next such end is the first of a new run. A turn of the daemon's own
-// relaunch record is neither, and ends neither the deaths nor the run (inRelaunchRecordTurn,
-// which says why); whether this turn is one is read from the claim before anything here moves it.
-// The run is cleared before either write below, so the claim leaves this turn with the reset
-// stored whichever of the two writes it. A turn a compaction aborted completed nothing, and clears
-// no run. The second run, of the ends of a start, is already over by then: the agent's ready
-// ended it (ready).
+// relaunch record ends both only where that record's own earlier turn was cut off, and a fresh
+// record's turn ends neither (turnEndsCounts, which says why). Whether this turn ends them is
+// read before endTurn forgets what the turn was the turn of (Machine.turnKind). The run is
+// cleared before either write below, so the claim leaves this turn with the reset stored
+// whichever of the two writes it. A turn a compaction aborted completed nothing, and clears no
+// run. The second run, of the ends of a start, is already over by then: the agent's ready ended
+// it (ready).
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
-	recordTurn := m.inRelaunchRecordTurn()
+	ends := m.turnEndsCounts()
 	m.endTurn()
 	m.turnsEnded.Add(1)
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
-	if !recordTurn {
+	if ends {
 		m.claim.Budgets.Deaths = 0
 	}
 	if m.compacting != nil {
@@ -1998,11 +2000,11 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	}
 	m.askFirst, m.busyTurn = false, false
 	if run := m.claim.Budgets.PodEndsNotOurs; run != 0 {
-		if recordTurn {
-			m.log.Info("supervise: a turn of the relaunch's record completed; the run of pod ends from outside the pod goes on", "podEndsNotOurs", run)
-		} else {
+		if ends {
 			m.log.Info("supervise: a turn completed; the run of pod ends from outside the pod is over", "podEndsNotOurs", run)
 			m.claim.Budgets.PodEndsNotOurs = 0
+		} else {
+			m.log.Info("supervise: a turn of the relaunch's record completed; the run of pod ends from outside the pod goes on", "podEndsNotOurs", run)
 		}
 	}
 	if m.held != nil {
@@ -2382,13 +2384,14 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 // the first of a new run. It does not reset the first run, of ends that found the ready agent
 // with work outstanding (Budgets.PodEndsNotOurs), which outlives it as the deaths do: a relaunch
 // completes no turn, so only a turn of the claim's own that completes or the end of the task the
-// run was counted against resets it (turnEnded, retirePending), and the turn of the record this
-// ready may queue (queueRelaunch) is neither (inRelaunchRecordTurn). An agent relaunched after a
-// turn a message started comes up with no task and no turn, and a run ended here would be one
-// again at each such turn the cluster ends, never reaching the limit. One run cannot do both,
-// which is why there are two (endedFromOutside): kept past the ready, the run of a start's ends
-// could not count a claim with no task, which completes no turn and would see its count only
-// grow.
+// run was counted against resets it (turnEnded, retirePending). A turn of the record this ready
+// may queue (queueRelaunch) resets it only where a let-go cut off an earlier turn of that record
+// and the record went again, and the record's retirement never does (turnEndsCounts). An agent
+// relaunched after a turn a message started comes up with no task and no turn, and a run ended
+// here would be one again at each such turn the cluster ends, never reaching the limit. One run
+// cannot do both, which is why there are two (endedFromOutside): kept past the ready, the run of
+// a start's ends could not count a claim with no task, which completes no turn and would see its
+// count only grow.
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	m.claim.LastReady = m.deps.Clock.Now()

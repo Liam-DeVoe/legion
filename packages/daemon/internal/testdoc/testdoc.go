@@ -12,10 +12,12 @@
 // check cannot see, so CI would stop running the test on a guide-only edit at all.
 //
 // Region finds the region an extract names by its two markers and fails by naming what it cannot
-// place; RequireDocFacts holds a region, or one bullet of it, to its facts; RegionBullets and
-// BulletNaming read a region that is a list as the list it is, so each fact is held to the bullet
-// that carries it. Which facts a region must state stays each test's own, and so does a list whose
-// shape is its own, such as the reclaim paragraph's two lists under their headings.
+// place; ExtractRegions reads an extract into all its regions, which Region and
+// internal/textcheck's comparison with the guide both read it by; RequireDocFacts holds a region,
+// or one bullet of it, to its facts; RegionBullets and BulletNaming read a region that is a list
+// as the list it is, so each fact is held to the bullet that carries it. Which facts a region
+// must state stays each test's own, and so does a list whose shape is its own, such as the
+// reclaim paragraph's two lists under their headings.
 package testdoc
 
 import (
@@ -36,8 +38,8 @@ type Fact struct {
 // The two lines that open a region of an extract. regionFrom and the region's start marker make
 // the first, regionTo and its end marker the line under it, and every line under those two, to
 // the next regionFrom line, is the region in the guide's own bytes; above the first region an
-// extract carries its `#` header. internal/textcheck reads the same two lines with a parse of its
-// own, and finds the guide's lines by the markers they name.
+// extract carries its `#` header. internal/textcheck reads the extracts through ExtractRegions
+// too, and finds the guide's lines by the markers they name.
 const (
 	regionFrom = "from: "
 	regionTo   = "to: "
@@ -74,9 +76,9 @@ func Region(t testing.TB, extract, what, start, end string) ([]string, string) {
 func regionOfExtract(t testing.TB, extract, text, what, start, end string) ([]string, string) {
 	t.Helper()
 	var named []string
-	for _, r := range extractRegions(t, extract, text) {
-		if r.start == start && r.end == end {
-			named = append(named, strings.Join(r.lines, "\n"))
+	for _, r := range ExtractRegions(t, extract, text) {
+		if r.Start == start && r.End == end {
+			named = append(named, strings.Join(r.Lines, "\n"))
 		}
 	}
 	if len(named) != 1 {
@@ -88,22 +90,29 @@ func regionOfExtract(t testing.TB, extract, text, what, start, end string) ([]st
 	return region(t, extract, named[0], what, start, end)
 }
 
-// extractRegion is one region of an extract: the two markers its opening lines name, and the
+// ExtractRegion is one region of an extract: the two markers its opening lines name, and the
 // guide's lines under them.
-type extractRegion struct {
-	start, end string
-	lines      []string
+type ExtractRegion struct {
+	Start, End string
+	Lines      []string
 }
 
-// extractRegions reads an extract into its regions. Above the first regionFrom line a line is the
-// `#` header or blank; a regionFrom line opens a region, and the line under it must be that
-// region's regionTo line; every other line is the open region's own, and the blank lines that end
-// a region are dropped, since a region ends on the line holding its end marker. The parse is a
-// split and a switch and shares no code with internal/textcheck's of the same files: two readers
-// that agree with each other while both drift are what a copy of a document is most at risk of.
-func extractRegions(t testing.TB, extract, text string) []extractRegion {
+// ExtractRegions reads text, the content of extract, into its regions. Above the first regionFrom
+// line a line is the `#` header or blank; a regionFrom line opens a region, and the line under it
+// must be that region's regionTo line; every other line is the open region's own, and the blank
+// lines that end a region are dropped, since a region ends on the line holding its end marker. An
+// extract whose shape cannot be read that way fails the test by name, as Region does. An extract
+// that holds no region at all is none of those failures, so a caller that reads every region, as
+// internal/textcheck does, fails that itself.
+//
+// Region and internal/textcheck read the extracts by this one parse, and that does not let the
+// two drift together: textcheck holds each region the parse answers to the guide's own lines
+// between the region's markers, found in the guide by a search of its own, so a parse that
+// dropped, added or moved a line would hand it a region the guide does not carry there, and it
+// fails.
+func ExtractRegions(t testing.TB, extract, text string) []ExtractRegion {
 	t.Helper()
-	var regions []extractRegion
+	var regions []ExtractRegion
 	for i, line := range strings.Split(text, "\n") {
 		open := len(regions) - 1
 		switch {
@@ -112,32 +121,32 @@ func extractRegions(t testing.TB, extract, text string) []extractRegion {
 			if start == "" {
 				t.Fatalf("%s:%d: %q names no start marker, so the region it opens cannot be found", extract, i+1, line)
 			}
-			regions = append(regions, extractRegion{start: start})
+			regions = append(regions, ExtractRegion{Start: start})
 		case open < 0:
 			if line != "" && !strings.HasPrefix(line, "#") {
 				t.Fatalf("%s:%d: %q stands above the first %q line, where only the `#` header is, so which "+
 					"region it belongs to cannot be read", extract, i+1, line, regionFrom)
 			}
-		case regions[open].end == "":
+		case regions[open].End == "":
 			end, ok := strings.CutPrefix(line, regionTo)
 			if !ok || end == "" {
 				t.Fatalf("%s:%d: the region from %q has no %q line naming its end marker under its %q line, so "+
-					"where it ends cannot be read", extract, i+1, regions[open].start, regionTo, regionFrom)
+					"where it ends cannot be read", extract, i+1, regions[open].Start, regionTo, regionFrom)
 			}
-			regions[open].end = end
+			regions[open].End = end
 		default:
-			regions[open].lines = append(regions[open].lines, line)
+			regions[open].Lines = append(regions[open].Lines, line)
 		}
 	}
 	for i, r := range regions {
-		for len(r.lines) > 0 && r.lines[len(r.lines)-1] == "" {
-			r.lines = r.lines[:len(r.lines)-1]
+		for len(r.Lines) > 0 && r.Lines[len(r.Lines)-1] == "" {
+			r.Lines = r.Lines[:len(r.Lines)-1]
 		}
-		if r.end == "" || len(r.lines) == 0 {
+		if r.End == "" || len(r.Lines) == 0 {
 			t.Fatalf("%s's region from %q carries no %q line or no line of the guide, so it holds nothing a "+
-				"check could read", extract, r.start, regionTo)
+				"check could read", extract, r.Start, regionTo)
 		}
-		regions[i].lines = r.lines
+		regions[i].Lines = r.Lines
 	}
 	return regions
 }
