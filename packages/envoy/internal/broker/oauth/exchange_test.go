@@ -1309,6 +1309,39 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 	machines.introspectsProjects(t, machines.exchanged(t, form, key), oauthwire.ProjectScopeNamed, []string{project})
 }
 
+// TestATokenStoredBeforeTheListIsNotLive: a token minted before this release stored its one
+// project under `project` and no `projects`. Read with no `projects`, it would pass as a named
+// token naming none, the public-session account's shape, which Dispatch holds to no project; it
+// is answered not live instead, so its holder trades again for a token of this release. The same
+// row with `projects` restored, and a machine login's own token, which no exchange decided and so
+// carries neither claim, are unchanged.
+func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	ctx := context.Background()
+	key := newKey(t)
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	tag, err := f.pool.Exec(ctx, `update oauth_access_tokens
+		set request = jsonb_set(request #- '{session,extra,projects}', '{session,extra,project}', to_jsonb($1::text))
+		where request #> '{session,extra,projects}' is not null and request #> '{session,extra,project_scope}' is not null`, project)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("rewrite the token's row to the older shape: %v, %d rows; want exactly the one row rewritten", err, tag.RowsAffected())
+	}
+	answer, err := f.provider.Introspect(ctx, token)
+	if err != nil || !reflect.DeepEqual(answer, oauthwire.Introspection{}) {
+		t.Fatalf("Introspect of a row stored before the list = %+v, %v; want not live", answer, err)
+	}
+	if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(request #- '{session,extra,project}', '{session,extra,projects}', to_jsonb($1::text))`, project); err != nil {
+		t.Fatal(err)
+	}
+	f.introspectsProjects(t, token, oauthwire.ProjectScopeNamed, []string{project})
+
+	machine := f.devBoxToken(t, newKey(t), person)
+	if answer, err := f.provider.Introspect(ctx, machine); err != nil || !answer.Active || answer.ProjectScope != "" || answer.Projects != nil {
+		t.Fatalf("Introspect of a machine login's own token = %+v, %v; want live with neither project claim", answer, err)
+	}
+}
+
 // TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject: the shared public-session
 // account's entry names a person and no project. Its pod's token introspects named, with the
 // entry's person and no project; when Dispatch calls that person a restricted member, who sees

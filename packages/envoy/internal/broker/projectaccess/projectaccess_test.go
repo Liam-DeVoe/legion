@@ -395,14 +395,21 @@ func TestVisibleAsksAgainForAnAnswerThatAgedDuringTheCheck(t *testing.T) {
 // later.
 func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
-	release := make(chan struct{})
+	// The first question's handler signals once it is blocked, so the second question is sent
+	// only after the first has reached Dispatch; release is closed on every way out of the test,
+	// so the server's cleanup never waits on a handler still blocked.
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	free := func() { releaseOnce.Do(func() { close(release) }) }
 	server, _ := projectServer(t, func(_ string, call int) bool {
 		if call == 1 {
+			close(entered)
 			<-release
 			return true
 		}
 		return false
 	})
+	t.Cleanup(free)
 	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
 	projectaccess.SetClock(client, clock.read)
 	first := make(chan error, 1)
@@ -410,14 +417,16 @@ func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 		_, err := client.Access(context.Background(), "PRIV", "carol@example.com")
 		first <- err
 	}()
-	for !projectaccess.InFlight(client) {
-		time.Sleep(time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first question never reached Dispatch")
 	}
 	clock.advance(time.Second)
 	if answer, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil || answer.Visible {
 		t.Fatalf("the later question = %+v, %v; want not visible", answer, err)
 	}
-	close(release)
+	free()
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}

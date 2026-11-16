@@ -57,11 +57,26 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.Service, _ = session.Extra[ClaimService].(string)
 	answer.Machine, _ = session.Extra[ClaimMachine].(string)
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
+	stored, present := session.Extra[ClaimProjects]
+	if !present {
+		if _, decided := session.Extra[ClaimProjectScope]; decided {
+			// A token an exchange decided before the list stored its one project under another
+			// claim and none under this one. Read as no projects, it would pass as a named token
+			// naming none, the public-session account's shape, which holds it to no project; it
+			// is answered not live instead, so its holder trades again for a token of this
+			// release. A machine login's own token, which no exchange decided, carries neither.
+			return oauthwire.Introspection{}, nil
+		}
+		return answer, nil
+	}
 	// The stored claim is the list's space-joined spelling (ClaimProjects), which the store
-	// hands back as the string it wrote; one that does not parse is a row this broker did not
-	// write, and is the broker's failure rather than a token naming no project.
-	stored, _ := session.Extra[ClaimProjects].(string)
-	projects, err := oauthwire.ParseProjects(stored)
+	// hands back as the string it wrote; one that is not a string or does not parse is a row this
+	// broker did not write, and is the broker's failure rather than a token naming no project.
+	text, ok := stored.(string)
+	if !ok {
+		return oauthwire.Introspection{}, fmt.Errorf("oauth: the stored projects of the token's session are a %T, not their string", stored)
+	}
+	projects, err := oauthwire.ParseProjects(text)
 	if err != nil {
 		return oauthwire.Introspection{}, fmt.Errorf("oauth: the stored projects of the token's session do not parse: %w", err)
 	}

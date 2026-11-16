@@ -273,6 +273,32 @@ func TestLiveRefusesANamedAnswerItCannotRead(t *testing.T) {
 	}
 }
 
+// TestAnAnswerOfABrokerBeforeTheListIsRefused: a broker before the list answered a named token's
+// one project under `project` and named no `projects`. This reader no longer reads that field, so
+// such an answer would otherwise pass as a named token naming no project — the shared
+// public-session account's shape, which Dispatch holds to no project. It is refused instead, as a
+// token this reader cannot read, whatever else it says; the same answer without `project` is the
+// public-session caller it says it is.
+func TestAnAnswerOfABrokerBeforeTheListIsRefused(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	legacy := fmt.Sprintf(`{"active":true,"session":"ses_a1b2c3","person":"sjawhar","project_scope":"named","project":"INFRA","scope":"dispatch.write","exp":%d,"client_id":%q,"jkt":%q}`,
+		time.Now().Add(time.Hour).Unix(), brokertoken.ExchangeClientID, caller.jkt)
+	const token = "a-token-an-older-broker-minted"
+	rig.broker.SaysRaw(token, legacy)
+	if decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) || !reflect.DeepEqual(decided, brokertoken.Caller{}) {
+		t.Fatalf("Verify of an older broker's named answer = %+v, %v; want no caller and ErrNotASession", decided, err)
+	}
+	if decided, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) || !reflect.DeepEqual(decided, brokertoken.Caller{}) {
+		t.Fatalf("Live of an older broker's named answer = %+v, %v; want no caller and ErrNotASession", decided, err)
+	}
+	const control = "the-same-answer-without-project"
+	rig.broker.SaysRaw(control, strings.Replace(legacy, `"project":"INFRA",`, "", 1))
+	if decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, control)); err != nil || decided.ProjectScope != brokertoken.ProjectScopeNamed || decided.Person != "sjawhar" {
+		t.Fatalf("Verify of the same answer without project = %+v, %v; want the named public-session caller", decided, err)
+	}
+}
+
 // TestANamedAnswerNamingNoProjectIsAPublicSession: an account entry naming a person and no project
 // (the shared public-session account's) mints a named token naming no project; its answer is the
 // caller it says, with the named scope and no project.

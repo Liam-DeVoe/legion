@@ -28,7 +28,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
@@ -136,9 +135,6 @@ type Client struct {
 	account brokertoken.Account
 	http    *http.Client
 	now     func() time.Time
-
-	// inFlight counts the questions to Dispatch under way.
-	inFlight atomic.Int32
 
 	mu      sync.Mutex
 	answers map[accessKey]cachedAnswer
@@ -305,8 +301,6 @@ func (c *Client) sweepLocked() {
 // token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	bearer, err := c.account.Read()
-	c.inFlight.Add(1)
-	defer c.inFlight.Add(-1)
 	if err != nil {
 		return 0, fmt.Errorf("projectaccess: read the broker's account token: %w", err)
 	}

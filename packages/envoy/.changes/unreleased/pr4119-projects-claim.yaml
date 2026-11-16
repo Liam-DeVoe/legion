@@ -15,9 +15,10 @@ body: |-
   project is refused. `brokertoken.Caller.Projects` replaces `Caller.Project`; Dispatch still holds
   only a `named` token's writes to its project. The TypeScript sign-in client sends the projects
   `AGENT_SECRETS_PROJECTS` lists, and the Go client sends `Config.Projects`.
-  **Upgrade order:** a Dispatch or listener of this release refuses a `named` token minted by an
-  older broker, whose introspection names `project` and no `projects`, until that token is renewed;
-  no such token is minted where no exchange entry is configured.
+  **Upgrade order:** a Dispatch or listener of this release refuses any answer of an older broker
+  that names `project` (`401 BROKER_TOKEN_NOT_A_SESSION`), and a broker of this release answers a
+  `named` token it stored before the list not live; either way the holder trades again for a token
+  of this release. No such token is minted where no exchange entry is configured.
 time: 2026-11-16T02:16:07Z
 custom:
     Issue: pr4119
