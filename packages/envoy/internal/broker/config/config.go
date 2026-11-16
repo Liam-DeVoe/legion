@@ -311,8 +311,9 @@ type Config struct {
 	// is private, whether a person may see it, and what kind of member a person is
 	// (internal/broker/projectaccess), an absolute http(s) URL, read without the slashes it ends
 	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
-	// Dispatch nothing, a token or an enrollment that names no project is made as before, and
-	// one that names a project is refused, since nothing could say its person may see it.
+	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
+	// project that operator's own setting chose, are minted as before; a person's trade that
+	// names a project is refused, since nothing could say that person may see it.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
