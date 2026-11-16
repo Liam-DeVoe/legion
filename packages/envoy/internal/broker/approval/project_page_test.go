@@ -140,3 +140,70 @@ func TestAnOutsiderSeesNoPrivateRequest(t *testing.T) {
 		}
 	}
 }
+
+// unansweredNote is what the page says of a request Dispatch cannot answer for: whether the
+// person may see it is unknown, so the page shows nothing of it and nothing decides it.
+const unansweredNote = "the secrets broker could not ask Dispatch whether you may see this request, so it shows nothing of it and cannot decide it until Dispatch answers. Try again shortly."
+
+// TestADispatchOutageShowsOnlyItsRequestAsUnavailable: nothing is tagged, and ben's request for
+// the shared secret names an issue, INFRA-12, beside one that names none. carol's page prints both
+// while Dispatch answers. Dispatch then goes down and she approves all she was shown: the request
+// naming no issue is granted, and the one naming INFRA-12 is decided by nobody and stays pending.
+// The page she lands on answers 200 with each outcome, the INFRA-12 one saying only that it is
+// unavailable; the INFRA-12 request's own page answers 503 showing that one request as
+// unavailable and nothing of it, its reason included. Once Dispatch answers it is shown and
+// decidable again.
+func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
+	up := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	access := &projectaccesstest.Swappable{}
+	access.Serve(up)
+	r := newRig(t, func(s *rigSetup) { s.projects = access })
+	plainSession, plainKey := r.benSession(t, "ben-plain-box")
+	plain := r.request(t, plainSession, plainKey, "rotate the wiki key", nil, "", "SHARED_SECRET")
+	keyedSession, keyedKey := r.benSession(t, "ben-keyed-box")
+	keyed := r.request(t, keyedSession, keyedKey, "INFRA-12: rotate the deploy key", nil, "", "SHARED_SECRET")
+
+	b := r.browser(t)
+	b.SignIn(t, plain.recordID, person(carol))
+	all, label := approveAll(t, b.Page(t, plain.recordID).Body)
+	if label != "Approve all 2 shown" {
+		t.Fatalf("carol's page offers %q; want both requests shown while Dispatch answers", label)
+	}
+	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	down.SetDown(true)
+	access.Serve(down)
+
+	res := b.FromPage(t, "/approve", all)
+	if res.Status != http.StatusSeeOther {
+		t.Fatalf("approve all while Dispatch is down = %d, want 303:\n%s", res.Status, res.Body)
+	}
+	if state := r.state(t, plain.recordID); state != "approved" {
+		t.Errorf("the request naming no issue = %s, want approved: Dispatch is asked nothing for it", state)
+	}
+	r.requirePending(t, keyed.recordID)
+	landed := b.Get(t, res.Header.Get("Location"))
+	text := pageText(t, landed.Body)
+	if landed.Status != http.StatusOK || !strings.Contains(text, keyed.recordID+": unavailable: "+unansweredNote) {
+		t.Fatalf("the page approve all lands on = %d; want 200 with the INFRA-12 request's outcome %q:\n%s", landed.Status, unansweredNote, text)
+	}
+	if strings.Contains(text, "INFRA-12") || strings.Contains(text, "rotate the deploy key") {
+		t.Errorf("the page shows the reason of a request Dispatch could not answer for:\n%s", text)
+	}
+
+	own := b.Get(t, "/approve/"+keyed.recordID)
+	text = pageText(t, own.Body)
+	if own.Status != http.StatusServiceUnavailable || !strings.Contains(text, "Request "+keyed.recordID) || !strings.Contains(text, "The "+strings.TrimPrefix(unansweredNote, "the ")) {
+		t.Fatalf("the INFRA-12 request's page while Dispatch is down = %d; want 503 showing it unavailable:\n%s", own.Status, text)
+	}
+	if strings.Contains(text, "INFRA-12") || strings.Contains(text, "SHARED_SECRET") || decisionForm(t, own.Body, keyed.recordID) != nil {
+		t.Errorf("the INFRA-12 request's page while Dispatch is down shows its names, its reason or a button:\n%s", text)
+	}
+	if down.Calls() == 0 {
+		t.Fatal("the down Dispatch was never asked: the test is blind")
+	}
+
+	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil))
+	if back := b.Page(t, keyed.recordID); back.Status != http.StatusOK || decisionForm(t, back.Body, keyed.recordID) == nil {
+		t.Fatalf("the INFRA-12 request's page once Dispatch answers = %d with no button; want it decidable again:\n%s", back.Status, pageText(t, back.Body))
+	}
+}

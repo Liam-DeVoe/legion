@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -287,7 +288,9 @@ func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 
 // TestPendingLeavesOutAPrivateRequestForAnOutsider: an outsider's pending list holds neither the
 // request for PRIV's secret nor a request for an untagged shared secret whose reason names a PRIV
-// issue, and may not read either record; a person on PRIV's list sees both.
+// issue, and may not read either record; a person on PRIV's list sees both. Every issue key of a
+// reason counts, not the first alone: "SHA-256" has an issue key's form and names no project, so a
+// reason naming it before a PRIV issue is still PRIV's.
 func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
@@ -300,6 +303,12 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 	if err != nil || reasoned.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v", reasoned, err)
 	}
+	hashed, hashedKey := newEnrollment(t, m.Store, "session", "box-h-"+t.Name(), new(fixtureOperator), nil)
+	hashedReason, err := m.Create(t.Context(), hashed, signRequest(t, m, hashedKey, "SHA-256 of the PRIV-12 bundle", "SHARED_KEY"), "")
+	if err != nil || hashedReason.RecordID == nil {
+		t.Fatalf("Create(SHARED_KEY) = %+v, %v", hashedReason, err)
+	}
+	ofPRIV := []string{*tagged.RecordID, *reasoned.RecordID, *hashedReason.RecordID}
 	listed := func(login string) []string {
 		pending, err := m.PendingForApprover(t.Context(), login)
 		if err != nil {
@@ -311,58 +320,208 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 		}
 		return ids
 	}
-	if got := listed(outsider); slices.Contains(got, *tagged.RecordID) || slices.Contains(got, *reasoned.RecordID) {
-		t.Fatalf("%s's pending list %v holds a request of PRIV", outsider, got)
+	if got := listed(outsider); slices.ContainsFunc(ofPRIV, func(id string) bool { return slices.Contains(got, id) }) {
+		t.Fatalf("%s's pending list %v holds a request of PRIV (%v)", outsider, got, ofPRIV)
 	}
-	if got := listed(insider); !slices.Contains(got, *tagged.RecordID) || !slices.Contains(got, *reasoned.RecordID) {
-		t.Fatalf("%s's pending list %v lacks a request of PRIV it may see", insider, got)
+	if got := listed(insider); slices.ContainsFunc(ofPRIV, func(id string) bool { return !slices.Contains(got, id) }) {
+		t.Fatalf("%s's pending list %v lacks a request of PRIV it may see (%v)", insider, got, ofPRIV)
 	}
-	for _, id := range []string{*tagged.RecordID, *reasoned.RecordID} {
+	for _, id := range ofPRIV {
 		detail, err := m.ReadRecord(t.Context(), id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if may, err := m.MaySee(t.Context(), outsider, detail); err != nil || may {
-			t.Fatalf("MaySee(%s, record %s) = %v, %v; want false", outsider, id, may, err)
+			t.Fatalf("MaySee(%s, record %s, reason %q) = %v, %v; want false", outsider, id, detail.Reason, may, err)
 		}
 		if may, err := m.MaySee(t.Context(), insider, detail); err != nil || !may {
-			t.Fatalf("MaySee(%s, record %s) = %v, %v; want true", insider, id, may, err)
+			t.Fatalf("MaySee(%s, record %s, reason %q) = %v, %v; want true", insider, id, detail.Reason, may, err)
 		}
 	}
 }
 
-// TestAnUntaggedDeploymentAsksDispatchNothing: with no secret tagged and no session naming a
-// project, a request, an approval, a release, an airlock connection and both approver lists make
-// no call to Dispatch at all, though the broker holds a client of it.
-func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}}, publicTeam)
+// TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor: nothing is tagged, the broker holds a
+// client of Dispatch, and Dispatch is down. A pending request and a grant whose reasons name an
+// issue key are rows Dispatch cannot answer for: each is left out of its list (fail closed for
+// that row alone) and logged once with its id and the error, however often the list is read, and
+// the rest of each list is answered. An approval of the pending one answers
+// ErrProjectAccessUnavailable and leaves it pending, while the request whose reason names no key
+// is approved. Once Dispatch answers, the request is listed again.
+func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	other, otherKey := newEnrollment(t, m.Store, "session", "box-o-"+t.Name(), new(fixtureOperator), nil)
+	_, keyedGrant := grantOf(t, m, enr, key, "INFRA-13: deploy the broker", "AUTO_TOKEN")
+	_, plainGrant := grantOf(t, m, other, otherKey, "no issue named", "AUTO_TOKEN")
+	keyed, err := m.Create(t.Context(), enr, signRequest(t, m, key, "INFRA-12: rotate the deploy key", "SHARED_KEY"), "")
+	if err != nil || keyed.RecordID == nil {
+		t.Fatalf("Create(SHARED_KEY, INFRA-12) = %+v, %v; want pending", keyed, err)
+	}
+	plain, err := m.Create(t.Context(), other, signRequest(t, m, otherKey, "no issue named", "SHARED_KEY"), "")
+	if err != nil || plain.RecordID == nil {
+		t.Fatalf("Create(SHARED_KEY, no issue) = %+v, %v; want pending", plain, err)
+	}
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
-	_, grantID := grantOf(t, m, enr, key, "no issue named", "AUTO_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
-		t.Fatalf("Values: %v", err)
+	dispatch.SetDown(true)
+	logged := policytest.CaptureLog(t)
+
+	pendingIDs := func() []string {
+		t.Helper()
+		pending, err := m.PendingForApprover(t.Context(), insider)
+		if err != nil {
+			t.Fatalf("PendingForApprover(%s) while Dispatch is down: %v; want the list answered", insider, err)
+		}
+		var ids []string
+		for _, p := range pending {
+			ids = append(ids, p.RecordID)
+		}
+		return ids
 	}
-	if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]); err != nil {
-		t.Fatalf("AirlockConnection: %v", err)
+	for range 2 {
+		if ids := pendingIDs(); slices.Contains(ids, *keyed.RecordID) || !slices.Contains(ids, *plain.RecordID) {
+			t.Fatalf("%s's pending list while Dispatch is down = %v; want %s (no issue named) and not %s (INFRA-12)", insider, ids, *plain.RecordID, *keyed.RecordID)
+		}
+		grants, err := m.GrantsForApprover(t.Context(), fixtureOperator)
+		if err != nil {
+			t.Fatalf("GrantsForApprover(%s) while Dispatch is down: %v; want the list answered", fixtureOperator, err)
+		}
+		var ids []string
+		for _, g := range grants {
+			ids = append(ids, g.GrantID)
+		}
+		if slices.Contains(ids, keyedGrant) || !slices.Contains(ids, plainGrant) {
+			t.Fatalf("%s's grants while Dispatch is down = %v; want %s (no issue named) and not %s (INFRA-13)", fixtureOperator, ids, plainGrant, keyedGrant)
+		}
 	}
-	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
-		t.Fatalf("AirlockValues: %v", err)
+	for _, id := range []string{*keyed.RecordID, keyedGrant} {
+		if n := strings.Count(logged.String(), id); n != 1 {
+			t.Errorf("the log names %s %d times after two readings of its list; want once:\n%s", id, n, logged)
+		}
 	}
-	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "no issue named", "SHARED_KEY"), "")
-	if err != nil || pending.RecordID == nil {
-		t.Fatalf("Create(SHARED_KEY) = %+v, %v", pending, err)
+	if !strings.Contains(logged.String(), "dispatch answered /api/v1/access/projects/INFRA 503") {
+		t.Errorf("the log does not carry Dispatch's error:\n%s", logged)
 	}
-	if _, err := m.PendingForApprover(t.Context(), insider); err != nil {
-		t.Fatal(err)
+
+	if decision, err := m.ApplyDecision(t.Context(), *keyed.RecordID, true, insider); !errors.Is(err, ErrProjectAccessUnavailable) {
+		t.Fatalf("an approval of %s (INFRA-12) while Dispatch is down = %+v, %v; want ErrProjectAccessUnavailable", *keyed.RecordID, decision, err)
 	}
-	if _, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, insider); err != nil {
-		t.Fatalf("ApplyDecision: %v", err)
+	if got, err := m.Get(t.Context(), keyed.ID); err != nil || got.State != "pending" {
+		t.Fatalf("after the approval Dispatch could not answer, the request is %+v, %v; want pending", got, err)
 	}
-	if _, err := m.GrantsForApprover(t.Context(), insider); err != nil {
-		t.Fatal(err)
+	if decision, err := m.ApplyDecision(t.Context(), *plain.RecordID, true, insider); err != nil || decision.GrantID == "" {
+		t.Fatalf("an approval of %s (no issue named) while Dispatch is down = %+v, %v; want a grant", *plain.RecordID, decision, err)
 	}
-	if calls := dispatch.Calls(); calls != 0 {
-		t.Fatalf("an untagged deployment made %d calls to Dispatch; want none", calls)
+	if dispatch.Calls() == 0 {
+		t.Fatal("Dispatch was never asked, so the outage was never met: the test is blind")
 	}
+
+	dispatch.SetDown(false)
+	if ids := pendingIDs(); !slices.Contains(ids, *keyed.RecordID) {
+		t.Fatalf("%s's pending list once Dispatch answers = %v; want %s again", insider, ids, *keyed.RecordID)
+	}
+}
+
+// TestAnUntaggedDeploymentAsksDispatchNothing: with no secret tagged and no session naming a
+// project, a request, an approval, a release, an airlock connection and both approver lists ask
+// Dispatch nothing of a tag, a session or a channel. Their reasons name an issue key, as nearly
+// every agent's does (the judge's issue check needs one), and "SHA-256", which has an issue key's
+// form. A broker with no project-access client then asks Dispatch nothing at all. A broker holding
+// one asks one thing and nothing else: whether the person reading a row may see the project of
+// each key its reason names (MaySee), every key and not the first alone, since a reason naming a
+// private project's issue is that project's text. "Asks Dispatch nothing" is true of the first
+// broker; of the second it is true of everything but those reads.
+func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
+	const reason = "INFRA-12: check the SHA-256 of the deploy bundle"
+	reasonReads := []string{"access INFRA", "access SHA"}
+	for _, c := range []struct {
+		name   string
+		client bool
+	}{{"no project-access client", false}, {"a project-access client", true}} {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, _ := newProjectFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}}, publicTeam)
+			dispatch := answerFrom(t, m, dispatchRows(publicTeam))
+			asked := &askLog{inner: m.Projects}
+			m.Projects = asked
+			if !c.client {
+				m.Projects = nil
+			}
+			_, grantID := grantOf(t, m, enr, key, reason, "AUTO_TOKEN")
+			if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
+				t.Fatalf("Values: %v", err)
+			}
+			if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]); err != nil {
+				t.Fatalf("AirlockConnection: %v", err)
+			}
+			if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
+				t.Fatalf("AirlockValues: %v", err)
+			}
+			pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, reason, "SHARED_KEY"), "")
+			if err != nil || pending.RecordID == nil {
+				t.Fatalf("Create(SHARED_KEY) = %+v, %v", pending, err)
+			}
+			if listed, err := m.PendingForApprover(t.Context(), insider); err != nil || len(listed) != 1 {
+				t.Fatalf("PendingForApprover(%s) = %+v, %v; want the one request", insider, listed, err)
+			}
+			if _, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, insider); err != nil {
+				t.Fatalf("ApplyDecision: %v", err)
+			}
+			if listed, err := m.GrantsForApprover(t.Context(), fixtureOperator); err != nil || len(listed) != 2 {
+				t.Fatalf("GrantsForApprover(%s) = %+v, %v; want both grants", fixtureOperator, listed, err)
+			}
+			questions := asked.questions()
+			if !c.client {
+				if calls := dispatch.Calls(); calls != 0 || len(questions) != 0 {
+					t.Fatalf("a broker with no project-access client asked Dispatch %v (%d calls); want nothing at all", questions, calls)
+				}
+				return
+			}
+			for _, q := range questions {
+				if !slices.Contains(reasonReads, q) {
+					t.Errorf("an untagged deployment asked Dispatch %q; want only the reason keys' project reads %v", q, reasonReads)
+				}
+			}
+			for _, want := range reasonReads {
+				if !slices.Contains(questions, want) {
+					t.Errorf("an untagged deployment never asked Dispatch %q (it asked %v): a key of the reason went unread", want, questions)
+				}
+			}
+		})
+	}
+}
+
+// askLog is a projectaccess.Access that writes down each question it passes on, so a test can
+// say which questions the broker asked Dispatch and not only how many.
+type askLog struct {
+	inner projectaccess.Access
+	mu    sync.Mutex
+	asked []string
+}
+
+func (a *askLog) note(question string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.asked = append(a.asked, question)
+}
+
+// questions is every question asked so far, in order.
+func (a *askLog) questions() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.asked)
+}
+
+func (a *askLog) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	a.note("access " + project)
+	return a.inner.Access(ctx, project, person)
+}
+
+func (a *askLog) MemberKind(ctx context.Context, person string) (string, error) {
+	a.note("member kind of " + person)
+	return a.inner.MemberKind(ctx, person)
+}
+
+func (a *askLog) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	a.note("states of " + strings.Join(projects, " "))
+	return a.inner.States(ctx, projects)
 }
 
 // lockProbe is a projectaccess.Access that, before each question it passes on, tries to take

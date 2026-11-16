@@ -586,3 +586,11 @@ var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
 func IssueKeyInReason(reason string) string {
 	return issueKeyPattern.FindString(reason)
 }
+
+// IssueKeysInReason is every Dispatch issue key in a request's own signed reason, in the order the
+// reason names them, and nil when it names none. A reader deciding whose text the reason is reads
+// them all, not the first alone: the pattern also matches words that are no issue key, such as
+// "SHA-256", so a reason naming one before a project's issue would otherwise hide that project.
+func IssueKeysInReason(reason string) []string {
+	return issueKeyPattern.FindAllString(reason, -1)
+}

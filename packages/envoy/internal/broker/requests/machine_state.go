@@ -304,6 +304,11 @@ type Machine struct {
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
+	// channelsMissingLogged throttles ChannelsMissingMessage to one line per project, and
+	// rowsUnansweredLogged rowUnansweredMessage to one per listed row, per projectaccess.CacheTTL:
+	// each machine's own, so one machine's lines never silence another's.
+	channelsMissingLogged logThrottle
+	rowsUnansweredLogged  logThrottle
 	// testAdoptionHook, when set, runs in applyDecisionAttempt between the read that locks the
 	// requesting enrollment and the read that locks the request. It exists only so a test can
 	// deterministically move the request to another enrollment in that window, which is where an

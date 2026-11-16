@@ -74,6 +74,27 @@ type recordView struct {
 	Projects []projectRow
 	// SessionProjects are the projects the requesting session named when it enrolled.
 	SessionProjects []string
+	// Unanswered, when not empty, is the one sentence the page prints for a record Dispatch could
+	// not say whether the person may see (requests.ErrProjectAccessUnavailable): the page then
+	// prints its id and that sentence and nothing else of it, no button included (unansweredView).
+	Unanswered string
+}
+
+// unansweredText is what the page says of a request Dispatch could not answer for, after "the
+// secrets broker": in that request's own box and in its outcome line alike.
+const unansweredText = "could not ask Dispatch whether you may see this request, so it shows nothing of it and cannot decide it until Dispatch answers. Try again shortly."
+
+// unansweredView is record id as the page prints it when Dispatch could not say whether the
+// person may see it: its id and unansweredText, and nothing the record holds, since its names and
+// its reason may be a private project's.
+func unansweredView(id string) recordView {
+	return recordView{ID: id, Unanswered: "The secrets broker " + unansweredText}
+}
+
+// unansweredOutcome is the outcome line of record id when Dispatch could not say whether the
+// person may see it: its id rather than its names, for the same reason.
+func unansweredOutcome(id string) string {
+	return id + ": unavailable: the secrets broker " + unansweredText
 }
 
 // projectRow is one tagged secret of a record as the page prints it.
@@ -122,6 +143,12 @@ type pageView struct {
 // and for how long, and what Deny and the expiry do. A machine login's record is printed with
 // the note that its typed code is decided on Dispatch's machine-login page, and offers no
 // button.
+//
+// A record Dispatch could not say whether the person may see (requests.ErrProjectAccessUnavailable)
+// is that one request unavailable, not the page: it answers 503 with the record's box saying so
+// and showing nothing else of it (unansweredView), and the outcome lines and the other pending
+// requests print as ever. Its sign-in as someone else names no login_hint, since the approver is
+// part of what it does not show.
 func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session) {
 	id := r.PathValue("record")
 	if !record.ValidID(id) {
@@ -137,7 +164,11 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	if err == nil {
 		err = p.hideUnseen(r.Context(), sess.Login, detail)
 	}
+	unanswered := errors.Is(err, requests.ErrProjectAccessUnavailable)
 	switch {
+	case unanswered:
+		slog.Warn("approval page: Dispatch could not say whether the person may see the request", "record", id, "login", sess.Login, "error", err)
+		detail = requests.RecordDetail{RecordID: id}
 	case errors.Is(err, pgx.ErrNoRows):
 		m := say("No such request", "The secrets broker has no credential request "+id+".")
 		m.Login = sess.Login
@@ -153,13 +184,16 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	}
 
 	now := time.Now()
-	main := p.recordView(detail, sess.Login, now)
+	main, status := unansweredView(id), http.StatusServiceUnavailable
+	if !unanswered {
+		main, status = p.recordView(detail, sess.Login, now), http.StatusOK
+	}
 	view := pageView{
 		chrome:          chrome{Title: "Approve a secret request", Login: sess.Login, Record: id},
 		Records:         []recordView{main},
 		MachineLoginURL: p.cfg.MachineLoginURL,
 	}
-	if view.Outcomes, err = p.outcomes(r.Context(), r.URL.Query().Get("decided"), sess.Login, now, detail); err != nil {
+	if view.Outcomes, err = p.outcomes(r.Context(), r.URL.Query().Get("decided"), sess.Login, now, detail, unanswered); err != nil {
 		writeUnavailable(w, "read the decided requests", err)
 		return
 	}
@@ -181,7 +215,12 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 			continue
 		}
 		other, err := p.cfg.Machine.ReadRecord(r.Context(), s.RecordID)
-		if err != nil {
+		switch {
+		case errors.Is(err, requests.ErrProjectAccessUnavailable):
+			// Listed a moment ago, and Dispatch could not answer for its secrets' projects
+			// since: left off, as the list itself leaves off such a request.
+			continue
+		case err != nil:
 			writeUnavailable(w, "read a pending request", err)
 			return
 		}
@@ -197,7 +236,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	if len(printed) > 1 {
 		view.ApproveAll = printed
 	}
-	writePage(w, http.StatusOK, "record.html", view)
+	writePage(w, status, "record.html", view)
 }
 
 // loginHint is the login_hint a sign-in started from id's page names: the record's approver, when
@@ -318,8 +357,11 @@ func approverText(approver string) string {
 // outcomes is one line for each record id the comma-separated decided names, at most maxRecords
 // of them, each said from the broker's own record now and never from the URL: an id that is not a
 // record id, or names no record, gets none. read is the record the page has just read, which a
-// decision's own page always names, so it is not read again.
-func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Time, read requests.RecordDetail) ([]string, error) {
+// decision's own page always names, so it is not read again; readUnanswered says Dispatch could
+// not say whether login may see it. A record Dispatch could not answer for gets the line that it
+// is unavailable, naming its id and nothing it holds (unansweredOutcome), and the other lines
+// print as ever.
+func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Time, read requests.RecordDetail, readUnanswered bool) ([]string, error) {
 	var lines []string
 	var seen []string
 	for id := range strings.SplitSeq(decided, ",") {
@@ -330,6 +372,10 @@ func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Tim
 			break
 		}
 		seen = append(seen, id)
+		if id == read.RecordID && readUnanswered {
+			lines = append(lines, unansweredOutcome(id))
+			continue
+		}
 		d := read
 		if id != read.RecordID {
 			var err error
@@ -340,6 +386,9 @@ func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Tim
 				err = p.hideUnseen(ctx, login, d)
 			}
 			switch {
+			case errors.Is(err, requests.ErrProjectAccessUnavailable):
+				lines = append(lines, unansweredOutcome(id))
+				continue
 			case errors.Is(err, pgx.ErrNoRows):
 				continue
 			case err != nil:
@@ -526,7 +575,9 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 // decide, is decided by nobody here. A machine login is never decided here, whatever a form says:
 // its typed code is decided on Dispatch's page. An approval the broker recorded as a denial
 // answers with that decision's own detail, so the person who pressed approve reads which secret
-// refused it and why rather than one fixed sentence.
+// refused it and why rather than one fixed sentence. A record Dispatch could not say whether login
+// may see (requests.ErrProjectAccessUnavailable) is decided by nobody, and the POST's other
+// records are decided as ever: the page it lands on says that one is unavailable.
 func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (string, bool) {
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {
@@ -550,6 +601,8 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "already decided", false
 	case errors.Is(err, record.ErrNotApprover), errors.Is(err, requests.ErrGrantChainInvalid):
 		return "refused: " + err.Error(), false
+	case errors.Is(err, requests.ErrProjectAccessUnavailable):
+		return "unavailable: " + err.Error(), false
 	}
 	slog.Error("approval page: decide the record", "record", id, "error", err)
 	return "error", false

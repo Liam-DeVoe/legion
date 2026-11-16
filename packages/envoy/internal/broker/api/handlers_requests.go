@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -12,6 +13,20 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
+
+// projectAccessUnavailable is the one sentence a session reads for a 503
+// PROJECT_ACCESS_UNAVAILABLE. It names no project: what the K3 client answered names the tag's
+// project key ("dispatch answered /api/v1/access/projects/PRIV 503"), and the broker names no
+// project to a session, so that text goes to the broker's log alone
+// (writeProjectAccessUnavailable).
+const projectAccessUnavailable = "the broker could not ask Dispatch about the project of a requested secret, so nothing was decided or released; ask again once Dispatch answers"
+
+// writeProjectAccessUnavailable logs err, which names the project Dispatch was asked about, and
+// answers the session 503 PROJECT_ACCESS_UNAVAILABLE with projectAccessUnavailable alone.
+func writeProjectAccessUnavailable(w http.ResponseWriter, op string, err error) {
+	slog.Warn("broker: "+op+": Dispatch could not be asked about a project", "error", err)
+	writeError(w, http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE", projectAccessUnavailable)
+}
 
 // createRequestBody is POST /v1/requests's exact shape: a signed
 // request object plus an optional,
@@ -98,7 +113,7 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		// A requested secret belongs to a Dispatch project, and the broker could not ask Dispatch
 		// about it. Nothing was decided; the same request succeeds once Dispatch answers.
-		writeError(w, http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE", err.Error())
+		writeProjectAccessUnavailable(w, "create request", err)
 		return
 	case errors.Is(err, pgx.ErrNoRows):
 		// The proof was verified moments ago against a live enrollment, but it was revoked (or
@@ -369,7 +384,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		// The grant holds a secret of a Dispatch project, which is checked again on every release,
 		// and Dispatch did not answer. Nothing was released and the grant stays live.
-		writeError(w, http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE", err.Error())
+		writeProjectAccessUnavailable(w, "read grant values", err)
 		return
 	case err != nil:
 		writeInternal(w, "read grant values", err)

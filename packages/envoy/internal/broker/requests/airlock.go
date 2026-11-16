@@ -556,19 +556,20 @@ func (m *Machine) airlockProjectRule(ctx context.Context, grantID string, enr en
 	if err != nil || facts.states == nil {
 		return err
 	}
+	// policy.ProjectRule is the rule Evaluate applies at the release, so the proxy's check and the
+	// release's cannot drift. projectFacts resolves a state for every tagged project of names, so
+	// ErrNoProjectState here is a broken caller, and fails the connection rather than keeping it.
+	requester := facts.requester(policy.Requester{})
 	slices.Sort(names)
 	for _, name := range names {
 		project := set.Secrets[name].Project
-		switch facts.states[project] {
-		case policy.ProjectMissing:
-		case policy.ProjectPrivate:
-			if slices.Contains(facts.projects, project) {
-				continue
-			}
-		default:
-			continue
+		reason, err := policy.ProjectRule(project, requester)
+		if err != nil {
+			return fmt.Errorf("%w: %s is tagged %s", err, name, project)
 		}
-		return m.endGrant(ctx, grantID, projectNotNamed(name))
+		if reason != "" {
+			return m.endGrant(ctx, grantID, projectNotNamed(name))
+		}
 	}
 	return nil
 }
@@ -627,9 +628,11 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	}
 	// The channels the grant's credential may post to, for a project-channels secret released to
 	// a credential that names a private project (channelLimit). Such a secret is bounded to
-	// airlockProjectRecheck itself, since the channel list is Dispatch's and moves no policy
-	// version: the Slack bot token carries no dispatch-project tag, so the bound above would never
-	// reach it, and an owner's change would never reach a running proxy.
+	// airlockProjectRecheck itself whenever its credential names any project, Limited or not:
+	// whether a named project is private, and the channels its owner allows, are Dispatch's and
+	// move no policy version, and the Slack bot token carries no dispatch-project tag, so the
+	// bound above would never reach it. Without it, a project the credential names turning
+	// private, or an owner's change to its list, would never reach a running proxy.
 	channels, limited := m.channelLimit(ctx, checked)
 	readAt := time.Now()
 	values := map[string]AirlockSecret{}
@@ -639,9 +642,11 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 			expires = recheck
 		}
 		value := AirlockSecret{Slots: released.split.values, Expires: expires, Kind: released.kind}
-		if limited && checked.set.Secrets[released.name].ProjectChannels == policy.ProjectChannelsSlack {
-			value.Limited, value.Channels = true, channels
-			if bound := readAt.Add(airlockProjectRecheck); value.Expires.IsZero() || value.Expires.After(bound) {
+		if checked.set.Secrets[released.name].ProjectChannels == policy.ProjectChannelsSlack {
+			if limited {
+				value.Limited, value.Channels = true, channels
+			}
+			if bound := readAt.Add(airlockProjectRecheck); len(checked.facts.named) > 0 && (value.Expires.IsZero() || value.Expires.After(bound)) {
 				value.Expires = bound
 			}
 		}

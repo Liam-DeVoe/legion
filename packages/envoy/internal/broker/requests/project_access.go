@@ -26,7 +26,10 @@ import (
 // ErrProjectAccessUnavailable is a request, release, decision or airlock connection that holds a
 // secret tagged with a project the broker could not ask Dispatch about: its project-access client
 // failed, or the broker holds none. Nothing is released; the session asks again once Dispatch
-// answers. A secret with no tag never meets it.
+// answers. A request or release of a secret with no tag never meets it. A person's decision meets
+// it too when Dispatch cannot say whether that person may see the record (MaySee, which reads the
+// projects its reason's issue keys name): nothing is decided and the request stays pending. An
+// approver's list never fails with it; it leaves that one row out (logRowUnanswered).
 var ErrProjectAccessUnavailable = errors.New("the broker could not ask Dispatch about the project of a requested secret")
 
 // errProjectNotNamed is stillAllowed's refusal of a granted name whose private project the
@@ -37,11 +40,13 @@ var ErrProjectAccessUnavailable = errors.New("the broker could not ask Dispatch 
 var errProjectNotNamed = errors.New("project not named")
 
 // airlockProjectRecheck bounds how long the airlock proxy may hold the values of a grant that
-// holds a project-tagged name: every AirlockSecret of such a grant expires no later than the read
-// time plus this, and the proxy drops a value within its own mintAgainBefore of that expiry, so a
-// pod holding values re-runs the release checks (AirlockValues, checkRelease) within this bound of
-// the read. Whether a project is private is Dispatch's, not the policy version's, so nothing else
-// would make the proxy read a held value again when access is lost.
+// holds a project-tagged name, and a project-channels value released to a credential that names
+// any project: every such AirlockSecret expires no later than the read time plus this, and the
+// proxy drops a value within its own mintAgainBefore of that expiry, so a pod holding values
+// re-runs the release checks (AirlockValues, checkRelease) within this bound of the read. Whether
+// a project is private, and which channels its owner allows, are Dispatch's, not the policy
+// version's, so nothing else would make the proxy read a held value again when access is lost or
+// a named project turns private.
 const airlockProjectRecheck = 10 * time.Minute
 
 // projectFacts is what a release's policy check reads of Dispatch for one credential and one set
@@ -178,12 +183,35 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 // so Dispatch and the broker deploy in either order safely.
 const ChannelsMissingMessage = "a private project's access answer carries no slack_channels; its credentials post to no channel until Dispatch has dispatch://INFRA-3862's #t-a-31"
 
-// channelsMissingLogged is when each project's ChannelsMissingMessage was last written, so it is
-// written once per project per projectaccess.CacheTTL, not on every release.
-var channelsMissingLogged = struct {
-	sync.Mutex
+// logThrottle is when each key's log line was last written, so a line a release or a listing
+// would repeat on every call is written once per key per projectaccess.CacheTTL, the age after
+// which the broker asks Dispatch again anyway. A Machine holds one per line it throttles.
+type logThrottle struct {
+	mu sync.Mutex
 	at map[string]time.Time
-}{at: map[string]time.Time{}}
+}
+
+// due reports whether key's line may be written now, and if so counts it written. Keys last
+// written longer than projectaccess.CacheTTL ago are dropped as it goes, so the map holds only
+// the keys of the last CacheTTL.
+func (l *logThrottle) due(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if at, ok := l.at[key]; ok && now.Sub(at) < projectaccess.CacheTTL {
+		return false
+	}
+	if l.at == nil {
+		l.at = map[string]time.Time{}
+	}
+	for held, at := range l.at {
+		if now.Sub(at) >= projectaccess.CacheTTL {
+			delete(l.at, held)
+		}
+	}
+	l.at[key] = now
+	return true
+}
 
 // channelLimit is the channels a grant's credential may post to, and whether it is limited at
 // all. It is limited when the grant holds a project-channels name and one of the projects its
@@ -218,7 +246,7 @@ func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) ([]str
 			return none, true
 		}
 		if !answer.SlackChannelsPresent {
-			logChannelsMissing(project)
+			m.logChannelsMissing(project)
 			return none, true
 		}
 		listed := slices.Compact(slices.Sorted(slices.Values(answer.SlackChannels)))
@@ -235,14 +263,24 @@ func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) ([]str
 }
 
 // logChannelsMissing writes ChannelsMissingMessage for project once per projectaccess.CacheTTL.
-func logChannelsMissing(project string) {
-	channelsMissingLogged.Lock()
-	defer channelsMissingLogged.Unlock()
-	if at, ok := channelsMissingLogged.at[project]; ok && time.Since(at) < projectaccess.CacheTTL {
-		return
+func (m *Machine) logChannelsMissing(project string) {
+	if m.channelsMissingLogged.due(project) {
+		slog.Warn(ChannelsMissingMessage, "project", project)
 	}
-	channelsMissingLogged.at[project] = time.Now()
-	slog.Warn(ChannelsMissingMessage, "project", project)
+}
+
+// rowUnansweredMessage is the log line for a row an approver's list leaves out because the
+// broker could not ask Dispatch whether the reader may see it (ErrProjectAccessUnavailable): the
+// row is hidden from that list alone, failing closed, and the rest of the list is answered.
+const rowUnansweredMessage = "an approver's list leaves out a row whose project Dispatch could not be asked about; it is listed again once Dispatch answers"
+
+// logRowUnanswered writes rowUnansweredMessage for the one row key names, with attrs and err,
+// once per projectaccess.CacheTTL however often its list is read: a list is read on every 15 s
+// poll of every open Inbox tab, and one line per row says all an operator needs.
+func (m *Machine) logRowUnanswered(key string, err error, attrs ...any) {
+	if m.rowsUnansweredLogged.due(key) {
+		slog.Warn(rowUnansweredMessage, append(attrs, "error", err)...)
+	}
 }
 
 // projectNotNamed is the refusal of a granted name the session may no longer have for its
@@ -332,11 +370,13 @@ func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name string) (
 
 // MaySee reports whether login may see rec: every private project among its tagged secrets
 // (rec.SecretProjects), the projects its session names (rec.SessionProjects), and the project of
-// the first Dispatch issue key its signed reason names. A person outside one of them may neither
-// read the record nor decide it, since its names and its reason are that project's. A project
-// Dispatch does not hold hides nothing. A record touching no project asks Dispatch nothing, and a
+// every Dispatch issue key its signed reason names. A person outside one of them may neither read
+// the record nor decide it, since its names and its reason are that project's. A project Dispatch
+// does not hold hides nothing, so a word of a key's form that is no project ("SHA-256") hides
+// nothing and hides no key after it. A record touching no project asks Dispatch nothing, and a
 // broker with no project-access client hides nothing, since it serves no tagged secret and
-// enrolls no session naming a project.
+// enrolls no session naming a project. An error is ErrProjectAccessUnavailable: whether login may
+// see rec is unknown, and a caller shows rec to nobody until Dispatch answers.
 func (m *Machine) MaySee(ctx context.Context, login string, rec RecordDetail) (bool, error) {
 	var projects []string
 	for _, p := range rec.SecretProjects {
@@ -347,10 +387,10 @@ func (m *Machine) MaySee(ctx context.Context, login string, rec RecordDetail) (b
 	return m.maySee(ctx, login, append(projects, rec.SessionProjects...), rec.Reason)
 }
 
-// maySee is MaySee over the record's parts: candidate projects and the reason whose issue key's
-// project joins them.
+// maySee is MaySee over the record's parts: candidate projects and the reason, the project of each
+// of whose issue keys joins them.
 func (m *Machine) maySee(ctx context.Context, login string, projects []string, reason string) (bool, error) {
-	if key := record.IssueKeyInReason(reason); key != "" {
+	for _, key := range record.IssueKeysInReason(reason) {
 		project, _, _ := strings.Cut(key, "-")
 		projects = append(projects, project)
 	}

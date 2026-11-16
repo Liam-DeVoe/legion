@@ -4,9 +4,9 @@
 // token spends it only on POST /api/chat.postMessage, carrying channel, thread_ts and text, to a
 // channel its project's owner named (slackPostAllowed). The first test drives every request shape
 // through the rig's fake grants, and the three ways a list comes back empty through the real
-// request machine; the two after it put that machine behind the proxy, on a store and a stand-in
+// request machine; the three after it put that machine behind the proxy, on a store and a stand-in
 // Dispatch of their own, so what they read is what the broker answers once an owner changes the
-// list or a person loses the project.
+// list, a person loses the project, or a project the session names turns private.
 package airlockproxy
 
 import (
@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,7 +31,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -355,8 +353,8 @@ func TestAPrivateProjectsSlackGrantPostsOnlyToItsChannels(t *testing.T) {
 }
 
 // ownerChangeHeard is how long a running proxy may go on spending an owner's old list: the
-// release's own bound on a Limited secret (requests.airlockProjectRecheck, which that package
-// keeps to itself).
+// release's own bound on a project-channels secret released to a credential that names a project,
+// Limited or not (requests.airlockProjectRecheck, which that package keeps to itself).
 const ownerChangeHeard = 10 * time.Minute
 
 // TestAPrivateProjectsSlackGrantHearsTheOwnersChangeWithinTenMinutes: an owner who takes a channel
@@ -398,6 +396,29 @@ func TestAPrivateProjectsSlackGrantStaysLimitedWhenItsPersonLosesTheProject(t *t
 		t.Fatal("the refusal came from no read of the changed list: the stand-in Dispatch holding it was never asked")
 	}
 	b.post(t, toA).refused(t, "a post to "+channelA+" after the person lost PRIV", toA)
+}
+
+// TestAPrivateProjectsSlackGrantIsLimitedOnceItsProjectTurnsPrivate: a session names PRIV while
+// PRIV is public, so the proxy holds the token unlimited and carries a post to a channel nobody
+// listed. PRIV's owner then makes PRIV private. Whether a project is private is Dispatch's and
+// moves no policy version, so the value the proxy holds is bounded all the same, because its
+// credential names a project: an hour on, the proxy has read the grant again, finds it Limited to
+// the channels PRIV's owner named, refuses the unlisted channel and carries the listed one.
+func TestAPrivateProjectsSlackGrantIsLimitedOnceItsProjectTurnsPrivate(t *testing.T) {
+	public := projectaccesstest.Row{Visibility: "public", Owner: slackOwner, SlackChannels: []string{channelA}}
+	b := newSlackBroker(t, map[string]projectaccesstest.Row{privKey: public}, privKey)
+	toUnlisted := jsonPost(postTo(unlisted))
+	b.post(t, toUnlisted).served(t, "a post to "+unlisted+" while PRIV is public", toUnlisted, slackValue)
+
+	private := b.dispatch.serve(t, map[string]projectaccesstest.Row{privKey: privateRow([]string{channelA}, slackPerson)})
+	b.clock.advance(time.Hour)
+
+	b.post(t, toUnlisted).refused(t, "a post to "+unlisted+" an hour after PRIV turned private", toUnlisted)
+	if private.Calls() == 0 {
+		t.Fatal("the refusal came from no read of PRIV turned private: the stand-in Dispatch holding it was never asked")
+	}
+	toA := jsonPost(postTo(channelA))
+	b.post(t, toA).served(t, "a post to "+channelA+", which PRIV's owner named", toA, slackValue)
 }
 
 // The real machine's projects and people: PRIV and TEAM are private and slackOwner's; the
@@ -531,43 +552,19 @@ func (c *proxyClock) now() time.Time { return time.Now().Add(time.Duration(c.ahe
 func (c *proxyClock) advance(d time.Duration) { c.ahead.Add(int64(d)) }
 
 // dispatchAt is the machine's client of Dispatch's project-access routes (Machine.Projects): a
-// real projectaccess.Client asking a projectaccesstest stand-in. A row plays an owner's change by
-// serving the changed rows from a stand-in of their own through a fresh client. That is what a
-// running broker reads once its client's cache (projectaccess.CacheTTL, 30 seconds) has let the old
-// answer go, which it has long before the proxy reads a grant again. The client's own clock cannot
-// be moved from here (projectaccess sets it only in its own tests) and a stand-in's rows are fixed
-// when it starts, so a fresh pair is the move, as requests' own answerFrom makes it. The client is
-// held under a lock because the proxy's requests read it while a row replaces it.
-type dispatchAt struct {
-	mu     sync.Mutex
-	client projectaccess.Access
-}
+// real projectaccess.Client asking a projectaccesstest stand-in (projectaccesstest.Swappable). A
+// row plays an owner's change by serving the changed rows from a stand-in of their own through a
+// fresh client. That is what a running broker reads once its client's cache
+// (projectaccess.CacheTTL, 30 seconds) has let the old answer go, which it has long before the
+// proxy reads a grant again. The client's own clock cannot be moved from here (projectaccess sets
+// it only in its own tests) and a stand-in's rows are fixed when it starts, so a fresh pair is the
+// move, as requests' own answerFrom makes it.
+type dispatchAt struct{ projectaccesstest.Swappable }
 
 // serve points the machine at a stand-in Dispatch answering rows, and answers that stand-in.
 func (d *dispatchAt) serve(t *testing.T, rows map[string]projectaccesstest.Row) *projectaccesstest.Server {
 	t.Helper()
 	stand := projectaccesstest.NewServer(t, rows, nil)
-	client := projectaccess.New(stand.URL, stand.Account, nil)
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.client = client
+	d.Serve(stand)
 	return stand
-}
-
-func (d *dispatchAt) current() projectaccess.Access {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.client
-}
-
-func (d *dispatchAt) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
-	return d.current().Access(ctx, project, person)
-}
-
-func (d *dispatchAt) MemberKind(ctx context.Context, person string) (string, error) {
-	return d.current().MemberKind(ctx, person)
-}
-
-func (d *dispatchAt) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
-	return d.current().States(ctx, projects)
 }

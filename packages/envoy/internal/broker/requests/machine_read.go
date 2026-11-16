@@ -1125,15 +1125,20 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]Pe
 	}
 	rows.Close()
 	// A private project's request is left off the list of everyone outside the project: its
-	// names and its reason are that project's (MaySee).
+	// names and its reason are that project's (MaySee). A request Dispatch cannot answer for is
+	// left off too, failing closed for that row alone, and the rest of the list is answered: an
+	// outage of Dispatch hides only the rows that ask it something (logRowUnanswered).
 	visible := out[:0]
 	for i, p := range out {
 		if p.Kind == record.KindAgentSecret {
 			ok, err := m.maySeeRecord(ctx, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
-			if err != nil {
+			switch {
+			case errors.Is(err, ErrProjectAccessUnavailable):
+				m.logRowUnanswered("pending "+p.RecordID, err, "list", "pending", "record", p.RecordID)
+				continue
+			case err != nil:
 				return nil, err
-			}
-			if !ok {
+			case !ok:
 				continue
 			}
 		}
@@ -1382,14 +1387,21 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	}
 	rows.Close()
 	// A private project's grant is left off the list of everyone outside the project, read once
-	// the rows are closed so no call to Dispatch holds the pooled connection (MaySee).
+	// the rows are closed so no call to Dispatch holds the pooled connection (MaySee); a grant
+	// Dispatch cannot answer for is left off alone, as PendingForApprover leaves off a request.
 	visible := out[:0]
 	for i, g := range out {
 		ok, err := m.maySeeRecord(ctx, login, g.Names, reads[i].sessionProjects, reads[i].reason)
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrProjectAccessUnavailable):
+			attrs := []any{"list", "grants", "grant", g.GrantID}
+			if g.RecordID != nil {
+				attrs = append(attrs, "record", *g.RecordID)
+			}
+			m.logRowUnanswered("grant "+g.GrantID, err, attrs...)
+		case err != nil:
 			return nil, err
-		}
-		if ok {
+		case ok:
 			visible = append(visible, g)
 		}
 	}

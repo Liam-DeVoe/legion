@@ -18,6 +18,12 @@
 {{- if eq $i 1}}
 <h2 class="others">Other requests waiting for you</h2>
 {{- end}}
+{{- if $r.Unanswered}}
+<article class="record" id="record-{{$r.ID}}">
+<h2>Request <code>{{$r.ID}}</code></h2>
+<p class="note">{{$r.Unanswered}}</p>
+</article>
+{{- else}}
 <article class="record" id="record-{{$r.ID}}">
 <h2>{{if $r.MachineLogin}}Machine login for {{end}}{{range $j, $name := $r.Identifiers}}{{if $j}}, {{end}}<code>{{$name}}</code>{{end}}</h2>
 <dl>
@@ -75,6 +81,7 @@
 <p class="note">Only {{$r.Approver}} may decide this request, and you are signed in as {{$.Login}}. <a href="/approve/{{$r.ID}}?switch=1">Sign in as someone else</a></p>
 {{- end}}
 </article>
+{{- end}}
 {{- end}}
 {{- with .ApproveAll}}
 <form method="post" action="/approve" class="all">
