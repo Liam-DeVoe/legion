@@ -324,8 +324,9 @@ export function DecisionsRow({
             onClickCapture={(event) => {
               if (!(event.target instanceof Element) || event.target.closest(ROW_ACTIONS) === null)
                 return;
+              // The row's own page: this component's `document` is the decisions document.
               const element = row.current;
-              if (element === null || element.contains(document.activeElement)) return;
+              if (element === null || element.contains(element.ownerDocument.activeElement)) return;
               element.focus({ preventScroll: true });
             }}
             onMouseDown={(event) => {
