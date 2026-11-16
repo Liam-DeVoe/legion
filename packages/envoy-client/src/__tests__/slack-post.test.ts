@@ -435,7 +435,7 @@ describe("postSlackReply", () => {
       [
         "as Slack's error code",
         (authorization) => Response.json({ ok: false, error: authorization }),
-        "Slack refused chat.postMessage with an error code slack_post does not pass on; nothing was posted; do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds",
+        "Slack refused chat.postMessage with an error code slack_post does not pass on: the reply may have been posted",
       ],
       [
         "as the posted ts",
@@ -474,6 +474,18 @@ describe("postSlackReply", () => {
       const { env } = brokerEnvironment("granted", slack.url);
       expect(await outcome(env)).toBe(
         `Slack refused chat.postMessage: ${code}; nothing was posted; do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds`
+      );
+    }
+  }, 30_000);
+
+  // Slack's reference says these two can follow a partial success ("It's possible some aspect of
+  // the operation succeeded before the error was raised"), so neither says nothing was posted.
+  test("fatal_error and internal_error say the reply may have been posted, not that nothing was", async () => {
+    for (const code of ["fatal_error", "internal_error"]) {
+      const slack = fakeSlack({ ok: false, error: code });
+      const { env } = brokerEnvironment("granted", slack.url);
+      expect(await outcome(env)).toBe(
+        `Slack answered chat.postMessage with ${code}, which Slack says can follow a partial success: the reply may have been posted, and posting it again may put it in the thread twice`
       );
     }
   }, 30_000);

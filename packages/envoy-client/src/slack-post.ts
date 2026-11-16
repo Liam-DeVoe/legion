@@ -182,14 +182,19 @@ interface PosterLine {
 const MAY_HAVE_POSTED =
   "the reply may have been posted, and posting it again may put it in the thread twice";
 
-/** Ends each error that says nothing was posted: the broker's refusals, Slack's, and the reply or
- * setting refused before anything was asked. The tool itself never falls back, but three agent
- * sessions the broker refused this token each sent the same reply within 20 s through another
- * Slack tool, which posted it as the person whose Slack login that tool held
- * (dispatch://INFRA-810/ask/3cb6e199-a3c1-413d-93b6-6fb6a5122a17). An error that says the reply
- * may have been posted does not carry it: MAY_HAVE_POSTED already says not to post it again. */
+/** Ends each error that says nothing was posted: the broker's refusals, Slack's refusals that
+ * leave nothing behind, and the reply or setting refused before anything was asked. The tool
+ * itself never falls back, but three agent sessions the broker refused this token each sent the
+ * same reply within 20 s through another Slack tool, which posted it as the person whose Slack
+ * login that tool held (dispatch://INFRA-810/ask/3cb6e199-a3c1-413d-93b6-6fb6a5122a17). An error
+ * that says the reply may have been posted does not carry it: MAY_HAVE_POSTED already says not to
+ * post it again. */
 const NO_PERSON_REPOST =
   "do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds";
+
+/** The codes Slack's reference says can follow a partial success ("It's possible some aspect of
+ * the operation succeeded before the error was raised"), so the reply may be in the thread. */
+const MAY_FOLLOW_A_POST: Record<string, true> = { fatal_error: true, internal_error: true };
 
 /** The secrets client's final line before it execs the poster. Once this has appeared, the poster
  * owns every later stderr byte and a missing answer may follow a Slack post; never describe that
@@ -398,13 +403,19 @@ export async function postSlackReply(
       `slack_post's poster exited ${code} without an answer${detail}: ${MAY_HAVE_POSTED}`
     );
   }
-  // Slack answered ok: false, so the reply is not in the thread.
+  // Slack answered ok: false. A code it lists, other than the two that can follow a partial
+  // success, means the reply is not in the thread; a code it does not list says nothing either way.
   if (line.refused === null) {
     throw new Error(
-      `Slack refused chat.postMessage with an error code slack_post does not pass on; nothing was posted; ${NO_PERSON_REPOST}`
+      `Slack refused chat.postMessage with an error code slack_post does not pass on: ${MAY_HAVE_POSTED}`
     );
   }
   if (line.refused !== undefined) {
+    if (Object.hasOwn(MAY_FOLLOW_A_POST, line.refused)) {
+      throw new Error(
+        `Slack answered chat.postMessage with ${line.refused}, which Slack says can follow a partial success: ${MAY_HAVE_POSTED}`
+      );
+    }
     throw new Error(
       `Slack refused chat.postMessage: ${line.refused}; nothing was posted; ${NO_PERSON_REPOST}`
     );

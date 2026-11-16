@@ -112,11 +112,13 @@ at once to the pods the Legion daemon enrolls under the accounts `BROKER_SERVICE
 `chat:write` bot scope and must be added to each channel it answers in. A request still waiting
 for approval, or denied, posts nothing, and the tool says which; a denial also says that only a
 Legion pod's session may post as the app. Slack's own refusal comes back as Slack's error code, such
-as `not_in_channel`. Every error that says nothing was posted also tells the agent not to send the
-reply with another Slack tool, which would post it as the person whose Slack login that tool holds.
-A reply is at most 4,000 characters, and the tool sends each one once, since a post whose answer
-was lost may already be in the thread. A session posts into any channel the app has been added to:
-the tool does not know which project a channel belongs to.
+as `not_in_channel`, and says that nothing was posted; `fatal_error` and `internal_error`, which
+Slack says can follow a partial success, and a code the tool does not pass on say instead that the
+reply may have been posted. Every error that says nothing was posted also tells the agent not to
+send the reply with another Slack tool, which would post it as the person whose Slack login that
+tool holds. A reply is at most 4,000 characters, and the tool sends each one once, since a post
+whose answer was lost may already be in the thread. A session posts into any channel the app has
+been added to: the tool does not know which project a channel belongs to.
 
 ## How Dispatch's events arrive
 
