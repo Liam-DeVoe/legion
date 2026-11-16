@@ -75,6 +75,6 @@ func Compare(files Tree, a Approved) Comparison {
 			c.Problems = append(c.Problems, idProblem(f.pos, f.id, detail))
 		}
 	}
-	sortProblems(c.Problems)
+	SortProblems(c.Problems)
 	return c
 }

@@ -26,6 +26,27 @@ func ParseSelector(selector string) (importPath, name string, err error) {
 	return path, test, nil
 }
 
+// MatchTests is each entry of ran that the check's test part picks: the entries of exactly the
+// selector's package and top-level test, two when the name runs in both package p and package
+// p_test, none when the test did not run. A runner other than go, or a selector that ParseSelector
+// refuses, is an error wrapping ErrSelector.
+func MatchTests(t Test, ran []TestOutcome) ([]TestOutcome, error) {
+	if t.Runner != "go" {
+		return nil, fmt.Errorf("%w: runner %q", ErrSelector, t.Runner)
+	}
+	path, name, err := ParseSelector(t.Selector)
+	if err != nil {
+		return nil, err
+	}
+	var matched []TestOutcome
+	for _, o := range ran {
+		if o.Package == path && o.Test == name {
+			matched = append(matched, o)
+		}
+	}
+	return matched, nil
+}
+
 // importPathForm reports whether path has the form of a Go import path.
 func importPathForm(path string) bool {
 	if path == "" || strings.ContainsFunc(path, unicode.IsSpace) {
