@@ -84,10 +84,13 @@
  *     closed by a run after it.
  */
 
-/** A half-open range of a text, `[start, end)`. */
+/** A half-open range of a text, `[start, end)`, and whether it is a fenced or an indented code
+ *  block rather than a code span, as the server's `codeRange` marks it where it places the
+ *  range, so a reader that wants one of the two tells them apart without working it out again. */
 export interface CodeRange {
   readonly start: number;
   readonly end: number;
+  readonly block: boolean;
 }
 
 /** One container open at the line being read - a block quote, a list item or a footnote
@@ -526,7 +529,7 @@ function codeBlocks(text: string): Blocks {
     if (fence !== undefined) {
       if (matched === stack.length) {
         if (reached - column <= 3 && closesFence(text, indent, end, fence.character, fence.width)) {
-          blocks.push({ end: next, start });
+          blocks.push({ block: true, end: next, start });
           fence = undefined;
         }
         at = next;
@@ -535,7 +538,7 @@ function codeBlocks(text: string): Blocks {
       // The line left the containers the fence opened in, and no code block is carried on by a
       // line that leaves them: the block ends with the line before this one, which is then read
       // as any other.
-      blocks.push({ end: at, start });
+      blocks.push({ block: true, end: at, start });
       fence = undefined;
     } else if (indentedOpen) {
       if (matched === stack.length) {
@@ -551,7 +554,7 @@ function codeBlocks(text: string): Blocks {
           continue;
         }
       }
-      blocks.push({ end: last, start });
+      blocks.push({ block: true, end: last, start });
       indentedOpen = false;
     }
 
@@ -685,9 +688,9 @@ function codeBlocks(text: string): Blocks {
   }
 
   if (fence !== undefined) {
-    blocks.push({ end: text.length, start });
+    blocks.push({ block: true, end: text.length, start });
   } else if (indentedOpen) {
-    blocks.push({ end: last, start });
+    blocks.push({ block: true, end: last, start });
   }
   return { blocks, breaks };
 }
@@ -733,7 +736,7 @@ function appendParagraphSpans(text: string, from: number, to: number, found: Cod
       at = opener;
       continue;
     }
-    found.push({ end: closer + width, start: at });
+    found.push({ block: false, end: closer + width, start: at });
     at = closer + width;
   }
 }

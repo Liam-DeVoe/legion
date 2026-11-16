@@ -116,11 +116,11 @@ test("EventBody shows the answer a change replaced, struck through", async () =>
   }
 });
 
-// A chosen option is one of the ask's options, so the struck-through line draws its label from
-// the tree the event carries for that option (`payload.options.<i>.label`), never parsing the
-// label: the tree here reads `soon` where the label's markdown says `now`. An option the ask no
-// longer holds has no tree anywhere and is shown as written (`earlier-chosen-option`). The
-// answer's text is drawn by the renderer as ever.
+// Each label the replaced answer chose is drawn from the tree the event carries for it, by its
+// place in that answer's list (`payload.previous_answer.selected.<i>`), never parsing the label:
+// the trees here read `soon` and `Went` where the labels' markdown says `now` and `Wait`, and the
+// second names an option the ask no longer holds. The option tree the event carries for the
+// first label's option is not what draws it. The answer's text is drawn by the renderer as ever.
 test("EventBody draws a replaced answer's options from their trees and its text as rendered markdown", async () => {
   await warmMarkdownRenderer();
   const changed: Extract<DispatchEvent, { type: "ask.answered" }> = {
@@ -159,8 +159,12 @@ test("EventBody draws a replaced answer's options from their trees and its text 
     seq: 6,
     trees: {
       "payload.options.0.label": displayTree(
+        "Ship [later](https://example.test/later)"
+      ) as DisplayTree,
+      "payload.previous_answer.selected.0": displayTree(
         "Ship [soon](https://example.test/soon)"
       ) as DisplayTree,
+      "payload.previous_answer.selected.1": displayTree("**Went**") as DisplayTree,
     },
     type: "ask.answered",
   };
@@ -168,11 +172,11 @@ test("EventBody draws a replaced answer's options from their trees and its text 
 
   try {
     await waitFor(() =>
-      expect(view.container.querySelector("s")?.textContent).toBe(
-        "was: Ship soon, **Wait** - Go now."
-      )
+      expect(view.container.querySelector("s")?.textContent).toBe("was: Ship soon, Went - Go now.")
     );
-    expect(view.container.querySelector("s strong")?.textContent).toBe("Go");
+    expect(
+      [...view.container.querySelectorAll("s strong")].map((bold) => bold.textContent)
+    ).toEqual(["Went", "Go"]);
     expect(view.container.querySelector("s a")?.getAttribute("href")).toBe(
       "https://example.test/soon"
     );

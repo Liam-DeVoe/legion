@@ -93,97 +93,144 @@ export interface InlineLink {
 const BLANK_LINE_AFTER = /[ \t]*\n/y;
 
 /**
- * The most characters a link's tail - its address and title, after the `(` - is read across: as
- * many as the server reads past a cut to keep a reference whole (`longestWholeReferenceRunes` in
- * `packages/envoy/internal/dispatch/text/runes.go`), far more than any address or title a person
- * writes. A tail that runs further reads as no link. Every `](` of a text is read across no more
- * than this, so a draft holding thousands of `](` that open no link - parentheses that never
- * balance, a title that never closes - is read in time that grows with its length, not with its
- * square.
+ * Where each step of reading a link's tail - its address and title, after the `(` - stops, from
+ * every offset of one text: built once, the first time the text is read for a link's tail
+ * (`readInlineLinks`), so a tail is a few lookups whatever its length. Read to its end instead,
+ * every `](` of a draft holding thousands that open no link - parentheses that never balance, a
+ * title that never closes - is read across the rest of its paragraph, in time that grows with the
+ * square of the draft's length; and a bound on each tail read a real link whose address runs
+ * past it - a dashboard URL with a long query - as no link, where both CommonMark parsers read
+ * it as one. A backslash escapes the character after it, as the tail's reader takes it, so an
+ * escaped character stops nothing. A stop past every character is the text's length.
  */
-const LONGEST_LINK_TAIL = 1024;
+interface TailStops {
+  /** The first offset at or after each that holds neither a space nor a tab (`pastSpace`). */
+  readonly filled: Int32Array;
+  /** Where an address not in angle brackets that starts at each offset ends, or -1 where it
+   *  reads none: at the first space, tab, line break or control character while its
+   *  parentheses balance, or at the first `)` that closes more of them than open after the
+   *  offset, which is the link's own. */
+  readonly bare: Int32Array;
+  /** The first `<`, `>` or line break at or after each: an address in angle brackets ends at a
+   *  `>` and reads as none at the other two. */
+  readonly angled: Int32Array;
+  /** The first `"`, `'` and `)` at or after each, by that character: where a title ends. */
+  readonly closers: Readonly<Record<string, Int32Array>>;
+  /** The line break that ends the first blank line starting at or after each: a title that has
+   *  not closed before it ends with its paragraph, and so does the link. */
+  readonly blank: Int32Array;
+}
 
-/** `at` moved past the spaces, tabs and one line break that stand there, short of `limit`;
- *  undefined at a second line break, since a link's parts are never more than a line apart and a
- *  blank line ends the paragraph, and so the link. */
-function pastSpace(body: string, at: number, limit: number): number | undefined {
-  let broken = false;
-  for (; at < limit; at += 1) {
-    const character = body.charAt(at);
-    if (character === "\n") {
-      if (broken) return undefined;
-      broken = true;
-    } else if (character !== " " && character !== "\t") {
-      break;
+/** Every stop of `body` (`TailStops`), in one walk of it from its end. The parentheses an address
+ *  balances are counted from the end too - only the count between two offsets matters - and an
+ *  address that starts at an offset ends at the nearest later one where fewer stand open than at
+ *  its start, which a stack of the offsets standing lower than all those before them answers. */
+function tailStops(body: string): TailStops {
+  const length = body.length;
+  const escaped = new Uint8Array(length + 1);
+  for (let at = 0; at < length; at += 1) {
+    if (body.charAt(at) === "\\") {
+      escaped[at + 1] = 1;
+      at += 1;
     }
   }
-  return at;
+  const table = () => new Int32Array(length + 1).fill(length);
+  const quote = table();
+  const apostrophe = table();
+  const parenthesis = table();
+  const stops = {
+    angled: table(),
+    bare: table(),
+    blank: table(),
+    closers: { '"': quote, "'": apostrophe, ")": parenthesis },
+    filled: table(),
+  };
+  stops.bare[length] = -1;
+  const lower = new Int32Array(length + 1);
+  const lowerOpen = new Int32Array(length + 1);
+  let lowers = 1;
+  lower[0] = length;
+  let open = 0;
+  let space = length;
+  let spaceOpen = 0;
+  let lineBreak = length;
+  let blankAfter = false;
+  for (let at = length - 1; at >= 0; at -= 1) {
+    const character = body.charAt(at);
+    const plain = escaped[at] === 0;
+    const after = at + 1;
+    if (plain && character === "(") open -= 1;
+    else if (plain && character === ")") open += 1;
+    stops.filled[at] = character === " " || character === "\t" ? stops.filled[after] : at;
+    stops.angled[at] = plain && "<>\n".includes(character) ? at : stops.angled[after];
+    quote[at] = plain && character === '"' ? at : quote[after];
+    apostrophe[at] = plain && character === "'" ? at : apostrophe[after];
+    parenthesis[at] = plain && character === ")" ? at : parenthesis[after];
+    if (plain && character === "\n") {
+      stops.blank[at] = blankAfter ? lineBreak : stops.blank[after];
+      lineBreak = at;
+      blankAfter = true;
+    } else {
+      stops.blank[at] = stops.blank[after];
+      if (character !== " " && character !== "\t") blankAfter = false;
+    }
+    if (plain && character <= " ") {
+      space = at;
+      spaceOpen = open;
+    }
+    while (lowers > 0 && lowerOpen[lowers - 1] >= open) lowers -= 1;
+    const closes = lowers > 0 ? lower[lowers - 1] - 1 : length;
+    stops.bare[at] = closes < space ? closes : space < length && spaceOpen === open ? space : -1;
+    lower[lowers] = at;
+    lowerOpen[lowers] = open;
+    lowers += 1;
+  }
+  return stops;
+}
+
+/** `at` moved past the spaces, tabs and one line break that stand there; undefined at a second
+ *  line break, since a link's parts are never more than a line apart and a blank line ends the
+ *  paragraph, and so the link. */
+function pastSpace(body: string, stops: TailStops, at: number): number | undefined {
+  const filled = stops.filled[at];
+  if (body.charAt(filled) !== "\n") return filled;
+  const next = stops.filled[filled + 1];
+  return body.charAt(next) === "\n" ? undefined : next;
 }
 
 /** What closes a link's title, by what opens it. */
 const TITLE_CLOSERS: Readonly<Record<string, string>> = { '"': '"', "'": "'", "(": ")" };
 
 /** The address and the end of an inline link whose `(` stands just before `from`, read as
- *  CommonMark reads a link's destination and title: an address in angle brackets, or one with no
- *  space whose parentheses balance, then, after a space, a title in double quotes, single quotes
- *  or parentheses, then the `)`, all within the paragraph and `LONGEST_LINK_TAIL` characters.
- *  Undefined where no link ends there. */
+ *  CommonMark reads a link's destination and title, however long: an address in angle brackets,
+ *  or one with no space whose parentheses balance, then, after a space, a title in double quotes,
+ *  single quotes or parentheses, then the `)`, all within the paragraph. Undefined where no link
+ *  ends there. */
 function linkTail(
   body: string,
+  stops: TailStops,
   from: number
 ): Pick<InlineLink, "addressEnd" | "addressStart" | "close"> | undefined {
-  const limit = Math.min(body.length, from + LONGEST_LINK_TAIL);
-  let at = pastSpace(body, from, limit);
-  if (at === undefined) return undefined;
-  const angled = body.charAt(at) === "<";
-  const addressStart = angled ? at + 1 : at;
-  at = addressStart;
-  if (angled) {
-    while (at < limit && body.charAt(at) !== ">") {
-      const character = body.charAt(at);
-      if (character === "\n" || character === "<") return undefined;
-      at += character === "\\" ? 2 : 1;
-    }
-    if (at >= limit) return undefined;
-  } else {
-    let depth = 0;
-    for (; at < limit; at += 1) {
-      const character = body.charAt(at);
-      if (character <= " " || (character === ")" && depth === 0)) break;
-      if (character === "\\") at += 1;
-      else if (character === "(") depth += 1;
-      else if (character === ")") depth -= 1;
-    }
-    if (depth !== 0 || at >= limit) return undefined;
-  }
-  const addressEnd = at;
-  if (angled) at += 1;
-  const spaced = pastSpace(body, at, limit);
+  const start = pastSpace(body, stops, from);
+  if (start === undefined) return undefined;
+  const angled = body.charAt(start) === "<";
+  const addressStart = angled ? start + 1 : start;
+  const addressEnd = angled ? stops.angled[addressStart] : stops.bare[addressStart];
+  if (addressEnd < 0 || (angled && body.charAt(addressEnd) !== ">")) return undefined;
+  const past = angled ? addressEnd + 1 : addressEnd;
+  const spaced = pastSpace(body, stops, past);
   if (spaced === undefined) return undefined;
-  const closer = spaced > at ? TITLE_CLOSERS[body.charAt(spaced)] : undefined;
-  at = spaced;
+  const closer = spaced > past ? TITLE_CLOSERS[body.charAt(spaced)] : undefined;
+  let at = spaced;
   if (closer !== undefined) {
-    at += 1;
+    const closed = stops.closers[closer][spaced + 1];
     // A title may run over a line break, never over a blank line.
-    let blank = false;
-    while (at < limit && body.charAt(at) !== closer) {
-      const character = body.charAt(at);
-      if (character === "\n") {
-        if (blank) return undefined;
-        blank = true;
-      } else if (character !== " " && character !== "\t") {
-        blank = false;
-      }
-      at += character === "\\" ? 2 : 1;
-    }
-    if (at >= limit) return undefined;
-    const closed = pastSpace(body, at + 1, limit);
-    if (closed === undefined) return undefined;
-    at = closed;
+    if (closed >= body.length || stops.blank[spaced + 1] < closed) return undefined;
+    const after = pastSpace(body, stops, closed + 1);
+    if (after === undefined) return undefined;
+    at = after;
   }
-  return at < limit && body.charAt(at) === ")"
-    ? { addressEnd, addressStart, close: at + 1 }
-    : undefined;
+  return body.charAt(at) === ")" ? { addressEnd, addressStart, close: at + 1 } : undefined;
 }
 
 /**
@@ -192,7 +239,8 @@ function linkTail(
  * that balance stand inside a link's words (`[@Planner [2]](…)`), a link holds no link - once one
  * closes, no `[` before it opens one, a picture's caption aside - and a blank line ends every
  * bracket open before it. Code holds no link syntax, so what the text's code contexts hold
- * (`codeRanges`) is passed over.
+ * (`codeRanges`) is passed over. Every tail is read through the one set of stops the text has
+ * (`tailStops`), built at its first `](`, so a text that writes none builds none.
  */
 function readInlineLinks(body: string): readonly InlineLink[] {
   const code = codeRanges(body);
@@ -202,6 +250,7 @@ function readInlineLinks(body: string): readonly InlineLink[] {
   // opens no link: one mark for all of them, rather than a walk over them at every link.
   let closedBelow = 0;
   let nextCode = 0;
+  let stops: TailStops | undefined;
   for (let at = 0; at < body.length; at += 1) {
     while (nextCode < code.length && (code[nextCode]?.end ?? 0) <= at) nextCode += 1;
     const range = code[nextCode];
@@ -225,7 +274,11 @@ function readInlineLinks(body: string): readonly InlineLink[] {
     } else if (character === "]") {
       const opener = openers.pop();
       const opens = opener !== undefined && (opener.picture || openers.length >= closedBelow);
-      const tail = opens && body.charAt(at + 1) === "(" ? linkTail(body, at + 2) : undefined;
+      let tail: Pick<InlineLink, "addressEnd" | "addressStart" | "close"> | undefined;
+      if (opens && body.charAt(at + 1) === "(") {
+        stops ??= tailStops(body);
+        tail = linkTail(body, stops, at + 2);
+      }
       if (opener === undefined || tail === undefined) continue;
       links.push({ ...tail, open: opener.at, picture: opener.picture, wordsEnd: at });
       if (!opener.picture) closedBelow = openers.length;

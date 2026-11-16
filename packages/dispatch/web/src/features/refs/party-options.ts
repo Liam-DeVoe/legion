@@ -1,12 +1,15 @@
-import type { Agent, IssueCollaboratorAgent, IssueCollaboratorLegionAgent } from "../../api/types";
+import type { Agent, IssueCollaboratorAgent } from "../../api/types";
 import type { AgentText } from "./AgentName";
+import { recordedRoles, roleHolders } from "./role-holders";
 
 /**
  * The parties a box can address: the live sessions, the roles their holders carry, and the
  * issue's Legion roles nobody holds now. One list, read by the shared text field's delivery
  * modes (`MentionComposer.tsx`) and by the reference picker's party rows (`useRefPicker.ts`),
  * so a session offered as a mention and the same session offered as a reference can never be
- * two different rules about who is running.
+ * two different rules about who is running. The roles are the two sets that make a role known
+ * (`role-holders.ts`), which the renderer links a role reference by, so a role offered here is
+ * one its mention links: this module adds only each option's words.
  *
  * A module of its own rather than part of the field: the field hosts the picker, so the picker
  * cannot read these from the field without the two importing each other (`noImportCycles`).
@@ -37,11 +40,7 @@ function roleOptions(
   agents: readonly Agent[],
   text: Pick<AgentText, "sessionText">
 ): MentionOption[] {
-  const byRole = new Map<string, Agent>();
-  for (const agent of agents) {
-    for (const role of agent.roles ?? []) byRole.set(role, agent);
-  }
-  return [...byRole.entries()]
+  return [...roleHolders(agents).entries()]
     .sort(([left], [right]) => {
       const leftController = left.includes("controller");
       const rightController = right.includes("controller");
@@ -86,12 +85,11 @@ export function mentionOptions(
 
 /**
  * The picker's "Not running" options: one per Legion role token the issue's collaborators record
- * (`IssueCollaborators.agents[].legion`) that no live agent holds - the live agents' `roles`, the
- * rule the live role options follow - addressed `role:<token>` and drawn by the role's newest
- * session, the one entry per token the server leaves unreplaced (`legion.replaced_by` null), so a
- * replaced session is never an option of its own. A session the live list itself names is left
- * out whatever its roles say: a live session that claims no role would otherwise be offered here
- * and draw its own `Running` mark, so one row would read running and not running at once.
+ * (`recordedRoles`) that no live agent holds (`roleHolders`, the set the live role options are),
+ * addressed `role:<token>` and drawn by the session `recordedRoles` shows the role by, its newest,
+ * so a replaced session is never an option of its own. A role whose newest session the live list
+ * names but which no longer claims the role is one of them: nobody holds it, and its mention is
+ * linked and not told, as every other role nobody holds.
  *
  * The options keep the server's order, which the collaborators contract states: the registry's
  * agents by role in workflow order, then newest first.
@@ -101,27 +99,23 @@ export function stoppedRoleOptions(
   collaborators: readonly IssueCollaboratorAgent[],
   text: Pick<AgentText, "sessionText">
 ): MentionOption[] {
-  const held = new Set(live.flatMap((agent) => agent.roles ?? []));
-  const running = new Set(live.map((agent) => agent.session_id));
-  const offered = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
-    agent.legion !== null &&
-    agent.legion.replaced_by === null &&
-    !held.has(agent.legion.role_token) &&
-    !running.has(agent.session_id);
-  return collaborators.filter(offered).map((agent) => {
-    // The title the server gives is the registry's, else the session's newest stamped one; the
-    // name is still `useAgentText`'s, as a live option's holder is.
-    const storedTitle = agent.title ?? "";
-    return {
-      capabilities: [],
-      // Not running, so a mention of it is refused rather than kept for its next session: the
-      // line says so, as the box's hint does.
-      detail: `${agent.legion.role} · not running, not told`,
-      holder: text.sessionText(agent.session_id, storedTitle),
-      sessionId: agent.session_id,
-      sessionTitle: storedTitle,
-      target: `role:${agent.legion.role_token}`,
-      title: agent.legion.role_token,
-    };
-  });
+  const held = roleHolders(live);
+  return [...recordedRoles(collaborators)]
+    .filter(([token]) => !held.has(token))
+    .map(([token, agent]) => {
+      // The title the server gives is the registry's, else the session's newest stamped one; the
+      // name is still `useAgentText`'s, as a live option's holder is.
+      const storedTitle = agent.title ?? "";
+      return {
+        capabilities: [],
+        // Not running, so a mention of it is refused rather than kept for its next session: the
+        // line says so, as the box's hint does.
+        detail: `${agent.legion.role} · not running, not told`,
+        holder: text.sessionText(agent.session_id, storedTitle),
+        sessionId: agent.session_id,
+        sessionTitle: storedTitle,
+        target: `role:${token}`,
+        title: token,
+      };
+    });
 }

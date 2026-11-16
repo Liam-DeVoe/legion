@@ -1,11 +1,13 @@
-import { expect, jest, test } from "bun:test";
+import { beforeAll, expect, jest, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, within } from "@testing-library/react";
+import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PriorityDescription } from "./PriorityDescription";
 import { SAVE_AFTER_MS } from "./useInPlaceDraft";
 
@@ -28,6 +30,8 @@ function heldDescription(initial: string) {
       <PriorityDescription
         canWrite
         description={description}
+        // The texts this row reads are the test's own, which the server read no tree of.
+        descriptionTree={undefined}
         label="Description of P2"
         onSave={(next) => {
           saves.push(next);
@@ -111,5 +115,41 @@ test("the answer to an earlier description write landing under the reader sends 
   } finally {
     realClock();
     unmount();
+  }
+});
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+// A description is a stored text its writer typed in a box with the reference picker, and the
+// priorities read sends the reading the server made of it (`description_tree`): the rendered
+// block draws that tree and parses nothing on the page's thread. The tree reads differently from
+// the markdown beside it, so a block drawn from a parse of the markdown would end `daemon.`.
+test("a description is drawn from the tree the priorities read sends", async () => {
+  const tree = displayTree("Ship the **daemon** first.");
+  const parses = countEngineParses();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={client}>
+        <PriorityDescription
+          canWrite={false}
+          description="Ship the **daemon**."
+          descriptionTree={tree}
+          label="Description of P1"
+          onSave={async () => undefined}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() => expect(view.container.textContent).toBe("Ship the daemon first."));
+    expect(view.container.querySelector("strong")?.textContent).toBe("daemon");
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
+    view.unmount();
+    client.clear();
   }
 });

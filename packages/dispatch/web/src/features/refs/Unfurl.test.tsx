@@ -5,7 +5,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { displayTree } from "../../__tests__/display-trees";
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
@@ -629,5 +629,27 @@ test("a reference inside code shows no card", async () => {
     expect(view.container.textContent).toBe("");
   } finally {
     view.unmount();
+  }
+});
+
+// A card whose target has no title - a role nobody holds and no record's collaborators name -
+// names it by the reference as the body wrote it: one address, which holds no markdown, drawn as
+// the characters it is, so nothing on the page is parsed for it (the reading list's
+// `reference-card-words`).
+test("a card for a target with no title shows the reference as written and parses nothing", async () => {
+  await warmMarkdownRenderer();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const parses = countEngineParses();
+  const view = renderUnfurl("dispatch://role/surveyor");
+  try {
+    const card = await within(view.container).findByRole("link", {
+      name: "dispatch://role/surveyor",
+    });
+    expect(card).toHaveAttribute("href", "/agents?role=surveyor");
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
+    view.unmount();
+    listAgents.mockRestore();
   }
 });

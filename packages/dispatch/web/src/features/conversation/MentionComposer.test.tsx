@@ -7,6 +7,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
@@ -30,7 +31,8 @@ import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { stoppedRoleOptions } from "../refs/party-options";
+import { mentionOptions, stoppedRoleOptions } from "../refs/party-options";
+import { recordedRoles, roleHolders } from "../refs/role-holders";
 import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -1320,10 +1322,11 @@ test("Enter in an ask option takes the picker's row, and adds an option once it 
   }
 });
 
-// The rule the "Not running" options follow: a role a live agent holds is the live options'
-// (never offered twice), and a role is offered once by its newest session whatever replaced it.
-// A live list whose state is unknown offers no stopped role at all, which `useRefPicker` holds
-// to where it builds the picker's party rows.
+// The rule the "Not running" options follow is the renderer's (`role-holders.ts`): a role a live
+// agent holds is the live options' (never offered twice), every other role the collaborators
+// record is offered, once, by its newest session whatever replaced it - the replaced session is
+// never an option of its own. A live list whose state is unknown offers no stopped role at all,
+// which `useRefPicker` holds to where it builds the picker's party rows.
 test("stopped role options leave out held roles and name each role once", () => {
   const answerAgents = collaboratorsAnswer.agents ?? [];
   const reviewerOnly = stoppedRoleOptions([planner], answerAgents, storedNames);
@@ -1336,13 +1339,36 @@ test("stopped role options leave out held roles and name each role once", () => 
   expect(
     stoppedRoleOptions([worker], answerAgents, storedNames).map((option) => option.target)
   ).toEqual(["role:legion-planner", "role:legion-p-core-1-reviewer"]);
-  // A session the live list names is no stopped option, whatever roles it claims: offered here it
-  // would draw its own `Running` mark inside the "Not running" group.
-  expect(
-    stoppedRoleOptions([{ ...worker, session_id: "new-reviewer" }], answerAgents, storedNames).map(
-      (option) => option.target
-    )
-  ).toEqual(["role:legion-planner"]);
+  // A role whose newest session the live list names but which claims no role is held by nobody,
+  // so it is offered as not running, by that session, as the renderer links it.
+  const reviewerLive = stoppedRoleOptions(
+    [{ ...worker, session_id: "new-reviewer" }],
+    answerAgents,
+    storedNames
+  );
+  expect(reviewerLive.map((option) => [option.target, option.sessionId])).toEqual([
+    ["role:legion-planner", "old-planner"],
+    ["role:legion-p-core-1-reviewer", "new-reviewer"],
+  ]);
+});
+
+// The roles the picker offers, live and not running, are the roles the renderer links
+// (`role-holders.ts`), whichever sessions run: the two can never differ, so a role offered is
+// one its mention links and a role its mention reads plain is never offered.
+test("the roles offered are the roles a reader is shown as known", () => {
+  const answerAgents = collaboratorsAnswer.agents ?? [];
+  for (const live of [[planner], [worker], [{ ...worker, session_id: "new-reviewer" }], []]) {
+    const offered = [
+      ...mentionOptions(live, storedNames),
+      ...stoppedRoleOptions(live, answerAgents, storedNames),
+    ].flatMap((option) =>
+      option.target.startsWith("role:") ? [option.target.slice("role:".length)] : []
+    );
+    expect(offered).toHaveLength(new Set(offered).size);
+    expect(new Set(offered)).toEqual(
+      new Set([...roleHolders(live).keys(), ...recordedRoles(answerAgents).keys()])
+    );
+  }
 });
 
 test("two seeded mentions receive one comment-level delivery mode", async () => {
@@ -1755,6 +1781,31 @@ test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape"
   } finally {
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+// The chip quotes a stored parent, whose host read it with its tree: the chip draws that tree
+// (`excerptTree`) rather than a parse of the parent's markdown. The tree reads differently from
+// the markdown beside it, so a chip drawn from a parse would read `— Once the build is green.`.
+test("the Replying-to chip draws its parent from the tree the reply's host read", async () => {
+  await warmMarkdownRenderer();
+  const { view } = renderComposer({
+    replyTo: {
+      actor: plannerAuthor,
+      excerpt: "Once the **build** is green.",
+      excerptTree: displayTree("Once the **build** is green, from the tree."),
+      id: "comment-9",
+      parentKind: "comment",
+      to: "/issues/CORE-1/comments/comment-9",
+    },
+  });
+  try {
+    const quote = await screen.findByRole("link", {
+      name: /^— Once the build is green, from the tree\./,
+    });
+    expect(quote.querySelector("strong")?.textContent).toBe("build");
+  } finally {
+    view.unmount();
   }
 });
 

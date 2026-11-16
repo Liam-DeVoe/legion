@@ -1,10 +1,10 @@
 /**
  * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over an ask as the Inbox
  * draws it: an open ask's row and its card's question, its options and its earlier wording, and
- * the record an answered and a resolved ask's card becomes, with its earlier answers. Each is a
- * record a reader meets on `/`, so each must draw every form a stored text names a node by
- * through the one renderer (R6): as its node's current name, the party as `@` and its current
- * name, and none left as the characters written.
+ * the record an answered and a resolved ask's card becomes, with its earlier answers and the
+ * options they chose. Each is a record a reader meets on `/`, so each must draw every form a
+ * stored text names a node by through the one renderer (R6): as its node's current name, the
+ * party as `@` and its current name, and none left as the characters written.
  *
  * Every one of these surfaces is a record a reader reads, so each reference in it is a link. The
  * card draws its texts in plain boxes; an option's text sits in the `<label>` of its radio, which
@@ -12,7 +12,7 @@
  * leaves a click on a link inside it to the link (`Inbox.tsx`'s `ROW_CONTROL_SELECTOR`).
  *
  * An open ask is an ask row of the reader's Inbox, which the first four rows read. An answered
- * or a resolved ask is no longer one, so the last three reach it the way the Inbox does: a thread
+ * or a resolved ask is no longer one, so the last four reach it the way the Inbox does: a thread
  * the reader wrote in - their answer, or their reply under the ask - that the asking session has
  * written in since is a Reply row, and the reading column draws that row's ask as its card
  * (`ThreadBody.tsx`'s `AskThreadBody`), which for a closed ask is its record.
@@ -172,6 +172,43 @@ test("ask-answer-history: an ask card's earlier answer draws every form of a sto
   await record.getByText("Show 1 earlier answer").click();
   const history = record.locator("details").filter({ hasText: "Show 1 earlier answer" });
   await expectReadsReferences(history, world, "link");
+});
+
+// SLOW(>=2s): a database reset, the reading world, an ask answered with one option and then
+// another and replied under, and the Inbox opened on its Reply row with its earlier answer shown.
+test("earlier-chosen-option: the option an ask card's earlier answer chose draws every form of a stored reference through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  const label = readingText(world);
+  const ask = await createAsk(
+    world.host.key,
+    { options: [{ label }, { label: "Later" }], question: PLAIN_QUESTION },
+    asker
+  );
+  // The reader chooses the option holding the stored text and then changes the answer to the
+  // other, so the stored text is the option the record's earlier answer chose.
+  const first = await answerAsk(ask.id, { expected_edited_at: null, selected: [label] });
+  const answeredAt = first.answer?.at;
+  if (answeredAt === undefined) {
+    throw new Error("setup: the reader's first answer came back with no answer on the ask");
+  }
+  await answerAsk(ask.id, {
+    expected_answer_at: answeredAt,
+    expected_edited_at: null,
+    selected: ["Later"],
+  });
+  await createComment(world.host.key, { ask_id: ask.id, body: "Taking the cache first." }, asker);
+
+  await page.goto("/");
+  await selectRow(page, replyRowId(ask.id));
+  const record = inboxPane(page).getByTestId(`ask-${ask.id}`);
+  await record.getByText("Show 1 earlier answer").click();
+  // The earlier answer chose that option and wrote no text, so the one rendered body of the
+  // list is the option's label, drawn from the tree the answer carries beside it. The record's
+  // own options above the list are the ask's, and `ask-option-text` reads those.
+  const history = record.locator("details").filter({ hasText: "Show 1 earlier answer" });
+  await expectReadsReferences(history.locator(RENDERED_BODY), world, "link");
 });
 
 // SLOW(>=2s): a database reset, the reading world, an ask replied under and resolved, and the

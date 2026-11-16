@@ -1,7 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import { loadedEngine, warmMarkdownRenderer } from "./markdown-engine";
-import { draftReading } from "./parsed-references";
+import { draftReading, parsedLinkWords } from "./parsed-references";
 import { partyMention } from "./party-references";
 import {
   applyInsertion,
@@ -326,6 +326,26 @@ test("a party's name holding Markdown's markup is written as literal words, whic
     href: agent,
     words: "@fix *the* cache",
   });
+});
+
+// A `<` and an `&` open inline HTML and a character reference: a session titled
+// `Fix <Suspense> fallback` written as it is reads `<Suspense>` as a tag, which holds none of the
+// words, and a name holding `&amp;` reads back as `&`. Escaped, each reads as the character it is.
+test("a party's name holding an angle bracket or an ampersand reads back as written", () => {
+  const agent = "dispatch://agent/s1";
+  expect(
+    ["Fix <Suspense> fallback", "Tom &amp; Jerry"].map(
+      (name) => parsedLinkWords(engine(), partyLink(name, agent))?.words
+    )
+  ).toEqual(["@Fix <Suspense> fallback", "@Tom &amp; Jerry"]);
+  expect(partyLink("Fix <Suspense> fallback", agent)).toBe(
+    `[@Fix \\<Suspense> fallback](${agent})`
+  );
+  expect(partyLink("Tom &amp; Jerry", agent)).toBe(`[@Tom \\&amp; Jerry](${agent})`);
+  // The seed a channel owes its party and a kept draft's rewrite write the same link.
+  expect(partyMention("session:s1", "Fix <Suspense> fallback")).toBe(
+    partyLink("Fix <Suspense> fallback", agent)
+  );
 });
 
 // In a link's address the link around the pick already has its words: a party is its bare

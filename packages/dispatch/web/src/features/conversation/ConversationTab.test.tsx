@@ -1067,10 +1067,11 @@ test("a handoff body that is not a JSON object is drawn whole by the renderer", 
 });
 
 // The words a handoff's session wrote are drawn by the renderer from the reading the server
-// sends for each (`field_trees`, keyed by the field, `proof.<n>` for a proof entry, and `` for a
-// body that is no JSON object), so a reference in them reads as its target's name and the page
-// parses none of them: the tree here reads `**Second** pass` where the field says `Second
-// pass`. A field of JSON stays the JSON it is (`conversation-handoff-data`).
+// sends for each (`field_trees`, keyed by the text's JSON Pointer into the body - `/summary` for a
+// field, `/proof/<n>` for a proof entry - and `` for a body that is no JSON object), so a
+// reference in them reads as its target's name and the page parses none of them: the tree here
+// reads `**Second** pass` where the field says `Second pass`. A field of JSON stays the JSON it
+// is (`conversation-handoff-data`).
 test("a handoff's words are drawn from the trees the server sends, its JSON as JSON", async () => {
   await warmMarkdownRenderer();
   const user = userEvent.setup();
@@ -1082,8 +1083,8 @@ test("a handoff's words are drawn from the trees the server sends, its JSON as J
       "2026-09-10T09:00:00Z"
     ),
     field_trees: {
-      "proof.0": displayTree("CI is *green*") as DisplayTree,
-      summary: displayTree("**Second** pass") as DisplayTree,
+      "/proof/0": displayTree("CI is *green*") as DisplayTree,
+      "/summary": displayTree("**Second** pass") as DisplayTree,
     },
   };
   const stub = stubLists({ handoffs: [record] });
@@ -1103,6 +1104,82 @@ test("a handoff's words are drawn from the trees the server sends, its JSON as J
     );
     expect(view.container.querySelector('[data-handoff-field="files"] pre')?.textContent).toBe(
       '[\n  "a.ts"\n]'
+    );
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A field named `proof.0` and the first entry of `proof` are two texts with two keys
+// (`/proof.0`, `/proof/0`), so each draws its own tree: here a word in strong type for the one
+// and in emphasis for the other, which their own words write neither of.
+test("a handoff field named like a proof entry and the entry draw their own trees", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const record = {
+    ...handoffRecord(
+      "handoff-1",
+      1,
+      JSON.stringify({ "proof.0": "x one", proof: ["y two"] }),
+      "2026-09-10T09:00:00Z"
+    ),
+    field_trees: {
+      "/proof.0": displayTree("**x** one") as DisplayTree,
+      "/proof/0": displayTree("*y* two") as DisplayTree,
+    },
+  };
+  const stub = stubLists({ handoffs: [record] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Show fields" }));
+    const field = await waitFor(() => {
+      const found = view.container.querySelector('[data-handoff-field="proof.0"] strong');
+      if (found === null) throw new Error("the field is not drawn from its tree yet");
+      return found;
+    });
+    expect(field.textContent).toBe("x");
+    expect(view.container.querySelector('[data-handoff-field="proof.0"] em')).toBeNull();
+    const entry = view.container.querySelector('[data-handoff-field="proof"] em');
+    expect(entry?.textContent).toBe("y");
+    expect(view.container.querySelector('[data-handoff-field="proof"] strong')).toBeNull();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A tree is looked up among the answer's own keys alone: a field named after a member every
+// object inherits - `constructor`, `toString` - whose tree the answer does not hold (an empty
+// string has none) reads no such member as its tree, and is drawn from its own words.
+test("a handoff field named after an inherited member reads no member as its tree", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const record = {
+    ...handoffRecord(
+      "handoff-1",
+      1,
+      JSON.stringify({ constructor: "**bold** words", toString: "" }),
+      "2026-09-10T09:00:00Z"
+    ),
+    field_trees: {},
+  };
+  const stub = stubLists({ handoffs: [record] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Show fields" }));
+    const words = await waitFor(() => {
+      const found = view.container.querySelector('[data-handoff-field="constructor"] strong');
+      if (found === null) throw new Error("the field is not drawn from its words yet");
+      return found;
+    });
+    expect(words.textContent).toBe("bold");
+    expect(view.container.querySelector('[data-handoff-field="toString"] dd')?.textContent).toBe(
+      ""
     );
   } finally {
     view.unmount();

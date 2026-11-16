@@ -209,20 +209,15 @@ function ShapedLinks({
           const blockId = link.to.block_id ?? "";
           return (
             <li key={`${link.from_block}:${blockId}`}>
+              {/* The link names the spec block by its id, in the panel's own words, as the
+                  characters they are. The decisions read sends no text of the block a link
+                  points to (`refs.BlockLinks` resolves each end as a graph node, which carries
+                  its text only on a reference read), so there is no stored text here to draw. */}
               <Link
                 className={`${linkText} ${linkHoverText}`}
                 to={specBlockPath(issueKey, spec, blockId)}
               >
-                <PlainText
-                  markdown={link.to.text}
-                  source={textSourceOf("artifact", spec?.id, issueKey)}
-                  surface="issue-decision-link"
-                >
-                  {/* The head of the block's text as its plain words, and as written until the
-                      engine has answered: the reading list's `issue-decision-link`. The block is
-                      one of the spec's, the record a `#id` in it names a question of. */}
-                  {(words) => (words ?? link.to.text)?.trim() || `Block ${blockId}`}
-                </PlainText>
+                {`Block ${blockId}`}
               </Link>
               {link.stale ? (
                 <span className={`ml-2 text-xs ${textMutedOnSurface}`}>out of date</span>

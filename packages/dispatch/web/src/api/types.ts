@@ -17,6 +17,7 @@ export type {
   ArchitectureTreeIssue,
   ArchitectureTreeIssueRef,
   ArchitectureTreeNone,
+  ArchitectureTreeNoneRead,
   ArchitectureTreeRetired,
   ArchitectureTreeSource,
   Artifact,

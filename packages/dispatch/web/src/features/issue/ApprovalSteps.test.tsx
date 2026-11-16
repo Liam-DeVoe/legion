@@ -1,15 +1,21 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { screen, waitFor, within } from "@testing-library/react";
 
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries } from "../../__tests__/query-provider";
-import type { Artifact, ArtifactApproval } from "../../api/types";
+import type { ArtifactApprovalWithTrees, ArtifactWithTrees } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ApprovalSteps } from "./ApprovalSteps";
 import type { StepEntry } from "./gated-steps";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const SPEC_ID = "artifact-spec";
 const DECISIONS_ID = "artifact-decisions";
 
-function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
+function doc(id: string, name: string, approval?: ArtifactApprovalWithTrees): ArtifactWithTrees {
   return {
     created_at: "2026-09-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
@@ -27,11 +33,11 @@ function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
   };
 }
 
-function specEntry(approval?: ArtifactApproval): StepEntry {
+function specEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
 }
 
-function decisionsEntry(approval?: ArtifactApproval): StepEntry {
+function decisionsEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
   return {
     document: doc(DECISIONS_ID, "decisions.md", approval),
     label: "Decisions",
@@ -80,7 +86,7 @@ test("lists one named item per entry, in the entries' order, under one Approvals
 });
 
 test("each approval state reads as that step's state", () => {
-  const cases: Array<[ArtifactApproval, string]> = [
+  const cases: Array<[ArtifactApprovalWithTrees, string]> = [
     [{ latest_version: 1, state: "draft" }, "Not requested"],
     [{ latest_version: 1, state: "awaiting" }, "Awaiting approval"],
     [{ latest_version: 3, state: "approved", version: 3 }, "Approved v3"],
@@ -225,6 +231,37 @@ test("a reason that holds markdown is drawn by the renderer", async () => {
       "https://example.test/plan"
     );
   } finally {
+    view.unmount();
+  }
+});
+
+// The reason is a stored text, and the issue read sends the reading the server made of it
+// (`reason_tree`): the line draws that tree and parses nothing on the page's thread. The tree
+// here reads differently from the markdown beside it, so a line drawn from a parse of the
+// markdown would end `the rollback step.` and count a parse.
+test("a changes-requested step's reason is drawn from the tree the issue read sends", async () => {
+  const tree = displayTree("Name the **rollback** step, as v1 had it.");
+  const parses = countEngineParses();
+  const view = renderSteps([
+    specEntry({
+      latest_version: 2,
+      reason: "Name the **rollback** step.",
+      reason_tree: tree,
+      state: "changes_requested",
+      version: 2,
+    }),
+  ]);
+  try {
+    const line = view.container.querySelector('[data-approval-step-reason="spec"]');
+    await waitFor(() =>
+      expect(line?.textContent).toBe(
+        "Spec: Changes requested on v2 · Name the rollback step, as v1 had it."
+      )
+    );
+    expect(line?.querySelector("strong")?.textContent).toBe("rollback");
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
     view.unmount();
   }
 });

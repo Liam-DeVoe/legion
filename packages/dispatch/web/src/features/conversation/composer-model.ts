@@ -1,4 +1,4 @@
-import type { Actor, DeliveryCapability } from "../../api/types";
+import type { Actor, DeliveryCapability, DisplayTree } from "../../api/types";
 import type { RecordMarkPlacement } from "../doc/editor";
 
 /** The composer's data model: where a draft goes, what kind it is, and what it carries. The
@@ -53,6 +53,9 @@ export interface ReplyTarget {
   /** The parent's author, which the Replying-to chip draws through `AgentName`. */
   readonly actor: Actor;
   readonly excerpt: string;
+  /** The reading Go made of `excerpt`, which the Replying-to chip draws (`ReplyQuote`); absent
+   *  where the reply's host read the parent with no tree, and for a parent of no text. */
+  readonly excerptTree?: DisplayTree;
   readonly id: string;
   readonly parentKind: "comment" | "message";
   /** Canonical targets carried by a comment parent, prefilled as editable @ mentions. */

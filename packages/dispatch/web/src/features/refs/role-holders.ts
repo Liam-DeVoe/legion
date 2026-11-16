@@ -1,22 +1,25 @@
 import { createContext } from "react";
 
-import type { Agent, IssueCollaboratorAgent } from "../../api/types";
+import type { Agent, IssueCollaboratorAgent, IssueCollaboratorLegionAgent } from "../../api/types";
 
 /**
  * What makes a role known, defined once: a role is known while a session the agent registry
- * lists holds it, or while the collaborators of the issue the record is on record it, which are
- * that issue's Legion roles, running or not. The picker offers a role on this rule: the roles the
- * listed sessions hold, and the issue's stopped roles under "Not running" (`party-options.ts`).
- * The renderer names and links a role reference on the same rule (`reference-target.ts`). The
- * registry (`GET /api/v1/agents`) lists the live sessions and the unresponsive ones, each with
- * the roles it holds. The collaborators (`GET /api/v1/issues/{key}/collaborators`) list every
- * Legion role the issue ever had a session for (`legion.role_token`).
+ * lists holds it (`roleHolders`), or while the collaborators of the issue the record is on record
+ * it (`recordedRoles`), which are that issue's Legion roles, running or not - a role whose
+ * session the registry still lists but which no longer claims it among them. The picker offers
+ * exactly these roles and adds only each one's words (`party-options.ts`): a held role among the
+ * live sessions' roles, and every recorded one nobody holds under "Not running". The renderer
+ * names and links a role reference on the same two sets (`reference-target.ts`), so a role the
+ * picker offers is a role its mention links, and no other. The registry (`GET /api/v1/agents`)
+ * lists the live sessions and the unresponsive ones, each with the roles it holds. The
+ * collaborators (`GET /api/v1/issues/{key}/collaborators`) list every Legion role the issue ever
+ * had a session for (`legion.role_token`), one entry per session, the newest of a role's
+ * sessions the one no later session replaced (`legion.replaced_by` null).
  *
  * Delivery follows the first half alone. A comment's role mention goes to the role's holder,
  * live or unresponsive, and fails at once where the role has none: the Go API's
- * `resolveDeliveryTarget`, through the Envoy client's `Role`. A stopped session holds no role, so
- * a role only its issue's collaborators record is linked and not told, as the writing box's hint
- * says.
+ * `resolveDeliveryTarget`, through the Envoy client's `Role`. A recorded role nobody holds is
+ * linked and not told, as the writing box's hint says.
  *
  * It is a module of its own rather than part of the picker's options, because the renderer reads
  * it too and the options module is the picker's.
@@ -37,22 +40,36 @@ export function roleHolders(agents: readonly Agent[]): ReadonlyMap<string, Agent
   return holders;
 }
 
-const recordedOf = new WeakMap<readonly IssueCollaboratorAgent[], ReadonlySet<string>>();
+const recordedOf = new WeakMap<
+  readonly IssueCollaboratorAgent[],
+  ReadonlyMap<string, IssueCollaboratorLegionAgent>
+>();
 
 /** No role recorded, for collaborators not read yet or an answer that lists no agent. */
-const NO_ROLES: ReadonlySet<string> = new Set();
+const NO_ROLES: ReadonlyMap<string, IssueCollaboratorLegionAgent> = new Map();
 
-/** Every Legion role token an issue's collaborators `agents` record, running or not: built once
- *  per response and shared by every reader of it. */
+/** Every Legion role token an issue's collaborators `agents` record, running or not, with the
+ *  entry a reader is shown it by: the role's newest session, the entry no later one replaced,
+ *  else - for a token every entry of which the answer says was replaced - its first entry. The
+ *  tokens keep the answer's order, its newest entries first. Built once per response and shared
+ *  by every reader of it. */
 export function recordedRoles(
   agents: readonly IssueCollaboratorAgent[] | null | undefined
-): ReadonlySet<string> {
+): ReadonlyMap<string, IssueCollaboratorLegionAgent> {
   if (agents === null || agents === undefined) return NO_ROLES;
   const known = recordedOf.get(agents);
   if (known !== undefined) return known;
-  const roles = new Set<string>();
-  for (const agent of agents) {
-    if (agent.legion !== null) roles.add(agent.legion.role_token);
+  const roles = new Map<string, IssueCollaboratorLegionAgent>();
+  const legion = agents.filter(
+    (agent): agent is IssueCollaboratorLegionAgent => agent.legion !== null
+  );
+  for (const agent of legion) {
+    if (agent.legion.replaced_by === null && !roles.has(agent.legion.role_token)) {
+      roles.set(agent.legion.role_token, agent);
+    }
+  }
+  for (const agent of legion) {
+    if (!roles.has(agent.legion.role_token)) roles.set(agent.legion.role_token, agent);
   }
   recordedOf.set(agents, roles);
   return roles;

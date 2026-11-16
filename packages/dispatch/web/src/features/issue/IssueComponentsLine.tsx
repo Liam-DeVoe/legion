@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery } from "../../api/queries";
-import type { Issue } from "../../api/types";
+import type { IssueDetails } from "../../api/types";
 import {
   badgeHigh,
   badgePrimary,
@@ -35,7 +35,10 @@ import { useIssueComponents } from "./useIssueComponents";
 export function IssueComponentsLine({
   issue,
 }: {
-  issue: Pick<Issue, "components" | "key" | "project" | "status" | "title">;
+  issue: Pick<
+    IssueDetails,
+    "components" | "components_reason_tree" | "key" | "project" | "status" | "title"
+  >;
 }): ReactNode {
   const { components } = issue;
   const sources = useQuery(projectArchitectureSourcesQuery(issue.project));
@@ -70,10 +73,12 @@ export function IssueComponentsLine({
         <span className={textMutedOnSurface}>
           None —{" "}
           {/* No `source`: why the reason is no record is the reading list's
-              `issue-components-reason` (`DISPATCH_READING_SURFACES`). */}
+              `issue-components-reason` (`DISPATCH_READING_SURFACES`). It is drawn from the
+              tree the issue read sends of it (`components_reason_tree`). */}
           <MarkdownBody
             markdown={components.reason ?? ""}
             surface="issue-components-reason"
+            tree={issue.components_reason_tree}
             variant="inline"
           />
         </span>

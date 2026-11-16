@@ -89,32 +89,24 @@ function AskEventBody({
             <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
               <s>
                 was:{" "}
-                {wasSelected.map((label, index) => {
-                  // A chosen option is one of the ask's options, so its label is drawn from that
-                  // option's tree, which the event carries by the option's place in its list.
-                  const tree = optionsWithTrees.find(
-                    (option) => option.label === label
-                  )?.label_tree;
-                  return (
-                    <Fragment key={label}>
-                      {index === 0 ? null : ", "}
-                      {tree === undefined ? (
-                        // One the ask no longer holds has no tree anywhere, so it is shown as
-                        // written: the reading list's `earlier-chosen-option`.
-                        label
-                      ) : (
-                        <MarkdownBody
-                          markdown={label}
-                          onRendered={onRendered}
-                          source={source}
-                          surface="activity-event-body"
-                          tree={tree}
-                          variant="inline"
-                        />
-                      )}
-                    </Fragment>
-                  );
-                })}
+                {wasSelected.map((label, index) => (
+                  <Fragment key={label}>
+                    {index === 0 ? null : ", "}
+                    {/* A label the replaced answer chose is drawn from its own tree, which the
+                        event carries by the label's place in that answer's list: it can name an
+                        option the ask no longer holds. Only a server older than those trees
+                        sends a label with none, and the renderer then parses it, as it parses
+                        every stored text of that server's events. */}
+                    <MarkdownBody
+                      markdown={label}
+                      onRendered={onRendered}
+                      source={source}
+                      surface="earlier-chosen-option"
+                      tree={payloadTree(event, `payload.previous_answer.selected.${index}`)}
+                      variant="inline"
+                    />
+                  </Fragment>
+                ))}
                 {wasSelected.length === 0 || wasText === "" ? null : " - "}
                 {wasText === "" ? null : (
                   <MarkdownBody

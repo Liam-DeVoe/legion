@@ -88,8 +88,10 @@ function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
   const href = reference === undefined ? undefined : referenceHref(reference);
   const owner = ownerOf(candidate);
   // The first line tells two matches apart; where the server gave none, the whole id does, so
-  // the link always has words of its own. It is the head of the item's text, which the server
-  // cuts, and a link's words hold no markup, so it is read as its plain words.
+  // the link always has words of its own. A document's first line is its file's name, which is
+  // drawn as the characters it is, so `*draft*.md` reads as written. Every other first line is
+  // the head of the item's text, which the server cuts and reads into a tree, and a link's words
+  // hold no markup, so it is read as its plain words.
   return (
     <li className="min-w-0">
       <div
@@ -107,18 +109,27 @@ function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
           className={`block min-w-0 [overflow-wrap:anywhere] ${linkText} ${linkHoverText}`}
           to={href}
         >
-          <PlainText
-            markdown={candidate.first_line}
-            source={textSourceOf(textSourceKind(candidate.kind), candidate.id, candidate.issue_key)}
-            surface="item-match-first-line"
-            tree={candidate.first_line_tree}
-          >
-            {/* The candidate is the record the line is the head of, though a block of a document
-                names no record by its own id. The first line is drawn from the server's reading
-                of it as its plain words, and as written until the engine has answered: the
-                reading list's `item-match-first-line`. */}
-            {(line) => (line ?? candidate.first_line) || candidate.id}
-          </PlainText>
+          {candidate.kind === "artifact" ? (
+            // A file's name, as the reading list's `item-match-first-line` says of a document.
+            candidate.first_line || candidate.id
+          ) : (
+            <PlainText
+              markdown={candidate.first_line}
+              source={textSourceOf(
+                textSourceKind(candidate.kind),
+                candidate.id,
+                candidate.issue_key
+              )}
+              surface="item-match-first-line"
+              tree={candidate.first_line_tree}
+            >
+              {/* The candidate is the record the line is the head of, though a block of a
+                  document names no record by its own id. The first line is drawn from the
+                  server's reading of it as its plain words, and as written until the engine
+                  has answered: the reading list's `item-match-first-line`. */}
+              {(line) => (line ?? candidate.first_line) || candidate.id}
+            </PlainText>
+          )}
         </Link>
       )}
     </li>

@@ -334,6 +334,38 @@ test("the picker offers a role a listed session holds, unresponsive or not, and 
   );
 });
 
+// A role the issue's collaborators record is known while no session holds it, whatever the
+// registry says of the session that last did: here that session is live and claims no role, so
+// the role is offered as not running - the one rule the renderer links it by
+// (`reference-naming.test.tsx`, "a role whose recorded session runs on without it").
+test("the picker offers a recorded role whose session is live and claims no role", async () => {
+  const user = userEvent.setup();
+  const reviewer = {
+    ...worker,
+    last_seen: now - 2_000,
+    roles: [],
+    session_id: "reviewer-session",
+    title: "Reviewer",
+  };
+  renderHost({ agents: [planner, worker, reviewer] });
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+
+  await waitFor(() =>
+    expect(drawnRows()).toEqual([
+      "People: alice@theorem.dev",
+      "Agents: Planner",
+      "Agents: Worker",
+      "Agents: Reviewer",
+      "Roles: planner",
+      "Roles: reviewer",
+      "Components: The relay",
+    ])
+  );
+});
+
 test("the doors differ only in their order, and `#` leads with the issues the search answers", async () => {
   const user = userEvent.setup();
   const page = renderHost();

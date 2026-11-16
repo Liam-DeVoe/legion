@@ -2,7 +2,7 @@ import { afterEach, beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { displayTree } from "../../__tests__/display-trees";
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
 import type { IDCandidate } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -85,5 +85,38 @@ test("a match's first line is drawn from its tree and reads a #id against its ow
     ).toBeDefined();
   } finally {
     answers.restore();
+  }
+});
+
+// A document's first line is its file's name, which the server sends no tree of: the link draws
+// the name as the characters it is and parses nothing, so `*draft*.md` keeps its asterisks. Read
+// as markdown, the link would read `draft.md`, and the page would have parsed a stored name.
+test("a document match's first line is its file's name, drawn as its characters", async () => {
+  const parses = countEngineParses();
+  const candidates: IDCandidate[] = [
+    {
+      first_line: "*draft*.md",
+      id: "c0ffee00-0000-4000-8000-000000000003",
+      issue_key: "CORE-1",
+      kind: "artifact",
+      ref: "dispatch://CORE-1/artifact/draft-md",
+    },
+  ];
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ItemMatchList
+          candidates={candidates}
+          route={{ id: "c0ffee00", key: "CORE-1", kind: "comment" }}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    expect(await screen.findByRole("link", { name: "*draft*.md" })).toBeDefined();
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
   }
 });

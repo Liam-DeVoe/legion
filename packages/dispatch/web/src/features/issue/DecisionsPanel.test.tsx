@@ -251,12 +251,12 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
   }
 });
 
-// Three places of the panel hold no markup and draw their text's plain-text projection: an open
-// question's link, a shaped block's link, and the name the Keep and the Change are given (the
-// Change's form here). Each drops the formatting and reads a `dispatch://` address as its
-// target's name - the reading list's `issue-open-question`, `issue-decision-link` and
-// `issue-decision`. Drawn as the characters they are, each would hold `**` and the address.
-test("an open question, a shaped block's link and the Change's name read their text's plain-text projection", async () => {
+// Two places of the panel hold no markup and draw their text's plain-text projection: an open
+// question's link, and the name the Keep and the Change are given (the Change's form here). Each
+// drops the formatting and reads a `dispatch://` address as its target's name - the reading
+// list's `issue-open-question` and `issue-decision`. Drawn as the characters they are, each would
+// hold `**` and the address.
+test("an open question and the Change's name read their text's plain-text projection", async () => {
   const user = userEvent.setup();
   const question = "**Which** index does dispatch://CORE-2 need?";
   const view: IssueDecisions = {
@@ -264,20 +264,6 @@ test("an open question, a shaped block's link and the Change's name read their t
       decision({
         block_id: "only",
         heading: "Warm dispatch://CORE-2 first",
-        links: [
-          {
-            created_at: "2026-11-01T00:00:00Z",
-            created_version: 1,
-            from_block: "only",
-            stale: false,
-            to: graphNode({
-              block_id: "p1",
-              id: "CORE-1/spec#p1",
-              kind: "block",
-              text: "**Warm** dispatch://CORE-2 before the cut.",
-            }),
-          },
-        ],
         text: "## Warm dispatch://CORE-2 first\n\nIt is cheap.",
         waiting_review: true,
       }),
@@ -309,15 +295,64 @@ test("an open question, a shaped block's link and the Change's name read their t
       })
     ).toHaveAttribute("href", "/issues/CORE-1/spec#b-q1");
     const waiting = list("Waiting for your review");
-    expect(
-      await within(waiting).findByRole("link", {
-        name: "Warm CORE-2 Cut the release before the cut.",
-      })
-    ).toHaveAttribute("href", "/issues/CORE-1/spec#b-p1");
     await user.click(within(waiting).getByRole("button", { name: "Change" }));
     expect(
       within(waiting).getByRole("form", { name: "Change Warm CORE-2 Cut the release first" })
     ).toBeDefined();
+  } finally {
+    read.mockRestore();
+    summary.mockRestore();
+  }
+});
+
+// A link under "Shaped in the spec" names the spec block by its id, in the panel's own words: the
+// decisions read sends no text of the block a link points to (`refs.BlockLinks` resolves each end
+// as a graph node, whose text only a reference read fills), so there is no stored text to draw,
+// and the panel reads none. Handed a node that did carry text, the link still reads `Block p1`:
+// a projection of that text would read `Warm CORE-2 Cut the release before the cut.`.
+test("a shaped block's link names the block by its id and draws no text of the block", async () => {
+  const view: IssueDecisions = {
+    decisions: [
+      decision({
+        block_id: "only",
+        heading: "Keep the notices queryable",
+        links: [
+          {
+            created_at: "2026-11-01T00:00:00Z",
+            created_version: 1,
+            from_block: "only",
+            stale: false,
+            to: graphNode({
+              block_id: "p1",
+              id: "CORE-1/spec#p1",
+              kind: "block",
+              text: "**Warm** dispatch://CORE-2 before the cut.",
+            }),
+          },
+        ],
+        text: "## Keep the notices queryable\n\nIt is cheap.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "in_progress",
+    title: "Cut the release",
+  }));
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(await within(waiting).findByRole("link", { name: "Block p1" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/spec#b-p1"
+    );
+    expect(within(waiting).queryByText(/before the cut/)).toBeNull();
   } finally {
     read.mockRestore();
     summary.mockRestore();

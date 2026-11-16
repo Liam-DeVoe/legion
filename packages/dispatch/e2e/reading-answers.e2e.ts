@@ -1,18 +1,19 @@
 /**
  * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over what a person wrote on an
- * ask or in a thread and reads back on their own pages: the Answers page's three texts - the
- * question a row answers, the answer written on it, and a reply written in its thread - and the
- * subject line the Inbox's reading column opens a Reply thread under, which is where `/replies`
- * lands. Each is a stored record, and each draws every form a text names a node by through the
- * one renderer (R6): as its node's current name, the party as `@` and the session's name, and
- * none left as the characters written. None of the four hosts is a link or a button - an
- * Answers row's Open is a link beside its texts, never around them, and the reading column's
- * subject line is a heading - so each reference is a link there.
+ * ask or in a thread and reads back on their own pages: the Answers page's four texts - the
+ * question a row answers, the label of an option the answer chose, the answer written on it, and
+ * a reply written in its thread - and the subject line the Inbox's reading column opens a Reply
+ * thread under, which is where `/replies` lands. Each is a stored record, and each draws every
+ * form a text names a node by through the one renderer (R6): as its node's current name, the
+ * party as `@` and the session's name, and none left as the characters written. None of the
+ * five hosts is a link or a button - an Answers row's Open is a link beside its texts, never
+ * around them, a chosen option is a pill, and the reading column's subject line is a heading -
+ * so each reference is a link there.
  *
  * Each row writes `readingText` into the one record its surface shows and plain words into any
- * other record the surface needs: the question the reading session asks, the answer and the
- * reply alice writes on it, and the root of a comment thread alice starts and the session
- * answers.
+ * other record the surface needs: the question the reading session asks and the options it
+ * offers, the answer and the reply alice writes on it, and the root of a comment thread alice
+ * starts and the session answers.
  */
 import { answerAsk, createAsk, createComment } from "./api";
 import { inboxPane, selectRow } from "./inbox-pane";
@@ -66,6 +67,28 @@ test("answers-subject: an Answers row's question draws every form of a stored re
   await expectReadsReferences(answeredQuestionPreview(page, ask.id), world, "link");
 });
 
+// SLOW(>=2s): the reading world, an ask asked and answered with one of its options, and the
+// Answers page drawn.
+test("answers-chosen-options: an Answers row's chosen option draws every form of a stored reference through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  const label = readingText(world);
+  const ask = await createAsk(
+    world.host.key,
+    { options: [{ label }, { label: "Later" }], question: PLAIN_QUESTION },
+    asReadingSession
+  );
+  await answerAsk(ask.id, { expected_edited_at: null, selected: [label] });
+
+  await page.goto("/answers");
+  // The answer chose that option and wrote no text, so the row's one rendered body is the
+  // option's pill, below the question's preview: its label is drawn from the tree the row
+  // carries beside it, in the row itself rather than in its Open link, so its references are
+  // links.
+  await expectReadsReferences(answerRow(page, ask.id).locator(RENDERED_BODY), world, "link");
+});
+
 // SLOW(>=2s): the reading world, an ask asked and answered, and the Answers page drawn.
 test("answers-answer: an Answers row's answer draws every form of a stored reference through the renderer", async ({
   page,
@@ -76,15 +99,17 @@ test("answers-answer: an Answers row's answer draws every form of a stored refer
     { options: OPTIONS, question: PLAIN_QUESTION },
     asReadingSession
   );
+  // The answer chooses no option, so no option's pill is a second rendered body in its row
+  // (`answers-chosen-options` reads that one).
   await answerAsk(ask.id, {
     expected_edited_at: null,
-    selected: ["Yes"],
+    selected: [],
     text: readingText(world),
   });
 
   await page.goto("/answers");
   // An answer's row draws one rendered body, the text written with the answer, below the
-  // question's preview and the picked option's pill.
+  // question's preview.
   await expectReadsReferences(answerRow(page, ask.id).locator(RENDERED_BODY), world, "link");
 });
 

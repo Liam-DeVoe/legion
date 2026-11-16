@@ -336,6 +336,14 @@ test("a reference in a link's words is told from the link's address", () => {
     ["CORE-1", true],
     ["dispatch://CORE-2", false],
   ]);
+  // A link's address may run on far longer than any a person types - a dashboard's URL with its
+  // query - and it is a link to both CommonMark parsers however long it is, so the key in its
+  // words is in a link's words, which the renderer links none of.
+  const longAddress = `https://grafana.example/d/x?${"var=1&".repeat(200)}`;
+  expect(inWords(`[CORE-12 p99](${longAddress}) is slow`)).toEqual([["CORE-12", true]]);
+  expect(inlineLinks(`[CORE-12 p99](${longAddress}) is slow`).map((link) => link.close)).toEqual([
+    `[CORE-12 p99](${longAddress})`.length,
+  ]);
 });
 
 // A link holds no link: once one closes, no bracket open before it opens one, while a bracket
@@ -360,12 +368,18 @@ test("a link holds no link, a picture's caption may, and one text is read for it
 });
 
 // A `](` that opens no link - parentheses that never balance, a title that never closes - is read
-// no further than the longest tail a link may have, and never past its paragraph, so a draft of
-// thousands of them is read in time that grows with its length, not with its square (8,000 of
+// through stops found once for the whole text, never across the rest of its paragraph, so a draft
+// of thousands of them is read in time that grows with its length, not with its square (8,000 of
 // either took 6 to 12 seconds read to the end of the text), and still reads the link after them.
 test("a draft of thousands of `](` that open no link is read in linear time, and its real link still found", () => {
-  for (const opening of ["[a](((", "[a](x ("]) {
-    const body = `${opening.repeat(8000)} [@Alice](${AGENT}) now.`;
+  const tail = ` [@Alice](${AGENT}) now.`;
+  // The third: every title closes at the one `)`, and a long run of spaces after it stands
+  // before something that is no `)`.
+  for (const body of [
+    `${"[a](((".repeat(8000)}${tail}`,
+    `${"[a](x (".repeat(8000)}${tail}`,
+    `${"[a](x (".repeat(8000)})${" ".repeat(8000)}.${tail}`,
+  ]) {
     const started = performance.now();
     const links = inlineLinks(body);
     expect(performance.now() - started).toBeLessThan(3000);

@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import type {
   ArchitectureTree,
   ArchitectureTreeIssueRef,
-  ArchitectureTreeNone,
+  ArchitectureTreeNoneRead,
   ArchitectureTreeRetired,
 } from "../../api/types";
 import { StatusPill } from "../../components/Pill";
@@ -328,9 +328,9 @@ function NotArchitecturalRow({
   project,
   registry,
 }: {
-  issue: ArchitectureTreeNone;
+  issue: ArchitectureTreeNoneRead;
   project: string;
-  registry: InFlightRegistry<ArchitectureTreeNone>;
+  registry: InFlightRegistry<ArchitectureTreeNoneRead>;
 }): ReactNode {
   const write = useListWrite(issue, project, registry);
   return (
@@ -361,8 +361,14 @@ function NotArchitecturalRow({
       </div>
       <p className={`text-sm ${textSecondaryOnSurface}`}>
         {/* No `source`: why the reason is no record is the reading list's
-            `not-architectural-reason` (`DISPATCH_READING_SURFACES`). */}
-        <MarkdownBody markdown={issue.reason} surface="not-architectural-reason" variant="inline" />
+            `not-architectural-reason` (`DISPATCH_READING_SURFACES`). It is drawn from the tree
+            the architecture read sends of it (`reason_tree`). */}
+        <MarkdownBody
+          markdown={issue.reason}
+          surface="not-architectural-reason"
+          tree={issue.reason_tree}
+          variant="inline"
+        />
       </p>
       <RowError error={write.error} />
     </div>

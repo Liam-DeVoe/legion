@@ -12,7 +12,6 @@ import {
 } from "../../theme/classes";
 
 import { MarkdownPreview } from "./MarkdownPreview";
-import { PlainText } from "./plain-text";
 import { ReferenceHostIs } from "./reference-host";
 import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferenceHref, useReferenceTarget } from "./reference-target";
@@ -62,9 +61,11 @@ function cardRecord(route: DispatchReferenceRoute): TextSource | undefined {
 }
 
 /** A card for one Dispatch reference: the route it resolved to, its `dispatch://` form (the
- *  card's identity, one card per distinct reference), and the words the body wrote for it, which
- *  the card shows - as their plain-text projection, since the body may have written a link -
- *  while the target's title loads and for a target that has none. */
+ *  card's identity, one card per distinct reference), and the reference as the body wrote it,
+ *  which the card shows while the target's title loads and for a target that has none. A card is
+ *  made only of a body that is nothing but references (`referenceCards`), so what the body wrote
+ *  is one reference - an address, an issue key or a `#id` - and never a link's words: a name,
+ *  drawn as the characters it is. */
 interface DispatchCard {
   readonly reference: string;
   readonly route: DispatchReferenceRoute;
@@ -82,14 +83,7 @@ interface ReferenceCards {
   readonly github: readonly GitHubReference[];
 }
 
-function DispatchUnfurl({
-  card,
-  source,
-}: {
-  card: DispatchCard;
-  /** The record the body is, which the card's words are part of. */
-  source: TextSource | undefined;
-}): ReactNode {
+function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
   const { title, description, descriptionTree } = useReferenceTarget(card.route, { text: true });
   const href = useReferenceHref(card.route);
 
@@ -101,11 +95,8 @@ function DispatchUnfurl({
         href={href}
       >
         <span className={`block font-medium ${linkText}`}>
-          {title ?? (
-            <PlainText markdown={card.text} source={source} surface="dispatch-reference-card">
-              {(words) => words ?? ""}
-            </PlainText>
-          )}
+          {/* The reading list's `reference-card-words`. */}
+          {title ?? card.text}
         </span>
         {description === undefined ? null : (
           <MarkdownPreview
@@ -333,15 +324,11 @@ function referenceCards(
 export function UnfurlRead({
   body,
   reading,
-  source,
   written,
 }: {
   body: string;
   /** The body's references with every fact its queries answered: what the cards are. */
   reading: TextReading;
-  /** The record the body is (`UnfurlProps`), which a card's words read a `#id` against while
-   *  the card's target loads. */
-  source: TextSource | undefined;
   /** The row of the reading list these cards are drawn on (`UnfurlProps`). */
   surface?: DispatchReadingSurface;
   /** The body's references as the text alone reads: what its shape is read from. */
@@ -362,7 +349,7 @@ export function UnfurlRead({
   return (
     <section aria-label="References" className="mt-3 space-y-2">
       {cards.dispatch.map((card) => (
-        <DispatchUnfurl card={card} key={card.reference} source={source} />
+        <DispatchUnfurl card={card} key={card.reference} />
       ))}
       {cards.github.map((reference) => (
         <GitHubUnfurl href={reference.href} key={reference.href} path={reference.path} />
@@ -388,7 +375,5 @@ export function Unfurl({ body, source, surface }: UnfurlProps): ReactNode {
     [body, written]
   );
   const { reading } = useTextReferences(shaped ? body : "", source);
-  return (
-    <UnfurlRead body={body} reading={reading} source={source} surface={surface} written={written} />
-  );
+  return <UnfurlRead body={body} reading={reading} surface={surface} written={written} />;
 }

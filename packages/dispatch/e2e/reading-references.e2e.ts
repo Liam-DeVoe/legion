@@ -180,6 +180,31 @@ test("search-ask-status: an ask hit draws every form of its stored question's an
   await expectReadsReferences(previews.nth(1), world, "inert");
 });
 
+// SLOW(>=2s): the reading world, an ask answered by alice with one of its options, and the
+// palette's search answered by Postgres's headline.
+test("search-ask-chosen-options: an ask hit's chosen option draws every form of a stored reference as a name that links nothing", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  const label = readingText(world);
+  // The question opens with the word the palette searches for and names nothing, so the hit is
+  // found by it and the one text of the hit's status line that names anything is the label.
+  const ask = await createAsk(
+    world.host.key,
+    { options: [{ label }, { label: "Later" }], question: `${READING_LEAD} which reading first?` },
+    referenceAgent
+  );
+  await answerAsk(ask.id, { expected_edited_at: null, selected: [label] });
+
+  const dialog = await searchPalette(page);
+  const hit = dialog.locator(`#search-option-ask-${ask.id}`);
+  await expect(hit).toContainText("Chose");
+  // The hit's snippet is a preview, and the answer wrote no text to preview, so the one body the
+  // hit renders is the label `Chose …` names, drawn from the tree the hit carries beside it. The
+  // row is one button, a `control` host, so it links nothing.
+  await expectReadsReferences(hit.locator(RENDERED_BODY), world, "inert");
+});
+
 // SLOW(>=2s): the reading world, a comment, and the palette's search answered by Postgres's
 // headline.
 test("search-result: a result row's snippet draws every form of a stored reference as a name that links nothing", async ({

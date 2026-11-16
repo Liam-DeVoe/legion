@@ -1,22 +1,29 @@
-import { afterEach, expect, test } from "bun:test";
-import { cleanup } from "@testing-library/react";
+import { afterEach, beforeAll, expect, test } from "bun:test";
+import { cleanup, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import type { SearchAsk } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskHitStatus } from "./AskHitStatus";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 afterEach(cleanup);
 
-// A hit carries its answer's chosen options as their labels alone (`SearchAsk`), with no tree
-// and no option to take one from, and the page parses no stored text: `Chose …` shows each label
-// as written (`search-ask-chosen-options`). Drawn by the renderer, the label would be parsed in
-// the page and read `Chose Brass it`.
-test("an ask hit's chosen options are their labels as written, parsed by nothing", () => {
+// A hit's `Chose …` draws each label from the tree the hit carries beside it, at the label's own
+// index (`search-ask-chosen-options`), and parses nothing: the trees here read `Bronze` and
+// `Iron` where the labels' markdown says `Brass` and `Steel`, so a line that parsed its labels,
+// or took one label's tree for another, would show other words.
+test("an ask hit's chosen options are drawn from the trees of their labels", async () => {
   const ask = {
     answer: {
       at: "2026-10-08T03:00:00Z",
       selected: ["**Brass** it", "Steel"],
+      selected_trees: [displayTree("**Bronze** it"), displayTree("Iron")],
       text: null,
       user: "alice",
     },
@@ -28,8 +35,8 @@ test("an ask hit's chosen options are their labels as written, parsed by nothing
     </MemoryRouter>
   );
   try {
-    expect(view.container.textContent).toContain("Chose **Brass** it, Steel");
-    expect(view.container.querySelector("strong")).toBeNull();
+    await waitFor(() => expect(view.container.textContent).toContain("Chose Bronze it, Iron"));
+    expect(view.container.querySelector("strong")?.textContent).toBe("Bronze");
   } finally {
     view.unmount();
   }

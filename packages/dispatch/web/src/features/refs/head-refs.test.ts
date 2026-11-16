@@ -1,6 +1,44 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { headRefs } from "./head-refs";
+
+/** One cut the server's `text.HeadRefs` and this twin are both held to: `text` cut at `limit`
+ *  characters with `ellipsis`, read against the deployment at `origin` (none known where it is
+ *  absent), gives `head`. */
+interface HeadRow {
+  readonly name: string;
+  readonly text: string;
+  readonly limit: number;
+  readonly ellipsis: string;
+  readonly origin?: string;
+  readonly head: string;
+}
+
+/** The one table of those cuts, read from where the server's tests read it
+ *  (`TestHeadRefsMatchesTheSharedHeadTable` in `text/runes_test.go`), so the two copies of the
+ *  rule cannot drift apart: a row either copy cuts otherwise fails here or there. */
+const HEAD_ROWS: readonly HeadRow[] = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL(
+        "../../../../../envoy/internal/dispatch/text/testdata/head-refs.json",
+        import.meta.url
+      )
+    ),
+    "utf8"
+  )
+);
+
+test("every row of the server's head table is cut as the server cuts it", () => {
+  expect(HEAD_ROWS.length).toBeGreaterThan(0);
+  const differing = HEAD_ROWS.flatMap((row) => {
+    const head = headRefs(row.text, row.limit, row.ellipsis, row.origin ?? "");
+    return head === row.head ? [] : [{ got: head, name: row.name, want: row.head }];
+  });
+  expect(differing).toEqual([]);
+});
 
 // A head drawn as its characters must not end in half a reference: a cut inside one moves back
 // to where it starts, the inline link around it taken whole, and drops the spaces before it.

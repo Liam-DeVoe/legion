@@ -894,6 +894,7 @@ export function MentionComposer({
             author={replyTo.actor}
             className="min-w-0 flex-1"
             excerpt={replyTo.excerpt}
+            excerptTree={replyTo.excerptTree}
             source={textSourceOf(
               replyTo.parentKind,
               replyTo.id,

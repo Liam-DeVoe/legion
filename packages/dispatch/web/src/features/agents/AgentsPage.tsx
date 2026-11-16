@@ -258,6 +258,7 @@ function AgentExchangeReply({
               author: parent.author,
               block: reply.reply_block,
               excerpt: parent.body,
+              excerptTree: parent.body_tree,
               source: textSourceOf("message", parent.id, parent.issue_key),
               ...(parent.issue_key === null
                 ? {}

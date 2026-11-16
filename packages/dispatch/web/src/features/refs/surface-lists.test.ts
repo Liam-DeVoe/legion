@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   DISPATCH_READING_SURFACES,
   DISPATCH_WRITING_BOXES,
+  type DispatchReadingSurface,
   type DispatchReadingSurfaceRow,
   type DispatchWritingBoxRow,
 } from "@legion/contracts";
@@ -22,7 +23,10 @@ import * as ts from "typescript";
  * names its row itself, in its `surface`, and fails when it names none or a row that does not
  * name its file: a second mount in a file a row already names is a surface of its own until it
  * says which row it is. A mount on a row whose text is a record hands its construct that record
- * as its `source`, or its row says it cannot carry a question id. The test reads each row back
+ * as its `source`, or its row says it cannot carry a question id; and a component that hands a
+ * prop of its own on as that `source` (`AskHitStatus`'s `source`, `AskOptionList`'s) is handed
+ * that prop wherever it is mounted, however many components hand it on, since a mount that
+ * forwards a prop its caller left out hands the construct nothing. The test reads each row back
  * against the source, so a row whose box or surface is gone fails too, and a row drawn through
  * the projection names the test that proves it.
  *
@@ -31,6 +35,17 @@ import * as ts from "typescript";
  * a mention reads as `[@name](dispatch://agent/...)`. The test finds those in the syntax tree
  * too, and fails on each one that no excluded row names by its id beside it and that the
  * reviewed list of fields holding no stored text (`NOT_STORED_TEXTS`) does not hold.
+ *
+ * The page parses no stored text on its own thread: the server sends the reading it made of each
+ * one, and the renderer and the projection draw that tree. So every mount of either that is
+ * handed a stored text hands it the text's tree too - the `tree` of an element, the first
+ * argument of the hook - and so does every mount of a component that hands one a text and its
+ * tree from its own props (`ReplyQuote`'s `excerpt` and `excerptTree`, `ReplyTurn`'s `quote`),
+ * however many components hand it on. The one excuse is a row whose text reaches the page with
+ * no tree (`UNTREED_ROWS`), named by its id: a live turn and its reasoning, a write the server
+ * has not stored (a held message, a broadcast's send row), a GitHub body, and a suggestion's
+ * two sides, which `margin/ThreadCard.tsx` - main's own mounts - draws inside a diff, where the
+ * renderer writes characters and parses nothing.
  *
  * What it cannot see, since it reads each file's syntax and not its types:
  *
@@ -41,9 +56,23 @@ import * as ts from "typescript";
  *   one but is not imported by its own name.
  * - A field the dashboard names like its own words (`label`, `description`) on a value the
  *   trace does not see reached through `options`, and any field whose name no stored text has.
- * - What a spread (`{...props}`) hands a construct: a spread counts as handing it a source.
+ * - What a spread (`{...props}`) hands a construct: a spread counts as handing it a source, and
+ *   a tree.
  * - A stored text written into the page by the DOM itself (`textContent`, `setAttribute`,
  *   `document.title`) other than through a template literal.
+ * - Which tree a mount hands: one is read as handed whatever text it is the tree of, and a
+ *   field whose tree the server leaves out for some records is held only by the mount's own row
+ *   of tests - a document candidate's first line is its file's name, which has none
+ *   (`ItemMatchList.tsx`).
+ * - A tree carried in a value built away from the mount - a reply target held in state, an
+ *   object that is no literal where the mount writes it - which counts as handing one, and a
+ *   function that is no component (a hook) handing its own parameter on, whose callers are not
+ *   followed. A component is followed by its name, so two components of one name are one here.
+ * - A host that draws characters (a link, a diff, a plain host), where the renderer parses
+ *   nothing: a mount there is held to a tree like any other, or excused by its row.
+ * - A record a component hands on that is not the one its mount's text is: a mount handing any
+ *   `source` counts as handing the right one, and a hook handing its own option on as a
+ *   `source` is not followed to its callers, as a component is.
  *
  * It walks `packages/proof-editor/src` beside the dashboard because the document body is one of
  * the three hosts that carry the picker: a box added inside the editor package must not be
@@ -213,8 +242,6 @@ const UNTREED_PROSE_FIELDS: readonly string[] = [
   "observed",
   // An anchor's quote: the document's own text where a comment or an ask was left.
   "quote",
-  // An answer's chosen options: each the label its asker wrote.
-  "selected",
   // A document version's summary: the line its writer gave the version.
   "summary",
 ];
@@ -704,22 +731,111 @@ function mountComplaint(mount: Mount): string {
  *  carry a question id (`cannotCarry`). A mount of a construct that takes no source, and one on
  *  a row whose text is no record, is held to nothing here. */
 function sourceComplaint(mount: Mount): string {
-  const row = DISPATCH_READING_SURFACES.find((candidate) => candidate.surface === mount.surface);
-  if (
-    row === undefined ||
-    !row.record ||
-    mount.sourced !== false ||
-    row.cannotCarry?.forms.includes("question-id") === true
-  ) {
+  if (mount.sourced !== false || !rowTakesSource(mount.surface)) {
     return mount.at;
   }
-  return `${mount.at}: ${mount.construct} draws ${row.surface}, whose text is a record, and hands it no source`;
+  return `${mount.at}: ${mount.construct} draws ${mount.surface}, whose text is a record, and hands it no source`;
+}
+
+/** Whether a mount on the row `surface` names is handed the record its text is: a row whose text
+ *  is a record, and that does not say its surface cannot carry a question id. */
+function rowTakesSource(surface: string | undefined): boolean {
+  const row = DISPATCH_READING_SURFACES.find((candidate) => candidate.surface === surface);
+  return row?.record === true && row.cannotCarry?.forms.includes("question-id") !== true;
+}
+
+/** A component that hands a prop of its own on as the record a construct's text is: the
+ *  construct's `source`, or the same prop of a component that hands it on in turn. The record
+ *  reaches the construct only where whoever mounts the component hands it that prop. */
+interface SourceForward {
+  readonly component: string;
+  readonly ref: PropRef;
+  readonly surface: string;
+}
+
+/**
+ * Each mount `trees` hold of a component that hands a prop of its own on as a construct's
+ * `source`, on a row that takes one (`rowTakesSource`): its place, or what is wrong where it
+ * hands that prop nothing. A component is found to hand its prop on where a mount's `source` is
+ * read from its own props (`propsHanded`), and is then held to it wherever it is mounted, by its
+ * name, in any of the files, as the tree check holds a component; the walk runs until no
+ * component is added, so one that hands the prop to another that hands it on is held too. A
+ * spread may hold the prop, and the walk cannot read what it holds, so it counts as handing one.
+ */
+function forwardedSourceComplaints(trees: readonly ts.SourceFile[]): string[] {
+  const forwards: SourceForward[] = [];
+  const known = new Set<string>();
+  const learn = (node: ts.Node, value: ts.Expression | undefined, surface: string): boolean => {
+    const component = componentOf(node);
+    if (value === undefined || component === undefined) {
+      return false;
+    }
+    let added = false;
+    for (const ref of propsHanded(value, component)) {
+      const key = `${component.name}.${ref.prop}.${ref.member ?? ""}`;
+      if (!known.has(key)) {
+        known.add(key);
+        forwards.push({ component: component.name, ref, surface });
+        added = true;
+      }
+    }
+    return added;
+  };
+  const elementsOf = (tree: ts.SourceFile): ts.JsxOpeningLikeElement[] => {
+    const elements: ts.JsxOpeningLikeElement[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+        elements.push(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(tree);
+    return elements;
+  };
+  const elements = trees.flatMap((tree) => elementsOf(tree).map((node) => ({ node, tree })));
+  for (const { node, tree } of elements) {
+    const surface = elementSurface(node, tree);
+    if (
+      SOURCE_TAKERS.has(node.tagName.getText(tree)) &&
+      typeof surface === "string" &&
+      rowTakesSource(surface)
+    ) {
+      learn(node, attributesOf(node, tree).values.get("source"), surface);
+    }
+  }
+  for (let added = true; added; ) {
+    added = false;
+    for (const { node, tree } of elements) {
+      for (const forward of forwards.filter(
+        (each) => each.component === node.tagName.getText(tree)
+      )) {
+        added =
+          learn(node, attributesOf(node, tree).values.get(forward.ref.prop), forward.surface) ||
+          added;
+      }
+    }
+  }
+  const complaints: string[] = [];
+  for (const { node, tree } of elements) {
+    const tag = node.tagName.getText(tree);
+    for (const forward of forwards.filter((each) => each.component === tag)) {
+      const at = `${tree.fileName}:${lineOf(tree, node)}`;
+      const handed = handedAt(attributesOf(node, tree), forward.ref);
+      complaints.push(
+        handed.some((each) => each.kind !== "none")
+          ? at
+          : `${at}: ${tag} hands its ${forward.ref.prop} on as the source of ${forward.surface}, whose text is a record, and is mounted here with none`
+      );
+    }
+  }
+  return complaints;
 }
 
 /** What the API's contract says of the stored texts it sends. */
 interface ContractTexts {
-  /** Every field the server also sends read as a tree (`<field>_tree` beside it): a tree is what
-   *  the server makes of a writer's stored text, so the field holds one. */
+  /** Every field the server also sends read as a tree - `<field>_tree` beside it, or for a list
+   *  of texts `<field>_trees`, one tree for each item: a tree is what the server makes of a
+   *  writer's stored text, so the field holds one. */
   readonly fields: readonly string[];
   /** For each of those fields, the fields of the contract whose value is a schema holding it, or
    *  a list of one: `options` for an ask option's `label`. */
@@ -746,7 +862,9 @@ function readContract(): ContractTexts {
             : []
         )
       );
-      const stored = [...names].filter((name) => names.has(`${name}_tree`));
+      const stored = [...names].filter(
+        (name) => names.has(`${name}_tree`) || names.has(`${name}_trees`)
+      );
       for (const field of stored) {
         fields.add(field);
       }
@@ -1555,29 +1673,477 @@ function drawComplaint(draw: RawDraw, text: string): string {
     : `${label}: a stored text drawn as its characters, by no construct and under no row of DISPATCH_READING_SURFACES`;
 }
 
+// ------------------------------------------------------------------------------------------
+// The trees
+// ------------------------------------------------------------------------------------------
+
+/** The constructs that draw a stored text from the reading the server sent of it rather than
+ *  parsing it on the page's thread: an element takes that reading as its `tree` and the text as
+ *  its `markdown`; the hook takes the tree as its first argument and the text as its second. */
+const TREE_TAKERS: ReadonlySet<string> = new Set([
+  "MarkdownBody",
+  "MarkdownPreview",
+  "PlainText",
+  "usePlainHeadline",
+]);
+
+/**
+ * The rows of the reading list whose text reaches the page with no tree the server read of it,
+ * so a mount on one hands its construct none and the page reads the text itself: the one excuse
+ * the tree check takes, by the row's id. A row here whose every mount hands a tree fails, so the
+ * list cannot outlive the mounts it speaks for.
+ */
+const UNTREED_ROWS: readonly { readonly surface: DispatchReadingSurface; readonly why: string }[] =
+  [
+    {
+      surface: "agent-turn-text",
+      why: "A session's live transcript, which Dispatch stores nothing of, so the server has no text to read a tree of.",
+    },
+    {
+      surface: "agent-turn-reasoning",
+      why: "The reasoning beside a live turn, which is that same transcript.",
+    },
+    {
+      surface: "agent-held-send",
+      why: "A message the server has not stored yet: the page parses it, as it parses every write the server has not stored.",
+    },
+    {
+      surface: "github-reference-card",
+      why: "A GitHub issue's or pull request's body, read from GitHub's API, which Dispatch does not store.",
+    },
+    {
+      surface: "broadcast-send-row",
+      why: "A send's own words, from the write the page holds (`row.send.input.body`) while it is queued, out, refused or just made: the server has not stored it, or the row does not read what it stored, so the page parses it, as it parses every write it holds.",
+    },
+    {
+      surface: "margin-suggestion-diff",
+      why: "A suggestion's two sides are drawn inside a diff (`ReferenceHostIs host=\"diff\"`), where the renderer writes the characters it is handed and parses nothing (`hostDrawsMarkup`), so no tree is needed. The mounts are main's own (`margin/ThreadCard.tsx`).",
+    },
+  ];
+
+/** Where a text or a tree a mount hands on comes from, where it is the props of the component the
+ *  mount is in: the prop, and the member of it for a prop that is an object holding the text
+ *  (`quote.excerpt`, `quote.excerptTree`). */
+interface PropRef {
+  readonly prop: string;
+  readonly member?: string;
+}
+
+/** A component that hands a construct, or another such component, a text and the tree of it
+ *  that it is handed itself: the props that carry each. Every mount of it then hands the tree
+ *  wherever it hands the text, as a mount of the construct does. */
+interface TreePair {
+  readonly text: PropRef;
+  readonly tree: PropRef;
+}
+
+/** One mount the tree check reads: where it is, the row its `surface` names for a construct's
+ *  own mount, whether it hands a stored text and no tree of it, and the complaint that makes
+ *  where no row of `UNTREED_ROWS` excuses it. */
+interface TreeMount {
+  readonly at: string;
+  readonly complaint: string | undefined;
+  readonly surface: string | undefined;
+  readonly untreed: boolean;
+}
+
+/** An element's attributes as a mount hands them: each with the expression it holds (a string
+ *  literal for one written `name="..."`), and whether it spreads anything. */
+interface MountAttributes {
+  readonly spread: boolean;
+  readonly values: ReadonlyMap<string, ts.Expression | undefined>;
+}
+
+/** One text a mount hands, with every tree it hands beside it. */
+interface HandedPair {
+  readonly text: Handed;
+  readonly trees: readonly Handed[];
+}
+
+/** What a mount hands a construct or a component for one text or tree: nothing, a string written
+ *  out (no stored text), a value the walk reads, or one it cannot see into - a spread, or a
+ *  value that is no object literal where the walk needs a member of one. */
+type Handed =
+  | { readonly kind: "none" }
+  | { readonly kind: "literal" }
+  | { readonly kind: "unseen" }
+  | { readonly kind: "value"; readonly value: ts.Expression };
+
+/** What `expression` hands as a text or a tree. */
+function handedValue(expression: ts.Expression | undefined): Handed {
+  if (
+    expression === undefined ||
+    (ts.isIdentifier(expression) && expression.text === "undefined")
+  ) {
+    return { kind: "none" };
+  }
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+    return { kind: "literal" };
+  }
+  return { kind: "value", value: expression };
+}
+
+/** The component `node` is written in: the nearest function whose name is written in capitals,
+ *  read through the callbacks inside it, with its props as its first parameter binds them. */
+interface Component {
+  readonly name: string;
+  readonly body: ts.Node;
+  /** Each name a destructured prop is bound to, with the prop it holds. */
+  readonly locals: ReadonlyMap<string, string>;
+  /** The parameter's own name where the props are taken whole. */
+  readonly whole: string | undefined;
+}
+
+function componentOf(node: ts.Node): Component | undefined {
+  for (let at: ts.Node | undefined = node.parent; at !== undefined; at = at.parent) {
+    let name: string | undefined;
+    if (ts.isFunctionDeclaration(at)) {
+      name = at.name?.text;
+    } else if (
+      (ts.isArrowFunction(at) || ts.isFunctionExpression(at)) &&
+      ts.isVariableDeclaration(at.parent) &&
+      ts.isIdentifier(at.parent.name)
+    ) {
+      name = at.parent.name.text;
+    }
+    if (name === undefined || !/^[A-Z]/.test(name) || !ts.isFunctionLike(at)) {
+      continue;
+    }
+    const [props] = at.parameters;
+    const locals = new Map<string, string>();
+    let whole: string | undefined;
+    if (props !== undefined && ts.isObjectBindingPattern(props.name)) {
+      for (const element of props.name.elements) {
+        const key = element.propertyName ?? element.name;
+        if (ts.isIdentifier(element.name) && (ts.isIdentifier(key) || ts.isStringLiteral(key))) {
+          locals.set(element.name.text, key.text);
+        }
+      }
+    } else if (props !== undefined && ts.isIdentifier(props.name)) {
+      whole = props.name.text;
+    }
+    return { body: at, locals, name, whole };
+  }
+  return undefined;
+}
+
+/** The constant of `component` named `name`, where one is written in it. */
+function constantIn(component: Component, name: string): ts.Expression | undefined {
+  let found: ts.Expression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      found === undefined &&
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === name &&
+      node.initializer !== undefined
+    ) {
+      found = node.initializer;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(component.body);
+  return found;
+}
+
+/** The props of `component` that `expression` hands on, through what it draws (`drawnLeaves`) and
+ *  the component's own constants, in the order it reads them. */
+function propsHanded(expression: ts.Expression, component: Component, depth = 0): PropRef[] {
+  return drawnLeaves(expression).flatMap((leaf): PropRef[] => {
+    if (ts.isIdentifier(leaf)) {
+      const prop = component.locals.get(leaf.text);
+      if (prop !== undefined) {
+        return [{ prop }];
+      }
+      const constant = depth < 4 ? constantIn(component, leaf.text) : undefined;
+      return constant === undefined ? [] : propsHanded(constant, component, depth + 1);
+    }
+    if (ts.isPropertyAccessExpression(leaf) && ts.isIdentifier(leaf.expression)) {
+      const owner = leaf.expression.text;
+      if (owner === component.whole) {
+        return [{ prop: leaf.name.text }];
+      }
+      const prop = component.locals.get(owner);
+      return prop === undefined ? [] : [{ member: leaf.name.text, prop }];
+    }
+    return [];
+  });
+}
+
+/** The attributes a mount's element names, each with the expression it holds (a string literal
+ *  for one written `name="..."`), and whether it spreads anything. */
+function attributesOf(element: ts.JsxOpeningLikeElement, tree: ts.SourceFile): MountAttributes {
+  const values = new Map<string, ts.Expression | undefined>();
+  let spread = false;
+  for (const property of element.attributes.properties) {
+    if (ts.isJsxSpreadAttribute(property)) {
+      spread = true;
+    } else if (ts.isJsxAttribute(property)) {
+      const value = property.initializer;
+      values.set(
+        property.name.getText(tree),
+        value === undefined ? undefined : ts.isJsxExpression(value) ? value.expression : value
+      );
+    }
+  }
+  return { spread, values };
+}
+
+/** What an object literal hands as `member`: the property it names, else what a spread of other
+ *  object literals inside it hands (`...(on ? {} : { to })`), and a spread of anything else is
+ *  unseen. */
+function memberOf(literal: ts.ObjectLiteralExpression, member: string): Handed {
+  const named = literal.properties.find(
+    (property) => property.name !== undefined && property.name.getText() === member
+  );
+  if (named !== undefined) {
+    return ts.isShorthandPropertyAssignment(named)
+      ? { kind: "value", value: named.name }
+      : handedValue(ts.isPropertyAssignment(named) ? named.initializer : undefined);
+  }
+  for (const spread of literal.properties.filter(ts.isSpreadAssignment)) {
+    for (const leaf of drawnLeaves(spread.expression)) {
+      if (!ts.isObjectLiteralExpression(leaf)) {
+        return { kind: "unseen" };
+      }
+      const inner = memberOf(leaf, member);
+      if (inner.kind !== "none") {
+        return inner;
+      }
+    }
+  }
+  return { kind: "none" };
+}
+
+/** What an element hands for `ref`, once for each object it hands where `ref` names a member. */
+function handedAt(attributes: MountAttributes, ref: PropRef): readonly Handed[] {
+  if (attributes.spread) {
+    return [{ kind: "unseen" }];
+  }
+  const value = attributes.values.get(ref.prop);
+  if (ref.member === undefined || value === undefined) {
+    return [handedValue(value)];
+  }
+  const member = ref.member;
+  return drawnLeaves(value).map((leaf): Handed => {
+    if (!ts.isObjectLiteralExpression(leaf)) {
+      return handedValue(leaf).kind === "none" ? { kind: "none" } : { kind: "unseen" };
+    }
+    return memberOf(leaf, member);
+  });
+}
+
+/** The text and the tree one mount hands, paired as the mount pairs them: one pair for each
+ *  object it hands where both are members of one prop, and one pair of all it hands otherwise. */
+function handedPairs(
+  texts: readonly Handed[],
+  trees: readonly Handed[],
+  sameObject: boolean
+): HandedPair[] {
+  if (sameObject && texts.length === trees.length) {
+    return texts.map((text, index) => ({ text, trees: [trees[index] as Handed] }));
+  }
+  return texts.map((text) => ({ text, trees }));
+}
+
+/** Whether a mount hands a stored text and no tree of it. */
+function handsNoTree(pairs: readonly HandedPair[]): boolean {
+  return pairs.some(
+    (pair) => pair.text.kind === "value" && pair.trees.every((tree) => tree.kind === "none")
+  );
+}
+
+/** One mount as the tree check reads it, by `what`'s own words in its complaint: excused where
+ *  its `surface` names a row of `UNTREED_ROWS`. */
+function treeMount(
+  at: string,
+  what: string,
+  pairs: readonly HandedPair[],
+  surface: string | undefined
+): TreeMount {
+  const untreed = handsNoTree(pairs);
+  const excused = UNTREED_ROWS.some((row) => row.surface === surface);
+  return {
+    at,
+    complaint:
+      untreed && !excused
+        ? `${at}: ${what} is handed a stored text and no tree of it, so the page parses that text on its own thread`
+        : undefined,
+    surface,
+    untreed,
+  };
+}
+
+/**
+ * Every mount `trees` hold of a construct that draws from a tree (`TREE_TAKERS`), and of a
+ * component that hands one a text and its tree from its own props, each with its complaint where
+ * it hands a stored text and no tree of it. A text written out as a string is no stored text, and
+ * a mount on a row of `UNTREED_ROWS` is excused by that row. A component is found to hand a tree
+ * on where its mount's tree is read from its own props (`propsHanded`), and is then held to it
+ * wherever it is mounted, by its name, in any of the files; the walk runs until no component is
+ * added, so a component that hands its tree to another one that hands it on is held too.
+ */
+function treeMountsOf(trees: readonly ts.SourceFile[]): TreeMount[] {
+  const pairs = new Map<string, TreePair[]>();
+  const learn = (
+    node: ts.Node,
+    texts: readonly Handed[],
+    treesHanded: readonly Handed[]
+  ): boolean => {
+    const component = componentOf(node);
+    if (component === undefined) {
+      return false;
+    }
+    let added = false;
+    texts.forEach((text, index) => {
+      const tree = treesHanded[index] ?? treesHanded[0];
+      if (text.kind !== "value" || tree === undefined || tree.kind !== "value") {
+        return;
+      }
+      const textProps = propsHanded(text.value, component);
+      const treeProps = propsHanded(tree.value, component);
+      treeProps.forEach((treeProp, at) => {
+        const textProp = textProps[at];
+        const known = pairs.get(component.name) ?? [];
+        if (
+          textProp === undefined ||
+          known.some(
+            (pair) =>
+              pair.tree.prop === treeProp.prop &&
+              pair.tree.member === treeProp.member &&
+              pair.text.prop === textProp.prop &&
+              pair.text.member === textProp.member
+          )
+        ) {
+          return;
+        }
+        pairs.set(component.name, [...known, { text: textProp, tree: treeProp }]);
+        added = true;
+      });
+    });
+    return added;
+  };
+  let mounts: TreeMount[] = [];
+  let learning = true;
+  for (let round = 0; learning && round < 8; round += 1) {
+    learning = false;
+    mounts = [];
+    for (const tree of trees) {
+      const visit = (node: ts.Node): void => {
+        const at = `${tree.fileName}:${ts.isSourceFile(node) ? 0 : lineOf(tree, node)}`;
+        if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+          const tag = node.tagName.getText(tree);
+          const attributes = attributesOf(node, tree);
+          if (TREE_TAKERS.has(tag)) {
+            const surface = surfaceOf(attributes.values.get("surface"));
+            const texts = handedAt(attributes, { prop: "markdown" });
+            const treesHanded = handedAt(attributes, { prop: "tree" });
+            learning = learn(node, texts, treesHanded) || learning;
+            mounts.push(
+              treeMount(
+                at,
+                tag,
+                handedPairs(texts, treesHanded, false),
+                typeof surface === "string" ? surface : undefined
+              )
+            );
+          }
+          for (const pair of pairs.get(tag) ?? []) {
+            const texts = handedAt(attributes, pair.text);
+            const treesHanded = handedAt(attributes, pair.tree);
+            const sameObject = pair.text.prop === pair.tree.prop && pair.text.member !== undefined;
+            learning = learn(node, texts, treesHanded) || learning;
+            const handed = `${pair.text.prop}${pair.text.member === undefined ? "" : `.${pair.text.member}`}`;
+            mounts.push(
+              treeMount(
+                at,
+                `${tag}'s ${handed}`,
+                handedPairs(texts, treesHanded, sameObject),
+                undefined
+              )
+            );
+          }
+        } else if (
+          ts.isCallExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          TREE_TAKERS.has(node.expression.text)
+        ) {
+          const [treeArgument, textArgument] = node.arguments;
+          const surface = hookSurface(node);
+          const texts = [handedValue(textArgument)];
+          const treesHanded = [handedValue(treeArgument)];
+          learning = learn(node, texts, treesHanded) || learning;
+          mounts.push(
+            treeMount(
+              at,
+              node.expression.text,
+              handedPairs(texts, treesHanded, false),
+              typeof surface === "string" ? surface : undefined
+            )
+          );
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(tree);
+    }
+  }
+  return mounts;
+}
+
+const TREE_MOUNTS = treeMountsOf(DRAWING_TREES);
+
+/** Each row of `UNTREED_ROWS`, or what is wrong with it: a row the reading list does not hold, or
+ *  one with no mount left that hands its construct no tree. */
+function untreedRowComplaint(surface: DispatchReadingSurface): string {
+  if (!DISPATCH_READING_SURFACES.some((row) => row.surface === surface)) {
+    return `${surface} is no row of DISPATCH_READING_SURFACES`;
+  }
+  return TREE_MOUNTS.some((mount) => mount.surface === surface && mount.untreed)
+    ? surface
+    : `${surface} has no mount left that hands its construct no tree`;
+}
+
 /** The workflow whose `changes` job decides which jobs a pull request runs. */
 const CI_WORKFLOW = ".github/workflows/ci.yaml";
 
 /**
  * The globs of `dispatch_references`, the paths filter of `CI_WORKFLOW`'s `changes` job that
- * starts the reference rows on a pull request. The filters are one YAML string inside the
+ * starts the reference rows on a pull request. The job declares its filters over several
+ * dorny/paths-filter steps, since Linux caps the one environment variable each step's input
+ * travels in, so the filter is read from whichever step declares it, and a reading that finds
+ * it in none or in more than one finds no filter. The filters are one YAML string inside the
  * workflow's YAML, and a filter may name a group of them through its anchor, so both are parsed
- * and the list is flattened, as dorny/paths-filter flattens it.
+ * and the list is flattened, as dorny/paths-filter flattens it. The steps read their patterns
+ * with the `some-with-excludes` quantifier, so a `!` pattern is an exclusion: a file is in the
+ * filter when a pattern without `!` matches it and no `!` pattern does.
  */
-function referenceFilter(): Bun.Glob[] {
+function referenceFilter(): { include: Bun.Glob[]; exclude: Bun.Glob[] } {
   const workflow = Bun.YAML.parse(readFileSync(join(REPO_ROOT, CI_WORKFLOW), "utf8")) as {
-    jobs?: { changes?: { steps?: { id?: string; with?: { filters?: string } }[] } };
+    jobs?: { changes?: { steps?: { with?: { filters?: string } }[] } };
   };
-  const filters = workflow.jobs?.changes?.steps?.find((step) => step.id === "filter")?.with
-    ?.filters;
-  const groups = Bun.YAML.parse(filters ?? "") as Record<string, unknown> | null;
-  return [groups?.dispatch_references]
+  const declaring = (workflow.jobs?.changes?.steps ?? [])
+    .map((step) => Bun.YAML.parse(step.with?.filters ?? "") as Record<string, unknown> | null)
+    .filter((groups) => groups?.dispatch_references !== undefined);
+  const patterns = (declaring.length === 1 ? [declaring[0]?.dispatch_references] : [])
     .flat(Number.POSITIVE_INFINITY)
-    .filter((pattern): pattern is string => typeof pattern === "string")
-    .map((pattern) => new Bun.Glob(pattern));
+    .filter((pattern): pattern is string => typeof pattern === "string");
+  return {
+    include: patterns.filter((pattern) => !pattern.startsWith("!")).map((p) => new Bun.Glob(p)),
+    exclude: patterns
+      .filter((pattern) => pattern.startsWith("!"))
+      .map((pattern) => new Bun.Glob(pattern.slice(1))),
+  };
 }
 
 const REFERENCE_FILTER = referenceFilter();
+
+/** Whether a pull request that changes `file` starts the reference rows. */
+function inReferenceFilter(file: string): boolean {
+  return (
+    REFERENCE_FILTER.include.some((glob) => glob.match(file)) &&
+    !REFERENCE_FILTER.exclude.some((glob) => glob.match(file))
+  );
+}
 
 /** The file, or the file and the list it is missing from: a failure a person can act on
  *  without opening anything first. */
@@ -1626,7 +2192,8 @@ describe("the walk reads the dashboard's source", () => {
 
   test("reads every stored text the contract gives a tree", () => {
     // A guard on the reading of the contract: were it to find no tree, the raw-draw walk would
-    // look for the hand-written fields alone.
+    // look for the hand-written fields alone. `selected` is an answer's chosen labels, whose
+    // trees are a list beside them (`selected_trees`) rather than one tree.
     expect(TREED_FIELDS).toEqual(
       expect.arrayContaining([
         "body",
@@ -1636,6 +2203,7 @@ describe("the walk reads the dashboard's source", () => {
         "prose",
         "question",
         "reason",
+        "selected",
         "snippet",
         "subject",
         "text",
@@ -1665,7 +2233,7 @@ describe("the walk reads the dashboard's source", () => {
   test("reads the reference rows' filter in ci.yaml", () => {
     // A guard on the reading of the workflow: were it to find no filter, no covered row's file
     // would be in it, and every covered row below would fail for a reason none of them has.
-    expect(REFERENCE_FILTER.length).toBeGreaterThan(20);
+    expect(REFERENCE_FILTER.include.length).toBeGreaterThan(20);
   });
 });
 
@@ -1807,6 +2375,39 @@ describe("a mount's surface is read from its own attributes", () => {
     ).toEqual([
       "fixture.tsx:4: a mount of the body or the preview renderer draws answers-reply, whose text is a record, and hands it no source",
       "fixture.tsx:15: a mount of the plain-text projection draws answers-reply, whose text is a record, and hands it no source",
+    ]);
+  });
+
+  // A component that hands its own prop on as a construct's `source` hands the record on only
+  // where it is handed one: each mount of it is held to that prop, and a component that hands
+  // the prop on to such a component in turn is held to it too.
+  test("a component that forwards its prop as a source is held to it at every mount", () => {
+    const fixture = [
+      "export function Status({ ask, source }: Props) {",
+      '  return <MarkdownBody markdown={ask.text} source={source} surface="search-ask-status" />;',
+      "}",
+      "export function Hit({ hit, record }: Props) {",
+      "  return <Status ask={hit.ask} source={record} />;",
+      "}",
+      "export const List = ({ x, rest }: Props) => (",
+      "  <>",
+      "    <Status ask={x.ask} source={x.source} />",
+      "    <Status ask={x.ask} />",
+      "    <Status ask={x.ask} source={undefined} />",
+      "    <Status ask={x.ask} {...rest} />",
+      "    <Hit hit={x} record={x.source} />",
+      "    <Hit hit={x} />",
+      "  </>",
+      ");",
+    ].join("\n");
+    expect(
+      forwardedSourceComplaints([parseSource("fixture.tsx", fixture)]).filter((complaint) =>
+        complaint.includes(": ")
+      )
+    ).toEqual([
+      "fixture.tsx:10: Status hands its source on as the source of search-ask-status, whose text is a record, and is mounted here with none",
+      "fixture.tsx:11: Status hands its source on as the source of search-ask-status, whose text is a record, and is mounted here with none",
+      "fixture.tsx:14: Hit hands its record on as the source of search-ask-status, whose text is a record, and is mounted here with none",
     ]);
   });
 });
@@ -2074,6 +2675,96 @@ describe("every mount of a record's text hands its construct that record", () =>
   });
 });
 
+describe("every mount of a component that hands its prop on as a record hands it that prop", () => {
+  const complaints = forwardedSourceComplaints(DRAWING_TREES);
+  test("finds the components that hand a record on", () => {
+    // A guard on the walk itself: were it to follow no component, every row below would pass
+    // over nothing. The palette's ask hit hands its `source` on to the renderer.
+    expect(complaints.some((complaint) => complaint.includes("SearchPalette.tsx"))).toBe(true);
+  });
+  test.each(
+    complaints.map((complaint) => [complaint.split(": ")[0] ?? complaint, complaint] as const)
+  )("%s", (at, complaint) => {
+    expect(complaint).toBe(at);
+  });
+});
+
+describe("a mount's tree is read from its own attributes and followed through a component's props", () => {
+  const fixture = [
+    "function Quote({ text, textTree }: Props) {",
+    "  const shown = textTree;",
+    '  return <MarkdownPreview lines={1} markdown={text} surface="reply-quote" tree={shown} />;',
+    "}",
+    "function Turn({ quote }: Props) {",
+    "  return <Quote text={quote.excerpt} textTree={quote.excerptTree} />;",
+    "}",
+    "export const Page = ({ x }: Props) => (",
+    "  <>",
+    '    <MarkdownBody markdown={x.body} surface="reply-quote" />',
+    '    <MarkdownBody markdown={x.body} surface="reply-quote" tree={x.body_tree} />',
+    '    <MarkdownBody markdown="Our own words." surface="reply-quote" />',
+    "    <Quote text={x.body} />",
+    '    <Quote text="" />',
+    "    <Turn quote={{ excerpt: x.body }} />",
+    "    <Turn quote={{ excerpt: x.body, excerptTree: x.body_tree }} />",
+    '    <Turn quote={{ excerpt: "" }} />',
+    "    <Turn quote={held} />",
+    "    <Turn quote={{ excerpt: x.body, ...(x.on ? {} : { to: x.to }) }} />",
+    "  </>",
+    ");",
+  ].join("\n");
+
+  test("a construct or a component handed a stored text and no tree of it fails, and no other", () => {
+    const mounts = treeMountsOf([parseSource("fixture.tsx", fixture)]);
+    expect(mounts.filter((mount) => mount.untreed).map((mount) => mount.at)).toEqual([
+      "fixture.tsx:10",
+      "fixture.tsx:13",
+      "fixture.tsx:15",
+      "fixture.tsx:19",
+    ]);
+    expect(mounts.find((mount) => mount.at === "fixture.tsx:13")?.complaint).toBe(
+      "fixture.tsx:13: Quote's text is handed a stored text and no tree of it, so the page parses that text on its own thread"
+    );
+  });
+
+  test("a mount on a row whose text has no tree is excused by that row and no other", () => {
+    const mounts = treeMountsOf([
+      parseSource(
+        "fixture.tsx",
+        [
+          "export const Row = ({ x }: Props) => (",
+          "  <>",
+          '    <MarkdownBody markdown={x.text} surface="agent-turn-text" />',
+          '    <MarkdownBody markdown={x.text} surface="reply-quote" />',
+          "  </>",
+          ");",
+        ].join("\n")
+      ),
+    ]);
+    expect(mounts.map((mount) => [mount.untreed, mount.complaint === undefined])).toEqual([
+      [true, true],
+      [true, false],
+    ]);
+  });
+});
+
+describe("every mount of the renderer or the projection on a stored text hands it the text's tree", () => {
+  test("finds the mounts and the components that hand a tree on", () => {
+    // A guard on the walk itself: were it to read no mount, or follow no component, every row
+    // below would pass over nothing.
+    expect(TREE_MOUNTS.length).toBeGreaterThan(100);
+    expect(TREE_MOUNTS.some((mount) => mount.at.includes("ReplyTurn.tsx"))).toBe(true);
+  });
+  test.each(TREE_MOUNTS.map((mount) => [mount.at, mount] as const))("%s", (at, mount) => {
+    expect(mount.complaint ?? at).toBe(at);
+  });
+  test.each(
+    UNTREED_ROWS.map((row) => [row.surface] as const)
+  )("%s still has a mount its text reaches with no tree", (surface) => {
+    expect(untreedRowComplaint(surface)).toBe(surface);
+  });
+});
+
 describe("every row drawn through the projection names the test that proves it", () => {
   // A rendered row is proved by its browser driver (`e2e/reading-rows.ts`); a row the renderer
   // does not draw and the projection does has no driver, so it names the test that reads its
@@ -2151,9 +2842,9 @@ describe("every row of the writing list is a box the dashboard still draws", () 
       // pull request can take the picker out of with none of those rows run.
       for (const file of row.files) {
         expect(
-          REFERENCE_FILTER.some((glob) => glob.match(file))
+          inReferenceFilter(file)
             ? file
-            : `${file} (named by ${label}) is in no glob of ${CI_WORKFLOW}'s dispatch_references`
+            : `${file} (named by ${label}) is not in ${CI_WORKFLOW}'s dispatch_references filter`
         ).toBe(file);
       }
     }

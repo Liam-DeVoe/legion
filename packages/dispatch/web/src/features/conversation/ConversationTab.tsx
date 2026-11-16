@@ -7,7 +7,7 @@ import { whoAmIQuery } from "../../api/queries";
 import type {
   Agent,
   Artifact,
-  Comment,
+  CommentWithTrees,
   MessageDelivery,
   MessageDeliveryMode,
   MessageWithTrees,
@@ -177,6 +177,7 @@ function replyTargetFor(
   return {
     actor: message.author,
     excerpt: message.body,
+    excerptTree: message.body_tree,
     id: message.id,
     parentKind: "message",
     to: buildIssuePath({ id: message.id, key: issueKey, kind: "message" }),
@@ -399,9 +400,11 @@ const handoffPre = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs whitespac
  *  row, the `proof` list one row per entry. A version never changes once written, so the read
  *  is kept for the page's life. The words a session wrote - a field's string, a proof entry, or
  *  a body that is not a JSON object - are drawn by the renderer from the reading the server
- *  sends for each (`field_trees`), so a reference in them reads as its target's name and the
- *  page parses none of them. A field of JSON is the session's data and is shown as the JSON it
- *  is (the reading list's `conversation-handoff-data`). */
+ *  sends for each (`field_trees`, keyed by the text's JSON Pointer into the body, `""` for the
+ *  whole of it), so a reference in them reads as its target's name and the page parses none of
+ *  them. A tree is looked up among the answer's own keys alone, so no key reads a member every
+ *  object inherits. A field of JSON is the session's data and is shown as the JSON it is (the
+ *  reading list's `conversation-handoff-data`). */
 function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): ReactNode {
   const handoff = useQuery({
     queryKey: ["handoff", handoffId],
@@ -433,7 +436,7 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
         <MarkdownBody
           markdown={handoff.data.body}
           surface="conversation-handoff-body"
-          tree={trees?.[""]}
+          tree={trees !== undefined && Object.hasOwn(trees, "") ? trees[""] : undefined}
         />
       </div>
     );
@@ -448,7 +451,7 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
               <MarkdownBody
                 markdown={text}
                 surface="conversation-handoff-body"
-                tree={trees?.[path]}
+                tree={trees !== undefined && Object.hasOwn(trees, path) ? trees[path] : undefined}
               />
             ) : shape === "json" ? (
               // The session's data, as the JSON it is: the reading list's
@@ -527,7 +530,7 @@ function HandoffTurn({
 /** What the composer quotes when the reader replies to `comment`: its author, and the
  *  mentions the reply starts with, each named as the mention picker names it (`sessionText`). */
 function commentReplyTarget(
-  comment: Comment,
+  comment: CommentWithTrees,
   text: Pick<AgentText, "sessionText">,
   issueKey: string
 ): ReplyTarget {
@@ -549,6 +552,7 @@ function commentReplyTarget(
   return {
     actor: author,
     excerpt: comment.body,
+    excerptTree: comment.body_tree,
     id: comment.id,
     mentions,
     parentKind: "comment",

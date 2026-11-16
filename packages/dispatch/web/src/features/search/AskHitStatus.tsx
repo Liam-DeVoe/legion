@@ -1,5 +1,5 @@
 import { actorActText } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import type { SearchAsk } from "../../api/types";
 import {
@@ -9,6 +9,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { AskResolutionLine } from "../refs/AgentName";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
 import type { TextSource } from "../refs/text-references";
@@ -27,9 +28,9 @@ function askStateLabel(ask: SearchAsk): string {
 export const ANSWER_PREVIEW_CHARS = 280;
 
 /** Where an ask hit stands, under its excerpt: a badge for its state, who closed it and when,
- *  and its latest answer - who gave it, when, the options chosen and the start of its text
- *  (`ANSWER_PREVIEW_CHARS`), clamped to three lines. Every part wraps inside the row, so a long
- *  label or name never widens the row it sits in. */
+ *  and its latest answer - who gave it, when, the options chosen, each drawn from the tree of its
+ *  label, and the start of its text (`ANSWER_PREVIEW_CHARS`), clamped to three lines. Every part
+ *  wraps inside the row, so a long label or name never widens the row it sits in. */
 export function AskHitStatus({
   ask,
   muted,
@@ -37,8 +38,9 @@ export function AskHitStatus({
 }: {
   ask: SearchAsk;
   muted: boolean;
-  /** The record the hit is - the ask itself, which its answer's text is scoped to
-   *  (`refs.ScopeOf`), so a `#id` in that answer resolves as it does on the ask's own card. */
+  /** The record the hit is - the ask itself, which its answer's text and the labels it chose
+   *  are scoped to (`refs.ScopeOf`), so a `#id` in them resolves as it does on the ask's own
+   *  card. */
   source?: TextSource;
 }): ReactNode {
   const answer = ask.state === "open" ? undefined : ask.answer;
@@ -69,10 +71,22 @@ export function AskHitStatus({
             ) : (
               <>
                 Chose{" "}
-                {/* A hit carries its chosen options as their labels alone, with no tree and no
-                    option to take one from, so they are shown as written: the reading list's
-                    `search-ask-chosen-options`. */}
-                {(answer.selected ?? []).join(", ")}
+                {(answer.selected ?? []).map((label, index) => (
+                  <Fragment key={label}>
+                    {index === 0 ? null : ", "}
+                    {/* Each label is drawn from its own tree, beside it at the same index. Only
+                        a server older than `selected_trees` answers a label with no tree, and
+                        the renderer then parses it, as it parses every stored text of that
+                        server's answers. */}
+                    <MarkdownBody
+                      markdown={label}
+                      source={source}
+                      surface="search-ask-chosen-options"
+                      tree={answer.selected_trees?.[index]}
+                      variant="inline"
+                    />
+                  </Fragment>
+                ))}
               </>
             )}
           </span>

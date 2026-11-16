@@ -406,7 +406,6 @@ function PaintedBody({
         <UnfurlRead
           body={referenceText}
           reading={references.reading}
-          source={source}
           surface="body-reference-cards"
           written={references.written}
         />

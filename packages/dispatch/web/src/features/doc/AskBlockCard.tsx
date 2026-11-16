@@ -21,6 +21,7 @@ import { blockFragment } from "../refs/block-reference";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { itemRoute, parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { type AskBlockFacts, type AskBlockHost, askBlockFacts } from "./typed-block-drawing";
 
 const PILL_CLASS = "rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase";
@@ -187,7 +188,7 @@ export function AskBlockCard({
               frame="block"
             />
           ) : (
-            <AttributeRecord facts={facts} />
+            <AttributeRecord ask={ask} facts={facts} />
           )}
           {inBody ? (
             <p className={`mt-3 text-sm ${textMutedOnSurfaceMuted}`} data-dispatch-ask-text-only="">
@@ -264,17 +265,28 @@ function CopiedFromLink({
 
 /** What the block's own attributes record: its options with the chosen ones ticked, and the
  * note. A still-open decision shows its options with nothing chosen. */
-function AttributeRecord({ facts }: { facts: AskBlockFacts }): ReactNode {
+function AttributeRecord({
+  ask,
+  facts,
+}: {
+  ask: Ask | undefined;
+  facts: AskBlockFacts;
+}): ReactNode {
   const otherText =
     facts.state === "answered" && facts.options.length > 0 && facts.selected.length === 0
       ? facts.answerText
       : "";
   return (
     <div className="mt-3 space-y-2" data-dispatch-ask-record="">
-      {/* No `source`: these are the block's own attributes, read from the document's text with
-          no ask row behind them, so there is no ask for a `#id` in an option to resolve
-          against. */}
-      <AskOptionList options={facts.options} rowClassName={surfaceBg} selected={facts.selected} />
+      {/* The block's own attributes, read from the document's text: where the server has indexed
+          the block into an ask, that ask is the record a `#id` in an option resolves against, as
+          on its own card; a block with no ask row behind it has none, and its `#id`s stay text. */}
+      <AskOptionList
+        options={facts.options}
+        rowClassName={surfaceBg}
+        selected={facts.selected}
+        source={textSourceOf("ask", ask?.id, ask?.issue_key)}
+      />
       {otherText === "" ? null : (
         <p className={`text-sm font-medium ${textPrimaryOnSurface}`}>Other</p>
       )}

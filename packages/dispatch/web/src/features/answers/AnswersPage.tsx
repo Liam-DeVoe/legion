@@ -53,9 +53,10 @@ function AnswerRow({
   onChange: () => void;
   row: MyAnswerRow;
 }): ReactNode {
-  // Every text of the row is the ask's: its question, the answer written on it, and a reply in
-  // its thread, which takes the ask's scope (`refs.ScopeOf`). So a `#id` in any of them resolves
-  // against the document the server scopes the ask to, read once for the row.
+  // Every text of the row is the ask's: its question, the labels of the options an answer chose,
+  // the answer written on it, and a reply in its thread, which takes the ask's scope
+  // (`refs.ScopeOf`). So a `#id` in any of them resolves against the document the server scopes
+  // the ask to, read once for the row.
   const source = textSourceOf("ask", row.ask_id, row.owner.issue?.key);
   const changeable =
     row.kind === "answer" &&
@@ -83,12 +84,19 @@ function AnswerRow({
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
           {(row.answer.selected ?? []).length === 0 ? null : (
             <div className="flex flex-wrap gap-1.5">
-              {(row.answer.selected ?? []).map((label) => (
+              {(row.answer.selected ?? []).map((label, index) => (
                 <LabelPill key={label} selected>
-                  {/* A row carries its chosen options as their labels alone, with no tree and
-                      no option to take one from, so each is shown as written: the reading
-                      list's `answers-chosen-options`. */}
-                  {label}
+                  {/* Each label is drawn from its own tree, beside it at the same index. Only
+                      a server older than `selected_trees` answers a label with no tree, and the
+                      renderer then parses it, as it parses every stored text of that server's
+                      answers. */}
+                  <MarkdownBody
+                    markdown={label}
+                    source={source}
+                    surface="answers-chosen-options"
+                    tree={row.answer?.selected_trees?.[index]}
+                    variant="inline"
+                  />
                 </LabelPill>
               ))}
             </div>

@@ -609,6 +609,35 @@ test("a stopped role the record's issue's collaborators record reads as its toke
   }
 });
 
+// A role whose recorded session runs on without it: the registry lists that session, live, and it
+// claims no role, so nobody holds the role, and the collaborators still record it. It is known all
+// the same and reads as its token, linked - the one rule the picker offers it by, under "Not
+// running" (`useRefPicker.test.tsx`, "the picker offers a recorded role whose session is live and
+// claims no role").
+test("a role whose recorded session runs on without it reads as its token, linked", async () => {
+  answerCollaborators();
+  const client = clientWithParties();
+  client.setQueryData(
+    ["agents"],
+    [
+      renamed,
+      reviewing,
+      stalled,
+      { ...renamed, roles: [], session_id: "old-implementer", title: "Old implementer" },
+    ]
+  );
+  const view = draw(
+    <MarkdownBody markdown={`Ask dispatch://role/${STOPPED_ROLE}.`} source={COMMENT} />,
+    client
+  );
+  try {
+    const role = await within(view.container).findByRole("link", { name: STOPPED_ROLE });
+    expect(role).toHaveAttribute("href", `/agents?role=${STOPPED_ROLE}`);
+  } finally {
+    view.unmount();
+  }
+});
+
 // The rule's other side: a role neither answer records is no target, and reads as the words its
 // writer wrote. That is a role CORE-1's collaborators do not record, on a record of CORE-1. It is
 // also CORE-1's stopped role on a record of CORE-2, whose collaborators do not record it, and on

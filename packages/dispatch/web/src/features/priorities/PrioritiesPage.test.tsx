@@ -1,9 +1,10 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
 import type {
@@ -13,7 +14,12 @@ import type {
   Priority,
   PriorityRow,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PrioritiesPage } from "./PrioritiesPage";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
   return {
@@ -414,6 +420,34 @@ test("the first line of a description shows on a closed row and the whole of it 
   expect((whole as HTMLTextAreaElement).value).toBe(
     "The first line.\nThe rest of it, which the row shows when it is open."
   );
+});
+
+// A description is a stored text, and the priorities read sends the reading the server made of
+// it (`description_tree`): a closed row draws the first line of that tree, and parses nothing on
+// the page's thread. The tree reads differently from the markdown beside it, so a row drawn from
+// a parse of the markdown would read `The opening line.`.
+test("a closed row draws its description's first line from the tree the priorities read sends", async () => {
+  const tree = displayTree("The **opening** line, from the tree.\n\nThe rest of it.");
+  const parses = countEngineParses();
+  try {
+    page(
+      body({
+        priorities: [
+          priority("legion-first", {
+            description: "The **opening** line.\n\nThe rest of it.",
+            description_tree: tree,
+            title: "Legion works reliably first",
+          }),
+        ],
+      })
+    );
+    const row = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+    expect(await within(row).findByText("The opening line, from the tree.")).toBeDefined();
+    expect(within(row).queryByText(/The rest of it/)).toBeNull();
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
+  }
 });
 
 test("opening a row lists the work advancing that priority, over every project", async () => {

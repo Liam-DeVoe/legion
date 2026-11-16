@@ -1,11 +1,12 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import type { Artifact, DocumentRole, Issue, IssueDetails } from "./types";
+import type { Artifact, ArtifactWithTrees, DocumentRole, Issue, IssueDetails } from "./types";
 
-/** The issue's primary document (its spec), or undefined until the details have loaded. */
+/** The issue's primary document (its spec), or undefined until the details have loaded. It is
+ *  the details' own row, so its approval carries the tree of its review reason. */
 export function primarySpec(
   issue: Pick<IssueDetails, "artifacts" | "primary_artifact_id"> | undefined
-): Artifact | undefined {
+): ArtifactWithTrees | undefined {
   return issue?.artifacts?.find((artifact) => artifact.id === issue.primary_artifact_id);
 }
 
@@ -22,7 +23,7 @@ export function roleDocument(
       >
     | undefined,
   role: DocumentRole
-): Artifact | undefined {
+): ArtifactWithTrees | undefined {
   const ids: Record<DocumentRole, string | undefined> = {
     plan: issue?.plan_artifact_id,
     verification: issue?.verification_artifact_id,

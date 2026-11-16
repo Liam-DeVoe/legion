@@ -248,7 +248,8 @@ export interface HandoffField {
   /** The field's name, or `proof <n>` for the nth proof entry, counted from 1. */
   readonly label: string;
   /** Where the server keeps the reading of this row's text in the handoff's `field_trees`: the
-   *  field's own name, or `proof.<n>` for the nth proof entry, counted from 0. */
+   *  JSON Pointer (RFC 6901) of the text in the body - `/summary` for a field, `/proof/0` for the
+   *  first proof entry - so a field named `proof.0` and that entry never share a key. */
   readonly path: string;
   readonly text: string;
   /** What `text` is: words the session wrote (`prose`), which the renderer draws; indented JSON
@@ -269,6 +270,12 @@ function handoffValue(value: unknown): Pick<HandoffField, "shape" | "text"> {
   return { shape: "value", text: JSON.stringify(value) };
 }
 
+/** The JSON Pointer (RFC 6901) token of an object's key: `~` written `~0` and `/` written `~1`,
+ *  the escapes the server's pointer to the same key uses (`handoffRead`). */
+function pointerToken(key: string): string {
+  return key.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
 /** The rows a handoff's body expands to, in the order its session wrote the fields, with a
  *  `proof` list split into one row per entry. Undefined when the body is not a JSON object,
  *  which the card then shows as the raw text it is. */
@@ -287,10 +294,10 @@ export function handoffFields(body: string): HandoffField[] | undefined {
       ? value.map((entry, index) => ({
           field,
           label: `proof ${index + 1}`,
-          path: `proof.${index}`,
+          path: `/proof/${index}`,
           ...handoffValue(entry),
         }))
-      : [{ field, label: field, path: field, ...handoffValue(value) }]
+      : [{ field, label: field, path: `/${pointerToken(field)}`, ...handoffValue(value) }]
   );
 }
 

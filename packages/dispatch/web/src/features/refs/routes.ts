@@ -4,6 +4,7 @@ import {
   hasControlCharacter,
   isSessionId,
   itemFromSearch,
+  PLAIN_ISSUE_TABS,
   SESSION_ID_PATTERN,
   shortSessionId,
 } from "@legion/contracts";
@@ -172,22 +173,14 @@ export type IssueTab =
 /** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
 export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
 
-/** The issue tabs whose whole route is the tab itself: no block, no slug, no id. Each one is
- *  parsed from the segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>`
- *  and is the tab of its own name, so the chains below hold the six in one arm rather than one
- *  apiece and a seventh tab is this list. The spec, the conversation and the decisions stay out
- *  of it: a spec route carries a block, the conversation is written `log` in a reference and
- *  `conversation` in a path, and the Decisions tab is a view of the issue's `decisions.md`, which
- *  a reference names as that document. */
-const PLAIN_ISSUE_TABS = [
-  "verification",
-  "plan",
-  "activity",
-  "children",
-  "artifacts",
-  "collaborators",
-] as const;
-
+/** An issue tab whose whole route is the tab itself (`@legion/contracts`'s `PLAIN_ISSUE_TABS`,
+ *  which the server reads the same way): no block, no slug, no id. Each one is parsed from the
+ *  segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>` and is the tab of
+ *  its own name, so the chains below hold the six in one arm rather than one apiece and a seventh
+ *  tab is that list. The spec, the conversation and the decisions stay out of it: a spec route
+ *  carries a block, the conversation is written `log` in a reference and `conversation` in a
+ *  path, and the Decisions tab is a view of the issue's `decisions.md`, which a reference names as
+ *  that document. */
 type PlainIssueTab = (typeof PLAIN_ISSUE_TABS)[number];
 
 /** The plain tab a path segment names, or `undefined` for anything else. */
@@ -366,8 +359,12 @@ function agentArtifactRoute(
     : { kind: "agent-artifact", session, slug: parsed.slug, version: parsed.version };
 }
 
+/** The route of an issue's `dispatch://` reference by what follows its key. Nothing, or nothing
+ *  after a trailing slash (`dispatch://CORE-1/`), is the issue itself, as the server's
+ *  `text.parseDispatch` reads it; every other empty tail - `artifact/`, `ask/`, `spec/`, a second
+ *  slash - names nothing there, and nothing here. */
 function parseIssueReference(key: string, target: string | undefined): IssueRoute | undefined {
-  if (target === undefined) {
+  if (target === undefined || target === "") {
     return { key, kind: "issue" };
   }
   if (target === "spec") {

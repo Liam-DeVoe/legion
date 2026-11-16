@@ -336,14 +336,17 @@ export interface RefPickerInsertion {
 }
 
 /** What Markdown reads as markup in a link's words: the brackets that would end them, the
- *  backslash that escapes, and the delimiters of emphasis, strong, code and strikethrough,
- *  which over a part of the words would make them their author's words rather than a mention
- *  (`@legion/contracts`'s `isMentionWords`). */
-const LINK_WORDS_MARKUP = /[[\]\\*_`~]/gu;
+ *  backslash that escapes, the delimiters of emphasis, strong, code and strikethrough, which over
+ *  a part of the words would make them their author's words rather than a mention
+ *  (`@legion/contracts`'s `isMentionWords`), and the `<` and `&` that open inline HTML and a
+ *  character reference: `Fix <Suspense> fallback` written as it is reads `<Suspense>` as a tag,
+ *  which holds none of the words, and `&amp;` reads as `&`. */
+const LINK_WORDS_MARKUP = /[[\]\\*_`~<&]/gu;
 
 /** A party's name as a link's words, each character Markdown would read as markup written
- *  escaped: a session title is whatever its holder typed - `Planner [2]`, `fix *the* cache` -
- *  and every reader of the link takes the escaped words as exactly those characters. */
+ *  escaped: a session title is whatever its holder typed - `Planner [2]`, `fix *the* cache`,
+ *  `Fix <Suspense> fallback` - and every reader of the link takes the escaped words as exactly
+ *  those characters. */
 function linkWords(label: string): string {
   return label.replace(LINK_WORDS_MARKUP, (character) => `\\${character}`);
 }

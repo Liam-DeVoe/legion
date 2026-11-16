@@ -11,6 +11,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { architectureTree, issueCollaborators } from "../../__tests__/search-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
@@ -43,6 +44,7 @@ import { messageDeliveryFields } from "./delivery-fixture";
 import "../agent-view/AgentConversationPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 import { orderAgents } from "./AgentsPage";
@@ -2102,6 +2104,45 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
       ).toBeNull()
     );
     expect(within(planner).getByRole("button", { name: "Choose issue" })).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A reply turn quotes the message it answers, which the exchange's read carries with its tree:
+// the quote draws that tree (`excerptTree`) rather than a parse of the parent's markdown. The tree
+// reads differently from the markdown beside it, so a quote drawn from a parse would read
+// `— Can this ship?`.
+test("a reply turn on the Agents page quotes its parent from the tree the exchange read carries", async () => {
+  const user = userEvent.setup();
+  await warmMarkdownRenderer();
+  const root = message("Can **this** ship?");
+  const page = renderAgents({
+    messages: [
+      {
+        message: { ...root, body_tree: displayTree("Can **this** ship today?") },
+        replies: [
+          message("Yes, it can.", {
+            author: { id: "planner-session", kind: "session" },
+            id: "message-2",
+            in_reply_to: root.id,
+          }),
+        ],
+      },
+    ],
+  });
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const conversation = await within(planner).findByRole("list", {
+      name: "Conversation with Planner",
+    });
+    const replies = await within(conversation).findByRole("list", { name: "Replies" });
+    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    if (answer === null) throw new Error("answer turn missing");
+    await waitFor(() => expect(answer).toHaveTextContent("— Can this ship today?"));
+    expect(within(answer).getByText("this").tagName).toBe("STRONG");
   } finally {
     page.view.unmount();
     page.restore();

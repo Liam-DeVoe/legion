@@ -6,7 +6,6 @@ import type {
   Ask,
   AskAnswerWithTrees,
   AskEditWithTrees,
-  AskOptionWithTrees,
   AskResolution,
   AskWithTrees,
 } from "../../api/types";
@@ -82,19 +81,17 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTre
 
 /** Earlier answers to an ask whose answer was changed, oldest first. Every text here is the
  *  ask's own (`refs.ScopeOf`), answer and question alike, so each is drawn as a record of that
- *  ask. A chosen option is one of the ask's `options`, so its label is drawn from that option's
- *  tree. */
+ *  ask. A chosen option's label is drawn from the tree the answer carries beside it
+ *  (`selected_trees`), which is the label's own whether or not the ask still holds that option. */
 export function AskAnswerHistory({
   answers,
   askId,
   issue,
-  options,
 }: {
   answers: AskAnswerWithTrees[];
   askId: string;
   /** The issue the ask is on, none for a project document's ask. */
   issue: string | null;
-  options: readonly Pick<AskOptionWithTrees, "label" | "label_tree">[];
 }): ReactNode {
   const earlier = answers.slice(0, -1);
   const latest = answers.at(-1);
@@ -117,27 +114,21 @@ export function AskAnswerHistory({
               <div key={previous.at}>
                 {selected.length === 0 ? null : (
                   <p>
-                    {selected.map((label, index) => {
-                      const tree = options.find((option) => option.label === label)?.label_tree;
-                      return (
-                        <Fragment key={label}>
-                          {index === 0 ? null : ", "}
-                          {tree === undefined ? (
-                            // An option the ask no longer holds has no tree anywhere, so it is
-                            // shown as written: the reading list's `earlier-chosen-option`.
-                            label
-                          ) : (
-                            <MarkdownBody
-                              markdown={label}
-                              source={textSourceOf("ask", askId, issue)}
-                              surface="ask-answer-history"
-                              tree={tree}
-                              variant="inline"
-                            />
-                          )}
-                        </Fragment>
-                      );
-                    })}
+                    {selected.map((label, index) => (
+                      <Fragment key={label}>
+                        {index === 0 ? null : ", "}
+                        {/* Only a server older than `selected_trees` answers a label with no
+                            tree, and the renderer then parses it, as it parses every stored
+                            text of that server's answers. */}
+                        <MarkdownBody
+                          markdown={label}
+                          source={textSourceOf("ask", askId, issue)}
+                          surface="earlier-chosen-option"
+                          tree={previous.selected_trees?.[index]}
+                          variant="inline"
+                        />
+                      </Fragment>
+                    ))}
                   </p>
                 )}
                 {previous.text === null || previous.text === "" ? null : (
@@ -284,12 +275,7 @@ function AnsweredAsk({
           <Timestamp at={answer.at} />
         </p>
       )}
-      <AskAnswerHistory
-        answers={answers}
-        askId={ask.id}
-        issue={ask.issue_key}
-        options={ask.options ?? []}
-      />
+      <AskAnswerHistory answers={answers} askId={ask.id} issue={ask.issue_key} />
       {onChangeAnswer === undefined ? null : (
         <button
           className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}

@@ -14,15 +14,16 @@ beforeAll(async () => {
 
 afterEach(cleanup);
 
-// A chosen option of an earlier answer is one of the ask's options, so its label is drawn from
-// that option's tree and never parsed in the page: the tree here reads `soon` where the label's
-// markdown says `now`. An option the ask no longer holds has no tree anywhere and is shown as
-// written (`earlier-chosen-option`).
-test("an earlier answer's chosen options are drawn from their options' trees", async () => {
+// Each label an earlier answer chose is drawn from the tree the answer carries beside it, at the
+// label's own index, and never parsed in the page: the trees here read `soon` and `Went` where
+// the labels' markdown says `now` and `Gone`. The second label names an option the ask no
+// longer holds, which is drawn the same way.
+test("an earlier answer's chosen options are drawn from the trees of their labels", async () => {
   const answers = [
     {
       at: "2026-10-08T01:00:00Z",
       selected: ["Ship **now**", "**Gone**"],
+      selected_trees: [displayTree("Ship **soon**"), displayTree("**Went**")],
       text: null,
       user: "alice",
     },
@@ -30,20 +31,16 @@ test("an earlier answer's chosen options are drawn from their options' trees", a
   ] as unknown as AskAnswerWithTrees[];
   const view = render(
     <MemoryRouter>
-      <AskAnswerHistory
-        answers={answers}
-        askId="ask-1"
-        issue="CORE-1"
-        options={[
-          { label: "Ship **now**", label_tree: displayTree("Ship **soon**") },
-          { label: "Hold", label_tree: displayTree("Hold") },
-        ]}
-      />
+      <AskAnswerHistory answers={answers} askId="ask-1" issue="CORE-1" />
     </MemoryRouter>
   );
   try {
-    await waitFor(() => expect(view.container.querySelector("strong")?.textContent).toBe("soon"));
-    expect(view.container.textContent).toContain("Ship soon, **Gone**");
+    await waitFor(() =>
+      expect(
+        [...view.container.querySelectorAll("strong")].map((bold) => bold.textContent)
+      ).toEqual(["soon", "Went"])
+    );
+    expect(view.container.textContent).toContain("Ship soon, Went");
   } finally {
     view.unmount();
   }

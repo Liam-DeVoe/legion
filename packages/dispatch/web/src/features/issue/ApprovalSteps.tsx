@@ -40,7 +40,8 @@ function StepState({
 /** Why a step's reviewer sent its document back, as one wrapping line: the chip says only
  *  `Changes requested`, and the reason is the whole of what the writer must act on. It is given
  *  no width, no clamp and no tooltip, so a phone reads all of it. The reason is the reviewer's
- *  own text on that document, drawn by the renderer as the Reviews dialog draws it. */
+ *  own text on that document, drawn by the renderer from the reading the server sent with it
+ *  (`reason_tree`), as the Reviews dialog draws it. */
 function StepReason({ entry }: { entry: StepEntry }): ReactNode {
   const approval = entry.document?.approval;
   if (approval === undefined || approval.state !== "changes_requested") {
@@ -69,6 +70,7 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
             markdown={reason}
             source={textSourceOf("artifact", entry.document?.id, entry.document?.issue_key)}
             surface="approval-review-reason"
+            tree={approval.reason_tree}
             variant="inline"
           />
         </>

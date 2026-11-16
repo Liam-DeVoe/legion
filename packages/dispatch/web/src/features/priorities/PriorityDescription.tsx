@@ -1,5 +1,6 @@
 import { dispatchWritingBox } from "@legion/contracts";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import type { DisplayTree } from "../../api/types";
 import {
   borderDefault,
   focusVisibleRing,
@@ -32,12 +33,16 @@ const NONE_WRITTEN = "No description is written.";
 export function PriorityDescription({
   canWrite,
   description,
+  descriptionTree,
   label,
   onSave,
   rows,
 }: {
   canWrite: boolean;
   description: string;
+  /** The reading Go made of `description` (`description_tree`), which the rendered block draws
+   *  while it shows what Dispatch holds. */
+  descriptionTree: DisplayTree | undefined;
   /** What the description is called, which names the priority it belongs to: "Description of
    *  P3". The editor and the group around the rendered text carry it, and the button that
    *  opens the editor reads it after "Edit the": "Edit the description of P3". */
@@ -53,8 +58,11 @@ export function PriorityDescription({
   // are still theirs (`useInPlaceDraft`).
   const edit = useInPlaceDraft(description, onSave, () => setEditing(false));
   // The rendered block reads what Dispatch is about to hold: the reader's text until the write's
-  // answer is read, and Dispatch's own after that, or once the write is refused.
+  // answer is read, and Dispatch's own after that, or once the write is refused. The reader's
+  // text is a write the server has not stored yet, so it has no tree and is parsed; Dispatch's
+  // own is drawn from the tree the server read of it.
   const shown = edit.sending ?? description;
+  const shownTree = edit.sending === undefined ? descriptionTree : undefined;
 
   if (canWrite && editing) return <DescriptionEditor edit={edit} label={label} rows={rows} />;
   const body =
@@ -65,7 +73,7 @@ export function PriorityDescription({
     ) : (
       // No `source`: why a priority's description is no record is the reading list's
       // `priority-description` (`DISPATCH_READING_SURFACES`).
-      <MarkdownBody markdown={shown} surface="priority-description" />
+      <MarkdownBody markdown={shown} surface="priority-description" tree={shownTree} />
     );
   if (!canWrite) return body;
   return (
