@@ -25,9 +25,11 @@ import (
 // which a starting listener gave up its start; no deadline of the listener's own bounds it now,
 // since a replacement stands by for the machine's delivery lease for as long as it runs
 // (cmd/listener/lease.go). The listener's durableTakeoverAlarmAfter (135 s,
-// cmd/listener/receive.go) times only the wait on a binding a listener from before
-// cybermonklabs/legion#2404 holds, during the first roll onto the lease, and the pod being
-// replaced then runs that older build's grace.
+// cmd/listener/receive.go) bounds no stop either: it times how long a listener has waited on a
+// binding a listener from before cybermonklabs/legion#2404 holds, during the first roll onto the
+// lease, when the pod being replaced runs that older build's grace, and how long its reads,
+// creations, policy corrections or subscribes of the durable have failed, after which a lease
+// holder gives the lease up.
 func TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace(t *testing.T) {
 	hub := runClusteredHub(t, clusteredArgs())
 	dispatch, err := runDispatch(t, dispatchArgs(), true)

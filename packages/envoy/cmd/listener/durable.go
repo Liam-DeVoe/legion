@@ -132,8 +132,9 @@ func listenerDurable(ctx context.Context, client *bus.Client, consumer string) (
 // ensureListenerDurable preserves the durable consumer so restarts resume from the last ACKed
 // message instead of skipping pending work, and returns it as the server holds it: it reads the
 // durable (listenerDurable) and writes it to the consumer policy (correctListenerDurable). Every
-// request runs under ctx. Only the lease holder calls it: a standby neither creates nor updates
-// the durable.
+// request runs under ctx. Only a receiving term calls it, on a resubscribe: the lease holder's,
+// or the term of a listener that runs without the lease bucket's grant. A standby neither creates
+// nor updates the durable.
 func ensureListenerDurable(ctx context.Context, client *bus.Client, consumer string) (*nats.ConsumerInfo, error) {
 	info, err := listenerDurable(ctx, client, consumer)
 	if err != nil {

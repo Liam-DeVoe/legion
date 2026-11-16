@@ -6,10 +6,12 @@ body: |-
     ack floor, was given the message again: the session took it twice. A relay stopped with a
     frame in hand now goes on hearing the session for 750 ms (`relaySettleGrace`) and
     acknowledges the message on its `done`, so the ack floor moves past it once nothing below it
-    is still held; and the pod taking a released holder's lease over waits `relayFormerSettle`
-    (the grace and a 250 ms margin) before it restarts a session's consumer, so the grace always
-    ends first. A holder taken over by force -- killed, its node lost, its record left to expire
-    -- settles nothing and is not waited for.
+    is still held; and the pod taking the lease over waits what is left of `relayFormerSettle`
+    (the grace and a 250 ms margin, counted from its acquisition) before it restarts a session's
+    consumer, so the grace always ends first. It waits whenever the lease record names a former
+    holder that released the lease less than 70 s before, after a take-over by force too, and
+    waits for nothing only when every former holder the record names was taken over by force --
+    killed, its node lost, its record left to expire -- since such a holder settles nothing.
     A frame the grace ends without a `done` is in doubt, its session's `received` notwithstanding:
     `received` says the client decoded the frame, not that its host wrote the message, so only
     `done` says the session took it. The stopping pod logs `session relay left a frame in doubt:
@@ -24,9 +26,9 @@ body: |-
     since the floor cannot move past the held frame.
     The grace is sized on a frame's round trip, measured on the test host over
     200 frames: p50 2.44 ms, p99 11.8 ms, slowest 37.2 ms on a quiet box, 111 ms under load.
-    A hard take-over is bounded as before at 15 s, and a message published in the gap a
-    receive-lost cut leaves between one pod's term and the next reaches its session 1.257 s after
-    the cut at worst, measured over 20 runs.
+    A hard take-over is bounded as before at 15 s, and the slowest message measured that was
+    published in the gap a receive-lost cut leaves between one pod's term and the next reached its
+    session 1.257 s after the cut.
 time: 2026-11-03T09:40:00.000000000Z
 custom:
     Issue: pr2404

@@ -52,14 +52,14 @@ func TestListenerStateBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
 	})
 }
 
-// The bucket keeps a session's `seen.` record for at least as long as every pod answers that
-// session's last_seen for, so the record every pod reads outlives the answer: the session
-// registry reports a lapsed session for the session TTL and the retention main gives it
-// (store.InterestReapAllowance of the reaper's grace) past the last registration write
-// (session.SessionRegistry.LastSeen). Every pod reads that record alone and keeps no answer of
-// its own, so a shorter bucket age would end the answer for the whole fleet while the registry
-// still reports the session, and /v1/interests/ would list rows the reaper still holds with no
-// last heartbeat.
+// The bucket keeps a session's `seen.` record for at least the session TTL and the interest
+// reaper's allowance (store.InterestReapAllowance of the reaper's grace) past the last
+// registration write. The session registry would report a lapsed session's last_seen for the
+// session TTL and its last-seen retention (session.LastSeenMemory, 2 hours) past that write
+// (session.SessionRegistry.LastSeen), but every pod reads the record alone and keeps no answer of
+// its own, so the bucket's age is what ends the answer for the whole fleet, and an age shorter
+// than this window would have /v1/interests/ list rows the reaper still holds with no last
+// heartbeat.
 func TestTheListenerStateBucketOutlivesTheLastSeenWindow(t *testing.T) {
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
@@ -76,8 +76,8 @@ func TestTheListenerStateBucketOutlivesTheLastSeenWindow(t *testing.T) {
 
 // A bucket an earlier build created with a shorter MaxAge is raised to listenerStateMaxAge when
 // a listener opens it: a create that finds the bucket there changes nothing of it, so without the
-// raise a deployment that ran an earlier build would drop every `seen.` record inside the window
-// its pods answer last_seen for.
+// raise a deployment that ran an earlier build would drop every `seen.` record at that build's
+// shorter age, and its pods' last_seen answers would end with it.
 func TestOpeningTheListenerStateBucketRaisesAnEarlierBuildsMaxAge(t *testing.T) {
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)

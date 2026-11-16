@@ -994,8 +994,10 @@ over its own deadlines. No deadline of the new pod's own bounds that window: it 
 machine's delivery lease for as long as it runs (`packages/envoy/cmd/listener/lease.go`), so a
 hung old pod that holds its durable for all 40 seconds delays the new pod's take-over and fails
 nothing, and what bounds the grace is the old pod's stop alone. The listener's 135-second
-`durableTakeoverAlarmAfter` (`cmd/listener/receive.go`) times only the wait on a binding that a
-listener from before the lease holds, during the first roll onto the lease. A new pod that never
+`durableTakeoverAlarmAfter` (`cmd/listener/receive.go`) bounds no stop either: it times how long
+a listener has waited on a binding that a listener from before the lease holds, during the first
+roll onto the lease, and how long its reads, creations, policy corrections or subscribes of the
+durable have failed, after which a lease holder gives the lease up. A new pod that never
 becomes Ready leaves the old one serving: nothing stops it, and the new one stands by for the
 lease while it runs. The Tailscale Service's port 9020 refuses connections while no listener pod
 is ready, and its port 4222 serves through it.

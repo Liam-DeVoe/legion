@@ -31,15 +31,16 @@ Every pod of a machine id, active or standby:
   what makes two pods saying it the same answer twice is what the daemon keeps of a report:
   the greatest time any report named (`RecordListenerReady`, `packages/daemon/internal/store/wake.go`), which one live reporter is enough to hold up.
 
-Only the pod holding the machine's **delivery lease** receives the durable consumer, writes its policy, and runs the loops one deliverer runs:
-the interest reaper, the role-claim reaper, the interest marker collector and, on a listener with the GitHub webhook route, the CI summary loop.
+Only the pod holding the machine's **delivery lease** receives the durable consumer, writes its policy, and runs the loops one deliverer runs (`holderLoops`, `main.go`):
+the interest reaper, the role-claim reaper, the session reaper, the interest marker collector, the sweep of the kept role lanes (`startKeptRoleSweep`), the session consumer sweep (`startSessionConsumerSweep`) and, on a listener with the GitHub webhook route, the CI summary loop.
 A standby runs none of them, never creates or updates the durable, and registers no JetStream subscription, so a NATS restart leaves it nothing to re-subscribe.
 
 ### The delivery lease
 
 The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV bucket `envoy_listener` (`bus.ListenerStateBucket`), which the listener creates at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and a 20 minute `MaxAge` (`listenerStateMaxAge`), raising a bucket an earlier build created with a shorter one on every open.
 The age is sized by the `seen.` records beside the lease, not by the lease:
-every pod answers a lapsed session's `last_seen` out of that record for the session TTL and the interest reaper's allowance (20 minutes with the default 5 minute TTL), so the record must outlive the answer.
+every pod answers a lapsed session's `last_seen` out of that record alone, and the session registry would report it for the session TTL and its last-seen retention (`session.LastSeenMemory`, 2 hours) past the session's last registration write, so the bucket's age, which drops the record 20 minutes after that write, is what ends the answer.
+At the default 5 minute TTL those 20 minutes are the session TTL and the interest reaper's allowance (`store.InterestReapAllowance`, 15 minutes), so `/v1/interests/` can give the last heartbeat of every row that reaper still holds.
 Its value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
 a field this build does not know is kept across every rewrite.
 
@@ -164,8 +165,9 @@ it fails with messages missing on v2.10.29.
   The receive loop ends the term as it ends any lost lease - it drops the subscription and leaves what it queued to come back at its ack wait - since nothing can be NAKed over a connection that is down.
   A message published as the connection was cut reaches its session about 14.5 s later at worst:
   up to 3 s before nats.go declares the connection stale (`bus.WithSilentCutDetection`), up to the holder's 1 s renewal round before the lease reads the signal down (`leaseRenewEvery`), the 3 s bound, the standby's 0.5 s poll (`leaseStandbyPoll`) and its 7 s settle hold (`consumerAckWait` and `settleMargin`), plus the standby's subscribe and the delivery itself, inside the 15 s a hard take-over is bounded at.
-  No pod takes the lease while its own receive connection is down - not an absent record, not a released one, not an expired one, and a holder that has lapsed does not resume - so the cut pod does not take back what it just released;
+  No standby takes the lease while its own receive connection is down - not an absent record, not a released one, not an expired one - so the cut pod does not take back what it just released;
   it stands by again, and may take the lease, once the connection is up.
+  A holder whose renewals have lapsed still renews while its connection has been down less than those 3 s, and so resumes its own record; at 3 s it releases the record instead.
   A release the bucket does not take keeps the hold:
   nothing was handed over, so the pod goes on as a holder whose bucket calls fail, its renewals lapse, a standby takes its record once it expires, and it tries the release again at its next turn.
   That holds whatever the lost route does to the pod's reconnects.
@@ -262,7 +264,9 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   these ask it, and nothing else does — a role-lane forward, the kept lane's drain of a role's stored copies (`keptRoleForwardAttempt`), a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, which it reports `delivery_failed`, and the publish route's confirmation that the stream stored a forward it made.
   No session receives from a plain NATS subscription any more (main's #2603 removed that path), so no copy is read off the bus outside this listener and nothing asks the ledger for one.
   Before any of them, a pod records the pair attempted, and once it lands, delivered:
-  a pair another pod delivered is not delivered again, and a refusal or a give-up another pod reported is not reported twice.
+  a pair another pod delivered is not delivered again.
+  A refusal or a give-up stays reported only in the process of the pod that reported it, which keeps that attempt (`dedupe.Ledger.Keep`, below):
+  another pod that reaches the same pair takes the attempt over once it is 35 s old, or sooner as a former holder's, and handles it again, so the same refusal or give-up is reported again under the same id ("Delivery exceptions" below).
   That failed route's ask holds the message: while the ledger cannot answer, the message is NAKed and the failure retried every 30 s.
   The relay of a session's own consumer asks it for nothing ("When a session can see a message twice" below).
   A pod skips a pair as `listener attempt-dedupe skip` only for an attempt it holds itself:
@@ -287,8 +291,9 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
     A relay restarts when:
 
     - a receive term ends and the pod that takes over starts the session's relay.
-      The stopping relay has `relaySettleGrace` (750 ms) to hear a `done` and ack the frame on it, and the successor waits `relayFormerSettle` (1 s) before it restarts, so a `done` that arrives inside the grace is acked in time to lift the ack floor as far as the frames still held below it allow;
+      The stopping relay has `relaySettleGrace` (750 ms) to hear a `done` and ack the frame on it, and the successor waits what is left of `relayFormerSettle` (1 s from its acquisition) before it restarts, so a `done` that arrives inside the grace is acked in time to lift the ack floor as far as the frames still held below it allow;
       every frame left above that floor is sent again, as above.
+      The successor waits whenever the record it took names in `former_boots` a pod that released the lease less than 70 s (`leaseFormerBootAge`) before it took the record, after a forced take too, and waits for nothing only when every pod named there was taken over by force.
       A frame still unwritten when the grace ends is in doubt (`session relay left a frame in doubt`), whether or not its `received` came back:
       the session answers `received` once it decodes a frame and `done` once its host wrote it, and only `done` says the message landed;
 
@@ -317,8 +322,8 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
 
 - **Last seen** (`seen.<session>` in `envoy_listener`):
   every session registration write records when the session was last seen, and every pod answers a lapsed session's `last_seen` out of that record alone, so two pods never answer one session differently - a pod that watched the session keeps no answer of its own.
-  The answer lasts the session TTL and the interest reaper's allowance past the last write (20 minutes with the default 5 minute TTL), which the bucket's `MaxAge` is sized to outlive;
-  with no record in the bucket - it was never written, or it could not be read within the request's budget - no pod answers one.
+  The registry would report it for the session TTL and 2 hours (`session.LastSeenMemory`) past the last write, but the bucket's `MaxAge` drops the record 20 minutes after that write, so the answer lasts 20 minutes past the last write, which is the session TTL and the interest reaper's allowance only at the default 5 minute TTL;
+  with no record in the bucket - it was never written, its age removed it, or it could not be read within the request's budget - no pod answers one.
 
 - **Role-claim grace** counts from the machine's service start, `service_since` in the lease record:
   the server's time of the write that took the lease when no pod of the machine was serving (no record, or one last written more than two TTLs before).
@@ -354,7 +359,7 @@ During a roll two builds run for one machine id, and each must deliver what the 
 - **The durable takes every stored message.**
   Its filter is `>` (`consumerFilterAll`), not a build's own list of stream subjects, so a build whose stream carries a subject the other does not know still has it delivered.
   It is `>` and not empty because nats-server 2.10 accepts an update that clears a push durable's filter and then delivers nothing published after it.
-  The holder writes the policy only once nothing but it receives.
+  A holder that finds the durable push-bound writes the policy only once that binding has ended, unless its term must settle: such a term writes it beside the binding, which it counts as an earlier holder's ("Take-over" above).
 
 - **A session's consumer takes what its filter captures.**
   A relay's restart writes the filter this build compiles for the session's followed topics, and a consumer keeps its position when its filter changes, so a topic either build knows is delivered from the sequence the session had reached.

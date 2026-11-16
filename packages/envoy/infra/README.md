@@ -364,9 +364,10 @@ Three probes read the pod's own loopback, two routes between them:
   status, so any answer keeps the container running and only a minute of no answer at all
   restarts it;
 - readiness, `curl -fsS` of `http://127.0.0.1:9020/healthz` every 5 seconds, with a 6-second
-  timeout and 2 failures allowed. It reads the HTTP status and never the body, so a pod that
-  answers 200 (`"starting"`) while it waits for the durable is ready, and the rolling update
-  never waits for the stream.
+  timeout and 2 failures allowed. It reads the HTTP status and never the body. A pod answers
+  503 (`"starting"`) until it can serve, and then 200 as the active pod or as a standby
+  (`"role": "standby"`) while it waits for the delivery lease, so a standby is ready and the
+  rolling update never waits for the lease.
 
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and
@@ -379,8 +380,10 @@ long it is: it stands by for the machine's delivery lease for as long as it runs
 (`packages/envoy/cmd/listener/lease.go`), so no deadline of its own bounds the grace. What bounds
 the grace is the old pod's stop alone, the preStop wait and the listener's 28-second stop with the
 margin above. The listener's 135-second `durableTakeoverAlarmAfter` (`cmd/listener/receive.go`)
-times only the wait on a binding that a listener from before the lease holds, during the first
-roll onto the lease.
+bounds no stop either: it times how long a listener has waited on a binding that a listener from
+before the lease holds, during the first roll onto the lease, and how long its reads, creations,
+policy corrections or subscribes of the durable have failed, after which a lease holder gives the
+lease up.
 
 One pod has one cost: while that pod is unready or restarting, the Tailscale Service's port
 9020 refuses connections. Port 4222 stays up through it, which is what the split is for.
@@ -2122,10 +2125,11 @@ delivery NATS can never take, answered 422), `<N>-reconnect-hooks-stalled` (a KV
 that has not succeeded for a minute after a NATS reconnect, so the pod's caches serve what they
 last held and `/healthz` answers 200 `degraded`), `<N>-stream-subject-dropped` (a start that
 dropped another deployment's overlapping stream subject), `<N>-durable-refused` (a start that
-refused its durable consumer) and `<N>-subscribe-exhausted` (a listener holding its machine's
-delivery lease that has gone 135 s or more without receiving from its durable: another subscriber
-holds it push-bound, usually a build from before the lease still running, or its reads, writes or
-subscribes of the durable fail, and it gives the lease up). `<N>-publish-failure` and
+refused its durable consumer) and `<N>-subscribe-exhausted` (a listener that has waited 135 s or
+more on another subscriber's push binding of its durable, usually a build from before the lease
+still running, or whose reads, creations, policy corrections or subscribes of the durable have
+failed for that long: a lease holder gives the lease up for the failures, and a listener without
+a lease logs the line again every five minutes). `<N>-publish-failure` and
 `<N>-webhook-refused` count a GitHub delivery's first failure or refusal in each listener task: a
 later one of the same delivery, such as each of the redeliveries Dispatch's sweep asks for over 72
 hours, is logged `redelivery <delivery>: <action> refused` (or `failed`), which no filter counts,

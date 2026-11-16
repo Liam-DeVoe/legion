@@ -57,7 +57,9 @@ func (m *sessionRelays) endFrames(ctx context.Context, run *relayRun) []*relayFr
 // taking over waits relayFormerSettle, which is this grace and a margin, before it restarts
 // the consumer, so it pulls only once the grace has ended and what the grace returned is
 // waiting for it; a holder taken over by force - killed, its node lost, its record expired -
-// settles nothing and is not waited for. The successor then sends again every frame above
+// settles nothing and is not waited for, unless another former holder in the lease record
+// released the lease within leaseFormerBootAge (70 s), which is waited for all the same
+// (FormerSettleWait). The successor then sends again every frame above
 // its ack floor, the one in doubt and any the session answered done above a frame still
 // held, each under its own event id; see cmd/listener/README.md, "When a session can see a
 // message twice".

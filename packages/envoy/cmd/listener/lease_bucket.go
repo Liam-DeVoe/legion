@@ -12,13 +12,16 @@ import (
 
 // The listener state bucket (bus.ListenerStateBucket) keeps one value per key and drops a key
 // nobody has written for listenerStateMaxAge, so a lease record nobody renews leaves the bucket
-// after 20 minutes. That age is what every pod answers a lapsed session's last_seen for: the
+// after 20 minutes. That age also ends every pod's answer for a lapsed session's last_seen: the
 // session's `seen.` record is the one answer they share (session.SessionRegistry.LastSeen), and
-// the registry reports it for the session TTL and the interest reaper's allowance past its write
-// (store.InterestReapAllowance, the retention main sets), 20 minutes with the default 5-minute
-// TTL. The record must outlive that window, because every pod reads the record alone and keeps
-// no answer of its own: once the bucket drops it, the whole fleet answers nothing for a session
-// the registry still reports. A record nobody renews living twice as long changes
+// the registry would report it for the session TTL and its last-seen retention past its write
+// (session.LastSeenMemory, 2 hours, which main does not shorten), so the bucket, which drops the
+// record 20 minutes after its write, ends the answer first. Every pod reads the record alone and
+// keeps no answer of its own: once the bucket drops it, the whole fleet answers nothing for that
+// session. At the default 5-minute TTL the age equals the session TTL and the interest reaper's
+// allowance (store.InterestReapAllowance), so /v1/interests/ can give the last heartbeat of every
+// row that reaper still holds (TestTheListenerStateBucketOutlivesTheLastSeenWindow holds the age
+// to no less). A record nobody renews living twice as long changes
 // nothing else: a lease record is taken over once it has stood unchanged for the lease's ttl,
 // whatever its age, and the delivery ledger judges every record by its own ages (dedupe.KV).
 // listenerStateRequestWait is the JetStream wait of every request on the bucket's handle: a
@@ -40,9 +43,9 @@ var errListenerStateRefused = errors.New("NATS refused KV bucket " + bus.Listene
 // listenerStateMaxAge and one value per key when it does not exist, with wait as the JetStream
 // wait of every request on the handle it returns (listenerStateRequestWait in production). A
 // bucket an earlier build created keeps its keys for a shorter age, so the open raises it to
-// listenerStateMaxAge (bus.RaiseMaxAge): a `seen.` record must outlive the window every pod
-// answers a lapsed session's last_seen for, and a create that finds the bucket there changes
-// nothing of it.
+// listenerStateMaxAge (bus.RaiseMaxAge): how long a `seen.` record stands past its write is how
+// long past that write every pod answers a lapsed session's last_seen, and a create that finds the
+// bucket there changes nothing of it.
 //
 // A refusal under the connection's grant is errListenerStateRefused, which errors.Is tells apart
 // from a connection error. nats-server drops a publish the grant refuses and answers it only with
