@@ -241,6 +241,13 @@ func (c *listenerCalls) counts() (open, held int) {
 //     which is the take-over's backoff before the next try. A listener call's window (five
 //     seconds) is further off, so a call already on its way to the stand-in, whose window is
 //     armed before the request is written, is never cut short by this.
+//
+// Either rule can also fire the bound of a comment's own mention lookup while that lookup's
+// request is still on its way to the stand-in: the request makes the lookup before its
+// transaction (resolveCommentDeliveries), bounded by mentionLookupTimeout - as near as the first
+// backoff - and arms that bound before the stand-in has taken the call. A caller whose stand-in
+// would answer that lookup moves the clock only once the request's lookups are done, which is
+// once the comment's attempts are committed.
 func stepListenerWaits(fake *clocktest.Fake, calls *listenerCalls) {
 	armed := fake.Armed()
 	if len(armed) == 0 {
@@ -474,6 +481,23 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				handler.ServeHTTP(response, request)
 				answered <- response
 			}()
+			// The clock stays where it is until the attempt the tries hold is committed. A
+			// comment's request looks its mention up before its transaction
+			// (resolveCommentDeliveries), bounded by mentionLookupTimeout on the server's clock -
+			// a deadline as near as a backoff, which stepListenerWaits fires whenever the stand-in
+			// is serving nothing, as it is while that lookup's request is still on its way to it.
+			// A lookup cut so reaches the stand-in later all the same, and its read of the claim is
+			// one no try of the sender's made. The attempt is written after every lookup the
+			// request makes, so a move made once it stands cuts none of them.
+			testwait.Eventually(t, "the attempt the sender's tries hold to be committed", func() bool {
+				var committed bool
+				if err := database.Pool.QueryRow(context.Background(),
+					`select exists (select from `+tc.table+` where state = 'pending' and attempt = 1)`,
+				).Scan(&committed); err != nil {
+					t.Fatalf("read the attempt the sender's tries hold: %v", err)
+				}
+				return committed
+			})
 			// Two tries the sender made while holding the attempt, each after the backoff this
 			// wait moves the clock through.
 			testwait.Eventually(t, "two tries of the sender that found its attempt held", func() bool {
