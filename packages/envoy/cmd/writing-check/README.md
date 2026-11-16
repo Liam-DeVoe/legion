@@ -29,6 +29,7 @@ go run ./cmd/writing-check dataset pack --snapshot <file> --verdicts <file> --se
 go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) --out <dir>
 go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
 go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
+go run ./cmd/writing-check dataset named --doc <issue>/<document>@<version>[,<version>...] [--doc ...] --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
 go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--part development|held_out] [--sample N --sample-seed S] [--grader-inputs final|full|trimmed[,j=mode]...] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
@@ -791,6 +792,9 @@ The dataset is a file artifact of INFRA-3231. It is never a file of this reposit
 `dataset/DATASET` holds the end time, the seed and the SHA-256 of each input and each output.
 `build --from <bundle>` prints the same SHA-256.
 
+`named` is not one of these steps. It builds cases from document versions that it reads from the
+live Dispatch, for a text the dataset does not hold (see "named").
+
 ### fetch
 
 | Flag | Meaning |
@@ -1100,6 +1104,77 @@ Each line holds one text as a case holds a text: `key`, `event_id`, `event_type`
 time of the event that wrote it), `kind`, `actor_kind`, `actor`, `text` and `sha256`.
 `owner-texts` prints the count of texts and the file's SHA-256.
 
+### named
+
+`named` builds cases from the document versions that `--doc` lists. It reads them from the live
+Dispatch, whose address and token file are `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`, as for
+`fetch`. Use it for a text the dataset does not hold, such as a version written after the
+dataset's end time. It reads no snapshot, no verdict and no seed, and it changes no file of the
+dataset.
+
+| Flag | Meaning |
+| --- | --- |
+| `--doc` | `<issue>/<document>@<version>[,<version>...]`: versions of one document of an issue. `<document>` is the document's slug or its file name. Give the flag once for each document. |
+| `--out` | The directory for the output files. |
+| `--owner` | The person the texts are written to (default `sami@theorem.dev`). `harness load` gives each case a reader in his place. |
+
+```sh
+go run ./cmd/writing-check dataset named --doc INFRA-3577/open-items-md@30,32,33 --out $TMPDIR/named-3577
+```
+
+Each version is one case:
+
+- Its `id` is `plain/named:<issue>/<slug>@<version>`, for example
+  `plain/named:INFRA-3577/open-items-md@30`. One version always gets the same id.
+- Its `group` is `plain` and its `part` is `development`. `named` writes no held-out case.
+- Its text is the version's whole Markdown. `build` takes only the blocks that the version
+  before it does not hold.
+- Its `agent_text` holds the event that wrote the version: the event's id, type, time and
+  actor. Its `writer_session` is the session of that event. A version that a person wrote
+  himself, or that a Legion daemon wrote, has no writer session, and `named` says so on stderr.
+- Its `record`, `tree` and `split_group` are the ones `build` gives a document version. The
+  record holds the issue with its title at that time, its parent and its root, and each document
+  of the issue at the version in force just before the write. For the version's own document,
+  that is the version before it.
+- It has no `owner_reply`.
+
+`named` makes these reads:
+
+1. `GET /api/v1/issues/{key}/artifacts/{document}` for each `--doc`: the document's id, slug and
+   kind. It refuses a file and an image.
+2. `GET /api/v1/issues/{key}/events` for each issue, 200 events a page. These are the rows of
+   `GET /api/v1/events/log` that belong to the issue and its documents. `named` gives them, in id
+   order, to the index that `build` fills from a snapshot, so the same code makes each record.
+3. `GET /api/v1/issues/{key}` for each ancestor of the issue: its parent.
+4. `GET /api/v1/artifacts/{id}/versions/{n}` for each version of `--doc` and each version in a
+   record. A version of a record that Dispatch does not serve (404 or 403) is `missing` in the
+   record, as in `build`.
+
+`named` writes `cases.jsonl.gz`, `documents.jsonl.gz` and `sessions.tsv` in the formats of
+`build`. Its `counts.json` is shorter than the one of `build`. It holds the `owner`, which
+`harness load` reads; the versions (`named`); the count of cases; the sessions listed in
+`sessions.tsv` and left out of it; and the SHA-256 of the other three files. `harness load
+--cases` and `harness score --cases` read the directory as they read a build directory.
+`harness load` also needs the dataset's verdicts file (`--verdicts`), for the owner's word records
+written before each case.
+
+`harness score` scores a case with no session when the directory of `--sessions` holds no place
+for it. To give these cases their sessions, run `export-sessions.sh` with this `sessions.tsv`,
+then `dataset sessions` with this directory, and give `harness score` the directory that
+`dataset sessions` writes.
+
+A case of `named` is always in the development part, and `named` does not read the dataset.
+Before you score a version, read the `tree` and `part` of the dataset's cases: if the dataset
+holds the version's issue tree in its held-out part, development rounds would read texts of a
+held-out tree.
+
+Two runs with the same `--doc` values write the same bytes while Dispatch holds the same events.
+A later rename of a document changes its name in the record, and a later move of the issue under
+another parent changes the record's parent and root.
+
+`TestDatasetNamedWritesCasesTheHarnessLoads` runs `named` against a stand-in Dispatch and loads
+the output with the harness's case reader (`harness.LoadDataset`).
+
 ## harness
 
 `harness` (package `cmd/writing-check/harness`) scores the changes of INFRA-3231's R3 on the
@@ -1176,7 +1251,7 @@ writes the rows as JSON.
 | `--model` | The candidate the change calls: the reviewer's, Rewrite's and Define's model and the detector's reader, for a change that holds 3, 4, 5, 6 or 7a. |
 | `--local`, `--loaded` | The `local.json` of `harness local` and the `loaded.jsonl` of `harness load`, for a change that holds 2 to 6. |
 | `--rounds`, `--unedited` | Change 3: the reviews of one text (default 2), after which the writer's last edit posts; and what posts for a case with no session, as `DISPATCH_REVIEWER_UNEDITED` says (`rewrite`, the default, or `as_written`). |
-| `--cases`, `--sessions` | The build directory of `dataset build` and the directory of `dataset sessions`. |
+| `--cases`, `--sessions` | The build directory of `dataset build`, or the directory of `dataset named`, and the directory of `dataset sessions`. |
 | `--out` | The run's directory. A run continues the cases that have no result in it, and refuses a directory whose `run.json` records other parameters. |
 | `--part` | `development` (the default), or `held_out`, which only this flag selects. |
 | `--groups` | The case groups to score (default all four; `question` alone for a change that holds 6). |

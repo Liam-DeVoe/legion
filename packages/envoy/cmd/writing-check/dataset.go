@@ -6,8 +6,9 @@ package main
 // seed, and pack puts those three inputs into one bundle that build --from reads. Every file
 // these steps write holds Dispatch text, so each belongs under $TMPDIR and never in a repository;
 // the repository holds the prompt (internal/dispatch/wordrecords/select.md, which the server's
-// records job reads too) and the digests (dataset/DATASET). README.md, "dataset", says what each
-// step does.
+// records job reads too) and the digests (dataset/DATASET). named (named.go) is apart from these
+// steps: it builds cases from document versions read from the live Dispatch. README.md,
+// "dataset", says what each step does.
 
 import (
 	"archive/tar"
@@ -159,6 +160,7 @@ steps:
   pack         put the snapshot, the verdicts and the seed into one bundle that build --from reads
   sessions     check the session export's parts and give each case its place in its writer session
   owner-texts  write each text the owner wrote himself, with its time, from the snapshot build reads
+  named        build plain cases of the development part from the document versions --doc lists, read from the live Dispatch
 
 writing-check dataset <step> -h lists its flags.
 `
@@ -181,6 +183,8 @@ func runDataset(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runDatasetSessions(args[1:], stdout, stderr)
 	case "owner-texts":
 		return runDatasetOwnerTexts(args[1:], stdout, stderr)
+	case "named":
+		return runDatasetNamed(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, dsUsage)
 		return 0
@@ -2914,11 +2918,7 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	}
 	slices.SortFunc(list, func(a, b *dsCase) int { return strings.Compare(a.ID, b.ID) })
 	for _, c := range list {
-		a := c.agent
-		c.Agent = ix.caseText(a)
-		c.Kind, c.Conversation, c.WriterSession, c.WriteTime = a.Kind, a.Conversation, a.Session, a.Time
-		c.Tree = ix.tree(a)
-		c.Record = ix.record(a)
+		ix.fill(c)
 	}
 	parts, err := dsSplit(list, seed)
 	if err != nil {
@@ -3033,6 +3033,16 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	return res, nil
 }
 
+// fill sets what a case takes from its agent text: the text as the case holds it, its kind, its
+// writer session and write time, its tree and its record.
+func (ix *dsIndex) fill(c *dsCase) {
+	a := c.agent
+	c.Agent = ix.caseText(a)
+	c.Kind, c.Conversation, c.WriterSession, c.WriteTime = a.Kind, a.Conversation, a.Session, a.Time
+	c.Tree = ix.tree(a)
+	c.Record = ix.record(a)
+}
+
 // caseText is a text as a case holds it.
 func (ix *dsIndex) caseText(t *dsText) dsCaseText {
 	actor := t.ActorID
@@ -3094,14 +3104,9 @@ func (ix *dsIndex) record(t *dsText) dsCaseRecord {
 	return rec
 }
 
-// dsSplit puts each split group whole in one part, and answers the part by split group key. A
-// split group is the cases an issue tree, a shared document or a near copy joins (group.go's
-// assignGroups), keyed by its least tree. The split groups go in the order of a hash of the seed
-// and their key, each to the held-out part when that brings the held-out share of every case
-// group, taken together, nearer dsHeldOutShare: the sum over the case groups of the squared
-// distance of each group's held-out share from it falls. So each case group is stratified to
-// about dsHeldOutShare, and a split group that holds cases of several case groups counts in each.
-func dsSplit(cases []*dsCase, seed uint64) (map[string]string, error) {
+// dsSplitGroups gives each case its split group: the cases an issue tree, a shared document or a
+// near copy joins (group.go's assignGroups), keyed by the group's least tree.
+func dsSplitGroups(cases []*dsCase) {
 	shims := make([]Case, len(cases))
 	for i, c := range cases {
 		shims[i] = Case{RootIssue: c.Tree, Text: c.Agent.Text}
@@ -3116,6 +3121,19 @@ func dsSplit(cases []*dsCase, seed uint64) (map[string]string, error) {
 			key[s.Group] = cases[i].Tree
 		}
 	}
+	for i, c := range cases {
+		c.SplitGroup = key[shims[i].Group]
+	}
+}
+
+// dsSplit puts each split group (dsSplitGroups) whole in one part, and answers the part by split
+// group key. The split groups go in the order of a hash of the seed and their key, each to the
+// held-out part when that brings the held-out share of every case group, taken together, nearer
+// dsHeldOutShare: the sum over the case groups of the squared distance of each group's held-out
+// share from it falls. So each case group is stratified to about dsHeldOutShare, and a split
+// group that holds cases of several case groups counts in each.
+func dsSplit(cases []*dsCase, seed uint64) (map[string]string, error) {
+	dsSplitGroups(cases)
 	type splitGroup struct {
 		key    string
 		hash   uint64
@@ -3123,8 +3141,7 @@ func dsSplit(cases []*dsCase, seed uint64) (map[string]string, error) {
 	}
 	groups := map[string]*splitGroup{}
 	total := map[string]int{}
-	for i, c := range cases {
-		c.SplitGroup = key[shims[i].Group]
+	for _, c := range cases {
 		g := groups[c.SplitGroup]
 		if g == nil {
 			g = &splitGroup{key: c.SplitGroup, hash: dsHash(seed, "split", c.SplitGroup), counts: map[string]int{}}
