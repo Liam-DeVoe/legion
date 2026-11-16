@@ -6540,6 +6540,7 @@ export interface operations {
   getApiV1AccessPerson: {
     parameters: {
       query?: {
+        person?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -6572,6 +6573,7 @@ export interface operations {
   getApiV1AccessProjectsByKey: {
     parameters: {
       query?: {
+        person?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };

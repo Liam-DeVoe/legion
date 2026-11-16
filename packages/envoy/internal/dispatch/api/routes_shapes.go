@@ -478,6 +478,14 @@ type liveWritePauseQuery struct {
 	Wait string `query:"wait"`
 }
 
+// accessPersonQuery is the query of the two membership-answer reads, GET
+// /api/v1/access/projects/{key} and GET /api/v1/access/person.
+type accessPersonQuery struct {
+	// Person is the email whose member kind, and for a project whether they see it, the answer
+	// reads; the project read takes none and answers the project alone.
+	Person string `query:"person"`
+}
+
 // --- the shapes ------------------------------------------------------------------------------
 
 // routeShapes is the shape of every row of the table with its test hooks in, by
@@ -574,8 +582,8 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/access-groups":                           {Status: http.StatusOK, Response: []model.AccessGroup{}},
 	"PUT /api/v1/access-groups/{name}":                    {Status: http.StatusOK, Response: model.AccessGroup{}, Request: accessGroupInput{}},
 	"DELETE /api/v1/access-groups/{name}":                 {Status: http.StatusNoContent},
-	"GET /api/v1/access/projects/{key}":                   {Status: http.StatusOK, Response: model.AccessAnswer{}},
-	"GET /api/v1/access/person":                           {Status: http.StatusOK, Response: model.PersonAnswer{}},
+	"GET /api/v1/access/projects/{key}":                   {Status: http.StatusOK, Response: model.AccessAnswer{}, Params: accessPersonQuery{}},
+	"GET /api/v1/access/person":                           {Status: http.StatusOK, Response: model.PersonAnswer{}, Params: accessPersonQuery{}},
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},
