@@ -1,0 +1,1149 @@
+#!/usr/bin/env bash
+# Drives the one truth of a run of the command bar and of this child's reasoning nodes across an
+# upgrade and a rollback (dispatch://INFRA-1950's c-census, dispatch://INFRA-1950/spec#b-r-one-truth,
+# dispatch://INFRA-1950/spec#b-r-interaction). Two products of one transformation agree after both
+# lose the same row, so the driver starts before the migration and holds both products to an
+# inventory of its own:
+#
+#   B1  The base build, booted through lib-baseline.sh, which builds it from BASELINE_SHA (unset,
+#       `git merge-base origin/main HEAD`) and stamps it with that commit, over the run's empty
+#       database, which it migrates. Through its own API three people each ask the command bar,
+#       and the driver reads each run's stream to its terminal frame; the server stops, so nothing
+#       appends a frame after the inventory is read. With psql it writes one run row a day ahead
+#       that holds no frame, and one run for each row of the identity table below, each form
+#       straight into going_requests.author, since the older server's sign-in stores a login in its
+#       canonical form only. It then reads the inventory - each run's id, author, words and frames -
+#       out of that database and keeps it as a file.
+#   H1  This head's server (DISPATCH_E2E_SERVER_BIN, stamped with its own commit) boots over the
+#       same database and runs every migration it holds; the driver runs
+#       `envoy-dispatch backfill-graph-store`, waits ten minutes at most until no
+#       document_block_versions row has a null version, and compares the store with the inventory
+#       row by row, then going_requests and going_events the same way, naming every run a side
+#       lacks.
+#   H2  Through this build's routes: a pre-mortem reserved for alice with one risk prevented by a
+#       check, a trade-off lens with one finding block, triggered by the pre-mortem, a constraint
+#       reserved for bob, the requirement's constrained_by tuple to it, one lens_kind through
+#       `envoy-dispatch lens-kind-add` (that kind's only writer), an edit of the words of an
+#       existing requirement block under the header of one of alice's runs, and one lens on the
+#       shared bearer e2e-token whose body names a session no other row names. It keeps an
+#       inventory of those writes. Before any further backfill the census reads the person and the
+#       session kinds at zero differences: that lens proved no author and has no author node.
+#   B2  The base build again, as after a rollback, through run-server.sh: one new run, whose frames
+#       it writes with no frame value; with psql the hand-written run's ends_at moves into the past,
+#       standing for time passing, on both sides in one transaction (its row, and its node's
+#       attribute and value tuple), and a third run is dated two hours back, and the driver waits
+#       ten minutes at most until that build's sweep has ended the first and deleted the row of the
+#       second.
+#   H3  This head again and the backfill again: a node for the new run, a frame value for each frame
+#       that build appended, and the run whose row it deleted at state gone. Only then the census,
+#       the store-to-projection comparison, which is reported apart from the inventory's: a run the
+#       migration lost shows in the first and never in the second. It reads zero differences for
+#       the interaction and frame kinds, for both block projections of dispatch://INFRA-1149, for
+#       person and session, and for the visibility and state of every node of this child's kinds,
+#       each kind having checked more than zero rows, and every interaction at `author`.
+#   S   The store-only kinds (lens, finding, risk, constraint, lens_kind) and their constrained_by,
+#       has_kind, triggered_by and prevented_by tuples against the inventory of the routes' writes
+#       and the migration's seed, node for node and tuple for tuple.
+#   I   The identity table against each run's made_by, its authored_by and going_requests.author.
+#   G   A grep of packages/envoy/cmd/dispatch and packages/envoy/scripts for a subcommand or a file
+#       whose name holds reconcile or rebuild beside interaction, lens, risk or constraint, beside
+#       the same grep over a copy under $TMPDIR holding a planted rebuild-lens.sh.
+#   P   For alice and for bob, the set of nodes of this child's kinds the predicate admits, read
+#       through GET /api/v1/references at each node's address, against the set computed from the
+#       store's columns alone.
+#   M   Each .census.sql of the migrations this head applied over the base, the select the
+#       repository runs before a deploy, reading 0.
+#   E   With no server running, `envoy-dispatch erase --node interaction:<uuid>` of the run the edit
+#       was made under, as dispatch://INFRA-1149's erase runs: a listing, then --confirm with its
+#       digest. The block's changed_by_run tuple blocks nothing and goes with the node; no row and no
+#       node of the run is left, the backfill writes none back, and the census reads zero again.
+#
+# The identity table is written into this driver by a person, and no code the server runs produces
+# it: each row is a form a record can hold of a person's identity, the node its run's authored_by
+# must name, and the person it resolves to. carol is the person of the table who asks the command
+# bar and writes no comment; karol is one character from her and must stay a person of his own.
+#
+# Inputs: DATABASE_URL (an empty database on this machine that the run created and drops; every
+# server here migrates and serves it, and this driver reads and writes its rows), and optionally
+# BASELINE_SHA (lib-baseline.sh's: the base commit; while a branch this child builds on is unmerged,
+# a commit holding every such branch), DISPATCH_E2E_SERVER_BIN (this head's envoy-dispatch, which
+# serves and runs backfill-graph-store, census, lens-kind-add and erase, default
+# $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE (lib-baseline.sh's checkout). It starts the
+# three fakes run-server.sh needs, and every server, and stops each when it exits, also when a check
+# fails, so the run can drop its database. Each unmet input is exit 2. No BASELINE_BINARY is read:
+# the base is always built here and stamped with its commit.
+#
+# Each passing check prints `PASS: <section> <what>`; the first failing one prints
+# `FAIL: <section> <what>: <observed>` and the script exits 1. The first PASS line after this head's
+# migrations, read before any lens is written, is
+# `PASS: node-visibility-census.sh the catalogue holds its ten kinds`. The last line is
+# `PASS: node-visibility-census.sh complete`.
+#
+# Every check is `cmd || fail …`, never part of an `&&` list: under `set -e` a failing command
+# anywhere but last in such a list does not stop the script.
+
+# shellcheck disable=SC2016 # the single-quoted jq filters and SQL name jq and psql variables
+set -euo pipefail
+set +x
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/infra_1950_census?sslmode=disable \
+         [BASELINE_SHA=<commit>] [DISPATCH_E2E_SERVER_BIN=$TMPDIR/bin/envoy-dispatch] \
+         node-visibility-census.sh
+       (DATABASE_URL names an empty database on this machine, which the run created and drops;
+       BASELINE_SHA unset is git merge-base origin/main HEAD)
+USAGE
+}
+
+# shellcheck source-path=SCRIPTDIR source=lib-baseline.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib-baseline.sh"
+require_env DATABASE_URL
+require_commands bun curl git go jq openssl psql python3 tar
+
+readonly driver=node-visibility-census.sh
+# shellcheck disable=SC2153,SC2031 # the caller's DATABASE_URL, checked by name above, not a server's
+# Not readonly: lib-baseline.sh's baseline_boot takes a local of this name.
+database_url="$DATABASE_URL"
+# shellcheck disable=SC2031 # the TMPDIR lib.sh's `cli` exports is its own; this one is the caller's
+server_bin="${DISPATCH_E2E_SERVER_BIN:-${TMPDIR:-/tmp}/bin/envoy-dispatch}"
+[[ "$server_bin" == /* ]] || server_bin="$PWD/$server_bin"
+readonly server_bin
+[[ -x "$server_bin" ]] || {
+  printf 'DISPATCH_E2E_SERVER_BIN names %s, which is not an executable file\n' "$server_bin" >&2
+  usage
+  exit 2
+}
+[[ -z "${BASELINE_BINARY:-}" ]] || {
+  printf 'BASELINE_BINARY is set: this driver builds the base itself, stamped with its commit\n' >&2
+  usage
+  exit 2
+}
+# The bearer every server here accepts: run-server.sh boots each with e2e-token, and
+# lib-baseline.sh boots the base with the run's DISPATCH_TOKEN, which it reads from this shell.
+readonly token=e2e-token
+# shellcheck disable=SC2034 # read by lib-baseline.sh's baseline_start
+DISPATCH_TOKEN="$token"
+e2e_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly e2e_dir
+# The tree this driver is part of, whose sources G greps and whose migrations M reads.
+tree="$(cd -- "$e2e_dir/../../.." && pwd)"
+readonly tree
+stamp="$(date +%s)-$$"
+readonly stamp
+# The session every bearer write names, the session the identity table says the server proved
+# carol's, and the session the lens on the shared bearer names, which no other row names.
+readonly session="census-$stamp"
+readonly carol_session="census-carol-$stamp"
+readonly bearer_session="census-bearer-lens-$stamp"
+readonly project=CENSUS
+# The two seeded people, the person of the identity table, and the login one character from hers.
+readonly alice=alice bob=bob carol=carol twin=karol
+# The ten kinds dispatch://INFRA-1297 records, which the catalogue's migration seeds.
+readonly seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
+readonly added_kind="census-$stamp"
+# How long a process gets to print the line that says it listens, and how long each of the two
+# waits below may take: the owed block versions, and the older build's sweep.
+readonly listen_limit=180
+readonly wait_limit=600
+# The words of the requirement edited under a run, before the edit and after it.
+readonly edited_from="The words of this requirement are edited under a run."
+readonly edited_to="The words of this requirement were edited under a run."
+
+work_dir
+printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
+
+pids=()
+server_pid=""
+# stop_pid PID: ends the process PID, with SIGKILL for one that does not go on SIGTERM within ten
+# seconds, and reaps it.
+stop_pid() {
+  local waited=0
+  kill -TERM "$1" 2>/dev/null || return 0
+  while kill -0 "$1" 2>/dev/null && [[ "$waited" -lt 20 ]]; do
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  kill -KILL "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
+cleanup() {
+  local code=$?
+  local pid
+  [[ -z "$server_pid" ]] || stop_pid "$server_pid"
+  for pid in "${pids[@]}"; do
+    stop_pid "$pid"
+  done
+  baseline_stop
+  rm -rf "$work"
+  exit "$code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# fail_with_log SECTION WHAT OBSERVED LOG: fail, with the last lines of LOG after OBSERVED.
+fail_with_log() {
+  fail "$1" "$2" "$3; the last lines of its log: $(tail -n 20 "$4" 2>/dev/null)"
+}
+
+# psql_run SECTION WHAT ARGS…: psql against the run's database, stopping at the first error, its
+# output in $work/psql.out. psql runs without PGHOSTADDR, which libpq would otherwise connect to in
+# place of the DSN's host.
+psql_run() {
+  local section="$1" what="$2"
+  shift 2
+  env -u PGHOSTADDR psql "$database_url" -X -q -At -v ON_ERROR_STOP=1 "$@" >"$work/psql.out" 2>&1 ||
+    fail "$section" "$what" "psql: $(<"$work/psql.out")"
+}
+
+# with_vars SECTION WHAT SQL NAME=VALUE…: runs SQL with each NAME bound as a psql variable (read as
+# :'NAME'), its one value in $answer. The SQL is read from stdin, where psql substitutes a variable.
+with_vars() {
+  local section="$1" what="$2" sql="$3" pair
+  shift 3
+  local -a vars=()
+  for pair in "$@"; do
+    vars+=(-v "$pair")
+  done
+  answer="$(env -u PGHOSTADDR psql "$database_url" -X -q -At -v ON_ERROR_STOP=1 "${vars[@]}" <<<"$sql" 2>"$work/psql")" ||
+    fail "$section" "$what" "psql: $(<"$work/psql")"
+}
+
+# want_value SECTION WHAT WANT SQL: the one value SQL reads is WANT.
+want_value() {
+  query "$1" "$2" "$4"
+  [[ "$answer" == "$3" ]] || fail "$1" "$2" "read '$answer', want '$3' (from: $4)"
+  pass "$1" "$2"
+}
+
+# await_line SECTION WHAT PID LOG PATTERN: waits for PATTERN in LOG while PID lives, for up to
+# $listen_limit seconds, and sets $line to the first line holding it.
+await_line() {
+  local waited=0
+  until line="$(grep -m 1 -E "$5" "$4" 2>/dev/null)"; do
+    kill -0 "$3" 2>/dev/null || fail_with_log "$1" "$2" "the process stopped before it printed /$5/" "$4"
+    [[ "$waited" -lt $((listen_limit * 2)) ]] ||
+      fail_with_log "$1" "$2" "no line /$5/ after $listen_limit s" "$4"
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+}
+
+# start_fake NAME FILE: starts the fake e2e/FILE on a port the OS chooses, which its own line
+# reports, and sets $fake_port to it.
+start_fake() {
+  env -u FAKE_ENVOY_PORT -u FAKE_GITHUB_PORT -u FAKE_BROKER_PORT -u FAKE_EMBEDDER_PORT \
+    -u DISPATCH_E2E_STACKS -u DISPATCH_E2E_STACK_COUNT -u DATABASE_URL \
+    bun "$e2e_dir/$2" >"$work/$1.log" 2>&1 &
+  pids+=("$!")
+  await_line setup "start the $1" "$!" "$work/$1.log" "listener on 127\.0\.0\.1:[0-9]+"
+  fake_port="${line##*:}"
+  [[ "$fake_port" =~ ^[0-9]+$ ]] || fail setup "start the $1" "its line reads: $line"
+  printf '%s: the %s listens on 127.0.0.1:%s\n' "$driver" "$1" "$fake_port"
+}
+
+# boot_server SECTION NAME BINARY: starts BINARY with e2e/run-server.sh over the run's database, on
+# a port the kernel chooses and held-port.py holds until the server serves on it, with the dev
+# sign-in key lib-baseline.sh gave the base build, so every server of the run signs cookies with one
+# key. It sets $server_pid and $base, the server's address.
+boot_server() {
+  env -u DISPATCH_E2E_PORT -u DISPATCH_E2E_PROCESSES -u DISPATCH_E2E_SIGNIN -u DISPATCH_E2E_LISTEN_FROM \
+    DATABASE_URL="$database_url" FAKE_ENVOY_PORT="$envoy_port" FAKE_GITHUB_PORT="$github_port" \
+    FAKE_BROKER_PORT="$broker_port" DISPATCH_E2E_SERVER_BIN="$3" \
+    DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY="$baseline_signin_key" \
+    bash "$e2e_dir/run-server.sh" >"$work/$2.log" 2>&1 &
+  server_pid="$!"
+  await_line "$1" "start $2" "$server_pid" "$work/$2.log" 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]+'
+  [[ "$line" =~ addr=(127\.0\.0\.1:[0-9]+) ]] || fail_with_log "$1" "start $2" "its line names no address: $line" "$work/$2.log"
+  base="http://${BASH_REMATCH[1]}"
+  printf '%s: %s, %s, serves %s (pid %s)\n' "$driver" "$2" "$3" "$base" "$server_pid"
+}
+
+# stop_server SECTION WHAT: stops the server this driver started last, which deletes its row of
+# server_processes as its drain ends, and reads that no process of the run is registered then, so
+# the next server is the only one serving the database.
+stop_server() {
+  stop_pid "$server_pid"
+  server_pid=""
+  want_value "$1" "$2: server_processes holds no row once it stopped" 0 "select count(*) from server_processes"
+}
+
+# registered_commit SECTION WHAT: the commit the one row of server_processes names, in $answer.
+registered_commit() {
+  query "$1" "$2" "select count(*) || '|' || coalesce(min(commit), '') from server_processes"
+  [[ "$answer" == 1\|* ]] || fail "$1" "$2" "server_processes holds '$answer', want one row"
+  answer="${answer#1|}"
+}
+
+# request AS METHOD PATH [JSON [RUN]]: sends METHOD PATH as AS: `agent`, the shared bearer in
+# $work/auth, or `cookie:<login>`, the session cookie the dev sign-in left in $work/jar.<login> and
+# the server's origin, which the server requires of every write a cookie authenticates. RUN names a
+# run of the command bar in the Dispatch-Going-Run header. The answer's body goes to $work/body and
+# its HTTP status to $status.
+request() {
+  local -a auth data=() going=()
+  case "$1" in
+    cookie:*) auth=(-b "$work/jar.${1#cookie:}" -H "Origin: $base") ;;
+    *) auth=(-H "@$work/auth") ;;
+  esac
+  [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
+  [[ $# -lt 5 ]] || going=(-H "Dispatch-Going-Run: $5")
+  status="$(curl -sS --max-time 60 -X "$2" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" "${going[@]}" \
+    "$base$3" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+}
+
+# actor: the session every write on the shared bearer acts for.
+actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
+
+# sign_in SECTION LOGIN: signs LOGIN in through the dev sign-in route of the server serving now,
+# keeping the cookie in $work/jar.LOGIN.
+sign_in() {
+  status="$(curl -sS --max-time 60 -o "$work/body" -w '%{http_code}' -c "$work/jar.$2" \
+    "$base/auth/_dev/signin?login=$(q "$2")" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+  want_status 302 "$1" "dev sign-in as $2"
+  grep -q $'\tdsession\t' "$work/jar.$2" || fail "$1" "dev sign-in as $2" "the answer set no session cookie"
+  pass "$1" "signed in as $2 at $base"
+}
+
+# ask SECTION LOGIN WORDS: LOGIN's cookie asks the command bar WORDS of the project, and the answer
+# is the stored run, whose id goes to $asked.
+ask() {
+  request "cookie:$2" POST /api/v1/going/requests "$(jq -cn --arg w "$3" --arg p "$project" '{words: $w, project: $p}')"
+  want_status 201 "$1" "$2 asks the command bar"
+  asked="$(jq -er '.id' "$work/body")" || fail "$1" "$2 asks the command bar" "no id: $(body)"
+  pass "$1" "$2 asked the command bar \"$3\" (run $asked)"
+}
+
+# read_stream SECTION LOGIN RUN: LOGIN's cookie reads RUN's stream until it ends, and it holds a
+# terminal frame.
+read_stream() {
+  status="$(curl -sS -N --max-time 60 -o "$work/stream" -w '%{http_code}' -b "$work/jar.$2" \
+    "$base/api/v1/going/requests/$3/stream" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+  want_status 200 "$1" "$2 reads the stream of run $3"
+  grep -Eq '^event: (end|error)$' "$work/stream" ||
+    fail "$1" "$2 reads the stream of run $3 to its terminal frame" "the stream holds no terminal frame: $(head -c 600 "$work/stream")"
+  pass "$1" "$2 read run $3's stream to its terminal frame ($(grep -E '^event: ' "$work/stream" | tr '\n' ' '))"
+}
+
+# run_cli SECTION WHAT ARGS…: runs this head's envoy-dispatch ARGS against the run's database, its
+# output in $work/cli.out and its exit status in $cli_code; a status of 2 or above, which says the
+# command could not run at all, fails.
+run_cli() {
+  local section="$1" what="$2"
+  shift 2
+  cli_code=0
+  env -u PGHOSTADDR DATABASE_URL="$database_url" "$server_bin" "$@" >"$work/cli.out" 2>&1 || cli_code=$?
+  [[ "$cli_code" -lt 2 ]] || fail "$section" "$what" "envoy-dispatch $* exited $cli_code: $(<"$work/cli.out")"
+}
+
+# backfill SECTION: runs envoy-dispatch backfill-graph-store, which exits 0, and prints its lines.
+backfill() {
+  run_cli "$1" "run envoy-dispatch backfill-graph-store" backfill-graph-store
+  [[ "$cli_code" == 0 ]] || fail "$1" "envoy-dispatch backfill-graph-store exits 0" "exited $cli_code: $(<"$work/cli.out")"
+  sed 's/^/  /' "$work/cli.out"
+  pass "$1" "envoy-dispatch backfill-graph-store ran over the run's database"
+}
+
+# take_census SECTION NAME: runs envoy-dispatch census --store and keeps its report in
+# $work/census.NAME. It exits 0 or 1, by whether the report refuses; what this driver reads of it is
+# each kind's line and the total of differences.
+take_census() {
+  run_cli "$1" "run envoy-dispatch census --store" census --store
+  cp "$work/cli.out" "$work/census.$2"
+  grep -E '^census: store (kind=[a-z_]+ nodes=|rows_checked=|ok|REFUSED|absent)|^census: store kind=[a-z_]+ (difference|and )' \
+    "$work/census.$2" | sed 's/^/  /'
+  pass "$1" "envoy-dispatch census --store read the store (exit $cli_code)"
+}
+
+# census_kind FILE KIND: KIND's counts in the census report FILE, into $c_nodes, $c_rows,
+# $c_row_differences and $c_node_differences.
+census_kind() {
+  local line
+  line="$(grep -m 1 -E "^census: store kind=$2 nodes=" "$1")" || return 1
+  [[ "$line" =~ nodes=([0-9,]+)\ rows=([0-9,]+)\ .*\ rows_without_a_node=([0-9,]+)\ nodes_without_a_row=([0-9,]+) ]] || return 1
+  c_nodes="${BASH_REMATCH[1]//,/}"
+  c_rows="${BASH_REMATCH[2]//,/}"
+  c_row_differences="${BASH_REMATCH[3]//,/}"
+  c_node_differences="${BASH_REMATCH[4]//,/}"
+}
+
+# census_zero SECTION NAME KIND [ANY]: the census NAME read KIND at zero differences in both
+# directions, having checked more than zero rows of it unless ANY is given; a kind that checked no
+# row fails, named.
+census_zero() {
+  census_kind "$work/census.$2" "$3" || fail "$1" "the census reads the kind $3" "no line of it in: $(<"$work/census.$2")"
+  [[ "$c_row_differences" == 0 && "$c_node_differences" == 0 ]] ||
+    fail "$1" "the census reads $3 at zero differences" \
+      "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: $(grep -E "^census: store kind=$3 " "$work/census.$2" | tr '\n' ' ')"
+  [[ -n "${4:-}" || "$c_rows" -gt 0 ]] ||
+    fail "$1" "the census checked more than zero rows of the kind $3" "it checked $c_rows rows of $3, so it proves nothing of it"
+  pass "$1" "the census reads $3 at zero differences: it checked $c_rows row(s) against $c_nodes node(s)"
+}
+
+# census_differences SECTION NAME: the census NAME read zero differences over every kind.
+census_differences() {
+  local line
+  line="$(grep -m 1 -E '^census: store rows_checked=' "$work/census.$2")" ||
+    fail "$1" "the census reads zero differences" "no total in: $(<"$work/census.$2")"
+  [[ "$line" =~ differences=0$ ]] ||
+    fail "$1" "the census reads zero differences over every kind" "$line: $(grep -E '^census: store kind=[a-z_]+ difference' "$work/census.$2" | tr '\n' ' ')"
+  pass "$1" "the census reads zero differences over every kind ($line)"
+}
+
+# runs_json SECTION WHAT FILE: every run going_requests holds, with its going_events rows as its
+# frames, one JSON array in FILE: each run's id, author, project, words and frames.
+readonly runs_sql="select coalesce(json_agg(json_build_object(
+    'id', r.id::text, 'author', r.author, 'project', r.project, 'words', r.words,
+    'frames', coalesce((select json_agg(json_build_object('sequence', e.sequence, 'name', e.name, 'data', e.data)
+                                  order by e.sequence)
+                        from going_events e where e.request_id = r.id), '[]'::json))
+  order by r.created_at, r.id), '[]'::json)
+  from going_requests r"
+runs_json() {
+  query "$1" "$2" "$runs_sql"
+  printf '%s\n' "$answer" >"$3"
+}
+
+# nodes_json SECTION WHAT FILE: every interaction node the store holds, one JSON array in FILE: each
+# node's id, its made_by as author, its words, state, visibility and frame values in sequence.
+readonly nodes_sql="select coalesce(json_agg(json_build_object(
+    'id', n.id, 'author', n.made_by, 'words', n.attributes->>'words', 'state', n.state,
+    'visibility', n.visibility,
+    'frames', coalesce((select json_agg(f.value order by (f.value->>'sequence')::integer)
+                        from (select distinct t.to_id::jsonb as value from graph_tuples t
+                              where t.from_kind = 'interaction' and t.from_id = n.id and t.kind = 'frame'
+                                and t.to_kind = 'value' and t.asserted) f), '[]'::json))
+  order by n.id), '[]'::json)
+  from graph_nodes n where n.kind = 'interaction'"
+nodes_json() {
+  query "$1" "$2" "$nodes_sql"
+  printf '%s\n' "$answer" >"$3"
+}
+
+# against_inventory INVENTORY STORE TABLE: one line for each run INVENTORY holds that the store's
+# interaction nodes (STORE) or the going tables (TABLE) lack or hold otherwise: its author, its words
+# or its frames. A side holds a run's frames when the inventory's are the first frames it holds: a
+# sweep may end a run after the inventory was read, and the frame it appends is no loss.
+readonly against_inventory_jq='
+  def keyed: map({key: .id, value: .}) | from_entries;
+  def framed($have; $want): ($have | length) >= ($want | length) and $have[0:($want | length)] == $want;
+  def held($side; $run; $what):
+    [ (if $side.author != $run.author then "\($what) records the author \($side.author | tojson), the inventory \($run.author | tojson)" else empty end),
+      (if $side.words != $run.words then "\($what) holds the words \($side.words | tojson), the inventory \($run.words | tojson)" else empty end),
+      (if framed($side.frames; $run.frames) | not
+       then "\($what) holds the frames \($side.frames | tojson), the inventory \($run.frames | tojson)" else empty end) ];
+  ($store[0] | keyed) as $s | ($table[0] | keyed) as $t
+  | .[] as $run
+  | (if $s[$run.id] == null and $t[$run.id] == null
+     then ["it is missing from both sides: the store holds no interaction node of it and going_requests holds no row of it"]
+     else (if $s[$run.id] == null then ["the store holds no interaction node of it"] else held($s[$run.id]; $run; "its node") end)
+          + (if $t[$run.id] == null then ["going_requests holds no row of it"] else held($t[$run.id]; $run; "its row") end)
+     end) as $found
+  | select($found | length > 0)
+  | "run \($run.id) (\($run.words | tojson)): \($found | join("; "))"'
+
+# --- inputs -------------------------------------------------------------------------------------
+
+host="${database_url#*://}"
+host="${host#*@}"
+host="${host%%[:/?]*}"
+case "$host" in
+  127.0.0.1 | ::1 | localhost) ;;
+  *)
+    printf 'DATABASE_URL names the host %s, which is not this machine: the servers'"'"' dev sign-in refuses it, and this driver writes rows of its store\n' "$host" >&2
+    exit 2
+    ;;
+esac
+query setup "read the run's database before any server starts" \
+  "select count(*) from information_schema.tables where table_schema = 'public'"
+[[ "$answer" == 0 ]] || fail setup "the run's database is empty before any server starts" "it holds $answer tables"
+pass setup "the run's database ($host) held no table before any server started"
+
+# The identity table. A person wrote these rows, and no code the server runs produces them: each
+# names a form going_requests.author can hold, the node the run's authored_by must name, and the
+# person that form resolves to. The third row's form is the actor the base build's record stored
+# for carol's own run, read out of that record once she has asked (B1); every other form is written
+# here. $1 of each row is what it is, $2 the form, $3 the authored_by end, $4 the person.
+identities=(
+  'a login in mixed case|{"kind": "user", "id": "CaRoL"}|person:carol|carol'
+  'the same login with spaces around it|{"kind": "user", "id": "  CaRoL  "}|person:carol|carol'
+  'the raw actor id the record of her own run stored|RECORDED|person:carol|carol'
+  "a session the server proved hers|{\"kind\": \"session\", \"id\": \"$carol_session\", \"owner\": \"carol\", \"act\": {\"session\": \"$carol_session\"}}|session:$carol_session|carol"
+  'a login one character from hers, which must stay a person of its own|{"kind": "user", "id": "karol"}|person:karol|karol'
+)
+readonly identities
+[[ "$twin" != "$carol" && "${#twin}" == "${#carol}" ]] ||
+  fail setup "two logins one character apart" "$carol and $twin"
+pass setup "the identity table holds ${#identities[@]} forms: four of $carol and one of $twin, one character from her"
+
+start_fake "fake Envoy" fake-envoy.ts
+readonly envoy_port="$fake_port"
+start_fake "fake GitHub" fake-github.ts
+readonly github_port="$fake_port"
+start_fake "fake secrets broker" fake-broker.ts
+readonly broker_port="$fake_port"
+
+# --- B1: the base build, its three runs, the hand-written row, the identity table, the inventory -
+
+baseline_start
+base="$baseline_url"
+registered_commit B1 "read the base build's row of server_processes"
+[[ -n "$baseline_commit" && "$answer" == "$baseline_commit" ]] ||
+  fail B1 "the base build registers the commit it was built from" "server_processes names '$answer', want $baseline_commit"
+pass B1 "the base build serves $base, stamped with commit $baseline_commit, which its row of server_processes names"
+query B1 "read the base build's schema_migrations high-water mark" "select coalesce(max(version), 0) from schema_migrations"
+readonly base_mark="$answer"
+[[ "$base_mark" =~ ^[0-9]+$ && "$base_mark" -gt 0 ]] ||
+  fail B1 "the base build ran its own migrations over the empty database" "schema_migrations reads '$base_mark'"
+pass B1 "the base build migrated the empty database to $base_mark"
+
+sign_in B1 "$alice"
+sign_in B1 "$bob"
+sign_in B1 "$carol"
+request agent POST /api/v1/projects "$(jq -cn --arg k "$project" --arg l "$alice" --argjson a "$(actor)" \
+  '{key: $k, name: "Census check", default_assignee: $l, actor: $a}')"
+want_status 201 B1 "create the project $project"
+cat >"$work/spec.md" <<'SPEC'
+The spec the census reads.
+
+:::requirement{#r1}
+Every run of the command bar is one node of the store.
+:::
+
+:::requirement{#r2}
+The words of this requirement are edited under a run.
+:::
+SPEC
+request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --rawfile s "$work/spec.md" --argjson a "$(actor)" \
+  '{project: $p, title: "Census check", spec: $s, force: true, actor: $a}')"
+want_status 201 B1 "create the issue"
+key="$(jq -er '.key' "$work/body")" || fail B1 "create the issue" "no key: $(body)"
+readonly key spec="dispatch://$key/spec"
+readonly requirement="$spec#b-r1"
+pass B1 "the base build created $key in $project, whose spec holds the requirements r1 and r2"
+cat >"$work/verification.md" <<VERIFICATION
+How $key is proved.
+
+:::check{#c1 serves="$requirement"}
+The census reads zero differences.
+:::
+VERIFICATION
+request agent POST "/api/v1/issues/$key/artifacts" "$(jq -cn --rawfile c "$work/verification.md" --argjson a "$(actor)" \
+  '{name: "verification.md", content: $c, actor: $a}')"
+want_status 201 B1 "write the verification document, whose check c1 serves r1"
+readonly check1="dispatch://$key/artifact/verification-md#b-c1"
+request "cookie:$bob" POST "/api/v1/issues/$key/comments" "$(jq -cn --arg b "A note $bob wrote on $key." '{body: $b}')"
+want_status 201 B1 "$bob writes a comment"
+pass B1 "the base build wrote $check1 and $bob's comment"
+
+ask B1 "$alice" "What does the spec of $key say?"
+readonly run_alice="$asked"
+read_stream B1 "$alice" "$run_alice"
+ask B1 "$bob" "Who wrote the spec of $key?"
+readonly run_bob="$asked"
+read_stream B1 "$bob" "$run_bob"
+ask B1 "$carol" "Which requirement is edited?"
+readonly run_carol="$asked"
+read_stream B1 "$carol" "$run_carol"
+
+# The server goes before the inventory is read, so nothing appends a frame after it.
+baseline_stop_server
+want_value B1 "the base build stopped: server_processes holds no row" 0 "select count(*) from server_processes"
+
+with_vars B1 "write one run row a day ahead, with no frame" \
+  "insert into going_requests (author, project, words, ends_at)
+   select author, project, 'A run row written by hand, a day ahead, with no frame.', now() + interval '1 day'
+   from going_requests where id = :'run'::uuid
+   returning id::text" "run=$run_alice"
+readonly run_ahead="$answer"
+[[ "$run_ahead" =~ ^[0-9a-f-]{36}$ ]] || fail B1 "write one run row a day ahead" "psql answered '$run_ahead'"
+want_value B1 "the run row $run_ahead is a day ahead and holds no frame" "true|0" \
+  "select (r.ends_at > now() + interval '23 hours')::text || '|' || (select count(*) from going_events e where e.request_id = r.id)
+   from going_requests r where r.id = '$run_ahead'"
+
+query B1 "read the actor the record of $carol's own run stored" "select author::text from going_requests where id = '$run_carol'"
+readonly carol_recorded="$answer"
+jq -e --arg c "$carol" '.kind == "user" and .id == $c' <<<"$carol_recorded" >/dev/null ||
+  fail B1 "the older server's sign-in stored $carol's login in its canonical form" "the record holds $carol_recorded"
+pass B1 "the record of $carol's own run stored the actor $carol_recorded"
+identity_runs=()
+for row in "${identities[@]}"; do
+  IFS='|' read -r what form wanted person <<<"$row"
+  [[ "$form" != RECORDED ]] || form="$carol_recorded"
+  jq -e . <<<"$form" >/dev/null || fail B1 "the identity table's form for $what is JSON" "$form"
+  with_vars B1 "write the identity table's $what into going_requests.author" \
+    "insert into going_requests (author, project, words, ends_at)
+     values (:'form'::jsonb, :'project', :'words', now() + interval '30 seconds')
+     returning id::text" "form=$form" "project=$project" "words=Identity table: $what."
+  identity_runs+=("$answer|$form|$wanted|$person|$what")
+  pass B1 "wrote run $answer with author $form ($what), which must resolve to $wanted, $person"
+done
+readonly identity_runs
+
+runs_json B1 "read the inventory out of the base build's database" "$work/inventory.json"
+inventory_size="$(jq 'length' "$work/inventory.json")"
+readonly inventory_size
+[[ "$inventory_size" == $((3 + 1 + ${#identities[@]})) ]] ||
+  fail B1 "the inventory holds the three runs, the row a day ahead and one run for each row of the identity table" \
+    "it holds $inventory_size runs: $(jq -c '[.[] | .id]' "$work/inventory.json")"
+jq -e '[.[] | select(.id == $a or .id == $b or .id == $c) | .frames | map(select(.name == "end" or .name == "error")) | length] == [1, 1, 1]' \
+  --arg a "$run_alice" --arg b "$run_bob" --arg c "$run_carol" "$work/inventory.json" >/dev/null ||
+  fail B1 "the inventory holds each API run's terminal frame" "$(jq -c '[.[] | {id, frames}]' "$work/inventory.json")"
+jq -r '.[] | "  inventory: run \(.id) by \(.author | tojson): \(.words | tojson), \(.frames | length) frame(s)"' "$work/inventory.json"
+pass B1 "kept the inventory of $inventory_size runs, each its id, author, words and frames, in $work/inventory.json"
+
+# --- H1: this head over the same database, its migrations and backfill, against the inventory ----
+
+boot_server H1 "this head's server" "$server_bin"
+request agent GET /api/v1/schema/blocks
+want_status 200 "$driver" "read the catalogue"
+cp "$work/body" "$work/catalogue.json"
+held="$(jq -cS --argjson want "$seeded_kinds" '[.lens_kinds[].id] as $ids | [$want[] | select(. as $id | $ids | index($id))]' \
+  "$work/catalogue.json")" || fail "$driver" "read the catalogue" "unreadable: $(body)"
+[[ "$held" == "$seeded_kinds" ]] || fail "$driver" "the catalogue holds its ten kinds" "it holds $held of $seeded_kinds"
+pass "$driver" "the catalogue holds its ten kinds"
+
+registered_commit H1 "read this head's row of server_processes"
+readonly head_commit="$answer"
+[[ -n "$head_commit" && "$head_commit" != "$baseline_commit" ]] ||
+  fail H1 "this head is stamped with a commit of its own" "its row names '$head_commit', the base build's $baseline_commit"
+pass H1 "this head registers commit $head_commit and the base build registered $baseline_commit: two stamped builds"
+query H1 "read this head's schema_migrations" \
+  "select coalesce(string_agg(version::text, ' ' order by version), '') from schema_migrations where version > $base_mark"
+readonly head_migrations="$answer"
+[[ " $head_migrations " == *" 20261116205055 "* ]] ||
+  fail H1 "this head ran its migrations over the base build's schema, 20261116205055_interaction_nodes among them" \
+    "the versions above $base_mark are: '$head_migrations'"
+pass H1 "this head ran $(wc -w <<<"$head_migrations") migration(s) above $base_mark, 20261116205055_interaction_nodes among them: $head_migrations"
+
+backfill H1
+query H1 "read the owed block versions" "select count(*) from document_block_versions where version is null"
+printf '%s: %s document_block_versions row(s) owed a version after the backfill\n' "$driver" "$answer"
+waited=0
+until [[ "$answer" == 0 ]]; do
+  [[ "$waited" -lt "$wait_limit" ]] ||
+    fail H1 "no document_block_versions row holds a null version within $wait_limit s" "$answer row(s) still do"
+  sleep 5
+  waited=$((waited + 5))
+  query H1 "read the owed block versions" "select count(*) from document_block_versions where version is null"
+done
+pass H1 "no document_block_versions row holds a null version (waited ${waited} s)"
+
+nodes_json H1 "read the store's interaction nodes" "$work/store.h1.json"
+runs_json H1 "read going_requests and going_events" "$work/table.h1.json"
+jq -r --slurpfile store "$work/store.h1.json" --slurpfile table "$work/table.h1.json" "$against_inventory_jq" \
+  "$work/inventory.json" >"$work/lost.h1" || fail H1 "hold the store and the going tables to the inventory" "jq refused it"
+[[ ! -s "$work/lost.h1" ]] ||
+  fail H1 "the store and going_requests and going_events hold every run of the inventory" "$(tr '\n' ' ' <"$work/lost.h1")"
+pass H1 "the store holds an interaction node for each of the $inventory_size runs of the inventory, with its author, its words and its frames"
+pass H1 "going_requests and going_events hold each of the $inventory_size runs of the inventory, with its author, its words and its frames"
+extra="$(jq -c --slurpfile inventory "$work/inventory.json" '[.[].id] - [$inventory[0][].id]' "$work/store.h1.json")"
+[[ "$extra" == "[]" ]] || fail H1 "the store holds no interaction node the inventory lacks" "it holds $extra"
+pass H1 "the store holds no interaction node the inventory lacks"
+
+# --- H2: this build's writes ----------------------------------------------------------------------
+
+sign_in H2 "$alice"
+sign_in H2 "$bob"
+seed="$(jq -c '{lens_kind: [.lens_kinds[].id], constraint: [.lens_kinds[].sources[].ref | ltrimstr("dispatch://constraint/")],
+  constrained_by: [.lens_kinds[] | .id as $k | .sources[] | "lens_kind:\($k) constrained_by constraint:\(.ref | ltrimstr("dispatch://constraint/"))"]}' \
+  "$work/catalogue.json")" || fail H2 "read the migration's seed out of the catalogue" "unreadable: $(<"$work/catalogue.json")"
+jq -e '(.lens_kind | length) > 0 and (.lens_kind | length) == (.constraint | length)' <<<"$seed" >/dev/null ||
+  fail H2 "each seeded lens_kind carries one source" "$seed"
+jq -c '. + {lens: [], finding: [], risk: [], has_kind: [], triggered_by: [], prevented_by: []}' <<<"$seed" >"$work/writes.json"
+pass H2 "the migration's seed is $(jq '.lens_kind | length' <<<"$seed") lens kinds, each held to one constraint"
+# written KIND ENTRY: one entry of the inventory of this build's writes.
+written() {
+  jq -c --arg k "$1" --arg v "$2" '.[$k] += [$v]' "$work/writes.json" >"$work/writes.next"
+  mv "$work/writes.next" "$work/writes.json"
+}
+query H2 "read the node of the check c1" "select id from graph_nodes where kind = 'block' and id like '$key/%#c1'"
+readonly check1_node="$answer"
+[[ -n "$check1_node" ]] || fail H2 "read the node of the check c1" "the store holds none"
+
+request "cookie:$alice" POST "/api/v1/issues/$key/lenses" \
+  "$(jq -cn --arg on "$spec" '{on: $on, kind: "pre-mortem", visibility: "author"}')"
+want_status 201 H2 "$alice invokes a pre-mortem on the spec reserved for her"
+premortem="$(jq -er '.address' "$work/body")" || fail H2 "invoke the pre-mortem" "no address: $(body)"
+readonly premortem premortem_id="${premortem#dispatch://lens/}"
+written lens "$premortem_id"
+written has_kind "lens:$premortem_id has_kind lens_kind:pre-mortem"
+pass H2 "$alice invoked $premortem, reserved for her"
+
+request "cookie:$alice" POST "/api/v1/issues/$key/risks" "$(jq -cn --arg l "$premortem" --arg c "$check1" \
+  '{lens: $l, heading: "A run lost by the migration", early_warning: "A run the inventory holds and the store lacks",
+    prevention: "The census against an inventory of its own", prevented_by: $c, visibility: "author"}')"
+want_status 201 H2 "$alice writes a risk under the pre-mortem, prevented by the check c1"
+risk="$(jq -er '.address' "$work/body")" || fail H2 "write the risk" "no address: $(body)"
+readonly risk risk_id="${risk#dispatch://risk/}"
+written risk "$risk_id"
+written prevented_by "risk:$risk_id prevented_by block:$check1_node"
+pass H2 "$alice wrote $risk, prevented by $check1"
+
+request "cookie:$alice" POST "/api/v1/issues/$key/lenses" "$(jq -cn --arg on "$spec" --arg t "$premortem" \
+  '{on: $on, kind: "trade-off", verdict: "One store, two projections.", findings: ["The going tables project the store."], triggered_by: $t}')"
+want_status 201 H2 "$alice invokes a trade-off analysis with one finding, triggered by the pre-mortem"
+tradeoff="$(jq -er '.address' "$work/body")" || fail H2 "invoke the trade-off analysis" "no address: $(body)"
+finding="$(jq -er '.findings[0].address' "$work/body")" || fail H2 "invoke the trade-off analysis" "no finding: $(body)"
+readonly tradeoff tradeoff_id="${tradeoff#dispatch://lens/}" finding
+readonly finding_node="lens/${finding#dispatch://lens/}"
+[[ "$finding_node" == "lens/$tradeoff_id#b-"* ]] || fail H2 "the finding stands under the trade-off analysis" "$finding"
+written lens "$tradeoff_id"
+written finding "${finding_node/\#b-/#}"
+written has_kind "lens:$tradeoff_id has_kind lens_kind:trade-off"
+written triggered_by "lens:$tradeoff_id triggered_by lens:$premortem_id"
+pass H2 "$alice invoked $tradeoff, with the finding $finding"
+
+request "cookie:$bob" POST "/api/v1/issues/$key/constraints" "$(jq -cn \
+  '{standard: "RFC 3339, Date and Time on the Internet: Timestamps", reference: "RFC 3339 §5.6, https://www.rfc-editor.org/rfc/rfc3339", visibility: "author"}')"
+want_status 201 H2 "$bob writes a constraint reserved for him"
+constraint="$(jq -er '.address' "$work/body")" || fail H2 "write the constraint" "no address: $(body)"
+readonly constraint constraint_id="${constraint#dispatch://constraint/}"
+written constraint "$constraint_id"
+pass H2 "$bob wrote $constraint, reserved for him"
+
+request "cookie:$bob" POST "/api/v1/issues/$key/nodes/$(q "$key/spec#r1")/pointers" \
+  "$(jq -cn --arg t "$constraint" '{kind: "constrained_by", action: "append", to: $t}')"
+want_status 200 H2 "$bob points the requirement r1 at his constraint"
+written constrained_by "block:$key/spec#r1 constrained_by constraint:$constraint_id"
+pass H2 "the requirement block $requirement holds a constrained_by tuple to $constraint"
+
+run_cli H2 "add a lens kind" lens-kind-add --id "$added_kind" --words "the census check" \
+  --source "Gary Klein, Performing a Project Premortem, Harvard Business Review, 2007" \
+  --reference "Harvard Business Review 85(9), September 2007, pp. 18-19"
+[[ "$cli_code" == 0 ]] || fail H2 "envoy-dispatch lens-kind-add adds $added_kind" "exited $cli_code: $(<"$work/cli.out")"
+added_source="$(sed -n "s#^lens-kind-add: added dispatch://lens_kind/$added_kind, held to its source dispatch://constraint/\([^ ,]*\).*#\1#p" "$work/cli.out")"
+[[ -n "$added_source" ]] || fail H2 "envoy-dispatch lens-kind-add adds $added_kind" "it printed: $(<"$work/cli.out")"
+readonly added_source
+written lens_kind "$added_kind"
+written constraint "$added_source"
+written constrained_by "lens_kind:$added_kind constrained_by constraint:$added_source"
+pass H2 "envoy-dispatch lens-kind-add added dispatch://lens_kind/$added_kind, held to dispatch://constraint/$added_source"
+
+ask H2 "$alice" "Edit the requirement r2 of $key for me."
+readonly run_edit="$asked"
+query H2 "read the requirement block r2 before the edit" \
+  "select (made_at < (select created_at from going_requests where id = '$run_edit'))::text || '|' || state
+   from graph_nodes where kind = 'block' and id = '$key/spec#r2'"
+[[ "$answer" == "true|live" ]] ||
+  fail H2 "the requirement block r2 exists before the run that edits it" "the store reads '$answer' of $key/spec#r2"
+request "cookie:$alice" POST "/api/v1/issues/$key/artifacts/spec/edits" \
+  "$(jq -cn --arg f "$edited_from" --arg t "$edited_to" '{ops: [{op: "replace", find: $f, with: $t}]}')" "$run_edit"
+[[ "$status" == 200 || "$status" == 201 ]] ||
+  fail H2 "$alice edits the words of r2 under the header of run $run_edit" "HTTP $status: $(body)"
+pass H2 "$alice edited the words of the existing requirement block r2 under the header of run $run_edit (HTTP $status)"
+want_value H2 "the edit names r2, which it changed and did not create, as changed by the run, and not r1, which it left as it was" "1|0" \
+  "select (select count(*) from graph_tuples where from_kind = 'block' and from_id = '$key/spec#r2'
+             and kind = 'changed_by_run' and to_kind = 'interaction' and to_id = '$run_edit' and asserted)
+          || '|' || (select count(*) from graph_tuples where from_kind = 'block' and from_id = '$key/spec#r1'
+             and kind = 'changed_by_run' and to_kind = 'interaction' and to_id = '$run_edit')"
+# Every node the edit names as changed by the run: r2 and the blocks inside it whose words it changed,
+# each a block of the spec that stood before the run was asked.
+query H2 "read every node the edit names as changed by the run" \
+  "select coalesce(string_agg(t.from_kind || ':' || t.from_id || '|' || (n.made_at < r.created_at)::text || '|' || n.state,
+                              ' ' order by t.from_id), '')
+   from graph_tuples t
+   join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id
+   join going_requests r on r.id::text = t.to_id
+   where t.kind = 'changed_by_run' and t.to_kind = 'interaction' and t.to_id = '$run_edit' and t.asserted"
+changed_blocks=()
+for changed in $answer; do
+  [[ "$changed" == "block:$key/spec#"*"|true|live" ]] ||
+    fail H2 "each node the edit names as changed by the run is a block of the spec that stood before the run" "it names $answer"
+  changed_blocks+=("${changed%%|*}")
+done
+readonly changed_blocks
+pass H2 "the edit names ${#changed_blocks[@]} block(s) of the spec as changed by the run, each standing before it: ${changed_blocks[*]}"
+
+request agent POST "/api/v1/issues/$key/lenses" "$(jq -cn --arg on "$spec" --arg s "$bearer_session" \
+  '{on: $on, kind: "boring-solution", actor: {kind: "session", id: $s}}')"
+want_status 201 H2 "the shared bearer invokes a lens whose body names the session $bearer_session"
+bearer_lens="$(jq -er '.address' "$work/body")" || fail H2 "invoke the lens on the shared bearer" "no address: $(body)"
+readonly bearer_lens bearer_lens_id="${bearer_lens#dispatch://lens/}"
+expect H2 "the lens on the shared bearer is project-visible" '"project"' '.visibility'
+written lens "$bearer_lens_id"
+written has_kind "lens:$bearer_lens_id has_kind lens_kind:boring-solution"
+want_value H2 "the lens on the shared bearer records the session its body names and states no authored_by" "$bearer_session|0" \
+  "select (made_by->>'id') || '|' || (select count(*) from graph_tuples
+     where from_kind = 'lens' and from_id = '$bearer_lens_id' and kind = 'authored_by')
+   from graph_nodes where kind = 'lens' and id = '$bearer_lens_id'"
+jq -r 'to_entries[] | "  inventory of writes: \(.key) \(.value | length)"' "$work/writes.json"
+pass H2 "kept the inventory of this build's writes in $work/writes.json"
+
+# Straight after those writes, before any further backfill.
+take_census H2 h2
+census_zero H2 h2 person
+census_zero H2 h2 session
+want_value H2 "the store holds no node of the session $bearer_session, which no other row names" 0 \
+  "select count(*) from graph_nodes where kind = 'session' and id = '$bearer_session'"
+! grep -Fq "$bearer_session" "$work/census.h2" ||
+  fail H2 "the census names the session $bearer_session nowhere" "$(grep -F "$bearer_session" "$work/census.h2")"
+pass H2 "the lens on the shared bearer proved no author, so it has no author node and puts no session on the census's row side"
+
+# --- B2: the base build again, as after a rollback ------------------------------------------------
+
+stop_server B2 "this head's server"
+boot_server B2 "the base build after a rollback" "$baseline_binary"
+registered_commit B2 "read the base build's row of server_processes"
+[[ "$answer" == "$baseline_commit" ]] ||
+  fail B2 "the base build serves the database again, stamped with its commit" "its row names '$answer', want $baseline_commit"
+pass B2 "the base build serves the database again at $base, stamped with $baseline_commit"
+sign_in B2 "$alice"
+ask B2 "$alice" "What did the census read?"
+readonly run_new="$asked"
+read_stream B2 "$alice" "$run_new"
+want_value B2 "the base build wrote run $run_new with no interaction node and its frames with no frame value" "0|0|true" \
+  "select (select count(*) from graph_nodes where kind = 'interaction' and id = '$run_new') || '|'
+          || (select count(*) from graph_tuples where from_kind = 'interaction' and from_id = '$run_new') || '|'
+          || ((select count(*) from going_events where request_id = '$run_new') > 0)::text"
+want_value B2 "the run row $run_ahead, written by hand, has the node this head gave it" 1 \
+  "select count(*) from graph_nodes where kind = 'interaction' and id = '$run_ahead'"
+# The edit below stands for time passing, so that the older build's sweep finds the run overdue. In
+# production no recorded fact moves: a run's ends_at is written once, by the write that records the
+# run. So the edit moves both sides in one transaction: the going_requests row, the interaction
+# node's ends_at attribute and a new ends_at value tuple, written as graphstore.InteractionFacts
+# writes that attribute (RFC 3339 in UTC with the fraction of a second time.RFC3339Nano writes, as
+# migration 20261116205055 spells it, stated by the run's made_by and caused by no event), so the
+# newest tuple and the column agree with the row. The third run, carol's own (bob's stays, for P to
+# read his run admitted to him alone), is dated two hours back on its row alone: that build's sweep
+# deletes the row, and the backfill states its node gone.
+readonly run_dated="$run_carol"
+with_vars B2 "move run $run_ahead's ends_at into the past on both sides, and date run $run_dated two hours back" "
+  begin;
+  update going_requests set ends_at = now() - interval '1 minute' where id = :'ahead'::uuid;
+  with moved as (
+    select r.id::text as id,
+           to_char(r.ends_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS')
+             || coalesce('.' || nullif(rtrim(to_char(r.ends_at at time zone 'UTC', 'US'), '0'), ''), '')
+             || 'Z' as ends_at
+    from going_requests r where r.id = :'ahead'::uuid
+  ),
+  node as (
+    update graph_nodes n set attributes = jsonb_set(n.attributes, '{ends_at}', to_jsonb(moved.ends_at))
+    from moved where n.kind = 'interaction' and n.id = moved.id
+    returning n.id, n.made_by
+  )
+  insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+  select 'interaction', node.id, 'ends_at', 'value', moved.ends_at, now(), node.made_by, 0, null, true
+  from node join moved on moved.id = node.id;
+  update going_requests set created_at = now() - interval '2 hours', ends_at = now() - interval '2 hours'
+  where id = :'dated'::uuid;
+  commit;" "ahead=$run_ahead" "dated=$run_dated"
+want_value B2 "run $run_ahead's ends_at is in the past on both sides: its row, its node's ends_at attribute and its newest ends_at value tuple" \
+  "true|true|true" \
+  "select (r.ends_at < now())::text || '|' || (r.ends_at = (n.attributes->>'ends_at')::timestamptz)::text || '|'
+          || (r.ends_at = (select t.to_id::timestamptz from graph_tuples t
+                           where t.from_kind = 'interaction' and t.from_id = n.id and t.kind = 'ends_at'
+                             and t.to_kind = 'value' and t.asserted
+                           order by t.seq desc limit 1))::text
+   from going_requests r join graph_nodes n on n.kind = 'interaction' and n.id = r.id::text
+   where r.id = '$run_ahead'"
+pass B2 "moved run $run_ahead's ends_at into the past on both sides in one transaction, and dated run $run_dated two hours back"
+readonly sweep_sql="select (select count(*) from going_events where request_id = '$run_ahead' and name in ('end', 'error'))
+  || '|' || (select count(*) from going_requests where id = '$run_dated')"
+query B2 "read what the base build's sweep has done" "$sweep_sql"
+waited=0
+until [[ "$answer" == "1|0" ]]; do
+  [[ "$waited" -lt "$wait_limit" ]] ||
+    fail_with_log B2 "the base build's sweep ends run $run_ahead and deletes run $run_dated within $wait_limit s" \
+      "terminal frames of $run_ahead|rows of $run_dated read $answer" "$work/the base build after a rollback.log"
+  sleep 5
+  waited=$((waited + 5))
+  query B2 "read what the base build's sweep has done" "$sweep_sql"
+done
+pass B2 "the base build's sweep appended run $run_ahead's terminal frame and deleted run $run_dated's row (waited ${waited} s)"
+stop_server B2 "the base build"
+
+# --- H3: this head and the backfill again, and the census ---------------------------------------
+
+boot_server H3 "this head's server again" "$server_bin"
+registered_commit H3 "read this head's row of server_processes"
+[[ "$answer" == "$head_commit" ]] || fail H3 "this head serves the database again" "its row names '$answer', want $head_commit"
+pass H3 "this head serves the database again at $base, stamped with $head_commit"
+backfill H3
+nodes_json H3 "read the store's interaction nodes" "$work/store.h3.json"
+runs_json H3 "read going_requests and going_events" "$work/table.h3.json"
+jq -e --arg id "$run_new" --slurpfile table "$work/table.h3.json" \
+  '(.[] | select(.id == $id)) as $node | ($table[0][] | select(.id == $id)) as $row
+   | $node.state == "live" and $node.visibility == "author" and $node.author == $row.author and $node.words == $row.words
+     and $node.frames == $row.frames and ($row.frames | length) > 0' "$work/store.h3.json" >/dev/null ||
+  fail H3 "the store holds a node for run $run_new, with a frame value for each frame the base build wrote" \
+    "node: $(jq -c --arg id "$run_new" '.[] | select(.id == $id)' "$work/store.h3.json"); row: $(jq -c --arg id "$run_new" '.[] | select(.id == $id)' "$work/table.h3.json")"
+pass H3 "the store holds a node for run $run_new, which the base build recorded, with a frame value for each of its $(jq --arg id "$run_new" '.[] | select(.id == $id) | .frames | length' "$work/table.h3.json") frame(s)"
+jq -e --arg id "$run_ahead" --slurpfile table "$work/table.h3.json" \
+  '(.[] | select(.id == $id)) as $node | ($table[0][] | select(.id == $id)) as $row
+   | $node.frames == $row.frames and ($row.frames | map(select(.name == "error")) | length) == 1' "$work/store.h3.json" >/dev/null ||
+  fail H3 "the store holds a frame value for the terminal frame the base build's sweep appended to run $run_ahead" \
+    "node: $(jq -c --arg id "$run_ahead" '.[] | select(.id == $id)' "$work/store.h3.json"); row: $(jq -c --arg id "$run_ahead" '.[] | select(.id == $id)' "$work/table.h3.json")"
+pass H3 "the store holds a frame value for the terminal frame the base build's sweep appended to run $run_ahead"
+jq -e --slurpfile table "$work/table.h3.json" \
+  '([.[] | {key: .id, value: .frames}] | from_entries) as $nodes
+   | all($table[0][]; .frames == $nodes[.id])' "$work/store.h3.json" >/dev/null ||
+  fail H3 "the store holds a frame value for every frame going_events holds" \
+    "$(jq -c --slurpfile nodes "$work/store.h3.json" '[.[] | .id as $id | select(.frames != ($nodes[0][] | select(.id == $id) | .frames))]' "$work/table.h3.json")"
+pass H3 "the store holds a frame value for every frame going_events holds, $(jq '[.[].frames[]] | length' "$work/table.h3.json") frame(s) of $(jq 'length' "$work/table.h3.json") run(s)"
+want_value H3 "the interaction of run $run_dated, whose row the base build deleted, is at state gone, and no row of it is left" "gone|0|0" \
+  "select n.state || '|' || (select count(*) from going_requests where id = '$run_dated')
+          || '|' || (select count(*) from going_events where request_id = '$run_dated')
+   from graph_nodes n where n.kind = 'interaction' and n.id = '$run_dated'"
+# The inventory again: each of its runs but the one the base build deleted is in both products.
+jq -c --arg gone "$run_dated" '[.[] | select(.id != $gone)]' "$work/inventory.json" >"$work/inventory.h3.json"
+jq -r --slurpfile store "$work/store.h3.json" --slurpfile table "$work/table.h3.json" "$against_inventory_jq" \
+  "$work/inventory.h3.json" >"$work/lost.h3" || fail H3 "hold the store and the going tables to the inventory" "jq refused it"
+[[ ! -s "$work/lost.h3" ]] ||
+  fail H3 "the store and the going tables still hold every run of the inventory the base build did not delete" "$(tr '\n' ' ' <"$work/lost.h3")"
+pass H3 "the store and the going tables still hold the $(jq 'length' "$work/inventory.h3.json") runs of the inventory the base build did not delete"
+
+take_census C h3
+census_zero C h3 interaction
+census_zero C h3 frame
+census_zero C h3 block
+census_zero C h3 block_ref
+census_zero C h3 person
+census_zero C h3 session
+for kind in interaction lens finding risk constraint lens_kind; do
+  census_zero C h3 "${kind}_visibility_state"
+done
+census_differences C h3
+want_value C "every interaction node is at visibility author" "0|true" \
+  "select count(*) filter (where visibility <> 'author') || '|' || (count(*) > 0)::text
+   from graph_nodes where kind = 'interaction'"
+want_value C "the interaction of run $run_dated, whose row is gone, is gone and no difference" "gone" \
+  "select state from graph_nodes where kind = 'interaction' and id = '$run_dated'"
+# The person of the identity table who asks the command bar and writes no comment.
+want_value C "$carol writes no comment" 0 \
+  "select count(*) from comments where user_threads_login(coalesce(author->>'owner', author->>'id', '')) = '$carol'"
+want_value C "the store holds one person node for every spelling of $carol, one for $twin, and the session proved hers" "1|1|1" \
+  "select (select count(*) from graph_nodes where kind = 'person' and lower(btrim(id)) = '$carol') || '|'
+          || (select count(*) from graph_nodes where kind = 'person' and id = '$twin') || '|'
+          || (select count(*) from graph_nodes where kind = 'session' and id = '$carol_session')"
+for named in "person $carol" "person $twin" "session $carol_session"; do
+  ! grep -Fq " difference at $named:" "$work/census.h3" ||
+    fail C "the census reads no difference of $named" "$(grep -F " difference at $named:" "$work/census.h3")"
+done
+pass C "the census reads the person and the session kinds at zero differences for $carol, her session and $twin: each is a node, and none is a node without a row or a row without a node"
+want_value C "the store still holds no node of the session $bearer_session" 0 \
+  "select count(*) from graph_nodes where kind = 'session' and id = '$bearer_session'"
+
+# --- S: the store-only kinds against the inventory of the writes and the migration's seed ---------
+
+query S "read the store-only kinds and their tuples" "with current as (
+    select distinct on (t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id)
+           t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted
+    from graph_tuples t
+    where t.kind in ('constrained_by', 'has_kind', 'triggered_by', 'prevented_by')
+    order by t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.seq desc
+  ),
+  stated as (
+    select c.kind, c.from_kind || ':' || c.from_id || ' ' || c.kind || ' ' || c.to_kind || ':' || c.to_id as tuple
+    from current c where c.asserted
+  ),
+  nodes as (
+    select case when n.kind = 'block' then 'finding' else n.kind end as kind, n.id
+    from graph_nodes n
+    where n.state <> 'gone'
+      and (n.kind in ('lens', 'risk', 'constraint', 'lens_kind') or (n.kind = 'block' and n.id like 'lens/%'))
+  )
+  select json_object_agg(listed.kind, listed.items) from (
+    select kinds.kind, coalesce((select json_agg(nodes.id order by nodes.id) from nodes where nodes.kind = kinds.kind), '[]') as items
+    from unnest(array['lens', 'finding', 'risk', 'constraint', 'lens_kind']) kinds (kind)
+    union all
+    select kinds.kind, coalesce((select json_agg(stated.tuple order by stated.tuple) from stated where stated.kind = kinds.kind), '[]')
+    from unnest(array['constrained_by', 'has_kind', 'triggered_by', 'prevented_by']) kinds (kind)
+  ) listed"
+printf '%s\n' "$answer" >"$work/store-only.json"
+for kind in lens finding risk constraint lens_kind constrained_by has_kind triggered_by prevented_by; do
+  want="$(jq -c --arg k "$kind" '.[$k] | sort' "$work/writes.json")"
+  got="$(jq -c --arg k "$kind" '.[$k] | sort' "$work/store-only.json")"
+  [[ "$got" == "$want" ]] ||
+    fail S "the store's $kind is the inventory's" "the store holds $got, the inventory of the writes and the seed $want"
+  pass S "the store holds the $(jq 'length' <<<"$want") $kind the inventory of the routes' writes and the migration's seed holds, and no other"
+done
+
+# --- I: the identity table against each made_by, authored_by and author --------------------------
+
+for entry in "${identity_runs[@]}"; do
+  IFS='|' read -r id form wanted person what <<<"$entry"
+  with_vars I "read run $id" \
+    "select json_build_object('made_by', n.made_by, 'author', r.author,
+       'authored_by', (select coalesce(json_agg(held.to_kind || ':' || held.to_id order by held.to_id), '[]') from (
+          select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted from graph_tuples t
+          where t.from_kind = 'interaction' and t.from_id = n.id and t.kind = 'authored_by'
+          order by t.to_kind, t.to_id, t.seq desc) held where held.asserted),
+       'person', (select count(*) from graph_nodes p where p.kind = 'person' and p.id = :'person'),
+       'alias', (select count(*) from graph_tuples a where a.from_kind = 'session' and a.from_id = split_part(:'wanted', ':', 2)
+                   and a.kind = 'alias_of' and a.to_kind = 'person' and a.to_id = :'person' and a.asserted))
+     from graph_nodes n left join going_requests r on r.id::text = n.id
+     where n.kind = 'interaction' and n.id = :'id'" "id=$id" "person=$person" "wanted=$wanted"
+  [[ -n "$answer" ]] || fail I "the store holds run $id ($what)" "no interaction node of it"
+  printf '%s\n' "$answer" >"$work/identity.json"
+  jq -e --argjson form "$form" '.made_by == $form' "$work/identity.json" >/dev/null ||
+    fail I "run $id's made_by is the form the table wrote ($what)" "made_by $(jq -c '.made_by' "$work/identity.json"), the table $form"
+  jq -e --argjson form "$form" '.author == $form' "$work/identity.json" >/dev/null ||
+    fail I "run $id's going_requests.author, which projects its made_by, is the form the table wrote ($what)" \
+      "author $(jq -c '.author' "$work/identity.json"), the table $form"
+  jq -e --arg w "$wanted" '.authored_by == [$w] and .person == 1' "$work/identity.json" >/dev/null ||
+    fail I "run $id ($what) is authored by $wanted, and $person is a person node" "$(<"$work/identity.json")"
+  [[ "$wanted" != session:* ]] || jq -e '.alias == 1' "$work/identity.json" >/dev/null ||
+    fail I "the session $wanted is tied to $person by alias_of" "$(<"$work/identity.json")"
+  pass I "$what: run $id's made_by and author are $form, and its authored_by names $wanted, $person"
+done
+
+# --- G: no reconcile or rebuild of these kinds, beside a planted one -----------------------------
+
+readonly name_pattern='(reconcile|rebuild)[-_.a-z0-9]*(interaction|lens|risk|constraint)|(interaction|lens|risk|constraint)[-_.a-z0-9]*(reconcile|rebuild)'
+# named_in TREE: every name TREE's packages/envoy/cmd/dispatch and packages/envoy/scripts hold - the
+# path of every file and directory under them, and every subcommand the table in cmd/dispatch
+# declares - into $named, and each of them whose name holds the pattern into $hits.
+named_in() {
+  local path name
+  named=()
+  hits=()
+  while IFS= read -r path; do
+    named+=("file $path")
+  done < <(cd -- "$1/packages/envoy" && find cmd/dispatch scripts -mindepth 1 -print)
+  while IFS= read -r name; do
+    named+=("subcommand $name")
+  done < <(sed -n 's/^[[:space:]]*{"\([a-z0-9-]*\)", func.*/\1/p' "$1"/packages/envoy/cmd/dispatch/*.go)
+  for name in "${named[@]}"; do
+    path="${name#* }"
+    path="${path##*/}"
+    [[ ! "${path,,}" =~ $name_pattern ]] || hits+=("$name")
+  done
+}
+mkdir -p "$work/planted/packages/envoy"
+cp -R "$tree/packages/envoy/cmd" "$tree/packages/envoy/scripts" "$work/planted/packages/envoy/" ||
+  fail G "copy packages/envoy/cmd and packages/envoy/scripts under $work/planted" "cp failed"
+printf '#!/usr/bin/env bash\n# Rebuilds the lens nodes from a projection: planted for the grep below.\n' \
+  >"$work/planted/packages/envoy/scripts/rebuild-lens.sh"
+printf 'G: the pattern, over each name'"'"'s last path element in lower case: %s\n' "$name_pattern"
+named_in "$work/planted"
+printf 'G: the copy %s with a planted scripts/rebuild-lens.sh: %d name(s) read, %d hit(s): %s\n' \
+  "$work/planted" "${#named[@]}" "${#hits[@]}" "${hits[*]:-none}"
+[[ "${#hits[@]}" == 1 && "${hits[0]}" == "file scripts/rebuild-lens.sh" ]] ||
+  fail G "the grep finds the planted rebuild-lens.sh in the copy, and nothing else" "it found ${#hits[@]}: ${hits[*]:-none}"
+pass G "the grep finds the planted scripts/rebuild-lens.sh in the copy under $work/planted"
+named_in "$tree"
+printf 'G: this tree, %s: %d name(s) read, %d hit(s): %s\n' "$tree" "${#named[@]}" "${#hits[@]}" "${hits[*]:-none}"
+[[ " ${named[*]} " == *" subcommand lens-kind-add "* && " ${named[*]} " == *" subcommand backfill-graph-store "* ]] ||
+  fail G "the grep reads the subcommand table of cmd/dispatch" "it read no lens-kind-add and no backfill-graph-store"
+[[ "${#hits[@]}" == 0 ]] ||
+  fail G "no subcommand and no file of packages/envoy/cmd/dispatch or packages/envoy/scripts holds reconcile or rebuild beside interaction, lens, risk or constraint" \
+    "${hits[*]}"
+pass G "no subcommand and no file of packages/envoy/cmd/dispatch or packages/envoy/scripts holds reconcile or rebuild beside interaction, lens, risk or constraint (0 of ${#named[@]} names)"
+
+# --- P: the predicate's sets, against the store's own -------------------------------------------
+
+sign_in P "$alice"
+sign_in P "$bob"
+# Every node of this child's kinds the store holds present, its address, and whether the store's
+# columns alone admit it to :'person': a node at project, or one reserved for its author whose
+# made_by names that person - the person a credential proves for a lens, a finding, a risk and a
+# constraint, and the whole credential, a cookie's user, for a run. A lens kind is project's.
+readonly candidates_sql="select coalesce(json_agg(json_build_object(
+    'node', n.kind || ':' || n.id,
+    'address', case when n.kind = 'block' then 'dispatch://' || split_part(n.id, '#', 1) || '#b-' || split_part(n.id, '#', 2)
+                    else 'dispatch://' || n.kind || '/' || n.id end,
+    'admits', n.visibility = 'project' or (n.visibility = 'author' and case
+        when n.kind = 'lens_kind' then false
+        when n.kind = 'interaction' then n.made_by->>'kind' = 'user' and n.made_by->>'id' = :'person'
+             and n.made_by->'owner' is null and n.made_by->'service' is null
+        else user_threads_login(coalesce(case when n.made_by->>'kind' = 'user' then n.made_by->>'id' end,
+                                         n.made_by->>'owner', '')) = :'person'
+      end)) order by n.kind, n.id), '[]')
+  from graph_nodes n
+  where n.state <> 'gone'
+    and (n.kind in ('lens', 'risk', 'constraint', 'lens_kind', 'interaction') or (n.kind = 'block' and n.id like 'lens/%'))"
+for person in "$alice" "$bob"; do
+  with_vars P "read the store's nodes of this child's kinds" "$candidates_sql" "person=$person"
+  printf '%s\n' "$answer" >"$work/candidates.$person.json"
+  : >"$work/predicate.$person"
+  while IFS=$'\t' read -r node address; do
+    request "cookie:$person" GET "/api/v1/references?to=$(q "$address")"
+    case "$status" in
+      200) printf '%s\n' "$node" >>"$work/predicate.$person" ;;
+      404) ;;
+      *) fail P "$person reads $address" "HTTP $status: $(body)" ;;
+    esac
+  done < <(jq -r '.[] | [.node, .address] | @tsv' "$work/candidates.$person.json")
+  jq -r '.[] | select(.admits) | .node' "$work/candidates.$person.json" >"$work/store.$person"
+  [[ "$(<"$work/predicate.$person")" == "$(<"$work/store.$person")" ]] ||
+    fail P "the nodes the predicate admits to $person are the nodes the store alone admits" \
+      "the predicate only: $(comm -23 <(sort "$work/predicate.$person") <(sort "$work/store.$person") | tr '\n' ' '); the store only: $(comm -13 <(sort "$work/predicate.$person") <(sort "$work/store.$person") | tr '\n' ' ')"
+  pass P "the predicate admits $(wc -l <"$work/predicate.$person") of $(jq 'length' "$work/candidates.$person.json") nodes to $person, the set the store's columns alone admit"
+done
+own_alice="$(comm -23 <(sort "$work/predicate.$alice") <(sort "$work/predicate.$bob") | tr '\n' ' ')"
+own_bob="$(comm -13 <(sort "$work/predicate.$alice") <(sort "$work/predicate.$bob") | tr '\n' ' ')"
+[[ " $own_alice " == *" lens:$premortem_id "* && " $own_alice " == *" risk:$risk_id "* && " $own_alice " == *" interaction:$run_alice "* &&
+  " $own_bob " == *" constraint:$constraint_id "* && " $own_bob " == *" interaction:$run_bob "* ]] ||
+  fail P "each person's set holds what that person alone wrote reserved for its author" "$alice alone: $own_alice; $bob alone: $own_bob"
+pass P "$alice alone reads $own_alice; $bob alone reads $own_bob"
+
+# --- M: the .census.sql of each migration this head applied ---------------------------------------
+
+censused=0
+for version in $head_migrations; do
+  files=("$tree/packages/envoy/internal/dispatch/store/migrations/${version}_"*.census.sql)
+  [[ -f "${files[0]}" ]] || fail M "migration $version has a .census.sql" "none in $tree/packages/envoy/internal/dispatch/store/migrations"
+  psql_run M "run ${files[0]##*/}" -f "${files[0]}"
+  [[ "$(<"$work/psql.out")" == 0 ]] || fail M "${files[0]##*/} reads 0" "it read: $(<"$work/psql.out")"
+  pass M "${files[0]##*/}, the select run before a deploy, reads 0"
+  censused=$((censused + 1))
+done
+[[ "$censused" -gt 0 ]] || fail M "run this head's migrations' .census.sql" "no migration above $base_mark"
+
+# --- E: the erase of the run the edit was made under ------------------------------------------------
+
+# No server runs from here on, so no tick writes a row between the listing and its confirmation.
+stop_server E "this head's server"
+want_value E "before the erase, run $run_edit holds its row, its frames, its node and the edited blocks' changed_by_run" "1|true|1|${#changed_blocks[@]}" \
+  "select (select count(*) from going_requests where id = '$run_edit') || '|'
+          || ((select count(*) from going_events where request_id = '$run_edit') > 0)::text || '|'
+          || (select count(*) from graph_nodes where kind = 'interaction' and id = '$run_edit') || '|'
+          || (select count(*) from graph_tuples where kind = 'changed_by_run' and to_kind = 'interaction' and to_id = '$run_edit')"
+run_cli E "list the erase of interaction:$run_edit" erase --node "interaction:$run_edit"
+cp "$work/cli.out" "$work/erase.listing"
+sed 's/^/  /' "$work/erase.listing"
+[[ "$cli_code" == 1 ]] || fail E "the erase without --confirm lists and removes nothing" "exited $cli_code"
+digest="$(sed -n 's/^  listing digest: \([0-9a-f]\{64\}\)$/\1/p' "$work/erase.listing")"
+[[ -n "$digest" ]] || fail E "read the listing's digest" "no listing digest in: $(<"$work/erase.listing")"
+! grep -q '^  blocked: ' "$work/erase.listing" ||
+  fail E "the edited blocks' changed_by_run tuples are no blocker of the erase" "$(grep '^  blocked: ' "$work/erase.listing")"
+for changed in "${changed_blocks[@]}"; do
+  grep -Fq ": $changed changed_by_run interaction:$run_edit" "$work/erase.listing" ||
+    fail E "the listing deletes the changed_by_run tuple from $changed with the node" "$(<"$work/erase.listing")"
+done
+grep -Eq "^    delete graph_tuples [0-9]+: block:$key/spec#r2 changed_by_run interaction:$run_edit\$" "$work/erase.listing" ||
+  fail E "the listing deletes the changed_by_run tuple from the edited block r2 with the node" "$(<"$work/erase.listing")"
+grep -Fqx "    delete going_requests (id)=($run_edit)" "$work/erase.listing" ||
+  fail E "the listing deletes run $run_edit's going_requests row" "$(<"$work/erase.listing")"
+pass E "the listing (digest $digest) names no blocker, and deletes the changed_by_run tuple of each of ${changed_blocks[*]} and the run's row with the node"
+run_cli E "erase interaction:$run_edit" erase --node "interaction:$run_edit" --confirm "$digest"
+sed 's/^/  /' "$work/cli.out"
+[[ "$cli_code" == 0 ]] || fail E "envoy-dispatch erase --node interaction:$run_edit --confirm $digest erases the run" "exited $cli_code: $(<"$work/cli.out")"
+pass E "envoy-dispatch erase --node interaction:$run_edit --confirm $digest erased the run"
+readonly erased_sql="select (select count(*) from going_requests where id = '$run_edit') || '|'
+          || (select count(*) from going_events where request_id = '$run_edit') || '|'
+          || (select count(*) from graph_nodes where kind = 'interaction' and id = '$run_edit') || '|'
+          || (select count(*) from graph_tuples where (from_kind = 'interaction' and from_id = '$run_edit')
+                                                 or (to_kind = 'interaction' and to_id = '$run_edit'))"
+want_value E "no row of run $run_edit in going_requests or going_events, no node and no tuple is left" "0|0|0|0" "$erased_sql"
+changed_ids="$(printf "'%s'," "${changed_blocks[@]#block:}")"
+want_value E "each edited block, ${changed_blocks[*]}, stands live, its changed_by_run gone with the run" "${#changed_blocks[@]}" \
+  "select count(*) from graph_nodes where kind = 'block' and state = 'live' and id in (${changed_ids%,})"
+backfill E
+want_value E "the backfill writes no node of the erased run back" "0|0|0|0" "$erased_sql"
+take_census E erased
+census_zero E erased interaction
+census_zero E erased frame
+census_zero E erased block
+census_zero E erased block_ref
+census_zero E erased person
+census_zero E erased session
+for kind in interaction lens finding risk constraint lens_kind; do
+  census_zero E erased "${kind}_visibility_state"
+done
+census_differences E erased
+
+pass "$driver" complete
