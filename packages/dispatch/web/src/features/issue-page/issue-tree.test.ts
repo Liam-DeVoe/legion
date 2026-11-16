@@ -1592,6 +1592,72 @@ test("every Change newer than a decision's words is drawn under it", () => {
   expect(nodeOf(root, id)).toMatchObject({ state: "change_requested", waiting: false });
 });
 
+// R3 and R7: a Change sits under the decision it was written in. The anchor names the block the
+// person wrote it in (`Anchor.block_id`), here the second decision's paragraph, and its quote is
+// words that decision holds; the first decision holds the same words too. So the quote alone
+// cannot say which decision was changed, and the Change must not land on the first decision
+// that holds them: that decision would read Change requested and leave the review list, while
+// the one the person changed would still wait on them.
+test("a Change anchored in one decision is drawn under it, though another decision holds its words", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const waiting = (id: string, text: string): Decision => {
+    const one = decision(id, text, ["r1"]);
+    return {
+      ...one,
+      changed_at: "2026-11-05T00:00:00Z",
+      // The tie comes from the decision's paragraph, as the server stores it.
+      links: one.links.map((link) => ({ ...link, from_block: `${id}-words` })),
+      waiting_review: true,
+    };
+  };
+  const first = waiting("d1", "## Keep the model pure\n\nKeep the model pure. Draw it once.");
+  const second = waiting("d2", "## Draw it once\n\nDraw it once.");
+  const change: Comment = {
+    ...comment("c-change", "2026-11-06T00:00:00Z"),
+    anchor: {
+      artifact_id: made.id,
+      block_id: "d2-words",
+      mark_id: "c-change",
+      orphaned: false,
+      quote: "Draw it once.",
+      version: 1,
+    },
+  };
+  // The decisions document's blocks in their order, as the blocks read answers them: each
+  // decision's heading, then its paragraph.
+  const placed = (id: string, type: string, from: number, to: number): ArtifactBlock => ({
+    ...block(id, type),
+    from,
+    to,
+  });
+  const root = buildIssueTree({
+    comments: [change],
+    coverage: coverage([requirement("r1", "The first.")]),
+    decisions: decisions([first, second]),
+    documents: [
+      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+      {
+        artifactId: made.id,
+        blocks: [
+          placed("d1", "heading", 0, 24),
+          placed("d1-words", "paragraph", 26, 62),
+          placed("d2", "heading", 64, 80),
+          placed("d2-words", "paragraph", 82, 96),
+        ],
+      },
+    ],
+    issue: issueDetails([spec, made]),
+    viewer: "alice",
+  });
+  const changed = blockNodeId("decisions-md", "d2");
+  const other = blockNodeId("decisions-md", "d1");
+
+  expect(placementsOf(root, "c-change").map((one) => one.parent)).toEqual([changed]);
+  expect(nodeOf(root, changed)).toMatchObject({ state: "change_requested", waiting: false });
+  expect(nodeOf(root, other)).toMatchObject({ state: "waiting_review", waiting: true });
+});
+
 // R14: a reply is drawn under the entry it answers. The write climbs `reply_to` to the head of
 // the thread before it stores, so a tree parented by `reply_to` draws every reply of a thread
 // under its head; `answers` is the comment the write named, which is what nests a reply under
