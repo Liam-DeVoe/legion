@@ -22,16 +22,18 @@
  * and a type are told apart by a word and a shape, never by colour alone.
  *
  * This module is data and pure functions. It holds no React and touches no DOM, and it imports
- * data and types, with three helpers:
+ * data and types, with four helpers:
  *
  * - from its sibling `page-structure.ts`, the property and section names and help lines
  *   `DECLARED_WORDS` is derived from as well, and `freeze`, which its tables are made with;
  * - from `@legion/contracts`, the most issues one issue may wait on, the most priorities it may
- *   advance, and the types of how a result's commit stands and of when a check runs;
+ *   advance, and the types of how a result's commit stands, of when a check runs and of how a
+ *   delivery stands;
  * - from `../../api/types`, the type of an actor;
  * - from `../project/board-model`, the issue statuses and `statusLabel` and `statusText`, the
  *   board's word for a status, which `ISSUE_STATUS_WORDS` and `issueStatusWord` say;
- * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in.
+ * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in, and
+ *   `isViewer`, whether an actor is the signed-in person.
  *
  * The last two are the module's links to files today's pages use.
  *
@@ -40,6 +42,7 @@
 
 import {
   type CheckWhen,
+  type DeliveryAttemptState,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   type ResultCommitStands,
@@ -47,7 +50,7 @@ import {
 
 import type { Actor } from "../../api/types";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
-import { ASK_RESOLUTION_WORDS } from "../refs/actor";
+import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
 import {
   freeze,
   HELP_LINES,
@@ -671,12 +674,15 @@ export const RESULT_VERDICT_WORDS = freeze({
 } as const);
 
 /** How one delivery of a comment's mention or a message to an agent stands, in the focused
- *  row's facts, in words rather than the delivery's `failed`, `pending` and `sent` (R22). */
+ *  row's facts, in words rather than the delivery's `failed`, `pending`, `queued` and `sent`
+ *  (R22). Keyed by the states the API declares, so a state added there is a compile error here
+ *  rather than a delivery that draws no word. */
 export const DELIVERY_STATE_WORDS = freeze({
   failed: "Not delivered",
   pending: "Sending",
+  queued: "Queued",
   sent: "Delivered",
-} as const);
+} as const satisfies Record<DeliveryAttemptState, string>);
 
 /**
  * What the blocked-by editor says when Dispatch refuses the list it saved
@@ -1163,18 +1169,14 @@ export function authorKind(actor: Actor | undefined): AuthorKind {
 }
 
 /**
- * Whether `actor` is the reader writing as themselves: a person signed in as `reader`, and not
- * an agent acting for them, whose words are the agent's (R9, R34). It is the one rule for whose
- * words carry the ink rule and which decisions are the reader's own, read by the outline's rows
- * and by each filter's body.
+ * Whether `actor` is the reader writing as themselves: a person signed in as `reader`, whose
+ * login matches in any casing as the server matches it (`isViewer`), and not an agent acting for
+ * them, whose words are the agent's (R9, R34). It is the one rule for whose words carry the ink
+ * rule and which decisions are the reader's own, read by the outline's rows and by each filter's
+ * body.
  */
 export function isReader(actor: Actor | undefined, reader: string | undefined): boolean {
-  return (
-    reader !== undefined &&
-    actor?.kind === "user" &&
-    actor.id === reader &&
-    (actor.act?.session ?? "") === ""
-  );
+  return actor !== undefined && isViewer(actor, reader) && (actor.act?.session ?? "") === "";
 }
 
 /** What each kind of author is called, in the accessible name of its shape: "Written by a

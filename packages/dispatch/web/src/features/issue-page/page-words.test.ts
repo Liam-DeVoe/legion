@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { AskResolution } from "../../api/types";
+import type { Actor, AskResolution } from "../../api/types";
 import { compiledBlockSchema } from "../doc/schema";
 import { ASK_RESOLUTION_WORDS, askResolutionBadge } from "../refs/actor";
 import * as pageStructure from "./page-structure";
@@ -34,6 +34,7 @@ import {
   GLYPH_NAMES,
   GLYPH_TOKENS,
   ISSUE_STATUS_WORDS,
+  isReader,
   NODE_FACT_LABELS,
   NODE_REFERENCES_WORDS,
   NODE_STATE_WORDS,
@@ -504,4 +505,12 @@ test("each way a question is closed has one word on its card and in the list", (
     expect(askResolutionBadge(resolution), kind).toBe(word);
     expect(nodeStateWord(kind as NodeState), kind).toBe(word);
   }
+});
+
+// The server matches a login in any casing, as `isViewer` does, so a person signed in as `alice`
+// whose actor says `Alice` is still the reader; a session acting for them is not.
+test("the reader's own words are theirs whatever the case of the login", () => {
+  const alice: Actor = { id: "Alice", kind: "user" };
+  expect(isReader(alice, "alice")).toBe(true);
+  expect(isReader({ ...alice, act: { session: "planner" } }, "alice")).toBe(false);
 });
