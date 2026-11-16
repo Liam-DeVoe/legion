@@ -1974,8 +1974,9 @@ func newCookieServer(t *testing.T) (http.Handler, *store.PgSessionStore, *http.C
 }
 
 // newCookieServerOn is newCookieServer on database, with heartbeat as the API's StreamHeartbeat
-// (zero leaves it unset), also returning the server's document service.
-func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Duration) (http.Handler, *store.PgSessionStore, *http.Cookie, cookieRequest, *docs.Service) {
+// (zero leaves it unset), also returning the server's document service. Each of with edits the
+// dependencies before the server is built.
+func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Duration, with ...func(*DepsInput)) (http.Handler, *store.PgSessionStore, *http.Cookie, cookieRequest, *docs.Service) {
 	t.Helper()
 	sessions := store.NewPgSessionStore(database.Pool)
 	cookieIdentity := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions}
@@ -1984,10 +1985,14 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 		Store: database, Events: broker, Identity: cookieIdentity, Settle: time.Hour,
 	})
 	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
-	deps, err := NewDeps(DepsInput{
+	input := DepsInput{
 		Store: database, Identity: cookieIdentity, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs: documentService, Events: broker, StreamHeartbeat: heartbeat,
-	})
+	}
+	for _, edit := range with {
+		edit(&input)
+	}
+	deps, err := NewDeps(input)
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}

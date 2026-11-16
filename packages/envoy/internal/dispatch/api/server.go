@@ -818,11 +818,28 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		ServeHTTP(http.ResponseWriter, *http.Request)
 	}); ok {
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
 	}
 	const livePattern = "/ws/live"
 	mux.Handle("GET "+livePattern, accesslog.Handler(livePattern, s.whileCallerResolves(s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
 	return s
+}
+
+// refuseUnlistedServiceAccount holds the document socket, which admits a person by the cookie
+// alone (docs.requestActor), to DISPATCH_OIDC_ACCOUNTS as optionalActor holds every route and the
+// live socket: a request presenting a verified token of an account the list does not name is
+// refused before the socket reads anything, whatever cookie it carries beside it. A deployment that
+// names no account, and a request that presents no service-account token, are served as they were.
+func (s *server) refuseUnlistedServiceAccount(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if token, present := auth.BearerToken(r); present && len(s.deps.OIDCAccounts) > 0 && s.deps.OIDC != nil && oidc.LooksLikeJWT(token) {
+			if _, _, err := s.serviceTokenActor(r, token); err != nil {
+				s.writeAuthenticationError(w, err)
+				return
+			}
+		}
+		handler(w, r)
+	}
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
