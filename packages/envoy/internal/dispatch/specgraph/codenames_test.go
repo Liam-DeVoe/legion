@@ -43,8 +43,9 @@ func TestCodeNames(t *testing.T) {
 		{text: "readSet gives each message an owner, as isValid says", want: []string{"readSet", "isValid"}},
 		{text: "pmdoc.ReadSet gives each message an owner, and so does notes.ReadSet's set.", want: []string{"pmdoc.ReadSet", "notes.ReadSet"}},
 		{text: "ReadSet() gives each message an owner", want: []string{"ReadSet()"}},
-		// The reviewer's, not the program's: a word with a capital at the start of each part and a
-		// bare package word have the shape of a product name and a plain word.
+		// The reviewer's, not the program's: a word with a capital at the start of each part, unless
+		// it has the form of a Go test's name, and a bare package word have the shape of a product
+		// name and a plain word.
 		{text: "ReadSet and the pmdoc package, GitHub and JetStream", want: nil},
 		{text: "e.g. one message, i.e. the first, at 9 a.m. on example.com", want: nil},
 		{text: "gRPC on macOS, iOS, tvOS and the iPhone, at 5 kHz and 64 kB, through eBPF, vCPU and jQuery", want: nil},
