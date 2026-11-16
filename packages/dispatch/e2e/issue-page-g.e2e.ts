@@ -1,19 +1,26 @@
+import type { Page } from "@playwright/test";
+
+import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
+  GLYPH_TOKENS,
   issueStatusWord,
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
 } from "../web/src/features/issue-page/page-words";
 import { getAsk, getIssue, listComments } from "./api";
+import { nextFrames } from "./frames";
 import {
   DESKTOP,
+  type DrawnRow,
   drawnRows,
   expectRowGroups,
   expectRowLayouts,
+  expectSeedDrawn,
   focusRow,
-  focusThePage,
   nodeRow,
   nodeRows,
+  ONE_LINE_WORDS,
   openIssue,
   PHONE,
   PLANNER_TITLE,
@@ -29,7 +36,6 @@ import {
   rowOf,
   rowWords,
   seedRows,
-  unfoldEveryBranch,
 } from "./issue-page-g";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -52,7 +58,50 @@ function addressesOf(seeded: RowSeed): RegExp {
   return new RegExp(`dispatch://|${seeded.key} \\S+( block)?$|-md\\b|session:`, "u");
 }
 
+/** An author as a row's group draws it: the name and the `data-glyph` token of its shape. */
+interface DrawnAuthor {
+  readonly author: string;
+  readonly shape: string;
+}
+
+/** The kinds of node the model holds no author for, whose rows draw none (R3, R5). */
+const AUTHORLESS: readonly string[] = [
+  "check",
+  "child_issue",
+  "decision",
+  "plan_task",
+  "requirement",
+];
+
+/** Each row that draws an author other than the one `stored` gives its node, or that draws one
+ *  where its kind has none. A row of neither, which the seed gave no known author, is left out. */
+function authorOffences(
+  rows: readonly DrawnRow[],
+  stored: ReadonlyMap<string, DrawnAuthor>
+): string[] {
+  return rows.flatMap((row) => {
+    const want =
+      stored.get(row.id ?? "") ?? (AUTHORLESS.includes(row.type ?? "") ? null : undefined);
+    if (want === undefined) return [];
+    const drawn = row.author === null ? null : { author: row.author, shape: row.authorShape };
+    return JSON.stringify(drawn) === JSON.stringify(want)
+      ? []
+      : [`the ${row.type} ${row.id} draws ${JSON.stringify(drawn)}, not ${JSON.stringify(want)}`];
+  });
+}
+
+/** How many rendering frames the page's writer goes on looking for its field in after a Reply or
+ *  an Answer (`DRAWING_FRAMES` in `outline-writer.tsx`: ten after the first), and one more. */
+const WRITER_FRAMES = 12;
+
+/** Waits out those frames, two at a time. */
+async function writerFramesPass(page: Page): Promise<void> {
+  for (let passed = 0; passed < WRITER_FRAMES; passed += 2) await nextFrames(page);
+}
+
 // c-row-layout: every row at both widths, read off the page's own layout (R1, R4, R5, R8).
+// SLOW(>=2s): a seeded issue of every kind of node, loaded at two widths with each load waited
+// out to a 1.5 s quiet window, a third load read row by row, and a picture opened.
 test("a node draws its kind at the right of its row and every node starts at one left edge @phone", async ({
   browser,
 }) => {
@@ -68,7 +117,7 @@ test("a node draws its kind at the right of its row and every node starts at one
         // The load takes no focus, so it scrolls nothing (R8).
         expect(await page.evaluate(() => window.scrollY), `${where} scrolled at load`).toBe(0);
       }
-      await unfoldEveryBranch(page);
+      await expectSeedDrawn(page, seeded);
       await expect
         .poll(() => nodeRows(page).count(), { message: `${where} draws no row` })
         .toBeGreaterThan(0);
@@ -88,7 +137,7 @@ test("a node draws its kind at the right of its row and every node starts at one
 
     await page.setViewportSize(DESKTOP);
     await openIssue(page, seeded.key);
-    await unfoldEveryBranch(page);
+    await expectSeedDrawn(page, seeded);
     const rows = await drawnRows(page);
     // No row for the issue, which the header names (R8).
     expect(
@@ -109,6 +158,8 @@ test("a node draws its kind at the right of its row and every node starts at one
     const facts = child.locator("[data-child-facts]");
     await expect(facts).toContainText(issueStatusWord((await getIssue(seeded.child)).status));
     await expect(facts).toContainText(seeded.blocker);
+    await expect(facts).toContainText(PROPERTY_LABELS.blocked_by);
+    await expect(facts.locator("a", { hasText: seeded.blocker })).toHaveCount(1);
     await expect(
       facts.locator("[data-child-holder]"),
       "the child's holder is drawn in a link"
@@ -130,19 +181,31 @@ test("a node draws its kind at the right of its row and every node starts at one
     await expect(rowWords(cites).locator("strong")).toHaveCount(1);
     await expect(rowWords(cites).locator("p")).toHaveCount(2);
 
+    // `r-ties`: its words cite r-one's block by its address, which they draw as a chip in place
+    // naming r-one by its first words, with no source line, no mark and no address (R4).
+    const ties = rowWords(nodeRow(page, `${seeded.slugs.spec}#b-r-ties`).first());
+    await expect(ties.locator("a[data-row-chip]")).toHaveCount(1);
+    await expect(ties.locator("a[data-row-chip]")).toHaveText(ONE_LINE_WORDS);
+    for (const source of [":::", "**", "dispatch://"]) {
+      await expect(ties, `r-ties' words draw "${source}"`).not.toContainText(source);
+    }
+
     // The needs chip names its target by its first words, with no mark of markdown (F18).
-    const needs = rowOf(rows, `${seeded.slugs.plan}#b-t2`);
-    expect(needs?.chips.join(" ") ?? "", "the needs chip draws a mark of markdown").not.toMatch(
-      /[*\\]/u
-    );
+    const needs = nodeRow(page, `${seeded.slugs.plan}#b-t2`).first().locator("[data-node-chip]");
+    await expect(needs, "t2 draws other than its one needs chip").toHaveCount(1);
+    await expect(needs.locator("[data-chip-name]")).toHaveText(/^1\. Stand/u);
+    await expect(needs, "the needs chip draws a mark of markdown").not.toHaveText(/[*\\]/u);
 
     // The decision that quotes a typed block draws none of its source, and its reference is a
-    // chip in place (F20).
-    const raw = rows.find((row) => row.type === "decision" && row.text.includes("raw source"));
+    // chip in place, which names r-one by its first words (F20).
+    const raw = rowOf(rows, seeded.raw);
     expect(raw?.text ?? ":::", "the decision draws a typed block's source").not.toContain(":::");
     expect(raw?.text ?? "dispatch://", "the decision draws an address").not.toContain(
       "dispatch://"
     );
+    const rawChip = rowWords(nodeRow(page, seeded.raw).first()).locator("a[data-row-chip]");
+    await expect(rawChip).toHaveCount(1);
+    await expect(rawChip).toHaveText(ONE_LINE_WORDS);
 
     // An agent's link and a word that only looks like a key (R4).
     const linked = nodeRow(page, seeded.linked).first();
@@ -175,6 +238,11 @@ test("a node draws its kind at the right of its row and every node starts at one
     await parent.locator("button[data-node-bullet]").click();
     await expect(parent).toHaveAttribute("aria-expanded", "false");
     await expect(parent.locator("[data-node-count]")).toHaveCount(1);
+    // The press takes no focus, so the folded row draws its one line and not its words whole.
+    await expect(
+      parent.locator("[data-node-first-line]"),
+      "the folded branch is not drawn on one line"
+    ).toHaveCount(1);
     await parent.locator("button[data-node-bullet]").click();
     await expect(parent).toHaveAttribute("aria-expanded", "true");
 
@@ -186,13 +254,15 @@ test("a node draws its kind at the right of its row and every node starts at one
 });
 
 // c-cut: ruling 1 on R2 at 1440 px.
+// SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
+// ten presses and focus moves, each waited on until the row redraws.
 test("an agent message and an answered question are cut at six lines, and the words of the reader and a waiting question are whole", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
     await openIssue(page, seeded.key);
-    await unfoldEveryBranch(page);
+    await expectSeedDrawn(page, seeded);
     const agent = nodeRow(page, seeded.longMessage).first();
     const cut = (await rowLayouts(page)).find((row) => row.id === seeded.longMessage);
     expect(cut?.more ?? "", "the agent's long message draws no more").toMatch(
@@ -204,7 +274,9 @@ test("an agent message and an answered question are cut at six lines, and the wo
     ).toBeGreaterThan(20);
     expect((await rowWords(agent).boundingBox())?.height ?? 1e6).toBeLessThanOrEqual(6 * 24 + 12);
     await rowMore(agent).click();
-    await focusThePage(page);
+    // They stay whole once the focus has been on the message and has left it.
+    await focusRow(page, seeded.longMessage);
+    await focusRow(page, seeded.comment);
     await expect
       .poll(async () => (await rowLayouts(page)).find((row) => row.id === seeded.longMessage))
       .toMatchObject({ more: CONTROL_LABELS.read_less, wordsHidden: 0 });
@@ -222,6 +294,13 @@ test("an agent message and an answered question are cut at six lines, and the wo
       seeded.answerWords,
       { useInnerText: true }
     );
+    expect(
+      await nodeRow(page, seeded.answered)
+        .first()
+        .locator("[data-answer-text]")
+        .evaluate((text) => text.scrollHeight - text.clientHeight),
+      "the reader's answer hides a word"
+    ).toBeLessThanOrEqual(1);
     expect((await getAsk(seeded.waitingLong)).ask.waiting_on_person).toBe(READER);
     expect(
       layouts.find((row) => row.id === seeded.waitingLong),
@@ -235,6 +314,10 @@ test("an agent message and an answered question are cut at six lines, and the wo
     // Focused, the answered question is whole, with no more, on the focused card.
     const answered = await focusRow(page, seeded.answeredLong);
     await expect(rowMore(answered)).toHaveCount(0);
+    expect(
+      await rowWords(answered).evaluate((words) => words.scrollHeight - words.clientHeight),
+      "the focused answered question hides a word"
+    ).toBeLessThanOrEqual(1);
     await expect(answered.locator("[data-node-card]").first()).toHaveCSS(
       "background-color",
       "rgb(250, 250, 249)"
@@ -262,30 +345,52 @@ test("an agent message and an answered question are cut at six lines, and the wo
 });
 
 // c-author: R3 at 1440 px with every branch unfolded, and at 390 px.
+// SLOW(>=2s): a seeded issue of every kind of node, loaded and read at two widths with its rows
+// and their names waited for each time, then two rows focused.
 test("an author is drawn by name and shape, and an agent's decision by its uncertainty @phone", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
+    const reader = { author: READER, shape: GLYPH_TOKENS.authors.person };
+    const plannerAuthor = { author: "Planner", shape: GLYPH_TOKENS.authors.agent };
+    const stored = new Map<string, DrawnAuthor>([
+      [seeded.comment, reader],
+      [seeded.longComment, reader],
+      [seeded.pictured, reader],
+      [seeded.change, reader],
+      [seeded.linked, plannerAuthor],
+      [seeded.longMessage, plannerAuthor],
+      [seeded.answered, plannerAuthor],
+      [seeded.answeredLong, plannerAuthor],
+      [seeded.waitingLong, plannerAuthor],
+      [seeded.openQuestion, plannerAuthor],
+      [seeded.result, { author: CONTROL_LABELS.unnamed_author, shape: GLYPH_TOKENS.authors.agent }],
+    ]);
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize(size);
       await openIssue(page, seeded.key);
-      await unfoldEveryBranch(page);
+      await expectSeedDrawn(page, seeded);
+      // A person by their login and an agent by its role's word, or by the page's word for one
+      // that names none, each by its kind's shape: people share one, agents another. A node the
+      // model holds no author for draws none.
+      await expect
+        .poll(async () => authorOffences(await drawnRows(page), stored), {
+          message: "a row draws its author other than by the stored actor's name and kind",
+        })
+        .toEqual([]);
       const rows = await drawnRows(page);
       const where = `at ${size.width} px`;
-      // A person by their login, an agent by its role's word, and neither by an id.
-      expect(rowOf(rows, seeded.comment)?.author, `the reader's comment ${where}`).toBe(READER);
-      expect(rowOf(rows, seeded.linked)?.author, `the planner's message ${where}`).toBe("Planner");
       for (const row of rows) {
         expect(row.author ?? "", `the ${row.type} ${row.id} ${where} draws an id`).not.toMatch(
           /session:|019a1c0a/u
         );
       }
-      const shape = (id: string) => rowOf(rows, id)?.authorShape ?? null;
-      expect(shape(seeded.comment), "people and agents share a shape").not.toBe(
-        shape(seeded.linked)
-      );
       // The answer is word for word, with no "Unsure"; only the seeded decision says it.
+      expect(
+        rowOf(rows, seeded.answered)?.answerText,
+        `the answer ${where} is not drawn word for word`
+      ).toBe(seeded.answerWords);
       expect(rowOf(rows, seeded.answered)?.unsure ?? null).toBeNull();
       expect(rows.filter((row) => row.unsure !== null).map((row) => row.id)).toEqual([
         seeded.unsure,
@@ -314,19 +419,22 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
 });
 
 // c-writer: R7 and R10 at 1440 px.
+// SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
+// six rows focused, two presses waited out for the writer's frames, and a read of the API.
 test("a row's Reply and Answer set the page's writer, and a decision asked to change draws it", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
     await openIssue(page, seeded.key);
-    await unfoldEveryBranch(page);
+    await expectSeedDrawn(page, seeded);
     const writes = watchApiRequests(page);
 
     const comment = await focusRow(page, seeded.comment);
-    await expect(rowAct(comment, "reply")).toHaveCount(1);
+    await expect(rowAct(comment, "reply"), "the focused comment draws no Reply").toHaveCount(1);
     await expect(rowAct(comment, "answer")).toHaveCount(0);
     await rowAct(comment, "reply").click();
+    await writerFramesPass(page);
     await expect(comment).toBeFocused();
 
     const question = await focusRow(page, seeded.openQuestion);
@@ -338,8 +446,8 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     await expect(option).toContainText("●");
     await expect(question.locator('[data-pick-option="1280 px"]')).toContainText("○");
     await rowAct(question, "answer").click();
+    await writerFramesPass(page);
     await expect(question).toBeFocused();
-    await expect(page.locator('[data-testid="issue-composer"]')).toHaveCount(0);
 
     // A statement and a check take no reply in today's model, so they draw no act.
     for (const id of [`${seeded.slugs.spec}#b-r-one`, `${seeded.slugs.verification}#b-c1`]) {

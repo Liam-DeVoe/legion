@@ -75,6 +75,7 @@ const SELECTORS = {
   nodeChip: "[data-node-chip]",
   nodeFirstLine: "[data-node-first-line]",
   nodeGlyph: "svg[data-glyph]",
+  nodeMargin: "[data-node-margin]",
   nodeRow: "[data-node-row]",
   nodeState: "[data-node-state]",
   nodeTag: "[data-node-tag]",
@@ -162,12 +163,14 @@ export function rowAct(row: Locator, act: "answer" | "change-answer" | "reply"):
   return row.locator(`[data-row-act="${act}"]`);
 }
 
-/** Puts the focus on node `id`'s row, as a press or a key puts it there, and waits for its
- *  card. */
+/** Puts the focus on node `id`'s row, as a press or a key puts it there, and waits until the row
+ *  holds it and draws its body, which every row draws while it has the focus: a row draws its
+ *  card whether or not it has the focus, so the card says nothing of it. */
 export async function focusRow(page: Page, id: string): Promise<Locator> {
   const row = nodeRow(page, id).first();
   await row.focus();
-  await expect(row.locator("[data-node-card]").first()).toBeVisible();
+  await expect(row).toBeFocused();
+  await expect(rowBody(row)).toHaveCount(1);
   return row;
 }
 
@@ -193,7 +196,9 @@ const BRANCHES_OPENED_AT_MOST = 200;
 /**
  * Opens every branch a fold left shut, as a reader does to read past one: G's body opens every
  * branch at load, and part I's outline folds to the frontier, so a row that reads what a branch
- * holds presses its fold control rather than asserting that the first drawing carried it.
+ * holds presses its fold control rather than asserting that the first drawing carried it. It ends
+ * with the focus on no row: a press may leave it on the row it opened, and a focused row draws
+ * its body, while the rows read the tree as it stands with no row focused.
  */
 export async function unfoldEveryBranch(page: Page): Promise<void> {
   const controls = nodeRows(page).getByRole("button", {
@@ -202,13 +207,73 @@ export async function unfoldEveryBranch(page: Page): Promise<void> {
   });
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
     const first = controls.first();
-    if ((await first.count()) === 0) return;
+    if ((await first.count()) === 0) {
+      await focusThePage(page);
+      return;
+    }
     await first.click();
   }
   expect(
     await controls.count(),
     `the tree still draws a folded branch after ${BRANCHES_OPENED_AT_MOST} openings`
   ).toBe(0);
+}
+
+/** How long `expectSeedDrawn` waits for the seed's rows and the names their chips read. */
+const SEED_DRAWN_MS = 30_000;
+
+/**
+ * Waits until the page draws a row for every node the seed wrote that a row reads, and the names
+ * of what their chips cite. The tree is drawn with the issue alone; its comments, messages,
+ * questions, decisions, results and blocks arrive after it, and the batched names last
+ * (`useIssueTree.ts`), so a reading taken as soon as the tree exists may find a row, or a chip's
+ * name, not drawn yet. The needs chip of `t2` draws nothing until the names have come
+ * (`NodeRow.tsx`'s `Chip`), so it stands for them. Each poll first opens every branch a fold
+ * left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
+ */
+export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void> {
+  const ids = [
+    seeded.child,
+    seeded.blocker,
+    seeded.comment,
+    seeded.linked,
+    seeded.pictured,
+    seeded.longMessage,
+    seeded.longComment,
+    seeded.answeredLong,
+    seeded.waitingLong,
+    seeded.openQuestion,
+    seeded.answered,
+    seeded.shaping,
+    seeded.changed,
+    seeded.change,
+    seeded.unsure,
+    seeded.raw,
+    seeded.result,
+    blockNode(seeded.slugs.spec, "r-one"),
+    blockNode(seeded.slugs.spec, "r-cites"),
+    blockNode(seeded.slugs.spec, "r-ties"),
+    blockNode(seeded.slugs.plan, "t1"),
+    blockNode(seeded.slugs.plan, "t2"),
+    blockNode(seeded.slugs.verification, "c1"),
+  ];
+  const needs = blockNode(seeded.slugs.plan, "t2");
+  await expect
+    .poll(
+      async () => {
+        await unfoldEveryBranch(page);
+        const rows = await drawnRows(page);
+        return {
+          missing: ids.filter((id) => rowOf(rows, id) === undefined),
+          named: (rowOf(rows, needs)?.chips.length ?? 0) > 0,
+        };
+      },
+      {
+        message: "the page never drew every seeded row and the names its chips read",
+        timeout: SEED_DRAWN_MS,
+      }
+    )
+    .toEqual({ missing: [], named: true });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -230,9 +295,11 @@ export interface DrawnRow {
   readonly answerLine: string | null;
   /** The whole of what the person wrote, every character kept; null where none is drawn. */
   readonly answerText: string | null;
-  /** The author the row names, or null where it names none. */
+  /** The author the row's group names, or null where it names none. An open body names an
+   *  author of its own, "Author unknown" included, which this leaves out. */
   readonly author: string | null;
-  /** The `data-glyph` token of the shape drawn beside the author, or null where none is. */
+  /** The `data-glyph` token of the shape drawn beside the group's author, or null where none
+   *  is. */
   readonly authorShape: string | null;
   /** Whether the row draws a body of its own. */
   readonly body: boolean;
@@ -243,8 +310,10 @@ export interface DrawnRow {
   readonly context: boolean;
   /** `aria-expanded`, or null for a row that holds no children. */
   readonly expanded: string | null;
-  /** The row's own first line, as drawn. */
+  /** The one line a folded row draws, or null on a row drawn whole, whose words are `words`. */
   readonly firstLine: string | null;
+  /** How wide that one line lays its text out against how wide it draws it, or null on a row
+   *  drawn whole. */
   readonly firstLineBox: LineBox | null;
   /** `data-folded-count`, or null for a row that is not folded. */
   readonly foldedCount: string | null;
@@ -274,6 +343,8 @@ export interface DrawnRow {
   readonly visible: boolean;
   /** The node's words as the row draws them whole, or null where it draws its one line. */
   readonly words: string | null;
+  /** How wide the box of a folded row's one line lays it out against how wide it draws it, or
+   *  null on a row drawn whole. */
   readonly wordsBox: LineBox | null;
 }
 
@@ -304,10 +375,10 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
         answerAuthor: text(answerLine?.querySelector(selectors.answerAuthor) ?? null),
         answerLine: text(answerLine),
         answerText: row.querySelector(selectors.answerText)?.textContent ?? null,
-        author: text(row.querySelector(selectors.nodeAuthor)),
+        author: text(row.querySelector(`${selectors.nodeMargin} ${selectors.nodeAuthor}`)),
         authorShape:
           row
-            .querySelector(`${selectors.nodeAuthor} ${selectors.nodeGlyph}`)
+            .querySelector(`${selectors.nodeMargin} ${selectors.nodeAuthor} ${selectors.nodeGlyph}`)
             ?.getAttribute("data-glyph") ?? null,
         body: row.querySelector(selectors.nodeBody) !== null,
         box: box(row),
@@ -838,6 +909,10 @@ export function blockNode(slug: string, block: string): string {
 /** The words of the decision a person asks to change, which the change's anchor quotes. */
 const CHANGED_DECISION_WORDS = "One read names every node the rows draw.";
 
+/** The words of the one-line statement `r-one`: 32 characters, so a chip that names the block
+ *  by its first words draws them whole. */
+export const ONE_LINE_WORDS = "The page draws one row per node.";
+
 /** What the seed wrote, by the ids the page draws its rows under. */
 export interface RowSeed {
   readonly key: string;
@@ -874,8 +949,12 @@ export interface RowSeed {
   readonly shaping: string;
   readonly changed: string;
   readonly change: string;
-  /** The decision the seed marks unsure. */
+  /** The decision the seed marks unsure, and the one that quotes a typed block and cites
+   *  `r-one` by its address. */
   readonly unsure: string;
+  readonly raw: string;
+  /** The result the untitled session recorded against `c1`. */
+  readonly result: string;
 }
 
 /** Uploads a picture to the issue as the reader, as the page's own upload does. */
@@ -901,7 +980,8 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * claim; the reader's comment; an agent's message with a link and "UTF-16", and the reader's
  * reply to each of the agent's messages; the statement `r-cites`, citing `notes.md` and the
  * child, with bold words and two paragraphs (a `requirement` holds paragraphs and no list,
- * `blocks.json`); a one-line statement;
+ * `blocks.json`); a one-line statement `r-one`; the statement `r-ties`, whose words cite `r-one`'s
+ * block by its address (a requirement takes no attribute, so the citation is the tie);
  * a plan task that needs one opening "**1\. Stand"; a check, with a result an untitled session
  * recorded; a decision that shaped a statement, one opening "Unsure:", one holding
  * `:::requirement{#r1}` and a block's address, and one a person asked to change; a picture; an
@@ -913,7 +993,7 @@ export async function seedRows(): Promise<RowSeed> {
   const issue = await createIssue({
     force: true,
     project: PROJECT,
-    spec: ":::requirement{#r-one}\nThe page draws one row per node.\n:::\n",
+    spec: `:::requirement{#r-one}\n${ONE_LINE_WORDS}\n:::\n`,
     title: "A node of an issue is drawn as one row",
   });
   const key = issue.key;
@@ -947,7 +1027,8 @@ export async function seedRows(): Promise<RowSeed> {
         markdown:
           ":::requirement{#r-cites}\n" +
           `The **measured** rows are in dispatch://${key}/artifact/${notes.artifact.slug}, and ` +
-          `dispatch://${child.key} draws them.\n\nOne row per node, and one edge per row.\n:::\n`,
+          `dispatch://${child.key} draws them.\n\nOne row per node, and one edge per row.\n:::\n` +
+          `\n:::requirement{#r-ties}\nEach row follows ${spec("r-one")}.\n:::\n`,
         op: "insert",
       },
     ],
@@ -966,7 +1047,7 @@ export async function seedRows(): Promise<RowSeed> {
       `when="before_merge"}\nEach node is one row.\n:::\n`,
     name: "verification.md",
   });
-  await recordCheckResult(
+  const recorded = await recordCheckResult(
     key,
     {
       check: "c1",
@@ -1069,6 +1150,8 @@ export async function seedRows(): Promise<RowSeed> {
     openQuestion: openQuestion.id,
     picture,
     pictured: pictured.id,
+    raw: await decision(headings.raw),
+    result: recorded.result.id,
     shaping: await decision(headings.shaping),
     slugs: {
       decisions: decisionsSlug,
