@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const listenerToken = "envoy-bearer"
@@ -82,6 +83,10 @@ type fakeStore struct {
 	released map[string]string
 	// standingErr is what FinishedIssues fails with while it is set.
 	standingErr error
+	// releasedReads counts the reads of ReleasedSessions.
+	releasedReads int
+	// holding holds the next call of each read it names until the test lets it go (hold).
+	holding map[string]chan chan struct{}
 }
 
 // setFinished is the record moving an issue out of the workflow (a close, a park, its tree
@@ -116,6 +121,46 @@ func (s *fakeStore) failStandings(err error) {
 	s.standingErr = err
 }
 
+// hold has the next call of read (FinishedIssues, a standings pass's first read, or
+// IssueConversations, which a pass makes once it has read the released claims) wait until the
+// test closes the channel the returned one hands it once the call has begun.
+func (s *fakeStore) hold(read string) <-chan chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.holding == nil {
+		s.holding = map[string]chan chan struct{}{}
+	}
+	holding := make(chan chan struct{}, 1)
+	s.holding[read] = holding
+	return holding
+}
+
+// wait is a call of read, held while the test holds it.
+func (s *fakeStore) wait(ctx context.Context, read string) error {
+	s.mu.Lock()
+	holding := s.holding[read]
+	delete(s.holding, read)
+	s.mu.Unlock()
+	if holding == nil {
+		return nil
+	}
+	proceed := make(chan struct{})
+	holding <- proceed
+	select {
+	case <-proceed:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releasedReadCount is how many times the mirror has read the released claims.
+func (s *fakeStore) releasedReadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.releasedReads
+}
+
 func (s *fakeStore) RegisterConversation(_ context.Context, c store.AgentConversation) (store.AgentConversation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -141,7 +186,10 @@ func (s *fakeStore) AgentConversations(_ context.Context, project string) ([]sto
 }
 
 // IssueConversations is every row of one issue of the project (store.IssueConversations).
-func (s *fakeStore) IssueConversations(_ context.Context, project, issue string) ([]store.AgentConversation, error) {
+func (s *fakeStore) IssueConversations(ctx context.Context, project, issue string) ([]store.AgentConversation, error) {
+	if err := s.wait(ctx, "IssueConversations"); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var rows []store.AgentConversation
@@ -156,9 +204,12 @@ func (s *fakeStore) IssueConversations(_ context.Context, project, issue string)
 // FinishedIssues names every issue the project's rows carry, with the standing the test set it,
 // and checks that the mirror reads the record's own rule (store.FinishedIssues takes
 // record.OutOfWorkflow, which no other function answers the same way).
-func (s *fakeStore) FinishedIssues(_ context.Context, project string, outOfWorkflow func(string) bool) (map[string]bool, error) {
+func (s *fakeStore) FinishedIssues(ctx context.Context, project string, outOfWorkflow func(string) bool) (map[string]bool, error) {
 	if outOfWorkflow == nil || !outOfWorkflow("done") || !outOfWorkflow("backlog") || outOfWorkflow("in_progress") {
 		return nil, fmt.Errorf("the mirror passed a rule that is not record.OutOfWorkflow")
+	}
+	if err := s.wait(ctx, "FinishedIssues"); err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,6 +233,7 @@ func (s *fakeStore) ReleasedSessions(_ context.Context, project string) (map[str
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.releasedReads++
 	released := map[string]string{}
 	maps.Copy(released, s.released)
 	return released, nil
@@ -825,5 +877,144 @@ func TestTheMirrorWritesReleasedWhileAClaimIsReleasedAndWithoutItOnceResumed(t *
 		if entry.Released {
 			t.Fatalf("the resume wrote %+v, want %s without released once its claim was resumed", puts[2:], entry.SessionID)
 		}
+	}
+}
+
+// putsReach waits, with the clock held still, until the stand-in has taken n PUTs of one session's
+// entry, and returns every such PUT it took by then.
+func putsReach(listener *standIn, n int) []Entry {
+	testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		_, puts, _ := listener.snapshot()
+		return len(puts) >= n
+	})
+	_, puts, _ := listener.snapshot()
+	return puts
+}
+
+// The daemon says when its idle release has suspended a claim (StandingsChanged), and the mirror
+// reads the standing at once: the claim's entry says `released` with the clock where the release
+// left it rather than at the mirror's next minute, so the listener does not hand a message for
+// that session to the answer loop in between. Without that word, a pass inside the minute - here
+// one a registration wakes - reads no standing and writes no release. The way back needs no word:
+// a wake resumes the claim, its process registers the session again, and the registration is
+// written without `released` at once (Put), whatever the last read said.
+func TestAReleaseTheDaemonReportsIsWrittenWithoutWaitingForTheMinute(t *testing.T) {
+	listener, server := newStandIn(t)
+	st := &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-0", 0), testerRow(t, "ses-1", 1)}}
+	m, clock := runMirror(t, server, st, &logs{})
+	clock.wait(t)
+	booted := clock.Now()
+
+	// The release suspends ses-1's claim, and nothing tells the mirror.
+	st.setReleased("ses-1", "LEGION-7", true)
+	m.Put(testerRow(t, "ses-2", 2))
+	clock.wait(t)
+	if _, puts, _ := listener.snapshot(); len(puts) != 1 || puts[0].SessionID != "ses-2" || puts[0].Released {
+		t.Fatalf("a pass inside the minute with no word from the daemon wrote %+v, want the registration of ses-2 alone: the standing is read each minute unless the daemon says it changed", puts)
+	}
+
+	// The daemon says it: ses-1's entry is written released, and ses-0's as it was.
+	m.StandingsChanged()
+	puts := putsReach(listener, 3)
+	if len(puts) != 3 || puts[1].SessionID != "ses-0" || puts[1].Released || puts[2].SessionID != "ses-1" || !puts[2].Released {
+		t.Fatalf("once the daemon said its release suspended a claim, the mirror wrote %+v; want ses-0 as it was and ses-1 released before the minute: until ses-1's entry says released, the listener hands a message for it to the answer loop instead of the wake", puts)
+	}
+	if now := clock.Now(); !now.Equal(booted) {
+		t.Fatalf("the clock reads %s, want %s: the release must be written without the mirror's minute passing", now, booted)
+	}
+
+	// A wake resumes the claim, and its registration says so before any read of the standing.
+	st.setReleased("ses-1", "LEGION-7", false)
+	m.Put(testerRow(t, "ses-1", 1))
+	puts = putsReach(listener, 4)
+	if len(puts) != 4 || puts[3].SessionID != "ses-1" || puts[3].Released {
+		t.Fatalf("the resumed claim's registration wrote %+v, want ses-1 without released at once", puts)
+	}
+	if now := clock.Now(); !now.Equal(booted) {
+		t.Fatalf("the clock reads %s, want %s: a registration is written without the mirror's minute passing", now, booted)
+	}
+}
+
+// A nudge is answered by the read it finds in progress when that read has not yet reached the
+// released claims, so a burst of nudges, one from each role stop of a release, costs the
+// listener's registry one read and one write of each changed entry rather than one per nudge.
+func TestNudgesBeforeARunningReadReachesTheReleasedClaimsCostNoReadOfTheirOwn(t *testing.T) {
+	listener, server := newStandIn(t)
+	st := &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-0", 0), testerRow(t, "ses-1", 1)}}
+	m, clock := runMirror(t, server, st, &logs{})
+	clock.wait(t)
+	if reads := st.releasedReadCount(); reads != 1 {
+		t.Fatalf("the boot read the released claims %d times, want once", reads)
+	}
+
+	// The first role stop suspends ses-1's claim and says so; the read it asks for begins.
+	held := st.hold("FinishedIssues")
+	st.setReleased("ses-1", "LEGION-7", true)
+	m.StandingsChanged()
+	proceed := begun(t, held, "the read the nudge asked for")
+	// Before it reaches the released claims, the second role stop suspends ses-0's claim and says
+	// so, more than once.
+	st.setReleased("ses-0", "LEGION-7", true)
+	for range 3 {
+		m.StandingsChanged()
+	}
+	close(proceed)
+	// The read's own pass, and the one the later nudges woke.
+	clock.wait(t)
+	clock.wait(t)
+
+	if reads := st.releasedReadCount(); reads != 2 {
+		t.Fatalf("the released claims were read %d times, want twice: the boot's, and the one read every nudge here is answered by", reads)
+	}
+	_, puts, _ := listener.snapshot()
+	if len(puts) != 2 || puts[0].SessionID != "ses-0" || !puts[0].Released || puts[1].SessionID != "ses-1" || !puts[1].Released {
+		t.Fatalf("the read wrote %+v, want ses-0 and ses-1 each released once", puts)
+	}
+}
+
+// begun waits for a held read to begin, and returns the channel whose close lets it go on.
+func begun(t *testing.T, held <-chan chan struct{}, what string) chan struct{} {
+	t.Helper()
+	select {
+	case proceed := <-held:
+		return proceed
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never began", what)
+		return nil
+	}
+}
+
+// A registration is its claim running, so it wins over a read of the released claims taken
+// before it. Here a wake resumes a released claim while a standings read is under way: the read
+// found the session released and has still to queue its issue's entries when the resumed process
+// registers the session again. The session's entry is written without `released`, though the
+// read's entry for it is queued after the registration's.
+func TestARegistrationWinsOverAReleasedReadTakenBeforeIt(t *testing.T) {
+	listener, server := newStandIn(t)
+	st := &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-0", 0), testerRow(t, "ses-1", 1)}}
+	m, clock := runMirror(t, server, st, &logs{})
+	clock.wait(t)
+
+	// The release suspends ses-1's claim and says so; the read finds it released and is held in
+	// reading the conversations of its issue.
+	held := st.hold("IssueConversations")
+	st.setReleased("ses-1", "LEGION-7", true)
+	m.StandingsChanged()
+	proceed := begun(t, held, "the read of the released claim's issue")
+	// A wake resumes the claim meanwhile, and its process registers the session again.
+	st.setReleased("ses-1", "LEGION-7", false)
+	m.Put(testerRow(t, "ses-1", 1))
+	close(proceed)
+	clock.wait(t)
+
+	_, puts, _ := listener.snapshot()
+	var last *Entry
+	for i := range puts {
+		if puts[i].SessionID == "ses-1" {
+			last = &puts[i]
+		}
+	}
+	if last == nil || last.Released {
+		t.Fatalf("the mirror wrote %+v, want ses-1's last entry without released: its claim registered after the read found it released, so it runs, and a message for it must not wait on a wake", puts)
 	}
 }

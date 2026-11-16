@@ -1082,7 +1082,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // lanes reserve from was built before either of them (run). The outbox's merge-queue read reads
 // GitHub through this runtime's own read of a pull request and waits this runtime's wait between
 // failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
-// outbox (outboxWake).
+// outbox (outboxWake). Its idle release tells the agent registry's mirror the plan carries of each
+// claim it suspends (standingsChanged).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -1094,6 +1095,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		return pull, err
 	}
 	w.outbox.mergeStateWait = w.mergeStateWait
+	w.outbox.standingsChanged = supervision.plan.standingsChanged
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)

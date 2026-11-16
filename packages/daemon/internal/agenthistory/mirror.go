@@ -36,7 +36,8 @@ const (
 	// standingsEvery is how often the standing of the history's issues and the project's released
 	// claims are read again (Store.FinishedIssues, Store.ReleasedSessions), so an issue that
 	// closed, was parked or whose tree was retired - and one a person moved back into the workflow
-	// - and a claim released or resumed reach the registry within the minute.
+	// - and a claim resumed reach the registry within the minute. A claim the daemon's idle
+	// release suspends reaches it at once: the release says so (Mirror.StandingsChanged).
 	standingsEvery = time.Minute
 	// notFoundRetry is how soon a route an older listener answers 404 is tried again.
 	notFoundRetry = time.Minute
@@ -151,11 +152,12 @@ type MirrorConfig struct {
 // minute, and, with a Store, the history: once Run starts, every recorded conversation of the
 // project in batches (each at most 256 entries and 1 MiB), then one PUT for each registration Put
 // hands it, in the order handed. It reads the standing of the history's issues and the project's
-// released claims each minute too (refresh), and writes an issue's conversations again when
-// either changes, so each entry's `finished` and `released` follow the record in both directions.
-// Nothing it does blocks the boot or a registration. A route an older listener answers 404 is
-// logged once and tried again each minute; any other failure is tried again on a backoff. A write
-// the listener refuses (400 or 409: an entry it will never take) is logged and dropped; a refused
+// released claims each minute too (refresh), and at once when the daemon says a release suspended
+// a claim (StandingsChanged), and writes an issue's conversations again when either changes, so
+// each entry's `finished` and `released` follow the record in both directions. Nothing it does
+// blocks the boot, a registration or a release. A route an older listener answers 404 is logged
+// once and tried again each minute; any other failure is tried again on a backoff. A write the
+// listener refuses (400 or 409: an entry it will never take) is logged and dropped; a refused
 // batch is sent again an entry at a time, so one bad entry costs only itself.
 type Mirror struct {
 	cfg  MirrorConfig
@@ -170,6 +172,14 @@ type Mirror struct {
 	// name is not finished and a session it does not name is not released, so a mirror that has
 	// read no standing yet writes the keep every entry had before these fields.
 	read standingRead
+	// nudged is whether StandingsChanged asked for a standings read that no read has answered yet
+	// (refresh clears it just before it reads the released claims).
+	nudged bool
+	// registrations counts the registrations Put has queued, and registeredAt is that count at
+	// each session's latest one. A standings read notes the count just before it reads the
+	// released claims, and writes a session registered after that without `released` (queueRead).
+	registrations uint64
+	registeredAt  map[string]uint64
 
 	// The rest is Run's own.
 	booted    bool
@@ -193,14 +203,15 @@ func NewMirror(cfg MirrorConfig) *Mirror {
 		cfg.Client = &http.Client{Timeout: requestTimeout}
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
-	return &Mirror{cfg: cfg, wake: make(chan struct{}, 1), read: standingRead{finished: map[string]bool{}, released: map[string]string{}}, logged404: map[string]bool{}}
+	return &Mirror{cfg: cfg, wake: make(chan struct{}, 1), read: standingRead{finished: map[string]bool{}, released: map[string]string{}},
+		registeredAt: map[string]uint64{}, logged404: map[string]bool{}}
 }
 
 // Put queues the registration row for one PUT of its session, never waiting on the listener. A
 // registration is made while its issue runs, so the entry carries the standing the last refresh
 // read of that issue, which is unfinished for every issue no refresh has named. It is never
 // released: a registration is its claim's process running, whatever the last refresh read of
-// the claim before it resumed.
+// the claim before it resumed, and whatever a refresh under way read of it (queueRead).
 func (m *Mirror) Put(row store.AgentConversation) {
 	finished, _ := m.standing().of(row)
 	entry, why := entryOf(row, finished, false)
@@ -208,23 +219,65 @@ func (m *Mirror) Put(row store.AgentConversation) {
 		m.cfg.Log.Warn("legion daemon does not write the conversation to the agent registry: "+why, "session", row.Session, "claim", row.Token)
 		return
 	}
-	m.queue(entry)
+	m.mu.Lock()
+	m.registrations++
+	m.registeredAt[entry.SessionID] = m.registrations
+	m.hold(entry)
+	m.mu.Unlock()
+	m.wakeRun()
 }
 
-// queue holds entry for one PUT of its session, replacing a queued write of the same session in
-// place, and wakes Run.
-func (m *Mirror) queue(entry Entry) {
+// queueRead holds the entries a standings read made for one PUT each, and wakes Run. since is the
+// registration count the read noted before it read the released claims: a session registered
+// after that is its claim running again, which the read could not know, so its entry is written
+// without `released`. The check and the hold are one step under m.mu, as Put's count and hold
+// are, so whichever of a registration and the read is queued last, the session's entry ends
+// without the flag.
+func (m *Mirror) queueRead(entries []Entry, since uint64) {
 	m.mu.Lock()
-	replaced := false
-	for i := range m.puts {
-		if m.puts[i].SessionID == entry.SessionID {
-			m.puts[i], replaced = entry, true
+	for _, entry := range entries {
+		if entry.Released && m.registeredAt[entry.SessionID] > since {
+			entry.Released = false
 		}
-	}
-	if !replaced {
-		m.puts = append(m.puts, entry)
+		m.hold(entry)
 	}
 	m.mu.Unlock()
+	m.wakeRun()
+}
+
+// hold holds entry for one PUT of its session, replacing a queued write of the same session in
+// place. The caller holds m.mu.
+func (m *Mirror) hold(entry Entry) {
+	for i := range m.puts {
+		if m.puts[i].SessionID == entry.SessionID {
+			m.puts[i] = entry
+			return
+		}
+	}
+	m.puts = append(m.puts, entry)
+}
+
+// StandingsChanged tells the mirror that the standing it reads has changed: the daemon's idle
+// release has suspended a claim and recorded it (store.ReleasedSessions names its session now).
+// Run reads the standings at once rather than at its next minute, with the same refresh, so the
+// released claims stay the one source of each entry's `released` and the writes go out on the
+// Put lane; until they do, the listener hands a message for that session to the answer loop
+// rather than leaving it to the wake. It never waits on Run or the listener. A nudge while a read
+// is due, or while one runs and has not yet read the released claims, costs no read of its own;
+// a lane on a failure's backoff is still not read before its time, and its retry reads the claim
+// all the same. A mirror without a Store reads no standing, so a nudge does nothing there.
+func (m *Mirror) StandingsChanged() {
+	if m.cfg.Store == nil {
+		return
+	}
+	m.mu.Lock()
+	m.nudged = true
+	m.mu.Unlock()
+	m.wakeRun()
+}
+
+// wakeRun ends Run's wait, or has its next wait end at once, without waiting for it.
+func (m *Mirror) wakeRun() {
 	select {
 	case m.wake <- struct{}{}:
 	default:
@@ -240,18 +293,18 @@ func (m *Mirror) standing() standingRead {
 }
 
 // Run writes until ctx ends: the heartbeat at once and then each minute, the standing of the
-// history's issues at once and then each minute, the recorded history in batches, and every Put
-// as it comes, each kind on its own schedule (lane), so a route an older listener lacks never
-// holds up one it has. The standing is read before the boot's own write, so the first batch
-// already carries each entry's `finished` and `released`. Without a Store it writes the heartbeat
-// alone.
+// history's issues at once, then each minute and whenever StandingsChanged asks, the recorded
+// history in batches, and every Put as it comes, each kind on its own schedule (lane), so a route
+// an older listener lacks never holds up one it has. The standing is read before the boot's own
+// write, so the first batch already carries each entry's `finished` and `released`. Without a
+// Store it writes the heartbeat alone.
 func (m *Mirror) Run(ctx context.Context) {
 	for {
 		now := m.cfg.Clock.Now()
 		if !now.Before(m.heartbeat.next) {
 			m.beat(ctx, now)
 		}
-		if m.cfg.Store != nil && !now.Before(m.standings.next) {
+		if m.cfg.Store != nil && (!now.Before(m.standings.next) || m.standingsAsked()) {
 			m.refresh(ctx, now)
 		}
 		if !now.Before(m.writes.next) && m.pendingWrites() {
@@ -267,8 +320,8 @@ func (m *Mirror) Run(ctx context.Context) {
 		if m.pendingWrites() && m.writes.next.Before(next) {
 			next = m.writes.next
 		}
-		// A registration wakes the loop at once; a lane on a failure's schedule is still not tried
-		// before its time.
+		// A registration and a nudge wake the loop at once; a lane on a failure's schedule is
+		// still not tried before its time.
 		select {
 		case <-ctx.Done():
 			return
@@ -276,6 +329,18 @@ func (m *Mirror) Run(ctx context.Context) {
 		case <-m.wake:
 		}
 	}
+}
+
+// standingsAsked is whether StandingsChanged asked for a standings read no read has answered, and
+// the lane may read now: one on a failure's backoff waits for its retry, which reads what the
+// nudge asked for.
+func (m *Mirror) standingsAsked() bool {
+	if m.standings.failures > 0 {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.nudged
 }
 
 func (m *Mirror) pendingWrites() bool {
@@ -303,10 +368,11 @@ func (m *Mirror) beat(ctx context.Context, now time.Time) {
 // and queues one PUT of each conversation of each issue whose standing changed or one of whose
 // sessions turned released or stopped being so, so a role's entries say `finished` from the
 // minute its issue leaves the workflow - a close, a park, a tree retired - and say it no longer
-// once a person moves that issue back in, and a session's entry says `released` from the minute
-// the daemon releases its idle issue pod and no longer once a wake resumes it. The queued writes
-// go out on the Put lane, which is the one write path and the one 409 handling: a session the
-// listener holds bound to another issue is refused and dropped there as any other write of it is.
+// once a person moves that issue back in, and a session's entry says `released` from the moment
+// the daemon's idle release suspends its claim (StandingsChanged) and no longer once a wake
+// resumes it. The queued writes go out on the Put lane, which is the one write path and the one
+// 409 handling: a session the listener holds bound to another issue is refused and dropped there
+// as any other write of it is.
 //
 // Nothing is queued before the boot's write, which writes every entry anyway with the standing
 // this read just recorded. An issue whose conversations could not be read keeps its last recorded
@@ -321,6 +387,14 @@ func (m *Mirror) refresh(ctx context.Context, now time.Time) {
 		m.standings.schedule(now, failed, standingsEvery)
 		return
 	}
+	// A nudge is answered from here: one that came before this point told of a suspension the
+	// store had already committed, which the read below sees, and one that comes after it may
+	// tell of one this read misses, so it asks for a read of its own. A registration from here on
+	// may be a resume this read misses too, so the count noted here lets it win (queueRead).
+	m.mu.Lock()
+	m.nudged = false
+	since := m.registrations
+	m.mu.Unlock()
 	released, err := m.cfg.Store.ReleasedSessions(ctx, m.cfg.Project)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -370,9 +444,7 @@ func (m *Mirror) refresh(ctx context.Context, now time.Time) {
 				result = failed
 				continue
 			}
-			for _, entry := range m.entriesOf(rows, standingRead{finished: finished, released: released}) {
-				m.queue(entry)
-			}
+			m.queueRead(m.entriesOf(rows, standingRead{finished: finished, released: released}), since)
 		}
 	}
 	m.mu.Lock()
