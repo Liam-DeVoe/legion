@@ -3,7 +3,6 @@
 package core_test
 
 import (
-	"context"
 	"regexp"
 	"strconv"
 	"testing"
@@ -34,30 +33,6 @@ func renderedTimeout(t *testing.T, text string) int {
 	seconds, err := strconv.Atoi(match[1])
 	require.NoError(t, err)
 	return seconds
-}
-
-func (r *calloutRig) restartWithAuthServiceDelay(t *testing.T, ctr hubContainer, config string, delay time.Duration) string {
-	t.Helper()
-	ctx := context.Background()
-	stop := 10 * time.Second
-	require.NoError(t, ctr.Stop(ctx, &stop))
-	require.NoError(t, ctr.CopyToContainer(ctx, []byte(config), "/etc/nats/nats-server.conf", 0o644))
-	require.NoError(t, ctr.Start(ctx))
-	uri, err := ctr.ConnectionString(ctx)
-	require.NoError(t, err)
-	var conn *natsgo.Conn
-	require.Eventually(t, func() bool {
-		conn, err = testnats.ConnectSeed(t, uri, r.serviceSeed)
-		return err == nil
-	}, 30*time.Second, 100*time.Millisecond, "the auth service's user could not connect to the restarted hub")
-	t.Cleanup(conn.Close)
-	_, err = conn.Subscribe("$SYS.REQ.USER.AUTH", func(m *natsgo.Msg) {
-		time.Sleep(delay)
-		r.answer(t, m)
-	})
-	require.NoError(t, err)
-	require.NoError(t, conn.Flush())
-	return uri
 }
 
 // TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient (found in the acceptance of
@@ -91,7 +66,7 @@ func TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctr, _ := rig.startHub(t)
-			uri := rig.restartWithAuthServiceDelay(t, ctr, text, row.delay)
+			uri := rig.restart(t, ctr, text, row.delay)
 			before := rig.requests.Load()
 			start := time.Now()
 			conn, err := testnats.ConnectSeed(t, uri, "", natsgo.Token(sessionToken), natsgo.Timeout(time.Duration(timeout+5)*time.Second))
