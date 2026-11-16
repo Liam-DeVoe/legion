@@ -45,9 +45,12 @@ export interface BrokerNatsCredential {
    * `sig` the proof of its key over that nonce, base64url-encoded, as the auth service reads a
    * signature. One snapshot of the token per CONNECT, so the proof always names the token sent
    * beside it. It presents nothing — and the server refuses the connection — where it holds no
-   * live token or the server sent no nonce, and then starts a trade, so the next reconnect
-   * presents a live token where the broker answers one. It never throws: nats.js closes a
-   * connection for good when its authenticator throws.
+   * live token, and then starts a trade, so the next reconnect presents a live token where the
+   * broker answers one; that case never throws, since nats.js closes a connection for good when
+   * its authenticator throws. A server that sent no nonce is the one case that does throw
+   * ({@link NO_AUTH_SERVICE}): nats-server sends one to every client where an auth service runs,
+   * so such a hub has nothing that checks a broker token, and a CONNECT with no credential would
+   * be admitted there while the session believed it presented its own.
    */
   authenticator(nonce?: string): Auth;
   /** When the token in hand lapses; the epoch before any is taken. */
@@ -59,6 +62,11 @@ export interface BrokerNatsCredential {
    *  should reconnect to present it. */
   needsReconnect(): boolean;
 }
+
+/** Why a CONNECT presenting the broker token fails at a hub that sent no nonce: it runs no auth
+ *  service (a hub that does sends every client one), and the remedy. */
+export const NO_AUTH_SERVICE =
+  "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub";
 
 /**
  * The broker token of `env`'s machine, or of a person signed in on it, for the session `session`
@@ -90,11 +98,12 @@ export function brokerNatsCredential(
     ready: () => (live() ? Promise.resolve() : renew()),
     renew,
     authenticator(nonce?: string): Auth {
+      if (nonce === undefined || nonce === "") throw new Error(NO_AUTH_SERVICE);
       const snapshot = held;
-      if (snapshot === undefined || !live() || nonce === undefined || nonce === "") {
+      if (snapshot === undefined || !live()) {
         // Nothing live to present: the server refuses this CONNECT, and the trade started here
         // lands a token for the next one. Its failure is the keeper's to report.
-        if (!live()) renew().catch(() => {});
+        renew().catch(() => {});
         return undefined;
       }
       const accessToken = snapshot.token.accessToken;

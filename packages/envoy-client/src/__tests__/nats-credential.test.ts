@@ -282,8 +282,13 @@ describe("the broker token's authenticator", () => {
     const again = credential.authenticator("nonce-2") as { auth_token: string; sig: string };
     expect(again.auth_token).toBe(auth.auth_token);
     expect(verifiedProof(again.sig).claims.nonce).toBe("nonce-2");
-    // A CONNECT with no nonce cannot carry a proof, so it carries no credential.
-    expect(credential.authenticator(undefined)).toBeUndefined();
+    // A server that sends no nonce runs no auth service, so nothing there admits a broker token:
+    // the CONNECT fails naming that, rather than going out with no credential.
+    for (const nonce of [undefined, ""]) {
+      expect(() => credential.authenticator(nonce)).toThrow(
+        "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub"
+      );
+    }
     // When the token in hand lapses: the answer's expires_in, read when it arrived.
     const lapses = credential.expiresAt().getTime();
     expect(Math.abs(lapses - (minted?.expiresAt ?? 0))).toBeLessThan(2_000);
@@ -535,6 +540,54 @@ describe.skipIf(!envoyStackEnabled)(
       } finally {
         await connection?.close().catch(() => {});
         await hub.stop();
+      }
+    }, 120_000);
+
+    test("NATS_AUTH=broker against a hub with no auth service fails naming it", async () => {
+      // natsd with no callout and no users admits any client and sends no nonce, so a broker
+      // token has nothing to be checked by: the dial fails, naming that and the remedy, rather
+      // than connecting with no credential while the session believes it presents its token.
+      const broker = stubBroker(600);
+      const work = path.join(stackDirectory, "no-auth");
+      mkdirSync(work, { recursive: true });
+      const [natsPort, monitorPort] = await freePorts(2);
+      const natsLog = path.join(work, "natsd.log");
+      const natsOut = openSync(natsLog, "a");
+      const { PATH = "" } = process.env;
+      const natsd = Bun.spawn(
+        [
+          path.join(stackDirectory, "bin", "natsd"),
+          ...["-p", String(natsPort), "-m", String(monitorPort)],
+          ...["-store_dir", path.join(work, "nats-store")],
+        ],
+        { env: { PATH, HOME: work }, stdout: natsOut, stderr: natsOut }
+      );
+      closeSync(natsOut);
+      try {
+        await awaitReady(
+          "natsd",
+          natsd,
+          natsLog,
+          { timeoutMs: 60_000, tailLines: 10 },
+          async () => {
+            const answer = await fetch(`http://127.0.0.1:${monitorPort}/healthz`);
+            return answer.ok;
+          }
+        );
+        const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_no_auth");
+        await credential.ready();
+        const dialled = connect(
+          natsConnectionOptions({
+            servers: [`nats://127.0.0.1:${natsPort}`],
+            name: "nats-credential-no-auth",
+            credential: { kind: "broker", broker: credential },
+          })
+        );
+        await expect(dialled).rejects.toThrow(
+          "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub"
+        );
+      } finally {
+        await stopProcess(natsd, "SIGTERM");
       }
     }, 120_000);
   }
