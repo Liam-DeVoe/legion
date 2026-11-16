@@ -12,8 +12,9 @@
 //
 // Answers are cached CacheTTL per project and person and per person, aged from before each
 // question was sent, which bounds how long a person removed from a project's access list goes on
-// passing a check here; Visible asks again for an answer that aged past it while a list was
-// checked, a question asked under Fresh skips the cache, and a slower answer never replaces one to
+// passing a check here; Visible and States ask again for an answer that aged past it while a list
+// was read, a caller holding answers across further reads ages them again where it decides
+// (Stale), a question asked under Fresh skips the cache, and a slower answer never replaces one to
 // a question asked later. A failure to reach Dispatch is never cached and is never an answer: each
 // caller decides what an outage means for its own check.
 package projectaccess
@@ -110,6 +111,20 @@ func (e *NotVisibleError) Error() string { return ErrNotVisible.Error() + ": " +
 // Unwrap is ErrNotVisible.
 func (e *NotVisibleError) Unwrap() error { return ErrNotVisible }
 
+// ProjectNotFoundError is Access's answer for a project Dispatch does not hold: it is
+// ErrProjectNotFound (errors.Is), and it carries when the question it answers was asked, so a
+// caller whose decision rests on a project's absence ages that answer as it ages any other
+// (Stale). A source that keeps no clock answers a zero AskedAt, or ErrProjectNotFound alone.
+type ProjectNotFoundError struct {
+	Project string
+	AskedAt time.Time
+}
+
+func (e *ProjectNotFoundError) Error() string { return ErrProjectNotFound.Error() + ": " + e.Project }
+
+// Unwrap is ErrProjectNotFound.
+func (e *ProjectNotFoundError) Unwrap() error { return ErrProjectNotFound }
+
 // Answer is Dispatch's answer for one project and one person.
 type Answer struct {
 	// Project is the project's key.
@@ -139,8 +154,11 @@ type Answer struct {
 	SlackChannelsPresent bool `json:"-"`
 	// AskedAt is when the question this answers was asked, read before it was sent, so an
 	// answer's age is never less than it truly is. *Client always sets it; a zero AskedAt is an
-	// answer from a source that keeps no clock, which Visible takes as fresh.
+	// answer from a source that keeps no clock, which Stale takes as fresh.
 	AskedAt time.Time `json:"-"`
+	// Missing is States' entry for a project Dispatch does not hold: Project and AskedAt are set
+	// beside it, and nothing else. Access never answers one; it answers a *ProjectNotFoundError.
+	Missing bool `json:"-"`
 }
 
 // Private reports whether the project is private.
@@ -153,9 +171,10 @@ type Access interface {
 	Access(ctx context.Context, project, person string) (Answer, error)
 	// MemberKind is the person's member kind.
 	MemberKind(ctx context.Context, person string) (string, error)
-	// States answers one fact per key, for the caller that must resolve every answer before it
-	// opens a transaction: present for a project Dispatch holds, absent for one it does not. It
-	// is one call per key against the cache, not a batch route.
+	// States answers one Answer per key, for the caller that must resolve every answer before it
+	// opens a transaction: Missing for a project Dispatch does not hold. Each answer was asked
+	// less than CacheTTL before it returns. It is one call per key against the cache, not a batch
+	// route.
 	States(ctx context.Context, projects []string) (map[string]Answer, error)
 }
 
@@ -230,7 +249,7 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	key := accessKey{project: project, person: record.CanonicalLogin(person)}
 	if cached, ok := c.cachedAnswer(key); ok && !fresh(ctx) {
 		if cached.projectNotFound {
-			return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
+			return Answer{}, &ProjectNotFoundError{Project: project, AskedAt: cached.at}
 		}
 		return cached.answer, nil
 	}
@@ -253,7 +272,7 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 		return Answer{}, err
 	case status == http.StatusNotFound:
 		c.keepAnswer(key, cachedAnswer{projectNotFound: true, at: asked})
-		return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
+		return Answer{}, &ProjectNotFoundError{Project: project, AskedAt: asked}
 	}
 	answer := wire.Answer
 	if wire.SlackChannels != nil {
@@ -305,19 +324,39 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	return answer.MemberKind, nil
 }
 
-// States answers each of projects Dispatch holds, as it is to a question naming no person, and
-// leaves out each it does not. Any other failure is the whole answer's.
+// States answers each of projects as it is to a question naming no person, and Missing for each
+// Dispatch does not hold. Any other failure is the whole answer's.
+//
+// The projects are asked one at a time, so, as in Visible, an answer that was young when the call
+// began can be older than CacheTTL by its end: a project read first and turned private while the
+// rest were read would otherwise be answered public past the bound. States asks again for each
+// such answer, going over the list at most maxRecheckPasses times, so every answer it returns was
+// asked less than CacheTTL before it returns, and a list whose answers still age out faster than
+// Dispatch answers them is a failure, never an aged answer.
 func (c *Client) States(ctx context.Context, projects []string) (map[string]Answer, error) {
 	states := make(map[string]Answer, len(projects))
-	for _, project := range projects {
-		answer, err := c.Access(ctx, project, "")
-		if errors.Is(err, ErrProjectNotFound) {
-			continue
+	pending := projects
+	for pass := 0; len(pending) > 0; pass++ {
+		if pass == maxRecheckPasses {
+			return nil, fmt.Errorf("projectaccess: the states of %d projects aged past %s while they were read", len(projects), CacheTTL)
 		}
-		if err != nil {
-			return nil, err
+		for _, project := range pending {
+			answer, err := c.Access(ctx, project, "")
+			var missing *ProjectNotFoundError
+			switch {
+			case errors.As(err, &missing):
+				answer = Answer{Project: project, Missing: true, AskedAt: missing.AskedAt}
+			case err != nil:
+				return nil, err
+			}
+			states[project] = answer
 		}
-		states[project] = answer
+		pending = nil
+		for _, project := range projects {
+			if Stale(c, states[project].AskedAt) {
+				pending = append(pending, project)
+			}
+		}
 	}
 	return states, nil
 }
@@ -438,52 +477,85 @@ func refusalCode(body io.Reader) string {
 // Visible answers nil when person may see every one of projects, else a *NotVisibleError (which
 // is ErrNotVisible) naming the first it may not see. A project Dispatch does not hold is the same
 // refusal, so the text never says whether a project exists. Any other failure is returned as it
-// is, and is no refusal.
+// is, and is no refusal. It is VisibleAsOf without the time.
+func Visible(ctx context.Context, a Access, person string, projects []string) error {
+	_, err := VisibleAsOf(ctx, a, person, projects)
+	return err
+}
+
+// VisibleAsOf is Visible, answering beside a nil error when the oldest answer it passed was
+// asked: zero for an empty list and for a source that keeps no clock. A caller that reads more
+// before it decides ages its decision from it (Stale).
 //
 // The projects are asked one at a time, so an answer that was young when the check began can be
-// older than CacheTTL by its end. Visible asks again for each such answer before it returns, so
-// every answer it passes was asked less than CacheTTL before it returns: the bound the exchange's
-// mint rests on. It goes over the list at most maxRecheckPasses times, and a list whose answers
-// still age out faster than Dispatch answers them is a failure, not a pass.
-func Visible(ctx context.Context, a Access, person string, projects []string) error {
+// older than CacheTTL by its end. VisibleAsOf asks again for each such answer before it returns,
+// so every answer it passes was asked less than CacheTTL before it returns: the bound the
+// exchange's mint rests on. It goes over the list at most maxRecheckPasses times, and a list whose
+// answers still age out faster than Dispatch answers them is a failure, not a pass.
+func VisibleAsOf(ctx context.Context, a Access, person string, projects []string) (time.Time, error) {
 	asked := make(map[string]time.Time, len(projects))
 	pending := projects
 	for pass := 0; len(pending) > 0; pass++ {
 		if pass == maxRecheckPasses {
-			return fmt.Errorf("projectaccess: the answers for %s aged past %s while %d projects were checked", person, CacheTTL, len(projects))
+			return time.Time{}, fmt.Errorf("projectaccess: the answers for %s aged past %s while %d projects were checked", person, CacheTTL, len(projects))
 		}
 		for _, project := range pending {
 			answer, err := a.Access(ctx, project, person)
 			if errors.Is(err, ErrProjectNotFound) {
-				return &NotVisibleError{Project: project}
+				return time.Time{}, &NotVisibleError{Project: project}
 			}
 			if err != nil {
-				return err
+				return time.Time{}, err
 			}
 			if !answer.Visible {
-				return &NotVisibleError{Project: project}
+				return time.Time{}, &NotVisibleError{Project: project}
 			}
 			asked[project] = answer.AskedAt
 		}
 		pending = nil
-		now := time.Now()
-		if clocked, ok := a.(interface{ clock() time.Time }); ok {
-			now = clocked.clock()
-		}
 		for _, project := range projects {
-			if at := asked[project]; !at.IsZero() && now.Sub(at) >= CacheTTL {
+			if Stale(a, asked[project]) {
 				pending = append(pending, project)
 			}
 		}
 	}
-	return nil
+	var oldest time.Time
+	for _, at := range asked {
+		oldest = Oldest(oldest, at)
+	}
+	return oldest, nil
 }
 
-// maxRecheckPasses bounds how many times Visible goes over a list for answers that aged out
-// while it was checked.
+// maxRecheckPasses bounds how many times Visible and States go over a list for answers that aged
+// out while it was read.
 const maxRecheckPasses = 3
 
-// clock is the time c reads, for Visible to age c's answers by the same clock that stamped them.
+// Stale reports whether an answer to a question asked at asked is too old for a decision to rest
+// on: asked CacheTTL or longer ago, by a's own clock where a is a *Client and by the wall clock
+// otherwise. A zero asked is an answer from a source that keeps no clock, and is never stale. It
+// is the one statement of an answer's age, for Visible, States and every caller that holds
+// answers across further reads before it decides on them.
+func Stale(a Access, asked time.Time) bool {
+	if asked.IsZero() {
+		return false
+	}
+	now := time.Now()
+	if clocked, ok := a.(interface{ clock() time.Time }); ok {
+		now = clocked.clock()
+	}
+	return now.Sub(asked) >= CacheTTL
+}
+
+// Oldest is the earlier of two ask times, a zero one standing for none: the age of a decision
+// resting on both answers.
+func Oldest(a, b time.Time) time.Time {
+	if a.IsZero() || (!b.IsZero() && b.Before(a)) {
+		return b
+	}
+	return a
+}
+
+// clock is the time c reads, for Stale to age c's answers by the same clock that stamped them.
 func (c *Client) clock() time.Time { return c.now() }
 
 // ListAllowed is the one statement of the rule for a person's list, used by the exchange and by

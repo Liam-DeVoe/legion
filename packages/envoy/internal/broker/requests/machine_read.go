@@ -75,8 +75,10 @@ type grantRelease struct {
 	granted                         []requestedSecret
 	set                             *policy.Set
 	// facts are what Dispatch answered for this release, kept so the airlock's own reads
-	// (channelLimit) ask it nothing a second time.
+	// (channelLimit) ask it nothing a second time; enr is the enrollment they were read for, so
+	// channelLimit can read them again once they aged past the bound.
 	facts projectFacts
+	enr   enrollmentRow
 }
 
 // checkRelease is every check a release of a grant makes before it reads a value, shared by
@@ -148,15 +150,17 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	}
 	var facts projectFacts
 	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyProjectTagged(set, granted) || anyChannelLimited(set, names) {
-		resolved, err := m.projectFacts(ctx, enr, names, set)
+		// The session's own rows are read before Dispatch is asked, so that nothing stands between
+		// Dispatch's answers and the rule that decides on them: projectFacts answers facts younger
+		// than projectaccess.CacheTTL as it returns (atDecision), and they are decided on then.
+		own, err := m.requester(ctx, m.Store.Pool, enr, projectFacts{})
 		if err != nil {
 			return grantRelease{}, err
 		}
-		facts = resolved
-		requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
-		if err != nil {
+		if facts, err = m.projectFacts(ctx, enr, names, set); err != nil {
 			return grantRelease{}, err
 		}
+		requester := facts.requester(own)
 		for _, g := range granted {
 			if err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
 				// A grant whose frozen source is not the one the name is served from now (its kind
@@ -191,7 +195,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 			}
 		}
 	}
-	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set, facts: facts}, nil
+	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set, facts: facts, enr: enr}, nil
 }
 
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
@@ -692,6 +696,12 @@ func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (p
 		return policy.Decision{}, false, false, err
 	}
 	set := m.Policy.Get()
+	// The session's own rows first, so nothing stands between Dispatch's answers and the
+	// evaluation that decides on them (projectFacts, atDecision).
+	own, err := m.requester(ctx, m.Store.Pool, enr, projectFacts{})
+	if err != nil {
+		return policy.Decision{}, false, false, err
+	}
 	// What Dispatch holds of a tagged name is read under the judge's bound on Dispatch, whatever
 	// ctx the caller passed (JudgeDispatch): this is the judge's first read of Dispatch, and it
 	// shares the judge's Dispatch phase when the judge asks.
@@ -701,10 +711,7 @@ func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (p
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
-	requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
-	if err != nil {
-		return policy.Decision{}, false, false, err
-	}
+	requester := facts.requester(own)
 	decision, err := set.Evaluate(name, requester)
 	if err != nil {
 		return policy.Decision{}, false, false, err
@@ -1089,16 +1096,18 @@ type PendingSummary struct {
 // free to change with the planner's own cost estimates, and not this test's concern).
 //
 // A session's move re-points its requests row and not the append-only record, so enr is the
-// enrollment that asked. It is read for its session id and for the projects its credential names
-// (credentialColumns, namedProjects), and an adoption moves a session's rows only to another
-// enrollment of the same session id (the carry pair enroll.Create matches on), so that id is the
-// one the enrollment holding the request names too. Which records are pending comes from the
-// requests rows, which move, so a moved card is listed once and the box it moved off lists it no
-// more.
-const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, cr.expires_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''), ` + credentialColumns + `
+// enrollment that asked and cur the one the request hangs off now. enr is read for its session id,
+// and both for the projects their credentials name (credentialColumns, currentCredentialColumns,
+// credentialsProjects): an adoption moves a session's rows only to another enrollment of the same
+// session id (the carry pair enroll.Create matches on), so that id is the one the enrollment
+// holding the request names too, but the projects the two credentials name can differ. Which
+// records are pending comes from the requests rows, which move, so a moved card is listed once and
+// the box it moved off lists it no more.
+const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, cr.expires_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''), ` + credentialColumns + `, ` + currentCredentialColumns + `
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
+	left join enrollments cur on cur.id = req.enrollment_id
 	where (
 		cr.approver in ($1, $2) and cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending')
 		or cr.approver in ($1, $2) and cr.kind='launcher_credential' and not exists (
@@ -1109,6 +1118,11 @@ const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, 
 // enr, in the order a scan into enrollmentRow's Kind, Operator, Subject and Projects takes them. A
 // record no enrollment asked answers an empty kind, which names no project.
 const credentialColumns = `coalesce(enr.kind, ''), enr.operator, enr.subject, coalesce(enr.projects, '{}')`
+
+// currentCredentialColumns are credentialColumns over a left join aliased cur: the enrollment a
+// request hangs off now, where enr is the one that asked. A record with no request (a machine
+// login) answers an empty kind, which names no project.
+const currentCredentialColumns = `coalesce(cur.kind, ''), cur.operator, cur.subject, coalesce(cur.projects, '{}')`
 
 // PendingForApprover lists every still-pending credential-request record — of either kind — that
 // approver may decide, newest first: GET /v1/pending's exact contract. That is every record naming
@@ -1151,8 +1165,10 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]Pe
 	for rows.Next() {
 		var id, kind, canonical, requestSession, enrollmentSession string
 		var createdAt, expiresAt time.Time
-		var asked enrollmentRow
-		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects); err != nil {
+		var asked, current enrollmentRow
+		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &expiresAt, &requestSession, &enrollmentSession,
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
 			return nil, err
 		}
 		identifiers, reason, err := m.requestedIdentifiers(canonical, createdAt)
@@ -1164,7 +1180,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]Pe
 			RecordID: id, Kind: kind, Identifiers: identifiers, RequestedAt: createdAt,
 			Session: Session{Request: requestSession, Enrollment: enrollmentSession},
 		})
-		reads = append(reads, seen{sessionProjects: m.namedProjects(asked), reason: reason})
+		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1296,12 +1312,16 @@ type RecordDetail struct {
 	RequestedAt     time.Time
 	Decided         *RecordDecision
 	Session         Session
-	// SessionProjects are the Dispatch projects the enrollment that asked named, and
-	// SecretProjects the project of each requested secret the live policy tags with one; both
-	// empty for a record touching no project. MaySee reads them, and the approval page shows
-	// them.
+	// SessionProjects are the Dispatch projects the credentials the request has had name: the
+	// enrollment that asked, which the record names, and the one the request hangs off now, which
+	// an adoption rewrites (credentialsProjects). SecretProjects is the project of each requested
+	// secret the live policy tags with one. Both are empty for a record touching no project.
+	// MaySee reads them, and the approval page shows them.
 	SessionProjects []string
 	SecretProjects  []SecretProject
+	// secretProjectsAsked is when the oldest answer of Dispatch's SecretProjects rest on was
+	// asked, which MaySee holds to the bound on a fact's age with its own reads (atDecision).
+	secretProjectsAsked time.Time
 }
 
 // ReadRecord reads a credential-request record's full detail by id, for the broker's approval page
@@ -1310,14 +1330,17 @@ type RecordDetail struct {
 func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail, error) {
 	var canonical, approver, kind, requestSession, enrollmentSession string
 	var createdAt, expiresAt time.Time
-	var asked enrollmentRow
+	var asked, current enrollmentRow
 	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, cr.expires_at,
-			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), `+credentialColumns+`
+			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), `+credentialColumns+`, `+currentCredentialColumns+`
 		from credential_requests cr
 		left join requests req on req.record_id = cr.id
 		left join enrollments enr on enr.id = cr.enrollment_id
+		left join enrollments cur on cur.id = req.enrollment_id
 		where cr.id=$1`, recordID).
-		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects); err != nil {
+		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession,
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
 		return RecordDetail{}, err
 	}
 	body, err := record.ParseBody(canonical)
@@ -1346,10 +1369,10 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		RecordID: recordID, Kind: kind, State: "pending", Approver: approver, Enrollment: enr,
 		Identifiers: identifiers, Service: service, Reason: obj.Reason, LifetimeSeconds: body.LifetimeSeconds,
 		RulesVersion: body.RulesVersion, ExpiresAt: expiresAt, RequestedAt: createdAt,
-		Session: Session{Request: requestSession, Enrollment: enrollmentSession}, SessionProjects: m.namedProjects(asked),
+		Session: Session{Request: requestSession, Enrollment: enrollmentSession}, SessionProjects: m.credentialsProjects(asked, current),
 	}
 	if agentSecret {
-		if detail.SecretProjects, err = m.SecretProjects(ctx, identifiers); err != nil {
+		if detail.SecretProjects, detail.secretProjectsAsked, err = m.secretProjects(ctx, identifiers); err != nil {
 			return RecordDetail{}, err
 		}
 	}
@@ -1441,7 +1464,9 @@ type ApproverGrant struct {
 //
 // The enrollment each grant is listed under is joined on the grants row's own enrollment_id, so a
 // grant that followed its session to another box is listed once, naming the box the session runs
-// on now.
+// on now. Whether its person may see it reads the projects of both credentials its request has
+// had, that one and the enrollment that asked (credentialsProjects), as every reader of whose
+// request this is does.
 func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]ApproverGrant, error) {
 	login := record.CanonicalLogin(approver)
 	if login == "" || login == record.AnyoneApprover {
@@ -1449,11 +1474,13 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), coalesce(r.decided_by,''), g.expires_at, g.created_at,
 		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
-		coalesce(e.projects, '{}'), e.subject, r.reason
+		coalesce(e.projects, '{}'), e.subject, r.reason, `+credentialColumns+`
 		from grants g
 		join requests r on r.id=g.request_id
 		join enrollments e on e.id=g.enrollment_id
 		join launcher_credentials c on c.id=e.launcher_credential_id
+		left join credential_requests cr on cr.id=r.record_id
+		left join enrollments enr on enr.id=cr.enrollment_id
 		where g.revoked_at is null and `+grantUnexpired("g")+`
 		and (g.approver=$1 or e.operator=$1 or g.approver=$2
 			or (g.approver is null and e.operator is null and c.service is not null))
@@ -1471,15 +1498,17 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	for rows.Next() {
 		var g ApproverGrant
 		var s seen
-		var asked enrollmentRow
-		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names, &asked.Projects, &asked.Subject, &s.reason); err != nil {
+		var current, asked enrollmentRow
+		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names,
+			&current.Projects, &current.Subject, &s.reason,
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects); err != nil {
 			return nil, err
 		}
-		asked.Kind = g.Enrollment.Kind
+		current.Kind = g.Enrollment.Kind
 		if g.Enrollment.Operator != "" {
-			asked.Operator = &g.Enrollment.Operator
+			current.Operator = &g.Enrollment.Operator
 		}
-		s.sessionProjects = m.namedProjects(asked)
+		s.sessionProjects = m.credentialsProjects(asked, current)
 		g.Granted = policy.Approval
 		if g.RecordID == nil {
 			g.Granted = policy.Automatic

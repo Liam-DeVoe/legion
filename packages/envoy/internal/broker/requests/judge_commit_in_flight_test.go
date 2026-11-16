@@ -18,7 +18,7 @@ import (
 // "unknown", never false. testHoldCommit holds the approval with every row written.
 func TestLogJudgedWaitsForAnApprovalStillCommitting(t *testing.T) {
 	const reason = "INFRA-12: rotate the deploy key"
-	failureRow := map[string]any{"verdict": "approve", "applied": false, "not_applied": "unexpected EOF"}
+	failureRow := map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": "the decision's COMMIT failed: unexpected EOF"}
 	type logged struct {
 		wrote JudgedWrite
 		err   error
@@ -29,7 +29,7 @@ func TestLogJudgedWaitsForAnApprovalStillCommitting(t *testing.T) {
 		t.Helper()
 		held, releases, done := make(chan struct{}), make(chan error), make(chan error, 1)
 		var once sync.Once
-		m.testHoldCommit = func() error {
+		m.testHoldCommit = func(uint32) error {
 			once.Do(func() { close(held) })
 			return <-releases
 		}

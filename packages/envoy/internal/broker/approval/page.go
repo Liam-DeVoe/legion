@@ -72,7 +72,9 @@ type recordView struct {
 	// project, whether that project is private (or one Dispatch does not hold), and whether the
 	// requesting session names it. Empty for a record touching no project, which prints as before.
 	Projects []projectRow
-	// SessionProjects are the projects the requesting session named when it enrolled.
+	// SessionProjects are the projects the session names: those of the credential that asked and
+	// of the one the request hangs off now, which differ after the session moves to another box
+	// (requests.RecordDetail.SessionProjects).
 	SessionProjects []string
 	// Unanswered, when not empty, is the one sentence the page prints for a record Dispatch could
 	// not say whether the person may see (requests.ErrProjectAccessUnavailable): the page then
@@ -193,7 +195,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		Records:         []recordView{main},
 		MachineLoginURL: p.cfg.MachineLoginURL,
 	}
-	if view.Outcomes, err = p.outcomes(r.Context(), r.URL.Query().Get("decided"), sess.Login, now, detail, unanswered); err != nil {
+	if view.Outcomes, err = p.outcomes(r.Context(), r.URL.Query().Get("decided"), r.URL.Query().Get("refused"), sess.Login, now, detail, unanswered); err != nil {
 		writeUnavailable(w, "read the decided requests", err)
 		return
 	}
@@ -367,8 +369,18 @@ func approverText(approver string) string {
 // decision's own page always names, so it is not read again; readUnanswered says Dispatch could
 // not say whether login may see it. A record Dispatch could not answer for gets the line that it
 // is unavailable, naming its id and nothing it holds (unansweredOutcome), and the other lines
-// print as ever.
-func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Time, read requests.RecordDetail, readUnanswered bool) ([]string, error) {
+// print as ever. refused is the comma-separated id:code pairs ServeDecide wrote for the records it
+// could not decide (refusalCodes); a record still pending names the reason its code picks, and a
+// pair whose code is not one of them is ignored, so the address picks among the broker's own
+// sentences and writes none of its own.
+func (p *Page) outcomes(ctx context.Context, decided, refused, login string, now time.Time, read requests.RecordDetail, readUnanswered bool) ([]string, error) {
+	codes := make(map[string]string)
+	for pair := range strings.SplitSeq(refused, ",") {
+		id, code, ok := strings.Cut(pair, ":")
+		if _, known := refusalSentences[code]; ok && known && record.ValidID(id) {
+			codes[id] = code
+		}
+	}
 	var lines []string
 	var seen []string
 	for id := range strings.SplitSeq(decided, ",") {
@@ -402,19 +414,20 @@ func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Tim
 				return nil, err
 			}
 		}
-		lines = append(lines, outcome(d, login, now))
+		lines = append(lines, outcome(d, login, now, codes[id]))
 	}
 	return lines, nil
 }
 
-// outcome says what became of a record a decision named, from its state now.
+// outcome says what became of a record a decision named, from its state now. refusal is the code
+// of why this page's decision of it was refused (refusalSentences), empty when it was not.
 //
 // "already decided: " opens the line whenever somebody other than the reader decided the record,
 // the model judge and the current policy included: the reader clicked Approve and got the
 // broker's refusal, and what they must read first is that the record was already decided and by
 // whom. A record nobody decided — one that expired, or that its requesting session withdrew —
 // has no decider to compare, and its own line says what became of it.
-func outcome(d requests.RecordDetail, login string, now time.Time) string {
+func outcome(d requests.RecordDetail, login string, now time.Time, refusal string) string {
 	what := strings.Join(d.Identifiers, ", ") + ": "
 	switch {
 	case d.Kind != record.KindAgentSecret:
@@ -423,6 +436,8 @@ func outcome(d requests.RecordDetail, login string, now time.Time) string {
 		return what + "not yours to decide; only " + approverText(d.Approver) + " may."
 	case d.Decided == nil && !d.ExpiresAt.After(now):
 		return what + "expired before anyone decided it."
+	case d.Decided == nil && refusalSentences[refusal] != "":
+		return what + refusalSentences[refusal]
 	case d.Decided == nil:
 		return what + "still pending; it was not decided."
 	}
@@ -560,9 +575,13 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		}
 	}
 	decided := false
+	var refused []string
 	for _, id := range decide {
-		outcome, made := p.decide(r.Context(), id, approve, sess.Login)
+		outcome, code, made := p.decide(r.Context(), id, approve, sess.Login)
 		decided = decided || made
+		if code != "" {
+			refused = append(refused, id+":"+code)
+		}
 		slog.Info("approval page decision", "login", sess.Login, "record", id, "decision", form.Get("decision"),
 			"outcome", outcome)
 	}
@@ -573,44 +592,79 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	if decided {
 		p.recordDecision(r.Context())
 	}
-	redirect(w, http.StatusSeeOther, "/approve/"+decide[0]+"?decided="+strings.Join(decide, ","))
+	to := "/approve/" + decide[0] + "?decided=" + strings.Join(decide, ",")
+	if len(refused) > 0 {
+		to += "&refused=" + strings.Join(refused, ",")
+	}
+	redirect(w, http.StatusSeeOther, to)
 }
 
-// decide decides one record as login and answers what became of it, for the log, and whether this
-// POST decided it: an approval or a denial the broker applied now, which is what the sign-in
-// status's last decision counts. A record already decided, expired, gone, or one login may not
-// decide, is decided by nobody here. A machine login is never decided here, whatever a form says:
-// its typed code is decided on Dispatch's page. An approval the broker recorded as a denial
-// answers with that decision's own detail, so the person who pressed approve reads which secret
-// refused it and why rather than one fixed sentence. A record Dispatch could not say whether login
-// may see (requests.ErrProjectAccessUnavailable) is decided by nobody, and the POST's other
-// records are decided as ever: the page it lands on says that one is unavailable.
-func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (string, bool) {
+// refusalSentences is what the page says of a record its decision could not decide, by the code
+// decide answered for it: a fixed set, so the address that carries the code to the page it lands
+// on picks among these sentences and writes none of its own. A record the decision left pending
+// reads one of them in place of "still pending; it was not decided.". Two refusals need no code: a
+// record a private project refused the person is hidden from them on the page they land on, as an
+// id no record has (hideUnseen), and one Dispatch could not answer for prints its own line
+// (unansweredOutcome).
+var refusalSentences = map[string]string{
+	refusedPolicy: "still pending; it was not decided: the current policy no longer lets you approve it.",
+	refusedChain:  "still pending; it was not decided: its approval chain no longer verifies.",
+	refusedError:  "still pending; it was not decided: the secrets broker could not decide it. Try again shortly.",
+}
+
+// The codes refusalSentences maps, which decide answers.
+const (
+	refusedPolicy = "policy"
+	refusedChain  = "chain"
+	refusedError  = "error"
+)
+
+// decide decides one record as login and answers what became of it, for the log, the code of why
+// the broker refused to decide it (refusalSentences), empty when it did not refuse or when the
+// page it lands on says why already, and whether this POST decided it: an approval or a denial the
+// broker applied now, which is what the sign-in status's last decision counts. A record already
+// decided, expired, gone, or one login may not decide, is decided by nobody here. A machine login
+// is never decided here, whatever a form says: its typed code is decided on Dispatch's page. An
+// approval the broker recorded as a denial answers with that decision's own detail, so the person
+// who pressed approve reads which secret refused it and why rather than one fixed sentence. A
+// record Dispatch could not say whether login may see (requests.ErrProjectAccessUnavailable) is
+// decided by nobody, and the POST's other records are decided as ever: the page it lands on says
+// that one is unavailable. A refusal record.ErrNotApprover carries for a record whose approver
+// line names someone else is said by the page it lands on in its own words ("not yours to
+// decide"), and carries no code; one for a record login may still see and decide is the current
+// policy's — its owner, a max-grant or a withheld name moved since the page was printed — since a
+// private project's refusal hides the record.
+func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (outcome, refusal string, made bool) {
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "no such record", false
+		return "no such record", "", false
 	case err != nil:
 		slog.Error("approval page: read the record's kind", "record", id, "error", err)
-		return "error", false
+		return "error", refusedError, false
 	case kind != record.KindAgentSecret:
-		return "not decided: a machine login", false
+		return "not decided: a machine login", "", false
 	}
 	decision, err := p.cfg.Machine.ApplyDecision(ctx, id, approve, login)
 	switch {
 	case err == nil && decision.State == "denied" && approve && decision.Detail != "":
-		return "denied: " + decision.Detail, true
+		return "denied: " + decision.Detail, "", true
 	case err == nil:
-		return decision.State, true
+		return decision.State, "", true
 	case errors.Is(err, requests.ErrExpired):
-		return "expired", false
+		return "expired", "", false
 	case errors.Is(err, requests.ErrTerminal):
-		return "already decided", false
-	case errors.Is(err, record.ErrNotApprover), errors.Is(err, requests.ErrGrantChainInvalid):
-		return "refused: " + err.Error(), false
+		return "already decided", "", false
+	case errors.Is(err, requests.ErrGrantChainInvalid):
+		return "refused: " + err.Error(), refusedChain, false
+	case errors.Is(err, record.ErrNotApprover):
+		if d, read := p.cfg.Machine.ReadRecord(ctx, id); read == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login) {
+			return "refused: " + err.Error(), "", false
+		}
+		return "refused: " + err.Error(), refusedPolicy, false
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
-		return "unavailable: " + err.Error(), false
+		return "unavailable: " + err.Error(), "", false
 	}
 	slog.Error("approval page: decide the record", "record", id, "error", err)
-	return "error", false
+	return "error", refusedError, false
 }

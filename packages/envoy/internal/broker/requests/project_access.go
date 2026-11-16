@@ -60,12 +60,41 @@ type projectFacts struct {
 	named []string
 	// person is who the credential acts for, for the channel limit's own reads.
 	person string
+	// asked is when the oldest answer of Dispatch's these facts rest on was asked, and zero for
+	// facts that asked Dispatch nothing: the age a decision made on them is checked by
+	// (atDecision).
+	asked time.Time
 }
 
 // requester is r with these facts, the form policy.Set.Evaluate reads them in.
 func (f projectFacts) requester(r policy.Requester) policy.Requester {
 	r.Projects, r.ProjectStates, r.Named = f.projects, f.states, f.named
 	return r
+}
+
+// atDecision is the one rule for how old a project fact a decision rests on may be: younger than
+// projectaccess.CacheTTL when the decision is made, the bound on how long a project turned private,
+// or a person taken off its list, goes on passing a check here. collect reads Dispatch and answers
+// what the decision rests on, the decision itself included, and when the oldest answer under it
+// was asked; collect returning is the moment of the decision, so the age is measured then and
+// never at a read's start. Each answer is young when it is read, from the cache or from Dispatch,
+// but the reads are one at a time and each may take up to 10 s, so an early answer can age past
+// the bound while the later ones are read. Such a decision is collected once more under
+// projectaccess.Fresh, which asks Dispatch every question again, with again set, so a collect that
+// decides on facts its caller read before it reads those again too; one whose answers aged past
+// the bound a second time is ErrProjectAccessUnavailable: it fails closed, and nothing is decided
+// on an aged fact. An error collect answers is answered as it is.
+func atDecision[T any](ctx context.Context, a projectaccess.Access, collect func(ctx context.Context, again bool) (T, time.Time, error)) (T, error) {
+	got, asked, err := collect(ctx, false)
+	if err != nil || !projectaccess.Stale(a, asked) {
+		return got, err
+	}
+	got, asked, err = collect(projectaccess.Fresh(ctx), true)
+	if err != nil || !projectaccess.Stale(a, asked) {
+		return got, err
+	}
+	var none T
+	return none, fmt.Errorf("%w: the answers a decision rests on aged past %s before it was made, and again when asked afresh", ErrProjectAccessUnavailable, projectaccess.CacheTTL)
 }
 
 // anyChannelLimited reports whether any of names carries a project-channels tag, the one tag
@@ -119,14 +148,33 @@ func (m *Machine) credentialProjects(e enrollmentRow) (person string, projects [
 
 // projectFacts resolves, on the pool and before any transaction, what Evaluate needs of Dispatch
 // for e asking for names under set: one state per distinct project tag among names
-// (projectaccess.Access.States: present, private or public; absent, missing), and the projects
+// (projectaccess.Access.States: present, private or public; Missing, missing), and the projects
 // the credential names that its person may still see, of those tags alone, since Evaluate reads
 // the credential's list for a tagged private secret and for nothing else. Where a requested name
 // carries a project-channels tag, the states of the credential's own named projects are resolved
 // too, because that rule reads them whatever project the secret belongs to
 // (policy.Requester.ListsPrivate). A request holding neither tag asks Dispatch nothing at all. A
 // failure to ask is ErrProjectAccessUnavailable.
+//
+// Every answer the facts rest on is younger than projectaccess.CacheTTL when projectFacts returns
+// (atDecision), and the caller decides on them then: a release (checkRelease) reads the
+// requester's own rows first and evaluates the names with nothing between, as JudgePolicy and the
+// airlock's connection check (airlockProjectRule) do. A request (Create) and a decision
+// (applyDecisionAttempt) evaluate the names again inside their transaction, where Dispatch is
+// never asked; they release no value, and every grant of a name these facts are read for is
+// checked again on facts of its own at each release (checkRelease's anyProjectTagged and
+// anyChannelLimited).
 func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []string, set *policy.Set) (projectFacts, error) {
+	return atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (projectFacts, time.Time, error) {
+		facts, err := m.collectProjectFacts(ctx, e, names, set)
+		return facts, facts.asked, err
+	})
+}
+
+// collectProjectFacts is projectFacts without the bound on its answers' age, for a caller that
+// reads Dispatch further before it decides and so checks the age of everything it read at once
+// (atDecision): the approval's decision, the judge's project check and the listings.
+func (m *Machine) collectProjectFacts(ctx context.Context, e enrollmentRow, names []string, set *policy.Set) (projectFacts, error) {
 	tagged := taggedProjects(set, names)
 	person, named := m.credentialProjects(e)
 	limited := anyChannelLimited(set, names)
@@ -161,8 +209,9 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 	}
 	for _, project := range asking {
 		answer, held := answers[project]
+		facts.asked = projectaccess.Oldest(facts.asked, answer.AskedAt)
 		switch {
-		case !held:
+		case !held || answer.Missing:
 			facts.states[project] = policy.ProjectMissing
 		case answer.Private():
 			facts.states[project] = policy.ProjectPrivate
@@ -174,10 +223,13 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 		if facts.states[project] != policy.ProjectPrivate {
 			continue
 		}
-		err := projectaccess.Visible(ctx, m.Projects, person, []string{project})
+		// A project the person may not see is left out of the facts, which refuses whatever its
+		// answer's age; one they may see is kept, aged from its own question.
+		asked, err := projectaccess.VisibleAsOf(ctx, m.Projects, person, []string{project})
 		switch {
 		case err == nil:
 			facts.projects = append(facts.projects, project)
+			facts.asked = projectaccess.Oldest(facts.asked, asked)
 		case !errors.Is(err, projectaccess.ErrNotVisible):
 			return projectFacts{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
 		}
@@ -231,31 +283,67 @@ func (l *logThrottle) due(key string) bool {
 // are never unlimited. A grant holding no project-channels name, or a credential naming no
 // private project, is unlimited and asks Dispatch nothing here; the answers it reads otherwise
 // are the ones projectFacts already put in the client's cache.
+//
+// It decides on the release's own facts, which the values' reads since checkRelease have aged,
+// and on its own reads of the channels, so the decision is held to atDecision's bound like any
+// other: facts that aged past it are read again, afresh, and decided on as read, and a limit whose
+// answers aged past it again is the limit to no channel.
 func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) ([]string, bool) {
 	names := make([]string, len(checked.granted))
 	for i, g := range checked.granted {
 		names[i] = g.name
 	}
-	if !anyChannelLimited(checked.set, names) || !checked.facts.requester(policy.Requester{}).ListsPrivate() {
+	if !anyChannelLimited(checked.set, names) {
 		return nil, false
 	}
-	none := []string{}
+	limit, err := atDecision(ctx, m.Projects, func(ctx context.Context, again bool) (channelGrant, time.Time, error) {
+		facts := checked.facts
+		if again {
+			var err error
+			if facts, err = m.collectProjectFacts(ctx, checked.enr, names, checked.set); err != nil {
+				return channelGrant{}, time.Time{}, err
+			}
+		}
+		limit, asked := m.channelsOf(ctx, facts)
+		return limit, projectaccess.Oldest(facts.asked, asked), nil
+	})
+	if err != nil {
+		return []string{}, true
+	}
+	return limit.channels, limit.limited
+}
+
+// channelGrant is what channelLimit answers: the channels, and whether they limit at all.
+type channelGrant struct {
+	channels []string
+	limited  bool
+}
+
+// channelsOf is channelLimit's decision on facts, and when the oldest answer it read itself was
+// asked: zero when it read none.
+func (m *Machine) channelsOf(ctx context.Context, facts projectFacts) (channelGrant, time.Time) {
+	none := channelGrant{channels: []string{}, limited: true}
+	if !facts.requester(policy.Requester{}).ListsPrivate() {
+		return channelGrant{}, time.Time{}
+	}
 	var allowed []string
+	var asked time.Time
 	first := true
-	for _, project := range checked.facts.named {
-		if checked.facts.states[project] != policy.ProjectPrivate {
+	for _, project := range facts.named {
+		if facts.states[project] != policy.ProjectPrivate {
 			continue
 		}
-		if !slices.Contains(checked.facts.projects, project) {
-			return none, true
+		if !slices.Contains(facts.projects, project) {
+			return none, asked
 		}
-		answer, err := m.Projects.Access(ctx, project, checked.facts.person)
+		answer, err := m.Projects.Access(ctx, project, facts.person)
 		if err != nil {
-			return none, true
+			return none, asked
 		}
+		asked = projectaccess.Oldest(asked, answer.AskedAt)
 		if !answer.SlackChannelsPresent {
 			m.logChannelsMissing(project)
-			return none, true
+			return none, asked
 		}
 		listed := slices.Compact(slices.Sorted(slices.Values(answer.SlackChannels)))
 		if first {
@@ -265,9 +353,9 @@ func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) ([]str
 		allowed = slices.DeleteFunc(allowed, func(channel string) bool { return !slices.Contains(listed, channel) })
 	}
 	if allowed == nil {
-		return none, true
+		return none, asked
 	}
-	return allowed, true
+	return channelGrant{channels: allowed, limited: true}, asked
 }
 
 // logChannelsMissing writes ChannelsMissingMessage for project once per projectaccess.CacheTTL.
@@ -326,18 +414,20 @@ type SecretProject struct {
 	Private       bool
 }
 
-// SecretProjects answers the project of each of names the live policy tags with one, in names'
-// order; a name of no project is left out, and a set of names none of which is tagged asks
-// Dispatch nothing.
-func (m *Machine) SecretProjects(ctx context.Context, names []string) ([]SecretProject, error) {
+// secretProjects answers the project of each of names the live policy tags with one, in names'
+// order, and when the oldest answer of Dispatch's the list rests on was asked; a name of no
+// project is left out, and a set of names none of which is tagged asks Dispatch nothing. It
+// decides nothing itself: a reader that decides on the list (MaySee, maySeeRecord) holds the
+// list's age and its own reads' to atDecision's bound together.
+func (m *Machine) secretProjects(ctx context.Context, names []string) ([]SecretProject, time.Time, error) {
 	set := m.Policy.Get()
 	tagged := taggedProjects(set, names)
 	if len(tagged) == 0 {
-		return nil, nil
+		return nil, time.Time{}, nil
 	}
-	facts, err := m.projectFacts(ctx, enrollmentRow{}, names, set)
+	facts, err := m.collectProjectFacts(ctx, enrollmentRow{}, names, set)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	var out []SecretProject
 	for _, name := range names {
@@ -345,7 +435,7 @@ func (m *Machine) SecretProjects(ctx context.Context, names []string) ([]SecretP
 			out = append(out, SecretProject{Name: name, Project: project, Private: facts.states[project] != policy.ProjectPublic})
 		}
 	}
-	return out, nil
+	return out, facts.asked, nil
 }
 
 // JudgeProject answers whether the model judge must leave the request of enrollmentID for name,
@@ -371,19 +461,25 @@ func (m *Machine) SecretProjects(ctx context.Context, names []string) ([]SecretP
 func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name, reason string) (bool, error) {
 	ctx, cancel := JudgeDispatch(ctx)
 	defer cancel()
-	facts, err := m.projectFacts(ctx, enrollmentRow{}, []string{name}, m.Policy.Get())
+	set := m.Policy.Get()
+	// The secret's projects, the enrollment and the person rule's reads are one decision, held to
+	// atDecision's bound together: a state read first ages while the rest are read.
+	may, err := atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (bool, time.Time, error) {
+		facts, err := m.collectProjectFacts(ctx, enrollmentRow{}, []string{name}, set)
+		if err != nil || m.Projects == nil {
+			return true, time.Time{}, err
+		}
+		enr, err := m.enrollment(ctx, enrollmentID)
+		if err != nil {
+			return false, time.Time{}, err
+		}
+		may, asked, err := m.judgeMayDecide(ctx, "enrollment "+enrollmentID, facts.states, m.namedProjects(enr), reason)
+		return may, projectaccess.Oldest(facts.asked, asked), err
+	})
 	if err != nil {
 		return false, err
 	}
-	if m.Projects == nil {
-		return false, nil
-	}
-	enr, err := m.enrollment(ctx, enrollmentID)
-	if err != nil {
-		return false, err
-	}
-	may, err := m.judgeMayDecide(ctx, "enrollment "+enrollmentID, facts.states, m.namedProjects(enr), reason)
-	return !may, err
+	return !may, nil
 }
 
 // MaySee reports whether login may see rec: every private project among its tagged secrets
@@ -395,8 +491,22 @@ func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name, reason s
 // broker with no project-access client hides nothing, since it serves no tagged secret and
 // enrolls no session naming a project. An error is ErrProjectAccessUnavailable: whether login may
 // see rec is unknown, and a caller shows rec to nobody until Dispatch answers.
+//
+// rec.SecretProjects were read when rec was (ReadRecord), and age while the person rule's own
+// questions are asked, so the two are held to atDecision's bound together: a list that aged past
+// it is read again, afresh, with the person rule's questions.
 func (m *Machine) MaySee(ctx context.Context, login string, rec RecordDetail) (bool, error) {
-	return m.maySee(ctx, "record "+rec.RecordID, login, append(privateProjects(rec.SecretProjects), rec.SessionProjects...), rec.Reason)
+	return atDecision(ctx, m.Projects, func(ctx context.Context, again bool) (bool, time.Time, error) {
+		secrets, asked := rec.SecretProjects, rec.secretProjectsAsked
+		if again && rec.Kind == record.KindAgentSecret {
+			var err error
+			if secrets, asked, err = m.secretProjects(ctx, rec.Identifiers); err != nil {
+				return false, time.Time{}, err
+			}
+		}
+		may, seen, err := m.maySee(ctx, "record "+rec.RecordID, login, append(privateProjects(secrets), rec.SessionProjects...), rec.Reason)
+		return may, projectaccess.Oldest(asked, seen), err
+	})
 }
 
 // privateProjects is the project of each of secrets that belongs to a private project.
@@ -456,6 +566,11 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 // too, and Dispatch answers it as no project, which hides nothing. It sorts a list of its own: the
 // caller's may be an enrollment's or an operator entry's, which nothing here owns.
 //
+// It answers beside a true when the oldest answer of Dispatch's it rests on was asked: every
+// project shown, and every key Dispatch answered no project for. A false rests on one answer that
+// hides the record, whatever its age, and is answered with no time. It decides nothing alone:
+// each caller holds its age to atDecision's bound with the facts it read before it.
+//
 // A reason naming the issue keys of more than record.MaxReasonProjects projects is one stored
 // before Create refused such a reason (record.CheckReasonProjects). Its keys are not read: they
 // count as naming no project, which is how every reader saw the record when it was written, and a
@@ -463,9 +578,9 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 // judge's own check, "enrollment <id>"). The record's other projects are still asked, since its
 // secrets' tags come of the live policy, and a secret it names may have been tagged with a
 // private project since it was stored.
-func (m *Machine) maySee(ctx context.Context, row, login string, projects []string, reason string) (bool, error) {
+func (m *Machine) maySee(ctx context.Context, row, login string, projects []string, reason string) (bool, time.Time, error) {
 	if m.Projects == nil {
-		return true, nil
+		return true, time.Time{}, nil
 	}
 	reasonProjects := record.ReasonProjects(reason)
 	if len(reasonProjects) > record.MaxReasonProjects {
@@ -474,18 +589,23 @@ func (m *Machine) maySee(ctx context.Context, row, login string, projects []stri
 	}
 	asking := slices.Concat(projects, reasonProjects)
 	slices.Sort(asking)
+	var asked time.Time
 	for _, project := range slices.Compact(asking) {
 		answer, err := m.Projects.Access(ctx, project, record.CanonicalLogin(login))
+		var missing *projectaccess.ProjectNotFoundError
 		switch {
+		case errors.As(err, &missing):
+			asked = projectaccess.Oldest(asked, missing.AskedAt)
 		case errors.Is(err, projectaccess.ErrProjectNotFound):
-			continue
 		case err != nil:
-			return false, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
+			return false, time.Time{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
 		case !answer.Visible:
-			return false, nil
+			return false, time.Time{}, nil
+		default:
+			asked = projectaccess.Oldest(asked, answer.AskedAt)
 		}
 	}
-	return true, nil
+	return true, asked, nil
 }
 
 // judgeMayDecide is the model judge's project rule, the one its run checks before the model
@@ -494,11 +614,11 @@ func (m *Machine) maySee(ctx context.Context, row, login string, projects []stri
 // and named the projects its credential names; the request is the judge's only when each tagged
 // project is public and the person rule shows it to a reader naming no person, which Dispatch
 // answers by visibility alone. The judge's own token names no person, so it may see no private
-// project.
-func (m *Machine) judgeMayDecide(ctx context.Context, row string, states map[string]policy.ProjectState, named []string, reason string) (bool, error) {
+// project. It answers maySee's time beside its answer, and no time for a state that refers it.
+func (m *Machine) judgeMayDecide(ctx context.Context, row string, states map[string]policy.ProjectState, named []string, reason string) (bool, time.Time, error) {
 	for _, state := range states {
 		if state != policy.ProjectPublic {
-			return false, nil
+			return false, time.Time{}, nil
 		}
 	}
 	return m.maySee(ctx, row, "", named, reason)
@@ -516,10 +636,26 @@ func (m *Machine) namedProjects(e enrollmentRow) []string {
 	return named
 }
 
+// credentialsProjects is the projects the credentials a request has had name: asked, the
+// enrollment that asked, which the append-only record names, and current, the one the request
+// hangs off now, which an adoption rewrites. Every reader of whose request this is reads both —
+// the pending list, the record's page, the grant list and the decision (readDecision's asked) — so
+// a person either would hide the request from neither sees nor decides it. Each project appears
+// once, in the order asked then current name them.
+func (m *Machine) credentialsProjects(asked, current enrollmentRow) []string {
+	var projects []string
+	for _, p := range slices.Concat(m.namedProjects(asked), m.namedProjects(current)) {
+		if !slices.Contains(projects, p) {
+			projects = append(projects, p)
+		}
+	}
+	return projects
+}
+
 // mayDecide is the approve path's MaySee, read before its transaction: the record's tagged
 // secrets under set, the projects the credential that asked names (namedProjects), and its
-// reason.
-func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projectFacts, sessionProjects []string, reason string) (bool, error) {
+// reason. It answers maySee's time beside its answer.
+func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projectFacts, sessionProjects []string, reason string) (bool, time.Time, error) {
 	var projects []string
 	for project, state := range facts.states {
 		if state == policy.ProjectPrivate {
@@ -543,33 +679,42 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // judge every read is under JudgeDispatch, so a slow Dispatch leaves the run the time its row
 // needs, and asked of Dispatch afresh (projectaccess.Fresh): the run's own check filled the cache
 // well inside projectaccess.CacheTTL, and an answer read back from it could not show a change made
-// since. A refusal is record.ErrNotApprover.
+// since. The facts and the rule's own reads are one decision, held to atDecision's bound together.
+// A refusal is record.ErrNotApprover.
 func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decider, pre decisionRead, set *policy.Set) (projectFacts, error) {
 	if who.isJudge() {
 		bounded, cancel := JudgeDispatch(ctx)
 		defer cancel()
 		ctx = projectaccess.Fresh(bounded)
 	}
-	facts, err := m.projectFacts(ctx, pre.enr, pre.names, set)
-	if err != nil {
-		return projectFacts{}, err
+	type decided struct {
+		facts projectFacts
+		may   bool
 	}
-	named := slices.Concat(m.namedProjects(pre.enr), pre.asked)
-	var may bool
-	if who.isJudge() {
-		tagged := make(map[string]policy.ProjectState)
-		for _, project := range taggedProjects(set, pre.names) {
-			tagged[project] = facts.states[project]
+	got, err := atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (decided, time.Time, error) {
+		facts, err := m.collectProjectFacts(ctx, pre.enr, pre.names, set)
+		if err != nil {
+			return decided{}, time.Time{}, err
 		}
-		may, err = m.judgeMayDecide(ctx, "record "+recordID, tagged, named, pre.reason)
-	} else {
-		may, err = m.mayDecide(ctx, "record "+recordID, who.login, facts, named, pre.reason)
-	}
+		named := slices.Concat(m.namedProjects(pre.enr), pre.asked)
+		var may bool
+		var asked time.Time
+		if who.isJudge() {
+			tagged := make(map[string]policy.ProjectState)
+			for _, project := range taggedProjects(set, pre.names) {
+				tagged[project] = facts.states[project]
+			}
+			may, asked, err = m.judgeMayDecide(ctx, "record "+recordID, tagged, named, pre.reason)
+		} else {
+			may, asked, err = m.mayDecide(ctx, "record "+recordID, who.login, facts, named, pre.reason)
+		}
+		return decided{facts: facts, may: may}, projectaccess.Oldest(facts.asked, asked), err
+	})
 	switch {
 	case err != nil:
 		return projectFacts{}, err
-	case may:
-		return facts, nil
+	case got.may:
+		return got.facts, nil
 	case who.isJudge():
 		return projectFacts{}, fmt.Errorf("%w: the request now belongs to a private project, which the model judge leaves to a person", record.ErrNotApprover)
 	}
@@ -577,13 +722,17 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 }
 
 // maySeeRecord is MaySee for a listing's row: names under the live policy, the projects of the
-// enrollment that asked, and the reason. A row touching no project asks Dispatch nothing.
+// enrollment that asked, and the reason. A row touching no project asks Dispatch nothing. The
+// names' projects and the person rule's reads are one decision, held to atDecision's bound.
 func (m *Machine) maySeeRecord(ctx context.Context, row, login string, names, sessionProjects []string, reason string) (bool, error) {
-	secrets, err := m.SecretProjects(ctx, names)
-	if err != nil {
-		return false, err
-	}
-	return m.maySee(ctx, row, login, append(privateProjects(secrets), sessionProjects...), reason)
+	return atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (bool, time.Time, error) {
+		secrets, asked, err := m.secretProjects(ctx, names)
+		if err != nil {
+			return false, time.Time{}, err
+		}
+		may, seen, err := m.maySee(ctx, row, login, append(privateProjects(secrets), sessionProjects...), reason)
+		return may, projectaccess.Oldest(asked, seen), err
+	})
 }
 
 // decisionRead is what the approve path reads of a record on the pool before its transaction: the

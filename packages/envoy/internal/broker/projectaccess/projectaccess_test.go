@@ -307,19 +307,20 @@ func TestListAllowedRefusesAnEmptyListOnlyForARestrictedMember(t *testing.T) {
 	}
 }
 
-// TestStatesAnswersOneEntryPerProjectItHolds: States answers each project Dispatch holds, as it
-// is to a caller naming no person, and leaves out the one it does not.
-func TestStatesAnswersOneEntryPerProjectItHolds(t *testing.T) {
+// TestStatesAnswersOneEntryPerProject: States answers each project Dispatch holds, as it is to a
+// caller naming no person, and Missing for the one it does not, asked at a time of its own so a
+// caller can age it as it ages any other answer.
+func TestStatesAnswersOneEntryPerProject(t *testing.T) {
 	client := clientOf(standIn(t))
 	states, err := client.States(t.Context(), []string{"PRIV", "PUB", "NOPE"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(states) != 2 || !states["PRIV"].Private() || states["PUB"].Private() || states["PUB"].Visible != true {
-		t.Fatalf("States(PRIV PUB NOPE) = %+v, want PRIV private and PUB public, and no entry for NOPE", states)
+	if len(states) != 3 || !states["PRIV"].Private() || states["PUB"].Private() || states["PUB"].Visible != true || states["PRIV"].Missing || states["PUB"].Missing {
+		t.Fatalf("States(PRIV PUB NOPE) = %+v, want PRIV private and PUB public, both held, and an entry for NOPE", states)
 	}
-	if _, held := states["NOPE"]; held {
-		t.Fatalf("States answered an entry for NOPE, which Dispatch does not hold: %+v", states["NOPE"])
+	if nope := states["NOPE"]; !nope.Missing || nope.Project != "NOPE" || nope.AskedAt.IsZero() || nope.Visible || nope.Private() {
+		t.Fatalf("States answered %+v for NOPE, which Dispatch does not hold; want Missing, named NOPE, with the time it was asked and nothing else", nope)
 	}
 	down := standIn(t)
 	down.SetDown(true)
@@ -430,6 +431,58 @@ func TestVisibleAsksAgainForAnAnswerThatAgedDuringTheCheck(t *testing.T) {
 	if got := calls("AGED"); got != 2 {
 		t.Fatalf("AGED was asked %d times, want 2: its answer was %s old when the check began and older than %s by its end, so Visible asks again", got, projectaccess.CacheTTL-5*time.Second, projectaccess.CacheTTL)
 	}
+}
+
+// TestStatesAsksAgainForAnAnswerThatAgedDuringTheCall is the client's half of the High on
+// cybermonklabs/legion#4135 (TNDeep4135 and ReviewPR4135, round 6): States asks one project at a
+// time, so an answer that was young when the call began, TEAM's while it was public, can be older
+// than CacheTTL by its end; States asks again for each such answer, so every answer it returns is
+// younger than CacheTTL as it returns, and one whose answers go on aging out faster than Dispatch
+// answers them fails rather than answering an aged one.
+func TestStatesAsksAgainForAnAnswerThatAgedDuringTheCall(t *testing.T) {
+	t.Run("an answer that aged is asked again", func(t *testing.T) {
+		clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+		server, calls := projectServer(t, func(project string, _ int) bool {
+			if project == "SLOW" {
+				clock.advance(10 * time.Second)
+			}
+			return true
+		})
+		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+		projectaccess.SetClock(client, clock.read)
+		if _, err := client.Access(t.Context(), "AGED", ""); err != nil {
+			t.Fatal(err)
+		}
+		clock.advance(projectaccess.CacheTTL - 5*time.Second)
+		states, err := client.States(t.Context(), []string{"AGED", "SLOW"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := calls("AGED"); got != 2 {
+			t.Fatalf("AGED was asked %d times, want 2: its answer was %s old when States began and older than %s by its end, so States asks again", got, projectaccess.CacheTTL-5*time.Second, projectaccess.CacheTTL)
+		}
+		for project, answer := range states {
+			if age := clock.read().Sub(answer.AskedAt); age >= projectaccess.CacheTTL {
+				t.Errorf("States answered %s asked %s before it returned; want every answer younger than %s", project, age, projectaccess.CacheTTL)
+			}
+		}
+	})
+	t.Run("answers that go on aging out fail the call", func(t *testing.T) {
+		clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+		server, calls := projectServer(t, func(string, int) bool {
+			clock.advance(20 * time.Second)
+			return true
+		})
+		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+		projectaccess.SetClock(client, clock.read)
+		states, err := client.States(t.Context(), []string{"ONE", "TWO"})
+		if err == nil {
+			t.Fatalf("States, each answer taking 20 s, answered %+v; want a failure, since each pass leaves one answer older than %s", states, projectaccess.CacheTTL)
+		}
+		if calls("ONE")+calls("TWO") < 4 {
+			t.Fatalf("States asked Dispatch %d times before it failed; want it to have asked again, more than once", calls("ONE")+calls("TWO"))
+		}
+	})
 }
 
 // TestAnOlderAnswerDoesNotReplaceANewerOne: two questions about one project and person in flight

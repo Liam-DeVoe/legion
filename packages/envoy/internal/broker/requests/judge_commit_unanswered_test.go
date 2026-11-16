@@ -15,15 +15,14 @@ import (
 func TestADecisionWhoseCommitGotNoAnswerSaysSo(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "INFRA-12: rotate the deploy key", 600, "DEEL_API_KEY")
-	ended := 0
-	m.testHoldCommit = func() error {
-		return m.Store.Pool.QueryRow(t.Context(), `select count(*) from (
-				select pg_terminate_backend(pid) from pg_stat_activity
-				where datname = current_database() and state = 'idle in transaction' and pid <> pg_backend_pid()) ended`).Scan(&ended)
+	ended := false
+	// The decision's own backend, and no other: every test of every package shares one database.
+	m.testHoldCommit = func(backend uint32) error {
+		return m.Store.Pool.QueryRow(t.Context(), `select pg_terminate_backend($1)`, int64(backend)).Scan(&ended)
 	}
 	_, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve"})
 	m.testHoldCommit = nil
-	if ended == 0 {
+	if !ended {
 		t.Fatal("the hook ended no backend, so the COMMIT did not lose its connection and this proves nothing")
 	}
 	if !errors.Is(err, ErrCommitUncertain) {
@@ -32,9 +31,9 @@ func TestADecisionWhoseCommitGotNoAnswerSaysSo(t *testing.T) {
 	if got := readDecided(t, m, *req.RecordID); got.state != "pending" || got.events != 0 {
 		t.Fatalf("the request after the lost COMMIT = %+v; want it untouched and pending", got)
 	}
-	wrote, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "applied": false, "not_applied": err.Error()})
+	wrote, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": err.Error()})
 	if err != nil || wrote != JudgedWritten {
-		t.Fatalf("LogJudged(applied false) after a COMMIT that did not apply = %q, %v; want %q", wrote, err, JudgedWritten)
+		t.Fatalf("LogJudged(applied unknown) after a COMMIT that did not apply = %q, %v; want %q, resolved to false", wrote, err, JudgedWritten)
 	}
 	if judged := readJudged(t, m, *req.RecordID); len(judged) != 1 || judged[0].applied != "false" {
 		t.Errorf("request.judged rows = %+v; want one, applied false", judged)

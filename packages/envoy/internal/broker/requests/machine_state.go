@@ -346,12 +346,15 @@ type Machine struct {
 	// the network then lost. testHoldCommit, when set, runs with every row of the decision
 	// written and before its COMMIT, and an error it returns rolls the decision back: a COMMIT
 	// still in flight. testLandedRead, when set, is what LogJudged's read of whether an
-	// approval's own row is there fails with. They exist only so a test can cut a judge's
-	// approval after it applied, hold it uncommitted, and fail that read; no production caller
-	// sets them.
+	// approval's own row is there fails with. The two that run inside a transaction are handed
+	// the process id of the backend that holds it, so a test that ends a backend ends that one
+	// alone: every test of every package shares one database (storetest), and a test that ended
+	// any other backend would cut another test's transaction. They exist only so a test can cut a
+	// judge's approval after it applied, hold it uncommitted, and fail that read; no production
+	// caller sets them.
 	testCommitCut  func() error
-	testHoldCommit func() error
-	testLandedRead func() error
+	testHoldCommit func(backend uint32) error
+	testLandedRead func(backend uint32) error
 }
 
 // missRereadLimiter is the per-enrollment buckets MissRereads names, built on the first miss.
@@ -1138,16 +1141,18 @@ const judgedKind = "request.judged"
 // one that expired — where that transaction rolled back and wrote nothing at all. The reasoning
 // is worth keeping either way: it is the record of what the judge was asked and what it answered.
 //
-// A row that says an approval was not applied (applied false) can be wrong: the approval's COMMIT
-// may have applied on the server and only its answer been lost, and then its own row is already
-// there, saying applied, or is still committing. So LogJudged first reads whether it is, inside
-// its own transaction (approvalLanded), after taking the request's row for share, which waits for
-// a COMMIT or an abort in flight, since the approval holds that row for update until it ends:
-// when the row is there, it writes nothing (JudgedAlreadyApplied), so the trail holds the one row
-// that says what happened; when that wait outlasts its bound or the read fails, it writes the row
-// with applied AppliedUnknown and the cause under applied_unknown (JudgedAppliedUnknown), never a
-// false it could not check, in a transaction of its own, since a read that lost its connection
-// leaves the first one nothing to write on. Any other row is written as given (JudgedWritten).
+// A row whose applied is AppliedUnknown reports an approval whose COMMIT failed (ErrCommitUncertain):
+// it may have applied on the server and only its answer been lost, and then its own row is already
+// there, saying what it did, or is still committing. So LogJudged resolves it, inside its own
+// transaction (approvalLanded), after taking the request's row for share, which waits for a COMMIT
+// or an abort in flight, since the approval holds that row for update until it ends: when the
+// approval's own row is there, it writes nothing (JudgedAlreadyApplied), so the trail holds the one
+// row that says what happened; when it is not, the approval did not apply, and the row is written
+// with applied false (JudgedWritten); when that wait outlasts its bound or the read fails, it
+// writes the row with applied AppliedUnknown and the cause under applied_unknown
+// (JudgedAppliedUnknown), in a transaction of its own, since a read that lost its connection
+// leaves the first one nothing to write on. Every other row is written as given (JudgedWritten),
+// with no read: an approval the state machine refused before its COMMIT certainly wrote nothing.
 func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (JudgedWrite, error) {
 	detail := judgedDetail(judged)
 	wrote := JudgedWritten
@@ -1156,11 +1161,10 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if applied, ok := detail["applied"].(bool); ok && !applied {
+	if applied, ok := detail["applied"].(string); ok && applied == AppliedUnknown {
 		landed, err := m.approvalLanded(ctx, tx, recordID)
 		switch {
 		case err != nil:
-			detail["applied"] = AppliedUnknown
 			detail["applied_unknown"] = record.Sanitize(err.Error(), record.MaxReasonRunes)
 			wrote = JudgedAppliedUnknown
 			// A read the database ended (lock_timeout) leaves tx as it was, but one whose
@@ -1173,6 +1177,8 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 			}
 		case landed:
 			return JudgedAlreadyApplied, nil
+		default:
+			detail["applied"] = false
 		}
 	}
 	// The enrollment is the one the request hangs off now, never the one the record froze, as
@@ -1211,7 +1217,7 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 // to write the row; a wait it ends is an error, and the savepoint's rollback leaves tx to write.
 func (m *Machine) approvalLanded(ctx context.Context, tx pgx.Tx, recordID string) (bool, error) {
 	if m.testLandedRead != nil {
-		if err := m.testLandedRead(); err != nil {
+		if err := m.testLandedRead(tx.Conn().PgConn().PID()); err != nil {
 			return false, err
 		}
 	}
@@ -1663,7 +1669,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		}
 	}
 	if m.testHoldCommit != nil {
-		if err := m.testHoldCommit(); err != nil {
+		if err := m.testHoldCommit(tx.Conn().PgConn().PID()); err != nil {
 			return Decision{}, false, err
 		}
 	}

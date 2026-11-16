@@ -529,14 +529,17 @@ denied to everyone, with the same words.
 
 Whether a project is private, and who may see it, is Dispatch's, so the broker asks Dispatch before
 it decides a request, a release or an approval of a tagged secret, and never while it holds a
-database lock. It keeps an answer for 30 seconds. A live grant of a tagged secret is checked again
-on every release: once the project turns private and the session does not name it, or its person
-leaves the access list, the grant ends for good, and making the project public again does not
-bring it back. The airlock is held to the same rule: a connection of such a grant is refused, and
-a pod holding its values asks the broker again within ten minutes. While Dispatch cannot be
-reached, a tagged secret is neither granted nor released (`503 PROJECT_ACCESS_UNAVAILABLE`) and
-its grants stay live; a secret with no tag is served as before. A broker with no
-`BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing about projects.
+database lock. It keeps an answer for 30 seconds, and decides nothing on an answer older than that:
+it asks one question at a time, so when the later questions take long enough for an earlier answer
+to pass 30 seconds before the decision, it asks every question again, and a decision whose answers
+pass 30 seconds a second time is refused as though Dispatch could not be reached. A live grant of
+a tagged secret is checked again on every release: once the project turns private and the session
+does not name it, or its person leaves the access list, the grant ends for good, and making the
+project public again does not bring it back. The airlock is held to the same rule: a connection of
+such a grant is refused, and a pod holding its values asks the broker again within ten minutes.
+While Dispatch cannot be reached, a tagged secret is neither granted nor released
+(`503 PROJECT_ACCESS_UNAVAILABLE`) and its grants stay live; a secret with no tag is served as
+before. A broker with no `BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing about projects.
 
 A secret tagged `project-channels` is limited by the projects the credential names, whatever
 project the secret itself belongs to. A credential that names a private project, whether or not

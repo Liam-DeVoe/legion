@@ -487,7 +487,13 @@ func (v verdictRow) detail(modelID string) map[string]any {
 		detail["not_pending"] = v.notPending
 	}
 	if v.notApplied != nil {
+		// An approval the state machine refused before its COMMIT wrote nothing, so applied is
+		// false. One whose COMMIT failed may have applied, so applied is unknown, and
+		// requests.Machine.LogJudged reads what that COMMIT left before it writes the row.
 		detail["applied"] = false
+		if errors.Is(v.notApplied, requests.ErrCommitUncertain) {
+			detail["applied"] = requests.AppliedUnknown
+		}
 		detail["not_applied"] = record.Sanitize(v.notApplied.Error(), maxRawAnswer)
 	}
 	return detail
@@ -527,44 +533,50 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 	rowCtx, cancel := rowContext(ctx)
 	defer cancel()
 	wrote, err := r.opts.Requests.LogJudged(rowCtx, p.RecordID, modelID, row.detail(modelID))
-	if row.notApplied != nil && wrote != requests.JudgedAlreadyApplied {
-		r.notApplied(ctx, p, modelID, row.notApplied, wrote)
-	}
 	if err != nil {
-		slog.Error("broker judge: the verdict could not be written", "record", p.RecordID,
-			"request", p.RequestID, "model", modelID, "err", err)
+		attrs := []any{"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", err}
+		if row.notApplied != nil {
+			attrs = append(attrs, "not_applied", row.notApplied)
+		}
+		slog.Error("broker judge: the verdict could not be written", attrs...)
 		return
 	}
 	if wrote == requests.JudgedAlreadyApplied {
-		slog.Info("broker judge: the judge's approval applied, and only its answer was lost; its own row records it, so no second row was written",
+		// The approval's own row is there, so its transaction committed: it may have granted,
+		// or recorded the request's own denial, and that row says which.
+		slog.Info("broker judge: the judge's approval committed, and only its answer was lost; its own row records what it did, so no second row was written",
 			"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", row.notApplied)
 		return
+	}
+	if row.notApplied != nil {
+		r.notApplied(p, modelID, row.notApplied, wrote)
 	}
 	row.appliedUnknown = wrote == requests.JudgedAppliedUnknown
 	r.logged(p, row)
 }
 
 // notApplied is the line for an approval that wrote nothing, err being what it answered and wrote
-// what LogJudged then did with the verdict's row. A person decided the request first, it expired,
-// or the current policy moved while the judge was reading: the session's operator withheld the
-// name or its owner tagged it an administrator's (the two guards currentPolicyAdmits makes for the
-// judge alone), the name's owner changed, its max-grant fell below the request's lifetime, or the
-// request became a private project's. Each is the ordinary outcome of losing a race and no fault
-// of the judge's (D10), and each answers record.ErrNotApprover. The broker stopping under the
-// approval (context.Canceled, on the run's context or in what the approval answered), a COMMIT that
-// failed and, by the row LogJudged read, did not apply (requests.ErrCommitUncertain), Dispatch not
-// answering the approval's check, and the run's time running out before the approval landed are
-// no refusal either. Any other refusal is one the judge should not have reached at all.
-func (r *Runner) notApplied(ctx context.Context, p requests.PendingRequest, modelID string, err error, wrote requests.JudgedWrite) {
+// what LogJudged then did with the verdict's row, which is written by then. A person decided the
+// request first, it expired, or the current policy moved while the judge was reading: the
+// session's operator withheld the name or its owner tagged it an administrator's (the two guards
+// currentPolicyAdmits makes for the judge alone), the name's owner changed, its max-grant fell
+// below the request's lifetime, or the request became a private project's. Each is the ordinary
+// outcome of losing a race and no fault of the judge's (D10), and each answers
+// record.ErrNotApprover. The broker stopping under the approval (context.Canceled in what the
+// approval answered), a COMMIT that failed and, by the row LogJudged read, did not apply
+// (requests.ErrCommitUncertain), Dispatch not answering the approval's check, and the run's time
+// running out before the approval landed are no refusal either. Any other refusal is one the
+// judge should not have reached at all, and is an ERROR even while the broker stops.
+func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error, wrote requests.JudgedWrite) {
 	attrs := []any{"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", err}
 	switch {
 	case wrote == requests.JudgedAppliedUnknown:
-		slog.Warn("broker judge: whether the judge's approval applied could not be read: its answer was lost, and so was the read of its own row; the row says applied unknown",
+		slog.Warn("broker judge: whether the judge's approval applied could not be read: its COMMIT failed, and so did the read of its own row; the row it wrote says applied unknown",
 			attrs...)
 	case errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, record.ErrNotApprover):
 		slog.Info("broker judge: the request was decided, expired or moved out of the judge's policy before the judge's approval landed",
 			attrs...)
-	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+	case errors.Is(err, context.Canceled):
 		slog.Info("broker judge: the broker stopped while the judge's approval was being written; the approval was not applied, and the request waits for its person",
 			attrs...)
 	case errors.Is(err, requests.ErrCommitUncertain):

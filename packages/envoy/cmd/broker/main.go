@@ -1143,11 +1143,12 @@ const judgeDispatchTimeout = 10 * time.Second
 // `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
 // is asked to stop ends there, before the drain, and leaves its request pending for the person who
 // decides it today. A run still before its verdict writes nothing at all; one whose approval the
-// stop cuts writes its request.judged row on a context of its own, at most a second into the drain
-// (judge's rowContext), saying the approval was not applied, unless the approval's own row shows
-// it applied. That is the right way round for a judge where it is not for the policy reload — a
-// half-finished reload costs a pod stale tags for its drain, while a half-finished run would
-// approve a credential as the pod goes away.
+// stop cuts writes its request.judged row on a context of its own, which lasts until the run's own
+// deadline, and at least a second (judge's rowContext), so the write may go on into the drain,
+// saying the approval was not applied, unless the approval's own row shows it applied. That is
+// the right way round for a judge where it is not for the policy reload — a half-finished reload
+// costs a pod stale tags for its drain, while a half-finished run would approve a credential as
+// the pod goes away.
 func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
 	if cfg.JudgeModelURL == "" {
 		slog.Info("model judge", "state", "off",

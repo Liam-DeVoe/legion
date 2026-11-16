@@ -130,3 +130,44 @@ func TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal(t *testing.T) {
 		t.Errorf("the run logged %d rows; want the verdict's row", len(logged))
 	}
 }
+
+// TestAnUnexpectedRefusalDuringAStopIsStillAnError is round 6's m-e on cybermonklabs/legion#4135:
+// a refusal the judge should not have reached is an ERROR even when the broker stops while the
+// approval runs. Only the approval's own answer says whether the stop cut it (context.Canceled in
+// that error); the run's context being cancelled says nothing of why this approval failed.
+func TestAnUnexpectedRefusalDuringAStopIsStillAnError(t *testing.T) {
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	machine.onApply = cancel
+	machine.applyErr = errors.New("the state machine refused the approval for a reason the judge never meets")
+	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
+	lines := capturedLog(t, func() {
+		runner.write(ctx, pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+	})
+	if line := lineWith(lines, "record=record-1", "refused"); !strings.Contains(line, "level=ERROR") {
+		t.Errorf("the approval's line is %q; want the ERROR \"refused\": the stop did not cause it (lines: %q)", line, lines)
+	}
+	if line := lineWith(lines, "the broker stopped"); line != "" {
+		t.Errorf("a line says %q; want none: the approval's own error names no stop", line)
+	}
+}
+
+// TestTheVerdictLineWaitsForTheRowItNames is round 6's m-e on cybermonklabs/legion#4135: an
+// approval's not-applied line describes the row LogJudged wrote, so a row that could not be written
+// gets the one ERROR saying so, with the approval's error beside it, and no line that claims a row.
+func TestTheVerdictLineWaitsForTheRowItNames(t *testing.T) {
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	machine.applyErr = fmt.Errorf("%w: unexpected EOF", requests.ErrCommitUncertain)
+	machine.logErr = errors.New("the database refused the row")
+	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
+	lines := capturedLog(t, func() {
+		runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Approve, Reason: "yes"}})
+	})
+	if line := lineWith(lines, "record=record-1", "could not be written"); !strings.Contains(line, "level=ERROR") || !strings.Contains(line, "not_applied=") {
+		t.Errorf("the line is %q; want the ERROR that the verdict could not be written, naming the approval's error", line)
+	}
+	if line := lineWith(lines, "its own row shows"); line != "" {
+		t.Errorf("a line says %q; want none: no row was written to show anything", line)
+	}
+}

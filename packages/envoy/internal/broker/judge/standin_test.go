@@ -306,6 +306,9 @@ type fakeRequests struct {
 	// wrote is what LogJudged answers it did, JudgedWritten when empty.
 	commitTakes time.Duration
 	wrote       requests.JudgedWrite
+	// onApply, when set, runs as ApplyJudgeDecision ends, before it answers, so a test can
+	// stop the broker while an approval is in flight.
+	onApply func()
 	// bounded is, for each call to a method that reads Dispatch in the real machine
 	// (JudgePolicy and JudgeProject), the method's name and whether its context was one
 	// requests.JudgeDispatch made.
@@ -411,6 +414,9 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.applied = append(f.applied, judged)
+	if f.onApply != nil {
+		f.onApply()
+	}
 	if f.applyErr != nil {
 		return requests.Decision{}, f.applyErr
 	}

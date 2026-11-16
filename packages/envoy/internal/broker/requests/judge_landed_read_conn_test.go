@@ -28,17 +28,17 @@ func TestAJudgedRowIsWrittenWhenTheLandedReadLosesItsConnection(t *testing.T) {
 	lost := errors.New("unexpected EOF: the COMMIT's answer was lost")
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, reason, 600, "DEEL_API_KEY")
-	ended := 0
-	m.testLandedRead = func() error {
+	ended := false
+	m.testLandedRead = func(backend uint32) error {
 		// LogJudged's transaction has begun, so its backend is idle in a transaction; this
-		// connection of the pool ends it, as a failover ends every backend.
-		return m.Store.Pool.QueryRow(t.Context(), `select count(*) from (
-				select pg_terminate_backend(pid) from pg_stat_activity
-				where datname = current_database() and state = 'idle in transaction' and pid <> pg_backend_pid()) ended`).Scan(&ended)
+		// connection of the pool ends it, as a failover ends every backend. It ends that backend
+		// alone: every test of every package shares one database, and ending every backend idle in
+		// a transaction there cut other tests' transactions.
+		return m.Store.Pool.QueryRow(t.Context(), `select pg_terminate_backend($1)`, int64(backend)).Scan(&ended)
 	}
-	wrote, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "applied": false, "not_applied": lost.Error()})
+	wrote, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": lost.Error()})
 	m.testLandedRead = nil
-	if ended == 0 {
+	if !ended {
 		t.Fatal("the hook ended no backend, so this run did not lose the landed read's connection and proves nothing")
 	}
 	if err != nil || wrote != JudgedAppliedUnknown {

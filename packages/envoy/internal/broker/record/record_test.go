@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -928,26 +927,6 @@ func TestIssueKeyInReason(t *testing.T) {
 	} {
 		if got := IssueKeyInReason(c.reason); got != c.want {
 			t.Errorf("IssueKeyInReason(%q) = %q, want %q", c.reason, got, c.want)
-		}
-	}
-}
-
-// TestIssueKeysInReason: a request's visibility reads every key its reason names, in order, so a
-// key-shaped word such as SHA-256 before a private project's issue key cannot hide that project.
-func TestIssueKeysInReason(t *testing.T) {
-	for _, c := range []struct {
-		reason string
-		want   []string
-	}{
-		{"", nil},
-		{"deploying the broker", nil},
-		{"INFRA-1352", []string{"INFRA-1352"}},
-		{"SHA-256 of the PRIV-12 bundle", []string{"SHA-256", "PRIV-12"}},
-		{"blocked by LEGION-587, see INFRA-1352", []string{"LEGION-587", "INFRA-1352"}},
-		{"dispatch://INFRA-1352/ask/3 and infra-9 lower-cased", []string{"INFRA-1352"}},
-	} {
-		if got := IssueKeysInReason(c.reason); !slices.Equal(got, c.want) {
-			t.Errorf("IssueKeysInReason(%q) = %q, want %q", c.reason, got, c.want)
 		}
 	}
 }

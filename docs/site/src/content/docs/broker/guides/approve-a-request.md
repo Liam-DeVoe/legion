@@ -61,7 +61,8 @@ along:
   names any. A person's session names the projects it started with (`AGENT_SECRETS_PROJECTS`). A
   pod names the one its operator's `BROKER_EXCHANGE_ACCOUNTS` entry maps its service account to,
   and a machine's own session the one `BROKER_VM_EXCHANGE_ACCOUNTS` maps its fleet's Google account
-  to.
+  to. A session that moved to another box since it asked shows the projects named on either box,
+  and the request is hidden from, and refused to, anyone either list would hide it from.
 - **Requested by (verified by the broker)**: the enrollment asking, as kind, operator and runtime
   id. A `session` started on a machine has a runtime id that starts with the machine's host name; a
   `pod` enrollment also shows its worker slot when it has one.

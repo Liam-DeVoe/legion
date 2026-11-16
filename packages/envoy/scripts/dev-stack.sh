@@ -38,7 +38,8 @@
 # in one docker container (DEV_STACK_AIRLOCK_IMAGE), the one container this script starts,
 # because a bound host must listen on port 443; so that run needs docker on PATH, and is refused
 # before anything is created or started without it. A run without the option builds no stands
-# and starts no container.
+# and starts no container. What the option adds to a run, and PRIV's pod every run has, are
+# scripts/lib/project-access-stack.sh's.
 #
 # Every port is chosen by the kernel and read back from the process that holds it: the issuer's
 # "issuer listening url=", the broker's JSON "broker listening" addr, natsd's "Listening for
@@ -311,37 +312,12 @@ POD_TOKEN_FILE="$WORK_DIR/pod-token"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
-# PRIV's pod, the production path of a private project's agent (scripts/project-secrets-check.sh):
-# a Kubernetes service account BROKER_EXCHANGE_ACCOUNTS maps to the project PRIV for its owner,
-# and binds in BROKER_SERVICE_LOGINS alone, as the service legion-priv, so the pod can log in
-# with its own token to enrol itself (agent-secrets enroll --pod). It is not in BROKER_SERVICES:
-# the pod reads no service-owned secret, and its project comes from its exchange entry through
-# its verified subject. Its two token files are one pod, as EXCHANGE_ACCOUNT's are. The entry fixes
-# the session the pod's tokens write under, as a long-running service's entry does, so its trade
-# needs no registration of a session name.
-PRIV_PROJECT="PRIV"
-PRIV_OWNER="carol@example.com"
-PRIV_SERVICE="legion-priv"
-PRIV_ACCOUNT="system:serviceaccount:legion-priv:legion-priv-worker"
-PRIV_SESSION="legion-priv-worker-session"
-PRIV_EXCHANGE_TOKEN_FILE="$WORK_DIR/priv-exchange-token"
-PRIV_POD_TOKEN_FILE="$WORK_DIR/priv-pod-token"
-# The broker's own account for Dispatch's access routes, and Dispatch's audience, as production
-# names them (system:serviceaccount:dispatch:envoy-broker, audience dispatch). Used only with
-# --project-access: the broker presents this token to Dispatch, and Dispatch admits the account
-# in both of its lists (DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS).
-DISPATCH_AUDIENCE="dispatch"
-BROKER_ACCESS_ACCOUNT="system:serviceaccount:example-ns:example-broker"
-BROKER_ACCESS_TOKEN_FILE="$WORK_DIR/broker-access-token"
-# The airlock, under --project-access alone: the one secret the rules bind, the host it may go to,
-# the rules file, and the container the stands run in (one per run, named from this run's own
-# suffix so two runs never share one). The image is any with a glibc: the only thing run in it is
-# the stands binary this run built, bind-mounted in.
-PRIV_SECRET="PRIV_KEY"
-AIRLOCK_BOUND_HOST="priv.airlock.test"
-AIRLOCK_RULES_FILE="$WORK_DIR/airlock.json"
-AIRLOCK_IMAGE="${DEV_STACK_AIRLOCK_IMAGE:-docker.io/library/python:3.12-slim}"
-AIRLOCK_CONTAINER="dev-stack-stands-$(printf '%s' "${WORK_DIR##*.}" | tr '[:upper:]' '[:lower:]')"
+# PRIV's pod and the broker's own access account, which every run mints tokens for, and the
+# airlock --project-access starts: their names, and what the option does with them, are
+# scripts/lib/project-access-stack.sh's. It names paths in the work directory, so it is sourced
+# here, once that is made, on every run.
+# shellcheck source=lib/project-access-stack.sh
+. "$SCRIPT_DIR/lib/project-access-stack.sh"
 # The namespace the fake secrets sit under and an example KMS key in AWS's documentation account;
 # nothing here calls AWS.
 SECRETS_PREFIX="example/agent-secrets/"
@@ -569,7 +545,6 @@ nats_port_in() {
 }
 listener_addr_in() { jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$1"; }
 dispatch_addr_in() { sed -n 's/.*msg="dispatch: listening" addr=\([^ ]*\).*/\1/p' "$1" | head -n1; }
-airlock_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "airlock proxy listening") | .addr][0] // empty' "$1"; }
 kept_port_in() { grep -o '^[0-9][0-9]*$' "$1" | head -n1; }
 
 # --- Dispatch's port, held from the kernel's choice until Dispatch serves on it. The broker names
@@ -641,41 +616,9 @@ cat >"$FAKE_SECRETS_FILE" <<EOF
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
-# With --project-access the broker asks this run's Dispatch about projects, at the port the keeper
-# already holds for it, presenting its own account's token; without it the broker holds no such
-# client and serves no project-tagged secret, as before.
-PROJECT_ACCESS_ENV=()
-AIRLOCK_ENV=()
-AIRLOCK_PROXY_URL=""
-AIRLOCK_PROXY_PORT=""
-if [ "$PROJECT_ACCESS" = true ]; then
-  PROJECT_ACCESS_ENV=(BROKER_PROJECT_ACCESS_URL="$DISPATCH_URL" BROKER_PROJECT_ACCESS_TOKEN_FILE="$BROKER_ACCESS_TOKEN_FILE")
-  # The airlock, so a proxied request of a private project's secret can be driven on this stack
-  # (scripts/project-secrets-check.sh). The stands run in a container of their own: a bound host
-  # must listen on port 443 (the proxy refuses any other port as a host header mismatch), which no
-  # unprivileged process binds on a machine whose ip_unprivileged_port_start is above it or whose
-  # 443 another listener holds. scripts/lib/airlock-stack.sh starts and stops that container, and
-  # this script is its one caller: dev-airlock.sh starts its own stands as a process of this
-  # machine, four of them on loopback addresses' port 443, each with options of its own.
-  # shellcheck source=lib/airlock-stack.sh
-  . "$SCRIPT_DIR/lib/airlock-stack.sh"
-  airlock_stands_start "$BIN_DIR/dev-airlock-stands" "$WORK_DIR" "$AIRLOCK_BOUND_HOST" "$AIRLOCK_IMAGE" "$AIRLOCK_CONTAINER"
-  airlock_rules_write "$AIRLOCK_RULES_FILE" "$AIRLOCK_BOUND_HOST" "$PRIV_SECRET"
-  # The proxy's port, which the broker must be told at boot and binds itself: the kernel picks a
-  # free one here, this script lets it go, and the broker takes it a moment later. Nothing holds
-  # it in between, so another process on this machine can take it first; that race is why the
-  # broker's own proxy line is read back below and a run whose proxy is not on this port stops
-  # rather than printing an address nothing serves.
-  AIRLOCK_PROXY_PORT="$(python3 -c "
-import socket
-s = socket.socket()
-s.bind(('127.0.0.1', 0))
-print(s.getsockname()[1])
-s.close()
-")"
-  AIRLOCK_PROXY_URL="http://127.0.0.1:${AIRLOCK_PROXY_PORT}"
-  mapfile -t AIRLOCK_ENV < <(airlock_broker_env "$AIRLOCK_RULES_FILE" "$AIRLOCK_PROXY_URL" "127.0.0.1:${AIRLOCK_PROXY_PORT}")
-fi
+# The broker's --project-access settings (PROJECT_ACCESS_ENV and AIRLOCK_ENV), and the airlock's
+# stands they name, started; without the option both are empty and nothing is started.
+project_access_broker_setup
 echo "dev-stack: starting broker..." >&2
 : >"$BROKER_LOG"
 env -i PATH="$PATH" \
@@ -712,17 +655,8 @@ await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broke
 BROKER_URL="http://$awaited"
 until_true "the broker's health check" curl -sf "$BROKER_URL/healthz"
 echo "dev-stack: broker $BROKER_URL" >&2
-if [ "$PROJECT_ACCESS" = true ]; then
-  # The port the broker's proxy actually bound, read from its own line, against the one this
-  # script picked: a lost race stops the run here rather than leaving a caller to find that the
-  # address the banner names serves nothing.
-  await "the broker's airlock proxy" "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its proxy address' airlock_addr_in
-  if [ "$awaited" != "127.0.0.1:${AIRLOCK_PROXY_PORT}" ]; then
-    echo "dev-stack: the broker's airlock proxy is on $awaited, not the 127.0.0.1:${AIRLOCK_PROXY_PORT} this run picked: another process took that port first. Start the run again." >&2
-    exit 1
-  fi
-  echo "dev-stack: airlock proxy $AIRLOCK_PROXY_URL, bound host $AIRLOCK_S_URL" >&2
-fi
+# Under --project-access, the broker's proxy must be on the port this run picked, or the run stops.
+project_access_proxy_check
 
 # --- This stack's pod, registered for the session name it exchanges under. The broker binds a
 # session name to the listed account and never to a pod, so what keeps two pods of one account
@@ -787,15 +721,8 @@ echo "dev-stack: listener $LISTENER_URL" >&2
 # deployment's. HOME and the XDG directories are this run's own, so the server reads no app.json
 # and writes no key where a developer keeps theirs. ---
 DISPATCH_TOKEN_VALUE="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
-# With --project-access, Dispatch takes this run's issuer's service-account tokens for its own
-# audience, admits the broker's account (DISPATCH_OIDC_ACCOUNTS, R13's list) and lets it read the
-# access routes (DISPATCH_ACCESS_ACCOUNTS), the two lists avenue A's access answers require the
-# broker in. Without it, Dispatch takes no service-account token, as before.
-DISPATCH_ACCESS_ENV=()
-if [ "$PROJECT_ACCESS" = true ]; then
-  DISPATCH_ACCESS_ENV=(DISPATCH_OIDC_ISSUER="$ISSUER_URL" DISPATCH_OIDC_AUDIENCE="$DISPATCH_AUDIENCE"
-    DISPATCH_OIDC_ACCOUNTS="$BROKER_ACCESS_ACCOUNT" DISPATCH_ACCESS_ACCOUNTS="$BROKER_ACCESS_ACCOUNT")
-fi
+# Dispatch's --project-access settings (DISPATCH_ACCESS_ENV); empty without the option.
+project_access_dispatch_env
 echo "dev-stack: starting dispatch at $DISPATCH_URL..." >&2
 : >"$DISPATCH_LOG"
 python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD -- \
@@ -976,18 +903,7 @@ dev-stack: ready.
   export DEV_STACK_MACHINE_ACCOUNT=$FLEET_ACCOUNT
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
   export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT
-  export DEV_STACK_PRIV_PROJECT=$PRIV_PROJECT
-  export DEV_STACK_PRIV_OWNER=$PRIV_OWNER
-  export DEV_STACK_PRIV_SERVICE=$PRIV_SERVICE
-  export DEV_STACK_PRIV_ACCOUNT=$PRIV_ACCOUNT
-  export DEV_STACK_PRIV_SESSION=$PRIV_SESSION
-  export DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE=$PRIV_EXCHANGE_TOKEN_FILE
-  export DEV_STACK_PRIV_POD_TOKEN_FILE=$PRIV_POD_TOKEN_FILE
-  export DEV_STACK_PROJECT_ACCESS=$PROJECT_ACCESS
-  export DEV_STACK_PRIV_SECRET=$PRIV_SECRET
-  export DEV_STACK_AIRLOCK_PROXY_URL=$AIRLOCK_PROXY_URL
-  export DEV_STACK_AIRLOCK_BOUND_URL=${AIRLOCK_S_URL:-}
-  export DEV_STACK_AIRLOCK_CA_CERT_FILE=${AIRLOCK_CA_CERT_FILE:-}
+$(project_access_exports)
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for

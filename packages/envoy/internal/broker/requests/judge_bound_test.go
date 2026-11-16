@@ -89,7 +89,14 @@ func TestTheJudgedRowIsWrittenWhenTheDecisionsDispatchReadIsSlow(t *testing.T) {
 			if !c.granted && !errors.Is(err, ErrProjectAccessUnavailable) {
 				t.Errorf("the judge's approval failed with %v; want ErrProjectAccessUnavailable: its Dispatch read was cut short", err)
 			}
-			if _, err := m.LogJudged(ctx, *req.RecordID, judgeModel, map[string]any{"verdict": "approve"}); err != nil {
+			// The slow case writes the costliest row LogJudged writes, one whose applied is
+			// unknown, so the time the approval left covers the read that resolves it too
+			// (round 6's m-h). The fast case writes a referral's row, beside the approval's own.
+			row := map[string]any{"verdict": "approve"}
+			if !c.granted {
+				row = map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": err.Error()}
+			}
+			if _, err := m.LogJudged(ctx, *req.RecordID, judgeModel, row); err != nil {
 				t.Errorf("LogJudged on the run's context = %v; want the row written in the time the approval left it", err)
 			}
 			if judged := readJudged(t, m, *req.RecordID); len(judged) != c.rows {
