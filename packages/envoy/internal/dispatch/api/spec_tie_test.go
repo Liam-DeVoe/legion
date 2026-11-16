@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -253,19 +254,32 @@ func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
 	d1 := refs.BlockNodeKind + ":" + choices.address("d1")
 
 	// The fourth requirement, which the answered ask alone shaped: one tuple, from the ask's node
-	// and not the ask's block node, whose block_refs row carries the ask's node; the node holds
-	// the question's answer as the store holds it, and the backlink read answers the ask.
+	// and not the ask's block node, whose block_refs row - the one shaped row into it - carries the
+	// ask's node; the node holds the person's answer, its words and its selection, as the store
+	// holds them, and the backlink read answers the ask.
 	fourth := requireShapedFrom(t, database, "the fourth requirement", spec.address("r4"), ask)[ask]
-	var nodeKind, nodeAddress, fromNode string
-	if err := database.Pool.QueryRow(ctx, `
-		select node_kind, node_address, from_node from block_refs where kind = $1 and to_kind = $2 and to_id = $3
-	`, refs.TupleShaped, refs.BlockNodeKind, spec.address("r4")).Scan(&nodeKind, &nodeAddress, &fromNode); err != nil {
-		t.Fatalf("read the block_refs row of the tie to the fourth requirement: %v", err)
+	rows, err := database.Pool.Query(ctx, `
+		select coalesce(node_kind, ''), coalesce(node_address, ''), from_node from block_refs
+		where kind = $1 and to_kind = $2 and to_id = $3
+	`, refs.TupleShaped, refs.BlockNodeKind, spec.address("r4"))
+	if err != nil {
+		t.Fatalf("read the block_refs rows of the ties to the fourth requirement: %v", err)
 	}
-	if nodeKind != graphstore.KindAsk || nodeAddress != askID {
-		t.Fatalf("the block_refs row of the tie to the fourth requirement carries the node (%s, %s) out of the block %s, want the ask's node (ask, %s)",
-			nodeKind, nodeAddress, fromNode, askID)
+	type tieRow struct{ nodeKind, nodeAddress, fromNode string }
+	tieRows, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (tieRow, error) {
+		var read tieRow
+		err := row.Scan(&read.nodeKind, &read.nodeAddress, &read.fromNode)
+		return read, err
+	})
+	if err != nil {
+		t.Fatalf("read the block_refs rows of the ties to the fourth requirement: %v", err)
 	}
+	if len(tieRows) != 1 || tieRows[0].nodeKind != graphstore.KindAsk || tieRows[0].nodeAddress != askID {
+		t.Fatalf("the shaped block_refs rows into the fourth requirement are %+v, want one, carrying the ask's node (ask, %s)", tieRows, askID)
+	}
+	// The ask's node holds no question: the question stays on the asks row, and the node holds
+	// the answer, its selection and who gave it (asks.Settle). So the decision's question is read
+	// off the row of the node's ask, and the person's answer off the node.
 	var question string
 	if err := database.Pool.QueryRow(ctx, `select question from asks where id = $1::uuid`, askID).Scan(&question); err != nil {
 		t.Fatalf("read the question of the ask at the tie's near end: %v", err)
@@ -274,6 +288,14 @@ func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
 	if err != nil || !stated || question != "Which transport?" || answer != "Plain HTTP until a client streams." {
 		t.Fatalf("the ask at the tie's near end holds the question %q and the answer %q (stated %t, %v), want the question and bob's answer",
 			question, answer, stated, err)
+	}
+	selection, stated, err := graphstore.CurrentValue(ctx, database.Pool, graphstore.KindAsk, askID, graphstore.TupleSelected)
+	var selected []string
+	if err == nil && stated {
+		err = json.Unmarshal([]byte(selection), &selected)
+	}
+	if err != nil || !stated || len(selected) != 1 || selected[0] != "REST" {
+		t.Fatalf("the ask at the tie's near end holds the selection %q (stated %t, %v), want bob's, [\"REST\"]", selection, stated, err)
 	}
 	requireShapedBacklinks(t, handler, "the fourth requirement", pointer("r4"), ask)
 
@@ -331,6 +353,10 @@ func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
 	// The fourth requirement goes in a new version: the ask's tie to it stands, its node is gone,
 	// and the store still holds the words it had when the tie was written.
 	editSpec(t, handler, issue.Key, []map[string]any{{"op": "delete", "block": "r4"}})
+	if changed := textChangedAt(t, database, spec, "r1"); changed != changedAfter {
+		t.Fatalf("the version that deleted the fourth requirement left the first one's text alone and moved its text-change time from %s to %s",
+			changedAfter, changed)
+	}
 	if held := requireShapedFrom(t, database, "after the fourth requirement went", spec.address("r4"), ask)[ask]; held.Seq != fourth.Seq {
 		t.Fatalf("after the fourth requirement went the store states %s into it, want the ask's tie %s still asserted", tuplesText([]graphstore.Tuple{held}), tuplesText([]graphstore.Tuple{fourth}))
 	}

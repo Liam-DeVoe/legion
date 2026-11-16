@@ -1284,7 +1284,9 @@ func censusBlockRefTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []p
 
 // ───── the census ─────────────────────────────────────────────────────────
 
-// kindCensus is one kind's line of the census report.
+// kindCensus is one kind's line of the census report. A kind held triple by triple
+// (dispatch://INFRA-1150's ties) prints the store's side as tuples= and its differences as
+// rows_without_a_tuple= and tuples_without_a_row=, read here into the same fields.
 type kindCensus struct {
 	kind               string
 	nodes, rows        int64
@@ -1305,15 +1307,22 @@ func runStoreCensus(t *testing.T, databaseURL string) []kindCensus {
 	var read []kindCensus
 	for _, line := range strings.Split(out, "\n") {
 		fields := censusFields(line)
-		if fields == nil || fields["kind"] == "" || fields["nodes"] == "" {
+		if fields == nil || fields["kind"] == "" {
+			continue
+		}
+		side, rowsMissing, sideMissing := "nodes", "rows_without_a_node", "nodes_without_a_row"
+		if fields["tuples"] != "" {
+			side, rowsMissing, sideMissing = "tuples", "rows_without_a_tuple", "tuples_without_a_row"
+		}
+		if fields[side] == "" {
 			continue
 		}
 		read = append(read, kindCensus{
 			kind:               fields["kind"],
-			nodes:              censusCount(t, fields["nodes"]),
+			nodes:              censusCount(t, fields[side]),
 			rows:               censusCount(t, fields["rows"]),
-			rowsWithoutANode:   censusCount(t, fields["rows_without_a_node"]),
-			nodesWithoutARow:   censusCount(t, fields["nodes_without_a_row"]),
+			rowsWithoutANode:   censusCount(t, fields[rowsMissing]),
+			nodesWithoutARow:   censusCount(t, fields[sideMissing]),
 			addressesPastBound: censusCount(t, fields["addresses_past_bound"]),
 		})
 	}

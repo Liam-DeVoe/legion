@@ -185,7 +185,11 @@ func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 		var printed strings.Builder
 		emptied.Write(&printed)
 		if held.EmptyAgrees {
-			line := "census: store kind=" + held.Kind + " holds no row and no node: nothing of it is written yet, which is no refusal\n"
+			side := "node"
+			if held.Triples {
+				side = "tuple"
+			}
+			line := "census: store kind=" + held.Kind + " holds no row and no " + side + ": nothing of it is written yet, which is no refusal\n"
 			if emptied.Refused() || !strings.Contains(printed.String(), line) || !strings.HasSuffix(printed.String(), "census: store ok\n") {
 				t.Errorf("a census whose %s kind holds no row and no node reads refused=%t, want a pass printing %q:\n%s",
 					held.Kind, emptied.Refused(), line, printed.String())

@@ -67,9 +67,11 @@ const TupleInDocument = "in_document"
 // than its pointers do (a string attribute citing it too, say).
 //
 // A block whose text (markdown[From:To]) is unchanged keeps its changed version; a new, changed
-// or restored block takes this version, and its text is recorded in document_block_texts; a
-// block the version no longer holds is deleted, recorded there with no text, its node's state
-// stated gone, and the edges at it stop resolving until a version holds its id again. A block's
+// or restored block takes the version its text stands since (textSince) - this version, or where
+// the pass covers versions no pass indexed, the earliest of them from which its text stood - and
+// its text is recorded in document_block_texts at that version; a block the version no longer
+// holds is deleted, recorded there with no text, its node's state stated gone, and the edges at
+// it stop resolving until a version holds its id again. A block's
 // stored excerpt is its text cut to BlockExcerptRunes, the excerpt a document's mention has
 // shown since migration 0092.
 //
@@ -129,7 +131,7 @@ func IndexBlocks(
 ) ([]Target, bool, graphstore.Uncaused, error) {
 	// The fence is the pass's first write, so a pass that loses it has written nothing to undo
 	// and waits at that one row rather than at a projection row further in.
-	won, err := standsAtVersion(ctx, tx, artifactID, version)
+	won, indexedBefore, err := standsAtVersion(ctx, tx, artifactID, version)
 	if err != nil || !won {
 		return nil, won, graphstore.Uncaused{}, err
 	}
@@ -277,7 +279,12 @@ func IndexBlocks(
 			return nil, false, graphstore.Uncaused{}, fmt.Errorf("delete the blocks version %d of %s no longer holds: %w", version, artifactID, err)
 		}
 	}
+	var textVersions []int32
 	if len(ids) > 0 {
+		since, sinceAt, err := textSince(ctx, tx, artifactID, version, versionAt, indexedBefore, texts[:len(ids)])
+		if err != nil {
+			return nil, false, graphstore.Uncaused{}, err
+		}
 		// xmax = 0 tells a row this statement inserted from one it updated, which is what says
 		// whether the block joined the document here: a block whose row was already there - a
 		// block whose text alone changed - keeps that row and the membership it already states.
@@ -286,8 +293,9 @@ func IndexBlocks(
 			select $1::uuid, b.id, a.ref_key || '#' || b.id,
 			       case when octet_length(a.ref_key || '#' || b.id) <= $9 then $8 end,
 			       case when octet_length(a.ref_key || '#' || b.id) <= $9 then a.ref_key || '#' || b.id end,
-			       b.type, b.sum, b.excerpt, $2, $3
-			from unnest($4::text[], $5::text[], $6::text[], $7::text[]) as b (id, type, sum, excerpt)
+			       b.type, b.sum, b.excerpt, b.since, b.since_at
+			from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::timestamptz[])
+			     as b (id, type, sum, excerpt, since, since_at)
 			cross join (select ref_key from artifacts where id = $1::uuid) a
 			on conflict (artifact_id, block_id) do update set
 				type = excluded.type,
@@ -296,10 +304,11 @@ func IndexBlocks(
 				changed_version = excluded.changed_version,
 				changed_at = excluded.changed_at
 			returning block_id, created_at, xmax = 0
-		`, artifactID, version, versionAt, ids, types, sums, excerpts, BlockNodeKind, MaxBlockNodeBytes))
+		`, artifactID, ids, types, sums, excerpts, since, sinceAt, BlockNodeKind, MaxBlockNodeBytes))
 		if err != nil {
 			return nil, false, graphstore.Uncaused{}, fmt.Errorf("record the blocks version %d of %s changed: %w", version, artifactID, err)
 		}
+		textVersions = since
 		for _, id := range ids {
 			joined, inserted := fresh[id]
 			if !inserted || !blockIDFits(refKey, id) {
@@ -313,11 +322,17 @@ func IndexBlocks(
 		}
 	}
 	if len(textIDs) > 0 {
+		// A deleted block's row is recorded at this version, and a changed one's at the version
+		// its text stands since (textSince), so the text a reader reads at an indexed version is
+		// the latest row at or before it, as ever, and the row a block's changed_version names.
+		for range len(textIDs) - len(textVersions) {
+			textVersions = append(textVersions, int32(version))
+		}
 		if _, err := tx.Exec(ctx, `
 			insert into document_block_texts (artifact_id, block_id, version, text)
-			select $1::uuid, t.id, $2, t.text from unnest($3::text[], $4::text[]) as t (id, text)
+			select $1::uuid, t.id, t.version, t.text from unnest($2::text[], $3::text[], $4::int[]) as t (id, text, version)
 			on conflict (artifact_id, block_id, version) do update set text = excluded.text
-		`, artifactID, version, textIDs, texts); err != nil {
+		`, artifactID, textIDs, texts, textVersions); err != nil {
 			return nil, false, graphstore.Uncaused{}, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
 		}
 	}
@@ -386,26 +401,107 @@ func IndexBlocks(
 // no longer holds; the arm finds it by the version recorded here rather than by a row of
 // document_blocks it has none of (documentsOwedWindowsQuery, INFRA-988).
 //
+// Its second result is the latest version a pass indexed before this one, 0 for none, read in
+// the same statement off document_indexed_versions: the versions between it and this one are
+// the ones this pass covers that no pass indexed (textSince).
+//
 // What a reader meets for it: a document's windows, and so its hits in meaning search, appear
 // one reconciliation tick after the write rather than within it, as a comment's do
 // (indexItemBlocks). The write holds the issue row for its own rows alone: this window write
 // was 9.7% of an hour's database time over 31,241 calls at a 114.3 ms mean on the load-test
 // deployment, and the writers queued behind it were waiting on that row (INFRA-988).
-func standsAtVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int) (bool, error) {
+func standsAtVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int) (bool, int, error) {
+	var indexedBefore int
 	err := tx.QueryRow(ctx, `
 		insert into document_block_versions (artifact_id, version, windows_owed_at) values ($1, $2, now())
 		on conflict (artifact_id) do update set version = excluded.version,
 			windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
 		where document_block_versions.version is null or document_block_versions.version < excluded.version
-		returning version
-	`, artifactID, version).Scan(new(int))
+		returning coalesce((select max(i.version) from document_indexed_versions i
+		                    where i.artifact_id = $1 and i.version < $2), 0)
+	`, artifactID, version).Scan(&indexedBefore)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return false, 0, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("record the blocks of %s indexed at version %d: %w", artifactID, version, err)
+		return false, 0, fmt.Errorf("record the blocks of %s indexed at version %d: %w", artifactID, version, err)
 	}
-	return true, nil
+	return true, indexedBefore, nil
+}
+
+// textSince is, for each block whose text this pass records (bodies, its text in this version),
+// the version that text has stood since and that version's time, which the block's row takes as
+// its changed_version and changed_at. It is this version where the pass covers no other: on the
+// request path every version is indexed by its own write, and indexedBefore is the one before it.
+// A pass can cover more than one - a document past the deferral bound, or versions a build
+// before wrote during the roll, each of which the block-index reconciliation indexes at the latest
+// owed version alone (docs' indexOwedDocument) - and then the text stands since the earliest of
+// the owed versions from which every version up to this one holds a block of that same text, as
+// the renderer cuts the version's stored markdown (versionBlockTexts). So a version that rewrote
+// a block and a later one that left it alone, indexed in one pass, date the change to the first,
+// and the text-change time a reader takes from the row (dispatch://INFRA-1150 c-spec-tie) is that
+// version's. The owed versions are read newest first and only while some block still matches, and
+// not at all on the request path.
+func textSince(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, indexedBefore int, bodies []*string) ([]int32, []time.Time, error) {
+	since := make([]int32, len(bodies))
+	at := make([]time.Time, len(bodies))
+	pending := make([]int, len(bodies))
+	for index := range bodies {
+		since[index], at[index], pending[index] = int32(version), versionAt, index
+	}
+	if indexedBefore >= version-1 {
+		return since, at, nil
+	}
+	rows, err := tx.Query(ctx, `
+		select number, markdown, created_at from artifact_versions
+		where artifact_id = $1::uuid and number > $2 and number < $3 and markdown is not null
+		order by number desc
+	`, artifactID, indexedBefore, version)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the versions of %s no pass indexed before %d: %w", artifactID, version, err)
+	}
+	defer rows.Close()
+	for len(pending) > 0 && rows.Next() {
+		var number int32
+		var markdown string
+		var created time.Time
+		if err := rows.Scan(&number, &markdown, &created); err != nil {
+			return nil, nil, fmt.Errorf("read a version of %s no pass indexed: %w", artifactID, err)
+		}
+		held := versionBlockTexts(markdown)
+		standing := pending[:0]
+		for _, index := range pending {
+			if _, holds := held[*bodies[index]]; holds {
+				since[index], at[index] = number, created
+				standing = append(standing, index)
+			}
+		}
+		pending = standing
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read the versions of %s no pass indexed before %d: %w", artifactID, version, err)
+	}
+	return since, at, nil
+}
+
+// versionBlockTexts is the text of every block of a version's stored markdown, as the renderer
+// cuts it for the block index: the markdown read back (pmdoc.ParseRendering) and rendered with its
+// block offsets. A version that does not read back holds no block textSince can match.
+func versionBlockTexts(markdown string) map[string]struct{} {
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		return nil
+	}
+	rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		return nil
+	}
+	texts := make(map[string]struct{}, len(offsets))
+	for _, offset := range offsets {
+		texts[rendered[offset.From:offset.To]] = struct{}{}
+	}
+	return texts
 }
 
 // OwedBlockIndexDebts is one row per document owed a block index
