@@ -17,7 +17,14 @@ import type {
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
-import { type Draft, plainWords, type TreeContext, treeContext, treeDrafts } from "./tree-drafts";
+import {
+  addressesAsShortForms,
+  type Draft,
+  plainWords,
+  type TreeContext,
+  treeContext,
+  treeDrafts,
+} from "./tree-drafts";
 
 /**
  * The issue's node tree, built from the page's reads and nothing else
@@ -352,7 +359,10 @@ export function drawnLine({
 
 /** The node's own words as a reader reads them: the words of the server's reading of its text
  *  where its read sent one (`tree`), so its first line holds none of the symbols its body draws
- *  as formatting, and its text as stored otherwise. */
+ *  as formatting, and its text as stored otherwise. A bare address stays in them as written,
+ *  never as the short form a line reads (`lineWords`): the body draws these words, the words
+ *  filter matches them (`presets.ts`), and the citations the batched reference read is asked to
+ *  name are read from them (`useIssueTree.ts`), which a short form would drop. */
 export function nodeWords(node: TreeNode): string {
   return node.tree === undefined ? node.text : wordsOf(node.tree);
 }
@@ -373,6 +383,12 @@ export function nodeWords(node: TreeNode): string {
  * `**1\. Stand the harness up.** Run it.` reads `1. Stand the harness up. Run it.`, whose label
  * `firstLineOf` reads as no sentence end (decision 51), and whose sentence end is no longer
  * hidden behind the `**` that followed it.
+ *
+ * A bare `dispatch://` address in these words reads as its target's short form, as a link to it
+ * draws it (`addressesAsShortForms`, decision 95): the server's reading keeps one as a plain
+ * text run, which is no link, a stored text holds it as written, and no one-line view draws a
+ * raw address (R22). The first block of a reading is written short here (`firstBlockWords`),
+ * and a stored block as it is read to plain words (`plainWords`).
  *
  * Every place that draws one line for a node cuts it from these words: a parent's line under a
  * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
@@ -395,13 +411,14 @@ export function lineWords(node: TreeNode): string {
  *  `___`). */
 const NO_WORDS = /^[\s*_-]*$/u;
 
-/** The words of the first top-level block of a reading that holds any (`lineWords`); `""` for a
+/** The words of the first top-level block of a reading that holds any (`lineWords`), each bare
+ *  address in them written as its target's short form (`addressesAsShortForms`); `""` for a
  *  reading none of whose blocks holds a word. */
 function firstBlockWords(reading: DisplayTree): string {
   const content = reading.content;
   for (const block of Array.isArray(content) ? (content as DisplayTree[]) : []) {
     const words = wordsOf(block);
-    if (words.trim() !== "") return words;
+    if (words.trim() !== "") return addressesAsShortForms(words);
   }
   return "";
 }

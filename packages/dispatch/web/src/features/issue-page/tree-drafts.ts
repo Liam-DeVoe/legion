@@ -16,7 +16,12 @@ import type {
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { referenceSpans } from "../refs/reference-spans";
-import { buildDispatchReference, parseNodeReference } from "../refs/routes";
+import {
+  buildDispatchReference,
+  parseDispatchReference,
+  parseNodeReference,
+  shortForm,
+} from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
@@ -351,9 +356,8 @@ const DIRECTIVE_FENCE = /^:{3,}\s*$/;
  * The read names a document's block by its stored excerpt, which is the block's source: a typed
  * block is a directive, so its excerpt opens on the directive's line - its type and its
  * attributes - and, where the excerpt holds the whole block, ends on its closing fence. Both are
- * markup and no word of the block (R21), so they are left out, as the head's three sentences
- * leave them out of the callout they read (`IssueThreeThings.tsx`). Any other name is left as
- * the read gives it.
+ * markup and no word of the block (R21), so they are left out. Any other name is left as the
+ * read gives it.
  */
 export function blockWords(name: string): string {
   const lines = name.trimEnd().split("\n");
@@ -426,6 +430,12 @@ const KEPT = /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu;
  * marker at the start of any line goes, an image goes whole, a link reads as its words, and
  * strong, emphasis and struck marks go until none is left, so nested marks (`***x***`) go too.
  * White space collapses to single spaces.
+ *
+ * Last, a bare `dispatch://` address reads as its target's short form (`addressesAsShortForms`,
+ * decision 95): every place that reads a stored text to plain words draws it on one line - a
+ * node's line where the node has no reading (`lineWords`), and the name of a chip naming an
+ * ask, a comment or a message (`treeContext`) - and no one-line view draws a raw address (R22).
+ * A link already reads as its words, so `[the spec](dispatch://…)` reads `the spec`.
  */
 export function plainWords(markdown: string): string {
   const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
@@ -451,7 +461,33 @@ export function plainWords(markdown: string): string {
     }
     return words.replace(KEPT, (kept) => String.fromCharCode(kept.charCodeAt(0) - 0xe000));
   });
-  return paragraphs.join(" ").replace(/\s+/gu, " ").trim();
+  return addressesAsShortForms(paragraphs.join(" ").replace(/\s+/gu, " ").trim());
+}
+
+/**
+ * `words` with each bare `dispatch://` address in them written as its target's short form, as a
+ * link to it draws it (`shortForm`): `dispatch://CORE-2` reads `CORE-2`, and
+ * `dispatch://INFRA-1196/spec#b-r1` reads `INFRA-1196 spec block`. It is for the words a place
+ * that draws one line for a node cuts that line from, since no one-line view draws a raw address
+ * (dispatch://INFRA-1196 R22, decision 95): the server's reading keeps a bare address in a node's
+ * words as a plain text run, which is no link, and a stored text holds it as written, so both
+ * meet it.
+ *
+ * An address is found as the page finds a reference in text (`referenceSpans`), and only the
+ * address itself is written short: what `trimReference` cuts off its end stays where it stood, so
+ * `see dispatch://CORE-2.` reads `see CORE-2.`. A span that names no target
+ * (`parseDispatchReference`) is left as written.
+ */
+export function addressesAsShortForms(words: string): string {
+  let shortened = "";
+  let cursor = 0;
+  for (const { start, value } of referenceSpans(words, "dispatch://")) {
+    const route = parseDispatchReference(value);
+    if (route === undefined) continue;
+    shortened += `${words.slice(cursor, start)}${shortForm(route)}`;
+    cursor = start + value.length;
+  }
+  return shortened + words.slice(cursor);
 }
 
 /** Every draft the reads hold, by its node id. */
