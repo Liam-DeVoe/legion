@@ -1074,6 +1074,41 @@ func TestIntrospectingATokenTheBrokerCannotStandBehind(t *testing.T) {
 	}
 }
 
+// TestIntrospectingALiveTokenWithACharacterAddedIsNotLive: a string made of a live token and one
+// character in front of it is not a token the broker minted, so it is answered as simply not
+// live, with no error, as a token nobody issued is. The signature half of such a string is the
+// live token's own, so the store finds the token's row, and what fails is the library's check of
+// the key half, which is no longer base64url. That is the library finding the token wanting and
+// never a storage outage: answered as a broker failure, the introspection route says 503
+// DATABASE_UNAVAILABLE and logs an error for a request that is only malformed, and Dispatch, which
+// hands the broker everything after the first space of `Authorization: DPoP  <token>`, tells the
+// caller of such a header that the broker cannot be reached and to try again.
+func TestIntrospectingALiveTokenWithACharacterAddedIsNotLive(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	ctx := context.Background()
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), newKey(t))
+	// The control: the token as it was minted is live, so each refusal below is the added
+	// character's.
+	if live := f.introspected(t, token); !live.Active {
+		t.Fatalf("Introspect of the token as minted = %+v, want it live", live)
+	}
+	for name, added := range map[string]string{
+		"a space":                       " ",
+		"a character outside base64url": "!",
+	} {
+		t.Run(name, func(t *testing.T) {
+			answer, err := f.provider.Introspect(ctx, added+token)
+			if err != nil {
+				t.Fatalf("Introspect = %v, want no error: a malformed token is not live, and no part of the broker failed", err)
+			}
+			if answer != (oauthwire.Introspection{}) {
+				t.Fatalf("Introspect = %+v, want not live and nothing else", answer)
+			}
+		})
+	}
+}
+
 // TestIntrospectionAnswersOnlyAnAccessToken: the introspection route is how Dispatch reads one
 // of the broker's access tokens back, and its answer carries no token type, so a resource server
 // cannot tell a refresh token from an access token by reading it. A machine login's refresh token
