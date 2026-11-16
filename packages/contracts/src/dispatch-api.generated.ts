@@ -25,7 +25,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every group an access list can name, by name: {name, owner, members, not_signed_in}, its owner the full member who made it, its members' emails sorted, and the members nobody has signed in as yet, whom the group admits only once they sign in as full members; [] for none. Needs the person scope. */
+    /** @description Every group an access list can name, by name: {name, owner, members, not_signed_in}, its owner the full member who made it, its members' emails sorted, and the members nobody has signed in as yet, whom the group admits only once they sign in as full members; [] for none. The owner may hand the group to another full member. Needs the person scope. */
     get: operations["getApiV1AccessGroups"];
     put?: never;
     post?: never;

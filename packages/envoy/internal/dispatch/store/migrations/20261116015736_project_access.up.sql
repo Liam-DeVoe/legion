@@ -12,7 +12,7 @@
 --   - projects.visibility, `public` (every full member sees the project, as today) or `private`.
 --   - project_access, the people and groups a project's owner lists. principal is a person's
 --     lowercase email or a group's name.
---   - access_groups, each with its one owner, the full member who made it, and
+--   - access_groups, each with its one owner, the full member who made it or was given it, and
 --     access_group_members, its people. Only a full member is ever admitted through a group.
 --   - people.member_kind, `full` for everyone who has signed in so far, or `restricted` for a
 --     person from outside the sign-in domain whom some project names directly.
