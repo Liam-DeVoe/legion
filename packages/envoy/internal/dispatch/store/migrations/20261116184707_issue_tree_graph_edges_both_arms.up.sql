@@ -1,27 +1,33 @@
 -- 20261116184707_issue_tree_graph_edges_both_arms.up.sql
 --
--- dispatch://INFRA-1253 carries two children that each re-state `graph_edges` from the text of
--- 20261109215947_graph_edges_tuples, and neither re-statement holds the other's change:
+-- dispatch://INFRA-1253 carries two children that each re-state `graph_edges`, and neither
+-- child's re-statements hold the other's changes:
 --
 --   20261116091932_graph_edges_store_tuples (dispatch://INFRA-1950) gives the tuple arm the class
 --   `store`, the relations the store holds with no projection row behind them: `changed_by_run`,
 --   `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node, and `part_of`
---   and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`;
+--   and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`; and
+--   20261116160000_graph_edges_findings (dispatch://INFRA-1950), re-stated from 091932's text,
+--   leaves a tuple out of a finding of a lens - a `block` node whose id begins `lens/` - out of that
+--   class and adds one arm over the store's current tuples that answers the relations of the class
+--   out of a finding with the literal from_kind `lens_block`;
 --
 --   20261116094101_graph_edges_asks (dispatch://INFRA-1150) answers the asks arms of
 --   `anchored_to`, `owned_by` and `followed_by` only for a row whose `node_kind` is null, and
 --   gives the tuple arm an ask's `anchored_to` and `owned_by` (class `ask`), its `followed_by`
 --   (class `ask_follower`) and an answered ask's `shaped` (class `block_ref`).
 --
--- The runner applies them in version order, so a database migrated through both holds the second
--- alone, and the tuple arm answers none of the class `store`. This re-states the view once more as
--- 20261116094101 states it, with 20261116091932's one change added: the class `store`, tested
--- after a block's `in_document` and before every other class, as 20261116091932 tests it, so a
--- requirement block's `constrained_by` is not read as a block reference, and answered with no
--- projection row consulted. No kind of the class `store` is a kind an ask's class names, so every
--- row either child's arm answered is answered as it was, and the kinds `refs.TupleKinds` lists are
--- both children's. A database that applied the two in the other order holds the first alone, and
--- this states the same view over it.
+-- The runner applies them in version order, so a database migrated through all three holds the
+-- last, 20261116160000, alone, and graph_edges answers none of an ask's relations from its node.
+-- This re-states the view once more as 20261116160000 states it, with 20261116094101's changes
+-- added: the three `node_kind is null` tests on the asks arms, and the tuple arm's classes `ask`,
+-- `ask_follower` and an ask's `shaped`, each with the join of its projection row. The class
+-- `store`, with its guard against a finding, is tested after a block's `in_document` and before
+-- every other class, as 20261116160000 tests it, so a requirement block's `constrained_by` is not
+-- read as a block reference; the finding arm stands last. No kind of the class `store` is a kind
+-- an ask's class names, so every row either child's arms answered is answered as it was, and the
+-- kinds `refs.TupleKinds` lists are both children's. A database that applied them in another order
+-- holds another one of them last, and this states the same view over it.
 --
 -- It drops no arm and changes no row an arm answers for either child: a build of the release
 -- before reads the rows it read. Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the
@@ -139,9 +145,10 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
            tuple.asserted,
            case
              when tuple.from_kind = 'block' and tuple.kind = 'in_document' then 'block'
-             when tuple.kind in ('changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
-               or (tuple.kind in ('part_of', 'authored_by')
-                   and tuple.from_kind in ('interaction', 'lens', 'risk', 'constraint')) then 'store'
+             when not (tuple.from_kind = 'block' and tuple.from_id like 'lens/%')
+               and (tuple.kind in ('changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
+                    or (tuple.kind in ('part_of', 'authored_by')
+                        and tuple.from_kind in ('interaction', 'lens', 'risk', 'constraint'))) then 'store'
              when tuple.from_kind = 'block' and tuple.kind <> 'part_of' then 'block_ref'
              when tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by') then 'comment'
              when tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by') then 'ask'
@@ -181,4 +188,24 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
               and projected.session_id = edge.to_id
             offset 0)
-        end;
+        end
+  union all
+  select 'lens_block', finding.from_id, finding.kind, finding.to_kind, finding.to_id, finding.created_at, finding.source_seq
+  from (
+    select distinct on (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id)
+           tuple.from_kind,
+           tuple.from_id,
+           tuple.kind,
+           tuple.to_kind,
+           tuple.to_id,
+           tuple.at as created_at,
+           tuple.legacy_source_seq as source_seq,
+           tuple.asserted
+    from graph_tuples tuple
+    where tuple.from_kind = 'block' and tuple.from_id like 'lens/%'
+      and tuple.kind in ('part_of', 'authored_by', 'changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
+      and tuple.to_kind <> 'value'
+    order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq desc
+  ) finding
+  join graph_nodes node on node.kind = finding.from_kind and node.id = finding.from_id
+  where finding.asserted and node.state <> 'gone';

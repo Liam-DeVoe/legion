@@ -1228,7 +1228,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty-six of the twenty-eight dispatch tools that write, of the forty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The two it leaves out are dispatch_review and dispatch_settle, on purpose: each records a person's decision - a review an approval or a changes request in a person's name, a settle that a person settled a proposal - and the loop that proposes operations must never propose one. Twenty-six actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1550,6 +1550,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/constraints": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The constraints under the issue the caller may see, in the order they were written there: {issue, constraints}, each with its address dispatch://constraint/<uuid>, id, standard, reference, measurement, value and taken_where (null where it holds none), author (the person or session its authored_by tuple names, null for one written on the shared bearer), created_at, state and visibility. A constraint reserved for its author is in its author's list alone, which reads its visibility author, and a constraint that is gone is in no list. It takes no query. An issue Dispatch does not hold is 404 NOT_FOUND. */
+    get: operations["getApiV1IssuesByKeyConstraints"];
+    put?: never;
+    /** @description Write one constraint under the issue, {standard, reference} or {measurement, value, taken_where}, with visibility?: what forced a requirement from outside the conversation, a standard with its reference or a measurement with its value and where it was taken, as attributes of the constraint, placed under the issue by its part_of tuple. A body that is neither shape, leaves a field of its shape blank or names fields of both is 400 CONSTRAINT_INPUT; visibility author is 403 AUTHOR_NAMES_NOBODY on a credential that proves no author; an issue Dispatch does not hold is 404 NOT_FOUND. A refused write stores nothing, and the write appends no event. A requirement points at the constraint through POST /api/v1/issues/{key}/nodes/{id}/pointers (constrained_by). Answers 201 with the constraint as GET /api/v1/issues/{key}/constraints lists it. */
+    post: operations["postApiV1IssuesByKeyConstraints"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/coverage": {
     parameters: {
       query?: never;
@@ -1557,7 +1575,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. */
+    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, its block's node state, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. A requirement at node state proposed is a question still open and raises neither gap. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. */
     get: operations["getApiV1IssuesByKeyCoverage"];
     put?: never;
     post?: never;
@@ -1669,6 +1687,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/lenses": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Invoke a lens on one node of the issue {on, kind, verdict?, findings?, triggered_by?, visibility?}: one analysis of one kind of the lens catalogue, logged under the node it looks at by its part_of tuple, with one has_kind tuple to its lens_kind. on is the dispatch:// address, or the store address /nodes/{id} takes, of a node the caller may see that stands under the issue: the issue itself, a document or one of its blocks, an ask, a comment or a message or one of their blocks, or a lens, a finding, a risk or a constraint of the issue; any other is 404 NOT_FOUND. kind is the id of a lens_kind node (GET /api/v1/schema/blocks lists them under lens_kinds): none is 400 LENS_KIND_REQUIRED, and an id no lens_kind node holds 400 INVALID_POINTER. verdict is stored as the lens's verdict. Each of findings is one finding, a block node under the lens at a random block id, addressed dispatch://lens/<uuid>#b-<id>, ranked in the order written. triggered_by is the address of the lens of the issue whose finding asked for this one, a triggered_by tuple. visibility author keeps the lens and its findings to their author, and is 403 AUTHOR_NAMES_NOBODY on a credential that proves no author, the deployment's shared bearer. A refused write stores nothing, and no write appends an event or sends a delivery. Answers 201 with the lens - its address dispatch://lens/<uuid>, kind, on, verdict, triggered_by, author (the person or session its authored_by tuple names, null on the shared bearer), created_at, state and visibility - and its findings, each with its address, text, author, state and visibility. */
+    post: operations["postApiV1IssuesByKeyLenses"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/messages": {
     parameters: {
       query?: never;
@@ -1696,6 +1731,91 @@ export interface paths {
     };
     /** @description Read one message with its deliveries and replies. */
     get: operations["getApiV1IssuesByKeyMessagesById"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/nodes/{id}/findings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Add one finding to a lens {text, visibility?}: a block node under the lens {id} names, at a random block id, addressed dispatch://lens/<uuid>#b-<id>, after every finding the lens holds. {id} is the lens's store address under the issue (lens/<uuid>, or its dispatch:// address), percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND, and a node that is no lens 400 INVALID_POINTER. The finding carries its lens's visibility unless visibility is author, which is 403 AUTHOR_NAMES_NOBODY on a credential that proves no author. An empty text is 400 FINDING_INPUT. A refused write stores nothing, and the write appends no event. Answers 201 with the finding: its address, id, block_id, its lens's address, text, author, created_at, state and visibility. */
+    post: operations["postApiV1IssuesByKeyNodesByIdFindings"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/nodes/{id}/pointers": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Append, retract or retarget one pointer tuple out of the node {id} names {kind, action, to, from?}. kind is has_kind (a lens to its lens_kind, to being a lens_kind id), triggered_by (a lens to the lens of the issue that asked for it), constrained_by (a requirement block to a constraint of the issue or of the catalogue) or prevented_by (a risk to a check block). action append asserts a tuple at to, retract retracts the one at to, and retarget moves the one at from to to, retracting the old and asserting the new in one write and touching no part_of tuple. {id} is the node's store address under the issue, percent-encoded as one path segment. The store holds each tuple to its type rule: a far end of a type the rule does not allow, a lens triggered by itself and a lens left with no kind are 400 INVALID_POINTER; a second has_kind, and a retarget of a pre-mortem lens's has_kind away from pre-mortem, are 409 POINTER_ALREADY_ASSERTED, one body whatever hangs under the lens; a retraction or a retarget of a tuple the node does not hold is 404 NOT_FOUND. A node or a far end the caller may not see under the issue answers 404 NOT_FOUND, as one that does not exist; a has_kind at an id no lens_kind node holds is 400 INVALID_POINTER; part_of, which moves through the node's parent route, or any other kind or action, is 400 POINTER_INPUT. A refused write stores nothing, and the write appends no event. Answers 200 {node, kind, action, to, from}, each end with its address, kind, state and visibility, from null but for a retarget. */
+    post: operations["postApiV1IssuesByKeyNodesByIdPointers"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/nodes/{id}/settle": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Settle the proposed node {id} names {actor?}: one state tuple at settled, written by the caller, and no event. {id} is the node's store address under the issue, percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND, in the words a node nobody wrote answers. A node that is not at proposed is 409 NODE_NOT_PROPOSED. A person settles any proposal - a browser's cookie, or a token holding the person scope, whose settle is written as the person it acts for - and any other caller only a proposal its own credential wrote, the node's made_by compared with that credential whole (for a block of a document, the writer of the version that first held the block); any other is 403 SETTLE_NOT_PERMITTED, naming the node. The deployment's shared agent token proves no author, so it settles nothing. Answers 200 {node: {address, kind, state, visibility}, previous}. */
+    post: operations["postApiV1IssuesByKeyNodesByIdSettle"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/nodes/{id}/state": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Write the node state of the node {id} names {state}: proposed or overtaken on any node, live on any node that is not gone, and gone only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block. {id} is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole dispatch:// address), percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND. The value is checked first: a word that is none of live, gone, proposed, settled and overtaken is 400 INVALID_ATTRIBUTE_VALUE, naming the attribute state and the word, and nothing is stored. settled is 409 NODE_STATE_NOT_WRITABLE, since POST /api/v1/issues/{key}/nodes/{id}/settle alone settles a proposed node, and so are gone on a block of a document or an issue, a document, an ask, a comment or a message, and any value on a gone node, each naming the node's kind, its state and the value asked for. The write appends one state tuple written by the caller and no event, and every read of the node answers the new state at once; a write of the state the node holds appends nothing. Answers 200 {node: {address, kind, state, visibility}, previous}, previous the state it held before. */
+    post: operations["postApiV1IssuesByKeyNodesByIdState"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/proposed": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The nodes under the issue whose node state is proposed and that the caller may see: {issue, nodes}, each {node, excerpt}, node the graph node as every read answers it (kind, id, ref, state, visibility and the rest) and excerpt the words an edge at it shows, null where it has none. A node under the issue is the issue itself, a document of the issue or one of its blocks, an ask, a comment or a message of the issue or one of their blocks, and a lens, a finding, a risk or a constraint standing under one of those, in the order of their kind and their id. It takes no query. An issue Dispatch does not hold is 404 NOT_FOUND. */
+    get: operations["getApiV1IssuesByKeyProposed"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1733,6 +1853,23 @@ export interface paths {
     put?: never;
     /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A pass of a before_merge check states the negative control that would have caught its failure: one whose negative_control is empty or whitespace alone is 400 NEGATIVE_CONTROL_REQUIRED, naming the field and the check's block id, asked after the closed-issue refusal; a pass of an after_merge or default_branch check and any fail may leave it empty. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
     post: operations["postApiV1IssuesByKeyResults"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/risks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Write one risk under a pre-mortem lens of the issue {lens, heading, early_warning, prevention, prevented_by?, visibility?}: the failure it names, the sign it is seen coming by and what keeps it from happening, as attributes of the risk, placed under the lens by its part_of tuple. prevented_by is the address of a check block of the issue's documents that covers the risk, a prevented_by tuple. A field left blank is 400 RISK_INPUT; a lens or a check the caller may not see under the issue is 404 NOT_FOUND; a lens of any kind but pre-mortem, a node that is no lens and a prevented_by at a block that is no check are 400 INVALID_POINTER, the first saying a risk belongs under a lens of kind pre-mortem; visibility author is 403 AUTHOR_NAMES_NOBODY on a credential that proves no author. A refused write stores nothing, and the write appends no event. Answers 201 with the risk: its address dispatch://risk/<uuid>, lens, heading, early_warning, prevention, prevented_by (each check's address), author, created_at, state and visibility. */
+    post: operations["postApiV1IssuesByKeyRisks"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1782,6 +1919,23 @@ export interface paths {
     };
     /** @description What a reference to an issue shows, read without the full issue: {key, project, title, status, documents}, documents every artifact of the issue in the order the issue read lists them, each {id, slug, name, kind, latest_version, primary}, primary whether the document is the issue's spec; 404 NOT_FOUND for no such issue. */
     get: operations["getApiV1IssuesByKeySummary"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/lenses": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The lenses invoked on one node, and each chain of triggered lenses they stand in: ?on= the node's dispatch:// address (or its store address as /nodes/{id} takes one), any node the caller may see, of an issue or of none; an address that names no node, a node nobody holds and a node the caller may not see are one 404 NOT_FOUND, and an empty on is 400 INVALID_QUERY. It takes no other query: nothing chooses a kind, an edge or a depth. Answers {on, lens, lenses, chains}: on the node read (address, kind, state, visibility); lens the node itself, whole, where it is a lens, else null; lenses the lenses whose part_of tuple points at the node, in the order they were invoked (the seq of that tuple, so a later write of a lens's row does not move it); and chains. Each lens is {address, kind {id, words}, on, author, created_at, verdict, state, visibility, triggered_by, triggered, findings, risks}: kind the lens_kind its has_kind tuple names with that kind's words, on the address of the node it stands on (null where the caller may not see it), author the person or session its authored_by tuple names (null on the shared bearer), triggered_by the lenses its triggered_by tuples point at and triggered the lenses whose triggered_by tuples point at it, each by address in the order written; findings in rank order, each {address, text, rank, state, visibility}, rank the seq of its part_of tuple, a sparse key; risks in the order of their part_of tuples, each {address, heading, early_warning, prevention, prevented_by, state, visibility}, prevented_by the address of each check that prevents it, [] where none does. A chain is {lenses, stopped_at}: the lenses joined to one another by triggered_by tuples the caller may see, walked both ways from each lens on the node (and from the node itself where it is a lens) that no earlier chain lists, breadth first, with a visited set so a cycle lists each lens once, and listed in the order they were invoked. A chain lists at most 50 lenses: past them stopped_at names the first lens it reached and did not list, and a lens on the node past that cut begins a chain of its own; a chain of exactly 50 has stopped_at null. A chain holds two lenses or more. A lens, a finding or a risk the caller may not see is in no list, no chain and no count, and no chain passes through a lens the caller may not see, so a lens reached only through one is in none of that caller's. */
+    get: operations["getApiV1Lenses"];
     put?: never;
     post?: never;
     delete?: never;
@@ -3651,7 +3805,7 @@ export interface components {
       comments: number;
     };
     BlockSchemaRead: {
-      lens_kinds: components["schemas"]["LensKindRead"][] | null;
+      lens_kinds?: components["schemas"]["LensKindRead"][] | null;
       /** @description elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block */
       marks?: {
         [key: string]: unknown;
@@ -3660,7 +3814,7 @@ export interface components {
       nodes?: {
         [key: string]: unknown;
       }[];
-      store_types: components["schemas"]["StoreTypeRead"][] | null;
+      store_types?: components["schemas"]["StoreTypeRead"][] | null;
       /** @description elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block */
       types:
         | {
@@ -4001,6 +4155,32 @@ export interface components {
       resolved_by: components["schemas"]["Actor"] | null;
       suggestion: components["schemas"]["Suggestion"] | null;
       turn: null | string;
+    };
+    ConstraintInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      measurement?: string;
+      reference?: string;
+      standard?: string;
+      taken_where?: string;
+      value?: string;
+      /** @enum {string} */
+      visibility?: "project" | "author";
+    };
+    ConstraintRead: {
+      address: string;
+      author: components["schemas"]["ReasoningAuthor"] | null;
+      /** Format: date-time */
+      created_at: string;
+      id: string;
+      measurement: null | string;
+      reference: null | string;
+      standard: null | string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      taken_where: null | string;
+      value: null | string;
+      /** @enum {string} */
+      visibility: "project" | "author";
     };
     CreateAgentMessageInput: {
       body: string;
@@ -4779,11 +4959,14 @@ export interface components {
         | "component"
         | "constraint"
         | "issue"
+        | "lens"
+        | "lens_block"
         | "lens_kind"
         | "message"
         | "message_block"
         | "page"
         | "person"
+        | "risk"
         | "role"
         | "session"
         | "supertag";
@@ -4796,10 +4979,10 @@ export interface components {
       project?: string;
       ref?: string;
       /** @enum {string} */
-      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
       text?: string;
       /** @enum {string} */
-      visibility: "project" | "author";
+      visibility?: "project" | "author";
     };
     GraphNodeParent: {
       id: string;
@@ -4827,11 +5010,14 @@ export interface components {
         | "component"
         | "constraint"
         | "issue"
+        | "lens"
+        | "lens_block"
         | "lens_kind"
         | "message"
         | "message_block"
         | "page"
         | "person"
+        | "risk"
         | "role"
         | "session"
         | "supertag";
@@ -4844,7 +5030,7 @@ export interface components {
       project?: string;
       ref?: string;
       /** @enum {string} */
-      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
       text?: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       text_tree?: {
@@ -4853,7 +5039,7 @@ export interface components {
         [key: string]: unknown;
       };
       /** @enum {string} */
-      visibility: "project" | "author";
+      visibility?: "project" | "author";
     };
     GraphReferences: {
       edges: components["schemas"]["GraphEdge"][] | null;
@@ -5114,6 +5300,10 @@ export interface components {
       mode: null | string;
       reason?: null | string;
     };
+    IssueConstraints: {
+      constraints: components["schemas"]["ConstraintRead"][] | null;
+      issue: string;
+    };
     IssueCoverage: {
       gaps: string[] | null;
       has_plan: boolean;
@@ -5237,6 +5427,10 @@ export interface components {
       children: components["schemas"]["ProgressCount"] | null;
       tasks: components["schemas"]["ProgressCount"] | null;
     };
+    IssueProposed: {
+      issue: string;
+      nodes: components["schemas"]["ProposedNode"][] | null;
+    };
     IssueRankInput: {
       after?: null | string;
       before?: null | string;
@@ -5355,6 +5549,66 @@ export interface components {
       opened_to_merge: components["schemas"]["DeliverySpread"];
       opened_to_production: components["schemas"]["DeliverySpread"];
     };
+    LensChain: {
+      lenses: components["schemas"]["LensRead"][] | null;
+      stopped_at: null | string;
+    };
+    LensFinding: {
+      address: string;
+      author: components["schemas"]["ReasoningAuthor"] | null;
+      block_id: string;
+      /** Format: date-time */
+      created_at: string;
+      id: string;
+      lens: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+      /** @enum {string} */
+      visibility: "project" | "author";
+    };
+    LensFindingInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      text: string;
+      /** @enum {string} */
+      visibility?: "project" | "author";
+    };
+    LensFindingRead: {
+      address: string;
+      /** Format: int64 */
+      rank: number;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+      /** @enum {string} */
+      visibility: "project" | "author";
+    };
+    LensInvocationInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      findings?: string[];
+      kind: string;
+      on: string;
+      triggered_by?: string;
+      verdict?: string;
+      /** @enum {string} */
+      visibility?: "project" | "author";
+    };
+    LensInvoked: {
+      address: string;
+      author: components["schemas"]["ReasoningAuthor"] | null;
+      /** Format: date-time */
+      created_at: string;
+      findings: components["schemas"]["LensFinding"][] | null;
+      id: string;
+      kind: string;
+      on: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      triggered_by: null | string;
+      verdict: null | string;
+      /** @enum {string} */
+      visibility: "project" | "author";
+    };
     LensKindRead: {
       id: string;
       ref: string;
@@ -5366,6 +5620,27 @@ export interface components {
       ref: string;
       reference: string;
       standard: string;
+    };
+    LensRead: {
+      address: string;
+      author: components["schemas"]["ReasoningAuthor"] | null;
+      /** Format: date-time */
+      created_at: string;
+      findings: components["schemas"]["LensFindingRead"][] | null;
+      kind: components["schemas"]["LensReadKind"] | null;
+      on: null | string;
+      risks: components["schemas"]["RiskRead"][] | null;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      triggered: string[] | null;
+      triggered_by: string[] | null;
+      verdict: null | string;
+      /** @enum {string} */
+      visibility: "project" | "author";
+    };
+    LensReadKind: {
+      id: string;
+      words: string;
     };
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
@@ -5551,6 +5826,22 @@ export interface components {
       label: string;
       session: string;
     };
+    NodeLenses: {
+      chains: components["schemas"]["LensChain"][] | null;
+      lens: components["schemas"]["LensRead"] | null;
+      lenses: components["schemas"]["LensRead"][] | null;
+      on: components["schemas"]["ReasoningEnd"];
+    };
+    NodeStateInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "overtaken";
+    };
+    NodeStateWritten: {
+      node: components["schemas"]["ReasoningEnd"];
+      /** @enum {string} */
+      previous: "live" | "gone" | "proposed" | "settled" | "overtaken";
+    };
     OpenAsk: {
       /** Format: int64 */
       age_seconds: number;
@@ -5645,10 +5936,10 @@ export interface components {
       kind: string;
       relations: string[] | null;
       /** @enum {string} */
-      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
       title: string;
       /** @enum {string} */
-      visibility: "project" | "author";
+      visibility?: "project" | "author";
     };
     PersonNodes: {
       limit: number;
@@ -5672,6 +5963,23 @@ export interface components {
     };
     PersonSignInsResponse: {
       signins: components["schemas"]["PersonSignInResp"][] | null;
+    };
+    PointerInput: {
+      /** @enum {string} */
+      action: "append" | "retract" | "retarget";
+      actor?: components["schemas"]["Actor"] | null;
+      from?: string;
+      /** @enum {string} */
+      kind: "has_kind" | "triggered_by" | "constrained_by" | "prevented_by";
+      to: string;
+    };
+    PointerWritten: {
+      /** @enum {string} */
+      action: "append" | "retract" | "retarget";
+      from: components["schemas"]["ReasoningEnd"] | null;
+      kind: string;
+      node: components["schemas"]["ReasoningEnd"];
+      to: components["schemas"]["ReasoningEnd"];
     };
     Priorities: {
       empty?: string;
@@ -5769,6 +6077,10 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       steps: null | ("decisions" | "criteria" | "spec")[];
     };
+    ProposedNode: {
+      excerpt: components["schemas"]["GraphExcerpt"] | null;
+      node: components["schemas"]["GraphNode"];
+    };
     PutArchitectureSourceInput: {
       actor?: components["schemas"]["Actor"] | null;
       branch: string;
@@ -5778,6 +6090,19 @@ export interface components {
       default?: null | boolean;
       project: string;
       renamed_to?: null | string;
+    };
+    ReasoningAuthor: {
+      id: string;
+      /** @enum {string} */
+      kind: "person" | "session";
+    };
+    ReasoningEnd: {
+      address: string;
+      kind: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      /** @enum {string} */
+      visibility: "project" | "author";
     };
     RebuildArtifactInput: {
       markdown?: null | string;
@@ -5931,6 +6256,8 @@ export interface components {
       gaps: string[] | null;
       plan_tasks: number;
       ref: string;
+      /** @enum {string} */
+      state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
       text: string;
     };
     ResidentRooms: {
@@ -5947,6 +6274,43 @@ export interface components {
       basis?: components["schemas"]["CheckBasis"];
       /** @enum {string} */
       reason?: "repository_unreadable" | "read_failed";
+    };
+    RiskInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      early_warning: string;
+      heading: string;
+      lens: string;
+      prevented_by?: string;
+      prevention: string;
+      /** @enum {string} */
+      visibility?: "project" | "author";
+    };
+    RiskRead: {
+      address: string;
+      early_warning: string;
+      heading: string;
+      prevented_by: string[] | null;
+      prevention: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      /** @enum {string} */
+      visibility: "project" | "author";
+    };
+    RiskWritten: {
+      address: string;
+      author: components["schemas"]["ReasoningAuthor"] | null;
+      /** Format: date-time */
+      created_at: string;
+      early_warning: string;
+      heading: string;
+      id: string;
+      lens: string;
+      prevented_by: string[] | null;
+      prevention: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      /** @enum {string} */
+      visibility: "project" | "author";
     };
     RoomCounters: {
       awareness_clients: number;
@@ -10367,6 +10731,78 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeyConstraints: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueConstraints"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1IssuesByKeyConstraints: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ConstraintInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ConstraintRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeyCoverage: {
     parameters: {
       query?: {
@@ -10620,6 +11056,44 @@ export interface operations {
       };
     };
   };
+  postApiV1IssuesByKeyLenses: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["LensInvocationInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LensInvoked"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeyMessages: {
     parameters: {
       query?: {
@@ -10716,6 +11190,196 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MessageRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1IssuesByKeyNodesByIdFindings: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["LensFindingInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LensFinding"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1IssuesByKeyNodesByIdPointers: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PointerInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PointerWritten"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1IssuesByKeyNodesByIdSettle: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeStateWritten"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1IssuesByKeyNodesByIdState: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["NodeStateInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeStateWritten"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1IssuesByKeyProposed: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueProposed"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10844,6 +11508,44 @@ export interface operations {
       };
     };
   };
+  postApiV1IssuesByKeyRisks: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RiskInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RiskWritten"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeySubscribers: {
     parameters: {
       query?: {
@@ -10932,6 +11634,39 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["IssueReferenceSummary"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1Lenses: {
+    parameters: {
+      query?: {
+        on?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeLenses"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13885,6 +14620,8 @@ export type CommentRead = components["schemas"]["CommentRead"];
 export type CommentReplyInput = components["schemas"]["CommentReplyInput"];
 export type CommentWithTrees = components["schemas"]["CommentWithTrees"];
 export type CommentWriteResponse = components["schemas"]["CommentWriteResponse"];
+export type ConstraintInput = components["schemas"]["ConstraintInput"];
+export type ConstraintRead = components["schemas"]["ConstraintRead"];
 export type CreateAgentMessageInput = components["schemas"]["CreateAgentMessageInput"];
 export type CreateAgentTokenInput = components["schemas"]["CreateAgentTokenInput"];
 export type CreateArtifactReviewInput = components["schemas"]["CreateArtifactReviewInput"];
@@ -14007,6 +14744,7 @@ export type IssueCollaboratorPerson = components["schemas"]["IssueCollaboratorPe
 export type IssueCollaborators = components["schemas"]["IssueCollaborators"];
 export type IssueComponents = components["schemas"]["IssueComponents"];
 export type IssueComponentsInput = components["schemas"]["IssueComponentsInput"];
+export type IssueConstraints = components["schemas"]["IssueConstraints"];
 export type IssueCoverage = components["schemas"]["IssueCoverage"];
 export type IssueDecisions = components["schemas"]["IssueDecisions"];
 export type IssueDesignGate = components["schemas"]["IssueDesignGate"];
@@ -14016,6 +14754,7 @@ export type IssueDetails = components["schemas"]["IssueDetails"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
 export type IssueOpenAsk = components["schemas"]["IssueOpenAsk"];
 export type IssueProgress = components["schemas"]["IssueProgress"];
+export type IssueProposed = components["schemas"]["IssueProposed"];
 export type IssueRankInput = components["schemas"]["IssueRankInput"];
 export type IssueRefResolved = components["schemas"]["IssueRefResolved"];
 export type IssueReferenceSummary = components["schemas"]["IssueReferenceSummary"];
@@ -14030,8 +14769,16 @@ export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];
+export type LensChain = components["schemas"]["LensChain"];
+export type LensFinding = components["schemas"]["LensFinding"];
+export type LensFindingInput = components["schemas"]["LensFindingInput"];
+export type LensFindingRead = components["schemas"]["LensFindingRead"];
+export type LensInvocationInput = components["schemas"]["LensInvocationInput"];
+export type LensInvoked = components["schemas"]["LensInvoked"];
 export type LensKindRead = components["schemas"]["LensKindRead"];
 export type LensKindSourceRead = components["schemas"]["LensKindSourceRead"];
+export type LensRead = components["schemas"]["LensRead"];
+export type LensReadKind = components["schemas"]["LensReadKind"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
@@ -14053,6 +14800,9 @@ export type MyReplyRow = components["schemas"]["MyReplyRow"];
 export type MyReplySession = components["schemas"]["MyReplySession"];
 export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
 export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
+export type NodeLenses = components["schemas"]["NodeLenses"];
+export type NodeStateInput = components["schemas"]["NodeStateInput"];
+export type NodeStateWritten = components["schemas"]["NodeStateWritten"];
 export type OpenAsk = components["schemas"]["OpenAsk"];
 export type OpenAskDocument = components["schemas"]["OpenAskDocument"];
 export type OpenAskIssue = components["schemas"]["OpenAskIssue"];
@@ -14069,6 +14819,8 @@ export type PersonNodes = components["schemas"]["PersonNodes"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
+export type PointerInput = components["schemas"]["PointerInput"];
+export type PointerWritten = components["schemas"]["PointerWritten"];
 export type Priorities = components["schemas"]["Priorities"];
 export type Priority = components["schemas"]["Priority"];
 export type PriorityAct = components["schemas"]["PriorityAct"];
@@ -14082,8 +14834,11 @@ export type ProjectDefaultAssignee = components["schemas"]["ProjectDefaultAssign
 export type ProjectDefaultAssigneeInput = components["schemas"]["ProjectDefaultAssigneeInput"];
 export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];
 export type ProjectGatedStepsInput = components["schemas"]["ProjectGatedStepsInput"];
+export type ProposedNode = components["schemas"]["ProposedNode"];
 export type PutArchitectureSourceInput = components["schemas"]["PutArchitectureSourceInput"];
 export type PutRepoProjectInput = components["schemas"]["PutRepoProjectInput"];
+export type ReasoningAuthor = components["schemas"]["ReasoningAuthor"];
+export type ReasoningEnd = components["schemas"]["ReasoningEnd"];
 export type RebuildArtifactInput = components["schemas"]["RebuildArtifactInput"];
 export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInput"];
 export type RecordDecisionResp = components["schemas"]["RecordDecisionResp"];
@@ -14104,6 +14859,9 @@ export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
 export type ResolveAskInput = components["schemas"]["ResolveAskInput"];
 export type ResultCommitStands = components["schemas"]["ResultCommitStands"];
+export type RiskInput = components["schemas"]["RiskInput"];
+export type RiskRead = components["schemas"]["RiskRead"];
+export type RiskWritten = components["schemas"]["RiskWritten"];
 export type RoomCounters = components["schemas"]["RoomCounters"];
 export type RouteIndex = components["schemas"]["RouteIndex"];
 export type RouteIndexEntry = components["schemas"]["RouteIndexEntry"];

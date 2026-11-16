@@ -502,6 +502,12 @@ var indexPasses = map[string]string{
 	// constraint - written with their tuples and their author in one store write (graphstore.Write)
 	// from the request alone: they have no projection row, so there is no side of one to read.
 	"api/reasoning_write.go#writeReasoningNodes": "the request's nodes and tuples, its credential and the project of the issue it names",
+	// One pointer tuple out of a node of an issue, appended, retracted or retargeted through the
+	// store's writer from the request alone: the tuple has no projection row either.
+	"api/reasoning_write.go#writeReasoningPointer": "the request's tuple, the node it goes out of and the far ends it names",
+	// One node's state, written or settled through the store's writer from the request and the
+	// node's own row: the state is a base attribute of the node, which no projection row holds.
+	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row and the issue it stands under",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
@@ -616,8 +622,11 @@ var indexPasses = map[string]string{
 	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
 	// The block index reads the version's render, and of each decision the author its node's
 	// decided_by tuple holds, which markdown never carries (refs.DecisionFacts): that tuple is
-	// the one record of who decided, read to restate the same tie, never to mend a row.
-	"refs/blocks.go#IndexBlocks":                "the version's render, and each decision's stored decided_by",
+	// the one record of who decided, read to restate the same tie, never to mend a row. It also
+	// retracts the pointer tuples at each block the render drops (retractGonePointers), which it
+	// reads off the store: the store's own relations, which no projection holds, retracted because
+	// the render no longer holds their block, so it mends neither side from the other.
+	"refs/blocks.go#IndexBlocks":                "the version's render, each decision's stored decided_by, and the pointer tuples the store holds at each block the render drops",
 	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
 	"refs/blocks.go#replaceBlockRefs":           "the version's render, and each decision's stored decided_by",
 	// The typed-node pass: the decision and reading nodes of the version, their values and their

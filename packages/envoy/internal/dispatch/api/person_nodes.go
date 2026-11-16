@@ -19,7 +19,8 @@ const personNodeTitleRunes = 240
 // personNode is one thing on a person's page: a node they are tied to, which of the two ties it
 // is, and where a reader opens it.
 type personNode struct {
-	// Kind is the node's kind, as the store keys it.
+	// Kind is the node's kind, as the graph addresses it: the kind the store keys it by, but
+	// lens_block for a finding of a lens, which the store keys as a block (graphstore.AddressKind).
 	Kind string `json:"kind"`
 	// ID is the node's id, as the store keys it.
 	ID string `json:"id"`
@@ -31,16 +32,21 @@ type personNode struct {
 	Title string `json:"title"`
 	// CreatedAt is when the node was written, which is the order the page reads in.
 	CreatedAt time.Time `json:"created_at"`
-	// Href is the dashboard path the row opens, as askItemRefExpression answers one for an ask.
+	// Href is the dashboard path the row opens, as askItemRefExpression answers one for an ask:
+	// a comment's own place in its issue or its document, and for a lens, a finding, a risk or a
+	// constraint, which the dashboard opens no page of, the page of the issue it stands under.
 	Href string `json:"href"`
 	// State is the node state the store holds for the node (graphstore.NodeStates), live for a
 	// node it holds no row of, as every read of a node answers it. A node that is gone is on no
-	// page.
-	State string `json:"state" enum:"live,gone,proposed,settled,overtaken"`
+	// page. Every row of this build carries it, and a server of the release before answers the
+	// page without it during a roll, so the document marks it optional (`required:"false"`) and a
+	// reader takes a row that carries none as live.
+	State string `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
 	// Visibility is the visibility the store holds for the node, project for a node it holds no
 	// row of: a node reserved for its author is on its author's page alone, which reads it as
-	// author.
-	Visibility string `json:"visibility" enum:"project,author"`
+	// author. It is optional in the document as State is, and a row that carries none is
+	// project.
+	Visibility string `json:"visibility" enum:"project,author" required:"false"`
 }
 
 // personNodes is one page of a person's nodes, newest first.
@@ -128,8 +134,12 @@ var personPageShownQuery = personNodesHeld + `
 //
 // The items arm resolves each held node into the row a reader opens. A node of a kind this build
 // cannot open is skipped rather than refused, exactly as refs.resolveNodes skips an end a newer
-// build wrote: today the page opens comments, and a kind joins here when this build learns to
-// open it, its predicate already bound by the arm above.
+// build wrote: today the page opens comments, and the lenses, findings, risks and constraints of
+// dispatch://INFRA-1950, and a kind joins here when this build learns to open it, its predicate
+// already bound by the arm above. A lens, a finding, a risk or a constraint is a row of the store
+// alone: its title is its text (refs.StandingTextSQL), its time its row's made_at, and it opens the
+// page of the issue it stands under (refs.StandingIssueSQL), so one that stands under no issue - a
+// constraint of the lens catalogue - is skipped as a comment with no place is.
 var personNodesQuery = personNodesHeld + `, items as (
 		select h.from_kind as kind, c.id::text as id, h.relations, c.body as text, c.created_at, h.stored,
 		       case
@@ -141,6 +151,18 @@ var personNodesQuery = personNodesHeld + `, items as (
 		left join issues i on i.key = c.issue_key
 		left join artifacts a on a.id = c.artifact_id
 		where (i.key is not null or a.id is not null)
+		union all
+		select standing.kind, standing.id, standing.relations, standing.text, standing.made_at, standing.stored,
+		       '/issues/' || standing.issue_key
+		from (
+			select ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` as kind, h.from_id as id, h.relations,
+			       ` + refs.StandingTextSQL("n") + ` as text, n.made_at, h.stored,
+			       ` + refs.StandingIssueSQL("n.kind", "n.id") + ` as issue_key
+			from held h
+			join graph_nodes n on n.kind = h.from_kind and n.id = h.from_id
+			where ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` in ('` + strings.Join(refs.StandingKinds(), `', '`) + `')
+		) standing
+		where standing.issue_key is not null
 	)
 	select count(*) over () as total, kind, id, relations, text, created_at, href, stored
 	from items

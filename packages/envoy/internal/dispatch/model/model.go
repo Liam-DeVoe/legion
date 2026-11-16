@@ -1437,11 +1437,16 @@ type IssueCoverage struct {
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
 // any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
-// parsing the sentence back.
+// parsing the sentence back. State is the node state the store holds for the requirement's block
+// (graphstore.NodeStates), live where it holds no row: a requirement at proposed is a question
+// still open, which raises no gap (dispatch://INFRA-1950/spec#b-r-proposed). A server of the
+// release before answers no State during a roll, so the OpenAPI document marks it optional
+// (`required:"false"`) and a reader takes a requirement that carries none as live.
 type RequirementCoverage struct {
 	BlockID   string   `json:"block_id"`
 	Ref       string   `json:"ref"`
 	Text      string   `json:"text"`
+	State     string   `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
 	Checks    int      `json:"checks"`
 	PlanTasks int      `json:"plan_tasks"`
 	Gaps      []string `json:"gaps"`
@@ -3104,16 +3109,20 @@ type ArtifactReferences struct {
 // and tuple store holds for it (graphstore.NodeStates; graphstore.VisibilityProject or
 // VisibilityAuthor), which are live and project for a node the store holds no row of. A node
 // reserved for its author reaches that author alone, so only its author reads Visibility author.
+// Every answer of this build carries both, but a server of the release before answers the same
+// reads without them during a roll, so the OpenAPI document marks them optional
+// (`required:"false"`) and a reader takes a node that carries neither as live and project.
 // A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then `[]`, never null, and
 // the others null.
 //
 // A block node (kind `block`, id `<document ref_key>#<block id>`) also carries BlockID, its
 // document's reference as Document, and ChangedVersion, the document version in which its text
-// last changed (ChangedAt is that version's time). Text and Pin are set only on the node a
-// reference read names: Text is the block's whole current text, and Pin answers a reference pinned
-// to a version.
+// last changed (ChangedAt is that version's time). A finding of a lens (kind `lens_block`, id
+// `lens/<uuid>#<block id>`) carries BlockID and no Document, and its parent is its lens. Text and
+// Pin are set only on the node a reference read names: Text is the block's whole current text,
+// and Pin answers a reference pinned to a version.
 type GraphNode struct {
-	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,issue,lens_kind,message,message_block,page,person,role,session,supertag"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session,supertag"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`
@@ -3127,8 +3136,8 @@ type GraphNode struct {
 	ChangedAt      *time.Time  `json:"changed_at"`
 	Parent         *NodeParent `json:"parent"`
 	ParentVersion  *int        `json:"parent_version"`
-	State          string      `json:"state" enum:"live,gone,proposed,settled,overtaken"`
-	Visibility     string      `json:"visibility" enum:"project,author"`
+	State          string      `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
+	Visibility     string      `json:"visibility" enum:"project,author" required:"false"`
 	Text           string      `json:"text,omitempty"`
 	Pin            *BlockPin   `json:"pin,omitempty"`
 }

@@ -95,6 +95,18 @@ var storeWriteCallSites = []string{
 	// sentinel, appending no event. Its order is the order TestEveryStoreWriteTakesOneLockOrder
 	// proves of Write.
 	"api/reasoning_write.go#writeReasoningNodes",
+	// One pointer tuple a request appends, retracts or retargets out of a node of an issue
+	// (has_kind, triggered_by, constrained_by, prevented_by): the issue's owner row, then one
+	// Write of the tuple, or Retarget, which takes the node's row and writes through Write. It
+	// appends no event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of
+	// Write, after the owner row writeReasoningNodes takes first too.
+	"api/reasoning_write.go#writeReasoningPointer",
+	// One node's state a request writes or settles (api/node_state.go): the issue's owner row,
+	// then one Write of the node as the store holds it but for its state, a plain write that
+	// moves the row and appends the state tuple. It appends no event. Its order is the order
+	// TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner row writeReasoningNodes
+	// takes first too.
+	"api/reasoning_write.go#writeNodeState",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and

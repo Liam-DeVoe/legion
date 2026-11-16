@@ -662,9 +662,12 @@ var routeShapes = map[string]routeShape{
 	// The references read answers graphReferencesRead, whose node carries its text's tree and
 	// whose pin carries the pinned text's, so the row names that read for the same reason the
 	// architecture row above does.
-	"GET /api/v1/references":                               {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
-	"GET /api/v1/references/questions":                     {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
-	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
+	"GET /api/v1/references":           {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
+	"GET /api/v1/references/questions": {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/block-links":          {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
+	// The lens read of dispatch://INFRA-1950 (lens_read.go): the lenses on one node and the chains
+	// of triggered lenses they stand in, each lens whole with its findings and its risks.
+	"GET /api/v1/lenses":                                   {Status: http.StatusOK, Response: nodeLenses{}, Params: lensesQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {Status: http.StatusNoContent},
 	"GET /api/v1/issues/{key}/artifacts":                   {Status: http.StatusOK, Response: []artifactRead{}},
@@ -696,9 +699,38 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
-	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	// The reasoning nodes of dispatch://INFRA-1950 under an issue (reasoning_routes.go). Each
+	// write answers the node it wrote, carrying its state and visibility, so an author reads
+	// `author` on the node reserved for her in the answer to her own write.
+	"POST /api/v1/issues/{key}/lenses": {
+		Status: http.StatusCreated, Response: lensInvoked{}, Request: lensInvocationInput{},
+	},
+	"POST /api/v1/issues/{key}/nodes/{id}/findings": {
+		Status: http.StatusCreated, Response: lensFinding{}, Request: lensFindingInput{},
+	},
+	"POST /api/v1/issues/{key}/risks": {
+		Status: http.StatusCreated, Response: riskWritten{}, Request: riskInput{},
+	},
+	"POST /api/v1/issues/{key}/constraints": {
+		Status: http.StatusCreated, Response: constraintRead{}, Request: constraintInput{},
+	},
+	"GET /api/v1/issues/{key}/constraints": {Status: http.StatusOK, Response: issueConstraints{}},
+	"POST /api/v1/issues/{key}/nodes/{id}/pointers": {
+		Status: http.StatusOK, Response: pointerWritten{}, Request: pointerInput{},
+	},
+	// The node state of dispatch://INFRA-1950 (node_state.go): one write of a node's state, the
+	// settle of a proposed node, whose body is an actor alone and may be empty, and the proposed
+	// nodes of an issue, each a graph node with its excerpt.
+	"POST /api/v1/issues/{key}/nodes/{id}/state": {
+		Status: http.StatusOK, Response: nodeStateWritten{}, Request: nodeStateInput{},
+	},
+	"POST /api/v1/issues/{key}/nodes/{id}/settle": {
+		Status: http.StatusOK, Response: nodeStateWritten{}, Request: actorInput{}, OptionalRequest: true,
+	},
+	"GET /api/v1/issues/{key}/proposed": {Status: http.StatusOK, Response: issueProposed{}},
+	"GET /api/v1/handoffs/{id}":         {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":         {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks":  {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -86,7 +87,10 @@ const BlockRefKindsSQL = `select 'mentions'
 // A block whose text (markdown[From:To]) is unchanged keeps its changed version; a new, changed
 // or restored block takes this version, and its text is recorded in document_block_texts; a
 // block the version no longer holds is deleted, recorded there with no text, its node's state
-// stated gone, and the edges at it stop resolving until a version holds its id again. A block the
+// stated gone, and the edges at it stop resolving until a version holds its id again. Such a
+// block also takes its pointer tuples with it: each prevented_by of a risk it covered as a check,
+// and each constrained_by it held as a requirement, is retracted beside the facts the pass states
+// (retractGonePointers), and a version that restores the block restores none of them. A block the
 // version holds keeps the state and the visibility its node has, unless it was gone, when it
 // comes back live (blockNode restates every node it writes). A block's stored excerpt is its text
 // cut to BlockExcerptRunes, the excerpt a document's mention has shown since migration 0092.
@@ -242,6 +246,7 @@ func IndexBlocks(
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
+	gone := make([]string, 0, len(deleted))
 	for _, id := range deleted {
 		if !blockIDFits(refKey, id) {
 			continue
@@ -250,6 +255,7 @@ func IndexBlocks(
 		if !stored {
 			supertag = BlockSupertag
 		}
+		gone = append(gone, blockNodeAddress(refKey, id))
 		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateGone, supertag))
 	}
 	// A row written before this release names no node: migration 20261109022248 added the
@@ -291,6 +297,11 @@ func IndexBlocks(
 		return nil, false, graphstore.Uncaused{}, fmt.Errorf("write the block nodes of version %d of %s: %w", version, artifactID, err)
 	}
 	write.Tuples = append(write.Tuples, memberships...)
+	retracted, err := retractGonePointers(ctx, tx, gone, versionAt, writer)
+	if err != nil {
+		return nil, false, graphstore.Uncaused{}, fmt.Errorf("retract the pointers at the blocks version %d of %s no longer holds: %w", version, artifactID, err)
+	}
+	write.Tuples = append(write.Tuples, retracted...)
 
 	if len(deleted) > 0 {
 		if _, err := tx.Exec(ctx, `
@@ -375,6 +386,64 @@ func IndexBlocks(
 		return nil, false, graphstore.Uncaused{}, fmt.Errorf("record version %d of %s indexed: %w", version, artifactID, err)
 	}
 	return moved, true, write, nil
+}
+
+// retractGonePointers is the retraction of every pointer tuple a block the version no longer holds
+// leaves behind (dispatch://INFRA-1950/spec#b-r-constraint-risk): each asserted prevented_by whose
+// far end is one of the blocks at addresses, a check that covered a risk, and each asserted
+// constrained_by whose near end is one of them, a requirement held to a constraint. A constrained_by
+// points at a constraint, never at a block, so the one a gone block takes with it starts there.
+// Each retraction is dated at, the version's time, and signed by writer, as a dropped pair of
+// block_refs is, and rides with the facts the pass states for the version's event, so it is
+// appended in the pass's own transaction (graphstore.Caused).
+//
+// It logs how many it retracts at each block, with the block's address, and answers the number to
+// no reader: the risk a check covered may be one only its author may see, and a count served
+// beside the block would tell another reader it is there.
+func retractGonePointers(ctx context.Context, tx pgx.Tx, addresses []string, at time.Time, writer model.Actor) ([]graphstore.UncausedTuple, error) {
+	if len(addresses) == 0 {
+		return nil, nil
+	}
+	const columns = `t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`
+	rows, err := tx.Query(ctx, `
+		select checked.from_kind, checked.from_id, checked.kind, checked.to_kind, checked.to_id, checked.to_id
+		from (
+			`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id, t.kind, t.from_kind, t.from_id`, columns,
+		`t.to_kind = '`+BlockNodeKind+`' and t.to_id = any($1) and t.kind = '`+graphstore.TuplePreventedBy+`'`)+`
+		) checked
+		where checked.asserted
+		union all
+		select held.from_kind, held.from_id, held.kind, held.to_kind, held.to_id, held.from_id
+		from (
+			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, columns,
+		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = any($1) and t.kind = '`+graphstore.TupleConstrainedBy+`'
+				and t.to_kind <> '`+graphstore.KindValue+`'`)+`
+		) held
+		where held.asserted
+	`, addresses)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var retracted []graphstore.UncausedTuple
+	perBlock := map[string]int{}
+	for rows.Next() {
+		tuple := graphstore.Tuple{At: at, Who: writer, Asserted: false}
+		var block string
+		if err := rows.Scan(&tuple.FromKind, &tuple.FromID, &tuple.Kind, &tuple.ToKind, &tuple.ToID, &block); err != nil {
+			return nil, err
+		}
+		retracted = append(retracted, graphstore.UncausedTuple{Tuple: tuple})
+		perBlock[block]++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, block := range slices.Sorted(maps.Keys(perBlock)) {
+		slog.Info("dispatch: a block the version no longer holds takes its pointers with it",
+			"block", block, "retracted", perBlock[block])
+	}
+	return retracted, nil
 }
 
 // standsAtVersion settles the mark migration 0122's trigger left on the document when this

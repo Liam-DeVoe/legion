@@ -14,13 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The store takes a node reserved for its author only of a kind the read registry flags
-// (graphstore.AdmitAuthorOnly), and the lens has no entry there until the commit that registers
-// it (refs' personAuthoredKind). This test binary admits the lens itself, so the write path can
-// be held to the author-only lens it writes. The commit that registers the lens deletes this:
-// refs' init then admits it, and a kind admitted twice stops the binary, naming it.
-func init() { graphstore.AdmitAuthorOnly(graphstore.KindLens) }
-
 // TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne holds the one write path of
 // a lens, a finding, a risk and a constraint (writeReasoningNodes) to what it states of who wrote
 // each node (dispatch://INFRA-1950/spec#b-r-author, #b-r-node-visibility): a project node on a

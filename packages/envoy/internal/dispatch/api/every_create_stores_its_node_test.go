@@ -193,12 +193,22 @@ var postCalls = map[string]postCall{
 		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "All green."}},
 	"POST /api/v1/artifacts/{id}/approval-requests": {creates: true, session: true, body: map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}}},
 
-	"POST /api/v1/issues/{key}/claim":                                      noObject,
-	"POST /api/v1/issues/{key}/artifacts/{slug}/versions":                  noObject,
-	"POST /api/v1/issues/{key}/artifacts/{slug}/edits":                     noObject,
-	"POST /api/v1/issues/{key}/results":                                    noObject,
-	"POST /api/v1/issues/{key}/handoffs/{phase}":                           noObject,
-	"POST /api/v1/results/{id}/retract":                                    noObject,
+	"POST /api/v1/issues/{key}/claim":                     noObject,
+	"POST /api/v1/issues/{key}/artifacts/{slug}/versions": noObject,
+	"POST /api/v1/issues/{key}/artifacts/{slug}/edits":    noObject,
+	"POST /api/v1/issues/{key}/results":                   noObject,
+	"POST /api/v1/issues/{key}/handoffs/{phase}":          noObject,
+	"POST /api/v1/results/{id}/retract":                   noObject,
+	// The reasoning nodes of dispatch://INFRA-1950 and a node's state: each writes nodes and
+	// tuples of the store alone and no row of a project-owned table, and the fixture's paths name
+	// no node of the issue under {id}, so each is called with the empty body and refused.
+	"POST /api/v1/issues/{key}/lenses":                                     noObject,
+	"POST /api/v1/issues/{key}/risks":                                      noObject,
+	"POST /api/v1/issues/{key}/constraints":                                noObject,
+	"POST /api/v1/issues/{key}/nodes/{id}/findings":                        noObject,
+	"POST /api/v1/issues/{key}/nodes/{id}/pointers":                        noObject,
+	"POST /api/v1/issues/{key}/nodes/{id}/state":                           noObject,
+	"POST /api/v1/issues/{key}/nodes/{id}/settle":                          noObject,
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions":                noObject,
 	"POST /api/v1/projects/{key}/artifacts/{slug}/edits":                   noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": noObject,

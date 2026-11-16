@@ -23,9 +23,10 @@ import (
 
 // goingMutatingRoutesWithNoTool is every write of the served table no action of the catalogue
 // performs. Nearly all of them are the catalogue's gap and this tree's follow-up work: an
-// operation the bar cannot yet propose. Two are not, the review routes, and their rows say why.
-// TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
-// named here or in goingToolRoutes and never silently missing.
+// operation the bar cannot yet propose. Three are not, the two review routes and the settle of a
+// proposed node, and their rows say why. TestTheMutatingRoutesNoToolSpecNames holds the list to
+// the table, so a write added later is named here or in goingToolRoutes and never silently
+// missing.
 var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
@@ -66,6 +67,11 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/delivery/session-groups",
 	"POST /api/v1/going/requests",
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
+	// The settle dispatch_settle performs: a settle written by a person's credential records that
+	// the person settled a proposal, which is the person's own call
+	// (dispatch://INFRA-1950/spec#b-r-proposed), so goingToolRoutes gives it no row for the reason
+	// it gives the review routes none. Keep it here; never give it a row.
+	"POST /api/v1/issues/{key}/nodes/{id}/settle",
 	"POST /api/v1/machine-logins/{id}/revoke",
 	"POST /api/v1/markdown/round-trip",
 	"POST /api/v1/me/agent-tokens",

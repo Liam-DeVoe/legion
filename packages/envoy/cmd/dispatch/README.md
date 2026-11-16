@@ -3135,8 +3135,11 @@ No other kind the store writes is an edge of this view — `authored_by`, `deliv
 
 Migration `20261116091932_graph_edges_store_tuples` re-states the view with the same arms and one class more in the tuple arm, `store`, which joins no projection row: `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node, and `part_of` and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`, the relations the store holds with no table behind them.
 The class is tested before the block-reference class, so a requirement block's `constrained_by` is not looked for in `block_refs`; every other row keeps its class, a comment's `authored_by` and a session's, a page's or a block's `part_of` stay out of the view, and `refs.TupleKinds`, which the announcer writes, lists the seven kinds beside the earlier ones.
-Migration `20261116094101_graph_edges_asks` (dispatch://INFRA-1150) re-states the view from the same text for an ask's relations, so neither re-statement holds the other's change and whichever runs last would drop the other's;
-`20261116184707_issue_tree_graph_edges_both_arms` (dispatch://INFRA-1253) states it once more with both, the class `store` tested where `20261116091932` tests it, and a later re-statement starts from its text.
+
+Migration `20261116160000_graph_edges_findings` re-states the view once more and adds one arm over the current tuples: every relation of the class `store` out of a finding of a lens — a block node whose id names its lens, `lens/<uuid>#<block id>` — answered with the literal from_kind `lens_block`, the kind the read registry and every reference know a finding by, at the finding's own id, by the tuple arm's own rules.
+The tuple arm's class `store` leaves out a tuple out of such a block, so no relation is answered twice; no finding exists before this release writes one, so the arm drops no row a build of the release before reads, and the read registry maps the predicate of `lens_block` onto the store's `block` row at that id.
+Migration `20261116094101_graph_edges_asks` (dispatch://INFRA-1150) re-states the view from the text before both of these for an ask's relations, so no one of the three holds every change and whichever runs last would drop the others';
+`20261116184707_issue_tree_graph_edges_both_arms` (dispatch://INFRA-1253) states it once more with all of them, the class `store` and its guard against a finding tested where `20261116160000` tests them and the finding arm last, and a later re-statement starts from its text.
 
 Each row decides which arm answers it: each of the four old arms answers only the rows of its own table whose `node_kind` is null, and the tuple arm answers an edge of those kinds only while the projection row that names it carries its node — the `document_blocks` row of the block for `in_document`, the `block_refs` row of the pair for a pointer or a mention, and the `comments` row of the comment for `anchored_to` and `owned_by`.
 One transaction writes both sides of a row — the writer that states a row's tuples names its node on the row — so the view answers each row exactly once, at every point of the backfill and not only at its end, and a row a previous release wrote during a roll, a row written after a rollback and a block past `refs.MaxBlockNodeBytes` each keep their answer from the old arm.
@@ -4209,12 +4212,13 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
-  The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty-six of the twenty-eight dispatch tools that write, of the forty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The two it leaves out are `dispatch_review` and `dispatch_settle`, on purpose: each records a person's decision - a review an approval or a changes request in a person's name, a settle written by a person's credential that the person settled a proposal - and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
-  Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
+  The catalogue is read whole: it takes no query and serves no page.
+  Twenty actions was under the count where a model's choice falls apart; dispatch://INFRA-1950 added six writes of the reasoning nodes and their state, which make twenty-six, and did not measure a model's choice against them.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
-  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route is kept out on purpose.
+  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review routes and the settle are kept out on purpose.
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -4290,6 +4294,19 @@ Each item below names a path with its method and identity, then its purpose.
   `from`, `to` and every link's two blocks carry the eight facts of every node ([Reference graph](#reference-graph)).
   A link is listed only while both blocks are current blocks of their documents, and a typed block's `block[]` pointer only while its target has a type the attribute allows.
   `400 INVALID_REFERENCE` when either is not a document reference; `404 NOT_FOUND` for a document that does not exist.
+
+- `/api/v1/lenses?on=` (GET; cookie, trusted header, or bearer)
+
+  The lenses invoked on one node, and each chain of triggered lenses they stand in (`api/lens_read.go`).
+  `on` is the node's `dispatch://` address, or its store address as the `/nodes/{id}` routes take one, of any node the caller may see, of an issue or of none; an address that names no node, a node nobody holds and a node the caller may not see are one `404 NOT_FOUND`, in the same words but the address, and an empty `on` is `400 INVALID_QUERY`.
+  It takes no other query: nothing chooses a kind, an edge or a depth.
+  Answers `{on, lens, lenses, chains}`: `on` the node read (address, kind, state and visibility); `lens` the node itself, whole, where it is a lens, so either end of a trigger reads the other, and null otherwise; `lenses` the lenses whose `part_of` tuple points at the node, in the order they were invoked, the `seq` of that tuple, so a later write of a lens's row does not move it.
+  Each lens carries its address `dispatch://lens/<uuid>`, its `kind` (`{id, words}`, the `lens_kind` its `has_kind` tuple names), `on` (the node it stands on, null where the caller may not see it), `author` (the person or session its `authored_by` tuple names, null on the shared bearer), `created_at`, `verdict`, `state`, `visibility`, `triggered_by` (the lenses its `triggered_by` tuples point at) and `triggered` (the lenses whose `triggered_by` tuples point at it), each by address in the order the tuples were written, since the store holds `triggered_by` as many-valued.
+  Its `findings` come in rank order, each `{address, text, rank, state, visibility}`, `rank` being the `seq` of its `part_of` tuple, a sparse key; its `risks` in the order of their `part_of` tuples, each `{address, heading, early_warning, prevention, prevented_by, state, visibility}`, `prevented_by` the address of each check that prevents it and `[]` where none does.
+  A chain is `{lenses, stopped_at}`: the lenses joined to one another by `triggered_by` tuples the caller may see, walked both ways, breadth first, from the node itself where it is a lens and from each lens on the node, in that order, that no earlier chain lists; a visited set lists each lens once, so a cycle is read once, and the chain lists its lenses whole in the order they were invoked.
+  A chain lists at most `lensChainDepth` (50) lenses, the depth counted in lenses: past them `stopped_at` names the first lens the walk reached and did not list, and a lens on the node past that cut begins a chain of its own; a chain of exactly 50 has `stopped_at` null.
+  A chain holds two lenses or more.
+  A lens, a finding or a risk the caller may not see is in no list, no chain and no count, and no chain passes through a lens the caller may not see, so a lens reached only through one is in none of that caller's chains.
 
 - `/api/v1/issues` (POST; cookie, trusted header, or bearer)
 
@@ -4608,12 +4625,13 @@ Each item below names a path with its method and identity, then its purpose.
 
   What each requirement of the issue's spec lacks: `{issue, spec_artifact_id, has_plan, requirements, gaps}`.
 
-  A requirement is a `requirement` block of the spec, and `requirements` lists them in document order, each with its block reference, its words, and how many `check` and `plan_task` blocks name it in `serves`.
+  A requirement is a `requirement` block of the spec, and `requirements` lists them in document order, each with its block reference, its words, its block's node `state` (read from `graph_nodes` in one statement with the predicate bound, `live` where the store holds no row), and how many `check` and `plan_task` blocks name it in `serves`.
 
   A block counts when it is in any document of the issue or of any descendant issue, at any status;
   the descendants are one recursive `child_of` walk bounded by `refs.IssueDepthCap` (`refs.IssueDescendants`).
 
   `gaps` is one line per gap, `<block id> has no check` and `<block id> has no plan task`, the second only once the issue has a plan document, or the single line `the spec marks no requirements` for a spec that marks none.
+  A requirement at `proposed` is a question still open and raises neither gap, here or in an approval request's answer (`missingCheckGaps`); one at `settled` or `live` is counted as every requirement is.
 
   Nothing is ever refused for a gap.
 
@@ -4638,6 +4656,75 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/handoffs/{id}` (GET; cookie, trusted header, or bearer)
 
   One handoff by id with its body; `404 HANDOFF_NOT_FOUND` when there is none, `400 HANDOFF_ID_INPUT` for an id that is not a uuid.
+
+- `/api/v1/issues/{key}/lenses` (POST; cookie, trusted header, or bearer)
+
+  Invoke a lens on one node of the issue, `{on, kind, verdict?, findings?, triggered_by?, visibility?}`: one analysis of one kind of the lens catalogue, a `lens` node of the node and tuple store.
+  `on` is the `dispatch://` address, or the store address `/nodes/{id}` takes, of a node the caller may see under the issue: the issue itself, a document or a block of one, an ask, a comment or a message or a block of one, or a lens, a finding, a risk or a constraint of the issue.
+  The lens stands on that node by its `part_of` tuple and holds one `has_kind` tuple to the `lens_kind` node `kind` names; `GET /api/v1/schema/blocks` lists the kinds under `lens_kinds`.
+  `verdict` is stored as the lens's verdict, `triggered_by` is a `triggered_by` tuple to the lens of the issue it names, and each of `findings` is one finding: a `block` node under the lens at a random block id, addressed `dispatch://lens/<uuid>#b-<id>`, ranked in the order it was written.
+  `visibility: "author"` keeps the lens and its findings to their author, and is `403 AUTHOR_NAMES_NOBODY` on a credential that proves no author, the deployment's shared bearer.
+  A missing kind is `400 LENS_KIND_REQUIRED`, an id no `lens_kind` node holds `400 INVALID_POINTER`, and an `on` or a `triggered_by` the caller may not see under the issue `404 NOT_FOUND`; a refused write stores nothing.
+  The write appends no event and sends no delivery.
+  Answers `201` with the lens: its address `dispatch://lens/<uuid>`, `kind`, `on`, `verdict`, `triggered_by`, `author` (the person or session its `authored_by` tuple names, null on the shared bearer), `created_at`, `state`, `visibility`, and each finding with its address, text, author, state and visibility.
+
+- `/api/v1/issues/{key}/nodes/{id}/findings` (POST; cookie, trusted header, or bearer)
+
+  Add one finding to the lens `{id}` names, `{text, visibility?}`: a `block` node under the lens at a random block id, after every finding it holds.
+  `{id}` is the lens's store address under the issue (`lens/<uuid>`, or its `dispatch://` address), percent-encoded as one path segment.
+  The finding carries its lens's visibility unless `visibility` is `author`.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, a node that is no lens `400 INVALID_POINTER`, and an empty text `400 FINDING_INPUT`.
+  Answers `201` with the finding: its address, `id`, `block_id`, its lens's address, `text`, `author`, `created_at`, `state` and `visibility`.
+
+- `/api/v1/issues/{key}/risks` (POST; cookie, trusted header, or bearer)
+
+  Write one risk under a pre-mortem lens of the issue, `{lens, heading, early_warning, prevention, prevented_by?, visibility?}`: the failure it names, the sign it is seen coming by and what keeps it from happening, as attributes of the risk, under the lens by its `part_of` tuple.
+  `prevented_by` is the address of a check block of the issue's documents that covers the risk, a `prevented_by` tuple.
+  The store holds a risk to a lens of kind `pre-mortem`: a lens of any other kind, a node that is no lens and a `prevented_by` at a block that is no check are `400 INVALID_POINTER`, the first saying a risk belongs under a lens of kind pre-mortem.
+  A blank field is `400 RISK_INPUT`, and a lens or a check the caller may not see under the issue `404 NOT_FOUND`.
+  Answers `201` with the risk: its address `dispatch://risk/<uuid>`, `lens`, `heading`, `early_warning`, `prevention`, `prevented_by` (each check's address), `author`, `created_at`, `state` and `visibility`.
+
+- `/api/v1/issues/{key}/constraints` (GET, POST; cookie, trusted header, or bearer)
+
+  POST writes one constraint under the issue, `{standard, reference}` or `{measurement, value, taken_where}`, with `visibility?`: what forced a requirement from outside the conversation, as attributes of the constraint, under the issue by its `part_of` tuple.
+  A body that is neither shape, leaves a field of its shape blank or names fields of both is `400 CONSTRAINT_INPUT`.
+  A requirement points at a constraint through `POST /api/v1/issues/{key}/nodes/{id}/pointers` (`constrained_by`).
+  GET answers `{issue, constraints}`: the constraints under the issue the caller may see, in the order they were written there, each with its address `dispatch://constraint/<uuid>`, `id`, `standard`, `reference`, `measurement`, `value` and `taken_where` (null where it holds none), `author`, `created_at`, `state` and `visibility`.
+  A constraint reserved for its author is in its author's list alone, and an issue Dispatch does not hold is `404 NOT_FOUND`.
+
+- `/api/v1/issues/{key}/nodes/{id}/pointers` (POST; cookie, trusted header, or bearer)
+
+  Append, retract or retarget one pointer tuple out of the node `{id}` names, `{kind, action, to, from?}`; `{id}` is the node's store address under the issue, percent-encoded as one path segment.
+  `kind` is `has_kind` (a lens to its `lens_kind`, `to` and `from` being `lens_kind` ids), `triggered_by` (a lens to the lens of the issue that asked for it), `constrained_by` (a requirement block to a constraint of the issue or of the catalogue) or `prevented_by` (a risk to a check block).
+  `append` asserts a tuple at `to`, `retract` retracts the one at `to`, and `retarget` moves the one at `from` to `to`, retracting the old and asserting the new in one write and touching no `part_of` tuple.
+  The store holds each tuple to its type rule: a far end of the wrong type, a lens triggered by itself and a lens left with no kind are `400 INVALID_POINTER`, and a second `has_kind` or a retarget of a pre-mortem's kind away from `pre-mortem` is `409 POINTER_ALREADY_ASSERTED`, one body whatever hangs under the lens.
+  A node or a far end the caller may not see under the issue, and a tuple to retract or retarget that the node does not hold, are `404 NOT_FOUND`; `part_of`, which moves through the node's parent route, or any other kind or action, is `400 POINTER_INPUT`.
+  Answers `200 {node, kind, action, to, from}`, each end with its address, kind, state and visibility, and `from` null but for a retarget.
+
+- `/api/v1/issues/{key}/nodes/{id}/state` (POST; cookie, trusted header, or bearer)
+
+  Write the node state of the node `{id}` names, `{state, actor?}`; `{id}` is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole `dispatch://` address), percent-encoded as one path segment (`api/node_state.go`, `writeNodeStateRoute`).
+  The value is checked first (`graphstore.CheckAttributeValue`): a word that is none of `live`, `gone`, `proposed`, `settled` and `overtaken` is `400 INVALID_ATTRIBUTE_VALUE`, naming the attribute `state` and the word, and nothing is read or stored.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, in `FindNodeUnderIssue`'s words.
+  It writes `proposed` and `overtaken` on any node, `live` on any node that is not `gone`, and `gone` only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block.
+  `409 NODE_STATE_NOT_WRITABLE`, naming the node's kind, its state and the value asked for, refuses `settled` (the settle below writes it), `gone` on a block of a document or on an issue, a document, an ask, a comment or a message, and every value on a gone node: a gone node takes no state here, `live` or otherwise, because `proposed` or `overtaken` would bring it back as surely as `live`, and a block of a document a version dropped would then read as a present block no version holds.
+  The write appends one `state` tuple written by the caller, through `graphstore.Write` and at no event, so every read of the node answers the new state at once; a write of the state the node holds appends nothing.
+  Answers `200 {node: {address, kind, state, visibility}, previous}`, `previous` the state it held before.
+
+- `/api/v1/issues/{key}/nodes/{id}/settle` (POST; cookie, trusted header, or bearer)
+
+  Settle the proposed node `{id}` names, `{actor?}` (an empty body too): one `state` tuple at `settled`, written by the caller, at no event (`settleNode`).
+  A node the caller may not see under the issue is `404 NOT_FOUND`, the bytes a node nobody wrote answers but for the id; a node not at `proposed` is `409 NODE_NOT_PROPOSED`.
+  A person settles any proposal - a browser's cookie, or a token holding the `person` scope, whose settle is written as the person it acts for (`actingPerson`) - and any other caller only a proposal its own proving credential wrote, the node's `made_by` compared with it by `model.Actor.SameCredential`; any other caller is `403 SETTLE_NOT_PERMITTED`, naming the node.
+  A block's author is the writer of the version that first held the block, never whoever marked it proposed; the deployment's shared agent token proves no author, so it settles nothing.
+  Answers `200 {node: {address, kind, state, visibility}, previous}`.
+
+- `/api/v1/issues/{key}/proposed` (GET; cookie, trusted header, or bearer)
+
+  The nodes under the issue at node state `proposed` that the caller may see, `{issue, nodes}`, each `{node, excerpt}`: `node` the `GraphNode` every read answers (kind, address, state, visibility and the rest) and `excerpt` the words an edge at it shows, null where it has none (`listIssueProposed`).
+  A node under the issue is one whose standing issue is `{key}` (`refs.StandingIssueSQL`): the issue itself, its documents and their blocks, its asks, comments and messages and their blocks, and the lenses, findings, risks and constraints standing under one of those, in the order of their kind and their id.
+  The read takes the store's rows at `proposed` through the partial index `graph_nodes_proposed` (migration `20261116172615`), binds each row's own predicate, and answers each through its kind's loader (`refs.ExcerptedNodes`).
+  It takes no query; an issue Dispatch does not hold is `404 NOT_FOUND`.
 
 - `/api/v1/issues/{key}/artifacts` (GET, POST; cookie, trusted header, or bearer)
 
