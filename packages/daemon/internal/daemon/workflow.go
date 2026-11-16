@@ -611,6 +611,9 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	var conn *nats.Conn
 	var err error
 	if nc.tokenFile != "" {
+		// While running, a refused reconnect is waited out on the boot's own schedule
+		// (readinessRetry), which natsConnection.waitsOut holds the boot's connect to.
+		options = append(options, natsauth.ReconnectBackoff(readinessRetry.Initial, readinessRetry.Max))
 		conn, err = natsauth.ConnectService(cfg.NatsURLs, nc.tokenFile, name, options...)
 	} else {
 		conn, err = natsauth.Connect(cfg.NatsURLs, nc.seed, name, options...)
