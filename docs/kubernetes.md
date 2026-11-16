@@ -6248,7 +6248,7 @@ An issued token carries these claims and no others:
 
 - `project_scope` — `named` or `person`, which says what `projects` means.
 
-- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names; for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
+- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
   A token whose trade named none, and a token that names a service and no person, carry none.
 
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.

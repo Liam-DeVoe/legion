@@ -7,7 +7,10 @@ body: |-
   the token's person may see each project, and refuses one they may not see in the same words
   whether Dispatch holds it or not. A restricted member's trade must name at least one project. A
   request under an operator's entry may name only that entry's project, and a token naming no
-  person may name none. With no project access configured, or while Dispatch cannot be reached, a
+  person may name none. A `BROKER_EXCHANGE_ACCOUNTS` entry may name no project
+  (`<account>==<person>`), for the shared public-session account: its tokens are `named`, act for
+  that person, name no project, and are refused when Dispatch calls that person a restricted
+  member. With no project access configured, or while Dispatch cannot be reached, a
   trade naming no project and an entry's token mint as before, and a person's trade naming a
   project is refused. `brokertoken.Caller.Projects` replaces `Caller.Project`; Dispatch still holds
   only a `named` token's writes to its project. The TypeScript sign-in client sends the projects
