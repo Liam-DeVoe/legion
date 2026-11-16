@@ -1,4 +1,5 @@
 import { ISSUE_TAB_LABELS } from "../web/src/features/issue/issue-tab-list";
+import { HEADER_SCROLLS_QUERY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "../web/src/features/issue-page/page-words";
 import {
@@ -713,6 +714,50 @@ test("the five controls are toggles with an address each, one line at every widt
       if (stays) expect(Math.round(row.y), "the row left the top at 390 px").toBe(0);
       else expect(row.y, "the row stayed at the top at 1440 px").toBeLessThan(0);
     }
+  });
+});
+
+// "760 px and below" starts at 760 px itself, where `HEADER_SCROLLS_QUERY` (`(max-width:
+// 760px)`) matches, the header scrolls away and the view row is the band that stays (decision
+// 72 of INFRA-1196's parts). Tailwind builds `max-[760px]:` as `@media not all and (min-width:
+// 760px)`, which is under 760 px alone, so the row's classes are `max-[761px]:`; with
+// `max-[760px]:` the row has no sticky box at 760 px, and this row fails on "the view row has no
+// sticky box at 760 px".
+test("at 760 px the header scrolls away and the view row stays at the top of a scrolled page", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await page.setViewportSize(viewportAt(760));
+    await gotoIssue(page, `/issues/${key}`);
+    expect(
+      await page.evaluate((query) => window.matchMedia(query).matches, HEADER_SCROLLS_QUERY),
+      `${HEADER_SCROLLS_QUERY} does not match at 760 px`
+    ).toBe(true);
+    // The band whose height `useIdentityBlock` publishes at this width is the row's nearest
+    // sticky box (`identity-block.ts`'s `stickyAncestor`), and with none it publishes 0. The
+    // hook is mounted by the identity block, which no slot of this part draws, so the row reads
+    // that band itself.
+    const band = await filterRow(page).evaluate((row) => {
+      for (let at: Element | null = row; at !== null; at = at.parentElement) {
+        const style = getComputedStyle(at);
+        if (style.position === "sticky") {
+          return { height: at.getBoundingClientRect().height, top: style.top };
+        }
+      }
+      return null;
+    });
+    expect(band, "the view row has no sticky box at 760 px").not.toBeNull();
+    expect(band?.top, "the view row's sticky box is not at the top of the screen").toBe("0px");
+    expect(band?.height ?? 0, "the band that stays is 0 px tall at 760 px").toBeGreaterThan(0);
+
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY), {
+        message: "the page did not scroll at 760 px",
+      })
+      .toBeGreaterThan(0);
+    const row = await boxOf(filterRow(page), "the view row");
+    expect(Math.round(row.y), "the row left the top at 760 px").toBe(0);
   });
 });
 
