@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -286,16 +285,28 @@ func ansiC(b *strings.Builder, line string, start int) int {
 // digits is the value of the octal (base 8) or hex (base 16) digits at the start of s, at most
 // limit of them, and how many there are.
 func digits(s string, base, limit int) (value, n int) {
-	set := "01234567"
-	if base == 16 {
-		set = "0123456789abcdefABCDEF"
+	for ; n < limit && n < len(s); n++ {
+		d := digitValue(s[n])
+		if d >= base {
+			break
+		}
+		value = value*base + d
 	}
-	for n < limit && n < len(s) && strings.IndexByte(set, s[n]) >= 0 {
-		n++
+	return value, n
+}
+
+// digitValue is the value of the hex digit c, in either case, and 16 for a byte that is no hex
+// digit.
+func digitValue(c byte) int {
+	switch {
+	case '0' <= c && c <= '9':
+		return int(c - '0')
+	case 'a' <= c && c <= 'f':
+		return int(c-'a') + 10
+	case 'A' <= c && c <= 'F':
+		return int(c-'A') + 10
 	}
-	// At most eight digits of base, so ParseUint fails only on no digit, which is 0.
-	v, _ := strconv.ParseUint(s[:n], base, 64)
-	return int(v), n
+	return 16
 }
 
 // runValueHits is the line, from 1, of each run: value of the YAML documents of content that runs
