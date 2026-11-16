@@ -4062,6 +4062,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
               - 'packages/envoy/internal/dispatch/graphcensus/*'
               - 'packages/envoy/internal/dispatch/graphstore/*'
+              - 'packages/envoy/internal/dispatch/graphstore/graphstoretest/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
@@ -4242,6 +4243,8 @@ jobs:
               # internal/dispatch/docs reads the live server processes' schema numbers
               # (schema_admission.go).
               - 'packages/envoy/internal/dispatch/processes/*'
+              # internal/dispatch/refs ranks each block's place among its siblings (block_nodes.go).
+              - 'packages/envoy/internal/dispatch/rank/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               # docs/graph_edges_cutover_test.go announces builds through internal/dispatch/startup.
               - 'packages/envoy/internal/dispatch/startup/*'
@@ -4287,6 +4290,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
               - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
               - '!packages/envoy/internal/dispatch/processes/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/rank/**/*_test.go'
               - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
               - '!packages/envoy/internal/dispatch/startup/**/*_test.go'
               - '!packages/envoy/internal/dispatch/store/**/*_test.go'
