@@ -2055,10 +2055,20 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// The role is read in either form, its project first (INFRA.legion-infra-infra-12-architect,
 		// _.lead-reviewer) or its name alone, and everything below works on the name, which is what
 		// its claim record is keyed by. The old form is counted and named back in the answer's
-		// warnings with its new form (store.Registry.ClaimedRole); nothing is refused for it.
-		if _, name, _ := contracts.CanonicalRole(body.Role); !roles.Valid(name) {
+		// warnings with its new form (store.Registry.ClaimedRole); nothing is refused for it. A new
+		// form whose project is not one its role may work for is refused (contracts.ClaimProject): a
+		// Legion role works for the project its own name gives, and a caller that asked for another
+		// would otherwise believe it holds a claim it does not.
+		project, name, legacy := contracts.CanonicalRole(body.Role)
+		if !roles.Valid(name) {
 			writeJSONError(w, http.StatusBadRequest, "role must match "+roles.PatternString+", after its project and a dot when it names one", "role")
 			return
+		}
+		if !legacy {
+			if _, err := contracts.ClaimProject(name, project); err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error(), "role")
+				return
+			}
 		}
 		var roleWarning string
 		body.Role, roleWarning = d.registry.ClaimedRole(body.Role)

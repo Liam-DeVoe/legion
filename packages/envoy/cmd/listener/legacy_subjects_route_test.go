@@ -128,6 +128,65 @@ func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 	}
 }
 
+// A claim's project is decided in one place (contracts.ClaimProject): a Legion role works for the
+// project its own name gives, so a claim naming it under another project is refused with 400, as
+// the merge base refused every dotted role, rather than quietly claiming that project's role for a
+// caller who asked for another. The same role under its own project, and a free-form role under any
+// project, are claimed.
+func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
+	const sessionID = "ses_role_project"
+	rig := newSessionConsumerRig(t)
+	rig.register(t, sessionID, nil)
+	claim := func(role string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+			strings.NewReader(`{"session_id":"`+sessionID+`","role":"`+role+`"}`)))
+		return recorder
+	}
+	for _, role := range []string{"PRIV.legion-zz-controller", "_.legion-zz-controller"} {
+		if answer := claim(role); answer.Code != http.StatusBadRequest || !strings.Contains(answer.Body.String(), "ZZ") {
+			t.Fatalf("claim %s answered %d %s, want 400 naming the role's own project ZZ", role, answer.Code, answer.Body.String())
+		}
+		if holder, err := rig.deps.registry.RoleHolder("legion-zz-controller"); err == nil && holder != "" {
+			t.Fatalf("after the refused claim %s, legion-zz-controller is held by %q, want nobody", role, holder)
+		}
+	}
+	for _, role := range []string{"ZZ.legion-zz-controller", "PRIV.lead-reviewer", "legion-zz-controller"} {
+		if answer := claim(role); answer.Code != http.StatusOK {
+			t.Fatalf("claim %s answered %d %s, want 200", role, answer.Code, answer.Body.String())
+		}
+	}
+}
+
+// An unsubscribe of either form of a topic removes every form the record holds (store.Remove), so
+// its answer names each topic it took out, the other form the caller did not name among them: a
+// plugin that followed both forms and dropped one reads from `removed` that the other is gone too,
+// rather than finding it missing at its next registration and adding it back.
+func TestAnUnsubscribeNamesEveryFormItRemoved(t *testing.T) {
+	rig := newInterestRig(t)
+	const old, current = "notifications.dispatch.issue.KEY-1.>", "notifications.dispatch.issue.KEY.KEY-1.>"
+	subscribeInterest(t, rig.mux, []string{old})
+	recorder := httptest.NewRecorder()
+	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/unsubscribe",
+		strings.NewReader(`{"session_id":"`+interestSession+`","topics":["`+current+`"]}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unsubscribe status = %d, body %s", recorder.Code, recorder.Body.String())
+	}
+	var answer struct {
+		Removed []string `json:"removed"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the unsubscribe answer %s: %v", recorder.Body.String(), err)
+	}
+	if want := []string{current, old}; !slices.Equal(answer.Removed, want) {
+		t.Fatalf("removed = %q, want %q: the form named and the form the record held", answer.Removed, want)
+	}
+	stored, err := rig.deps.registry.Get(context.Background(), interestSession)
+	if err == nil && slices.Contains(stored.Topics, old) {
+		t.Fatalf("stored topics = %q, want %s gone", stored.Topics, old)
+	}
+}
+
 // A role's claim is keyed by its bare name in this slice, whichever form named it
 // (store.Registry.ClaimedRole), so every reader of a role name must resolve it to that bare name
 // before it looks the claim up: a send to the role's lane in the new form, and GET

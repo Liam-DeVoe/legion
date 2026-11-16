@@ -124,3 +124,22 @@ func TestTopicsOfAFamilyTheRenameLeavesKeepTheirFilters(t *testing.T) {
 		t.Fatalf("filters with the agent subject = %q, want %q", filters, want)
 	}
 }
+
+// An issue's topic under a wildcard project position has no old form beside it
+// (contracts.LegacyTwin): its old form would overlap it, the wildcard against the key and the key
+// against what follows, and ReduceFilterSubjects would replace the two with their common prefix,
+// notifications.dispatch.issue.>, a filter over every project's issues. So such a topic is its own
+// one filter, as at the merge base, and the session's consumer reaches no other issue. The control
+// is the issue's topic in either form under its own project, which keeps its two disjoint forms.
+func TestAWildcardProjectIssueTopicKeepsItsOneFilter(t *testing.T) {
+	const wildcard = "notifications.dispatch.issue.*.INFRA-12.>"
+	if filters := SessionConsumerFilters([]string{wildcard}); !slices.Equal(filters, []string{wildcard}) {
+		t.Fatalf("filters of %s = %q, want the topic alone", wildcard, filters)
+	}
+	both := []string{"notifications.dispatch.issue.INFRA-12.>", "notifications.dispatch.issue.INFRA.INFRA-12.>"}
+	for _, topic := range both {
+		if filters := SessionConsumerFilters([]string{topic}); !slices.Equal(filters, ReduceFilterSubjects(both)) {
+			t.Fatalf("filters of %s = %q, want both forms %q", topic, filters, ReduceFilterSubjects(both))
+		}
+	}
+}

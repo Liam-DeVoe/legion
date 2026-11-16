@@ -647,6 +647,30 @@ describe("renderInbound dispatch events", () => {
     );
   });
 
+  // A session's inbox has two forms while every reader takes both (dispatch://INFRA-3862): the
+  // session alone, and the session under a project (`_` for none). A message on either form is
+  // this session's own, so its card names it the recipient; another session's inbox is not, in
+  // either form.
+  test("names the session the recipient of a message on its inbox in either form", () => {
+    const otherSession = "01a02222-3333-7444-8555-666666666666";
+    for (const topic of [
+      `notifications.agent.${reader}`,
+      `notifications.agent._.${reader}`,
+      `notifications.agent.PRIV.${reader}`,
+    ]) {
+      const raw = JSON.stringify(envelope({ source: "agent", topic, payload: "hello" }));
+      const intended = decode(renderInbound(raw, reader, topic).content) as {
+        envoy: { to?: string };
+      };
+      const other = decode(renderInbound(raw, otherSession, topic).content) as {
+        envoy: { to?: string };
+      };
+
+      expect(intended.envoy.to, topic).toBe(`you (${reader})`);
+      expect(other.envoy.to, topic).toBeUndefined();
+    }
+  });
+
   test("keeps rendering a targeted Dispatch message when its payload grows", () => {
     const extendedPayload = JSON.parse(targetedDispatchPayload) as {
       event: { payload: Record<string, unknown> };

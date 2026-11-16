@@ -333,16 +333,30 @@ func (reaper SessionReaper) storedAfterLastSeen(ctx context.Context, sessionID s
 	if reaper.Client == nil || stream.LastSeq == 0 || lastSeen <= 0 {
 		return 0, false
 	}
+	// The session's agent subject in either form, the session alone and under any project
+	// (contracts.TopicForms), each walked on its own: its consumer filters on both.
+	for _, subject := range contracts.TopicForms(contracts.LegacyAgentSubject(sessionID)) {
+		stored, partial := reaper.storedOnAfter(ctx, subject, lastSeen, stream, deadline)
+		count += stored
+		if partial {
+			return count, true
+		}
+	}
+	return count, false
+}
+
+// storedOnAfter is storedAfterLastSeen for one subject.
+func (reaper SessionReaper) storedOnAfter(ctx context.Context, subject string, lastSeen int64, stream nats.StreamState, deadline time.Time) (count int, bounded bool) {
 	walk := &storedWalk{
 		reaper:   reaper,
-		subject:  contracts.LegacyAgentSubject(sessionID),
+		subject:  subject,
 		after:    time.UnixMilli(lastSeen),
 		stream:   stream,
 		deadline: deadline,
 	}
 	first, outcome := walk.firstAfter(ctx)
 	if outcome != storedFound {
-		return 0, true
+		return 0, outcome != storedNone
 	}
 	for seq := first; seq <= stream.LastSeq; {
 		stored, outcome := walk.next(ctx, seq)
