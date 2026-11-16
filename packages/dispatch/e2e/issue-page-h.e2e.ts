@@ -7,7 +7,7 @@ import {
 import { CONTROL_LABELS, PROGRESS_NOUNS } from "../web/src/features/issue-page/page-words";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
-import { getIssue, patchIssue } from "./api";
+import { getIssue, patchIssue, putRepoProject } from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -722,6 +722,42 @@ test("a label of the most characters Dispatch takes is whole in Details at every
         `a label of 40 characters runs past the Labels row at ${width} px`
       ).toBeLessThanOrEqual((rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1);
       await assertWholeInDetails(page, [label]);
+    }
+  });
+});
+
+/** A repository whose name runs to 45 characters, which GitHub allows (a name of up to 100), with
+ *  no space to break it at. A name of 32 characters, which a project of this deployment maps,
+ *  already runs 14 px past the row at 1440 px. */
+const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
+
+// (5): the repository is visible in its row, whole. Found by the tester on the preview of
+// 962ec632: on INFRA-3570 a repository of 44 characters ran 101 px past Details' Repository row
+// at 1440 px and was cut at Details' edge, at 390 px as well.
+test("a repository of a long name is whole in Details at every width @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { two } = seeded.keys;
+    await putRepoProject(LONG_REPOSITORY, { default: false, project: PROJECT });
+    await patchIssue(two, { repo: LONG_REPOSITORY });
+    const desktopProject = test.info().project.name !== "iphone";
+    for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${two}`);
+      await openDetails(page);
+      const row = detailsRow(page, PROPERTY_LABELS.repository);
+      const repository = row.getByText(LONG_REPOSITORY, { exact: true }).first();
+      await expect(repository).toBeVisible();
+      const [repositoryBox, rowBox] = [await repository.boundingBox(), await row.boundingBox()];
+      expect(repositoryBox, `the repository has no box at ${width} px`).not.toBeNull();
+      expect(rowBox, `the Repository row has no box at ${width} px`).not.toBeNull();
+      expect(
+        (repositoryBox?.x ?? 0) + (repositoryBox?.width ?? 0),
+        `a repository of ${LONG_REPOSITORY.length} characters runs past the Repository row at ${width} px`
+      ).toBeLessThanOrEqual((rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1);
+      await assertWholeInDetails(page, [repository]);
     }
   });
 });
