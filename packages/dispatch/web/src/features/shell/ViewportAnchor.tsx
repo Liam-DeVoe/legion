@@ -5,8 +5,9 @@ import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-
 export interface AnchorRow {
   id: string;
   /** How the row was chosen: keyboard focus within it, the pointer resting on it, or, failing
-   *  both, the row nearest the list's visible centre. */
-  via: "center" | "focus" | "pointer";
+   *  both, the row nearest the list's visible centre - or, for a host that holds a reader at the
+   *  top (`holdAtTop`) while they are there, the first row on screen. */
+  via: "center" | "focus" | "pointer" | "top";
 }
 
 interface Snapshot extends AnchorRow {
@@ -37,6 +38,13 @@ export interface ViewportAnchorProps {
    *  and moves that element's `scrollTop`, and measures the list against its box. With no ref,
    *  or one holding null, the window scrolls the rows as it always has. */
   scroller?: RefObject<HTMLElement | null>;
+  /** Hold a reader at the top too: with no hand on a row and the rows at their top, the place
+   *  kept is the first row on screen in the column nearest the middle, so a row added above it
+   *  lands out of view above and the rows on screen keep their tops. A table of issues and the
+   *  Board take it ("content that others add does not move a reader's place"); a feed whose
+   *  reader at the top is waiting for arrivals (the Activity tab, the Inbox, the Conversation)
+   *  leaves it off and sees them land. */
+  holdAtTop?: boolean;
 }
 
 const probeSteps = 5;
@@ -61,14 +69,9 @@ function rowAtCenter(
   selector: string,
   scroller: HTMLElement | null
 ): HTMLElement | null {
-  const rect = root.getBoundingClientRect();
-  const box = scroller === null ? null : scroller.getBoundingClientRect();
-  const visibleLeft = Math.max(rect.left, box?.left ?? 0);
-  const visibleRight = Math.min(rect.right, box?.right ?? window.innerWidth);
-  const x = (visibleLeft + visibleRight) / 2;
-  const visibleTop = Math.max(rect.top, box === null ? 0 : box.top);
-  const visibleBottom = Math.min(rect.bottom, box === null ? window.innerHeight : box.bottom);
-  const y = (visibleTop + visibleBottom) / 2;
+  const { left, right, top, bottom } = visibleBox(root, scroller);
+  const x = (left + right) / 2;
+  const y = (top + bottom) / 2;
   const hit = (offset: number): HTMLElement | null =>
     document.elementFromPoint(x, y + offset)?.closest<HTMLElement>(selector) ?? null;
 
@@ -82,6 +85,58 @@ function rowAtCenter(
   return found !== null && root.contains(found) ? found : null;
 }
 
+/** The part of `root` the reader sees: inside the window, or inside `scroller`'s box. */
+function visibleBox(
+  root: HTMLElement,
+  scroller: HTMLElement | null
+): { left: number; right: number; top: number; bottom: number } {
+  const rect = root.getBoundingClientRect();
+  const box = scroller === null ? null : scroller.getBoundingClientRect();
+  return {
+    left: Math.max(rect.left, box?.left ?? 0),
+    right: Math.min(rect.right, box?.right ?? window.innerWidth),
+    top: Math.max(rect.top, box === null ? 0 : box.top),
+    bottom: Math.min(rect.bottom, box === null ? window.innerHeight : box.bottom),
+  };
+}
+
+const topProbeStepPx = 24;
+const topProbeSideStepPx = 32;
+const topProbeSideSteps = 19;
+
+/**
+ * The first row on screen in the column nearest the middle, for a reader at the top
+ * (`holdAtTop`): hit tests down from the visible top at the visible middle, in steps shorter
+ * than any row, past a sticky header or a column's title, to the first row. Where the middle
+ * holds no row - the gap between two Board columns, an empty column - the same line is tried a
+ * step further left and right, out to two Board columns either side. A list of one column (a
+ * table) finds its first row on screen on the first line. No row is measured but the one it
+ * finds.
+ */
+function firstRowOnScreen(
+  root: HTMLElement,
+  selector: string,
+  scroller: HTMLElement | null
+): HTMLElement | null {
+  if (root.querySelector(selector) === null) return null;
+  const { left, right, top, bottom } = visibleBox(root, scroller);
+  const middle = (left + right) / 2;
+  for (let side = 0; side <= topProbeSideSteps; side += 1) {
+    const xs =
+      side === 0
+        ? [middle]
+        : [middle - side * topProbeSideStepPx, middle + side * topProbeSideStepPx];
+    for (const x of xs) {
+      if (x < left || x > right) continue;
+      for (let y = top + 1; y < bottom; y += topProbeStepPx) {
+        const found = document.elementFromPoint(x, y)?.closest<HTMLElement>(selector) ?? null;
+        if (found !== null && root.contains(found)) return found;
+      }
+    }
+  }
+  return null;
+}
+
 function rowWithin(root: HTMLElement, selector: string, node: Element | null): HTMLElement | null {
   const row = node?.closest<HTMLElement>(selector) ?? null;
   return row !== null && root.contains(row) ? row : null;
@@ -93,7 +148,9 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
  * banner appearing. The current row is the one with keyboard focus within it, else the one under
  * the pointer, else the one nearest the list's visible centre - the first two hold even at the
  * top of the page (the hand is on that row), the centre only once the reader has scrolled, since
- * a reader at the top is looking for arrivals and should see them land. A row that itself leaves
+ * a reader at the top of a feed is looking for arrivals and should see them land. A host that
+ * holds a reader at the top too (`holdAtTop`: the tables of issues, the Board) keeps the first
+ * row on screen there instead, so an arrival lands out of view above. A row that itself leaves
  * its place for another `group` (a section) is not followed: the reader's place is where the row
  * was, not where it went. The pointer moving from a row onto the hover card a reference in that
  * row opened keeps that row the current one while the card is open: the card is the row's own
@@ -359,17 +416,23 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   }
 
   /** `interacted()`, else - only once the reader has scrolled - the row nearest the list's
-   *  visible centre (a hit-test probe: layout reads). The row a commit will anchor to. The box
-   *  that scrolls is `scroller`'s element while the host gave one and it holds one, else the
-   *  window, and `componentDidUpdate` moves whichever this read. */
+   *  visible centre (a hit-test probe: layout reads), or, for a host that holds a reader at the
+   *  top (`holdAtTop`), the first row on screen while they are there. The row a commit will
+   *  anchor to. The box that scrolls is `scroller`'s element while the host gave one and it
+   *  holds one, else the window, and `componentDidUpdate` moves whichever this read. */
   current(): (AnchorRow & { row: HTMLElement }) | null {
     const interacted = this.interacted();
     if (interacted !== null) return interacted;
     const root = this.root;
     if (root === null) return null;
     const scroller = this.scrollerElement();
-    if ((scroller === null ? window.scrollY : scroller.scrollTop) <= 0) return null;
-    const row = rowAtCenter(root, `[${this.props.item}]`, scroller);
+    const selector = `[${this.props.item}]`;
+    if ((scroller === null ? window.scrollY : scroller.scrollTop) <= 0) {
+      if (this.props.holdAtTop !== true) return null;
+      const first = firstRowOnScreen(root, selector, scroller);
+      return first === null ? null : { id: this.idOf(first), row: first, via: "top" };
+    }
+    const row = rowAtCenter(root, selector, scroller);
     return row === null ? null : { id: this.idOf(row), row, via: "center" };
   }
 

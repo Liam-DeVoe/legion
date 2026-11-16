@@ -395,9 +395,42 @@ const createElsewhere = (page: Page, title: string) =>
 /** The title of the issue the pictures create elsewhere, which says it is invented. */
 const NEW_ISSUE_TITLE = "An issue another reader just made (invented by the demo)";
 
-/** The opening words of Work time's method sentence, which its header tooltip, a Board card's
- *  Work time fact and the Columns menu show alike. */
-const WORK_TIME_METHOD = "Dispatch counts the hours from the first Legion worker event";
+/** Work time's method sentence, which its header tooltip, a Board card's Work time fact and the
+ *  Columns menu show alike. */
+const WORK_TIME_METHOD =
+  "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it, without Backlog, Icebox and Queue phase hours.";
+
+/** The sort hint of a sortable header the reader may drag: main's words. */
+const SORT_HINT = "Sort (shift-click to add a second sort); drag to move the column";
+
+/** Checks that no sort button of any table on the page carries a browser title, since the
+ *  shared tooltip says how it sorts. A sort button is a header's draggable button. */
+async function checkNoSortTitles(page: Page, name: string): Promise<void> {
+  const buttons = await page.locator("thead button[draggable]").evaluateAll((all) => ({
+    count: all.length,
+    titled: all.flatMap((button) =>
+      button.hasAttribute("title") ? [button.textContent?.trim() ?? ""] : []
+    ),
+  }));
+  check(
+    buttons.count > 0 && buttons.titled.length === 0,
+    `${name}: none of the page's ${buttons.count} sort buttons carries a title${buttons.titled.length > 0 ? ` (${buttons.titled.join(", ")} do)` : ""}`
+  );
+}
+
+/** The header the keyboard focus stands in, and the lines of the tooltip the focused control
+ *  names as its description (none where it names no tooltip). */
+const focusedTooltip = (page: Page) =>
+  page.evaluate(() => {
+    const active = document.activeElement;
+    const named = active?.getAttribute("aria-describedby");
+    const tip = named ? document.getElementById(named) : null;
+    const lines =
+      tip?.getAttribute("role") === "tooltip"
+        ? [...tip.querySelectorAll("p")].map((line) => line.textContent?.trim() ?? "")
+        : [];
+    return { header: active?.closest("th")?.textContent?.trim() ?? "", lines };
+  });
 
 /** Checks that the banner names each change the picture made, in its words (`ACME-12 to P3 by
  *  another reader`), each given as its text or as a pattern of it. */
@@ -841,23 +874,134 @@ const afterShots: Shot[] = [
     },
   },
   // Open by Created with the pointer off the table and the box at its top: an issue another
-  // reader creates is the first row at once.
+  // reader creates sorts first, but lands out of view above, and the row that was first keeps
+  // its top. The Open tab counts it.
   {
-    name: "table-new-row-hand-off-1440",
+    name: "table-top-row-stays-new-row-above-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      const name = "table-new-row-hand-off-1440";
-      const box = page.getByTestId("issues-table-scroll");
+      const name = "table-top-row-stays-new-row-above-1440";
+      const box = '[data-testid="issues-table-scroll"]';
+      const row = (key: string) => `[data-issue-row="${key}"]`;
       await open(page, view("open", "&sort=-created"));
       await page.mouse.move(1, 1);
-      const before = await firstRows(page, 1);
+      const [first] = await firstRows(page, 1);
+      if (first === undefined) throw new Error("Open drew no row");
+      const count = await tabCount(page, "open");
+      const before = await topOf(page, row(first));
       const created = await createElsewhere(page, NEW_ISSUE_TITLE);
-      const firstIn = await within(5_000, async () => (await firstRows(page, 1))[0] === created);
-      const after = await firstRows(page, 2);
-      const scrolled = await box.evaluate((scroller) => scroller.scrollTop);
+      const countedIn = await within(
+        5_000,
+        async () => (await tabCount(page, "open")) === count + 1
+      );
+      await page.waitForTimeout(500);
+      const after = await topOf(page, row(first));
+      const landed = await page.evaluate(
+        ([frame, key]) => {
+          const scroller = document.querySelector(frame);
+          const area = scroller?.getBoundingClientRect();
+          // The header cells are sticky, not the thead, which scrolls away with the rows.
+          const head = scroller?.querySelector("thead th")?.getBoundingClientRect();
+          const own = document.querySelector(`[data-issue-row="${key}"]`)?.getBoundingClientRect();
+          return {
+            visibleTop: Math.round(Math.max(area?.top ?? 0, head?.bottom ?? 0)),
+            top: own === undefined ? null : Math.round(own.top),
+            bottom: own === undefined ? null : Math.round(own.bottom),
+            scrollTop: Math.round(scroller?.scrollTop ?? Number.NaN),
+          };
+        },
+        [box, created] as const
+      );
       check(
-        Number.isFinite(firstIn) && after[1] === before[0] && scrolled === 0,
-        `${name}: with the pointer off the table and the box at its top, ${created} is the first row ${firstIn} ms after it was made, above ${after[1]} (first before it: ${before[0]}; the box's scrollTop ${scrolled})`
+        Math.abs(after - before) <= 1,
+        `${name}: ${first}, the first row, stands at ${before} px before ${created} was made and ${after} px after`
+      );
+      check(
+        Number.isFinite(countedIn) &&
+          landed.scrollTop > 0 &&
+          (landed.bottom === null || landed.bottom <= landed.visibleTop + 1),
+        `${name}: ${created} lands out of view above (${landed.top === null ? "not drawn" : `at ${landed.top}-${landed.bottom} px`}, the rows show from ${landed.visibleTop} px; the box's scrollTop ${landed.scrollTop}), and the Open tab reads ${count + 1} (was ${count}) in ${countedIn} ms`
+      );
+      await checkBannerNames(page, name, [`${created} created by another reader`]);
+    },
+  },
+  // Open's Board by Created, newest first, with the window at its top and the pointer off the
+  // Board, scrolled sideways so Todo is the column at its middle: an issue another reader
+  // creates sorts first in Todo, and the card that was first there keeps its top. The window
+  // scrolls the Board, so the anchor holds that card by scrolling the window, and the new card
+  // may show above it. Todo and the Open tab count it.
+  {
+    name: "board-top-card-stays-new-card-above-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      const name = "board-top-card-stays-new-card-above-1440";
+      const todo = '[data-board-column="todo"] [data-board-card]';
+      const card = (key: string) => `[data-board-card="${key}"]`;
+      await open(
+        page,
+        view("open", "&layout=board&sort=-created"),
+        page.locator("[data-board-card]").first()
+      );
+      await page.evaluate(() => {
+        const scroller = document.querySelector<HTMLElement>(
+          '[data-testid="board-scroll-container"]'
+        );
+        const column = document.querySelector('[data-board-column="todo"]');
+        if (scroller === null || column === null) throw new Error("the Board draws no Todo");
+        const own = scroller.getBoundingClientRect();
+        const at = column.getBoundingClientRect();
+        scroller.scrollLeft += (at.left + at.right) / 2 - (own.left + own.right) / 2;
+        window.scrollTo(0, 0);
+      });
+      await page.mouse.move(1, 1);
+      await page.waitForTimeout(500);
+      const [first] = await page
+        .locator(todo)
+        .evaluateAll((cards) =>
+          cards.slice(0, 1).map((each) => each.getAttribute("data-board-card") ?? "")
+        );
+      if (first === undefined) throw new Error("the Todo column draws no card");
+      const counts = [await tabCount(page, "open"), await columnCount(page, "todo")];
+      const before = await topOf(page, card(first));
+      const created = await createElsewhere(page, NEW_ISSUE_TITLE);
+      const countedIn = await within(
+        10_000,
+        async () => (await columnCount(page, "todo")) === (counts[1] ?? 0) + 1
+      );
+      await page.waitForTimeout(500);
+      const after = await topOf(page, card(first));
+      const now = [await tabCount(page, "open"), await columnCount(page, "todo")];
+      const landed = await page.evaluate(
+        ([key, held]) => {
+          const own = document.querySelector(`[data-board-card="${key}"]`)?.getBoundingClientRect();
+          const cards = [
+            ...document.querySelectorAll('[data-board-column="todo"] [data-board-card]'),
+          ];
+          return {
+            top: own === undefined ? null : Math.round(own.top),
+            bottom: own === undefined ? null : Math.round(own.bottom),
+            firstInTodo: cards[0]?.getAttribute("data-board-card") ?? "",
+            heldSecond: cards[1]?.getAttribute("data-board-card") === held,
+            scrollY: Math.round(window.scrollY),
+          };
+        },
+        [created, first] as const
+      );
+      check(
+        Math.abs(after - before) <= 1,
+        `${name}: ${first}, Todo's first card, stands at ${before} px before ${created} was made and ${after} px after`
+      );
+      check(
+        Number.isFinite(countedIn) &&
+          landed.firstInTodo === created &&
+          landed.heldSecond &&
+          now[0] === (counts[0] ?? 0) + 1 &&
+          now[1] === (counts[1] ?? 0) + 1,
+        `${name}: ${created} lands first in Todo, above ${first}; Todo reads ${now[1]} (was ${counts[1]}) and the Open tab ${now[0]} (was ${counts[0]}) in ${countedIn} ms`
+      );
+      check(
+        landed.bottom !== null && landed.bottom <= after,
+        `${name}: ${created} stands above ${first}, at ${landed.top}-${landed.bottom} px (${landed.bottom !== null && landed.bottom <= 0 ? "out of view" : "in view"}; the window's scrollY ${landed.scrollY})`
       );
       await checkBannerNames(page, name, [`${created} created by another reader`]);
     },
@@ -985,26 +1129,40 @@ const afterShots: Shot[] = [
       await page.getByRole("button", { name: "Filter Time per phase", exact: true }).focus();
       await page.keyboard.press("Tab");
       await page.waitForTimeout(500);
-      const focused = await page.evaluate(() => {
-        const active = document.activeElement;
-        const named = active?.getAttribute("aria-describedby");
-        const tip = named ? document.getElementById(named) : null;
-        const lines =
-          tip?.getAttribute("role") === "tooltip"
-            ? [...tip.querySelectorAll("p")].map((line) => line.textContent?.trim() ?? "")
-            : [];
-        return { header: active?.closest("th")?.textContent?.trim() ?? "", lines };
-      });
+      const focused = await focusedTooltip(page);
       const [method = "", hint = ""] = focused.lines;
       check(
         focused.header.startsWith("Work time") &&
           focused.lines.length === 2 &&
-          method.startsWith(WORK_TIME_METHOD) &&
-          /^[^.]+\.$/.test(method) &&
-          hint.startsWith("Sort (shift-click"),
+          method === WORK_TIME_METHOD &&
+          hint === SORT_HINT,
         `Tab onto Work time's header opens its tooltip: "${method}", then "${hint}"`
       );
       await checkTooltipInWindow(page, "done-work-time-tooltip-focus-1440");
+    },
+  },
+  // A plain header's sort reached with the keyboard: Tab from Queue's filter onto Status's sort
+  // opens its tooltip, which holds main's sort hint alone, and no sort button on the page
+  // carries a browser title. The pointer stands off the page, so no hover opens it.
+  {
+    name: "view-open-status-sort-tooltip-focus-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      const name = "view-open-status-sort-tooltip-focus-1440";
+      await open(page, view("open"));
+      await page.mouse.move(1, 1);
+      await page.getByRole("button", { name: "Filter Queue", exact: true }).focus();
+      await page.keyboard.press("Tab");
+      await page.waitForTimeout(500);
+      const focused = await focusedTooltip(page);
+      check(
+        focused.header.startsWith("Status") &&
+          focused.lines.length === 1 &&
+          focused.lines[0] === SORT_HINT,
+        `${name}: Tab onto Status's header opens its tooltip: "${focused.lines.join(" / ")}"`
+      );
+      await checkNoSortTitles(page, name);
+      await checkTooltipInWindow(page, name);
     },
   },
   // A done issue with Legion facts and no measured work (the newest closed, or the one
@@ -1282,10 +1440,7 @@ const afterShots: Shot[] = [
       await pointAt(page, box.x + box.width / 2, box.y + box.height / 2);
       await page.waitForTimeout(200);
       const tip = (await page.locator('[role="tooltip"]').first().textContent())?.trim() ?? "";
-      check(
-        tip.startsWith(WORK_TIME_METHOD) && /^[^.]+\.$/.test(tip),
-        `${name}: the Work time fact's tooltip reads "${tip}"`
-      );
+      check(tip === WORK_TIME_METHOD, `${name}: the Work time fact's tooltip reads "${tip}"`);
       await checkTooltipInWindow(page, name);
     },
   },
@@ -1349,7 +1504,7 @@ const afterShots: Shot[] = [
       const described = Object.keys(menu.methods).sort();
       check(
         same(described, [...MEASURED_COLUMNS].sort()) &&
-          (menu.methods["Work time"] ?? "").startsWith(WORK_TIME_METHOD),
+          menu.methods["Work time"] === WORK_TIME_METHOD,
         `the Columns menu draws a method line under ${described.join(", ")}; Work time's reads "${menu.methods["Work time"] ?? ""}"`
       );
       checkMenuReach("columns-menu-1440", menu);
@@ -1496,8 +1651,24 @@ const afterShots: Shot[] = [
     },
   },
   // The priority pages (cybermonklabs/legion#3767), whose issue tables are the design's.
-  { name: "priorities-1440", viewport: DESKTOP, fullPage: true, take: openPriorities },
-  { name: "priority-page-1440", viewport: DESKTOP, fullPage: true, take: openPriority },
+  {
+    name: "priorities-1440",
+    viewport: DESKTOP,
+    fullPage: true,
+    take: async (page) => {
+      await openPriorities(page);
+      await checkNoSortTitles(page, "priorities-1440");
+    },
+  },
+  {
+    name: "priority-page-1440",
+    viewport: DESKTOP,
+    fullPage: true,
+    take: async (page) => {
+      await openPriority(page);
+      await checkNoSortTitles(page, "priority-page-1440");
+    },
+  },
   { name: "view-open-390", viewport: PHONE, take: (page) => open(page, view("open")) },
   {
     name: "board-open-legion-phase-390",

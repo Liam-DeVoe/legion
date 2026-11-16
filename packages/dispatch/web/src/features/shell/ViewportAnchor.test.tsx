@@ -22,12 +22,14 @@ function chosen(): AnchorRow | null {
 function List({
   enabled,
   groups,
+  holdAtTop,
   rows,
   scroller,
 }: {
   enabled?: () => boolean;
   /** A row's group; rows default to one shared group. */
   groups?: Readonly<Record<string, string>>;
+  holdAtTop?: boolean;
   rows: string[];
   /** When given, the rows scroll in this element instead of the document. */
   scroller?: RefObject<HTMLDivElement | null>;
@@ -36,6 +38,7 @@ function List({
     <ViewportAnchor
       enabled={enabled}
       group="data-group"
+      holdAtTop={holdAtTop}
       item="data-row"
       ref={anchor}
       scroller={scroller}
@@ -161,6 +164,39 @@ test("a reader at the top sees new rows arrive without the view following the ce
     view.rerender(<List rows={["new-a", ...ids(12)]} />);
     expect(window.scrollY).toBe(0);
     expect(viewportTop("new-a")).toBe(LIST_TOP);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host that holds a reader at the top too (`holdAtTop`: the tables of issues, the Board) keeps
+// the first row on screen there: a row added above it lands out of view above, and the rows on
+// screen keep their tops.
+test("a host that holds a reader at the top keeps the first row on screen as rows arrive above", () => {
+  const view = render(<List holdAtTop rows={ids(12)} />);
+  try {
+    expect(chosen()).toEqual({ id: "r1", via: "top" });
+    const before = viewportTop("r1");
+    view.rerender(<List holdAtTop rows={["new-a", ...ids(12)]} />);
+    expect(viewportTop("r1")).toBe(before);
+    expect(window.scrollY).toBe(ROW_HEIGHT);
+    expect(viewportTop("new-a")).toBe(LIST_TOP - ROW_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a host that holds a reader at the top keeps the first row on screen in its own scroller", () => {
+  const view = render(<List holdAtTop rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("no scroller");
+    expect(chosen()).toEqual({ id: "r1", via: "top" });
+    const before = viewportTop("r1");
+    view.rerender(<List holdAtTop rows={["new-a", "new-b", ...ids(12)]} scroller={scrollerRef} />);
+    expect(viewportTop("r1")).toBe(before);
+    expect(scroller.scrollTop).toBe(2 * ROW_HEIGHT);
+    expect(window.scrollY).toBe(0);
   } finally {
     view.unmount();
   }

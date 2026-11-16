@@ -1177,6 +1177,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
             showIcebox={showIcebox}
             statusPicks={statusPicks}
             userState={userState.data}
+            viewKey={`${params.toString()}\n${lanes}`}
           />
           {/* The Board of a view the server pages draws the page on screen, and the steps to
               the others. */}

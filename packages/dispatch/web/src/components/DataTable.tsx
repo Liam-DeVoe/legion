@@ -313,9 +313,27 @@ export function useDataTable<Row>({
     if (previousView.current !== viewKey) layout.scrollRef.current?.scrollTo({ top: 0 });
     previousView.current = viewKey;
   }, [viewKey, layout.scrollRef]);
+  // The rows the last commit drew. A commit that draws the same rows - the virtualizer moving its
+  // range on a scroll - moves no row the anchor could hold, so it is not anchored, and a scroll
+  // alone reads no layout. The same rows are the same ids holding the same data, in the same
+  // order: a change of the data hands every row new data (`rows` is made again), and a sort,
+  // a filter, a group or a page moves or replaces them.
+  const drawnRows = useRef(pageRows);
+  useLayoutEffect(() => {
+    drawnRows.current = pageRows;
+  });
+  const rowsMoved = () => {
+    const drawn = drawnRows.current;
+    return (
+      drawn.length !== pageRows.length ||
+      pageRows.some(
+        (row, index) => row.id !== drawn[index]?.id || row.original !== drawn[index]?.original
+      )
+    );
+  };
 
   return {
-    anchorEnabled: () => previousView.current === viewKey,
+    anchorEnabled: () => previousView.current === viewKey && rowsMoved(),
     displayRows,
     focusRow,
     layout,
@@ -410,15 +428,17 @@ function TableHeaderCell<TData>({
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
-  // A column that says how its value is computed (`meta.describe`) says it in a tooltip off its
-  // header, on hover and keyboard focus, with main's sort hint as the tooltip's second line, so
-  // the header keeps that hint and no browser title shows beside the tooltip.
+  // Every sortable header says how it sorts in the shared tooltip, on hover and keyboard focus,
+  // and a column that says how its value is computed (`meta.describe`) says that first, with the
+  // sort hint as the second line. No browser title shows beside it. The tooltip does not open
+  // while a column is dragged: the drag closes it, and no hover opens it meanwhile.
   const describe = column.columnDef.meta?.describe;
   const sortHint = pinned
     ? "Sort (shift-click to add a second sort)"
     : "Sort (shift-click to add a second sort); drag to move the column";
   const sortRef = useRef<HTMLButtonElement>(null);
   const tooltip = useTooltip();
+  const shown = { ...tooltip, open: tooltip.open && dragColumn === undefined };
   return (
     <th
       aria-sort={
@@ -447,14 +467,16 @@ function TableHeaderCell<TData>({
       >
         {column.getCanSort() ? (
           <button
-            {...(describe === undefined ? {} : tooltip.props)}
+            {...tooltip.props}
             className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
             draggable={!pinned}
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
-            onDragStart={() => setDragColumn(column.id)}
+            onDragStart={() => {
+              tooltip.hide();
+              setDragColumn(column.id);
+            }}
             ref={sortRef}
-            title={describe === undefined ? sortHint : undefined}
             type="button"
           >
             {flexRender(column.columnDef.header, header.getContext())}
@@ -465,12 +487,12 @@ function TableHeaderCell<TData>({
         ) : (
           flexRender(column.columnDef.header, header.getContext())
         )}
-        {describe === undefined ? null : (
-          <Tooltip anchorRef={sortRef} trigger={tooltip}>
-            <p>{describe}</p>
-            <p className={`mt-1 ${textMutedOnSurface}`}>{sortHint}</p>
+        {column.getCanSort() ? (
+          <Tooltip anchorRef={sortRef} trigger={shown}>
+            {describe === undefined ? null : <p>{describe}</p>}
+            <p className={describe === undefined ? "" : `mt-1 ${textMutedOnSurface}`}>{sortHint}</p>
           </Tooltip>
-        )}
+        ) : null}
         {column.getCanFilter()
           ? renderFilter({
               column,
@@ -549,10 +571,13 @@ export function DataTable<Row>({
           scrollPaddingTop: 64,
         }}
       >
+        {/* The reader's place, at the top too (`holdAtTop`): a row another reader adds above
+            the first row on screen lands out of view above, in every table this core draws. */}
         <ViewportAnchor
           item={names.rowAttribute}
           className="w-max min-w-full"
           group={names.groupAttribute}
+          holdAtTop
           scroller={layout.scrollRef}
           enabled={model.anchorEnabled}
         >

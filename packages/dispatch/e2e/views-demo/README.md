@@ -165,8 +165,9 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
   Another reader then retitles a row above it so that it takes another number of lines,
   creates an issue, which sorts first, and sets another row above it to Backlog. Each change
   lands at once, and the row under the pointer keeps its top;
-- `table-new-row-hand-off-1440`: the same table with the pointer off it and the box at its top,
-  where an issue another reader creates is the first row at once;
+- `table-top-row-stays-new-row-above-1440`: the same table with the pointer off it and the box
+  at its top. An issue another reader creates sorts first but lands out of view above, the row
+  that was first keeps its top, and the Open tab counts the new issue;
 - `old-queue-link-1440`: an older `view=queue` link, which opens Open with `f.queue=Queued`;
 - `done-closed-filter-1440`: Done with the 3rd of November to the 9th picked in the Closed
   column's date-range filter, which writes `f.closed=2026-11-03..2026-11-10` (main's rule: UTC,
@@ -178,6 +179,8 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
 - `done-work-time-tooltip-focus-1440`: Done with Work time's header reached by Tab from the
   filter before it, its tooltip open on the keyboard focus alone, inside the window: the
   method's one sentence, and main's sort hint under it;
+- `view-open-status-sort-tooltip-focus-1440`: Open with Status's header reached by Tab from
+  Queue's filter, its tooltip open with main's sort hint alone;
 - `done-work-time-empty-1440`: Done narrowed to the day a done issue with Legion facts and no
   measured work closed (the newest closed of them, or the one `--empty-work-time` names),
   whose Work time cell is empty beside rows that draw one;
@@ -194,6 +197,12 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
   Another reader then retitles a Todo card above it so that it takes more lines, and moves
   another from Todo to Backlog. Both land at once, the column counts follow, and the card under
   the pointer keeps its top;
+- `board-top-card-stays-new-card-above-1440`: Open's Board sorted by Created, newest first,
+  with the window at its top, the pointer off the Board, and the Board scrolled sideways so
+  Todo is its middle column. An issue another reader creates sorts first in Todo, and Todo's
+  first card keeps its top. The window scrolls the Board, so the anchor holds that card by
+  scrolling the window, and the new card shows above it. Todo and the Open tab count the new
+  issue;
 - `board-card-work-time-tooltip-1440`: the pointer on a Board card's Work time fact, its
   tooltip open with the same sentence as Work time's header tooltip;
 - `board-own-drag-applies-1440`: the reader's own drag of the first Todo card onto Backlog,
@@ -260,14 +269,18 @@ check of what the page drew failed:
   draws all of its cards again), a retitle not changing its row's or card's height, the Open
   tab's count not growing by the new issue, or the Board's Todo and Backlog counts not
   following the move;
-- with the pointer off the table and the box at its top, the new issue not being the first row
-  within 5 s, or the box scrolling;
+- at the top with the pointer off the table, the first row moving more than 1 px when a new
+  issue sorts above it, the new row standing in view, or the Open tab not counting it within
+  5 s; on the Board, Todo's first card moving more than 1 px, the new card not standing first
+  in Todo above it (in view or not), or Todo and the Open tab not counting it within 10 s;
 - the banner not naming an issue change the picture made, with who made it;
 - the reader's own drag not moving its card at once, or moving the column counts wrongly, in
   the demo and in the single file;
 - Work time's header tooltip not opening on keyboard focus, or not holding its one method
   sentence and then main's sort hint; a Board card's Work time tooltip not holding the same
   sentence;
+- Status's header tooltip not opening on keyboard focus, or holding anything but main's sort
+  hint; a sort button carrying a browser title, on Open or on the priority pages;
 - a tooltip standing partly outside the window;
 - the done issue with no measured work drawing anything in its Work time cell;
 - Created by or Open asks not whole on Open's first screen at 1440, on INFRA or on the project

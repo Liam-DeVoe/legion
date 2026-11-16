@@ -1,4 +1,4 @@
-import { type ReactNode, type RefObject, useId, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useId, useState } from "react";
 import { card } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
 
@@ -24,8 +24,8 @@ export interface TooltipTrigger {
 export function useTooltip(): TooltipTrigger {
   const [open, setOpen] = useState(false);
   const id = useId();
-  const show = () => setOpen(true);
-  const hide = () => setOpen(false);
+  const show = useCallback(() => setOpen(true), []);
+  const hide = useCallback(() => setOpen(false), []);
   return {
     open,
     id,
@@ -45,7 +45,9 @@ export function useTooltip(): TooltipTrigger {
  * The one tooltip: a short text or table that hangs off its control while the reader hovers it
  * or the keyboard focuses it, placed and dismissed by `AnchoredPanel`'s rules. It takes no
  * focus, so the control keeps it, and the control names it (`aria-describedby`) while it is
- * open. Time per phase's cell and the measure columns' headers draw it.
+ * open. It closes as the pointer or the focus leaves, and on Escape wherever the focus is: a
+ * tooltip a hover opened hangs off a control the focus may not be on. Time per phase's cell,
+ * every sortable column header and a Board card's measure facts and open asks draw it.
  */
 export function Tooltip({
   anchorRef,
@@ -58,7 +60,33 @@ export function Tooltip({
 }): ReactNode {
   if (!trigger.open) return null;
   return (
-    <AnchoredPanel anchorRef={anchorRef} className={TOOLTIP_CLASS} flip onDismiss={trigger.hide}>
+    <OpenTooltip anchorRef={anchorRef} trigger={trigger}>
+      {children}
+    </OpenTooltip>
+  );
+}
+
+function OpenTooltip({
+  anchorRef,
+  children,
+  trigger,
+}: {
+  anchorRef: RefObject<HTMLElement | null>;
+  children: ReactNode;
+  trigger: TooltipTrigger;
+}): ReactNode {
+  const { hide } = trigger;
+  useEffect(() => {
+    // Escape from the control itself is the panel's (`AnchoredPanel`), which keeps it; any
+    // other Escape closes the tooltip and goes on to whoever owns it.
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") hide();
+    };
+    document.addEventListener("keydown", onEscape);
+    return () => document.removeEventListener("keydown", onEscape);
+  }, [hide]);
+  return (
+    <AnchoredPanel anchorRef={anchorRef} className={TOOLTIP_CLASS} flip onDismiss={hide}>
       <div id={trigger.id} role="tooltip">
         {children}
       </div>

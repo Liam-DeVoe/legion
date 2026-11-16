@@ -17,6 +17,7 @@ import {
   memo,
   type ReactNode,
   useCallback,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -123,6 +124,29 @@ function Fact({
   );
 }
 
+/** A card's open asks: the count, which says what it counts in the shared tooltip, on hover and
+ *  on keyboard focus. */
+function OpenAsks({ count }: { count: number }): ReactNode {
+  const anchor = useRef<HTMLSpanElement>(null);
+  const tooltip = useTooltip();
+  return (
+    <span
+      {...tooltip.props}
+      className={`inline-flex rounded-sm ${boardFocusRing}`}
+      data-open-asks={count}
+      ref={anchor}
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: the tab stop opens the tooltip that says what the count is.
+      tabIndex={0}
+    >
+      <AttentionBadge count={count} />
+      <span className="sr-only"> open {count === 1 ? "ask" : "asks"}</span>
+      <Tooltip anchorRef={anchor} trigger={tooltip}>
+        {count} open {count === 1 ? "ask" : "asks"}
+      </Tooltip>
+    </span>
+  );
+}
+
 /** What a card with a card on the Legion board shows beside today's card: every field the
  *  Legion view's card showed, from the board route. */
 function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode {
@@ -211,12 +235,7 @@ const sameCard = (a: CardProps, b: CardProps): boolean =>
  *  drag handle: an 8 px mouse move or a 150 ms touch hold lifts it. Its drag hooks draw it
  *  again whenever the drag context changes, so what it shows is a body of its own (`CardBody`),
  *  drawn again only when its data changes. */
-const BoardCard = memo(function BoardCard({
-  item,
-  nowMs,
-  place,
-  unread,
-}: CardProps): ReactNode {
+const BoardCard = memo(function BoardCard({ item, nowMs, place, unread }: CardProps): ReactNode {
   const { issue } = item;
   const { attributes, isDragging, listeners, setNodeRef, transform } = useDraggable({
     attributes: { role: "article", roleDescription: "card", tabIndex: -1 },
@@ -288,11 +307,7 @@ const CardBody = memo(function CardBody({ item, nowMs, unread }: CardProps): Rea
         {(issue.labels ?? []).map((label) => (
           <LabelPill key={label}>{label}</LabelPill>
         ))}
-        {issue.open_asks === 0 ? null : (
-          <span title={`${issue.open_asks} open asks`}>
-            <AttentionBadge count={issue.open_asks} />
-          </span>
-        )}
+        {issue.open_asks === 0 ? null : <OpenAsks count={issue.open_asks} />}
       </div>
       <LegionFacts item={item} nowMs={nowMs} />
     </>
@@ -496,6 +511,7 @@ export function IssueBoard({
   showIcebox,
   statusPicks,
   userState,
+  viewKey,
 }: {
   by: BoardBy;
   hasLegion: boolean;
@@ -511,6 +527,9 @@ export function IssueBoard({
   showIcebox: boolean;
   statusPicks: readonly string[] | undefined;
   userState: UserState | undefined;
+  /** Names the view the reader picked: its address, its layout and its lanes. A change of it is
+   *  the reader's own move, which the anchor leaves alone, as a table does (`useDataTable`). */
+  viewKey: string;
 }): ReactNode {
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string>();
@@ -529,6 +548,12 @@ export function IssueBoard({
       })
     );
   };
+  // The view the last commit drew: while it is the one the reader is in, a change of the rows is
+  // someone else's and the anchor holds the reader's place; a new view is the reader's own move.
+  const drawnView = useRef(viewKey);
+  useLayoutEffect(() => {
+    drawnView.current = viewKey;
+  }, [viewKey]);
   const statuses = useMemo(
     () => boardStatuses({ rows, showIcebox, statusPicks }),
     [rows, showIcebox, statusPicks]
@@ -763,15 +788,19 @@ export function IssueBoard({
         }}
         sensors={sensors}
       >
-        {/* The reader's place, as main's table keeps it: the card the reader's hand is on (focus,
-            then the pointer), or once they have scrolled the card at the middle of the Board,
+        {/* The reader's place, as the tables keep it: the card the reader's hand is on (focus,
+            then the pointer), else, once they have scrolled, the card at the middle of the
+            Board, and at the top the first card of the column nearest the middle (`holdAtTop`),
             stays where it is on screen while cards are added, removed or resized above it in its
             column, or a notice appears above the Board. The page scrolls the Board, so the anchor
-            moves the window. A card that leaves its column or lane (`data-board-place`) is not
-            followed, and a card the reader is dragging is left to the drag. */}
+            moves the window; the scroll boxes below turn the browser's own scroll anchoring off
+            (`overflow-anchor: none`), so it does not move the page a second time. A card that
+            leaves its column or lane (`data-board-place`) is not followed, and a card the reader
+            is dragging is left to the drag. */}
         <ViewportAnchor
-          enabled={() => !dragging.current}
+          enabled={() => !dragging.current && drawnView.current === viewKey}
           group="data-board-place"
+          holdAtTop
           item="data-board-card"
         >
           {lanes ? (
@@ -786,7 +815,7 @@ export function IssueBoard({
                       {laneLabel(lane)}
                       <Pill>{inLane.length}</Pill>
                     </h2>
-                    <div className="relative overflow-x-auto pb-3">
+                    <div className="relative overflow-x-auto pb-3 [overflow-anchor:none]">
                       {drawRow(inLane, String(lane))}
                     </div>
                   </section>
@@ -796,7 +825,10 @@ export function IssueBoard({
           ) : (
             // `relative` is load-bearing: a card's `sr-only` text is absolutely placed, and with no
             // placed ancestor inside the scroll box it widens the whole page past the window.
-            <div className="relative overflow-x-auto pb-3" data-testid="board-scroll-container">
+            <div
+              className="relative overflow-x-auto pb-3 [overflow-anchor:none]"
+              data-testid="board-scroll-container"
+            >
               {drawRow(rows, undefined)}
             </div>
           )}

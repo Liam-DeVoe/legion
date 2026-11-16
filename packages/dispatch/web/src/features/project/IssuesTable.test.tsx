@@ -8,6 +8,7 @@ import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { Issue, IssueSummary } from "../../api/types";
 import { readLayout } from "../../components/table-storage";
+import * as routeReach from "../issue/RouteReach";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -1214,6 +1215,188 @@ test("a live insert above the anchored Board card leaves its top in place", asyn
   ).toBe(before);
   expect(window.scrollY).toBe(CARD);
 });
+
+/** Puts `window.scrollY` under the test's hand, and `scrollBy` moving it, for the anchor that
+ *  moves the window; gives back the window as it was after the test. */
+function windowScroll(): (value: number) => void {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const setScrollY = (value: number) =>
+    Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
+  const scrollBy = window.scrollBy;
+  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
+    const top = typeof x === "number" ? y : x.top;
+    if (top !== undefined) setScrollY(window.scrollY + top);
+  }) as typeof window.scrollBy;
+  restores.push(() => {
+    window.scrollBy = scrollBy;
+    if (scrollY === undefined) Reflect.deleteProperty(window, "scrollY");
+    else Object.defineProperty(window, "scrollY", scrollY);
+  });
+  setScrollY(0);
+  return setScrollY;
+}
+
+/** A rect at `top`, `height` tall and `width` wide from `left`. */
+const box = (left: number, top: number, width: number, height: number) =>
+  ({
+    bottom: top + height,
+    height,
+    left,
+    right: left + width,
+    toJSON: () => ({}),
+    top,
+    width,
+    x: left,
+    y: top,
+  }) as DOMRect;
+
+// Level one's rule for a reader at the top: content that others add does not move a reader's
+// place while that content stays on screen. With no hand on a row and the table's box at its
+// top, the anchor holds the first row on screen, so a row added above it lands out of view
+// above, and the Open tab counts it at once.
+test("a row added above the first row on screen lands out of view for a reader at the top", async () => {
+  const BOX = 300;
+  const HEAD = 48;
+  const ROW = 64;
+  const scrolledBy = () => screen.queryByTestId("issues-table-scroll")?.scrollTop ?? 0;
+  const scrollBox = () => screen.getByTestId("issues-table-scroll");
+  const rowsOnPage = () => [...document.querySelectorAll<HTMLElement>("tr[data-issue-row]")];
+  // The geometry the anchor reads: the box at BOX, its header HEAD tall, each row ROW tall
+  // below it, all scrolled by the box's `scrollTop`.
+  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const scrolled = scrolledBy();
+    if (this.dataset.testid === "issues-table-scroll") return box(0, BOX, 1000, 600);
+    const index = rowsOnPage().indexOf(this);
+    if (index >= 0) return box(0, BOX + HEAD + index * ROW - scrolled, 1000, ROW);
+    return box(0, BOX - scrolled, 1000, 2000);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    if (y < BOX + HEAD) return null;
+    return rowsOnPage()[Math.floor((y - BOX - HEAD + scrolledBy()) / ROW)] ?? null;
+  });
+  restores.push(() => {
+    rect.mockRestore();
+    point.mockRestore();
+  });
+  const rows = [issue("CORE-2"), issue("CORE-3")];
+  const { client } = table(rows);
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const top = (key: string) =>
+    document.querySelector(`tr[data-issue-row="${key}"]`)?.getBoundingClientRect().top;
+  const before = top("CORE-2");
+  expect(scrollBox().scrollTop).toBe(0);
+
+  rows.unshift(issue("CORE-1"));
+  await client.invalidateQueries({ queryKey: ["issues"] });
+  await waitFor(() => expect(listedKeys()).toEqual(["CORE-1", "CORE-2", "CORE-3"]));
+
+  expect(top("CORE-2")).toBe(before);
+  expect(scrollBox().scrollTop).toBe(ROW);
+  expect(top("CORE-1")).toBe((before ?? 0) - ROW);
+  expect(screen.getByRole("tab", { name: "Open 3" })).toBeDefined();
+});
+
+// The same rule on the Board: with no hand on a card and the page at its top, the anchor holds
+// the first card of the column nearest the middle, and a card added above it in that column
+// lands above, the page scrolling by its height.
+test("a card added above the first card of the middle column keeps that card's top at the top", async () => {
+  const CARD = 120;
+  const TOP = 200;
+  const COLUMN = 304;
+  windowScroll();
+  const columns = () => [...document.querySelectorAll<HTMLElement>("[data-board-column]")];
+  const middleColumn = () =>
+    columns().findIndex((column) => column.dataset.boardColumn === "in_progress");
+  // Column `i`'s left edge: the columns 288 px wide, COLUMN apart, In progress centred in the
+  // window, as a reader scrolled sideways to it sees the Board.
+  const leftOf = (index: number) => window.innerWidth / 2 - 144 + (index - middleColumn()) * COLUMN;
+  // The geometry the anchor reads: each card CARD tall from TOP in its column, the Board as wide
+  // as the window, all scrolled by `window.scrollY`.
+  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const column = this.closest<HTMLElement>("[data-board-column]");
+    if (this.hasAttribute("data-board-card") && column !== null) {
+      const index = [...column.querySelectorAll("[data-board-card]")].indexOf(this);
+      return box(leftOf(columns().indexOf(column)), TOP + index * CARD - window.scrollY, 288, CARD);
+    }
+    return box(0, -window.scrollY, window.innerWidth, 3000);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((x, y) => {
+    const at = middleColumn() + Math.floor((x - leftOf(middleColumn())) / COLUMN);
+    const column = columns()[at];
+    if (column === undefined || x - leftOf(at) > 288) return null;
+    const index = Math.floor((y + window.scrollY - TOP) / CARD);
+    return index < 0
+      ? null
+      : (column.querySelectorAll<HTMLElement>("[data-board-card]")[index] ?? null);
+  });
+  restores.push(() => {
+    rect.mockRestore();
+    point.mockRestore();
+  });
+  const rows = [
+    issue("CORE-2"),
+    issue("CORE-5", { status: "in_progress" }),
+    issue("CORE-6", { status: "in_progress" }),
+    issue("CORE-8", { status: "testing" }),
+  ];
+  const { client } = table(rows, "?layout=board");
+  const card = await screen.findByRole("article", { name: "CORE-5 Work CORE-5" });
+  (document.activeElement as HTMLElement | null)?.blur();
+  const before = card.getBoundingClientRect().top;
+  // Nothing in hand: the reader at the top of the page, reading.
+  expect(before).toBe(TOP);
+
+  rows.unshift(issue("CORE-4", { status: "in_progress" }));
+  await client.invalidateQueries({ queryKey: ["issues"] });
+  const inProgress = () => screen.getByRole("region", { name: "In progress" });
+  await waitFor(() => expect(within(inProgress()).getAllByRole("article")).toHaveLength(3));
+
+  expect(
+    within(inProgress())
+      .getAllByRole("article")
+      .map((one) => one.getAttribute("data-board-card"))
+  ).toEqual(["CORE-4", "CORE-5", "CORE-6"]);
+  expect(
+    screen.getByRole("article", { name: "CORE-5 Work CORE-5" }).getBoundingClientRect().top
+  ).toBe(before);
+  expect(window.scrollY).toBe(CARD);
+  expect(screen.getByRole("tab", { name: "Open 5" })).toBeDefined();
+});
+
+// k13: a live change to one issue draws that issue's card, not the Board's hundreds. Every card
+// body draws `UnreachableRouteMarker` once per render, and on the Board nothing else does, so
+// its calls count the card bodies a commit drew.
+test("a live read that moves one card of 600 draws at most 5 card bodies", async () => {
+  const rows = Array.from({ length: 600 }, (_, index) =>
+    issue(`CORE-${1000 + index}`, { status: index % 3 === 0 ? "in_progress" : "todo" })
+  );
+  const { client } = table(rows, "?layout=board");
+  await waitFor(() => expect(document.querySelectorAll("[data-board-card]")).toHaveLength(600), {
+    timeout: 30_000,
+  });
+  const bodies = spyOn(routeReach, "UnreachableRouteMarker");
+  restores.push(() => bodies.mockRestore());
+  const moved = rows.findIndex((row) => row.status === "todo");
+  const key = rows[moved]?.key ?? "";
+  rows[moved] = issue(key, { status: "in_progress", updated_at: "2026-09-11T00:00:00Z" });
+  await client.invalidateQueries({ queryKey: ["issues"] });
+  await waitFor(
+    () =>
+      expect(
+        document.querySelector(`[data-board-column="in_progress"] [data-board-card="${key}"]`)
+      ).not.toBeNull(),
+    { timeout: 30_000 }
+  );
+  // Whatever the change still draws after the card lands is counted too.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  console.log(`k13: ${bodies.mock.calls.length} card bodies drew for one moved card of 600`);
+  expect(bodies.mock.calls.length).toBeGreaterThan(0);
+  expect(bodies.mock.calls.length).toBeLessThanOrEqual(5);
+}, 120_000);
 
 test("a scoped table lists the issues the server answers for the priority, over every project", async () => {
   const { listing } = table(
