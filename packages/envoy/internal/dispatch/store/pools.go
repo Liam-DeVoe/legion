@@ -620,9 +620,11 @@ func (p *Pool) Horizon() (*RawPool, error) {
 // reference-excerpt and block-index reconciliation, the edit-notice sweep, the repair of closed and
 // reopened issues' asks, the server process registry's prune and the fleet build announcer, and
 // what a request leaves running behind its answer: the comment mention sender's claim statements
-// (api/comment_mention_sender.go). Six is the background's share of the budget SharedPoolSize
-// describes; nobody waits on these loops, so they wait for each other here (up to
-// backgroundAcquireBound) instead of for the requests' connections.
+// (api/comment_mention_sender.go) and the one retry of a related_checks or near_copy_checks row
+// its first attempt could not write (api's retryRecord, at most four at once). Six is the
+// background's share of the budget SharedPoolSize describes; nobody waits on these loops, so they
+// wait for each other here (up to backgroundAcquireBound) instead of for the requests'
+// connections.
 const backgroundPoolSize = 6
 
 // Background is the pool for background loops and the work a request leaves behind it, so that
