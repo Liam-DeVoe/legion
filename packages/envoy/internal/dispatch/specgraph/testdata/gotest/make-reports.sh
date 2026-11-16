@@ -9,6 +9,9 @@
 #     run over the package's test binary with -test.v=test2json, the form `go doc cmd/test2json`
 #     names, in the package's directory, as go test runs a binary. The kill packages run under
 #     -test.timeout=1s.
+#   - piped-<name>.jsonl, for each package the list piped names: the text of `go test -v -trimpath
+#     -count=1 -timeout 1s` of the package through `go tool test2json -t -p <package>`. That form
+#     holds no marker, so the reader's stated limit applies to it.
 #   - go1.26-subprint.jsonl: `go test -json -trimpath -count=1` of the package subprint with Go
 #     1.26.11, in a scratch module of its own whose go.mod says go 1.26. Its converter marks no line
 #     as a frame, which is the report the reader refuses.
@@ -17,7 +20,8 @@
 # script refuses a report that names one of its scratch directories.
 set -euo pipefail
 version=go1.27.3
-t2j=(exitkill killfirst killprinted killprintedfail killsame killsibling killstack ownlines subprint)
+t2j=(exitkill killfirst killprinted killprintedfail killsame killsibling killsiblingpass killstack ownlines subprint)
+piped=(killprinted)
 here=$(cd "$(dirname "$0")" && pwd)
 module=$(mktemp -d)
 binaries=$(mktemp -d)
@@ -61,6 +65,12 @@ for name in "${t2j[@]}"; do
   (cd "$module/$name" && go tool test2json -t -p "example.com/acme/gotest/$name" "$binaries/$name.test" -test.v=test2json "${flags[@]}") >"$here/t2j-$name.jsonl" || status=$?
   refuse "$here/t2j-$name.jsonl"
   echo "go tool test2json -t -p example.com/acme/gotest/$name $name.test -test.v=test2json ${flags[*]}: exit $status, $(wc -l <"$here/t2j-$name.jsonl") events"
+done
+for name in "${piped[@]}"; do
+  status=0
+  (go test -v -trimpath -count=1 -timeout 1s "./$name/" 2>&1 | go tool test2json -t -p "example.com/acme/gotest/$name") >"$here/piped-$name.jsonl" || status=$?
+  refuse "$here/piped-$name.jsonl"
+  echo "go test -v -trimpath -count=1 -timeout 1s ./$name/ | go tool test2json -t -p example.com/acme/gotest/$name: exit $status, $(wc -l <"$here/piped-$name.jsonl") events"
 done
 cp -R "$here/cases/subprint" "$old/"
 printf 'module example.com/acme/gotest\n\ngo 1.26\n' >"$old/go.mod"
