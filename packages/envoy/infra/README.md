@@ -972,10 +972,11 @@ or verifies one under, naming both inputs: `natsAudience`, `agentSecretsAudience
 or the keyless Azure sign-in's `azureFederationAudience` (`api://AzureADTokenExchange` when
 unset). A token minted for that other audience would be a bearer the listener admits too. For
 the same reason a `natsAudience` equal to `oidcAudience` or to the Azure audience is refused,
-naming both: a token for either would be one the NATS auth service admits. Every
-audience is compared and rendered as Dispatch and the listener read theirs, trimmed of surrounding
-whitespace, so two inputs that differ only in padding are one audience, and a padded
-`agentSecretsAudience`, `oidcAudience` or `azureFederationAudience` renders the audience it names.
+naming both: a token for either would be one the NATS auth service admits. `agentSecretsAudience`,
+`oidcAudience` and `azureFederationAudience` are compared and rendered as Dispatch and Entra read
+them, trimmed of surrounding whitespace, so a padded one renders and is compared as the audience
+it names, and one of whitespace alone, which names none, is refused by name rather than turning
+its verifier off; `natsAudience` and `listenerAudience` holding any whitespace are refused.
 A `listenerAudience` that is this cluster's issuer (the `serviceAccountIssuer` output) is refused
 too, once the issuer resolves, naming `listenerAudience`: Kubernetes mints the token every pod
 mounts by default for the API server's audiences, which are the issuer itself unless

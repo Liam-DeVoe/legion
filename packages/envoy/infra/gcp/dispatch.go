@@ -1045,11 +1045,24 @@ func refuseDispatchRegion(region string) error {
 
 // dispatchAudience is the audience an input names, as the verifier that checks it reads it:
 // trimmed of surrounding whitespace, as oidc.ConfigFromEnv trims every verifier's audience
-// (internal/oidc/boot.go), Dispatch's DISPATCH_OIDC_AUDIENCE among them. Every audience the
-// component renders is this value, and so is every audience refuseSharedAudiences compares, so
-// two inputs that differ only in padding are one audience, rendered once and refused together.
+// (internal/oidc/boot.go), Dispatch's DISPATCH_OIDC_AUDIENCE among them. Three inputs are read
+// through it — agentSecretsAudience, oidcAudience and azureFederationAudience — so a padded one
+// renders the audience it names and is compared as that one in refuseSharedAudiences, and one of
+// whitespace alone, which would name none, is refused by name (blankAudience). The other two,
+// natsAudience and listenerAudience, are rendered as they are, since core.CheckEnvValue refuses
+// any whitespace in them.
 func dispatchAudience(input string) string {
 	return strings.TrimSpace(input)
+}
+
+// blankAudience is the refusal of an audience input that is set and holds whitespace alone,
+// naming it: trimmed to nothing, it would render no verifier and turn the feature off without a
+// word, where Dispatch's own boot used to refuse the half pair it rendered.
+func blankAudience(input, value string) error {
+	if value != "" && dispatchAudience(value) == "" {
+		return core.InputErrorf(input, "%s is blank: set the audience, or leave it unset to turn its verifier off", input)
+	}
+	return nil
 }
 
 // refuseSharedAudiences keeps each audience a verifier of this deployment admits apart from every
@@ -1180,8 +1193,16 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if err := core.CheckEnvValue("listenerAudience", "ENVOY_OIDC_AUDIENCE", args.ListenerAudience); err != nil {
 		return dispatchSettings{}, err
 	}
-	// Every audience is used as its verifier reads it (dispatchAudience), so a padded one is the
-	// audience it names, and a blank one is none.
+	// agentSecretsAudience and oidcAudience are read as their verifiers read them, trimmed
+	// (dispatchAudience), and either set to whitespace alone is refused by name.
+	for _, in := range []struct{ input, value string }{
+		{"agentSecretsAudience", args.AgentSecretsAudience},
+		{"oidcAudience", args.OidcAudience},
+	} {
+		if err := blankAudience(in.input, in.value); err != nil {
+			return dispatchSettings{}, err
+		}
+	}
 	agentSecretsAudience, oidcAudience := dispatchAudience(args.AgentSecretsAudience), dispatchAudience(args.OidcAudience)
 	if agentSecretsAudience != "" && args.AgentSecretsUrl == "" {
 		return dispatchSettings{}, errors.New("agentSecretsUrl is required when agentSecretsAudience is set")
@@ -1269,8 +1290,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.signIn.domain = args.SignInDomain
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = agentSecretsAudience
-	s.natsAudience = dispatchAudience(args.NatsAudience)
-	s.listenerAudience = dispatchAudience(args.ListenerAudience)
+	s.natsAudience = args.NatsAudience
+	s.listenerAudience = args.ListenerAudience
 	s.oidcAudience = oidcAudience
 	s.oidcIssuer = args.OidcIssuer
 	s.appClientID = args.AppClientId

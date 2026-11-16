@@ -386,3 +386,38 @@ func TestDispatchRendersEachAudienceTrimmed(t *testing.T) {
 	require.Equal(t, "example-broker-audience", projectedAudience(t, template, container, "/var/run/secrets/dispatch/agent-secrets-account-token"))
 	require.Equal(t, "api://example-audience", projectedAudience(t, template, container, "/var/run/secrets/azure-federation/token"))
 }
+
+// An audience input set to whitespace alone names no audience, and is refused by name before
+// anything registers, as a blank azureFederationAudience is: trimmed to nothing it would render no
+// verifier, so Dispatch would boot with no OIDC caller verification, or with no broker relay, and
+// say nothing of why (review B7). Dispatch's own boot refused the half pair such an oidcAudience
+// rendered before the trim; the component now refuses it first.
+func TestDispatchRefusesABlankAudienceByName(t *testing.T) {
+	for _, row := range []struct {
+		name, input string
+		edit        func(*gcp.DispatchArgs)
+	}{
+		{"oidcAudience alone", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = "   " }},
+		{"oidcAudience beside oidcIssuer", "oidcAudience", func(a *gcp.DispatchArgs) {
+			a.OidcIssuer, a.OidcAudience = "https://issuer.example", "\t\n"
+		}},
+		{"agentSecretsAudience beside agentSecretsUrl", "agentSecretsAudience", func(a *gcp.DispatchArgs) {
+			a.AgentSecretsUrl, a.AgentSecretsAudience = "https://example-broker.internal.example", " "
+		}},
+		{"agentSecretsAudience alone", "agentSecretsAudience", func(a *gcp.DispatchArgs) { a.AgentSecretsAudience = " \t" }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			row.edit(args)
+			_, err := gcp.ResolveDispatch(args)
+			var input *core.InputError
+			require.ErrorAs(t, err, &input, "%v", err)
+			require.Equal(t, row.input, input.Input, "%v", err)
+			require.ErrorContains(t, err, row.input+" is blank")
+			m, err := runDispatch(t, args, true)
+			require.Error(t, err)
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types(),
+				"nothing registered beyond the test's providers")
+		})
+	}
+}
