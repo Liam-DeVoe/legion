@@ -216,12 +216,16 @@ function Details({
 // Reply box takes the focus off that node as it mounts.
 test("a desktop link to a comment's node marks its card without expanding its thread", async () => {
   const restoreMatchMedia = stubMatchMedia(false);
+  // The card below the margin's view, as main's deep-link case puts it, so a hold on it would
+  // scroll the margin: only the address's rule keeps it still.
+  const restoreRects = stubRects(() => 900);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
   try {
     for (const path of [
       buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" }),
       `${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=${comment.id}`,
     ]) {
+      scrollTo.mockClear();
       const view = render(
         <MemoryRouter initialEntries={[path]}>
           <QueryClientProvider client={landingClient([comment])}>
@@ -244,12 +248,14 @@ test("a desktop link to a comment's node marks its card without expanding its th
           `${path} expands the comment's thread`
         ).toBe("false");
         expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+        expect(scrollTo, `${path} scrolls the margin to the comment's card`).not.toHaveBeenCalled();
       } finally {
         view.unmount();
       }
     }
   } finally {
     restoreMatchMedia();
+    restoreRects();
     scrollTo.mockRestore();
   }
 });

@@ -41,7 +41,7 @@ export function IconRail({
   return (
     <nav
       aria-label="App"
-      className={`fixed inset-y-0 left-0 z-10 flex w-14 flex-col overflow-hidden py-2.5 ${iconRailBg} ${iconRailText}`}
+      className={`fixed inset-y-0 left-0 z-10 flex w-14 flex-col overflow-y-auto py-2.5 ${iconRailBg} ${iconRailText}`}
       data-testid="icon-rail"
     >
       <Link

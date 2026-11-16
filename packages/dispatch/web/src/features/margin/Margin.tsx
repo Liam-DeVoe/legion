@@ -17,6 +17,7 @@ import {
 import { DETAILS_ATTRIBUTE, type MarginDrawer, useMarginDrawer } from "../issue-page/margin-slot";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { routeHasMargin } from "../refs/routes";
+import { DIALOG_SCOPE, useKeymap } from "../shell/keymap";
 import {
   COMPACT_VIEWPORT_QUERY,
   PHONE_VIEWPORT_QUERY,
@@ -250,13 +251,35 @@ function DetailsDrawer({
   const closeButton = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLElement | null>(null);
   const { open, page, setOpen } = drawer;
+  // The shell hands a new `setOpen` whenever its drawer changes - a new `page` among them - so
+  // the effects below read the latest through this ref and run on `open` alone: a drawer that
+  // stays open neither moves the focus nor records a new opener.
+  const setOpenNow = useRef(setOpen);
+  setOpenNow.current = setOpen;
   // The phone's sheet covers the page, so it is a dialog: the focus stays inside it, the page
   // under it does not scroll, and Escape closes it and gives the focus back (`useDialog`).
   const sheet = useDialog<HTMLElement>({
     initialFocusRef: closeButton,
-    onClose: () => setOpen(false),
+    onClose: () => setOpenNow.current(false),
     open: open && isPhoneViewport,
   });
+  // An open dialog masks every global binding, `Shift+M` among them, so the sheet binds its own
+  // in the dialog's scope: it closes Details, as the global one does at every other width, while
+  // the focus is in it - under a dialog opened over it, that dialog holds the focus.
+  useKeymap(
+    DIALOG_SCOPE,
+    open && isPhoneViewport
+      ? [
+          {
+            id: "details.close",
+            keys: "Shift+M",
+            label: "Open or close Details",
+            run: () => setOpenNow.current(false),
+            when: () => box.current?.contains(document.activeElement) === true,
+          },
+        ]
+      : []
+  );
   // From the phone's width up the drawer sits beside the page the reader keeps working in, so it
   // holds no focus of its own: opening it puts the focus on its Close, and closing it - by Close,
   // by Escape, or by the page's own control - gives the focus back to where it was taken from
@@ -265,8 +288,14 @@ function DetailsDrawer({
   const opener = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
     if (!open || isPhoneViewport) return;
+    // The drawer as it is now: the commit that closes it detaches the `aside`'s ref before this
+    // effect's cleanup runs, so the cleanup cannot read `box`.
+    const drawerBox = box.current;
     const active = document.activeElement;
-    opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    opener.current =
+      active instanceof HTMLElement && active !== document.body && !drawerBox?.contains(active)
+        ? active
+        : null;
     closeButton.current?.focus({ preventScroll: true });
     // Escape closes the drawer before the page's own Escape does anything else: the press is the
     // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
@@ -288,19 +317,18 @@ function DetailsDrawer({
       if (target instanceof Element && target.closest('[role="dialog"]') !== null) return;
       if (box.current?.querySelector('[role="menu"]') != null) return;
       event.preventDefault();
-      setOpen(false);
+      setOpenNow.current(false);
     };
     document.addEventListener("keydown", closeOnEscape);
     return () => {
       document.removeEventListener("keydown", closeOnEscape);
       const focus = document.activeElement;
-      const lost =
-        focus === null || focus === document.body || box.current?.contains(focus) === true;
+      const lost = focus === null || focus === document.body || drawerBox?.contains(focus) === true;
       if (lost && opener.current?.isConnected === true) {
         opener.current.focus({ preventScroll: true });
       }
     };
-  }, [isPhoneViewport, open, setOpen]);
+  }, [isPhoneViewport, open]);
 
   return (
     <>

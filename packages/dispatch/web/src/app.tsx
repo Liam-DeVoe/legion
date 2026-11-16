@@ -753,8 +753,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
     {
       // In the new issue page's frame the margin is Details, which this key opens and closes at
-      // every width.
-      id: "toggle-margin",
+      // every width. Its id follows the gate, so that crossing it registers the binding again
+      // and the list of keys reads the label of the shell it is in.
+      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
       keys: "Shift+M",
       label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
       run: () =>

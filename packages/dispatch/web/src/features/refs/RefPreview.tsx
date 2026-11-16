@@ -317,9 +317,10 @@ function attachTriggers(): () => void {
       refPreview.blur(trigger);
     }
   };
-  /** The link of an editable document the caret opened a card for, on a surface that opens no
-   *  card on hover: a link inside an editor takes no focus of its own, so the caret entering it
-   *  is the keyboard reaching it, and the caret leaving it closes the card it opened. */
+  /** The link of an editable document the caret is in, on a surface that opens no card on
+   *  hover: a link inside an editor takes no focus of its own, so the caret entering it is the
+   *  keyboard reaching it and opens its card once, a caret moving inside it opens nothing - a
+   *  card closed by Escape stays closed - and the caret leaving it closes the card it opened. */
   let caretIn: HTMLElement | undefined;
   const onSelectionChange = () => {
     const at = document.getSelection()?.anchorNode ?? null;
@@ -327,7 +328,7 @@ function attachTriggers(): () => void {
     const trigger = triggerOf(element);
     if (trigger?.isContentEditable && previewCard.hoverPreviewsOff(trigger)) {
       const route = routeOf(trigger);
-      if (route !== undefined && state?.target.anchor !== trigger) {
+      if (route !== undefined && caretIn !== trigger) {
         caretIn = trigger;
         refPreview.focus(trigger, route);
       }

@@ -5,12 +5,11 @@ import { useLocation } from "react-router-dom";
 import { primarySpec } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
-import { isViewer } from "../../refs/actor";
 import { useMediaQuery } from "../../shell/useDialog";
+import { contentsEntries } from "../contents-entries";
 import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";
 import { IssuePresets } from "../IssuePresets";
 import { issueAddress } from "../issue-address";
-import type { TreeNode } from "../issue-tree";
 import { filterSignals, isFilter, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
@@ -24,7 +23,9 @@ import { useIssueTree } from "../useIssueTree";
  *
  * The row's rule runs the column's whole width, as the prototype's `#tabs` does, and its
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
- * page scrolls; above, it scrolls away with the header.
+ * page scrolls; above, it scrolls away with the header. While it stays it stands over the page
+ * and under the navigation's backdrop (`z-20`), so an open navigation dims it as it dims the
+ * page.
  */
 export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
@@ -50,7 +51,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   useIssueKeymap(issue.key);
   return (
     <div
-      className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[760px]:sticky max-[760px]:top-0 max-[760px]:z-[25]`}
+      className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[760px]:sticky max-[760px]:top-0 max-[760px]:z-[19]`}
     >
       <IssuePresets
         active={address.preset}
@@ -60,26 +61,4 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       />
     </div>
   );
-}
-
-/**
- * How many entries the Contents list draws for `node`'s branch: each ask, and each comment or
- * message the reader wrote that begins a thread, at any depth. A node drawn under a second
- * parent is counted once, at its own place: a transcluded copy and the branch under it are the
- * same nodes as at the edited place.
- */
-function contentsEntries(node: TreeNode, viewer: string | undefined): number {
-  let entries = 0;
-  for (const child of node.children) {
-    if (child.transcluded) continue;
-    const begunByReader =
-      (child.type === "comment" || child.type === "message") &&
-      node.type !== "comment" &&
-      node.type !== "message" &&
-      child.author !== undefined &&
-      isViewer(child.author, viewer);
-    if (child.type === "ask" || begunByReader) entries += 1;
-    entries += contentsEntries(child, viewer);
-  }
-  return entries;
 }

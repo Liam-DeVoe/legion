@@ -376,12 +376,9 @@ test("on the issue page, the caret in an editor's link opens its card, and leavi
     const link = view.container.querySelector<HTMLElement>("[data-dispatch-href]");
     if (link === null) throw new Error("the editable body drew no link mark");
     const caretAt = (node: Node, offset: number) => {
-      const range = document.createRange();
-      range.setStart(node, offset);
-      range.collapse(true);
-      const selection = document.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
+      // One move of the caret, as a browser reports it: emptying the selection first would report
+      // a caret outside every link in between.
+      document.getSelection()?.collapse(node, offset);
       // user-event has no form that moves the caret inside an editable root.
       fireEvent(document, new Event("selectionchange"));
     };
@@ -389,6 +386,13 @@ test("on the issue page, the caret in an editor's link opens its card, and leavi
       caretAt(link.firstChild as Node, 3);
     });
     expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1");
+    // Escape closes it, and the caret moving on inside the same link opens it no more.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    act(() => {
+      caretAt(link.firstChild as Node, 4);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     act(() => {
       caretAt(link.parentElement?.lastChild as Node, 2);
     });

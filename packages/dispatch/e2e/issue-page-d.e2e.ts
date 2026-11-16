@@ -464,9 +464,17 @@ test("the five controls are toggles with an address each, one line at every widt
           `"${control.text}" is under 24 px wide at ${width} px`
         ).toBeGreaterThanOrEqual(24);
       }
+      // A control's words are the text it shows less what it hides from assistive technology,
+      // such as the menu control's `▾`, a glyph that names nothing (WCAG 2.5.3 reads words).
       const named = filterRow(page).locator("button:visible");
       for (let at = 0; at < (await named.count()); at += 1) {
-        const words = (await named.nth(at).innerText()).replace(/\s+/g, " ").trim();
+        const words = await named.nth(at).evaluate((control: HTMLElement) => {
+          let text = control.innerText;
+          for (const hidden of control.querySelectorAll<HTMLElement>('[aria-hidden="true"]')) {
+            text = text.replace(hidden.innerText, " ");
+          }
+          return text.replace(/\s+/g, " ").trim();
+        });
         if (words === "") continue;
         await expect(
           named.nth(at),

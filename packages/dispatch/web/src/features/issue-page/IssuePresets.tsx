@@ -85,12 +85,26 @@ export function IssuePresets({
   const [open, setOpen] = useState<OpenMenu>(undefined);
   const wrapper = useRef<HTMLDivElement>(null);
   const toggles = useRef<Partial<Record<Preset, HTMLButtonElement | null>>>({});
+  // The one control, which takes the focus back when its menu closes with the focus in it - on
+  // a chosen view or on Escape - since the item the focus was on goes with the menu.
+  const chooser = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef<OpenMenu>(undefined);
   // The ids a control's name and signal are read by; one prefix per drawn row, since two issue
   // pages in one document would otherwise write the same ids.
   const ids = useId();
   const nameId = (preset: Preset) => `${ids}-name-${preset}`;
   const signalId = (preset: Preset) => `${ids}-signal-${preset}`;
   const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
+
+  useEffect(() => {
+    const closed = wasOpen.current === "presets" && open === undefined;
+    wasOpen.current = open;
+    if (!closed) return;
+    const focus = document.activeElement;
+    if (focus === null || focus === document.body || wrapper.current?.contains(focus) === true) {
+      chooser.current?.focus();
+    }
+  }, [open]);
 
   useEffect(() => {
     if (open === undefined) return;
@@ -105,17 +119,18 @@ export function IssuePresets({
       }
     };
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
-    // the next one.
+    // the next one. The menu reads it in the capture phase, so it marks the press before any
+    // listener of the page's that a layer under it added earlier.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
       event.preventDefault();
       setOpen(undefined);
     };
     document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("keydown", closeOnEscape, true);
     return () => {
       document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("keydown", closeOnEscape, true);
     };
   }, [open]);
 
@@ -187,6 +202,7 @@ export function IssuePresets({
             aria-haspopup="menu"
             className={`flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-sm leading-5 font-semibold ${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusVisibleRing}`}
             onClick={() => setOpen((shown) => (shown === "presets" ? undefined : "presets"))}
+            ref={chooser}
             type="button"
           >
             <span className="flex min-w-0 items-baseline gap-1.5">

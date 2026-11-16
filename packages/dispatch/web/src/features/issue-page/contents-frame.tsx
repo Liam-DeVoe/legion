@@ -1,4 +1,5 @@
 import { type ReactNode, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   focusVisibleRing,
@@ -9,6 +10,7 @@ import {
   pagePaneBg,
   pagePaperBg,
 } from "../../theme/classes";
+import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { useDialog, useMediaQuery } from "../shell/useDialog";
 import { ContentsChosen } from "./contents-chosen";
 import { issueAddress } from "./issue-address";
@@ -89,34 +91,42 @@ export function OutlineSheet({
       >
         {CONTROL_LABELS.outline}
       </button>
-      {open ? (
-        <div
-          aria-label={CONTROL_LABELS.contents}
-          aria-modal="true"
-          className={`fixed inset-x-0 top-14 bottom-0 z-50 flex flex-col rounded-t-[14px] shadow-[0_-10px_30px_rgba(0,0,0,0.2)] ${pagePaneBg} ${pageInkText}`}
-          data-testid="issue-outline-sheet"
-          ref={dialog.containerRef}
-          role="dialog"
-        >
-          <div className="flex shrink-0 items-start gap-2 px-3.5 pt-2.5">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">{tools}</div>
-            <button
-              className={`rounded-[7px] border px-3 py-[3px] text-sm font-medium ${pageHairBorder} ${pagePaperBg} ${pageMutedText} ${focusVisibleRing}`}
-              onClick={() => setOpen(false)}
-              ref={closeButton}
-              type="button"
-              {...pageChrome}
+      {/* Drawn in the body, not in the view row, which is sticky on a phone and so a stacking
+          context of its own: there the sheet would stand under the shell's status corner. Out
+          of `<main>`, it carries the frame's mark itself, so its references open no card on
+          hover. */}
+      {open
+        ? createPortal(
+            <div
+              aria-label={CONTROL_LABELS.contents}
+              aria-modal="true"
+              className={`fixed inset-x-0 top-14 bottom-0 z-50 flex flex-col rounded-t-[14px] shadow-[0_-10px_30px_rgba(0,0,0,0.2)] ${pagePaneBg} ${pageInkText}`}
+              data-testid="issue-outline-sheet"
+              ref={dialog.containerRef}
+              role="dialog"
+              {...{ [NO_HOVER_PREVIEW_ATTRIBUTE]: "" }}
             >
-              {CONTROL_LABELS.close}
-            </button>
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-            <ContentsChosen.Provider value={() => setOpen(false)}>
-              <ContentsSlot {...slot} />
-            </ContentsChosen.Provider>
-          </div>
-        </div>
-      ) : null}
+              <div className="flex shrink-0 items-start gap-2 px-3.5 pt-2.5">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">{tools}</div>
+                <button
+                  className={`rounded-[7px] border px-3 py-[3px] text-sm font-medium ${pageHairBorder} ${pagePaperBg} ${pageMutedText} ${focusVisibleRing}`}
+                  onClick={() => setOpen(false)}
+                  ref={closeButton}
+                  type="button"
+                  {...pageChrome}
+                >
+                  {CONTROL_LABELS.close}
+                </button>
+              </div>
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                <ContentsChosen.Provider value={() => setOpen(false)}>
+                  <ContentsSlot {...slot} />
+                </ContentsChosen.Provider>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </>
   );
 }
