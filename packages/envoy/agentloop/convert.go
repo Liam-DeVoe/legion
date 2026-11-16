@@ -246,14 +246,19 @@ func withOption(options provider.ProviderOptions, option provider.ProviderOption
 // message's mark, which the run places itself, is then the call's only one. Where Input is
 // empty the newest message is that same history message, whose mark the provider drops as
 // well, and the call carries no mark at all. The run places the marks unless the caller turns
-// them off with Request.NoCache.
-func markAnthropicHistory(messages []provider.Message, history int) {
+// them off with Request.NoCache. ttl is the mark's life: "" names none, which leaves the
+// provider's own, and Request.HistoryMarkOnly names "5m".
+func markAnthropicHistory(messages []provider.Message, history int, ttl string) {
+	mark := anthropic.CacheControl("ephemeral")
+	if ttl != "" {
+		mark = anthropic.CacheControlWithTTL("ephemeral", ttl)
+	}
 	for i := history - 1; i >= 0; i-- {
 		m := messages[i]
 		if m.Content[len(m.Content)-1].Type == provider.ContentPartTypeReasoning {
 			continue
 		}
-		messages[i].ProviderOptions = withOption(m.ProviderOptions, anthropic.CacheControl("ephemeral"))
+		messages[i].ProviderOptions = withOption(m.ProviderOptions, mark)
 		return
 	}
 }

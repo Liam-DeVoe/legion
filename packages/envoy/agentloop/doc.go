@@ -56,7 +56,10 @@
 // sets Request.NoCache, which takes off the marks this package places and nothing else: a
 // provider's own caching is not the field's to turn off, openai-responses keeps the implicit
 // breakpoint it puts after the newest message, and on openai-chat, which this package never
-// marks, the field changes nothing at all.
+// marks, the field changes nothing at all. A caller whose history other calls re-send, and whose
+// newest message only it sends, sets Request.HistoryMarkOnly: anthropic-messages then takes the
+// mark at the history's end alone, with a five-minute life, so the call pays no cache write on
+// its newest message and pays the five-minute write price on its history.
 //
 // # The structured reply
 //

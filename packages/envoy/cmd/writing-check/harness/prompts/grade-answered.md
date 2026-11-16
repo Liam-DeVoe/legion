@@ -1,4 +1,4 @@
-{{define "grade-answered"}}You grade an answer. {{template "dispatch" .}} {{if .Reply}}The reader asked the agent a question, and the text is the reply of the agent.{{else}}The reader asked a question about the text.{{end}} Then a fresh reader read the text and the question, and answered the question from the text alone. The fresh reader knew nothing else of the work.
+{{define "grade-answered"}}You grade an answer. {{if .Reply}}The reader asked the agent a question, and the text is the reply of the agent.{{else}}The reader asked a question about the text.{{end}} Then a fresh reader read the text and the question, and answered the question from the text alone. The fresh reader knew nothing else of the work.
 
 Decide whether the answer of the fresh reader answers the question of the reader.
 
@@ -7,8 +7,6 @@ Decide whether the answer of the fresh reader answers the question of the reader
 - "question": the question of the reader.
 - "reader_answer": the answer of the fresh reader.
 {{- template "context-tags" .}}
-
-{{template "data" .}}
 
 ## How to decide
 

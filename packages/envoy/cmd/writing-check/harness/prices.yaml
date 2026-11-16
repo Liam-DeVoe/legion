@@ -1,12 +1,17 @@
 # What each model of candidates.yaml charges, in USD per million tokens: prompt tokens (input),
 # reply tokens (output), a cache write and a cache read. The harness prices every call's tokens
-# with this table, and refuses to start when a model of candidates.yaml has no row here.
+# with this table, and refuses to start when a model of candidates.yaml has no row here. A model
+# that --grader names needs a row too.
 sources:
   claude:
     source: >-
       The operator's model gateway, GET /model/info: each model's input_cost_per_token,
       output_cost_per_token, cache_creation_input_token_cost and cache_read_input_token_cost,
-      times one million.
+      times one million. cache_creation_input_token_cost is the price of a five-minute cache
+      write, which is the life the harness's cache marks ask for (ttl 5m). The gateway gives a
+      mark that names no life one hour, at cache_creation_input_token_cost_above_1hr, which the
+      harness never asks for. claude-fable-5-2, a grader that `--grader` may name, was read from
+      the same source on 2026-11-16.
     read: 2026-11-15
   foundry:
     source: >-
@@ -29,5 +34,6 @@ prices:
   claude-haiku-5-5: {family: claude, input: 0.1, output: 0.5, cache_write: 0.125, cache_read: 0.01}
   claude-sonnet-5-5: {family: claude, input: 2, output: 10, cache_write: 2.5, cache_read: 0.1}
   claude-opus-4-8: {family: claude, input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}
+  claude-fable-5-2: {family: claude, input: 8, output: 40, cache_write: 10, cache_read: 0.2}
   grok-4.7: {family: foundry, input: 2, output: 6, cache_write: 0, cache_read: 0.5}
   Kimi-K3.1-Pro: {family: foundry, input: 2.3, output: 11.5, cache_write: 0, cache_read: 0.23}

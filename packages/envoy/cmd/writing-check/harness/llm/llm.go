@@ -1,8 +1,9 @@
-// Package llm makes the harness's model calls: one system prompt and one user message in, one
-// reply out, through agentloop.Run, with a bound on the calls in flight that every client of a
-// run shares, retries with a backoff, and each call's tokens priced at the model's price. It holds
-// the Foundry client. The Claude client is package claude, which is the only package that can read
-// a writer session's text: this package cannot name that type, since package claude imports it.
+// Package llm makes the harness's model calls: one system prompt and one user turn in, whose
+// start other calls may share and the provider then caches, one reply out, through agentloop.Run,
+// with a bound on the calls in flight that every client of a run shares, retries with a backoff,
+// and each call's tokens priced at the model's price. It holds the Foundry client. The Claude
+// client is package claude, which is the only package that can read a writer session's text:
+// this package cannot name that type, since package claude imports it.
 package llm
 
 import (
@@ -51,10 +52,24 @@ const (
 type Request struct {
 	// Purpose names what the call is for, as the outputs record it ("reader", "grade:answered").
 	Purpose string
-	// System is the system prompt and User the one user message.
-	System, User string
+	// System is the system prompt.
+	System string
+	// Shared is the start of the user's turn, each element a text block of its own: the part
+	// that other calls send the same, such as a case's record and session part. It goes as the
+	// call's history, and only its end carries a cache mark, of five minutes (agentloop's
+	// HistoryMarkOnly), so a later call within those minutes that sends the same model, system
+	// prompt, schema and Shared reads them from the provider's cache, and no call pays the cache
+	// write on its own part. A call with no Shared carries no cache mark. User is the rest of
+	// the user's turn, which goes after Shared.
+	Shared []string
+	User   string
 	// Schema is the JSON schema the reply must be one object of; nil asks for free text.
 	Schema json.RawMessage
+	// Shape, where set, refuses a reply that is an object of Schema but not of the shape the
+	// call asks for: a schema that several kinds of call share admits each kind's reply. Such
+	// a reply is asked again at once, as a reply out of its schema is, and counts in the
+	// Response's OtherShape.
+	Shape func(json.RawMessage) error
 	// MaxTokens bounds the reply; zero is DefaultMaxTokens.
 	MaxTokens int
 }
@@ -71,6 +86,8 @@ type Response struct {
 	// Attempts is how many attempts the call took, and Elapsed how long they took in all.
 	Attempts int
 	Elapsed  time.Duration
+	// OtherShape is how many replies the request's Shape refused.
+	OtherShape int
 }
 
 // Client is one model a run calls. Only package claude's client also takes a writer session's
@@ -167,7 +184,8 @@ func retryableDetail(detail string) bool {
 }
 
 // Run makes req on model. Every attempt's tokens count in the Response's Usage, priced at
-// model.Price, whether the call answered or not.
+// model.Price, whether the call answered or not: a cache write at the model's cache write price
+// and a cache read at its cache read price.
 func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (resp Response, err error) {
 	resp = Response{Requested: model.ID}
 	started := time.Now()
@@ -195,14 +213,29 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 	if maxTokens == 0 {
 		maxTokens = DefaultMaxTokens
 	}
-	// A call with no reasoning samples at temperature 0, so a judgement is as repeatable as the
+	// A call with no reasoning asks for temperature 0, so a judgement is as repeatable as the
 	// provider makes it; a model that reasons first takes the provider's own temperature, which
-	// Anthropic requires of a call with thinking on.
+	// Anthropic requires of a call with thinking on. The Anthropic client drops the setting for a
+	// model that takes no sampling settings (claude-opus-5 and the -5 families among them), which
+	// then samples at the provider's own setting.
 	var temperature *float64
 	if model.Effort == "" || model.Effort == "off" {
 		zero := 0.0
 		temperature = &zero
 	}
+	// Shared goes as a history of one user message, which Anthropic joins with User's message
+	// into one user turn. A block of white space alone is left out: Anthropic refuses one.
+	var shared []agentloop.Block
+	for _, s := range req.Shared {
+		if strings.TrimSpace(s) != "" {
+			shared = append(shared, agentloop.Block{Kind: agentloop.TextBlock, Text: s})
+		}
+	}
+	var history []agentloop.Message
+	if len(shared) > 0 {
+		history = []agentloop.Message{{Role: agentloop.User, Blocks: shared}}
+	}
+	input := []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: req.User}}}}
 	backoffs, replies := 0, 0
 	fail := func(fault agentloop.Fault, detail string, err error) (Response, error) {
 		return resp, &CallError{Purpose: req.Purpose, Model: model.ID, Fault: fault, Detail: detail, Err: err, Attempts: resp.Attempts}
@@ -215,13 +248,15 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 		}
 		resp.Attempts++
 		result, err := agentloop.Run(ctx, agentloop.Request{
-			Model:       model,
-			System:      req.System,
-			Input:       []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: req.User}}}},
-			NoCache:     true,
-			Bounds:      agentloop.Bounds{Time: timeout, Calls: 1, OutputTokens: maxTokens},
-			Final:       req.Schema,
-			Temperature: temperature,
+			Model:           model,
+			System:          req.System,
+			History:         history,
+			Input:           input,
+			NoCache:         history == nil,
+			HistoryMarkOnly: true,
+			Bounds:          agentloop.Bounds{Time: timeout, Calls: 1, OutputTokens: maxTokens},
+			Final:           req.Schema,
+			Temperature:     temperature,
 		})
 		if r.Limit != nil {
 			r.Limit.release()
@@ -269,6 +304,16 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 			}
 			replies++
 			continue
+		}
+		if req.Shape != nil {
+			if err := req.Shape(resp.Value); err != nil {
+				resp.OtherShape++
+				if replies >= replyRetries {
+					return fail(agentloop.FaultMalformed, "the reply is not of the call's own shape: "+err.Error(), nil)
+				}
+				replies++
+				continue
+			}
 		}
 		return resp, nil
 	}

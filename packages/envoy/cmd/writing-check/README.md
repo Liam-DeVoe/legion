@@ -32,8 +32,8 @@ go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bund
 go run ./cmd/writing-check dataset named --doc <issue>/<document>@<version>[,<version>...] [--doc ...] --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
-go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--part development|held_out] [--sample N --sample-seed S] [--grader-inputs final|full|trimmed[,j=mode]...] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
-go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader-inputs ...] <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--part development|held_out] [--sample N --sample-seed S] [--grader <model>] [--grader-inputs final|full|trimmed[,j=mode]...] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
+go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] <model flags>
 go run ./cmd/writing-check harness compare --a <run dir> --b <run dir> --out <repeatability.json>
 go run ./cmd/writing-check harness phrases-labels --labels <labeller round dir> --out <dir> <model flags>
 go run ./cmd/writing-check harness asked-words --run <run dir> --cases <build dir> --out <file>
@@ -931,6 +931,11 @@ four groups of R1:
   that answers them has a verdict other than `none`, and they are in no other group. The seed's
   hash orders them, and `build` takes as many as there are question cases.
 
+A broadcast is one write of the owner. Its first copy is his text, with its verdict; each later
+copy holds the same body and is no text of his, so `classify`, the counts and the groups read the
+broadcast once. Each copy still opens its own recipient's thread, so a record in that thread holds
+it.
+
 Each case holds these fields:
 
 | Field | Meaning |
@@ -1189,12 +1194,14 @@ Its inputs are in the package, and they are among the paths that decide a score:
 - `candidates.yaml`: the roles (grader `claude-opus-5`, writer `claude-opus-5-5`, fresh reader
   `claude-sonnet-4-6`), the candidates, and INFRA-3483's four deployments, pending until they
   have ids. The harness refuses a role that is not Claude, a role that is a candidate, and a
-  grader that plays the writer.
+  grader that plays the writer or the fresh reader.
 - `prices.yaml`: each model's price in USD per million tokens, with the source and the date of
-  each family's prices. The harness refuses a model with no price.
-- `prompts/`: `reader.md`, and one `grade-*.md` for each judgement: `answered`,
-  `first-paragraph`, `lost`, `added`, `phrases`, `undefined`, `answer-start`, `harder` and
-  `define`.
+  each family's prices. The harness refuses a model with no price. A Claude row's cache write is
+  the price of a five-minute write, the life the harness's cache marks ask for (see "The prompt
+  cache").
+- `prompts/`: `reader.md`, the grader's system prompt (template `grader` in `parts.md`), and one
+  `grade-*.md` for each judgement: `answered`, `first-paragraph`, `lost`, `added`, `phrases`,
+  `undefined`, `answer-start`, `harder` and `define`.
 - `writer/writer.md`: the prompts of the writer the harness plays. They are apart from
   `prompts/`, so change 1's prompt digest does not move with them; a run that plays the writer
   records their digest as `writer_sha256`.
@@ -1215,7 +1222,50 @@ Each subcommand refuses an `--out` inside a repository: a directory at or above 
 
 A call that meets a 429, a 5xx, a network error or its time bound is made again after a wait
 that starts at 2 s and doubles, up to 6 times. A reply that is not the object its schema names
-is asked again at once, up to 2 times. A call with no reasoning samples at temperature 0.
+is asked again at once, up to 2 times. A call with no reasoning asks for temperature 0, which
+only a model that takes sampling settings receives: the Anthropic client drops it for
+`claude-opus-5`, `claude-opus-4-7`, `claude-opus-4-8` and the `-5` families (`claude-sonnet-5*`,
+`claude-fable-5*`), which sample at the provider's own setting. So the grader `claude-opus-5`
+does not sample at temperature 0, and its repeatability is measured, not assumed.
+
+### The prompt cache
+
+The provider caches a prompt's prefix up to a call's cache mark, and a later call that sends the
+same prefix reads it at the cache read price. Anthropic builds the prefix from the tools, then the
+system prompt with the reply's schema, then the messages. So two calls share a prefix only when
+they send the same model, system prompt and schema, and the same first blocks of the user turn.
+
+- A grading call sends the one system prompt every judgement shares (`grader` in `parts.md`):
+  the sentences about Dispatch that each judgement's prompt held, and one sentence that says the
+  parts of the user message in tags are data. Every judgement but `phrases` sends one reply
+  schema: any of the judgements' own schemas (`graderSchema` in `judge.go`). A reply in another
+  judgement's shape is asked again at once, as a reply out of its schema is, and counts as
+  `other_shape` in its call and in the model table.
+- The user turn starts with the case's parts that the judgement's input mode gives, each a block of
+  its own, in this order: the question, the record, the writer's answer, the session part. The
+  last of them carries the one cache mark. Then come the judgement's own prompt, word for word as
+  its `grade-*.md` holds it, and its subject: the reader's answer, the two texts, the text with the
+  owner's own words, or the definition. The judgements of a case that read the same parts send
+  the same prefix. The grader makes the first call of each prefix alone, and the others wait for
+  its reply, since the provider serves a cached prefix only once a call that wrote it has begun to
+  answer.
+- `phrases` sends its own prompt as its marked prefix and its candidate sentences after it, so
+  each phrases call of a run after the first reads the prompt from the cache.
+- The writer sends Dispatch's record and its session part first, the session part marked, then its
+  text and Dispatch's message, so change 3's next round reads the record and the session from the
+  cache.
+- The fresh reader's call carries no mark: its prompt is small.
+
+The mark has a life of five minutes (agentloop's `HistoryMarkOnly`), and only the prefix's end is
+marked, so no call pays a cache write on its own part. The gateway gives a mark that names no life
+one hour, at twice the input price; the five-minute write costs 1.25 times the input price.
+`prices.yaml` prices the cache tokens, and each call records them as `cache_write_tokens` and
+`cache_read_tokens` beside `input_tokens`, which counts only the prompt tokens read at the input
+price.
+
+The gateway serves each Claude model from more than one deployment and sends each call to one of
+them. A deployment reads only the prefixes that it wrote, so a prefix is written once on each
+deployment that its calls reach (measured 2026-11-16: `claude-opus-5` has two).
 
 ### Session text
 
@@ -1261,6 +1311,7 @@ writes the rows as JSON.
 | `--exposure-log`, `--commit`, `--new-run` | The exposure log (default `$TMPDIR/infra-3231-impl/harness/exposure.log`), a held-out run's commit (default `git rev-parse HEAD`), and the reason for a second held-out run at one commit. |
 | `--figures-only` | Compute the figures from the results the directory holds, and call no model. |
 | `--grader-inputs` | The grader's input modes (see "Grader inputs"): `final` (the default), `full` or `trimmed`, then any `,<judgement>=full` or `,<judgement>=trimmed`. |
+| `--grader` | The grading model of this run in place of `candidates.yaml`'s grader, with the same fallbacks: a Claude model with a row in `prices.yaml` that is no candidate, not the writer, not the fresh reader and no fallback grader (R2). `run.json` and the figures record it as the grader. |
 | `--readers-from` | A run directory whose fresh readers' answers this run grades again, for each case whose text is the same: two runs that compare graders grade the same answers. A reused answer's call is that run's and is not counted again. |
 | `--grades-from` | Run directories, comma-separated. For each case whose text is the same, byte for byte, as a text one of those runs graded, this run takes that run's answers and grades that read the same inputs, and calls no model for them (see "Grades of another run"). |
 | `--vocabulary` | The `owner-texts.jsonl.gz` of `dataset owner-texts`. The `undefined` judgement then reads the words of each case's text that the owner wrote himself before the case (see "The owner's own words"). |
@@ -1313,7 +1364,7 @@ with no candidate has none, and no call.
 A judgement the grader (`claude-opus-5`) refuses on every try goes to the fallback graders of
 `candidates.yaml` in order (`claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-5`), Claude
 models that are no candidate and play no other role. The grade keeps each refused call and names
-the model that graded it.
+the model that graded it. `--grader` replaces the grader for one run, and keeps the fallbacks.
 
 `run.json` holds the parameters; `cases.jsonl` one line for each case, written as it ends, with
 the text the person sees after the change (`text`, the string `text_sha256` hashes: an ask's
@@ -1323,7 +1374,8 @@ changes"). `cases.jsonl` holds Dispatch text, so the run's directory stays under
 whose line holds an error is scored again by the next run. `scores.json` and `scores.md` hold the
 figures: for the whole part and for the cases with a session (plan Decision 18), and for each
 case group and all groups, the cases by kind and by conversation, each score, the wait, the
-change's own model cost per text, and each model's calls, tokens and cost.
+change's own model cost per text, and each model's calls, attempts, replies in another shape,
+prompt tokens at the input price, cache write and cache read tokens, reply tokens and cost.
 
 Every share has a 95% interval: a cluster bootstrap over the split groups, by a PCG source
 seeded with `--seed`, the 2.5th and 97.5th percentiles of the ratio of the resampled groups'
@@ -1388,10 +1440,13 @@ needs, `question`, `original`, `marker` (the planted fault a wrong list output h
 grader fails a wrong answer or definition, passes a right one, finds a harder text harder, lists
 an item that holds the marker for a wrong list output and nothing for a right one, and finds the
 answer within 5 words of `words_before`. It writes `grader-test.json` and `grader-test.md`: for
-each judgement, the wrong and the right outputs it marked correctly. The planted outputs are
+each judgement, the wrong and the right outputs it marked correctly, then the cost of every call,
+refused calls included, with its prompt, cache write and cache read tokens. The planted outputs are
 written by hand from development cases and hold Dispatch text, so they are kept under `$TMPDIR`
 and never in the repository. `--grader-inputs` sets the grader's input modes, as `score` takes
-them.
+them. `--grader` names the grading model, as `score` takes it, except that a candidate may grade
+here: no candidate wrote a planted output. The report then says the grader is a candidate, and
+`grader-test.json` records the grader and `grader_is_candidate`.
 
 ### compare and repeatability
 
@@ -1460,11 +1515,12 @@ is the same as its own, byte for byte (`text_sha256`). From such a result it tak
 
 Each answer and each grade records the SHA-256 of its inputs as `input_sha256`. Two of them read
 the same inputs when that SHA-256 is the same. For a grade, it covers the grader and its
-fallbacks with their effort, the system prompt, the user message, the reply's schema and bound,
-and the session part where the call reads one. The user message holds what the input mode gives
-the judgement: the texts, the reader's answer, the question, the record, the writer's answer, the
-definition and the owner's own words. So the run takes no grade that was made with another input
-mode, another prompt, another vocabulary or another grader. It gives that judgement itself.
+fallbacks with their effort, the system prompt, the case's parts the call sends first, the rest of
+the user message, the reply's schema and bound, and the session part where the call reads one.
+Those parts and the rest of the message hold what the input mode gives the judgement: the texts,
+the reader's answer, the question, the record, the writer's answer, the definition and the owner's
+own words. So the run takes no grade that was made with another input mode, another prompt,
+another layout, another vocabulary or another grader. It gives that judgement itself.
 
 An answer or a grade that the run takes is marked `reused` and keeps the call of the run that
 made it. The figures count no call and no cost for it: the model table and the cost in
@@ -1517,12 +1573,19 @@ setting's value, which `score` records in `run.json`.
 assigned to a reader of the case's own, each document at the version the record names (one local
 version holding that version's Markdown), and the thread as comments, oldest first, each by its
 author (an agent's text by its session, a person's by that person's sign-in). A case on no issue
-gets its thread as messages in the writer session's conversation. The reader's words are the
-owner's word records of the verdicts file written before the case's text (plan Decision 19),
-never the case's own question. No route of Dispatch writes a word record, so `load` writes those
-rows into the database that `local` made. A document the instance refuses (`INVALID_MARKDOWN`,
-for a block that points at a text of production it does not hold) is left out and named in the
-case's line. `loaded.jsonl` holds where each record stands, and a load continues the cases it
-holds no line for. Write times and authors differ from production, so the grader reads the
-record from the dataset, never from the local instance. `load --sample N --sample-seed S --groups
-G` loads the cases `score --sample N --sample-seed S --groups G` scores.
+gets its thread as messages in the writer session's conversation, each by the route its author
+may use: a person's text is that person's send to the session, and the session's text is its
+reply to the person's latest message, or a follow-up under its first reply. A session writes
+there only in reply to a person, so where the thread starts with the session's text (a thread a
+session opened in production, as an ask on a project document), `load` first sends a message by
+the reader that says it is not in the record, and names it in the case's line (`opened`). A text
+of another session has no message to answer in that conversation, so it is left out and named in
+the case's line (`left_out`). The reader's words are the owner's word records of the verdicts file
+written before the case's text (plan Decision 19), never the case's own question. No route of
+Dispatch writes a word record, so `load` writes those rows into the database that `local` made. A
+document the instance refuses (`INVALID_MARKDOWN`, for a block that points at a text of production
+it does not hold) is left out and named in the case's line. `loaded.jsonl` holds where each record
+stands, and a load continues the cases it holds no line for. Write times and authors differ from
+production, so the grader reads the record from the dataset, never from the local instance.
+`load --sample N --sample-seed S --groups G` loads the cases
+`score --sample N --sample-seed S --groups G` scores.

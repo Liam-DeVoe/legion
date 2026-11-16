@@ -23,6 +23,7 @@ func TestTheCandidateListAndThePriceTable(t *testing.T) {
 		{"a role that is a candidate", strings.Replace(string(candidatesFile), "reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: claude, id: claude-opus-4-8}", 1)},
 		{"a role of another family", strings.Replace(string(candidatesFile), "reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: foundry, id: grok-4.7}", 1)},
 		{"the grader playing the writer", strings.Replace(string(candidatesFile), "writer: {family: claude, id: claude-opus-5-5}", "writer: {family: claude, id: claude-opus-5}", 1)},
+		{"the grader playing the reader", strings.Replace(string(candidatesFile), "reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: claude, id: claude-opus-5}", 1)},
 		{"a model with no price", strings.Replace(string(candidatesFile), "id: claude-haiku-5-5", "id: claude-haiku-9", 1)},
 	} {
 		if _, err := parseConfig([]byte(bad.candidates), pricesFile); err == nil {

@@ -98,14 +98,15 @@ func (c *Client) Call(ctx context.Context, req llm.Request) (llm.Response, error
 	return c.runner.Run(ctx, c.model, req)
 }
 
-// SessionTag is the tag the session part stands in at the end of a user message.
+// SessionTag is the tag the session part stands in, as the last block of a call's Shared.
 const SessionTag = "writer_session"
 
-// CallWithSession makes one call whose user message ends with the session part in its tag. An
-// empty session part adds nothing.
+// CallWithSession makes one call whose Shared ends with the session part in its tag, so the
+// session part is in the prefix the call marks for the provider's cache and that the other calls
+// of its case send the same. An empty session part adds nothing.
 func (c *Client) CallWithSession(ctx context.Context, req llm.Request, session SessionText) (llm.Response, error) {
 	if !session.Empty() {
-		req.User = strings.TrimRight(req.User, "\n") + "\n\n<" + SessionTag + ">\n" + session.text + "\n</" + SessionTag + ">\n"
+		req.Shared = append(slices.Clip(req.Shared), "<"+SessionTag+">\n"+session.text+"\n</"+SessionTag+">\n")
 	}
 	return c.runner.Run(ctx, c.model, req)
 }

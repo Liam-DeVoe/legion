@@ -93,13 +93,15 @@ type GroupFigures struct {
 	ChangeCost *Mean `json:"change_cost_usd,omitempty"`
 }
 
-// ModelUse is one model's calls in the results.
+// ModelUse is one model's calls in the results. OtherShape counts the replies in another
+// judgement's shape that the calls asked again (Call.OtherShape), out of Attempts.
 type ModelUse struct {
 	Model      string   `json:"model"`
 	Role       string   `json:"role"`
 	Use        string   `json:"use"`
 	Calls      int      `json:"calls"`
 	Attempts   int      `json:"attempts"`
+	OtherShape int      `json:"other_shape"`
 	Input      int      `json:"input_tokens"`
 	Output     int      `json:"output_tokens"`
 	CacheWrite int      `json:"cache_write_tokens"`
@@ -280,6 +282,7 @@ func modelUse(results []CaseResult, cfg Config) []ModelUse {
 		}
 		u.Calls++
 		u.Attempts += c.Attempts
+		u.OtherShape += c.OtherShape
 		u.Input += c.Input
 		u.Output += c.Output
 		u.CacheWrite += c.CacheWrite
@@ -451,10 +454,11 @@ func (f Figures) markdown() string {
 		row("change's model cost per text (USD)", "-", func(g *GroupFigures) string { return meanText(g.ChangeCost, "") })
 		b.WriteString("\n")
 	}
-	b.WriteString("## Model calls\n\n| Model | Role | Use | Calls | Attempts | Input tokens | Output tokens | Cost (USD) | Served |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |\n")
+	b.WriteString("## Model calls\n\nInput tokens are the prompt tokens read at the input price; the cache columns are the prompt tokens written to the provider's cache and read from it, at their own prices. Other shape counts the replies in another judgement's shape, asked again.\n\n" +
+		"| Model | Role | Use | Calls | Attempts | Other shape | Input tokens | Cache write tokens | Cache read tokens | Output tokens | Cost (USD) | Served |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
 	var total float64
 	for _, u := range f.Models {
-		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %.2f | %s |\n", u.Model, u.Role, u.Use, u.Calls, u.Attempts, u.Input, u.Output, u.CostUSD, strings.Join(u.Served, ", "))
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d | %.2f | %s |\n", u.Model, u.Role, u.Use, u.Calls, u.Attempts, u.OtherShape, u.Input, u.CacheWrite, u.CacheRead, u.Output, u.CostUSD, strings.Join(u.Served, ", "))
 		total += u.CostUSD
 	}
 	fmt.Fprintf(&b, "\nTotal model cost: %.2f USD. Wall time of this run: %.0f s; the calls' own time, summed: %.0f s.\n", total, f.Run.WallSeconds, f.Run.CallSeconds)

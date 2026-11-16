@@ -313,3 +313,100 @@ func TestOptingOutOfTheCacheSendsNoMark(t *testing.T) {
 		})
 	}
 }
+
+// fiveMinutes is the mark HistoryMarkOnly places, and ephemeral the one every other request's
+// marks are, which names no life.
+var (
+	fiveMinutes = map[string]any{"type": "ephemeral", "ttl": "5m"}
+	ephemeral   = map[string]any{"type": "ephemeral"}
+)
+
+// A request that sets HistoryMarkOnly carries the mark at the history's end alone, with a
+// five-minute life, on every call of the run: the newest message takes none, and no step moves
+// one onto the turns the run adds.
+func TestHistoryMarkOnlyMarksTheHistorysEndAlone(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t, threeCallAnthropic()...)
+	f := newFixture(t, s, AnthropicMessages, 3)
+	f.req.History = anthropicHistory()
+	f.req.HistoryMarkOnly = true
+	result, err := Run(context.Background(), f.req)
+	if err != nil || result.Fault != "" || result.Text != "The note says plum." {
+		t.Fatalf("result %+v, %v; want the answer and no fault", result, err)
+	}
+	got := s.requests()
+	if len(got) != 3 {
+		t.Fatalf("%d model calls, want 3", len(got))
+	}
+	// The wire's messages: the history's request and model turn (0, 1), the new question (2),
+	// then each call's turn and the tool result answering it.
+	for i, r := range got {
+		if n := countKey(r.decoded(t), "cache_control"); n != 1 {
+			t.Errorf("call %d carries %d cache marks, want 1", i+1, n)
+		}
+		if marks := marked(t, r); !reflect.DeepEqual(marks, []int{1}) {
+			t.Errorf("call %d marks messages %v, want [1] (the history's end alone)", i+1, marks)
+		}
+		b := blocks(messages(t, r)[1])
+		if mark := b[len(b)-1]["cache_control"]; !reflect.DeepEqual(mark, fiveMinutes) {
+			t.Errorf("call %d's history mark is %v, want %v", i+1, mark, fiveMinutes)
+		}
+	}
+}
+
+// A history of one user message before an Input of one user message, which is how a caller sends
+// a prefix that other calls share before the part only this call sends, goes as one user turn of
+// two text blocks. With HistoryMarkOnly the first block carries the five-minute mark and the
+// second none, and with an empty History the call carries no mark at all. A request that leaves
+// the field unset is marked as before: both blocks, each with a mark that names no life.
+func TestHistoryMarkOnlyMarksASharedPrefixOfTheUserTurn(t *testing.T) {
+	t.Parallel()
+	shared := []Message{{Role: User, Blocks: []Block{{Kind: TextBlock, Text: "<record>\nThe note says plum.\n</record>\n"}}}}
+	for _, c := range []struct {
+		name    string
+		history []Message
+		only    bool
+		want    []any
+	}{
+		{"a shared prefix", shared, true, []any{fiveMinutes, nil}},
+		{"no history", nil, true, []any{nil}},
+		{"the field unset", shared, false, []any{ephemeral, ephemeral}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 5}, anthropicText("The note says plum.")))
+			f := newFixture(t, s, AnthropicMessages, 1)
+			f.req.History = c.history
+			f.req.HistoryMarkOnly = c.only
+			result, err := Run(context.Background(), f.req)
+			if err != nil || result.Fault != "" {
+				t.Fatalf("result %+v, %v", result, err)
+			}
+			got := s.requests()
+			if len(got) != 1 {
+				t.Fatalf("%d model calls, want 1", len(got))
+			}
+			wire := messages(t, got[0])
+			if len(wire) != 1 {
+				t.Fatalf("%d wire messages, want the one user turn", len(wire))
+			}
+			b := blocks(wire[0])
+			if len(b) != len(c.want) {
+				t.Fatalf("the user turn has %d blocks, want %d", len(b), len(c.want))
+			}
+			marks := 0
+			for i, want := range c.want {
+				mark := b[i]["cache_control"]
+				if !reflect.DeepEqual(mark, want) {
+					t.Errorf("block %d carries the cache mark %v, want %v", i, mark, want)
+				}
+				if want != nil {
+					marks++
+				}
+			}
+			if n := countKey(got[0].decoded(t), "cache_control"); n != marks {
+				t.Errorf("the call carries %d cache marks, want %d", n, marks)
+			}
+		})
+	}
+}

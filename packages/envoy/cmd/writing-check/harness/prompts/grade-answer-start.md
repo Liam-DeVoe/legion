@@ -1,4 +1,4 @@
-{{define "grade-answer-start"}}You find an answer in a text. {{template "dispatch" .}} The reader asked the agent a question, and the text is the reply of the agent.
+{{define "grade-answer-start"}}You find an answer in a text. The reader asked the agent a question, and the text is the reply of the agent.
 
 Find the first sentence of the text that answers the question.
 
@@ -7,8 +7,6 @@ Find the first sentence of the text that answers the question.
 - "question": the question of the reader.
 - "text": the reply of the agent.
 {{- template "context-tags" .}}
-
-{{template "data" .}}
 
 ## How to find it
 

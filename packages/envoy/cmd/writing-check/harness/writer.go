@@ -67,7 +67,11 @@ type writerTurn struct {
 	message string
 }
 
-// call makes the writer's call for prompt with the turn's inputs and its session, if any.
+// call makes the writer's call for prompt with the turn's inputs and its session, if any. The
+// record and the session part, which every turn of a case sends the same, go first as Shared,
+// so a later turn of the case with the same prompt (change 3's next round) reads them from the
+// provider's cache; the writer's text and Dispatch's message, which change from turn to turn,
+// go after them.
 func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTurn, schema json.RawMessage) (llm.Response, error) {
 	var b strings.Builder
 	if err := writerPrompts.ExecuteTemplate(&b, prompt, writerData{
@@ -75,8 +79,11 @@ func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTu
 	}); err != nil {
 		return llm.Response{}, fmt.Errorf("fill the %s prompt: %w", prompt, err)
 	}
-	user := strings.TrimSpace(turn.record) + "\n" + tag("your_text", turn.text) + tag("dispatch_message", turn.message)
-	req := llm.Request{Purpose: purpose, System: strings.TrimSpace(b.String()) + "\n", User: user, Schema: schema, MaxTokens: writerMaxTokens}
+	req := llm.Request{
+		Purpose: purpose, System: strings.TrimSpace(b.String()) + "\n",
+		Shared: []string{strings.TrimSpace(turn.record) + "\n"}, User: tag("your_text", turn.text) + tag("dispatch_message", turn.message),
+		Schema: schema, MaxTokens: writerMaxTokens,
+	}
 	return w.Model.CallWithSession(ctx, req, turn.session)
 }
 

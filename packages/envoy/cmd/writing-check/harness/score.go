@@ -460,6 +460,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	newRun := fs.String("new-run", "", "the reason for a second held-out run at one commit")
 	figuresOnly := fs.Bool("figures-only", false, "compute the figures from the results the output directory holds, calling no model")
 	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
+	graderFlag := fs.String("grader", "", "the grading model of this run in place of candidates.yaml's roles.grader, with the same fallbacks: a Claude model with a row in prices.yaml that is no candidate and plays no other role (default: roles.grader)")
 	readersFrom := fs.String("readers-from", "", "a run directory whose readers' answers this run grades again, for the cases whose text is the same")
 	gradesFrom := fs.String("grades-from", "", "run directories, comma-separated, whose answers and grades this run takes, calling no model, for each case whose text and whose reader's and grader's inputs are the same")
 	vocabulary := fs.String("vocabulary", "", "the owner-texts.jsonl.gz that writing-check dataset owner-texts wrote: the undefined judgement reads the words of each text that the owner wrote himself before the case")
@@ -555,6 +556,9 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	cfg, err := LoadConfig()
 	if err != nil {
 		return fail(err)
+	}
+	if cfg, err = cfg.WithGrader(*graderFlag, false); err != nil {
+		return usage(err.Error())
 	}
 	started := time.Now()
 	if err := os.MkdirAll(*out, 0o755); err != nil {

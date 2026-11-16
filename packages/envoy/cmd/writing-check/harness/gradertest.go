@@ -186,6 +186,7 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	out := fs.String("out", "", "the directory for the test's results (required; keep it under $TMPDIR)")
 	sessionChars := fs.Int("session-chars", 30000, "the bytes of a case's session, its newest, that a grading call reads")
 	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
+	graderFlag := fs.String("grader", "", "the grading model of this test in place of candidates.yaml's roles.grader, with the same fallbacks: a Claude model with a row in prices.yaml that plays no other role; a candidate may grade here, since no candidate wrote a planted output (default: roles.grader)")
 	mf := addModelFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -212,6 +213,11 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		return fail(err)
 	}
+	if cfg, err = cfg.WithGrader(*graderFlag, true); err != nil {
+		return usage(err.Error())
+	}
+	graderID := cfg.Models.Roles.Grader.ID
+	candidate := cfg.IsCandidate(graderID)
 	planted, err := readPlanted(*plantedPath)
 	if err != nil {
 		return usage(err.Error())
@@ -272,8 +278,8 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}()
 	}
 	wg.Wait()
-	report := graderReport(results, cfg.Models.Roles.Grader.ID, time.Since(started))
-	if err := writeJSON(filepath.Join(*out, "grader-test.json"), map[string]any{"grader": cfg.Models.Roles.Grader.ID, "grader_inputs": inputs.String(), "prompts_sha256": PromptsDigest(), "results": results}); err != nil {
+	report := graderReport(results, graderID, candidate, time.Since(started))
+	if err := writeJSON(filepath.Join(*out, "grader-test.json"), map[string]any{"grader": graderID, "grader_is_candidate": candidate, "grader_inputs": inputs.String(), "prompts_sha256": PromptsDigest(), "results": results}); err != nil {
 		return fail(err)
 	}
 	if err := os.WriteFile(filepath.Join(*out, "grader-test.md"), []byte(report), 0o600); err != nil {
@@ -289,12 +295,17 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 }
 
 // graderReport is the grader test's table: for each judgement, the wrong and the right outputs
-// it marked correctly, then each output with what a correct grader answers and what it answered.
-func graderReport(results []PlantedResult, grader string, elapsed time.Duration) string {
+// it marked correctly, then each output with what a correct grader answers and what it answered,
+// then what the calls cost. candidate says the grader is a candidate of candidates.yaml, which
+// the report says.
+func graderReport(results []PlantedResult, grader string, candidate bool, elapsed time.Duration) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Grader test: %s\n\n| Judgement | Wrong outputs marked correctly | Right outputs marked correctly | Correct / total |\n| --- | ---: | ---: | ---: |\n", grader)
+	fmt.Fprintf(&b, "# Grader test: %s\n\n", grader)
+	if candidate {
+		fmt.Fprintf(&b, "%s is a candidate of candidates.yaml. It grades here because no candidate wrote a planted output; `harness score` refuses it as the grader (R2).\n\n", grader)
+	}
+	b.WriteString("| Judgement | Wrong outputs marked correctly | Right outputs marked correctly | Correct / total |\n| --- | ---: | ---: | ---: |\n")
 	all, allCorrect := 0, 0
-	var cost float64
 	for _, j := range Judgements {
 		var wrong, wrongOK, right, rightOK int
 		for _, r := range results {
@@ -318,13 +329,18 @@ func graderReport(results []PlantedResult, grader string, elapsed time.Duration)
 		fmt.Fprintf(&b, "| %s | %d of %d | %d of %d | %d / %d |\n", j, wrongOK, wrong, rightOK, right, wrongOK+rightOK, wrong+right)
 	}
 	fmt.Fprintf(&b, "| all | | | %d / %d |\n\n| Output | Judgement | Planted | A correct grader | The grader | Correct |\n| --- | --- | --- | --- | --- | --- |\n", allCorrect, all)
+	var total Call
 	for _, r := range results {
+		for _, c := range r.Grade.Refused {
+			total = addCall(total, c)
+		}
 		if r.Grade.Call != nil {
-			cost += r.Grade.Call.CostUSD
+			total = addCall(total, *r.Grade.Call)
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %t |\n", r.Planted.ID, r.Planted.Judgement, r.Planted.Planted, r.Expect, gradeText(r.Grade), r.Correct)
 	}
-	fmt.Fprintf(&b, "\nModel cost: %.2f USD; wall time %s.\n", cost, elapsed.Round(time.Second))
+	fmt.Fprintf(&b, "\nModel cost: %.2f USD, refused calls included; prompt tokens %d at the input price, %d written to the cache, %d read from it; %d replies in another judgement's shape, asked again; wall time %s.\n",
+		total.CostUSD, total.Input, total.CacheWrite, total.CacheRead, total.OtherShape, elapsed.Round(time.Second))
 	return b.String()
 }
 

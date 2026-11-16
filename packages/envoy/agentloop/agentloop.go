@@ -232,6 +232,15 @@ type Request struct {
 	// re-sends the marked prefix within the cache's life, which reads it at the cache's
 	// price instead of the input price.
 	NoCache bool
+	// HistoryMarkOnly keeps, of those marks, the one at the end of the history alone, and
+	// gives it a five-minute life: on anthropic-messages and azure-anthropic the newest
+	// message takes none, so a call whose history other calls re-send pays the cache write on
+	// that history and not on the part of its prompt that only it sends, and pays the
+	// five-minute write price, not the dearer one of a longer life a provider may give a mark
+	// that names none. A request that sets it with an empty History carries no mark. It
+	// changes nothing on the OpenAI kinds, which this package marks at the history's end
+	// alone in any case, nor where NoCache is set.
+	HistoryMarkOnly bool
 	// Tools are the tools the model may call.
 	Tools []Tool
 	// Bounds are the limits of the run.

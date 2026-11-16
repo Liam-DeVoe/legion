@@ -109,7 +109,8 @@ func parseConfig(candidates, prices []byte) (Config, error) {
 }
 
 // check refuses a role that is not Claude, a role that is a candidate, a grader that plays the
-// writer, a model of an unknown family, a model named twice, and a model with no price.
+// writer or the reader, a model of an unknown family, a model named twice, and a model with no
+// price.
 func (c Config) check() error {
 	roles := c.roles()
 	for _, r := range roles {
@@ -135,6 +136,9 @@ func (c Config) check() error {
 	if r.Grader.ID == r.Writer.ID {
 		return errors.New("candidates.yaml: a grader plays the writer (R2)")
 	}
+	if r.Grader.ID == r.Reader.ID {
+		return errors.New("candidates.yaml: the grader plays the fresh reader (R2)")
+	}
 	seen := map[string]bool{}
 	for _, m := range c.AllModels() {
 		switch {
@@ -156,6 +160,37 @@ func (c Config) check() error {
 		}
 	}
 	return nil
+}
+
+// WithGrader is the config with id as its grader in place of candidates.yaml's, for one run
+// (--grader), with the same fallbacks and the grader's effort. It refuses the writer, the fresh
+// reader, a fallback grader, a model with no Claude price in prices.yaml, and, unless candidate
+// is true, a candidate (R2): a grader grades no output it wrote. An empty id is the config as it
+// is.
+func (c Config) WithGrader(id string, candidate bool) (Config, error) {
+	r := c.Models.Roles
+	switch {
+	case id == "" || id == r.Grader.ID:
+		return c, nil
+	case id == r.Writer.ID:
+		return c, fmt.Errorf("--grader %q is the writer: a grader does not play the writer (R2)", id)
+	case id == r.Reader.ID:
+		return c, fmt.Errorf("--grader %q is the fresh reader: a grader plays no other role (R2)", id)
+	case slices.ContainsFunc(r.GraderFallbacks, func(m ModelEntry) bool { return m.ID == id }):
+		return c, fmt.Errorf("--grader %q is a fallback grader: it would grade the judgements it refused", id)
+	case !candidate && c.IsCandidate(id):
+		return c, fmt.Errorf("--grader %q is a candidate of candidates.yaml: a grader is no candidate (R2)", id)
+	}
+	if p, ok := c.Prices.Prices[id]; !ok || p.Family != llm.FamilyClaude {
+		return c, fmt.Errorf("--grader %q has no Claude price in prices.yaml", id)
+	}
+	c.Models.Roles.Grader = ModelEntry{Family: llm.FamilyClaude, ID: id, Effort: r.Grader.Effort}
+	return c, nil
+}
+
+// IsCandidate is whether id is a candidate of candidates.yaml.
+func (c Config) IsCandidate(id string) bool {
+	return slices.ContainsFunc(c.Models.Candidates, func(m ModelEntry) bool { return m.ID == id })
 }
 
 type namedRole struct {

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/cmd/writing-check/harness/claude"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 )
 
@@ -98,9 +99,10 @@ func phraseCandidates(text string) []phraseCandidate {
 const phraseChunk = 30
 
 // gradeSentences gives the phrases judgement sentence by sentence: the candidates of in.Text,
-// each judged by the spec's prompt, which base holds with the reply's schema; the sentences the
-// grader finds vacuous are the findings, each quoted whole. The calls of the chunks are summed
-// into one Call.
+// each judged by the spec's prompt, which base holds as its Shared with the reply's schema; the
+// sentences the grader finds vacuous are the findings, each quoted whole. The calls of the
+// chunks are summed into one Call. Every call of the judgement sends the same prompt, which the
+// first call of the run writes to the provider's cache and the others read.
 // A sentence judgement reads only its candidates, so its input mode is always trimmed.
 func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in GradeInput, base llm.Request) Grade {
 	grade := Grade{Inputs: InputsTrimmed}
@@ -109,6 +111,7 @@ func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in Grad
 	if len(cands) == 0 {
 		return grade
 	}
+	key := prefixKey(g.Model, base, claude.SessionText{})
 	var total Call
 	var replies []json.RawMessage
 	for start := 0; start < len(cands); start += phraseChunk {
@@ -116,7 +119,9 @@ func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in Grad
 		list, _ := json.MarshalIndent(chunk, "", " ")
 		req := base
 		req.User = tag("candidates", string(list))
+		done := g.first(ctx, key)
 		resp, err := g.Model.Call(ctx, req)
+		done()
 		for _, fallback := range g.Fallbacks {
 			var callErr *llm.CallError
 			if !errors.As(err, &callErr) || callErr.Fault != agentloop.FaultRefusal {
@@ -159,7 +164,8 @@ func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in Grad
 	return grade
 }
 
-// addCall is the sum of two calls' tokens, cost, attempts and time, with b's model.
+// addCall is the sum of two calls' tokens, cost, attempts, replies in another shape and time,
+// with b's model.
 func addCall(a, b Call) Call {
 	b.Input += a.Input
 	b.Output += a.Output
@@ -167,6 +173,7 @@ func addCall(a, b Call) Call {
 	b.CacheRead += a.CacheRead
 	b.CostUSD += a.CostUSD
 	b.Attempts += a.Attempts
+	b.OtherShape += a.OtherShape
 	b.Seconds += a.Seconds
 	return b
 }

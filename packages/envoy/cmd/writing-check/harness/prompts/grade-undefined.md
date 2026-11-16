@@ -1,4 +1,4 @@
-{{define "grade-undefined"}}You check a text. {{template "dispatch" .}} The reader knows the work in general, but he did not see what the agent did.
+{{define "grade-undefined"}}You check a text. The reader knows the work in general, but he did not see what the agent did.
 
 Find each word or name of the text that the reader would have to ask about: he cannot understand the sentence that uses it from the text and the record.
 
@@ -10,8 +10,6 @@ Find each word or name of the text that the reader would have to ask about: he c
 {{- end}}
 {{- template "question-tag" .}}
 {{- template "context-tags" .}}
-
-{{template "data" .}}
 
 ## How to find an undefined word or name
 
