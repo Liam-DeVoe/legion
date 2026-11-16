@@ -762,6 +762,10 @@ export const CONTROL_LABELS = freeze({
   accept: "Accept",
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
+  /** The labels control's word where the issue has no label yet, as `add_priority` is the
+   *  priority's: the property's own name would draw "Labels" twice in its row of Details
+   *  (decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+  add_label: "Add a label",
   /** The control that places an issue under a priority, where the issue advances none: the
    *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
   add_priority: "Add a priority",

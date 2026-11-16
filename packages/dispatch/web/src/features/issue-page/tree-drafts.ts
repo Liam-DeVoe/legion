@@ -92,6 +92,9 @@ export interface Draft {
   /** A person's answer to this ask, which the ask's own row and body draw (`TreeNode.answer`). */
   answer?: NodeAnswer;
   chips: NodeChip[];
+  /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
+   *  every other draft, a `requirement` block no coverage row holds among them, which is how the
+   *  review list tells a statement from a block (`treeDrafts`). */
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
@@ -181,14 +184,18 @@ export interface TreeContext {
 
 /**
  * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
- * for a node draws, from the server's reading of the node's words: `buildIssueTree` gives R1's
- * rule over the words of the reading's first block (`lineWords`, `drawnLine(firstLineOf(…))`),
- * which this module cannot import, since `issue-tree.ts` imports it, and a caller that reads no
- * chip's name gives none, which names a block by the whole reading's words (`wordsOf`).
+ * for a node draws, from the server's reading of the node's words: `buildIssueTree` and
+ * `targetNames` give R1's rule over the words of the reading's first block (`chipLine`, which
+ * is `drawnLine(firstLineOf(…))` of what `lineWords` reads), which this module cannot import,
+ * since `issue-tree.ts` imports it, and a caller that reads no chip's name gives none, which
+ * names a block by the whole reading's words (`wordsOf`).
  *
  * A chip names its target by the words a reader reads it by, and never by markup:
  *
- * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone.
+ * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone. A short
+ *   reference two or more targets carry the id of is such a target, which the read answers
+ *   `ambiguous` as well, and its chip carries `ambiguous` so it can draw the reference as
+ *   written rather than as a target deleted (dispatch://INFRA-1196 decision 62).
  * - **A block** - the reference names one, or the read answers that its target is one - by
  *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`). Where the read
  *   answered and sent no reading, or one that holds no words, a block of this issue whose
@@ -200,7 +207,10 @@ export interface TreeContext {
  *   markup and no word of it (R21).
  * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
  *   word for it (`documentWord`), and never by its file name.
- * - **Anything else** - an issue, an ask, a comment, a message - by the read's `name` for it.
+ * - **Anything else** by the read's `name` for it. An ask's, a comment's and a message's name is
+ *   the question or the body as stored, which is markdown whose marks are no word of it (R21),
+ *   so it is read to plain words (`plainWords`); an issue's and a component's name is a title,
+ *   which is no markdown, and is left as the read gives it.
  */
 export function treeContext(
   reads: IssueTreeReads,
@@ -258,6 +268,9 @@ export function treeContext(
     if (route?.kind === "artifact") {
       return documentWord(reads.issue, route.key === key ? documents.get(route.slug) : undefined);
     }
+    if (target?.kind === "ask" || target?.kind === "comment" || target?.kind === "message") {
+      return plainWords(target.name);
+    }
     return blockWords(target?.name ?? "");
   };
   return {
@@ -265,6 +278,7 @@ export function treeContext(
       const target = names.get(reference);
       const gone = target?.gone ?? false;
       return {
+        ...(target?.ambiguous === true ? { ambiguous: true } : {}),
         answered: target !== undefined,
         gone,
         name: gone ? "" : nameOf(reference, target),
@@ -338,8 +352,8 @@ const DIRECTIVE_FENCE = /^:{3,}\s*$/;
  * block is a directive, so its excerpt opens on the directive's line - its type and its
  * attributes - and, where the excerpt holds the whole block, ends on its closing fence. Both are
  * markup and no word of the block (R21), so they are left out, as the head's three sentences
- * leave them out of the callout they read (`IssueThreeThings.tsx`). Any other name is its own
- * words already.
+ * leave them out of the callout they read (`IssueThreeThings.tsx`). Any other name is left as
+ * the read gives it.
  */
 export function blockWords(name: string): string {
   const lines = name.trimEnd().split("\n");
@@ -347,6 +361,97 @@ export function blockWords(name: string): string {
   lines.shift();
   if (DIRECTIVE_FENCE.test(lines.at(-1) ?? "")) lines.pop();
   return lines.join("\n").trim();
+}
+
+/** A blank line, which ends a paragraph: no mark and no code span reaches past one. */
+const BLANK_LINE = /\n\s*\n/u;
+
+/** One ASCII punctuation character: what a backslash escapes, and what a code span and an
+ *  autolink hold that the marks below would otherwise read as marks. */
+const PUNCTUATION = /[!-/:-@[-`{-~]/gu;
+
+/**
+ * What markdown reads literally, each where it starts, left to right: a backslash before an
+ * ASCII punctuation character, which is that character; a code span, a run of backticks closed
+ * by the next run of the same count, which is its content verbatim and inside which a backslash
+ * escapes nothing; an autolink, `<https://…>`, which is its URL; and a run of backticks no run
+ * of its count closes, which is that run as written. They are one pattern because each decides
+ * the others: a backtick a backslash escapes opens no code span, and a backslash inside a code
+ * span escapes nothing.
+ */
+const LITERAL =
+  /\\([!-/:-@[-`{-~])|(`+)(?!`)([\s\S]*?[^`])\2(?!`)|<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)>|`+/gu;
+
+/** A heading marker at the start of a line, `#` to `######` and a space, which markdown allows
+ *  up to three spaces of indent before. */
+const HEADING_MARKER = /^ {0,3}#{1,6}[ \t]+/gmu;
+
+/** An image, `![alt](src)`, whose words the server's reading of it holds none of. */
+const IMAGE = /!\[[^\]]*\]\([^)]*\)/gu;
+
+/** A link, `[words](target)`, which reads as its words; its target is no word of the text. */
+const LINK = /\[([^\]]*)\]\([^)]*\)/gu;
+
+/** `**strong**`, which stands wherever it is written. */
+const STAR_STRONG = /\*\*(?=\S)([\s\S]*?\S)\*\*/gu;
+
+/** `__strong__`, which markdown reads only where no letter or digit stands either side of it. */
+const UNDERSCORE_STRONG = /(?<![\p{L}\p{N}])__(?=\S)([\s\S]*?\S)__(?![\p{L}\p{N}])/gu;
+
+/** `~~struck~~`, which stands wherever it is written. */
+const STRUCK = /~~(?=\S)([\s\S]*?\S)~~/gu;
+
+/** `*emphasis*`, which stands wherever it is written. */
+const STAR_EMPHASIS = /\*(?=\S)([^*]*?\S)\*/gu;
+
+/** `_emphasis_`, which markdown reads only between characters that are no letter or digit, so
+ *  `snake_case_name` is one word. */
+const UNDERSCORE_EMPHASIS = /(?<![\p{L}\p{N}])_(?=\S)([^_]*?\S)_(?![\p{L}\p{N}])/gu;
+
+/** The private-use stand-in of each ASCII punctuation character `LITERAL` keeps from the marks
+ *  (U+E000 plus its code), which `plainWords` puts the character back for. */
+const KEPT = /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu;
+
+/**
+ * The words of a stored markdown text as a reader reads them, on one line: what a place that
+ * draws a stored text as plain words draws, since its marks are markup and no word of it (R21),
+ * and a mark after a sentence's end (`today.**`) would hide that end from `firstLineOf`.
+ *
+ * Each paragraph is read on its own, since no mark pairs across a blank line. What markdown
+ * reads literally (`LITERAL`) - an escaped punctuation character (`1\.` is `1.`), a code span's
+ * content, an autolink's URL - is read first, and each ASCII punctuation character of it is held
+ * as a private-use stand-in (U+E000 plus its code) while the marks are taken off, so no mark is
+ * read inside it, and put back after. A character of the text already in that private-use range
+ * is no word a reader reads, and reads as the ASCII character it stands in for. Then a heading
+ * marker at the start of any line goes, an image goes whole, a link reads as its words, and
+ * strong, emphasis and struck marks go until none is left, so nested marks (`***x***`) go too.
+ * White space collapses to single spaces.
+ */
+export function plainWords(markdown: string): string {
+  const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
+    let words = paragraph
+      .replace(
+        LITERAL,
+        (written, escaped?: string, _run?: string, code?: string, url?: string) =>
+          (escaped ?? code ?? url)?.replace(PUNCTUATION, (character) =>
+            String.fromCharCode(0xe000 + character.charCodeAt(0))
+          ) ?? written
+      )
+      .replace(HEADING_MARKER, "")
+      .replace(IMAGE, "")
+      .replace(LINK, "$1");
+    for (let marked = ""; marked !== words; ) {
+      marked = words;
+      words = words
+        .replace(STAR_STRONG, "$1")
+        .replace(UNDERSCORE_STRONG, "$1")
+        .replace(STRUCK, "$1")
+        .replace(STAR_EMPHASIS, "$1")
+        .replace(UNDERSCORE_EMPHASIS, "$1");
+    }
+    return words.replace(KEPT, (kept) => String.fromCharCode(kept.charCodeAt(0) - 0xe000));
+  });
+  return paragraphs.join(" ").replace(/\s+/gu, " ").trim();
 }
 
 /** Every draft the reads hold, by its node id. */
@@ -375,8 +480,13 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addChecks(drafts, reads, context);
   // What waits for the reader's review is the review list's one rule (R35): the tie to a
   // statement decides it, and a decision the reader asked to change waits on its agent, not on
-  // the reader (`decision-review.ts`). It is read once every statement has its draft. Nothing
-  // waits on a reader whose login has not resolved, as `waiting.ts` counts it.
+  // the reader (`decision-review.ts`). A statement is a requirement the coverage read holds - a
+  // draft `addRequirements` gave that read's counts - as the header's count is handed the
+  // coverage read's statements (`waitingOnReader`'s `isStatement`): a spec's `requirement` block
+  // drawn before that read answers, and one of another document, which no coverage row holds, is
+  // a block and nothing more, and a tie to it puts no decision on the list. It is read once every
+  // statement has its draft. Nothing waits on a reader whose login has not resolved, as
+  // `waiting.ts` counts it.
   for (const decision of reads.decisions?.decisions ?? []) {
     const draft = drafts.get(context.nodeIdOf(decision.ref) ?? "");
     if (draft === undefined) continue;
@@ -384,7 +494,7 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
       context.viewer !== undefined &&
       inReviewList(
         decision,
-        (reference) => drafts.get(context.nodeIdOf(reference) ?? "")?.type === "requirement",
+        (reference) => drafts.get(context.nodeIdOf(reference) ?? "")?.counts !== undefined,
         changes.has(decision.ref)
       );
   }

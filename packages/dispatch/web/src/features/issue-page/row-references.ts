@@ -44,18 +44,20 @@ export interface RowReference {
 
 /**
  * Every reference `text` cites, as the batched read is asked for it: each `dispatch://`
- * reference and dashboard address it writes whole, and each issue key it writes bare, which is
- * asked as that issue's own reference so the read answers whether the issue exists. An address
- * that writes an id as a prefix is left out: the read answers whole ids alone.
+ * reference and dashboard address it writes, and each issue key it writes bare, which is asked
+ * as that issue's own reference so the read answers whether the issue exists. An address that
+ * writes an item id or a block id short is asked as written too: the read resolves the short id
+ * in the owner the reference names and answers under the reference as the request wrote it,
+ * which is the reference a row links it by (`rowReferences`); where no item or two of them carry
+ * the prefix it answers the reference gone, and `ambiguous` where two do (dispatch://INFRA-1196
+ * decision 55).
  */
 export function citedReferences(text: string): string[] {
   if (text === "") return [];
   const { needs, references } = readTextReferences(text);
   const cited = new Set<string>();
   for (const found of references) {
-    if (found.form === "address" && found.reference !== undefined && !found.unresolved) {
-      cited.add(found.reference);
-    }
+    if (found.form === "address" && found.reference !== undefined) cited.add(found.reference);
   }
   for (const key of needs.keys) cited.add(`dispatch://${key}`);
   return [...cited];
