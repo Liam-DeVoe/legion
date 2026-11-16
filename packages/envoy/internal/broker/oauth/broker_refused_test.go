@@ -3,8 +3,6 @@ package oauth_test
 import (
 	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/oauth"
@@ -21,10 +19,10 @@ import (
 func TestARefusalWithABodyItCannotReadStillRefusesTheTrade(t *testing.T) {
 	const says = "Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
-		for _, body := range []string{refusalOversized, refusalCutShort} {
+		for _, body := range projectaccesstest.RefusalBodies {
 			fixture := func(t *testing.T) *exchangeFixture {
 				t.Helper()
-				dispatch := projectaccess.New(refusingDispatch(t, status, body), projectaccesstest.StaticAccount("token"), nil)
+				dispatch := projectaccess.New(projectaccesstest.NewRefusing(t, status, body), projectaccesstest.StaticAccount("token"), nil)
 				return newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = dispatch })
 			}
 			t.Run(fmt.Sprintf("%d with a body %s refuses an entry's token", status, body), func(t *testing.T) {
@@ -41,35 +39,4 @@ func TestARefusalWithABodyItCannotReadStillRefusesTheTrade(t *testing.T) {
 			})
 		}
 	}
-}
-
-// The two bodies refusingDispatch answers with.
-const (
-	refusalOversized = "past 64 KiB"
-	refusalCutShort  = "cut short of its Content-Length"
-)
-
-// refusingDispatch answers every request status, with a body past what the client reads of an
-// answer, or one that ends, its connection closed, before the length its header declares, so
-// reading it fails.
-func refusingDispatch(t *testing.T, status int, body string) string {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if body == refusalOversized {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(status)
-			_, _ = fmt.Fprintf(w, `{"code":"ACCESS_ACCOUNT_REQUIRED","error":"%s"}`, strings.Repeat("x", 70<<10))
-			return
-		}
-		conn, buffered, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Errorf("hijack the refusal's connection: %v", err)
-			return
-		}
-		defer conn.Close()
-		_, _ = fmt.Fprintf(buffered, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{\"code\":\"ACCESS_ACC", status, http.StatusText(status))
-		_ = buffered.Flush()
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
 }
