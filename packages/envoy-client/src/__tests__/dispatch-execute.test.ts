@@ -8343,7 +8343,7 @@ describe("executeDispatchTool", () => {
     };
   }
 
-  async function readCICheck(read: unknown) {
+  async function readCICheck(read: unknown, args: Record<string, unknown> = {}) {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
       if (target.pathname === "/api/v1/issues/DSP-42/results") return response(read);
@@ -8351,7 +8351,7 @@ describe("executeDispatchTool", () => {
     };
     return await executeDispatchTool({
       tool: "dispatch_results",
-      args: { issue: "DSP-42" },
+      args: { issue: "DSP-42", ...args },
       cwd: "/workspace",
       host: "omp",
       config,
@@ -8460,6 +8460,44 @@ describe("executeDispatchTool", () => {
         "    Reading: ok",
       ].join("\n")
     );
+  });
+
+  // A reader who keeps the statements reads the route's answer whole, as the project form's json
+  // prints the stored results.
+  test("dispatch_results with issue and json prints the route's answer whole, each CI job's result with its statement", async () => {
+    const commit = "3333333333333333333333333333333333333333";
+    const served = ciCheckRead(
+      {
+        run: "contracts",
+        state: "no_result",
+        case: "no_head",
+        detail: "Dispatch holds no open or merged pull request head of DSP-42.",
+        line: "- Check k5 (before_merge): CI run contracts has no result (no_head)",
+      },
+      [
+        {
+          ...jobResult(
+            "job-1",
+            commit,
+            { answer: "at_basis", basis: { kind: "branch_head", branch: "legion/DSP-42", commit } },
+            "2026-11-10T10:00:00Z"
+          ),
+          attestation: {
+            _type: "https://in-toto.io/Statement/v1",
+            subject: [{ name: "git+https://github.com/owner/repo", digest: { gitCommit: commit } }],
+            predicateType:
+              "https://github.com/cybermonklabs/legion/attestations/check-block-result/v1",
+            predicate: {
+              check: "dispatch://DSP-42/artifact/verification-md#b-k5",
+              verdict: "pass",
+            },
+          },
+        },
+      ]
+    );
+
+    const read = await readCICheck(served, { json: true });
+    expect(JSON.parse(read.text)).toEqual(served);
   });
 
   test("dispatch_result --retract records the retraction and prints what it holds", async () => {
