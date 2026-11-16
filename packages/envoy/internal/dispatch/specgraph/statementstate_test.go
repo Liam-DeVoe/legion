@@ -1,10 +1,18 @@
 package specgraph
 
 import (
+	"runtime/debug"
 	"slices"
 	"testing"
 	"time"
 )
+
+// The derivation of a statement recurses into the statements under it and its supporters, and its
+// loop guard (reaches) is what ends a loop of parent and support relations. With no guard, the rows
+// of a loop ("a loop of supporters", and the loop of parents of
+// TestDeriveListsEachStatementInPreorder) recurse without end. This cap of 16 MiB makes them fail
+// in a fraction of a second; Go's own limit of 1 GB would take far longer and that much memory.
+func init() { debug.SetMaxStack(16 << 20) }
 
 // The nodes of TestStatementState beside TestCheckState's. T is checkStateTop, with its own check of
 // the code CT, and L1 is checkStateLeaf under it, with its check C1, checkStateCheck. L2 is a second
@@ -284,7 +292,8 @@ func TestStatementState(t *testing.T) {
 		// Validate refuses reads unknown, refused, with the rule as the detail, and each statement
 		// above it reads unknown, statement_refused, with the detail that names it; its own state is
 		// unknown, so a wait on it holds. A problem that names no check and no statement refuses each
-		// check and statement of its file, or of the tree when its file holds none.
+		// check and statement of the tree: a file is no relation of The Spec, so the split of the tree
+		// into files changes no state.
 		{name: "D1: L1, whose text has no letter and no digit, reads refused, and T above it reads unknown; subject the head of main", change: func(s *checkCase) {
 			bare := checkStateLeaf
 			bare.Text = "-"
@@ -300,6 +309,11 @@ func TestStatementState(t *testing.T) {
 			s.files["components.md"] = []specNode{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
 		}, want: []StatementState{held(T, "unknown", "refused", "bad-component", "unknown"), held(L1, "unknown", "refused", "bad-component", "unknown"),
 			held(L2, "unknown", "refused", "bad-component", "unknown"), held(P, "unknown", "refused", "bad-component", "unknown")}},
+		{name: "D1: a problem of a term refuses P and its check in a file of their own too", change: func(s *checkCase) {
+			s.drop(P, CP)
+			s.files["p.md"] = []specNode{statementSupporter, statementSupporterCheck}
+			s.files["spec.md"] = append(s.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
+		}, want: []StatementState{held(T, "unknown", "refused", "bad-term", "unknown"), held(P, "unknown", "refused", "bad-term", "unknown")}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -378,8 +392,8 @@ func TestTheTreeAndTheDerivationAskForACheckOfOneSetOfStatements(t *testing.T) {
 // D1: the derivation gives no clean state for a tree that the rules refuse. For each problem that
 // Validate finds in the files, Derive reads no check that the problem names as true, and no
 // statement that it names, or that is above a check or a statement that it names, as met; a
-// problem that names no check and no statement does so for each check and statement of its file,
-// or of the tree when its file holds none. The rule is read from the problems, so a rule that
+// problem that names no check and no statement does so for each check and statement of the tree,
+// whatever file holds it. The rule is read from the problems, so a rule that
 // Validate gains is under the test too. Each row is the base of TestStatementState with one fault.
 func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
 	t.Parallel()
@@ -406,6 +420,11 @@ func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
 		{"a leaf with no check", func(s *checkCase) { s.remove(statementLeafTwoCheck.ID) }},
 		{"a supported statement with no check of its own", func(s *checkCase) { s.remove(statementTopCheck.ID) }},
 		{"a term with no definition in the file of the statements", func(s *checkCase) {
+			s.files["spec.md"] = append(s.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
+		}},
+		{"a term with no definition in another file than a statement and its check", func(s *checkCase) {
+			s.drop(statementSupporter.ID, statementSupporterCheck.ID)
+			s.files["p.md"] = []specNode{statementSupporter, statementSupporterCheck}
 			s.files["spec.md"] = append(s.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
 		}},
 		{"a component with no purpose in a file of its own", func(s *checkCase) {
@@ -442,8 +461,7 @@ func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
 
 // namedBy is each check and statement of files that the problem p names: the node it names, and,
 // for a check, the statement it serves; for a problem that names no check and no statement, each
-// check and statement of its file, or of files when its file holds none; then each statement
-// above one of them.
+// check and statement of files, whatever file holds it; then each statement above one of them.
 func namedBy(files Tree, p Problem) []string {
 	var named []string
 	if c, held := files.CheckByID(p.Node); held {
@@ -451,20 +469,11 @@ func namedBy(files Tree, p Problem) []string {
 	} else if _, held := files.StatementByID(p.Node); held {
 		named = append(named, p.Node)
 	} else {
-		for _, all := range []bool{false, true} {
-			for _, st := range files.Statements {
-				if all || st.Pos.File == p.Pos.File {
-					named = append(named, st.ID)
-				}
-			}
-			for _, c := range files.Checks {
-				if all || c.Pos.File == p.Pos.File {
-					named = append(named, c.ID)
-				}
-			}
-			if len(named) > 0 {
-				break
-			}
+		for _, st := range files.Statements {
+			named = append(named, st.ID)
+		}
+		for _, c := range files.Checks {
+			named = append(named, c.ID)
 		}
 	}
 	for i := 0; i < len(named); i++ {
