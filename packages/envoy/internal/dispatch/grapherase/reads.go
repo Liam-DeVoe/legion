@@ -51,7 +51,7 @@ type erasedRead struct {
 	project  string
 	// margins are the documents a comment's body stands in the margin of, whose editing state
 	// therefore derives from the comment (marginDocuments). A node of any other kind has none.
-	margins []ownDocument
+	margins []marginDocument
 	// ancestors are the blocks that hold the node's block and whose stored text or excerpt the
 	// redaction rewrites: a container's text is cut from the document across the blocks inside
 	// it, so it quotes the node's own text as well as its siblings'.
@@ -170,22 +170,32 @@ func (e *Erasure) ownDocument(ctx context.Context, tx pgx.Tx) (*ownDocument, str
 	return &document, blockID, nil
 }
 
+// marginDocument is a document whose margin holds an erased comment's body, with what of that
+// margin goes: the comment's own record, by its mark id, and its entry in the record of each
+// thread it replies in.
+type marginDocument struct {
+	ownDocument
+	records []string
+	replies []docs.ErasedReply
+}
+
 // marginDocuments reads the documents whose margin record holds a comment's body, whose editing
 // state therefore derives from the comment and holds its bytes. A comment anchored to a document
 // is projected into that document's margin by the write that makes it: the record carries its
-// body under `text` (api's commentMarkRecord, docs.ProjectMark), and a reply's body stands in
-// its thread root's record under `replies`. So the two documents a comment's body can be in are
-// the one its own anchor names and the one its root's anchor names, which is one document for a
-// reply to an anchored comment and none for a comment on an issue.
+// body under `text` (api's commentMarkRecord, docs.ProjectMark), keyed by its anchor's mark id,
+// and a reply's body stands in its thread root's record under `replies`, as an entry naming its
+// author (docs.ActorRef). So the two documents a comment's body can be in are the one its own
+// anchor names and the one its root's anchor names, which is one document for a reply to an
+// anchored comment and none for a comment on an issue.
 //
 // The run replaces the editing state of each of them, as it replaces a block's own document's:
 // a record is stored in the same updates the text is, so no search of those bytes can say which
-// update holds the record, and the seed is parsed from markdown, which carries no record at all
-// (docs.ReadErasedLiveText). The document's text is left as it is: a comment's body is no part
-// of it, and bytes of the body that stand in a block are that block's text.
+// update holds the record. The seed is the live document with those entries taken out and
+// nothing else (docs.ReadErasedLiveText): the document's text, every other comment's anchor mark
+// and every other comment's record are other nodes', and stand.
 //
 // Any other node kind answers none: nothing else is projected into a document's margin.
-func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]ownDocument, error) {
+func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]marginDocument, error) {
 	if refs.ItemKind(e.Kind) != refs.ItemComment {
 		return nil, nil
 	}
@@ -197,23 +207,46 @@ func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]ownDocument
 			join comments root on root.id = thread.reply_to
 			where thread.depth < 100
 		)
-		select distinct a.id::text, a.ref_key, coalesce(a.issue_key, ''), coalesce(a.project_key, ''),
-		       a.is_primary and a.issue_key is not null
+		select a.id::text, a.ref_key, coalesce(a.issue_key, ''), coalesce(a.project_key, ''),
+		       a.is_primary and a.issue_key is not null,
+		       coalesce(c.anchor->>'mark_id', ''), thread.depth = 1,
+		       coalesce((select erased.author->>'kind' || ':' || (erased.author->>'id') from comments erased where erased.id = $1::uuid), '')
 		from thread
 		join comments c on c.id = thread.id
 		join artifacts a on a.id = (c.anchor->>'artifact_id')::uuid and a.kind = 'doc'
 		where c.anchor is not null
-		order by 1`, e.ID)
+		order by 1, thread.depth`, e.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read the documents holding %s:%s in their margin: %w", e.Kind, e.ID, err)
 	}
-	margins, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ownDocument, error) {
-		var document ownDocument
-		err := row.Scan(&document.artifact, &document.refKey, &document.issue, &document.project, &document.spec)
-		return document, err
+	type anchored struct {
+		document ownDocument
+		mark, by string
+		own      bool
+	}
+	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (anchored, error) {
+		var held anchored
+		err := row.Scan(&held.document.artifact, &held.document.refKey, &held.document.issue, &held.document.project,
+			&held.document.spec, &held.mark, &held.own, &held.by)
+		return held, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read the documents holding %s:%s in their margin: %w", e.Kind, e.ID, err)
+	}
+	var margins []marginDocument
+	for _, held := range found {
+		if len(margins) == 0 || margins[len(margins)-1].artifact != held.document.artifact {
+			margins = append(margins, marginDocument{ownDocument: held.document})
+		}
+		margin := &margins[len(margins)-1]
+		if held.mark == "" {
+			continue
+		}
+		if held.own {
+			margin.records = append(margin.records, held.mark)
+		} else {
+			margin.replies = append(margin.replies, docs.ErasedReply{Record: held.mark, By: held.by})
+		}
 	}
 	return margins, nil
 }
@@ -479,8 +512,14 @@ func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *era
 }
 
 // readVersions reads every version of the node's own document the erase deletes, and answers the
-// (artifact, number) pairs the deletes take. A version goes when the erased block itself held an
-// erased text at it, which document_block_texts records; the listing says so for each.
+// (artifact, number) pairs the deletes take. A version goes when the erased block stood in it
+// holding an erased text; the listing says so for each.
+//
+// The block stood in a version when its newest document_block_texts row at or before that
+// version holds the text. The indexer writes a block's row only at a version that made, changed,
+// restored or dropped it (refs.IndexBlocks), so a version that carries the block unchanged has no
+// row of its own, and the block's text in it is the one its last row recorded; a row with no text
+// is the version that dropped the block, after which it stands in none until a row restores it.
 //
 // A version whose markdown holds the text only where another block of the document stands is
 // that block's text and stays: the whole version row would take the other block's words away
@@ -496,9 +535,11 @@ func (e *Erasure) readVersions(ctx context.Context, tx pgx.Tx, read *erasedRead)
 	}
 	rows, err := tx.Query(ctx, `
 		select v.number,
-		       exists (select 1 from document_block_texts t
-		               where t.artifact_id = v.artifact_id and t.block_id = $3 and t.version = v.number
-		                 and exists (select 1 from unnest($2::text[]) as erased(text) where position(erased.text in t.text) > 0)),
+		       exists (select 1 from (select t.text from document_block_texts t
+		                              where t.artifact_id = v.artifact_id and t.block_id = $3 and t.version <= v.number
+		                              order by t.version desc limit 1) newest
+		               where newest.text is not null
+		                 and exists (select 1 from unnest($2::text[]) as erased(text) where position(erased.text in newest.text) > 0)),
 		       exists (select 1 from document_indexed_versions i
 		               where i.artifact_id = v.artifact_id and i.version = v.number)
 		from artifact_versions v
@@ -521,7 +562,7 @@ func (e *Erasure) readVersions(ctx context.Context, tx pgx.Tx, read *erasedRead)
 		return fmt.Errorf("read the versions holding the erased text: %w", err)
 	}
 	for _, version := range held {
-		why := "the erased block holds the text at that version"
+		why := "the erased block stands in that version holding the text"
 		switch {
 		case version.block:
 		case !version.indexed:
@@ -586,7 +627,7 @@ func (e *Erasure) readReviews(ctx context.Context, tx pgx.Tx, read *erasedRead) 
 }
 
 // readHistory lists the stored history of every document the run replaces whole with one seed of
-// its live text (docs.ErasedLiveText): the node's own document, and for a comment every document
+// its live state (docs.ErasedLiveText): the node's own document, and for a comment every document
 // whose margin record holds its body (marginDocuments). A text typed piece by piece can be stored
 // split across updates, and a margin record is stored in those same updates, so no search of
 // those bytes can say whether the history holds them, and a block that holds a text was typed
@@ -597,7 +638,7 @@ func (e *Erasure) readHistory(ctx context.Context, tx pgx.Tx, read *erasedRead) 
 	e.Documents = []ErasedDocument{}
 	for _, replaced := range read.replacedHistories() {
 		held := ErasedDocument{Document: replaced.document.refKey, Issue: replaced.document.issue,
-			Project: replaced.document.project, artifact: replaced.document.artifact, blockID: replaced.blockID}
+			Project: replaced.document.project, artifact: replaced.document.artifact, scope: replaced.scope}
 		if err := tx.QueryRow(ctx, `
 			select (select count(*) from doc_updates where artifact_id = $1::uuid),
 			       (select count(*) from doc_checkpoints where artifact_id = $1::uuid),
@@ -610,19 +651,19 @@ func (e *Erasure) readHistory(ctx context.Context, tx pgx.Tx, read *erasedRead) 
 		}
 		e.Documents = append(e.Documents, held)
 		read.listing.documents = append(read.listing.documents, fmt.Sprintf("%s%s: its %d stored update(s), %d checkpoint(s) "+
-			"and %d snapshot(s) are replaced by one seed of its live text, %s; "+
-			"its anchor marks and margin records go with them; an editor open on it reloads and loses what it has not stored",
+			"and %d snapshot(s) are replaced by one seed of its live state, %s; "+
+			"an editor open on it reloads and loses what it has not stored",
 			held.Document, owner(held.Issue, held.Project), held.Updates, held.Checkpoints, held.Snapshots, replaced.redaction))
 	}
 	return nil
 }
 
-// replacedHistory is one document whose stored history the run replaces: the document, the block
-// of it the run redacts in the seed, empty where the run redacts none of its text, and what the
-// listing says of that redaction.
+// replacedHistory is one document whose stored history the run replaces: the document, what the
+// seed takes out of its live state (the erased block, and the erased comment's margin entries),
+// and what the listing says of it.
 type replacedHistory struct {
 	document  ownDocument
-	blockID   string
+	scope     docs.ErasedScope
 	redaction string
 }
 
@@ -635,8 +676,8 @@ func (read *erasedRead) replacedHistories() []replacedHistory {
 	var replaced []replacedHistory
 	held := map[string]bool{}
 	if read.document != nil && len(read.texts) > 0 {
-		replaced = append(replaced, replacedHistory{document: *read.document, blockID: read.blockID,
-			redaction: "the marker standing where the erased text was"})
+		replaced = append(replaced, replacedHistory{document: *read.document, scope: docs.ErasedScope{BlockID: read.blockID},
+			redaction: "the marker standing where the erased text was, every anchor mark and margin record outside the erased block standing as it was"})
 		held[read.document.artifact] = true
 	}
 	for _, margin := range read.margins {
@@ -644,8 +685,9 @@ func (read *erasedRead) replacedHistories() []replacedHistory {
 			continue
 		}
 		held[margin.artifact] = true
-		replaced = append(replaced, replacedHistory{document: margin,
-			redaction: "its own text as it stands, the erased body going with the margin record that held it"})
+		replaced = append(replaced, replacedHistory{document: margin.ownDocument,
+			scope:     docs.ErasedScope{Records: margin.records, Replies: margin.replies},
+			redaction: "its text and every other comment's anchor mark and margin record standing as they are, the erased comment's margin entry gone"})
 	}
 	return replaced
 }
@@ -658,7 +700,9 @@ func (read *erasedRead) replacedHistories() []replacedHistory {
 func (e *Erasure) readLiveTexts(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	for index := range e.Documents {
 		document := &e.Documents[index]
-		live, err := docs.ReadErasedLiveText(ctx, tx, document.artifact, document.blockID, read.texts, e.marker())
+		scope := document.scope
+		scope.Texts, scope.Marker = read.texts, e.marker()
+		live, err := docs.ReadErasedLiveText(ctx, tx, document.artifact, scope)
 		if err != nil {
 			return fmt.Errorf("read the live state of %s: %w", document.Document, err)
 		}

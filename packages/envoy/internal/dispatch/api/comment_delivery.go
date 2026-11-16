@@ -477,8 +477,9 @@ func (s *server) completeCommentDelivery(
 				return settled, err
 			}
 			// The session this attempt reached, in the transaction that records that it did
-			// (graphstore.Reached): a sent attempt is a delivery and its session is a node from
-			// this moment, a pending or failed one reached nobody and writes nothing. A row
+			// (graphstore.Reached): an attempt the listener took, sent or queued
+			// (model.DeliveryTaken), is a delivery and its session is a node from this moment,
+			// a pending or failed one reached nobody and writes nothing. A row
 			// whose resolution named no session carries a null, which records nothing either.
 			// The rest of what the delivery states - its delivered_to tuple, the session's page
 			// and that page's part_of - is the publisher's, recorded under the receipt this

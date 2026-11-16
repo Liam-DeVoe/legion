@@ -151,7 +151,9 @@ func Install(value BlockSchema) error {
 // (enumDefaultThisBuildReads). A `block[]` attribute every target of which names a typed block
 // this build leaves out goes altogether: an empty target set means "any block"
 // (CheckBlockPointers), so keeping it would let an older build accept at any block the pointers
-// a newer one holds to a type it does not know.
+// a newer one holds to a type it does not know. An enum attribute every choice of which is newer
+// than this build goes the same way: an enum with no choice is one validateAttributeSchema
+// refuses, which would fail the boot, and no value of it is one this build could read.
 func asOfVersion(value BlockSchema, version int) BlockSchema {
 	reads := func(since int) bool { return max(since, 1) <= version }
 	dropped := make(map[string]bool)
@@ -188,6 +190,9 @@ func asOfVersion(value BlockSchema, version int) BlockSchema {
 					}
 				}
 				attr.Choices, attr.ChoiceVersions = choices, versions
+				if len(choices) == 0 {
+					continue
+				}
 			}
 			if attr.Kind == BlockAttributeEnum {
 				attr.Default = enumDefaultThisBuildReads(typ.Name, attribute.Name, attr)

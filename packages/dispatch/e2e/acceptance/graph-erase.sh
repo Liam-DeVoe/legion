@@ -730,7 +730,7 @@ listed_digest E4 "$work/block.listing"
 readonly block_digest="$digest"
 grep -Eq "^  versions holding the erased text: [1-9][0-9]*\$" "$work/block.listing" ||
   fail E4 "list the versions it would end" "$(<"$work/block.listing")"
-grep -Fq "    $document_ref version $version of $key: the erased block holds the text at that version" "$work/block.listing" ||
+grep -Fq "    $document_ref version $version of $key: the erased block stands in that version holding the text" "$work/block.listing" ||
   fail E4 "list the versions it would end" "no $document_ref version $version in: $(<"$work/block.listing")"
 pass E4 "the list holds $document_ref version $version"
 grep -Eq "^  reviews over those bytes: [1-9][0-9]*\$" "$work/block.listing" ||
@@ -739,11 +739,12 @@ grep -Fqx "    $document_ref version $version approved (review $review) of $key"
   fail E4 "list the reviews it would end" "no review $review in: $(<"$work/block.listing")"
 pass E4 "the list holds the approval over those bytes (review $review)"
 # The document's live state, which the erase replaces: its live text with the marker where the
-# secret was, seeded as its one stored update in place of its history. That costs what a rebuild
-# costs, so the list says it before anything goes: the operator's last look.
+# secret was and every other anchor mark and margin record as it stood, seeded as its one stored
+# update in place of its history. That costs what a rebuild costs, so the list says it before
+# anything goes: the operator's last look.
 grep -Eq "^  live documents whose history is replaced: [1-9][0-9]*\$" "$work/block.listing" ||
   fail E4 "list the documents whose live state it would replace" "$(<"$work/block.listing")"
-grep -Eq "^    $document_ref of $key: its [1-9][0-9]* stored update\(s\), [0-9]+ checkpoint\(s\) and [0-9]+ snapshot\(s\) are replaced by one seed of its live text, the marker standing where the erased text was; its anchor marks and margin records go with them; an editor open on it reloads and loses what it has not stored\$" "$work/block.listing" ||
+grep -Eq "^    $document_ref of $key: its [1-9][0-9]* stored update\(s\), [0-9]+ checkpoint\(s\) and [0-9]+ snapshot\(s\) are replaced by one seed of its live state, the marker standing where the erased text was, every anchor mark and margin record outside the erased block standing as it was; an editor open on it reloads and loses what it has not stored\$" "$work/block.listing" ||
   fail E4 "list what replacing $document_ref's live state costs" "no such line for $document_ref in: $(<"$work/block.listing")"
 pass E4 "the list holds $document_ref's live state: its history replaced, and what that costs"
 grep -Eq "^    leave public\.artifact_versions .*\[$other_ref version 1 of $other_key\] markdown\$" "$work/block.listing" ||
@@ -942,9 +943,9 @@ pass E6 "the block's graph_erasures row holds $document_ref version $version and
 want_rows E7 "every node carries a supertag the store declares" 0 \
   "select count(*) from graph_nodes n where not exists (select 1 from graph_nodes s where s.kind = 'supertag' and s.id = n.supertag)"
 query E7 "count the supertag nodes" "select count(*) from graph_nodes where kind = 'supertag'"
-[[ "$answer" == 29 ]] ||
-  fail E7 "the closed list holds 29 supertags" "the store holds $answer supertag node(s)"
-pass E7 "the closed list of 29 supertags is what every node's supertag comes from"
+[[ "$answer" == 27 ]] ||
+  fail E7 "the closed list holds 27 supertags" "the store holds $answer supertag node(s)"
+pass E7 "the closed list of 27 supertags is what every node's supertag comes from"
 
 # E8: the census after the erases reads zero differences.
 census_code=0

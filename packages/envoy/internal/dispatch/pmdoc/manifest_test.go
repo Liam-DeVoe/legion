@@ -510,3 +510,47 @@ func TestABlockAttributeWhoseTargetsANewerStoreAllAddsIsNotInstalled(t *testing.
 		t.Errorf("reading a stored %s carrying %s = %v, want ErrUnknownElement naming it", block, attribute, err)
 	}
 }
+
+// An enum attribute this build reads, every choice of which only a newer release declares, is
+// left out of the installed manifest altogether, as the block[] attribute above is. Its choices
+// filtered to the ones this build reads are none, and an enum with no choice is one
+// validateAttributeSchema refuses: Install would fail, and a failed install at boot exits the
+// process (cmd/dispatch's main), which is a crash loop on rollback.
+func TestAnEnumAttributeWhoseChoicesANewerStoreAllAddsIsNotInstalled(t *testing.T) {
+	const block, attribute, choice = "check", "tone", "urgent"
+	if _, declared := embedded.types[block].Attributes.Lookup(attribute); declared {
+		t.Fatalf("this build declares attribute %q of typed block %q, which only the newer release does, so this proves nothing", attribute, block)
+	}
+	built := BuiltSchemaVersion()
+	value := storeManifestAhead(t, func(value *BlockSchema, ahead int) {
+		for index := range value.Types {
+			if value.Types[index].Name != block {
+				continue
+			}
+			value.Types[index].Attributes = append(slices.Clone(value.Types[index].Attributes), BlockAttribute{
+				Name: attribute,
+				BlockAttributeSchema: BlockAttributeSchema{
+					Kind: BlockAttributeEnum, Choices: []string{choice},
+					ChoiceVersions: map[string]BlockElementVersions{choice: {Since: ahead, CreatableSince: ahead}},
+					Since:          built, CreatableSince: built,
+				},
+			})
+		}
+	})
+
+	if err := installStoreManifest(t, value); err != nil {
+		t.Fatalf("install a store whose %s attribute of %s holds only the choice %q it adds: %v", attribute, block, choice, err)
+	}
+	if installed, declared := active.Load().types[block].Attributes.Lookup(attribute); declared {
+		t.Errorf("the installed %s block declares %s with the choices %v: an enum whose every choice is gone can hold no value this build reads, and must be dropped instead",
+			block, attribute, installed.Choices)
+	}
+	stored := &Node{Type: "doc", Children: []*Node{{
+		Type:     block,
+		Attrs:    Attrs{BlockIDAttr: "b-c1", attribute: choice},
+		Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: "Body."}}}},
+	}}}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), attribute) {
+		t.Errorf("reading a stored %s carrying %s = %v, want ErrUnknownElement naming it", block, attribute, err)
+	}
+}

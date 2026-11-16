@@ -710,8 +710,9 @@ func (s *server) completeMessageDelivery(
 				return settled, err
 			}
 			// The session this attempt reached, in the transaction that records that it did
-			// (graphstore.Reached): a sent attempt is a delivery and its session is a node from
-			// this moment, a pending or failed one reached nobody and writes nothing.
+			// (graphstore.Reached): an attempt the listener took, sent or queued
+			// (model.DeliveryTaken), is a delivery and its session is a node from this moment, a
+			// pending or failed one reached nobody and writes nothing.
 			reached, err = graphstore.Reached(ctx, tx, settled.State, settled.SessionID, actor, settled.CreatedAt)
 			return settled, err
 		},

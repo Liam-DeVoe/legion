@@ -52,16 +52,19 @@ var closedSupertags = []string{
 
 // authorisedSupertags is every supertag the closed list does not name that an approved document
 // of this tree creates, each with the reference of the document that creates it. A bare
-// prohibition would refuse a correct store: the root's own c-derived requires the entry below
-// once dispatch://INFRA-1950 seeds it, so a test that allowed the closed list alone would fail the
-// build that requirement asks for. What the check is for is a supertag nobody authorised, so an entry
+// prohibition would refuse a correct store: the root's own c-derived requires the entries below
+// once dispatch://INFRA-1950 and dispatch://INFRA-1253 seed them, so a test that allowed the
+// closed list alone would fail the build that requirement asks for. What the check is for is a
+// supertag nobody authorised, so an entry
 // beyond the closed list passes only where this list names its document, and the run prints
 // every one of them with that reference.
 //
 // The reference is written here rather than read: these checks run where no Dispatch is
 // reachable, so a test that called one could not run at all.
 var authorisedSupertags = map[string]string{
-	"lens_kind": "dispatch://INFRA-1950/spec R7",
+	"lens_kind":     "dispatch://INFRA-1950/spec R7",
+	"query":         "dispatch://INFRA-1253/spec",
+	"query version": "dispatch://INFRA-1253/spec",
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed

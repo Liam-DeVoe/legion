@@ -62,14 +62,17 @@ type ErasedDocument struct {
 	// otherwise than the erased text is written - an escaped `*` or `_`, for one - so no marker
 	// can stand where they are. Such a document refuses the erase (Unredacted).
 	Left bool `json:"live_bytes_left"`
-	// AnchorMarks and MarginRecords are what goes with the history (docs.ErasedLiveText).
+	// AnchorMarks and MarginRecords are what the seed takes out of the live document
+	// (docs.ErasedLiveText): the anchor marks inside the erased block, and the erased comment's
+	// margin records. Every other mark and record stands.
 	AnchorMarks   int `json:"anchor_marks"`
 	MarginRecords int `json:"margin_records"`
 	artifact      string
-	// blockID is the block of this document the seed is redacted in, empty where the run
-	// redacts none of its text (docs.ReadErasedLiveText).
-	blockID string
-	live    *docs.ErasedLiveText
+	// scope is what the seed takes out of this document's live state: the block of it redacted,
+	// empty where the run redacts none of its text, and the erased comment's margin entries
+	// (docs.ReadErasedLiveText).
+	scope docs.ErasedScope
+	live  *docs.ErasedLiveText
 }
 
 // Operator is who ran the erase: the database role the credential is, and the account and host

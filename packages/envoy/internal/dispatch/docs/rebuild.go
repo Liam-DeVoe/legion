@@ -5,9 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -293,20 +296,22 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 }
 
 // ErasedLiveText is what `envoy-dispatch erase` (grapherase.Erase) leaves of the live state of a
-// document whose text, or whose stored history, holds the bytes it erases: the live text with each
-// erased text replaced by the erase's marker, seeded as the document's one stored update in place
-// of every update it holds, through the statements a rebuild writes (RebuildTx). The rows are
-// replaced rather than edited because a stored update is ygo's encoding of the edits: a deleted
-// item keeps its bytes there until a fold collects them, and a text substitution inside the
-// encoding would leave an update no load can decode.
+// document whose text, margin or stored history holds the bytes it erases: the live document with
+// the erased block's text replaced by the erase's marker and the erased comment's margin entries
+// taken out, every other block, anchor mark and margin record as it stands, seeded as the
+// document's one stored update in place of every update it holds, through the statements a
+// rebuild writes (RebuildTx). The rows are replaced rather than edited because a stored update is
+// ygo's encoding of the edits: a deleted item keeps its bytes there until a fold collects them,
+// and a text substitution inside the encoding would leave an update no load can decode.
 //
 // It is read first (ReadErasedLiveText) and written second (Replace), both in the erase's own
 // transaction, so the erase lists what it would do before any of it is done, and a failure
 // anywhere rolls back the whole erase.
 type ErasedLiveText struct {
-	// Held is whether the live text holds one of the erased texts. A document that holds none -
-	// one a version of which held the text, edited since - keeps its text, and its history, which
-	// can still hold the bytes in the items that edit deleted, is replaced all the same.
+	// Held is whether the erased block's own text stood in the live text. A document that holds
+	// none - one a version of which held the text, edited since, or one whose margin alone held an
+	// erased comment - keeps its text, and its history, which can still hold the bytes in the
+	// items that edit deleted or in the margin, is replaced all the same.
 	Held bool
 	// Left is whether the seed would still hold the bytes of the erased block's own text: the
 	// block holds them where its markdown spells them otherwise than the erased text is written
@@ -317,9 +322,10 @@ type ErasedLiveText struct {
 	Left bool
 	// Updates is how many stored updates the history holds, every one of which the seed replaces.
 	Updates int64
-	// AnchorMarks is how many comment, suggestion and ask anchors the live text carries, and
-	// MarginRecords how many records its margin holds. The seed is parsed from markdown, which
-	// carries neither, so both go with the history, as they go with RebuildDocument's.
+	// AnchorMarks is how many comment, suggestion and ask anchors go with the erased block's text,
+	// which the seed rewrites from markdown, and MarginRecords how many margin records the seed
+	// drops or rewrites: an erased comment's own, and the record of the thread an erased reply
+	// stands in. Every other mark and record stands in the seed as it stood in the live document.
 	AnchorMarks, MarginRecords int
 	// Text is the live text before the erase, whose stored display tree goes with it.
 	Text string
@@ -329,28 +335,51 @@ type ErasedLiveText struct {
 	seed []byte
 }
 
+// ErasedScope is what one erase takes out of one document's live state.
+type ErasedScope struct {
+	// BlockID is the erased node's own block of this document, empty where the node is no block
+	// of it - a comment anchored to it, whose body the document holds in its margin and not in
+	// its text.
+	BlockID string
+	// Records are the margin records that go whole, by their mark id: an erased comment's own.
+	Records []string
+	// Replies are the entries that go out of a thread root's margin record: an erased reply's.
+	Replies []ErasedReply
+	// Texts are the erased texts, longest first, and Marker what stands where one stood.
+	Texts  []string
+	Marker string
+}
+
+// ErasedReply names an erased reply's entry in the margin record of the thread it stands in: the
+// root's mark id, and the reply's author as the record writes it (ActorRef). An entry of that
+// record goes when its author is that one and its text is one of the erased texts, which is the
+// reply's body as the reply's write projected it (api's commentMarkRecord).
+type ErasedReply struct {
+	Record, By string
+}
+
 // ReadErasedLiveText reads, inside tx, the live state of the document artifactID names as the
-// erase would leave it, with each of texts replaced by marker inside the block blockID names. It
-// answers nil for a document with no stored history, which holds no live text. It writes nothing.
+// erase would leave it (scope). It answers nil for a document with no stored history, which
+// holds no live text. It writes nothing.
 //
-// blockID is the erased node's own block of this document, and the redaction happens there and
-// nowhere else: a block of the same document holding the same words is another node, whose text
-// the erase lists and leaves (R5). It is empty where the node is no block of this document - a
-// comment anchored to it, whose body the document holds in the margin record beside its text and
-// not in the text - and then no byte of the text is replaced: the seed is parsed from markdown,
-// which carries no margin record, so the record goes with the history either way.
+// The erased block's text is replaced inside that block and nowhere else: a block of the same
+// document holding the same words is another node, whose text the erase lists and leaves (R5).
+// The erased comment's margin entries go and no others: every other comment's record and every
+// anchor mark outside the erased block are other nodes' too, and a suggestion whose mark went
+// would answer that its anchor is orphaned when someone accepts it.
 //
 // It takes the document's owner row and then its advisory lock, the order every writer of a
 // document takes them in (lockArtifactOwner, lockDocumentRoom), and holds both until tx ends, so
 // the history it reads is the one Replace replaces and no edit lands between the two.
 //
-// The text is the server's own rendering of the live tree with the erased block's text replaced,
-// parsed back as a write over that tree is parsed (pmdoc.ParseWritten), so every block the
-// replacement leaves unchanged keeps its id. A history that does not load, a tree outside the
-// schema, and a replacement that breaks an ask's content rule or drops an open ask block each
-// refuse the erase, naming the document: a document the erase could not leave whole is one an
-// operator repairs first, by its rebuild or a replacement from markdown.
-func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID, blockID string, texts []string, marker string) (*ErasedLiveText, error) {
+// The erased block's new text is the server's own rendering of the live tree with that block's
+// text replaced, parsed back as a write over that tree is parsed (pmdoc.ParseWritten), and the
+// block it reads back takes the erased block's place in the live tree (splicedBlock). A history
+// that does not load, a tree outside the schema, and a replacement that breaks an ask's content
+// rule or drops an open ask block each refuse the erase, naming the document: a document the
+// erase could not leave whole is one an operator repairs first, by its rebuild or a replacement
+// from markdown.
+func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, scope ErasedScope) (*ErasedLiveText, error) {
 	if _, _, err := lockArtifactOwner(ctx, tx, artifactID); err != nil {
 		return nil, err
 	}
@@ -385,26 +414,127 @@ func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID, blockID stri
 	if err != nil {
 		return nil, fmt.Errorf("render document %s: %w", artifactID, err)
 	}
-	redacted := redactedBlock(markdown, offsets, blockID, texts, marker)
-	target, _, err := pmdoc.ParseWritten(redacted, tree)
-	if err != nil {
-		return nil, fmt.Errorf("read back the redacted text of document %s: %w", artifactID, err)
+	redacted := redactedBlock(markdown, offsets, scope.BlockID, scope.Texts, scope.Marker)
+	seeded := tree
+	if redacted != markdown {
+		target, _, err := pmdoc.ParseWritten(redacted, tree)
+		if err != nil {
+			return nil, fmt.Errorf("read back the redacted text of document %s: %w", artifactID, err)
+		}
+		seeded = splicedBlock(tree, target, scope.BlockID)
 	}
-	if err := validateStoredAskBlocks(target); err != nil {
+	if err := validateStoredAskBlocks(seeded); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
 	}
-	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, target); err != nil {
+	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
 	}
-	if erased.seed, err = encodeDocumentTree(target); err != nil {
+	margin, moved := erasedMargin(doc, scope)
+	if erased.seed, err = encodeDocumentSeed(seeded, tree, margin); err != nil {
 		return nil, fmt.Errorf("seed the redacted document %s: %w", artifactID, err)
 	}
 	erased.Held = redacted != markdown
-	erased.Left = erasedBytesLeft(tree, target, blockID, texts, marker, erased.seed)
-	erased.AnchorMarks = len(pmdoc.ListMarks(tree))
-	erased.MarginRecords = len(doc.GetMap(marksMapName).Keys())
+	erased.Left = erasedBytesLeft(tree, seeded, scope.BlockID, scope.Texts, scope.Marker, erased.seed)
+	erased.AnchorMarks = len(pmdoc.ListMarks(tree)) - len(pmdoc.ListMarks(seeded))
+	erased.MarginRecords = moved
 	erased.Text = markdown
 	return erased, nil
+}
+
+// splicedBlock is the live tree with the block blockID names replaced by the block target, the
+// redacted text read back, holds at the same place: every other node of the live tree, its anchor
+// marks and its block ids with it, stands as it is. The parse back gives a block whose text
+// changed a fresh id (pmdoc's carryBlockIDs), so the block is found by its place and not by that
+// id. Where the redaction moved the document's shape, so that the place holds no block of the
+// same kind in target, the seed is target whole, and the anchor marks of the live tree go with
+// it: a run that cannot say which block of target is the erased one keeps none of the live tree
+// it cannot match.
+func splicedBlock(live, target *pmdoc.Node, blockID string) *pmdoc.Node {
+	path := blockPath(live, blockID)
+	if path == nil {
+		return target
+	}
+	was, now := nodeAt(live, path), nodeAt(target, path)
+	if was == nil || now == nil || was.Type != now.Type {
+		return target
+	}
+	return replacedAt(live, path, now)
+}
+
+// replacedAt is a copy of tree with the node at path replaced by with. Only the nodes along the
+// path are copied, so tree itself is left as it was.
+func replacedAt(tree *pmdoc.Node, path []int, with *pmdoc.Node) *pmdoc.Node {
+	if len(path) == 0 {
+		return with
+	}
+	copied := *tree
+	copied.Children = slices.Clone(tree.Children)
+	copied.Children[path[0]] = replacedAt(tree.Children[path[0]], path[1:], with)
+	return &copied
+}
+
+// erasedMargin is the live document's margin as the erase leaves it, and how many records it
+// dropped or rewrote: every record but those scope names whole, and the record of each thread an
+// erased reply stands in with that reply's entries taken out. Every other record is another
+// comment's, which stands as it is.
+func erasedMargin(doc *crdt.Doc, scope ErasedScope) (map[string]any, int) {
+	margin := map[string]any{}
+	doc.GetMap(marksMapName).ForEach(func(key string, record any) { margin[key] = record })
+	moved := 0
+	for _, key := range scope.Records {
+		if _, held := margin[key]; held {
+			delete(margin, key)
+			moved++
+		}
+	}
+	for _, reply := range scope.Replies {
+		record, ok := margin[reply.Record].(map[string]any)
+		if !ok {
+			continue
+		}
+		replies, _ := record["replies"].([]any)
+		kept := make([]any, 0, len(replies))
+		for _, entry := range replies {
+			fields, _ := entry.(map[string]any)
+			by, _ := fields["by"].(string)
+			text, _ := fields["text"].(string)
+			if by == reply.By && slices.Contains(scope.Texts, text) {
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		if len(kept) == len(replies) {
+			continue
+		}
+		rewritten := maps.Clone(record)
+		rewritten["replies"] = kept
+		margin[reply.Record] = rewritten
+		moved++
+	}
+	return margin, moved
+}
+
+// encodeDocumentSeed writes tree and margin into a fresh document and returns its one durable
+// update, as encodeDocumentTreeHolding does for a tree alone: the erase's seed carries the
+// document's margin records as well as its text and its anchor marks. held is the live tree the
+// seed is cut from, whose elements the document already holds (pmdoc.UpdateHolding), so an
+// element a newer build wrote there is put back rather than refused.
+func encodeDocumentSeed(tree, held *pmdoc.Node, margin map[string]any) ([]byte, error) {
+	doc := crdt.New()
+	fragment := doc.GetXmlFragment(fragmentName)
+	marks := doc.GetMap(marksMapName)
+	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
+		if err := pmdoc.UpdateHolding(transaction, fragment, tree, held); err != nil {
+			return err
+		}
+		for _, key := range slices.Sorted(maps.Keys(margin)) {
+			marks.Set(transaction, key, margin[key])
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return crdt.EncodeStateAsUpdateV1(doc, nil), nil
 }
 
 // redactedBlock is markdown with each of texts replaced by marker inside the byte range the
@@ -438,14 +568,16 @@ func redactedBlock(markdown string, offsets []pmdoc.BlockOffset, blockID string,
 // (ErasedLiveText.Left). A text the marker itself holds cannot be told from the marker in the
 // seed, and is left to the replacement.
 //
-// It reads the block the redaction rewrote in target, found at the place blockID stands at in
+// It reads the erased block as the seed's tree holds it, found at the place blockID stands at in
 // the live tree: the parse back gives a block whose text changed a fresh id (pmdoc's
-// carryBlockIDs), so the block is found by its place and not by that id. A node that is no block
-// of this document (an empty blockID) and a block the live tree does not hold leave nothing of
-// the node in the live text, so neither can leave bytes there. Where the redaction moved the
-// document's shape, so that the place holds no block of the same kind, the whole seed is read
-// instead: a run that cannot say which block holds the bytes refuses rather than leave them.
-func erasedBytesLeft(live, target *pmdoc.Node, blockID string, texts []string, marker string, seed []byte) bool {
+// carryBlockIDs), so the block is found by its place and not by that id, and a block the
+// redaction did not rewrite is the live block itself. A node that is no block of this document
+// (an empty blockID) and a block the live tree does not hold leave nothing of the node in the
+// live text, so neither can leave bytes there. Where the redaction moved the document's shape,
+// so that the place holds no block of the same kind, the whole seed is read instead - its margin
+// records included: a run that cannot say which block holds the bytes refuses rather than leave
+// them.
+func erasedBytesLeft(live, seeded *pmdoc.Node, blockID string, texts []string, marker string, seed []byte) bool {
 	if blockID == "" {
 		return false
 	}
@@ -454,7 +586,7 @@ func erasedBytesLeft(live, target *pmdoc.Node, blockID string, texts []string, m
 		return false
 	}
 	held := func(text string) bool { return bytes.Contains(seed, []byte(text)) }
-	if was, now := nodeAt(live, path), nodeAt(target, path); now != nil && was != nil && now.Type == was.Type {
+	if was, now := nodeAt(live, path), nodeAt(seeded, path); now != nil && was != nil && now.Type == was.Type {
 		content := blockContent(now)
 		held = func(text string) bool { return strings.Contains(content, text) }
 	}

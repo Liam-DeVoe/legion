@@ -145,7 +145,7 @@ func TestTheBlockEraseLeavesASiblingThatRepeatsItsWords(t *testing.T) {
 	if held := versionsOf(t, database, document); len(held) != 1 || held[0] != 1 {
 		t.Errorf("the document holds the versions %v after the erase, want version 1 alone: it holds the sibling's words and no block the erase took", held)
 	}
-	if !listed(erasure, "version 2", "the erased block holds the text at that version") {
+	if !listed(erasure, "version 2", "the erased block stands in that version holding the text") {
 		t.Errorf("the listing does not say why version 2 goes:\n%s", strings.Join(erasure.Listing, "\n"))
 	}
 	for id, before := range documentEvents(t, database, document) {
@@ -282,5 +282,114 @@ func TestTheCommentEraseTakesItsBodyOutOfTheMarginOfItsDocument(t *testing.T) {
 	}
 	if text := eraseDocumentText(t, server, thread); text != threadText {
 		t.Errorf("the erase moved the text of the thread's document:\nbefore %q\nafter  %q", threadText, text)
+	}
+}
+
+// R5: a version that carries the erased block unchanged holds its text as much as the version
+// that wrote it, and goes with it. The indexer records a block's text only at a version that
+// made or changed it, so the second version here, which edits another paragraph alone, has no
+// stored text of the erased block of its own: the erase reads the block's newest text at or
+// before each version. After it no version is left holding the secret, and no column of any
+// table holds it - not the latest version's markdown, nor the search rows that stood on it.
+func TestTheBlockEraseTakesAVersionThatCarriedTheBlockUnchanged(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	server := startDispatchProcess(t, databaseURL)
+	server.waitHealthy(t)
+	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERC","name":"Erase"}`, http.StatusCreated)
+
+	secret := eraseTestSecret()
+	issue, _ := createEraseIssue(t, server, "ERC", "A block carried unchanged", "# Spec\n\nNothing here.\n")
+	document := uploadEraseDocument(t, server, issue, "carry.md", "# Carry\n\n"+secret+"\n\nSecond paragraph.\n")
+	uploadEraseDocument(t, server, issue, "carry.md", "# Carry\n\n"+secret+"\n\nSecond paragraph, edited.\n")
+	block := blockWhoseTextIs(t, database, document, secret)
+	// The control: both versions hold the secret, and the block's text is stored at the first
+	// alone, so a version is told to hold the block by more than a text row of its own.
+	var stored int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from document_block_texts t join artifacts a on a.id = t.artifact_id
+		where t.artifact_id = $1::uuid and a.ref_key || '#' || t.block_id = $2`, document, block).Scan(&stored); err != nil {
+		t.Fatalf("count the stored texts of %s: %v", block, err)
+	}
+	if held := versionsOf(t, database, document); len(held) != 2 || stored != 1 {
+		t.Fatalf("before the erase the document holds the versions %v and the block %d stored text(s), want two versions and one text, so the carried version proves nothing",
+			held, stored)
+	}
+
+	erasure, err := confirmErase(ctx, databaseURL, "block", block, time.Millisecond)
+	if err != nil || !erasure.Applied {
+		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
+	}
+	if held := versionsOf(t, database, document); len(held) != 0 {
+		t.Errorf("the document holds the versions %v after the erase, want none: the erased block stands in both", held)
+	}
+	if !listed(erasure, "version 2", "the erased block stands in that version holding the text") {
+		t.Errorf("the listing does not say why version 2 goes:\n%s", strings.Join(erasure.Listing, "\n"))
+	}
+	if places, searched := columnsHolding(t, database, secret); len(places) > 0 {
+		t.Errorf("after the erase the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
+	}
+	if text := eraseDocumentText(t, server, document); strings.Contains(text, secret) || !strings.Contains(text, "Second paragraph, edited.") {
+		t.Errorf("the live text after the erase reads %q, want the edited paragraph and no secret", text)
+	}
+}
+
+// R5: the erase of a comment takes its own margin record out of the document it is anchored to
+// and leaves every other comment's anchor mark and margin record there: those are other nodes'.
+// The document holds two anchored comments, the second a suggestion. After the first is erased,
+// its body is in no stored update of the document, and the suggestion is still anchored where it
+// was: accepting it rewrites the line it marks.
+func TestTheCommentEraseKeepsTheOtherCommentsOfItsDocument(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	server := startDispatchProcess(t, databaseURL)
+	server.waitHealthy(t)
+	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERK","name":"Erase"}`, http.StatusCreated)
+
+	const first = "The first line a person had something to say about."
+	const second = "The second line a person had something to say about."
+	const reworded = "The second line, reworded."
+	issue, _ := createEraseIssue(t, server, "ERK", "Two comments in one margin", "# Spec\n\nNothing here.\n")
+	marked := uploadEraseDocument(t, server, issue, "marks.md", "# Marks\n\n"+first+"\n\n"+second+"\n")
+	remark := eraseTestSecret()
+	erased := writeAnchoredComment(t, server, issue, marked, first, remark)
+	input, err := json.Marshal(map[string]any{
+		"body":       "Please reword this.",
+		"anchor":     map[string]any{"artifact": marked, "quote": second},
+		"suggestion": map[string]any{"replace_with": reworded},
+	})
+	if err != nil {
+		t.Fatalf("encode the suggestion: %v", err)
+	}
+	created := server.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/comments", string(input), http.StatusCreated)
+	var suggestion struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created, &suggestion); err != nil || suggestion.ID == "" {
+		t.Fatalf("read the suggestion back: %v: %s", err, created)
+	}
+	if held := updatesHolding(t, database, marked, remark); held == 0 {
+		t.Fatalf("no stored update of the document holds the first comment's body, so the erase proves nothing")
+	}
+
+	erasure, err := confirmErase(ctx, databaseURL, "comment", erased, time.Millisecond)
+	if err != nil || !erasure.Applied {
+		t.Fatalf("erase the first comment: applied %t, %v", erasure != nil && erasure.Applied, err)
+	}
+	if held := updatesHolding(t, database, marked, remark); held != 0 {
+		t.Errorf("after the erase %d stored update(s) of the document still hold the first comment's body", held)
+	}
+	if len(erasure.Documents) != 1 || erasure.Documents[0].MarginRecords != 1 || erasure.Documents[0].AnchorMarks != 0 {
+		t.Errorf("the erase lists the documents %+v, want the one document losing the first comment's margin record and no anchor mark",
+			erasure.Documents)
+	}
+	accepted := server.send(t, http.MethodPost, "/api/v1/comments/"+suggestion.ID+"/accept", `{}`, asUser(dispatchTestLogin))
+	if accepted.status != http.StatusOK {
+		t.Fatalf("accepting the other comment's suggestion after the erase answered %s, want it accepted where it is anchored", accepted)
+	}
+	if text := eraseDocumentText(t, server, marked); !strings.Contains(text, reworded) || !strings.Contains(text, first) {
+		t.Errorf("after the accept the document reads %q, want the first line as it was and the second reworded", text)
 	}
 }
