@@ -181,9 +181,10 @@ and decides there, the only gate on such an issue.
   would catch the ways it breaks, writing the red test for one that none would, and
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
   and integration suites are CI's, read there and recorded for no later step, except a `ci_check` job. A lane GitHub shows
-  `queued` or `in progress` is read as such, and the tester waits for none of them but the two
-  `skill://legion-worker/references/red-at-the-head.md` gives it, the re-run and a red it was
-  told of that the counted set does not yet report `completed`, since the reviewer reads
+  `queued` or `in progress` is read as such, and the tester waits for none of them but the three
+  `skill://legion-worker/references/red-at-the-head.md` gives it: the run that holds a red, until
+  it ends; the re-run; and a red it was told of that the counted set does not yet report
+  `completed`, since the reviewer reads
   the head's checks before it approves. A red at the head
   that the change did not make is the tester's to re-run once, and
   `skill://legion-worker/references/red-at-the-head.md` holds the rule.

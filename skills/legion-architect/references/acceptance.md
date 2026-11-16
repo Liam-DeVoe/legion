@@ -50,7 +50,8 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 - `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
   that phase's role with your reason in its task.
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
-  in `accepting` returns the issue to `implementing` by the daemon's table.
+  in `accepting` moves nothing, and its re-run is not yours: read the head's checks yourself
+  before you accept (`skill://legion-worker/references/merge-gate.md`).
 - No `after_merge` result is asked here: the production check records it after the close, where
   the project's `production_check` opens one.
 - A finding ask on the issue holds the acceptance: one a worker sent you, or one `dispatch read`

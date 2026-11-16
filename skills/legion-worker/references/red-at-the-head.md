@@ -13,6 +13,8 @@ jobs once.
 - The holder of the issue's phase presses the re-run: the tester in `testing`, the reviewer in
   `reviewing`, the implementer in `implementing`.
 - The merger, the architect in `accepting` and an implementer that runs retro re-run nothing.
+  The merger's own rule for a `failed_checks` ejection is in
+  `skill://legion-worker/references/merge-gate.md`, where the guard pins it.
 - A role that is told of a red whose phase it does not hold re-runs nothing.
 
 ## The record comes first, never after
@@ -196,10 +198,12 @@ there spends the head's one re-run on a run nobody counted. The wait ends one of
   has settled without the check or has not reached it yet. When it does end the wait, the role
   records what it was told and what the counted set carries, re-runs nothing, goes on with its
   round, and tells the architect, as the last bullet of this section says.
-- No wake comes at all: the bound is the role's own next wake, which for a phase worker that ends
-  its turn with nothing else coming is the daemon's backstop about an hour after its pod goes
-  idle. The role then reads the counted set once more and takes whichever of the first two the
-  reading gives.
+- No wake comes at all: the bound is the role's own next turn. While its process runs (under
+  `runtime: tmux`, and under `runtime: kubernetes` with idle release off), a phase worker that
+  ended its turn with a WAITING line gets the phase reminder 15 minutes later
+  (`LEGION_STALL_WAITING_MS`). Where idle release is on, the pod goes first, and the bound is the
+  daemon's backstop about an hour after it went idle. The role then reads the counted set once
+  more and takes whichever of the first two the reading gives.
 
 The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. Then, in the
 same turn, it does these two things and nothing else:
@@ -263,13 +267,9 @@ nothing of its own to change. A red again of the same test is not that case.
 
 ## What the daemon does with a red
 
-A red moves no phase. When CI settles at the pull request's head, the daemon sends one message to
-the tree's architect, the worker of the issue's current phase and the implementer, naming each
-check of that settlement with what it came to — failed, cancelled or succeeded — and it judges
-none of them (`tellChecks`, `packages/daemon/internal/workflow/review.go`). A role the same
-settlement woke from a released pod reads it in its wake task instead. So nothing but the role
-ends a round that a red the change did not cause would otherwise hold, and this page is the rule
-it ends it by.
+A red moves no phase: the daemon names each check of a settlement to the architect, the phase's
+worker and the implementer and judges none (`tellChecks`, in the daemon's `workflow/review.go`),
+so only the role ends a round such a red would hold, and it ends it by this page.
 
 ## What becomes of the record
 
@@ -297,10 +297,3 @@ Where step 1 finds no issue, or finds one that reads `done`, step 2 has nowhere 
 says so in step 3's message instead, naming the test, the job, the head and both results. It
 files no issue itself in either case. The controller keeps the census, one issue per test
 (`skill://legion-controller/references/finding-asks.md`).
-
-## The merge queue, for the merger
-
-The merger's rule is in `skill://legion-worker/references/merge-gate.md` (*A `failed_checks`
-ejection at an unchanged head is queued once more*): no role re-runs a merge-group run, and no
-re-run of this page's kind belongs to one. Keeping it in one place keeps the two from drifting,
-since the guard pins the merge-queue wording there.

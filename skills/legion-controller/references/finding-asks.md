@@ -84,10 +84,10 @@ and the failure is one occurrence of a test that fails at random. The role posts
 as a `dispatch comment` on the issue that tracks the test, unless it reads `done`, and tells
 you on the controller topic. Its message names the test, the job, the head and both results, the
 failing run and the green re-run. You act on that message when the role found no issue for the
-test, or found one that reads `done`. A role that found no controller posts the occurrence as a
-`Clear defect from` comment on the report issue instead: take such a comment that names a test
-re-run green under this section, not as a hand-over, and reply under it with the issue you filed
-or reopened.
+test, or found one that reads `done`. A role that found no controller, and found no issue for the
+test or one that reads `done`, posts the occurrence as a `Clear defect from` comment on the report
+issue instead: take such a comment that names a test re-run green under this section, not as a
+hand-over, and reply under it with the issue you filed or reopened.
 
 You file this one, and no person asks you for it. It is a named exception to the rule in the
 skill's "Findings, and the issues you file": a test that fails for a cause outside the change

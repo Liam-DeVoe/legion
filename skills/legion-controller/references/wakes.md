@@ -212,9 +212,9 @@ Four moves release a held root, at three prices. The tree's architect's own `ret
 with `retry` costs nothing. A `todo` on the root costs nothing either, and it is your own lever:
 your `set_status` to `todo`, a person's move in the Dispatch dashboard and an operator's
 `legion status` all reach the daemon as the same status, and each returns the issue to the phase
-its hold came from and starts that phase's role with its task. Two cases end elsewhere: a held
-phase whose pull request head is red goes on to `implementing`, and a held review whose round is
-already decided goes on to the phase that decision names. Either way the daemon writes the
+its hold came from and starts that phase's role with its task. One case ends elsewhere: a held
+review whose round is already decided goes on to the phase that decision names. A red head moves
+nothing, and the restored worker reads the head's checks itself. Either way the daemon writes the
 Dispatch status of the phase the issue ends in. Nothing else moves: the generation, the review
 rounds, the pod and the issue's place in the admission line all stay as they were.
 `fresh_session` costs the worker's session, which the claim leaves behind with everything in it.

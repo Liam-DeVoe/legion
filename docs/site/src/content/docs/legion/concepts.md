@@ -362,8 +362,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the tree's architect, the worker of the issue's current phase
   and the implementer whose code the checks ran on, and moves the issue nowhere. A red is for
-  those roles to decide on — the worker that holds the issue's phase re-runs a check that failed
-  on itself once, the implementer fixes code that is at fault, or they wait — and for GitHub to hold the merge over, under the base branch's own required checks, which
+  the role that holds the issue's phase to act on — the tester in `testing`, the reviewer in
+  `reviewing` or the implementer while it holds `implementing` re-runs a check that failed on
+  itself once at that head, the implementer fixes code that is at fault, and a check still running
+  is waited for — and for GitHub to hold the merge over, under the base branch's own required checks, which
   Legion neither reads nor re-implements. The reviewer reads the head's checks on GitHub itself
   before it approves, and the architect before it accepts; those reads are the ones that decide
   anything. Two settlements of the same head that name the same checks tell nobody twice, and a

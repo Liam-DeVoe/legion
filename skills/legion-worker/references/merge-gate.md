@@ -178,8 +178,10 @@ on nothing either: it ends the round whatever CI says at the head it names, sinc
 no CI verdict, and a settlement the daemon reads later — at that head or any above it — moves the
 issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub gave it,
 in one message to the tree's architect, the worker of the issue's current phase and the
-implementer, and judges none of them: a red is the implementer's to fix or re-run while it holds
-`implementing`, the architect's to decide on, and GitHub's to hold the merge for. So the
+implementer, and judges none of them: a red the change did not make is the one re-run of the role
+that holds the issue's phase (`skill://legion-worker/references/red-at-the-head.md`), a red the
+change made is the implementer's to fix, and a red is the architect's to decide on and GitHub's to
+hold the merge for. So the
 reviewer's own read before it approves is the only read that decides anything. A review that names an older head reviews
 code the pull request no longer has. The daemon moves the issue once all three are in — the
 decision GitHub reports, your completion, in either order, and GitHub's own answer that the
@@ -212,7 +214,7 @@ it there until that answer comes clean.
   asked here: it is recorded after the close, where the project opens a check (*The production
   check after the close*, below).
   CI red at the head in `accepting` moves nothing, as it moves nothing anywhere: the daemon names
-  the checks GitHub reported and leaves the decision to the roles it told. Read the head's checks
+  the checks GitHub reported and judges none of them. Read the head's checks
   on GitHub yourself before you accept, and send a red head back with `request_backward_move`.
 
 ## Retro

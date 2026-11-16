@@ -1324,9 +1324,11 @@ These arrive as messages on the Dispatch issue:
   daemon's own wake to an architect is a notice.
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
   conclusion GitHub gave it, in one message each to the tree's architect, the worker of the
-  issue's current phase and the implementer, and judges none of them. Re-run a check that failed
-  on itself, have the implementer fix code that is at fault, or leave it to GitHub, which holds
-  the merge under the base branch's own required checks.
+  issue's current phase and the implementer, and judges none of them. The tester in `testing`,
+  the reviewer in `reviewing` or the implementer while it holds `implementing` re-runs a check
+  that failed on itself once at that head, after it records the failure, and no other role
+  re-runs one; the implementer fixes code that is at fault; and GitHub holds the merge under the
+  base branch's own required checks.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a
