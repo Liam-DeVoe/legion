@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // ownerMe is the --owner value that names the person the sign-in names (secretSession.ownerTag).
@@ -38,8 +39,8 @@ func checkOwnerTier(owner, tier string) (string, error) {
 }
 
 // tagNone is the value of --kind, --github-owners, --requesters, --scopes, --admin, --shape,
-// --max-grant and --default-grant that removes the tag, the one the broker refuses as a
-// github-owners login (policy.TagRemoved).
+// --project, --max-grant and --default-grant that removes the tag, the one the broker refuses as
+// a github-owners login (policy.TagRemoved).
 const tagNone = policy.TagRemoved
 
 // checkKind is --kind's rule: a kind the broker mints (policy.ValidKind), or none.
@@ -214,6 +215,26 @@ func checkShape(shape string, orNone bool) error {
 	return usageErr{fmt.Errorf("--shape is %s or %s, not %q, or the broker refuses the secret as %s; leave --shape off to let the broker read the value's own trailing line ending", policy.ShapeToken, policy.ShapeDocument, shape, policy.ReasonShapeMalformed)}
 }
 
+// checkProject is --project's rule, the broker's own (policy.ParseProject): one Dispatch project
+// key as written, an upper-case letter then one to nine upper-case letters or digits, or none
+// where orNone allows it (retag) to remove the tag. Any other value — a key in lower case, two
+// keys, white space around one, and on create the word none — is refused here, before anything
+// is read or written, as the broker refuses it on the reread, policy.ReasonProjectMalformed,
+// named as the broker names it: a tag the broker cannot read names no project it could check,
+// and a secret carrying one is served to nobody.
+func checkProject(project string, orNone bool) error {
+	if project == "" || (orNone && project == tagNone) {
+		return nil
+	}
+	if _, err := policy.ParseProject(project); err == nil {
+		return nil
+	}
+	if orNone {
+		return usageErr{fmt.Errorf("--project is one Dispatch project key (%s) or %s, not %q, or the broker refuses the secret as %s", contracts.ProjectKeyRule, tagNone, project, policy.ReasonProjectMalformed)}
+	}
+	return usageErr{fmt.Errorf("--project is one Dispatch project key (%s), not %q, or the broker refuses the secret as %s; leave --project off for a secret of no project", contracts.ProjectKeyRule, project, policy.ReasonProjectMalformed)}
+}
+
 // checkTagsFor applies the broker's cross-tag rules (policy.TagRules) to the tags a secret will
 // hold once a write lands — its kind, owner, tier, requesters, scopes, shape, admin mark and
 // max grant — so create (cmdSecretCreate) and retag (cmdSecretRetag) refuse, before any write,
@@ -342,7 +363,7 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 }
 
 // tagFlags is the value of each tag flag a create or a retag names, one field per flag. It is a
-// struct rather than eight string parameters for the reason policy.TagSet is one: a caller
+// struct rather than nine string parameters for the reason policy.TagSet is one: a caller
 // passing that many values in order would transpose two of them, and every transposition
 // compiles and writes each value as another tag.
 type tagFlags struct {
@@ -352,15 +373,16 @@ type tagFlags struct {
 	Scopes       string
 	Admin        string
 	Shape        string
+	Project      string
 	MaxGrant     string
 	DefaultGrant string
 }
 
-// optionalTags is the kind, github-owners, requesters, scopes, admin, shape, max-grant and
-// default-grant tags the flags set: each flag's value when it names one, and nothing for one
-// left unset or set to none. A kind brings the rollback guard with it (policy.TagRollbackGuard),
-// so a broker from before kinds refuses the secret rather than serve its stored key or refresh
-// token.
+// optionalTags is the kind, github-owners, requesters, scopes, admin, shape, dispatch-project,
+// max-grant and default-grant tags the flags set: each flag's value when it names one, and
+// nothing for one left unset or set to none. A kind brings the rollback guard with it
+// (policy.TagRollbackGuard), so a broker from before kinds refuses the secret rather than serve
+// its stored key or refresh token.
 func optionalTags(f tagFlags) map[string]string {
 	named := func(value string) bool { return value != "" && value != tagNone }
 	tags := map[string]string{}
@@ -382,6 +404,9 @@ func optionalTags(f tagFlags) map[string]string {
 	}
 	if named(f.Shape) {
 		tags[policy.TagShape] = f.Shape
+	}
+	if named(f.Project) {
+		tags[policy.TagProject] = f.Project
 	}
 	if named(f.MaxGrant) {
 		tags[policy.TagMaxGrant] = f.MaxGrant

@@ -160,6 +160,18 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   the value: that trailing run goes only where the rest of the value is not empty and holds no
   carriage return and no line feed, so a PEM document keeps the line feed that ends it. Any word
   but `token` and `document` is refused before anything is written.
+- **`--project`** is optional. It names the one Dispatch project the secret belongs to, by its
+  key as Dispatch writes it: `--project PRIV`. A secret of a **private** project goes only to a
+  session or pod whose credential names that project; every other one is denied
+  `project-not-named`, whatever its owner and tier allow. A secret of a public project is decided
+  by owner and tier as if it carried no project. A session names its projects when it starts,
+  with `AGENT_SECRETS_PROJECTS` ([name a session's
+  projects](/legion/broker/concepts/#a-private-projects-secrets)). Anyone who may write the
+  store's prefix may set the tag, and that person can already read every value there; which of a
+  project's secrets belong to it is the project owner's call. A key in lower case, two keys, and
+  the word `none` are refused before anything is written. Only a broker that can ask Dispatch
+  whether a project is private serves a secret carrying the tag: any other refuses it
+  `project-unchecked`, which the create prints with its reason and exits 1 for.
 - **`--max-grant`** is optional, except with `--admin true` and with
   `--kind google-service-account`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.
@@ -305,10 +317,10 @@ lists the calls each form makes.
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND          SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -      -          -              yes    -        -
-DEMO_GITHUB_APP    ada@example.com  agent  github-app    -      -          -              yes    -        -
-DEMO_LOGIN         ada@example.com  human  google-login  -      1h         -              yes    -        -
+NAME               OWNER            TIER   KIND          SHAPE  PROJECT  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -      -        -          -              yes    -        -
+DEMO_GITHUB_APP    ada@example.com  agent  github-app    -      -        -          -              yes    -        -
+DEMO_LOGIN         ada@example.com  human  google-login  -      -        1h         -              yes    -        -
 Every row is a secret in AWS Secrets Manager account 111122223333 in us-east-1.
 ```
 
@@ -331,6 +343,7 @@ requesters: -
 scopes: -
 admin: -
 shape: -
+project: -
 max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
@@ -363,7 +376,7 @@ retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-eas
 broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--shape`, `--max-grant`, `--default-grant` or a combination. A retag that
+Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--shape`, `--project`, `--max-grant`, `--default-grant` or a combination. A retag that
 sets tags reads the owner and tier tags the secret holds and sends both in one request. On AWS,
 this lets an IAM condition inspect both tags. Every other tag or annotation stays as it is. For a
 secret missing an owner or tier tag, name that tag too.
@@ -372,7 +385,8 @@ secret missing an owner or tier tag, name that tag too.
 `--github-owners none` removes the GitHub owners, `--requesters none` removes the list of who may
 ask, `--scopes none` removes the scopes, so the token carries `cloud-platform` alone again,
 `--admin none` removes the administrator's mark, `--shape none` removes the shape, so the broker
-reads the value for itself again, `--max-grant none` removes the max grant, and
+reads the value for itself again, `--project none` removes the project, so the secret belongs to
+no project again, `--max-grant none` removes the max grant, and
 `--default-grant none` removes the opt-out. A
 removal is a retag of its own: it changes no other tag, so the cloud refusing it leaves the secret
 as it was. A retag that names `none` beside another change is refused before it writes anything.
@@ -517,10 +531,10 @@ that moment is both), and the **earliest** it can be purged:
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND  SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -      -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
-DEMO_EMPTY_KEY     ada@example.com  human  -     -      -          -              yes    -                     -
-DEMO_SHARED_KEY    shared           human  -     -      -          -              yes    -                     -
+NAME               OWNER            TIER   KIND  SHAPE  PROJECT  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -      -        -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
+DEMO_EMPTY_KEY     ada@example.com  human  -     -      -        -          -              yes    -                     -
+DEMO_SHARED_KEY    shared           human  -     -      -        -          -              yes    -                     -
 EARLIEST_PURGE is the deletion plus Secrets Manager's 7-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.
 ```
 

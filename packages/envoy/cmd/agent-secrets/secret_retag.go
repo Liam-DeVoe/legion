@@ -33,13 +33,13 @@ var errTagsChanged = errors.New("another write changed the secret after this ret
 var errTagsRestored = errors.New("the tags are restored to what this retag read; run the retag again once the other writer is done")
 
 // cmdSecretRetag changes a secret's owner, tier, kind, GitHub owners, requesters, scopes, admin
-// mark, shape, max grant or default grant, in one cloud write. A retag that names none
+// mark, shape, project, max grant or default grant, in one cloud write. A retag that names none
 // (--kind none, --github-owners none, --requesters none, --scopes none, --admin none,
-// --shape none, --max-grant none, --default-grant none) removes those tags and does nothing
-// else; --kind none also removes the rollback guard written with the kind. Any other retag sets
-// tags. A retag that does both is refused before anything is read or written: AWS removes tags
-// only with UntagResource, so it would be two calls, and a refused second call would leave it
-// half applied.
+// --shape none, --project none, --max-grant none, --default-grant none) removes those tags and
+// does nothing else; --kind none also removes the rollback guard written with the kind. Any other
+// retag sets tags. A retag that does both is refused before anything is read or written: AWS
+// removes tags only with UntagResource, so it would be two calls, and a refused second call would
+// leave it half applied.
 //
 // Either kind of retag reads the tags the secret holds, builds from them the tags it will hold
 // once the write lands (after), and checks the github-owners rule and the broker's cross-tag
@@ -78,14 +78,15 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	newScopes := flags.String("scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"), or none; read on that kind alone, and a secret without it mints cloud-platform`)
 	newAdmin := flags.String("admin", "", "true marks a secret whose grant is an administrator's, or none removes the mark: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
 	newShape := flags.String("shape", "", "token (the broker removes the value's trailing line endings before it spends it), document (the broker releases the value byte for byte) or none")
+	newProject := flags.String("project", "", "the key of the Dispatch project the secret belongs to (PRIV), whose private secret goes only to a session naming the project in AGENT_SECRETS_PROJECTS, or none: the secret then belongs to no project")
 	newMaxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows, or none")
 	newDefaultGrant := flags.String("default-grant", "", "session (no --ttl lasts until the session ends) or none (12 hours)")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
 	name, slug, err := secretName(positional)
-	if err == nil && *newOwner == "" && *newTier == "" && *newKind == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newShape == "" && *newMaxGrant == "" && *newDefaultGrant == "" {
-		err = usageErr{errors.New("--owner, --tier, --kind, --github-owners, --requesters, --scopes, --admin, --shape, --max-grant, --default-grant or a combination is required")}
+	if err == nil && *newOwner == "" && *newTier == "" && *newKind == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newShape == "" && *newProject == "" && *newMaxGrant == "" && *newDefaultGrant == "" {
+		err = usageErr{errors.New("--owner, --tier, --kind, --github-owners, --requesters, --scopes, --admin, --shape, --project, --max-grant, --default-grant or a combination is required")}
 	}
 	if err == nil {
 		*newOwner, err = checkOwnerTier(*newOwner, *newTier)
@@ -107,6 +108,9 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	}
 	if err == nil {
 		err = checkShape(*newShape, true)
+	}
+	if err == nil {
+		err = checkProject(*newProject, true)
 	}
 	if err == nil {
 		err = checkMaxGrant(*newMaxGrant, true)
@@ -134,6 +138,9 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if *newShape == tagNone {
 		remove = append(remove, policy.TagShape)
 	}
+	if *newProject == tagNone {
+		remove = append(remove, policy.TagProject)
+	}
 	if *newMaxGrant == tagNone {
 		remove = append(remove, policy.TagMaxGrant)
 	}
@@ -147,6 +154,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		Scopes:       *newScopes,
 		Admin:        *newAdmin,
 		Shape:        *newShape,
+		Project:      *newProject,
 		MaxGrant:     *newMaxGrant,
 		DefaultGrant: *newDefaultGrant,
 	})

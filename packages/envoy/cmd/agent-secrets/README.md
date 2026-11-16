@@ -85,6 +85,15 @@ tags, and the retag says on standard error that the value was not checked and na
 permission the read needs. The broker reads every kind secret's value with the same decoder and
 refuses a secret whose value it refuses as `value-malformed`.
 
+A secret can belong to one Dispatch project: its `dispatch-project` tag names the project's key.
+A secret of a private project goes only to a session whose credential names that project.
+`agent-secrets secret create --project KEY` writes the tag, `secret retag --project KEY|none`
+changes it or removes it, `secret show` prints it as a `project:` line, `secret list` prints it as
+a `PROJECT` column, and `--json` carries it as `project`, null for a secret of no project. A key
+in lower case, two keys and `none` on create are refused before anything is written. A broker
+that cannot ask Dispatch whether a project is private refuses a tagged secret
+`project-unchecked`, which the write's reread prints, exiting 1.
+
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
 `AGENT_SECRETS_KEY_DIR`.
