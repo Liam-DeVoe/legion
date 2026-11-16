@@ -1,5 +1,5 @@
 kind: Added
-body: 'spec-check state derives the state of each check and each statement of a scenario of The Spec at each of its subjects, says whether each wait on a statement ends at the head of main, and names the cycle of waits; --json prints the states as JSON. It refuses spec files that spec-check tree refuses, and state, compare and print read each JSON file strictly: a byte that is not UTF-8, or a member written in other letters or given two times, is exit 2.'
+body: 'spec-check state derives the state of each check and each statement of a scenario of The Spec at each of its subjects, says whether each wait on a statement ends at the head of main, and names the cycle of waits; --json prints the states as JSON. It refuses spec files that spec-check tree refuses, and state, compare and print read each JSON file strictly: a byte that is not UTF-8, or a member written in other letters or given two times, is exit 2. A check reads unknown when its failing example has no letter and no digit, or when the record of the failing example of a program check names no author of the test; a statement that other statements support and that has no check of its own reads unknown, as a leaf with no check does.'
 time: 2026-11-16T09:51:49.296448907Z
 custom:
     Issue: pr4191
