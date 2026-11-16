@@ -42,12 +42,14 @@ export type IssueRoute =
 
 /** `project` is the bare `/projects/:key`, which opens on `architecture` when the project has
  *  an architecture source and on `issues` otherwise (`ProjectPage`'s open-on rule); the Issues
- *  tab and its `?label=`/`?status=`/`?q=` filter URLs live at `/issues`. */
+ *  tab and its `?label=`/`?status=`/`?q=` filter URLs live at `/issues`, and who may see the
+ *  project at `/access`. */
 export type ProjectRoute =
   | { kind: "project"; project: string }
   | { kind: "architecture"; project: string }
   | { kind: "issues"; project: string }
   | { kind: "documents"; project: string }
+  | { kind: "access"; project: string }
   | ({
       kind: "document";
       project: string;
@@ -218,6 +220,7 @@ export function isProjectRoute(route: DispatchRoute | AgentArtifactRoute): route
     route.kind === "architecture" ||
     route.kind === "issues" ||
     route.kind === "documents" ||
+    route.kind === "access" ||
     route.kind === "document"
   );
 }
@@ -484,6 +487,9 @@ export function parseProjectPath(pathname: string, search = ""): ProjectRoute | 
   }
   if (target === "documents") {
     return { kind: "documents", project };
+  }
+  if (target === "access") {
+    return { kind: "access", project };
   }
   const document = target.match(/^documents\/([^/?#\s]+)$/);
   if (document === null) {
@@ -971,7 +977,12 @@ export function buildProjectPath(route: ProjectRoute): string {
   if (route.kind === "project") {
     return project;
   }
-  if (route.kind === "architecture" || route.kind === "issues" || route.kind === "documents") {
+  if (
+    route.kind === "architecture" ||
+    route.kind === "issues" ||
+    route.kind === "documents" ||
+    route.kind === "access"
+  ) {
     return `${project}/${route.kind}`;
   }
   const document = `${project}/documents/${encodeURIComponent(route.slug)}`;
