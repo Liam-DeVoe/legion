@@ -3692,7 +3692,7 @@ an owner whose settle released an event is the exception: its release reports th
 the batches take one statement at a time between them, so the hold's renewal never queues behind two of them.
 Every send, and the record, checks the hold's deadline first, and the window writes nothing at or past it (`bus.ErrWindowDeadline`), so a process frozen past it neither sends nor writes.
 A stopping holder sends nothing more, records what NATS already answered, releases the rest and then the hold, and a graceful stop of `envoy-dispatch` waits for that before it closes the pool, up to `outboxStopBudget` (`cmd/dispatch/shutdown.go`).
-What one settlement came to is written in one statement (`recordBatch`), all of it or none - one statement per owner a batch settles before it ends, and one for everything it settles at its end - marking an event published only once each of its destinations is reached.
+What one settlement came to is written in one statement (`recordBatch`), all of it or none - one statement per owner a batch settles before it ends, and one for everything it settles at its end - marking an event published only once each of its destinations is reached or refused for good (below).
 It reads and records events, and renews its hold, on a pool of its own (`store.Pool.Outbox`, two connections), so the API's requests never queue ahead of it.
 It retries each required issue, route, and author destination with exponential backoff (`retry.Delay` on the database's clock, with the attempt count and `events.publish_error`), so a failed or poison delivery cannot be marked complete or starve later notifications;
 a destination that failed holds back only that destination's later events of the same owner, which wait as `blocked` with no attempt counted.
@@ -3727,7 +3727,13 @@ a role send whose forward the server denies answers that same 403 at once rather
 A destination NATS refuses (`bus.ErrRefused`:
 an event past the server's max payload, or a subject past NATS's limit or holding whitespace or an empty token, which an unbounded document slug or a bearer's session id such as `sess..x` can make) is refused the same way on every retry, so it is logged once (`dispatch outbox: destination refused`, naming the event and topic) and the same event is sent once more with its payload left out (`standInEnvelope`), logged `dispatch outbox: a stand-in went out with the payload left out`:
   the stand-in keeps the topic, the event id and the `payload_summary`, and in place of the event's payload carries its top-level fields whose encoded value is at most 256 bytes plus `payload_omitted: true`, so a reader still learns which comment or message to read rather than hearing nothing.
-  A stand-in NATS refuses in its turn is logged and counted done as every refusal was before stand-ins, and the event goes on to its other destinations.
+  A payload that is not a JSON object has no field to keep, so its stand-in carries `{"payload_omitted":true}`, and every event has a stand-in.
+  A stand-in NATS refuses in its turn is logged `dispatch outbox: the stand-in was refused too`, and the event goes on to its other destinations.
+  The record writes that subject and its error to `events.refused_destinations`, merged with what the row holds, and not to `published_destinations`, so no reader takes it for delivered.
+  No retry sends a refused subject again, since the batch skips the subjects of both columns, and an event whose other destinations are all reached is published with no attempt counted.
+  A batch that stops before the stand-in goes releases the event, and the next scan sends it again.
+  A full stream (`bus.ErrStreamFull`) and a subject the stream does not capture are no refusal: the event backs off and is retried.
+  The fallback pass sends no stand-in for a copy NATS refuses: it logs `dispatch outbox: fallback copy refused` and settles the row with `published` false, so no pass sends it again.
 The listener holds one line for both of the bearer kinds `/v1` accepts:
 the shared-token compare stays constant time and is skipped entirely when no shared token is configured, so no request authenticates against an empty one;
 a JWT-shaped bearer the verifier rejects is answered 401 and never falls back to the shared token or any other path;

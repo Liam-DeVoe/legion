@@ -246,11 +246,12 @@ func scanBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID) (ba
 // (sendChains), so its next events and the owners this batch left behind are read while the rest
 // of the batch is still sending: a chain waiting for a role forward's acknowledgement then holds
 // back its own owner's later events alone. An owner with a send that failed for the connection, one
-// with a send the hold's deadline fenced, one with a send the batch's stop left unmade, and every
-// owner of a batch whose context has ended wait for the batch's end instead, where the connection
-// check below decides what their sends came to: each of those is an owner an early settle would
-// release or leave unrecorded, so it is settled once, there. Whichever way an owner settles, every
-// lane the read took is given back before the batch returns.
+// with a send the hold's deadline fenced, one with a send the batch's stop left unmade or lost (a
+// refused send whose stand-in it left unmade among them), and every owner of a batch whose
+// context has ended wait for the batch's end instead, where the connection check below decides
+// what their sends came to: each of those is an owner an early settle would release or leave
+// unrecorded, so it is settled once, there. Whichever way an owner settles, every lane the read
+// took is given back before the batch returns.
 //
 // What an owner's own settle came to is the batch's too: its published events are counted, and
 // an event it released reports the batch blocked, so the scan stops after it (Outbox.scan,
@@ -264,7 +265,13 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	result := batchResult{}
 	events := make([]*batchEvent, len(pending))
 	for index := range pending {
-		events[index] = &batchEvent{pendingEvent: pending[index], delivered: publishedDestinationSet(pending[index].destinations)}
+		// What the event sends nothing to again: each subject it reached, and each NATS refused
+		// for good, so a retry of an event that also has a failed destination sends neither.
+		delivered := publishedDestinationSet(pending[index].destinations)
+		for subject := range pending[index].refused {
+			delivered[subject] = struct{}{}
+		}
+		events[index] = &batchEvent{pendingEvent: pending[index], delivered: delivered}
 		if pending[index].due {
 			result.sendable++
 		}
@@ -367,7 +374,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		}
 		for _, event := range byOwner[owner] {
 			for _, send := range event.sends {
-				if send.connection || send.fenced || send.state == unsent {
+				if send.connection || send.fenced || send.state == unsent || send.state == lost {
 					return
 				}
 			}
@@ -514,7 +521,8 @@ type settlement struct {
 type outcomeState string
 
 const (
-	// published: every destination of the event is reached.
+	// published: every destination of the event is reached, or refused for good (sendState
+	// refused), so no retry is left to make.
 	published outcomeState = "published"
 	// backedOff: the event failed, and waits retry.Delay of its attempts before it is tried again.
 	backedOff outcomeState = "backed_off"
@@ -540,8 +548,10 @@ const (
 type outcome struct {
 	id    int64
 	state outcomeState
-	// reached is every destination the batch reached, in the order of the event's destinations.
+	// reached is every destination the batch reached, in the order of the event's destinations,
+	// and refused every one NATS refused for good, with its error (sendState refused).
 	reached []string
+	refused []refusedDestination
 	// attempts and failure are the backed-off event's attempt count and why it failed.
 	attempts int
 	failure  string
@@ -551,6 +561,13 @@ type outcome struct {
 	// falls due at the earlier of the two.
 	delay *time.Duration
 	until *time.Time
+}
+
+// refusedDestination is a destination NATS refused for good (sendState refused): its subject,
+// and the error the last send to it was refused with.
+type refusedDestination struct {
+	subject string
+	err     string
 }
 
 // settleEvent returns what event, sent by its batch, came to. An event that could not be read is
@@ -566,7 +583,9 @@ type outcome struct {
 // mentioned session's own, or a role route's copy waiting for the mention its key comes from
 // (batchEvent.mentionPending) - is blocked: on its blockers (holdBack), and for
 // mentionPendingDelay at most when a copy of it waits on a mention; and one with neither is
-// published.
+// published. A destination NATS refused for good (sendState refused) is neither a failure nor a
+// hold: the outcome carries it, with its error, for refused_destinations, so an event whose sends
+// all reached their destinations or were refused is published and never sent again.
 // A held-back copy so blocks the event only when no send of it failed or was lost: a denied or
 // failed send backs the event off with its attempt counted, and a lost one releases it, as they
 // would without the mention.
@@ -588,6 +607,8 @@ func settleEvent(event *batchEvent, releaseUnacknowledged bool) outcome {
 		switch send.state {
 		case reached:
 			result.reached = append(result.reached, send.dest.subject)
+		case refused:
+			result.refused = append(result.refused, refusedDestination{subject: send.dest.subject, err: send.err.Error()})
 		case failed:
 			if releaseUnacknowledged && send.connection {
 				release = true
@@ -758,12 +779,14 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // recordBatch writes what each event of a batch came to, in one statement and so all of it or
 // none, and reports whether holder still held the publisher hold when it did. What is true whoever
 // holds the hold is written regardless: the destinations an event reached are added to its
-// published_destinations, and an event that reached every destination is marked published, its
-// publish_error cleared. A back-off (next_attempt_at on the database's clock, the attempt count and
-// publish_error), a hold-back (next_attempt_at alone, the earlier of its delay out and its until)
-// and a release are written only while the hold is holder's and has not lapsed, checked in the
-// same statement, so a process that lost the hold mid-batch schedules nothing beside the holder
-// that took it. Each row is guarded on published_at is null.
+// published_destinations, those NATS refused for good are merged into its refused_destinations
+// with their errors and kept out of published_destinations, and an event that reached or was
+// refused at every destination is marked published, its publish_error cleared. A back-off
+// (next_attempt_at on the database's clock, the attempt count and publish_error), a hold-back
+// (next_attempt_at alone, the earlier of its delay out and its until) and a release are written
+// only while the hold is holder's and has not lapsed, checked in the same statement, so a
+// process that lost the hold mid-batch schedules nothing beside the holder that took it. Each
+// row is guarded on published_at is null.
 //
 // A write that fails leaves the events it covered (one owner's, or the batch end's remainder) as
 // they were read, which is what a process that dies between NATS's acknowledgements and this write
@@ -782,6 +805,8 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 	failures := make([]*string, 0, len(outcomes))
 	var reachedIDs []int64
 	var reachedTopics []string
+	var refusedIDs []int64
+	var refusedSubjects, refusedErrors []string
 	for _, result := range outcomes {
 		ids = append(ids, result.id)
 		states = append(states, string(result.state))
@@ -802,6 +827,11 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			reachedIDs = append(reachedIDs, result.id)
 			reachedTopics = append(reachedTopics, topic)
 		}
+		for _, destination := range result.refused {
+			refusedIDs = append(refusedIDs, result.id)
+			refusedSubjects = append(refusedSubjects, destination.subject)
+			refusedErrors = append(refusedErrors, destination.err)
+		}
 	}
 	var holds bool
 	if err := deps.lanes.statement(func() error {
@@ -817,6 +847,10 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			select id, array_agg(topic order by position) as topics
 			from unnest($9::bigint[], $10::text[]) with ordinality as r(id, topic, position)
 			group by id
+		), refused as (
+			select id, jsonb_object_agg(subject, reason) as subjects
+			from unnest($11::bigint[], $12::text[], $13::text[]) as f(id, subject, reason)
+			group by id
 		), recorded as (
 			update events e set
 				published_destinations = e.published_destinations || array(
@@ -824,6 +858,10 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 					where t.topic <> all(e.published_destinations)
 					order by t.position
 				),
+				refused_destinations = case
+					when f.id is null then e.refused_destinations
+					else coalesce(e.refused_destinations, '{}'::jsonb) || f.subjects
+				end,
 				published_at = case when o.state = 'published' then now() end,
 				publish_error = case
 					when o.state = 'published' then null
@@ -841,11 +879,13 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			from outcome o
 			cross join hold h
 			left join reached r on r.id = o.id
+			left join refused f on f.id = o.id
 			where e.id = o.id and e.published_at is null
-			  and (o.state = 'published' or h.mine or r.id is not null)
+			  and (o.state = 'published' or h.mine or r.id is not null or f.id is not null)
 		)
 		select mine from hold
-	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics).Scan(&holds)
+	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics,
+			refusedIDs, refusedSubjects, refusedErrors).Scan(&holds)
 	}); err != nil {
 		return false, fmt.Errorf("record the batch's outcome: %w", err)
 	}
@@ -920,11 +960,11 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 // already reaches is not added again, and neither is one a fallback row owns
 // (mentionDeliveries.held), which the fallback pass publishes or settles (publishFallbackCopies).
 // comment is the new comment whose mention attempts a settle or a hold of one of its copies writes
-// through, and delivered the destinations the event reached before this read. mentions is what
-// the event's mentions did (a new comment's alone), and mentionPending whether a session's copy
-// was held back for a mention still being sent (leftTo). failed holds the settles and the holds
-// of held-back copies that failed, which end no list: each backs the event off once the
-// destinations the list does name are sent (err).
+// through, and delivered the destinations the event reached, or NATS refused for good, before
+// this read (batchEvent.delivered). mentions is what the event's mentions did (a new comment's
+// alone), and mentionPending whether a session's copy was held back for a mention still being
+// sent (leftTo). failed holds the settles and the holds of held-back copies that failed, which
+// end no list: each backs the event off once the destinations the list does name are sent (err).
 type destinations struct {
 	list           []destination
 	seen           map[string]struct{}

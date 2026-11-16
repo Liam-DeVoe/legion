@@ -33,8 +33,11 @@ type pendingEvent struct {
 	nextAttempt  *time.Time
 	attempts     int
 	destinations []string
-	slug         string
-	routing      routing
+	// refused is the event's refused_destinations: each subject NATS refused for good, with the
+	// error it was refused with (sendState refused). The event sends nothing to it again.
+	refused map[string]string
+	slug    string
+	routing routing
 	// candidates are the owner's events that are due and that the batch's choice of owners found
 	// (readBatch), and windowSize how many of the owner's events the batch read before it kept the
 	// first batchSize due ones: a candidate a window read whole does not hold is one past it.
@@ -135,7 +138,7 @@ const readBatchSQL = `
 	)
 	select e.id, e.issue_key, e.artifact_id::text, coalesce(e.project_key, i.project_key, ar.project_key, ''),
 	       e.seq, e.type, e.actor, e.notify, e.created_at, e.payload, e.attempt_count,
-	       e.published_destinations, coalesce(ar.slug, ''), coalesce(i.route, ai.route),
+	       e.published_destinations, e.refused_destinations, coalesce(ar.slug, ''), coalesce(i.route, ai.route),
 	       coalesce(case when i.claimed_by ->> 'kind' = 'session' then i.claimed_by ->> 'id' end, ''),
 	       coalesce(e.issue_key, e.artifact_id::text, e.project_key), r.due, r.next_attempt_at, r.candidates,
 	       r.window_size
@@ -174,7 +177,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 	defer rows.Close()
 	for rows.Next() {
 		var item pendingEvent
-		var actor, payload []byte
+		var actor, payload, refused []byte
 		var destinations []pgtype.Text
 		var owner *string
 		if err := rows.Scan(
@@ -190,6 +193,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 			&payload,
 			&item.attempts,
 			&destinations,
+			&refused,
 			&item.slug,
 			&item.routing.route,
 			&item.routing.claimant,
@@ -228,6 +232,11 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 			} else if err := json.Unmarshal(payload, &item.event.Payload); err != nil {
 				item.failure = fmt.Errorf("decode event payload: %w", err)
 				item.failureLog = "dispatch outbox: decode event payload"
+			} else if refused != nil {
+				if err := json.Unmarshal(refused, &item.refused); err != nil {
+					item.failure = fmt.Errorf("decode event refused destinations: %w", err)
+					item.failureLog = "dispatch outbox: decode event refused destinations"
+				}
 			}
 		}
 		pending = append(pending, item)
@@ -339,7 +348,8 @@ func (d destination) key() string {
 type batchEvent struct {
 	pendingEvent
 	item contracts.Envelope
-	// delivered is the set of the event's published_destinations (publishedDestinationSet).
+	// delivered is the set of the event's published_destinations (publishedDestinationSet) and
+	// of its refused_destinations: every subject the event sends nothing to again.
 	// destinationsOf are every destination the event has; resolveErr is why the list ends short,
 	// when it does, and resolveLost that the error is the batch's context ending (a
 	// recipient read the process's stop cancelled), which releases the event rather than backing
@@ -398,13 +408,19 @@ const (
 	// unsent: the send was never made, because the batch stopped first (NATS unreachable, the
 	// publisher hold's deadline passed, the process stopping).
 	unsent sendState = iota
-	// reached: NATS accepted the envelope, or refused it in a way no retry changes (bus.ErrRefused).
+	// reached: NATS accepted the envelope.
 	reached
+	// refused: NATS refused the envelope in a way no retry changes (bus.ErrRefused), and then
+	// refused its stand-in too. The chain goes on past it, and the event records the subject in
+	// refused_destinations, not in published_destinations, so it never sends it again
+	// (settleEvent, recordBatch).
+	refused
 	// failed: NATS answered the send with a failure of the envelope: a denial, no acknowledgement
 	// on a connection still current, or another error.
 	failed
 	// lost: the send met a lost connection, the hold's deadline or the process stopping, so whether
-	// it landed is unknown and no fault of the event.
+	// it landed is unknown and no fault of the event. A refused send whose stand-in the batch
+	// stopped before it went is lost too: the next scan sends the event again, and its stand-in.
 	lost
 	// held: an earlier send of the chain failed, so this one was not made.
 	held
@@ -426,7 +442,7 @@ type chainSend struct {
 	heldBy *batchEvent
 	// standIn is the envelope this send carries once NATS refused the event's own
 	// (standInEnvelope): the same event with its payload left out. It is set once, so a
-	// stand-in NATS refuses too is the end of this send.
+	// stand-in NATS refuses too settles the send refused.
 	standIn *contracts.Envelope
 }
 
@@ -646,8 +662,10 @@ func planChains(events []*batchEvent) []*chain {
 //
 // A send NATS refuses (bus.ErrRefused) is made once more with the event's payload left out
 // (standInEnvelope), on the same chain and in the same place, so a reader hears which event it
-// is and reads the item itself; a stand-in refused in its turn ends that send as every refusal
-// ended before stand-ins.
+// is and reads the item itself. A stand-in refused in its turn settles the send refused: the
+// chain goes on past it, and the event records the subject as refused, not reached. A batch
+// that stops before the stand-in goes leaves the send lost, so the next scan sends the event
+// again, and its stand-in after it.
 //
 // settled is called once per owner, as soon as the last chain of that owner has finished - its
 // sends all answered, or the rest of them held back or never made - so the batch can settle,
@@ -719,7 +737,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			if send.standIn != nil {
 				slog.Error("dispatch outbox: the stand-in was refused too",
 					"event_id", send.event.event.ID, "topic", send.dest.subject, "error", err)
-				send.state = reached
+				send.state = refused
 				break
 			}
 			deps.countPublishFailure("refused")
@@ -727,16 +745,16 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			// An event whose payload NATS will not take still has readers waiting on it, so the
 			// same event goes out once more with that payload left out (standInEnvelope): the
 			// reader learns which event it is and reads the item itself. A stand-in refused in
-			// its turn, one this batch can no longer send, and an envelope no stand-in can be
-			// made of count as reached, as every refusal did before stand-ins.
-			if !stopped && ctx.Err() == nil {
-				if item, ok := standInEnvelope(send.event.item); ok {
-					send.standIn = &item
-					issue(c)
-					return
-				}
+			// its turn settles the send refused, above. A stand-in this batch can no longer send
+			// leaves the send lost: the next scan sends the event again, and the stand-in after it.
+			if stopped || ctx.Err() != nil {
+				send.state = lost
+				break
 			}
-			send.state = reached
+			standIn := standInEnvelope(send.event.item)
+			send.standIn = &standIn
+			issue(c)
+			return
 		case send.fenced, errors.Is(err, bus.ErrUnavailable):
 			// NATS unreachable is the outage the publish-failure metric exists for, so the send
 			// that met it is counted a failure, once; a send the hold's deadline refused never
@@ -774,7 +792,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			send.connection = errors.Is(err, bus.ErrNotAcknowledged)
 		}
 		c.next++
-		if send.state != reached {
+		if send.state != reached && send.state != refused {
 			if send.state == failed {
 				for _, rest := range c.sends[c.next:] {
 					rest.state, rest.heldBy = held, send.event
@@ -863,18 +881,18 @@ const standInPayloadFieldBytes = 256
 // then learns which event it is and reads the item itself for the rest, where today it learns
 // nothing at all.
 //
-// ok is false for an envelope no stand-in can be made of - one whose payload is not a JSON
-// object, or whose event carries no payload - which settles as a refusal settled before
-// stand-ins.
-func standInEnvelope(item contracts.Envelope) (contracts.Envelope, bool) {
+// A payload that is not a JSON object - an array, a string, a number, a boolean, null, or no
+// payload at all - has no field to keep, so its stand-in's payload is {"payload_omitted":true}.
+// So every event has a stand-in.
+func standInEnvelope(item contracts.Envelope) contracts.Envelope {
 	var event map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
-		return contracts.Envelope{}, false
+	if json.Unmarshal([]byte(item.Payload), &event) != nil || event == nil {
+		// envelope encodes every event as an object, so this is an envelope it did not build.
+		event = map[string]json.RawMessage{}
 	}
+	// A payload that is not a JSON object does not decode here, and payload stays empty.
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(event["payload"], &payload); err != nil {
-		return contracts.Envelope{}, false
-	}
+	_ = json.Unmarshal(event["payload"], &payload)
 	kept := make(map[string]json.RawMessage, len(payload)+1)
 	for name, value := range payload {
 		if len(value) <= standInPayloadFieldBytes {
@@ -882,15 +900,9 @@ func standInEnvelope(item contracts.Envelope) (contracts.Envelope, bool) {
 		}
 	}
 	kept["payload_omitted"] = json.RawMessage("true")
-	short, err := json.Marshal(kept)
-	if err != nil {
-		return contracts.Envelope{}, false
-	}
-	event["payload"] = short
-	encoded, err := json.Marshal(event)
-	if err != nil {
-		return contracts.Envelope{}, false
-	}
+	// Neither encoding can fail: every value in them is one that json.Unmarshal read whole.
+	event["payload"], _ = json.Marshal(kept)
+	encoded, _ := json.Marshal(event)
 	item.Payload = string(encoded)
-	return item, true
+	return item
 }
