@@ -4,7 +4,8 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
-import { type AddressTarget, issueAddress, pathToTarget } from "../issue-address";
+import { useAddressTarget } from "../address-target";
+import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
@@ -28,19 +29,10 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   const { blocksRead, root } = useIssueTree(issue);
   // Who is reading, so a decision of theirs reads as their own words (R5).
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  // The address's own node, resolved against the whole tree and kept by the view. The target is
-  // read by what it says rather than by the value `issueAddress` built, which is a new one on
-  // every render, so the tree is walked again only when the address or the tree changes.
-  const targetKind = address.target?.kind;
-  const targetId = address.target?.id;
-  const targetDocument = address.target?.kind === "block" ? address.target.document : undefined;
-  const target = useMemo<AddressTarget | undefined>(() => {
-    if (targetKind === undefined || targetId === undefined) return undefined;
-    if (targetKind === "block") return { document: targetDocument, id: targetId, kind: "block" };
-    return { id: targetId, kind: targetKind } as AddressTarget;
-  }, [targetDocument, targetId, targetKind]);
-  const revealed = useMemo(() => pathToTarget(root, target)?.at(-1)?.id, [root, target]);
-  const named = useMemo(() => new Set(revealed === undefined ? [] : [revealed]), [revealed]);
+  // The address's own node, resolved against the whole tree and kept by the view
+  // (`useAddressTarget`, as the outline reads it).
+  const { named, reveal } = useAddressTarget(root, address);
+  const revealed = reveal?.at(-1)?.id;
   const view = useMemo(
     () => presetView(root, "spec", address.filter, named),
     [address.filter, named, root]

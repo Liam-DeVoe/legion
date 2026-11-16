@@ -40,18 +40,17 @@ import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { conversationPath } from "../decisions-filter/decisions-parts";
-import { type FocusedNode, useSetFocusedNode } from "../focused-node";
+import { useSetFocusedNode } from "../focused-node";
 import { IssueThreeThings } from "../IssueThreeThings";
-import type { OutlineRequest } from "../IssueTree";
-import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
-import { DETAILS_ATTRIBUTE } from "../margin-slot";
+import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
+import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useClamp, useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
 import { useReferenceNames } from "../one-line";
 import { useTakeOutlineRequest } from "../outline-request";
-import { conversationItem, useOutlineWriter } from "../outline-writer";
+import { useOutlineWriter } from "../outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
 import {
   ANSWER_LINES,
@@ -256,17 +255,10 @@ export function SpecFilterBody({
     [root, setFocusedNode]
   );
   // The focus leaving the body gives the panel back to the issue's own facts, unless it went
-  // to Details, where a reader reads the node's (`IssueTree.tsx`).
-  const releaseFocus = useCallback(
-    (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
-      const to = event.relatedTarget;
-      if (to instanceof Node && event.currentTarget.contains(to)) return;
-      setFocused(undefined);
-      if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
-      setFocusedNode(undefined);
-    },
-    [setFocusedNode]
-  );
+  // to Details, where a reader reads the node's: the outline's own rule (`useReleaseFocus`).
+  // This body edits nothing, so no row holds the focus through an edit.
+  const leave = useCallback(() => setFocused(undefined), []);
+  const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
   // Puts the focus on the statement or the decision cell that draws node `id`.
   const goTo = useCallback((id: string): boolean => {
     const target = tree.current?.querySelector<HTMLElement>(
@@ -521,23 +513,6 @@ function bareKey(event: KeyboardEvent): string | undefined {
     return undefined;
   }
   return event.key.length === 1 ? event.key.toLowerCase() : event.key;
-}
-
-/** What Details draws while the focus is on `node`'s row or cell (R12): its facts, and its
- *  first line as its title. */
-function focusedNodeOf(node: TreeNode): FocusedNode {
-  const item = conversationItem(node);
-  const line = firstLineOf(nodeWords(node)).line;
-  return {
-    ...(node.author === undefined ? {} : { author: node.author }),
-    id: node.id,
-    ...(item === undefined ? {} : { item }),
-    ...(node.reference === undefined ? {} : { reference: node.reference }),
-    ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
-    // A node with no words is titled by its kind's word, never by its id (decision 66).
-    title: line === "" ? NODE_TYPE_NAMES[node.type] : line,
-    type: node.type,
-  };
 }
 
 /** The colour each mark is drawn in, which repeats what its shape and the legend's word say
