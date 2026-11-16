@@ -354,6 +354,53 @@ func TestKeyReadsTheSetOnceForConcurrentCallers(t *testing.T) {
 	}
 }
 
+// A Keys holding no key set yet reads on every Key, with no spacing after a read that failed, so
+// what bounds the issuer's load during a cold outage is that the reads never overlap: every caller
+// that arrives while a read is in flight waits on that read rather than starting its own. Against
+// an issuer that fails slowly and one that hangs, many concurrent cold callers cost one key-set
+// request, and each is answered that the set could not be read (review K3).
+func TestKeyJoinsTheColdReadInFlightWhileTheIssuerFails(t *testing.T) {
+	for _, outage := range []struct {
+		name  string
+		start func(*oidctest.Issuer)
+	}{
+		{"a key set that answers 500 after 200 ms", func(i *oidctest.Issuer) {
+			i.FailKeys(http.StatusInternalServerError)
+			i.DelayKeys(200 * time.Millisecond)
+		}},
+		{"a key set that never answers", func(i *oidctest.Issuer) { i.DelayKeys(time.Minute) }},
+	} {
+		t.Run(outage.name, func(t *testing.T) {
+			issuer := oidctest.New(t)
+			keys, _ := keysFor(t, issuer, "exchange-key")
+			keys.FetchWait, keys.FetchTimeout = 300*time.Millisecond, time.Second
+			outage.start(issuer)
+			const callers = 32
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			errs := make([]error, callers)
+			for i := range callers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					_, errs[i] = keys.Key(context.Background(), "exchange-key", testAlgorithm)
+				}()
+			}
+			close(start)
+			wg.Wait()
+			for i, err := range errs {
+				if !errors.Is(err, ErrKeySet) {
+					t.Errorf("cold caller %d of %d = %v, want ErrKeySet", i, callers, err)
+				}
+			}
+			if fetches := issuer.JWKSFetches(); fetches != 1 {
+				t.Errorf("key set read %d times for %d concurrent cold callers, want 1: each waits on the read in flight", fetches, callers)
+			}
+		})
+	}
+}
+
 func TestNewKeysRefusesAnIssuerThatDoesNotDiscover(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.FailDiscovery(http.StatusInternalServerError)

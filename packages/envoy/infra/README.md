@@ -929,12 +929,14 @@ A credential the auth service refuses shows differently in the two pods, so watc
 `natsAudience` rolls out. `envoy-dispatch` serves without the bus and keeps retrying in the
 background, so its pods go ready and its `/healthz` answers 200 with `"nats":false`.
 `envoy-listener` connects in the foreground and exits when that connect fails
-(`packages/envoy/cmd/listener/main.go`), so its pods crash-loop; each pod reads as ready for the
-seconds that connect takes, since `/healthz` answers 200 `{"status":"starting"}` until the
-listener is up, and is gone again when it exits. At one listener replica its Deployment is
-`Recreate`, so no listener serves and every delivery fails until the credential is admitted. No
-startup probe reads NATS, so an app pod that restarts during a NATS outage serves again as soon
-as it starts.
+(`packages/envoy/cmd/listener/main.go`). A starting listener counts as ready by design
+(LEGION-456, #1661): its `/healthz` answers 200 `{"status":"starting"}` until its durable consumer
+binds, because during a rolling deploy the replacement's bind waits for the old pod to let go of
+the durable, and a 503 while starting would stall that roll for good. So a listener pod whose
+credential is refused is ready for the seconds its connect takes, then exits and crash-loops. At
+one listener replica its Deployment is `Recreate`, so no listener serves and every delivery fails
+until the credential is admitted. No startup probe reads NATS, so an app pod that restarts during
+a NATS outage serves again as soon as it starts.
 
 `listenerAudience` (plain), unset by default, moves the app's calls to its listener onto the
 app's own identity, so no caller of the listener holds a shared bearer. The app pod gets a
@@ -952,7 +954,9 @@ when it cannot within 30 seconds, so a listener pod started while the issuer can
 restarts until it can. Once started, it keeps the key set it read, reads it again every 15
 minutes behind the answers it serves from it, and reads it for a token naming a key it does not
 hold, at most once a minute. While the key set cannot be read it keeps serving the keys it holds,
-however old the set grows, and reads again no sooner than 5 seconds after a read that failed. A
+however old the set grows, and reads again no sooner than 5 seconds after a read that failed; a
+listener that has read no key set yet reads again on the next call, but never two reads at once,
+since every call that arrives while a read is in flight waits on it. A
 token it cannot judge because the key set cannot be read, or has not answered within 3 seconds, is
 answered 503 with `Retry-After` — for a key rotated in during the outage, every such call until a
 read succeeds — which Dispatch tries again for up to 12 seconds, as it does a listener being

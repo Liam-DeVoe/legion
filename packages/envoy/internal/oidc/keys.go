@@ -76,8 +76,10 @@ type Keys struct {
 	// does not hold, after a fetch that succeeded (DefaultKeysMinRefresh).
 	MinRefresh time.Duration
 	// RetrySpacing is the shortest interval after a read that failed before the next one, for a
-	// Keys that holds a set (DefaultKeysRetrySpacing). A Keys holding none reads on every Key a
-	// read is not already in flight for, since no token can be judged until one succeeds.
+	// Keys that holds a set (DefaultKeysRetrySpacing). A Keys holding none reads again on the next
+	// Key, since no token can be judged until a read succeeds, but never two reads at once: a Key
+	// that arrives while a read is in flight waits on it, so an issuer that fails or hangs is asked
+	// one read at a time however many callers arrive (TestKeyJoinsTheColdReadInFlightWhileTheIssuerFails).
 	RetrySpacing time.Duration
 	// FetchTimeout bounds one key-set read, which no caller's context ends
 	// (DefaultKeysFetchTimeout).
