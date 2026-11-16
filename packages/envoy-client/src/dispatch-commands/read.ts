@@ -25,7 +25,7 @@ import {
 } from "./context";
 import { resolveMessageArgument } from "./conversation";
 import { approvalLine, documentListLines } from "./document-targets";
-import { dispatchAnswered, throughPostCorrections } from "./failures";
+import { dispatchAnswered, refuseMissingOfRef, throughPostCorrections } from "./failures";
 import { messageIdOf, refOwnerName, refTarget, refuseItemOffRef, resolveIdPrefix } from "./refs";
 import {
   askPartNoun,
@@ -173,7 +173,11 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         ? client.getComments(ref.owner.issue)
         : client.getArtifactComments(await documentIdOf(ref))
     );
-    const comment = await client.getComment(id);
+    // The same undecidable `not found` the corrections met: a reader of this read must be able
+    // to tell a post that is gone from an issue that was never there (dispatch://INFRA-1523).
+    const comment = await client.getComment(id).catch(async (error: unknown) => {
+      throw await refuseMissingOfRef(client, error, "comment", id, ref.owner, refOwnerName(ref));
+    });
     await refuseItemOffRef(
       input.tool,
       "comment",
@@ -240,10 +244,18 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         details: { issue: messageIssue, message: id },
       };
     }
-    const messageRead = await client.getMessage(
-      ownerArguments.ref.owner.issue,
-      ownerArguments.ref.id
-    );
+    const messageRead = await client
+      .getMessage(ownerArguments.ref.owner.issue, ownerArguments.ref.id)
+      .catch(async (error: unknown) => {
+        throw await refuseMissingOfRef(
+          client,
+          error,
+          "message",
+          ownerArguments.ref?.id ?? "",
+          { kind: "issue", issue: messageIssue },
+          messageIssue
+        );
+      });
     const messageRef = dispatchChildRef(
       dispatchIssueRef(ownerArguments.ref.owner.issue),
       "message",

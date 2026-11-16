@@ -15972,6 +15972,60 @@ for (const [name, tool, args, issueStands, named] of [
   });
 }
 
+// `dispatch read` of a reference meets the same undecidable `not found`, and a reader of a read
+// needs the answer as much as a reader of a correction does: this is the correction's fix one
+// command over, in main's own output.
+for (const [name, args, issueStands, named] of [
+  [
+    "a comment of an issue that stands",
+    { ref: "dispatch://CORE-1/comment/11111111-2222-4333-8444-555555555555" },
+    true,
+    "CORE-1 holds no comment 11111111-2222-4333-8444-555555555555",
+  ],
+  [
+    "a comment of an issue Dispatch does not hold",
+    { ref: "dispatch://NOPE-9/comment/11111111-2222-4333-8444-555555555555" },
+    false,
+    "this Dispatch holds no issue NOPE-9",
+  ],
+  [
+    "a message of an issue that stands",
+    { ref: "dispatch://CORE-1/message/11111111-2222-4333-8444-555555555555" },
+    true,
+    "CORE-1 holds no message 11111111-2222-4333-8444-555555555555",
+  ],
+] as const) {
+  test(`dispatch_read names what it could not find for ${name}`, async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (/^\/api\/v1\/issues\/[^/]+$/.test(pathname)) {
+        return issueStands
+          ? response({ issue: { key: "CORE-1", title: "An issue", status: "todo" } })
+          : response({ code: "NOT_FOUND", error: "not found" }, 404);
+      }
+      return response({ code: "NOT_FOUND", error: "not found" }, 404);
+    };
+    const error: unknown = await executeDispatchTool({
+      tool: "dispatch_read",
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      sleep: async () => {},
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(named);
+  });
+}
+
 test("dispatch delete-comment against a Dispatch without the route says that server predates corrections", async () => {
   await expect(
     olderDispatch("dispatch_delete_comment", { comment: correctedComment })

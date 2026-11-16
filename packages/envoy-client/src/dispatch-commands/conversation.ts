@@ -18,7 +18,7 @@ import { renderAdvice } from "./advice";
 import { movedApprovalLine, resolveReplyToAsk } from "./asks";
 import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
 import { anchor, resolveArtifact } from "./document-targets";
-import { dispatchAnswered, refusalWithCode, throughPostCorrections } from "./failures";
+import { refuseMissingOfRef, throughPostCorrections } from "./failures";
 import {
   itemReplyTo,
   messageArgumentId,
@@ -72,37 +72,6 @@ export async function resolveCommentArgument(
     document === undefined ? "" : document.id
   );
   return { id, ...(document === undefined ? {} : { document }) };
-}
-
-/**
- * The refusal a reference's own read earns when Dispatch answers `404 NOT_FOUND`: its `not found`
- * names neither the post nor the issue, so a reader cannot tell a post that is not there from an
- * issue that is not (dispatch://INFRA-1523). The owner is read once, on this failing path alone,
- * to say which: a reference whose issue Dispatch does not hold names that issue, and one whose
- * issue stands names the post it holds no row of. A document's owner is already read above, so
- * only an issue is read here.
- */
-async function refuseMissingOfRef(
-  client: DispatchClient,
-  error: unknown,
-  kind: "comment" | "message",
-  id: string,
-  owner: { readonly kind: string; readonly issue?: string },
-  ownerName: string
-): Promise<unknown> {
-  if (!(dispatchAnswered(error, 404) && error.code === "NOT_FOUND")) return error;
-  if (owner.kind === "issue" && owner.issue !== undefined) {
-    const issueKey = owner.issue;
-    const issueStands = await client
-      .getIssue(issueKey)
-      .then(() => true)
-      .catch((caught: unknown) => {
-        if (dispatchAnswered(caught, 404)) return false;
-        throw caught;
-      });
-    if (!issueStands) return refusalWithCode(error, `this Dispatch holds no issue ${issueKey}`);
-  }
-  return refusalWithCode(error, `${ownerName} holds no ${kind} ${id}`);
 }
 
 /**
