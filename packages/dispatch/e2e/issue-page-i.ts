@@ -14,7 +14,14 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  * What the outline draws, beyond what G's file names:
  *
  * - **The tree** `role="tree"` named `CONTROL_LABELS.tree` (G's `tree`), its rows `treeitem`s
- *   carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop.
+ *   carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop. A row of the
+ *   outline carries `data-row-key`, which G's `NodeRow.tsx` draws and no view's row does: every
+ *   view draws a tree of its own (decision 59), so a tree is no sign that the outline is drawn.
+ * - **The stage** the outline is drawn in: the column `[data-testid="issue-column"]` that holds
+ *   the stage and the foot (`IssueOutlinePage.tsx`).
+ * - **A row's bullet** `[data-node-bullet]`: its column, or its fold control where its node holds
+ *   others; its tag `[data-node-tag]` in its margin; and a link its words draw for a reference,
+ *   `a[data-row-reference]` naming the reference it links.
  * - **A node's body** `[data-node-body]`, drawn for the focused row and each row pinned open
  *   (`[data-node-body][data-pinned]`), and for no other row.
  * - **A branch deeper than the drawn levels**, one row `[data-branch-more]` whose text says how
@@ -37,8 +44,13 @@ const SELECTORS = {
   gap: "[data-gap]",
   issuePage: "[data-issue-page]",
   nodeBody: "[data-node-body]",
+  nodeBullet: "[data-node-bullet]",
   nodeRow: "[data-node-row]",
+  nodeTag: "[data-node-margin] [data-node-tag]",
+  /** A row of the outline, and of no view's tree. */
+  outlineRow: "[data-node-row][data-row-key]",
   presetRow: '[data-testid="issue-presets"]',
+  stage: '[data-testid="issue-column"]',
   tree: '[role="tree"]',
 } as const;
 
@@ -103,6 +115,24 @@ export function pageStatus(page: Page): Locator {
   return tree(page).locator("[data-row-report]");
 }
 
+/** The outline's own rows, by the mark a row of the outline carries and no view's row does: a
+ *  view's tree is named as the outline's is, so the tree alone does not say which is drawn. */
+export function outlineRows(page: Page): Locator {
+  return issuePage(page).locator(SELECTORS.outlineRow);
+}
+
+/** The outline's one row in the tab order, which takes the focus back when the reader comes
+ *  back to the tree (the WAI-ARIA tree pattern, R9). */
+export function tabStopRow(page: Page): Locator {
+  return tree(page).locator(`${SELECTORS.nodeRow}[tabindex="0"]`);
+}
+
+/** The link `row`'s words draw for `reference` (`dispatch://<key>` for an issue), which names
+ *  what it links by the page's batched read (`row-references.ts`). */
+export function rowReference(row: Locator, reference: string): Locator {
+  return row.locator(`[data-node-words] a[data-row-reference="${cssValue(reference)}"]`);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The readers: one `page.evaluate` each, so a page that draws none of this answers an empty
 // list or null instead of timing out.
@@ -111,6 +141,139 @@ export function pageStatus(page: Page): Locator {
 /** The ids of `rows`, in order, a row with none named so in a failure. */
 export function idsOf(rows: readonly DrawnRow[]): string[] {
   return rows.map((row) => row.id ?? "<no id>");
+}
+
+/** The text of each row's tag, by its node's id: a typed kind's word, or a child's key (the
+ *  architect's ruling 5). A row that draws no tag is not in it. */
+export async function rowTags(page: Page): Promise<ReadonlyMap<string, string>> {
+  const tags = await page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)].flatMap(
+        (row): [string, string][] => {
+          const id = row.getAttribute("data-node-id");
+          const tag = row.querySelector(selectors.nodeTag);
+          return id === null || tag === null ? [] : [[id, (tag.textContent ?? "").trim()]];
+        }
+      ),
+    SELECTORS
+  );
+  return new Map(tags);
+}
+
+/** Where `scope` stands in the stage, the column that holds the stage and the foot, inside the
+ *  column's insets: its width, and its gap to the column's inner edge at each side. Null where
+ *  `scope` stands in no such column. */
+export function placeInStage(
+  scope: Locator
+): Promise<{ readonly left: number; readonly right: number; readonly width: number } | null> {
+  return scope.first().evaluate((element, selectors) => {
+    const column = element.closest(selectors.stage);
+    if (column === null) return null;
+    const style = getComputedStyle(column);
+    const inner = column.getBoundingClientRect().left + column.clientLeft;
+    const start = inner + Number.parseFloat(style.paddingLeft);
+    const end = inner + column.clientWidth - Number.parseFloat(style.paddingRight);
+    const box = element.getBoundingClientRect();
+    return { left: box.left - start, right: end - box.right, width: box.width };
+  }, SELECTORS);
+}
+
+/** The box of each visible row's bullet, in document order, as G's `rowLayouts` reads the rows:
+ *  the bullet's column on a node that holds no other, and its fold control on one that does.
+ *  G's reader gives the left of the bullet's dot, which stands where every bullet's does, and
+ *  not the edges of the box it stands in. */
+export function bulletBoxes(
+  page: Page
+): Promise<{ readonly id: string; readonly left: number; readonly right: number }[]> {
+  return page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)]
+        .filter((row) => row.getClientRects().length > 0)
+        .map((row) => {
+          const box = row.querySelector(selectors.nodeBullet)?.getBoundingClientRect();
+          return {
+            id: row.getAttribute("data-node-id") ?? "",
+            left: box?.left ?? -1,
+            right: box?.right ?? -1,
+          };
+        }),
+    SELECTORS
+  );
+}
+
+/** Every item the tree draws, in order, with its `aria-level`: a node's row by its node's id,
+ *  and the one line a branch below the drawn levels folds to by its text, which counts what it
+ *  holds. */
+export function drawnItems(
+  page: Page
+): Promise<
+  { readonly id: string | null; readonly level: string | null; readonly more: string | null }[]
+> {
+  return page.evaluate(
+    (selectors) =>
+      [
+        ...document.querySelectorAll(
+          `${selectors.issuePage} ${selectors.tree} :is(${selectors.nodeRow}, ${selectors.branchMore})`
+        ),
+      ].map((item) => ({
+        id: item.getAttribute("data-node-id"),
+        level: item.getAttribute("aria-level"),
+        more: item.matches(selectors.branchMore)
+          ? (item.textContent ?? "").replace(/\s+/g, " ").trim()
+          : null,
+      })),
+    SELECTORS
+  );
+}
+
+/** Each deeper branch's one line: the `--row-depth` it is drawn at and its computed left
+ *  padding, in pixels, which is its indent (`TreeRows.tsx`'s `BranchMore`). */
+export function branchMoreIndents(
+  page: Page
+): Promise<{ readonly depth: number; readonly padding: number }[]> {
+  return page.evaluate(
+    (selectors) =>
+      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.branchMore}`)].map(
+        (line) => {
+          const style = getComputedStyle(line);
+          return {
+            depth: Number.parseFloat(style.getPropertyValue("--row-depth")),
+            padding: Number.parseFloat(style.paddingLeft),
+          };
+        }
+      ),
+    SELECTORS
+  );
+}
+
+/** The `data-enabled` of each line of the open Keys list (`ShortcutHelp.tsx`) whose keys are
+ *  `chord`, such as `t h`: the list greys a binding that cannot run where the focus is, and
+ *  does not hide it. */
+export function keysListLines(page: Page, chord: string): Promise<(string | null)[]> {
+  return page
+    .getByRole("dialog", { name: "Keyboard shortcuts" })
+    .evaluate(
+      (dialog, keys) =>
+        [...dialog.querySelectorAll("li[data-enabled]")]
+          .filter(
+            (line) =>
+              [...line.querySelectorAll("kbd")]
+                .map((kbd) => (kbd.textContent ?? "").trim())
+                .join(" ") === keys
+          )
+          .map((line) => line.getAttribute("data-enabled")),
+      chord
+    );
+}
+
+/** Resolves once the page has drawn two frames, so a key that changed nothing is read after
+ *  the render it would have caused. */
+export async function afterTwoFrames(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const frame = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
+    await frame.promise;
+  });
 }
 
 /** The chain of ancestors above `id`, outermost first, as the drawn levels give it. */

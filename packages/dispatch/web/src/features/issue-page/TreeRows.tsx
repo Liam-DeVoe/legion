@@ -184,7 +184,7 @@ function BranchMore({
   return (
     <div
       aria-level={level}
-      className={`relative flex min-w-0 pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[760px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
+      className={`relative flex min-w-0 pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[761px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
       data-branch-more=""
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
@@ -193,7 +193,7 @@ function BranchMore({
       {Array.from({ length: depth }, (_unused, guide) => (
         <span
           aria-hidden="true"
-          className={`absolute inset-y-0 w-px left-[calc(var(--guide)*23px+9px)] max-[760px]:left-[calc(var(--guide)*17px+8px)] ${pageGuideLineBg}`}
+          className={`absolute inset-y-0 w-px left-[calc(var(--guide)*23px+9px)] max-[761px]:left-[calc(var(--guide)*17px+8px)] ${pageGuideLineBg}`}
           // biome-ignore lint/suspicious/noArrayIndexKey: a guide is its level and nothing else.
           key={guide}
           style={{ "--guide": guide } as CSSProperties}
