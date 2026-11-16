@@ -24,7 +24,7 @@ import {
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
-import { PlainReferenceNamesProvider, RowText } from "./RowText";
+import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 
 /**
@@ -466,7 +466,9 @@ const MARKED_DRAWN = {
 // R20, c-plain-words: a decision's text is stored markdown, and the decisions read sends the
 // server's reading of it (`Decision.text_tree`). The row draws that reading, so the reader sees
 // a heading, bold words and a list, never the `##`, `**` and `-` the author typed, and the
-// browser parses nothing to get there. Folded, its one line holds none of those symbols either.
+// browser parses nothing to get there. Folded, its one line holds none of those symbols either,
+// and is cut from its first block's words alone (`lineWords`): the heading never runs into the
+// paragraph after it.
 test("a decision whose text holds bold draws no literal asterisks", () => {
   const decision = node({
     id: "decisions-md#b-d1",
@@ -483,7 +485,7 @@ test("a decision whose text holds bold draws no literal asterisks", () => {
   const folded = renderRow({ ...decision, held: 1 }, { body: false, expanded: false, folded: 1 });
   try {
     expect(folded.container.querySelector("[data-node-first-line]")?.textContent).toBe(
-      "Store the notices A decided thing."
+      "Store the notices"
     );
   } finally {
     folded.unmount();
@@ -621,9 +623,10 @@ test("a chip names its target by its first words and never by an address", () =>
   }
 });
 
-// The tester's finding F18: a target's name is its stored excerpt, which is markdown, and its
-// chip draws the words alone, with no mark the author typed.
-test("a chip draws its target's words with no mark of markdown", () => {
+// Decision 66: a target's name is plain words already (`tree-drafts.ts`'s `treeContext` names a
+// block by the words of the server's reading of it), so a chip draws it as it stands, with no
+// markdown pass, which would read a numbered step as a list and drop its number.
+test("a chip named as a numbered step draws its number", () => {
   const view = renderRow(
     node({
       chips: [
@@ -631,8 +634,14 @@ test("a chip draws its target's words with no mark of markdown", () => {
           answered: true,
           gone: false,
           label: "Needs",
-          name: "**1\\. Stand the harness up and read the rows**",
+          name: "1. Stand the harness up.",
           ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
+        },
+        {
+          answered: true,
+          gone: false,
+          name: "2. Stand the harness up and read the rows",
+          ref: "dispatch://CORE-1/artifact/plan-md#b-t3",
         },
       ],
       id: "plan-md#b-t2",
@@ -643,7 +652,10 @@ test("a chip draws its target's words with no mark of markdown", () => {
   );
   try {
     const chips = [...view.container.querySelectorAll("[data-node-chip]")];
-    expect(chips.map((chip) => chip.textContent)).toEqual(["Needs 1. Stand the harness up and…"]);
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      "Needs 1. Stand the harness up.",
+      "2. Stand the harness up and…",
+    ]);
   } finally {
     view.unmount();
   }
@@ -661,24 +673,20 @@ function Named({
   return children;
 }
 
-// F18 in a node's words: a chip in place is named from the batched read, whose name for a block
-// is its stored excerpt, which is markdown; it draws the words alone, as the chip at the end of
-// the words does.
-test("a chip in a node's words draws its target's words with no mark of markdown", async () => {
+// F18 and decision 66 in a node's words: a chip in place is named from the batched read, which
+// the page publishes as plain words (`useIssueTree.ts`), so it draws them with no markdown pass,
+// as the chip at the end of the words does, a numbered step's number kept.
+test("a chip in a node's words draws its target's plain words, a numbered step's number kept", async () => {
   const target = "dispatch://CORE-1/artifact/plan-md#b-t1";
   const text = `It follows ${target}.`;
-  const names = new Map([
-    [target, ":::plan_task{#t1}\n**1\\. Stand the harness up and read the rows**\n:::"],
-  ]);
+  const names = new Map([[target, "1. Stand the harness up and read the rows"]]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <ReferenceNamesProvider>
           <Named names={names}>
-            <PlainReferenceNamesProvider>
-              <RowText markdown={text} tree={displayTree(text)} />
-            </PlainReferenceNamesProvider>
+            <RowText markdown={text} tree={displayTree(text)} />
           </Named>
         </ReferenceNamesProvider>
       </MemoryRouter>
