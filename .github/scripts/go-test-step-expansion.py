@@ -250,8 +250,10 @@ EXCEPTIONS = (
     ),
 )
 
-# `go test -list` prints one name per line, then a status line per package.
-NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)[A-Za-z0-9_]*$")
+# `go test -list` prints one name per line, then a status line per package. The rest of a name
+# is any Go identifier's: Unicode letters, digits and `_` (`\w` on a str), since go test runs
+# `TestÉ`; an ASCII-only class would drop such a test from both verdicts.
+NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)\w*$")
 STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 # A shell variable, as the steps write it: $pkg or ${pkg}.
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
@@ -332,7 +334,7 @@ class GoTest:
 def shell(script: str, cwd: Path, what: str) -> str:
     """A line of a step's own script, run in the step's own directory."""
     done = subprocess.run(["bash", "-c", f"set -euo pipefail\n{script}"],
-                          cwd=cwd, capture_output=True, text=True)
+                          cwd=cwd, capture_output=True, encoding="utf-8")
     if done.returncode != 0:
         raise Refused(f"{what} exited {done.returncode}\n"
                       f"    $ {script}\n{indent(done.stderr or done.stdout)}")
@@ -340,7 +342,7 @@ def shell(script: str, cwd: Path, what: str) -> str:
 
 
 def go(args: list[str], cwd: Path, what: str) -> str:
-    done = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    done = subprocess.run(args, cwd=cwd, capture_output=True, encoding="utf-8")
     if done.returncode != 0:
         hint = ("\n    -race needs CGO_ENABLED=1 and a C compiler."
                 if "-race" in args and "cgo" in (done.stderr or "") else "")

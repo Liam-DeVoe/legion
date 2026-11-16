@@ -79,8 +79,11 @@ usage: go-test-shards.py pattern <index> <total> [<build flag>...] <package>
        go-test-shards.py check [<build flag>...] <package> -- <pattern>..."""
 
 # A name `-test.list` prints: a top-level test, benchmark, fuzz target or example. Anything else
-# on the binary's standard output (a TestMain that prints) names no test.
-LISTED = re.compile(r"^(Test|Benchmark|Fuzz|Example)[A-Za-z0-9_]*$")
+# on the binary's standard output (a TestMain that prints) names no test. The rest of the name is
+# any Go identifier's: Unicode letters, digits and `_` (`\w` on a str), because go test runs
+# `TestÉ` - cmd/go checks only that the rune after `Test` is not lower case - and a name this
+# missed would be in no shard while the proof, blind to it too, passed.
+LISTED = re.compile(r"^(Test|Benchmark|Fuzz|Example)\w*$")
 # Linux's MAX_ARG_STRLEN, 32 pages of 4 KiB: the longest single argument exec accepts, terminator
 # included. The pattern is one argument to go test and one to the test binary.
 MAX_ARGUMENT = 131072
@@ -108,7 +111,7 @@ def build(flags: list[str], package: str, directory: Path) -> Path:
     """The package's test binary, built under the flags into directory."""
     binary = directory / "package.test"
     command = ["go", "test", "-c", "-o", str(binary), *flags, package]
-    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    done = subprocess.run(command, capture_output=True, encoding="utf-8", check=False)
     if done.returncode != 0:
         raise Refused(f"`{' '.join(command)}` exited {done.returncode}:\n{done.stderr}{done.stdout}")
     if not binary.is_file():
@@ -122,7 +125,9 @@ def listed(binary: Path, pattern: str) -> list[str]:
         raise Refused(f"a pattern of {len(pattern.encode())} bytes is longer than one argument may be "
                       f"({MAX_ARGUMENT - 1} bytes, MAX_ARG_STRLEN), so go test could not pass it to the "
                       f"test binary; add a leg to the matrix, which shortens every shard's pattern")
-    done = subprocess.run([str(binary), f"-test.list={pattern}"], capture_output=True, text=True, check=False)
+    # UTF-8 whatever the locale says, since a test's name may hold any letter Go allows.
+    done = subprocess.run([str(binary), f"-test.list={pattern}"], capture_output=True, encoding="utf-8",
+                          check=False)
     if done.returncode != 0:
         raise Refused(f"`{binary.name} -test.list` exited {done.returncode}:\n{done.stderr}{done.stdout}")
     return [line for line in done.stdout.splitlines()

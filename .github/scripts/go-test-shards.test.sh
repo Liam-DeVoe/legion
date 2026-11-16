@@ -181,6 +181,39 @@ check "TestEpsilon is in two shards" "$(contains "$err" '^go-test-shards.py: Tes
 check "and so is TestEta" "$(contains "$err" '^go-test-shards.py: TestEta is in shards [123] and 4 of 4')"
 check "and nothing else" "$(is "$(grep -c 'is in' <<<"$err")" 2)"
 
+echo "case: a test whose name is not ASCII is split and checked like any other"
+# go test runs TestÉclair and Test日本: cmd/go asks only that the rune after `Test` is not lower
+# case. A listing that kept ASCII names alone would leave both in no shard, and its proof, reading
+# the same listing, would pass while no leg ran them.
+root_unicode=$(module unicode)
+tests "$root_unicode/names_test.go" TestAlpha TestBeta TestÉclair Test日本
+unicode_patterns=()
+for index in 0 1; do
+  run_shards "$root_unicode" pattern "$index" 2 .
+  check "shard $index exits 0" "$(is "$status" 0)"
+  unicode_patterns+=("$out")
+done
+check "the two shards hold all four tests, each once" \
+  "$(is "$(for p in "${unicode_patterns[@]}"; do names_of "$p"; done | LC_ALL=C sort | paste -sd ' ')" \
+    "TestAlpha TestBeta TestÉclair Test日本")"
+run_shards "$root_unicode" check . -- "${unicode_patterns[@]}"
+check "and the check passes them" "$(is "$status" 0)"
+check "counting all four" \
+  "$(contains "$err" '^go-test-shards.py: every one of the 4 tests of \. is in exactly one of the 2 shards$')"
+
+echo "case: control - a test whose name is not ASCII, left out of every shard, fails the check by name"
+without_eclair=()
+for p in "${unicode_patterns[@]}"; do
+  kept=$(names_of "$p" | grep -v -x 'TestÉclair' | paste -sd '|')
+  without_eclair+=("^($kept)\$")
+done
+run_shards "$root_unicode" check . -- "${without_eclair[@]}"
+check "exits 1" "$(is "$status" 1)"
+check "prints nothing on standard output" "$(is "$out" "")"
+check "names the test and says no leg runs it" \
+  "$(contains "$err" '^go-test-shards.py: TestÉclair is in no shard: none of the 2 patterns selects it, so no leg runs it$')"
+check "names no other test" "$(is "$(grep -c 'is in' <<<"$err")" 1)"
+
 echo "case: the build flags decide which tests exist"
 run_shards "$root" pattern 0 1 -tags shardtag .
 check "exits 0" "$(is "$status" 0)"

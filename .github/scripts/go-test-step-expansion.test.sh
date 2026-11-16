@@ -96,6 +96,23 @@ print(sum(1 for line in lines
   check "$file holds a go test line this reader reads" "$(is "$found" "1")"
 done
 
+# go test runs a test whose name is not ASCII (TestÉclair, Test日本): cmd/go asks only that the
+# rune after `Test` is not lower case. The listing reader keeps a line as a name by NAME, so an
+# ASCII-only NAME dropped such a test from what every step compiles and runs, and neither verdict
+# could see it run twice or not at all.
+echo "case: a listed name that is not ASCII is a name, and other output is not"
+names=$(py 'for line in sys.argv[1:]:
+    print(line, bool(ex.NAME.match(line)))' TestÉclair Test日本 FuzzÜber ExampleÅ 'TestÉclair passed' 'ok  pkg 0.1s')
+check "TestÉclair, Test日本, FuzzÜber and ExampleÅ are names; a sentence and a status line are not" "$(is "$names" \
+  'TestÉclair True
+Test日本 True
+FuzzÜber True
+ExampleÅ True
+TestÉclair passed False
+ok  pkg 0.1s False')"
+check "a -skip of such names is read, not refused" \
+  "$(is "$(py 'print(ex.skip_names(sys.argv[1]))' '^(TestÉclair|Test日本)$')" "['TestÉclair', 'Test日本']")"
+
 # The one `-skip` line of this repository is daemon-go's race step, and the rule expands
 # packages/daemon now, so the space form below is reachable from a real step and the equals form
 # from none, which is why this case holds both. The parse is what these cases hold: measured at
