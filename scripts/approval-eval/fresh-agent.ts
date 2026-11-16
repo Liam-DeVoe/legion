@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { appendFile, copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { parseArgs } from "node:util";
 import { labelKey, type ArmReading as RoundArm, readRound } from "./analyze";
 import type { CaseRow } from "./build-corpus";
 import {
   CannotRunError,
   type Corpus,
+  counted,
   labelsOfCase,
   listOf,
   num,
@@ -25,6 +26,7 @@ import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
 import { renderChecked } from "./render";
 import type { ReplayedDocument } from "./replay";
+import { bytesDigestOf, DigestError, executableOf } from "./reserve";
 import {
   CACHE_VERSION,
   cachePath,
@@ -1014,6 +1016,28 @@ async function modelsFileOf(omp: string): Promise<string | null> {
 }
 
 /**
+ * What a run that reads the reserve adds to its digest (`reserve.ts`) for the agent it scores,
+ * which lives outside the repository: the bytes of the executable, the version it prints, and the
+ * bytes of the models file every profile copies. `omp` is the path `readFlags` resolved, the one
+ * each case runs; a bare name `PATH` did not find is refused (`DigestError`), since the runtime
+ * could still find another executable under it. An upgrade of the agent or a change of its models
+ * is then another run, which the reserve's registration does not name.
+ */
+async function agentInputsOf(omp: string): Promise<string[]> {
+  if (!isAbsolute(omp)) {
+    throw new DigestError(`${omp} is not found on PATH, so no digest covers the agent`);
+  }
+  const child = Bun.spawn({ cmd: [omp, "--version"], stdout: "pipe", stderr: "ignore" });
+  const [printed, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  const models = await modelsFileOf(omp);
+  return [
+    `agent ${await bytesDigestOf(omp)}`,
+    `agent version ${code === 0 ? JSON.stringify(printed.trim()) : `exit ${code}`}`,
+    `agent models ${models === null ? "none" : await bytesDigestOf(models)}`,
+  ];
+}
+
+/**
  * The environment one agent run is given: its own home, `PATH`, `TMPDIR` where this process has
  * one, and the two variables the run needs to reach the model gateway, `ANTHROPIC_BASE_URL` and
  * `ANTHROPIC_API_KEY`. So the agent does get this session's model credential, here and in the
@@ -1143,7 +1167,7 @@ function readFlags(argv: readonly string[]): Flags {
     cases: whole(values.cases, "--cases", DEFAULT_CASES, 1, USAGE),
     neighbours: shapeOf(values.neighbours, "--neighbours", DEFAULT_SHAPE, USAGE),
     answers: answersOf(values.answers),
-    omp: values.omp?.trim() || DEFAULT_OMP,
+    omp: executableOf(values.omp?.trim() || DEFAULT_OMP, process.env.PATH),
     concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1, USAGE),
   };
 }
@@ -1201,14 +1225,37 @@ async function writeReport(out: string, report: FreshReport): Promise<void> {
   await writeFile(reportPath(out), `${JSON.stringify(shapes, null, 2)}\n`, "utf8");
 }
 
+/**
+ * Refuses a run into a directory whose `fresh-agent.json` keeps a report over a case this corpus
+ * does not hold: the command prints every report the file keeps, and such a case is one the
+ * reserve left out (`reserve.ts`), whose figure is a figure of INFRA-2897's next final test, or
+ * one of another corpus, which nothing here can say is not reserved.
+ */
+export function refuseReportsOutside(
+  shapes: FreshShapes,
+  corpus: ReadonlyMap<string, CaseRow>,
+  out: string
+): void {
+  for (const [shape, report] of Object.entries(shapes)) {
+    const outside = report?.caseIds.filter((caseId) => !corpus.has(caseId)).length ?? 0;
+    if (outside > 0) {
+      throw new FreshError(
+        `${reportPath(out)} keeps the ${shape} report over ${counted(outside, "case")} this ` +
+          "corpus does not hold, which the reserve may hold (reserve.ts): move that file aside"
+      );
+    }
+  }
+}
+
 /** The run as the command makes it: the real corpus, the real round and the real agent. */
 async function fresh(flags: Flags): Promise<number> {
   const log = (line: string): void => {
     process.stderr.write(`${line}\n`);
   };
-  const corpus = await readCorpus(flags.corpus);
+  const corpus = await readCorpus(flags.corpus, { inputs: () => agentInputsOf(flags.omp) });
   const out = await outDirectory(flags.out);
   await mkdir(out, { recursive: true });
+  refuseReportsOutside(await readShapes(out), corpus.byCaseId, out);
   // Before a case directory, a profile or a prompt is built: a run into a directory already
   // holding this shape's answers stops here, having paid for nothing and read nothing.
   await settleAnswers(

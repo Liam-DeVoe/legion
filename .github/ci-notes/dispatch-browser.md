@@ -51,9 +51,15 @@ budget cancels the job. So the `if: always()` and `if: failure()` upload steps s
 report, the memory samples and the CPU samples still reach the run, which a cancelled job loses.
 A job budget is the backstop above the sum of its step budgets, so it never fires first.
 
-No permissions: block, so each caller's permissions stand. The merge job reads the run's jobs
-through the API (`actions: read`) and ends with the ci-ok report (`checks: write`), both of
-which ci.yaml already gives the job that calls this workflow.
+No permissions: block, and that is not what decides this workflow's scopes. A called workflow
+runs under the calling job's `permissions:`, and a caller that declares none hands it the
+default GITHUB_TOKEN permissions rather than its own workflow's block (GitHub's
+reusable-workflow reference, "Supported keywords for jobs that call a reusable workflow").
+ci.yaml's dispatch-browser job declares what these jobs need: `contents: read` for every job's
+checkout, and the merge job's `actions: read` (it reads the run's jobs through the API) and
+`checks: write` (the ci-ok report it ends with, which only that call turns on).
+dispatch-browser-nightly.yaml's full job declares the first two: its call passes no
+`ci-ok-changes` either, so the report step skips there and no check is posted.
 
 ## Why GOPROXY falls through to direct
 
@@ -312,7 +318,10 @@ gitignored - so a checkout that has never built it dies while the config loads, 
 `Cannot find module @legion/contracts/dist/index.js`. No hook of the suite can be early
 enough: `globalSetup` runs after the config has loaded. A workstation gets the build from
 `bun run e2e`, which carries `build:contracts`; a job that runs Playwright itself needs
-this step.
+this step. It runs `build:dispatch`, the contracts entries Dispatch imports and no other
+(ci-job-dispatch-ui.yaml's `Build contracts for the suites that spawn Playwright` says
+how that list grows), so it compiles no module the dispatch_browser filter's listed
+block leaves out - not ./legion-api, which no row loads.
 
 ## What the shard job's PostgreSQL reading records, and why it is a script
 
@@ -564,7 +573,7 @@ refusal would otherwise surface in a stack's own log, far from this cause.
 
 The shard job's step of this name, for the reason it gives: Playwright's Node runner
 reads `@legion/contracts` out of a build this checkout has to make before the config
-loads.
+loads, and the entries Dispatch imports are all it needs.
 
 ## What the alone job's PostgreSQL reading records
 
@@ -694,7 +703,8 @@ entry holds. It saves none.
 
 The shard job's step of this name, for the reason it gives: Playwright's Node runner
 reads `@legion/contracts` out of a build this checkout has to make before the config
-loads.
+loads, and the entries Dispatch imports are all it needs. `bun run e2e:multiprocess`
+below makes the same build again (packages/dispatch's build:contracts).
 
 ## Why the two-process job builds the Dispatch server itself
 
@@ -867,8 +877,9 @@ holds. It saves none.
 
 The e2e helpers the visual specs import read some of contracts' values from its built
 dist/, through Playwright's own Node resolution (the shard job's step of the same name,
-which says why no hook of the suite can make this build). The run inside the container
-reads it from this same checkout, mounted there at its own path.
+which says why no hook of the suite can make this build, and why the entries Dispatch
+imports are the ones it builds). The run inside the container reads it from this same
+checkout, mounted there at its own path.
 
 ## Why the visual job installs no browser
 

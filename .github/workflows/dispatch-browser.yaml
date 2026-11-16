@@ -105,7 +105,7 @@ jobs:
       - run: bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
       - name: Build contracts for dispatch e2e
-        run: bun run build
+        run: bun run build:dispatch
         working-directory: packages/contracts
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
@@ -192,7 +192,7 @@ jobs:
       - run: bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-builds-contracts
       - name: Build contracts for dispatch e2e
-        run: bun run build
+        run: bun run build:dispatch
         working-directory: packages/contracts
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
@@ -277,7 +277,7 @@ jobs:
       - run: bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-contracts
       - name: Build contracts for dispatch e2e
-        run: bun run build
+        run: bun run build:dispatch
         working-directory: packages/contracts
       - name: Build the Dispatch server
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-the-dispatch-server-itself
@@ -348,8 +348,10 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # The e2e helpers the specs import read some of contracts' values from its built dist/,
-        # through Playwright's own Node resolution (the shard job's step of the same name).
-        run: bun run build
+        # through Playwright's own Node resolution (the shard job's step of the same name), which
+        # takes the entries Dispatch imports alone. `bun run e2e:embedder` below makes the same
+        # build again (packages/dispatch's build:contracts).
+        run: bun run build:dispatch
         working-directory: packages/contracts
       - name: Build the Dispatch server for the embedder lane
         # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name
@@ -401,7 +403,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-builds-contracts
-        run: bun run build
+        run: bun run build:dispatch
         working-directory: packages/contracts
       - name: Build dispatch dashboard
         run: |
