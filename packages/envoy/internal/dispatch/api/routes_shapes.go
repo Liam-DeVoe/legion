@@ -257,8 +257,8 @@ type referenceTargetsQuery struct {
 	// Ref is one reference to resolve, given once per reference, at most
 	// referenceTargetsMax of them; naming none is 400 INVALID_REFERENCE and naming more
 	// than the cap is 400 CAP_EXCEEDED. An item id or a block id written short in it is
-	// resolved in the scope the reference names, and a prefix two or more items carry is
-	// 409 ID_AMBIGUOUS.
+	// resolved in the scope the reference names, and a prefix two or more items carry
+	// answers that member gone with ambiguous: true, and every other member is answered.
 	Ref []string `query:"ref"`
 }
 

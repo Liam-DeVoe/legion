@@ -102,10 +102,13 @@ type Scope struct {
 
 // ResolvePrefix is the one item kind names whose id starts with prefix: an ask, a comment, a
 // message, a document (`artifact`) or a document block, looked for where scope says, as viewer.
-// Both callers of a short id go through it - the resolver that rewrites a body's short ids as it
-// is indexed (text.Resolver.Items), with the zero Viewer and the owner the reference names, and
-// the API route that resolves one id for a person or a session, with the viewer it authenticated
-// and, where its route names no owner, the whole kind.
+// Both callers that resolve one short id at a time go through it - the resolver that rewrites a
+// body's short ids as it is indexed (text.Resolver.Items), with the zero Viewer and the owner the
+// reference names, and the API route that resolves one id for a person or a session, with the
+// viewer it authenticated and, where its route names no owner, the whole kind. ResolvePrefixes
+// is the batched second copy of these queries, which GET /api/v1/reference-targets uses to
+// resolve the short ids of a whole set at once. It shares the selection rule of this function
+// (choosePrefixCandidate), so a short id names the same item through either function.
 //
 // It answers the one match, ErrPrefixAmbiguous with the matches listed (at most
 // prefixCandidateLimit of them, in id order) where two or more carry the prefix, and

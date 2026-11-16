@@ -7,8 +7,6 @@ import (
 	"math"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -22,30 +20,33 @@ type ShortID struct {
 }
 
 // ResolvePrefixes is ResolvePrefix for many short ids at once. The read that resolves a set of
-// references (GET /api/v1/reference-targets) uses it, so that a set costs a statement per kind
-// of item and not a statement per short id. It reads one statement for each kind that the ids
-// name, however many ids and owners they hold: the asks, the comments, the messages, the
-// documents, the blocks of the latest indexed version of a document, and the blocks of a version
-// that a reference pins, which are read from other tables. A kind that no id names costs no
-// statement, so a set of no id costs none. For each id, the statement reads the candidates that
-// the query of ResolvePrefix reads for that id alone: the same range on the uuid key or the same
-// match on the block id, the same owner, the same order, and at most prefixCandidateLimit of
-// them. Each id is then answered by the rule that ResolvePrefix answers by
-// (choosePrefixCandidate), so an id names the same item through either function.
+// references (GET /api/v1/reference-targets) uses it, so that a set costs one statement per kind
+// of item, two for the blocks of a document, and not a statement per short id. It reads one
+// statement for each kind that the ids name, however many ids and owners they hold: the asks,
+// the comments, the messages, the documents, the blocks of the latest indexed version of a
+// document, and the blocks of a version that a reference pins, which are read from other tables.
+// A kind that no id names costs no statement, so a set of no id costs none. For each id, the
+// statement reads the candidates that the query of ResolvePrefix reads for that id alone: the
+// same range on the uuid key or the same match on the block id, the same owner, the same order,
+// and at most prefixCandidateLimit of them. Each id is then answered by the rule that
+// ResolvePrefix answers by (choosePrefixCandidate), so an id names the same item through either
+// function.
 //
-// The answer holds the one item that each id names, under that id. An id that nothing carries
-// has no entry. Nor has an id that ResolvePrefix answers as no match without a query: a prefix
-// that text.IsIDPrefix refuses or that can start no uuid, a kind that it does not know, and a
-// scope that the kind cannot have. An id that two items or more carry fails the whole call with
-// its ErrPrefixAmbiguous: the error of the first such id, in the order of ids. An id that ids
-// holds twice is read once.
+// The first answer, whole, holds the one item that each id names, under that id. An id that
+// nothing carries has no entry. Nor has an id that ResolvePrefix answers as no match without a
+// query: a prefix that text.IsIDPrefix refuses or that can start no uuid, a kind that it does
+// not know, and a scope that the kind cannot have. The second answer, ambiguous, is true for
+// each id that two items or more carry, which has no entry in whole: where ResolvePrefix
+// refuses such an id with ErrPrefixAmbiguous, this function answers it under its own id and
+// answers every other id of the call too. ambiguous is nil when no id is ambiguous. An id that
+// ids holds twice is read once.
 //
 // Every candidate is read as the zero Viewer reads it. A short message id in a reference always
 // names the issue of its message (PrefixScope), so a message is resolved within its issue alone.
 // Thus no direct message is ever a candidate, and this function needs no part that decides
 // which session can read the first line of a direct message, as ResolvePrefix has. A message id
 // whose scope names no issue is no match.
-func ResolvePrefixes(ctx context.Context, q Queryer, ids []ShortID) (map[ShortID]Candidate, error) {
+func ResolvePrefixes(ctx context.Context, q Queryer, ids []ShortID) (whole map[ShortID]Candidate, ambiguous map[ShortID]bool, err error) {
 	var asks, comments, messages, documents, latest, pinned, order []ShortID
 	seen := make(map[ShortID]bool, len(ids))
 	for _, id := range ids {
@@ -84,20 +85,26 @@ func ResolvePrefixes(ctx context.Context, q Queryer, ids []ShortID) (map[ShortID
 		func() error { return blockShortIDCandidates(ctx, q, pinned, true, found) },
 	} {
 		if err := read(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	whole := make(map[ShortID]Candidate, len(order))
+	whole = make(map[ShortID]Candidate, len(order))
+	var many *ErrPrefixAmbiguous
 	for _, id := range order {
+		// choosePrefixCandidate answers one item, ErrPrefixAmbiguous, or pgx.ErrNoRows for an
+		// id that nothing carries, which has no entry in either answer.
 		candidate, err := choosePrefixCandidate(id.Kind, id.Prefix, found[id])
 		switch {
 		case err == nil:
 			whole[id] = candidate
-		case !errors.Is(err, pgx.ErrNoRows):
-			return nil, err
+		case errors.As(err, &many):
+			if ambiguous == nil {
+				ambiguous = make(map[ShortID]bool)
+			}
+			ambiguous[id] = true
 		}
 	}
-	return whole, nil
+	return whole, ambiguous, nil
 }
 
 // itemShortIDCandidates reads into found, under each of ids, the asks or the comments that its

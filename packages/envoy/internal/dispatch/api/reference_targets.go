@@ -20,8 +20,10 @@ import (
 // the client batches by too, and whose comment gives the measurement it is set above: the 247
 // distinct references that dispatch://INFRA-1196 and its four largest documents name. So the
 // count of references splits no such load into a second request, and a set at the cap costs one
-// statement per node kind (refs.TargetNames), not one per reference, and one statement per kind
-// of item whose ids it writes short (refs.ResolvePrefixes).
+// statement per node kind (refs.TargetNames), not one per reference. The ids that the set writes
+// short cost one statement per kind of item (refs.ResolvePrefixes), except the blocks of a
+// document, which cost two: one for the blocks of the latest version of each document, and one
+// for the blocks of the versions that the references pin.
 //
 // The other bound on a batch is the request line itself, which this server sets no limit of its
 // own on. A proxy in front of the server can set one; 16 KB is one known such limit, an AWS load
@@ -52,10 +54,11 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // A reference whose item id or block id is written short is read as GET /api/v1/references reads
 // its ?to= (wholeReferences): as the one item that carries the prefix among the items of the
 // owner that the reference names. A prefix that nothing carries leaves the reference as written,
-// which then names nothing and is answered gone. A prefix that two items or more carry refuses
-// the whole read with the 409 ID_AMBIGUOUS that the per-reference route answers for it, listing
-// the items (writeIDPrefixError). That refusal comes once every reference is parsed, so a set
-// that also holds a reference the grammar cannot read is refused for that reference.
+// which then names nothing and is answered gone. A prefix that two items or more carry is
+// answered gone too, with ambiguous true, and every other member of the read is answered as it
+// stands. GET /api/v1/references refuses such a prefix with a 409, but one reference must not
+// refuse a whole batch: the page reads its batches together, so one refusal would blank the
+// name of every reference in the batch.
 //
 // A caller that sent `Dispatch-Trees: 1` is given each block's whole text as its text_tree
 // (blockTrees). The trees are resolved before the ETag is made, because the ETag hashes them: a
@@ -67,7 +70,7 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	targets, err := s.referenceTargets(r, trees)
 	if err != nil {
-		s.writeIDPrefixError(w, err)
+		s.writeHandlerError(w, err)
 		return
 	}
 	trees.resolve()
@@ -83,7 +86,9 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 // query per node kind. The kind of each answer is the kind the reference itself names, which is
 // the kind its node resolves to (refs.TargetOf stores a block of an ask, a comment or a message
 // under its item's block kind, and those resolve to nodes of kind block), so a gone target is
-// answered under its kind too.
+// answered under its kind too. A reference whose short id two items or more carry names no one
+// target, so it is looked up as nothing (the zero refs.Target, which has no name and no tree),
+// and is answered gone and ambiguous.
 //
 // A reference is read past the whitespace around it, and echoed as the request wrote it, that
 // whitespace and an id written short included: the answer is read by index or by reference, and
@@ -108,16 +113,21 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		}
 		parsed[index] = ref
 	}
-	if err := s.wholeReferences(r.Context(), parsed); err != nil {
+	ambiguous, err := s.wholeReferences(r.Context(), parsed)
+	if err != nil {
 		return nil, err
 	}
 	answers := make([]model.ReferenceTarget, len(raw))
 	named := make([]refs.Target, len(raw))
 	for index, ref := range parsed {
+		answers[index] = model.ReferenceTarget{Ref: raw[index], Kind: ref.Kind, Gone: true}
+		if ambiguous != nil && ambiguous[index] {
+			answers[index].Ambiguous = true
+			continue
+		}
 		// Every kind parseRequestRef admits has a target; only an external URL has none, and
 		// that is no reference.
 		target, _ := refs.TargetOf(ref)
-		answers[index] = model.ReferenceTarget{Ref: raw[index], Kind: ref.Kind, Gone: true}
 		named[index] = target
 	}
 	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, named)
@@ -139,14 +149,16 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 // id is written short, by the rules that GET /api/v1/references reads one ?to= by
 // (wholeReference). The owner that the prefix is resolved within is read from the reference
 // (refs.PrefixScope), and only an id that text.IsIDPrefix accepts is resolved. The one item that
-// carries the prefix gives the reference its whole id. A prefix that nothing carries leaves the
-// reference as written, and a prefix that two items or more carry is the error
-// *refs.ErrPrefixAmbiguous, of the first such reference in the set.
+// carries the prefix gives the reference its whole id, and a prefix that nothing carries leaves
+// the reference as written. A prefix that two items or more carry leaves the reference as
+// written too, and ambiguous is true at that reference's index, so that the caller answers that
+// reference alone as ambiguous and every other reference as it stands. ambiguous is nil when no
+// reference is ambiguous.
 //
 // Every short id of the set is resolved in one batch (refs.ResolvePrefixes), which reads each
-// distinct id once, in one statement per kind of item, so a set with no short id costs no
-// statement.
-func (s *server) wholeReferences(ctx context.Context, references []text.Ref) error {
+// distinct id once, in one statement per kind of item and two for the blocks of a document, so
+// a set with no short id costs no statement.
+func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (ambiguous []bool, err error) {
 	short := make([]refs.ShortID, len(references))
 	var asked []refs.ShortID
 	for index, ref := range references {
@@ -158,15 +170,22 @@ func (s *server) wholeReferences(ctx context.Context, references []text.Ref) err
 		}
 	}
 	if len(asked) == 0 {
-		return nil
+		return nil, nil
 	}
-	whole, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, asked)
+	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, asked)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for index, id := range short {
-		// A reference that writes no short id holds the zero ShortID, which the answer never
+		// A reference that writes no short id holds the zero ShortID, which neither answer ever
 		// holds, since no prefix is empty.
+		if many[id] {
+			if ambiguous == nil {
+				ambiguous = make([]bool, len(references))
+			}
+			ambiguous[index] = true
+			continue
+		}
 		candidate, found := whole[id]
 		if !found {
 			continue
@@ -177,7 +196,7 @@ func (s *server) wholeReferences(ctx context.Context, references []text.Ref) err
 			ref.ID = candidate.ID
 		}
 	}
-	return nil
+	return ambiguous, nil
 }
 
 // blockTrees registers, for each member that names a block something answers to, that block's
@@ -331,17 +350,19 @@ func withoutBlankEnds(lines string) string {
 }
 
 // referenceTargetsETag hashes the answer itself, every member in order: its reference, its kind,
-// whether it is gone, its name and its tree, each of the last two after its length so no name's
-// own line endings can read as another member's fields. The answer depends on nothing else, so a
-// set whose members all stand as they did is answered 304, and a member renamed, deleted or
-// restored changes the tag; for a caller given trees, a block whose text changed anywhere changes
-// the tag. A caller given trees and one given none are answered different bodies wherever a
-// block is named, and different tags with them.
+// whether it is gone, whether it is ambiguous, its name and its tree, each of the last two after
+// its length so no name's own line endings can read as another member's fields. The answer
+// depends on nothing else, so a set whose members all stand as they did is answered 304, and a
+// member renamed, deleted or restored changes the tag; for a caller given trees, a block whose
+// text changed anywhere changes the tag. A member gone because its short id is ambiguous and a
+// member gone because its target is deleted never share a tag, so a short id that stops being
+// ambiguous, or starts to be, changes the tag too. A caller given trees and one given none are
+// answered different bodies wherever a block is named, and different tags with them.
 func referenceTargetsETag(targets []model.ReferenceTarget) string {
 	hash := sha256.New()
 	for _, target := range targets {
-		_, _ = fmt.Fprintf(hash, "%s %s %t %d %s %d %s\n", target.Ref, target.Kind, target.Gone,
-			len(target.Name), target.Name, len(target.TextTree), target.TextTree)
+		_, _ = fmt.Fprintf(hash, "%s %s %t %t %d %s %d %s\n", target.Ref, target.Kind, target.Gone,
+			target.Ambiguous, len(target.Name), target.Name, len(target.TextTree), target.TextTree)
 	}
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }

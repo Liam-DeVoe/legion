@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -154,9 +153,10 @@ func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
 // A set at the cap is read, one past it is refused naming the cap, and a reference the grammar
 // cannot read - an external URL, or a reference to a person, which it reads none of - is refused
 // naming it. The cap is counted before anything is parsed, so a set past it costs no
-// reference's parse. A block id written short that two blocks of the document carry refuses the
-// whole set with the 409 ID_AMBIGUOUS that GET /api/v1/references answers for it, listing both
-// blocks.
+// reference's parse. A block id written short that two blocks of the document carry refuses
+// nothing: that reference is answered as one member, gone and ambiguous, with no name, and the
+// other member of the set is answered with its name. The other member's answer carries no key
+// ambiguous at all.
 func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -206,18 +206,27 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 
 	shared := createSpecIssue(t, handler, "CORE", ":::requirement{#deadbeef-one}\nThe first requirement.\n:::\n\n"+
 		":::requirement{#deadbeef-two}\nThe second requirement.\n:::\n")
-	ambiguous := referenceTargetsRequest(t, handler, []string{reference, "dispatch://" + shared.Key + "/spec#b-deadbeef"}, "")
-	if ambiguous.Code != http.StatusConflict {
-		t.Fatalf("a block prefix two blocks carry answered status=%d body=%s, want 409", ambiguous.Code, ambiguous.Body.String())
+	short := "dispatch://" + shared.Key + "/spec#b-deadbeef"
+	answered := referenceTargetsRequest(t, handler, []string{short, reference}, "")
+	if answered.Code != http.StatusOK {
+		t.Fatalf("a set that holds a block prefix two blocks carry answered status=%d body=%s, want 200",
+			answered.Code, answered.Body.String())
 	}
-	refusal := decodeBody[ambiguousIDAnswer](t, ambiguous)
-	if refusal.Code != contracts.IDAmbiguous || len(refusal.Candidates) != 2 {
-		t.Fatalf("the refusal is %+v, want %s naming both blocks", refusal, contracts.IDAmbiguous)
+	members := decodeBody[model.ReferenceTargets](t, answered).Targets
+	wanted := []model.ReferenceTarget{
+		{Ref: short, Kind: "block", Name: "", Gone: true, Ambiguous: true},
+		{Ref: reference, Kind: "issue", Name: issue.Title},
 	}
-	for nth, candidate := range refusal.Candidates {
-		want := []string{"deadbeef-one", "deadbeef-two"}[nth]
-		if candidate.Kind != "block" || candidate.ID != want || candidate.IssueKey != shared.Key {
-			t.Errorf("candidate %d = %+v, want the block %s of %s", nth, candidate, want, shared.Key)
-		}
+	if !reflect.DeepEqual(members, wanted) {
+		t.Fatalf("a set that holds a block prefix two blocks carry answered %#v, want %#v", members, wanted)
+	}
+	keys := decodeBody[struct {
+		Targets []map[string]any `json:"targets"`
+	}](t, answered).Targets
+	if keys[0]["ambiguous"] != true {
+		t.Errorf("the ambiguous member is %v, want the key ambiguous true", keys[0])
+	}
+	if _, carried := keys[1]["ambiguous"]; carried {
+		t.Errorf("the other member is %v, want no key ambiguous", keys[1])
 	}
 }

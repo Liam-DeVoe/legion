@@ -6,7 +6,8 @@ body: |-
     request, answering each one's kind, the words a reader is shown for its target and whether
     the target is gone, so a page draws every pointer chip without a request per chip. At most
     256 references in one request, with an `ETag`; a reference that parses but names nothing is
-    answered as gone rather than refused.
+    answered as gone rather than refused. A reference whose short id two or more items carry
+    answers that member as gone with `ambiguous: true`, and every other member is answered.
   - Each `IssueChild` of `GET /api/v1/issues/{key}` carries `needs`, the keys of the issues it
     waits on, and `claim`, who holds it, each left out when the child has none, so a reader sees
     what blocks a child and who holds it.
