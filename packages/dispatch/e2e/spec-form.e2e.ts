@@ -250,6 +250,13 @@ test("the person's Approve on the Inbox card of a broken statement under the roo
       "Dispatch refused this approval, because 1 text breaks the form of The Spec."
     );
     await expect(card.getByRole("alert")).toContainText(findingLine);
+    // The card has picked Request changes itself, so its last line names the press left, and
+    // that press keeps the focus.
+    await expect(card.getByRole("alert")).toContainText(
+      "To send these findings to the author, choose Answer."
+    );
+    await expect(card.getByRole("alert")).not.toContainText("choose Request changes");
+    await expect(card.getByRole("button", { name: "Answer" })).toBeFocused();
     await expect(card.getByRole("radio", { name: /^Request changes / })).toBeChecked();
     await expect(card.getByLabel("Reason (required)")).toHaveValue(changesReason);
 
