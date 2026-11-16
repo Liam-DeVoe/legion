@@ -5409,7 +5409,8 @@ The release's ask is no task, and no daemon sends it again.
 Each new pod builds its workspace from the issue's pushed branch, and the release gives it no bundle.
 A delivery that waited reaches its claim after the start: a role message, a phase-ended message and a hook prompt wait on until the start's session holds the claim's role again.
 One for a claim that failed, retired or was suspended again by an operator or the daemon is handled as any delivery for a role nobody holds.
-The release and the starts charge no launch failure and no death, and the release changes no claim that was suspended, failed or retired before it.
+The release and the starts charge no launch failure and no death.
+The release changes no claim that was suspended, failed or retired before it, except that it takes each claim of a pod it leaves out of its update round (below), and takes over an idle release's suspension (`released`) as its own.
 A restart on the configuration of the release's own cluster also adopts each pod the release did not reach, as after any restart.
 A restart on another cluster's configuration finds none of those pods, so the move changes the configuration only once the release ended with no pod left.
 
@@ -5459,7 +5460,8 @@ Before the release, the other cluster and the daemon need these:
   The broker reads each issuer in the background, so it serves while the other cluster's issuer cannot be read, and answers that cluster's tokens `503 OIDC_ISSUER_UNAVAILABLE` until it can.
   The broker's token exchange takes the tokens of each cluster that `BROKER_EXCHANGE_K8S_ISSUER` names, by their names in the list and separated by commas.
   Where the broker sets `BROKER_EXCHANGE_K8S_AUDIENCE` and the list names two or more issuers, the broker refuses to boot without that setting.
-  Each `BROKER_EXCHANGE_ACCOUNTS` entry takes its account's token only from the issuers it names after its last `=`, and an entry that names none takes the list's first issuer alone, so the entry of an account whose pods move names both clusters.
+  Each `BROKER_EXCHANGE_ACCOUNTS` entry takes its account's token only from the issuers it names in a fifth `=`-separated field, after its session field, which is empty where the entry fixes no session: `<service account>=<project>=<person>==home,other`.
+  An entry that names none takes the list's first issuer alone, so the entry of an account whose pods move names both clusters.
   The exchange reads its issuers in the background with the rest of the list, so it answers the tokens of a cluster whose issuer it cannot read `503 OIDC_ISSUER_UNAVAILABLE` and stops no boot.
 
 - **Every service that checks a pod's token accepts the other cluster's tokens.**
