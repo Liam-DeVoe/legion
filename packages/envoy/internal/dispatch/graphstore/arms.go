@@ -65,8 +65,13 @@ func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) 
 }
 
 // writeArms is both: states says whether the node arm states the base attributes of each node
-// it makes.
+// it makes. A node, a value tuple or a claim stating a state or a visibility at a value that
+// attribute does not take is refused before any arm is built (checkBaseValues), so the caller's
+// statement never runs it.
 func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states bool) (string, []any, error) {
+	if err := checkBaseValues(nodes, tuples, claims); err != nil {
+		return "", nil, err
+	}
 	relations, values := splitTuples(tuples)
 	if len(nodes) == 0 && len(relations) == 0 && len(values) == 0 && len(claims) == 0 {
 		return "", nil, nil
@@ -262,13 +267,15 @@ const (
 	do nothing`
 )
 
-// nodeArrays are the eleven arrays a node write binds, in nodeColumns' order: one spelling of the
-// types, read by the arm the publisher's record splices in and by writeNodes alike. The project
-// and the parties are bound as text, null for a node that carries none, and the parties as the
-// one value their attribute carries (PartiesValue), which nodeBound splits into the column's
-// array.
+// nodeArrayTypes are the types of the eleven arrays a node write binds, in nodeColumns' order,
+// and nodeArrays their parameter list: one spelling of the types, read by the arm the publisher's
+// record splices in and by writeNodes alike. The project and the parties are bound as text, null
+// for a node that carries none, and the parties as the one value their attribute carries
+// (PartiesValue), which nodeBound splits into the column's array.
+var nodeArrayTypes = []string{"text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint", "text", "text"}
+
 func nodeArrays(first int) string {
-	return arrayList(first, "text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint", "text", "text")
+	return arrayList(first, nodeArrayTypes...)
 }
 
 // nodeBound is nodeColumns as a node write reads them off the arrays it binds (nodeArrays): each

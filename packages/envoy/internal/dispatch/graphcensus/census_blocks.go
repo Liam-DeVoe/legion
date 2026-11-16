@@ -11,9 +11,10 @@ var blockProjections = []projection{{
 	name:     "block",
 	nodeKind: refs.BlockNodeKind,
 	table:    "document_blocks",
-	note: "one node per row, blocks past the address bound aside; the digest is the row's document and the block" +
-		" its parent_block_id names, or the document where it names none, against the in_document and part_of" +
-		" tuples the node states now, a block with no part_of telling itself from one the document holds directly",
+	note: "one node per row, blocks past the address bound and the blocks of a lens's finding aside; the digest is" +
+		" the row's document and the block its parent_block_id names, or the document where it names none, against" +
+		" the in_document and part_of tuples the node states now, a block with no part_of telling itself from one" +
+		" the document holds directly",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
@@ -27,7 +28,7 @@ var blockProjections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
 		`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
-		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'`,
+		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 }, {
@@ -35,9 +36,10 @@ var blockProjections = []projection{{
 	nodeKind: refs.BlockNodeKind,
 	table:    "block_refs",
 	note: "a row is one link out of a block and its node is that block's, so several rows share one node:" +
-		" the node side is every live block node that states a link now beside its in_document and part_of," +
-		" whether a row names it or not, and the digest is every link the rows of that block name against" +
-		" every such link its node states now",
+		" the node side is every block node not gone, a lens's finding aside, that states a link now of a kind" +
+		" refs.IndexBlocks writes into block_refs (a mention, or a pointer of a block[] attribute the store's" +
+		" type nodes declare, at any state), whether a row names it or not, and the digest is every link the" +
+		" rows of that block name against every such link its node states now",
 	rows: `
 		select 'block_ref ' || r.from_node || ' ' || r.kind || ' -> ' || r.to_kind || ' ' || r.to_id,
 		       r.node_kind, r.node_address, md5(r.from_node || '|' || named.links)
@@ -54,13 +56,13 @@ var blockProjections = []projection{{
 	// Every block node is read, and not only those a row names: a mention or a pointer the store
 	// states out of a block no block_refs row names is a link graph_edges answers, and a node
 	// side that began at the rows could never find it. A block whose only links are its
-	// placement states no link here and is no node of this kind; the block kind holds it.
+	// placement, or tuples no block_refs row projects, states no link here and is no node of this
+	// kind; the block kind holds it.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind,
-		`t.kind not in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + ` as links
-			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+refs.BlockRefKindsSQL+`)`) + ` as links
+			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + `
 		) held
 		where held.links <> ''`,
 	pastBound: `

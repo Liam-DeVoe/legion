@@ -145,8 +145,8 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
 		select exists (
 			select 1 from graph_nodes
-			where kind = $1 and id = $2 and state = $3 and `+refs.VisibleRow("graph_nodes", "$4")+`
-		)`, graphstore.KindPerson, login, graphstore.StateLive, seen).Scan(&held); err != nil {
+			where kind = $1 and id = $2 and state <> $3 and `+refs.VisibleRow("graph_nodes", "$4")+`
+		)`, graphstore.KindPerson, login, graphstore.StateGone, seen).Scan(&held); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

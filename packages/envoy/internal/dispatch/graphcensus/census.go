@@ -25,9 +25,10 @@ const reportedDifferences = 20
 //
 // rows is a select of (row_label, node_kind, node_address, digest): one row per projection row,
 // naming the node that row says it projects and digesting the fields the row and its node
-// share. nodes is a select of (id, digest): one row per live node of the kind, digesting the
-// same fields as the store holds them. The census holds the two against each other in both
-// directions, so a row with no node and a node with no row are each a difference.
+// share. nodes is a select of (id, digest): one row per node of the kind, digesting the same
+// fields as the store holds them, of which the census compares those the store holds present
+// (presentNodes). The census holds the two against each other in both directions, so a row with
+// no node and a node with no row are each a difference.
 //
 // A kind with no projection table takes the set of actors the projected tables name as its rows
 // (people and agents below), which is the side that exists for it; a role takes the roles the
@@ -42,7 +43,7 @@ type projection struct {
 	// so the report says what it checked rather than only what it found.
 	note string
 	rows string
-	// nodes is the live nodes of the kind. It names no state: liveNodes wraps it.
+	// nodes is the nodes of the kind. It names no state: presentNodes wraps it.
 	nodes string
 	// addressed says rows reads the roles addressedRoles names as $1, which the census reads once
 	// for the run (readAddressedRoles) rather than once in every statement that reads the rows.
@@ -55,8 +56,8 @@ type projection struct {
 	pastBound string
 }
 
-// KindReport is one kind's census: how many rows and how many live nodes it read, and what the
-// two said about each other.
+// KindReport is one kind's census: how many rows and how many present nodes it read, and what
+// the two said about each other.
 type KindReport struct {
 	Kind, NodeKind, Table, Note string
 	Rows, Nodes                 int64
@@ -172,6 +173,14 @@ func (r *StoreReport) Refused() bool {
 // a session named past it is no node either. Each row side leaves those addresses out and counts
 // them as a class of its own (pastBound), so the census reports no difference the writers made on
 // purpose, in both directions.
+//
+// The two block kinds hold a block to what refs.IndexBlocks projects of it and to nothing else. A
+// block of a lens's finding (lensBlock) is a block node no document holds, so no table projects
+// it and neither block kind reads it. And a tuple another writer states out of a block - a
+// requirement's constrained_by, a changed_by_run, a finding's authored_by - is no link a
+// block_refs row names, so the block_ref kind reads only the kinds that writer projects into
+// block_refs (refs.BlockRefKindsSQL, read from the store inside the census's own snapshot) and
+// the block kind only a block's placement.
 var projections = slices.Concat(
 	commentProjections, blockProjections, actorProjections,
 	issueProjections, componentProjections, resultProjections, versionProjections, refProjections,
@@ -303,6 +312,19 @@ var actorProjections = []projection{{
 // it. It is written into the text rather than bound as a parameter because each side is spliced
 // into a statement of its own and one shared constant keeps the two sides reading the same bound.
 var addressBound = strconv.Itoa(graphstore.MaxAddressBytes)
+
+// lensBlockPrefix is how a block node's id names a lens: a block of a lens's finding is addressed
+// under its lens, dispatch://lens/<uuid>, so its id is `lens/<uuid>#<id>`.
+const lensBlockPrefix = "lens/"
+
+// lensBlock is true of the block node alias whose id names a lens: a block of a lens's finding
+// (dispatch://INFRA-1950), which no document holds, so no document_blocks row projects it and no
+// block_refs row names it. A document's block is `<ref_key>#<id>` (refs.IndexBlocks), and a
+// ref_key begins with an issue's or a project's key, which is upper case, or with `agent/`
+// (graphstore.ArtifactRefKey), so no document's block reads as one.
+func lensBlock(alias string) string {
+	return `(` + alias + `.id like '` + lensBlockPrefix + `%')`
+}
 
 // statedLinks is the links a projection row states, as one value its digest can carry: links are
 // SQL expressions over the row, each answering one link written kind>to_kind:to_id, or null where
@@ -523,7 +545,8 @@ func readAddressedRoles(ctx context.Context, tx pgx.Tx) ([]string, error) {
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
-// gone; a row whose shared fields disagree with its node's; and a live node no row projects.
+// gone; a row whose shared fields disagree with its node's; and a node the store holds present
+// that no row projects, named with its state.
 //
 // Two writes can state one fact twice by design and nothing here reads wrong for it: a tuple at
 // the source_event sentinel is outside both repeat keys, and the backfill writes every fact it
@@ -615,7 +638,7 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 	return kinds, nil
 }
 
-// censusOfKind reads one kind: how many rows and live nodes there are, and the differences in
+// censusOfKind reads one kind: how many rows and present nodes there are, and the differences in
 // each direction with the first reportedDifferences of them. args are what the kind's rows bind,
 // none but for a kind that reads the addressed roles.
 //
@@ -632,7 +655,7 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 	}
 	if err := tx.QueryRow(ctx, `select
 		(select count(*) from (`+held.rows+`) rows (row_label, node_kind, node_address, digest)),
-		(select count(*) from (`+liveNodes(held)+`) nodes (id, digest)),
+		(select count(*) from (`+presentNodes(held)+`) nodes (id, digest, state)),
 		(select count(*) from (`+rowDifferences(held)+`) rows_found),
 		(select count(*) from (`+nodeDifferences(held)+`) nodes_found),
 		(`+pastBound+`)`, args...,
@@ -655,45 +678,51 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 	return kind, nil
 }
 
-// liveNodes is the kind's node side bound to the live state: a node the store holds gone is no
-// node a row may project, and the row side holds it to that separately (goneNodeCause).
-func liveNodes(held projection) string {
-	return `select id, digest from (` + held.nodes + `) node (id, digest)
-		where exists (select 1 from graph_nodes live
-		              where live.kind = '` + held.nodeKind + `' and live.id = node.id
-		                and live.state = '` + graphstore.StateLive + `')`
+// presentNodes is the kind's node side bound to the nodes the store holds present, which is every
+// node not at state gone (R12 of dispatch://INFRA-1950): a node at proposed, settled or overtaken
+// is a node a row projects as one at live is, so a move between those states is no lost node. It
+// answers each node's state beside its digest, which the report names a node with. A node the
+// store holds gone is no node a row may project, and the row side holds it to that separately.
+func presentNodes(held projection) string {
+	return `select node.id, node.digest, present.state from (` + held.nodes + `) node (id, digest)
+		join graph_nodes present on present.kind = '` + held.nodeKind + `' and present.id = node.id
+		                        and present.state <> '` + graphstore.StateGone + `'`
 }
 
 // rowDifferences reads the row side against the store: every row that names no node, names one
 // the store does not hold, names one it holds gone, or disagrees with its node's digest. The
 // gone test is its own cause rather than a missing node, because a row projecting a node the
-// store has ended is a different defect from a row projecting nothing.
+// store has ended is a different defect from a row projecting nothing, and it is the one test
+// of a node's state here: a row may project a node at any other state.
 func rowDifferences(held projection) string {
 	return `
 		select case
 			when row.node_kind is null or row.node_address is null then 'the row names no node'
 			when node.kind is null then 'the row names a node the store does not hold'
-			when node.state <> '` + graphstore.StateLive + `'
+			when node.state = '` + graphstore.StateGone + `'
 				then 'the row names a node the store holds ' || node.state
 			else 'the row and its node disagree: the row digests ' || row.digest
-			     || ' and the node ' || coalesce(live.digest, '(none)')
+			     || ' and the node ' || coalesce(present.digest, '(none)')
 		end,
 		row.row_label
 		from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
 		left join graph_nodes node on node.kind = row.node_kind and node.id = row.node_address
-		left join (` + liveNodes(held) + `) live (id, digest) on live.id = row.node_address
+		left join (` + presentNodes(held) + `) present (id, digest, state) on present.id = row.node_address
 		where row.node_kind is null or row.node_address is null or node.kind is null
-		   or node.state <> '` + graphstore.StateLive + `'
-		   or row.digest is distinct from live.digest
+		   or node.state = '` + graphstore.StateGone + `'
+		   or row.digest is distinct from present.digest
 		order by 2, 1`
 }
 
-// nodeDifferences reads the store against the row side: every live node of the kind no row
-// projects.
+// nodeDifferences reads the store against the row side: every node of the kind the store holds
+// present that no row projects, named with the state it is at, so a proposed node with no row
+// reads as a proposed one and a live one as `a live node no row projects`.
 func nodeDifferences(held projection) string {
 	return `
-		select 'a live node no row projects', '` + held.nodeKind + ` ' || node.id
-		from (` + liveNodes(held) + `) node (id, digest)
+		select case when node.state ~ '^[aeiou]' then 'an ' else 'a ' end || node.state
+		       || ' node no row projects',
+		       '` + held.nodeKind + ` ' || node.id
+		from (` + presentNodes(held) + `) node (id, digest, state)
 		where not exists (
 			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
 			where row.node_kind = '` + held.nodeKind + `' and row.node_address = node.id)

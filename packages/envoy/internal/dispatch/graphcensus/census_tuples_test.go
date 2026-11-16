@@ -174,3 +174,73 @@ func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 		})
 	}
 }
+
+// The two block kinds hold a block to what the block index projects of it and to nothing else
+// (dispatch://INFRA-1950, R11 and R12). A tuple another writer states out of a document's block -
+// a requirement's constrained_by to a constraint - is no link a block_refs row names, so the
+// block_ref kind reads only the kinds refs.IndexBlocks writes there (refs.BlockRefKindsSQL). And
+// a block of a lens's finding, whose id names its lens, is a block node no document holds, so
+// neither block kind reads it (lensBlock).
+//
+// Over a store the census agrees with (seedAgreeingStore), the test states both through the
+// store's writer: a constraint node and a constrained_by to it out of the inner block, which
+// holds a block_refs row already, and a lens node with a finding block under it, part_of the lens
+// and authored_by the person who wrote the agreeing store's comment. The census reads zero
+// differences in both directions over every kind, and its block line compares as many present
+// nodes as document_blocks holds rows.
+func TestTheBlockCensusReadsNoFindingAndNoTupleTheBlockIndexDoesNotProject(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	seeded := seedAgreeingStore(t, database)
+	const (
+		constraintID = "00000000-0000-4000-8000-0000000000c1"
+		lensID       = "00000000-0000-4000-8000-0000000000c2"
+	)
+	finding := lensBlockPrefix + lensID + "#b-x"
+	at := time.Now().UTC()
+	node := func(kind, id, supertag string) graphstore.Node {
+		return graphstore.Node{
+			Kind: kind, ID: id, Supertag: supertag,
+			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: "CORE",
+			MadeAt: at, MadeBy: censusWriter, SourceEvent: graphstore.NoEvent,
+		}
+	}
+	tuple := func(fromID, kind, toKind, toID string) graphstore.Tuple {
+		return graphstore.Tuple{
+			FromKind: refs.BlockNodeKind, FromID: fromID, Kind: kind, ToKind: toKind, ToID: toID,
+			At: at, Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
+		}
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the constraint's and the finding's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{
+		node("constraint", constraintID, "constraint"),
+		node("lens", lensID, "lens"),
+		node(refs.BlockNodeKind, finding, refs.BlockSupertag),
+	}, []graphstore.Tuple{
+		tuple(seeded.inner, "constrained_by", "constraint", constraintID),
+		tuple(finding, graphstore.TuplePartOf, "lens", lensID),
+		tuple(finding, graphstore.TupleAuthoredBy, graphstore.KindPerson, "alice"),
+	}); err != nil {
+		t.Fatalf("write the constraint, the lens and its finding: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the constraint's and the finding's write: %v", err)
+	}
+	t.Logf("the inner block %s states constrained_by constraint:%s, and the finding %s is part_of lens:%s",
+		seeded.inner, constraintID, finding, lensID)
+
+	report := storeCensusOf(t, database)
+	requireTheCensusAgrees(t, "the census beside a constrained_by out of a block and a lens's finding", report)
+	var rows int64
+	if err := database.Pool.QueryRow(ctx, `select count(*) from document_blocks`).Scan(&rows); err != nil {
+		t.Fatalf("count the document_blocks rows: %v", err)
+	}
+	if blocks := censusKind(t, report, "block"); blocks.Rows != rows || blocks.Nodes != rows {
+		t.Fatalf("the census checked %d block rows against %d present block nodes, want both the %d rows document_blocks holds: a lens's finding is no block a document holds",
+			blocks.Rows, blocks.Nodes, rows)
+	}
+}
