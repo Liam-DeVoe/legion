@@ -168,7 +168,18 @@ func decide(ctx context.Context, deps Deps, services []ServiceEntry, req Request
 	if entry, named := natsgrant.NamesSystemSubject(decision.Grant); named {
 		return Decision{}, refuse(credentialKind(req), "grant names a system subject: "+entry)
 	}
+	// And a grant with an empty allow list in either direction is every subject in that
+	// direction, not none (natsgrant.OpenDirection), so it is refused whatever produced it.
+	// encodeAnswer refuses it again, since that is the one place every answer passes.
+	if direction, open := natsgrant.OpenDirection(decision.Grant); open {
+		return Decision{}, refuse(credentialKind(req), openDirectionReason(direction))
+	}
 	return decision, nil
+}
+
+// openDirectionReason is the refusal of a grant whose allow list in direction is empty.
+func openDirectionReason(direction string) string {
+	return "grant opens every subject: its " + direction + " allow list is empty"
 }
 
 // decideCredential is the decision of the credential req presents, before the guard.
@@ -188,6 +199,9 @@ const sessionNamePrefix = "session/"
 func decideSession(ctx context.Context, deps Deps, req Request, grants grantSource) (Decision, error) {
 	answer, err := deps.Introspect(ctx, req.Token)
 	if err != nil {
+		if ctx.Err() != nil {
+			return Decision{}, budgetRefusal(credentialSession, "the token's introspection")
+		}
 		return Decision{}, refuse(credentialSession, "broker unreachable: the token's introspection failed")
 	}
 	caller, err := brokertoken.SessionCaller(answer)
@@ -228,6 +242,9 @@ const longestServiceToken = machine.MaxTokenLoginLifetime + brokertoken.ProofClo
 func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req Request, grants grantSource) (Decision, error) {
 	account, google, issued, expiry, err := deps.ServiceToken(ctx, req.Password)
 	if err != nil {
+		if ctx.Err() != nil {
+			return Decision{}, budgetRefusal(credentialService, "the service token's verification")
+		}
 		return Decision{}, refuse(credentialService, "service token not verified")
 	}
 	if expiry.Sub(issued) > longestServiceToken {

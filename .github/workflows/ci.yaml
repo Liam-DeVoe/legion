@@ -5059,11 +5059,11 @@ jobs:
     # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
     # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
     # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, natslive's default 10, the bus matrix's own 5 and natsgrant's own 5 (measured
-    # at under a minute on a dev box) are 58, the integration step's 5 is less, and the callout
-    # check's own 6 after it, measured at about 1 minute on a dev box with its build cache, keeps
-    # the whole under 65.
-    timeout-minutes: 65
+    # exceed that, natslive's default 10, the bus matrix's own 5, the auth service's own 5 and
+    # natsgrant's own 5 (measured at under a minute on a dev box) are 63, the integration step's 5
+    # is less, and the callout check's own 6 after it, measured at about 1 minute on a dev box with
+    # its build cache, keeps the whole under 70.
+    timeout-minutes: 70
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5169,13 +5169,16 @@ jobs:
       # unset are proved in process. What is left for a real image is the pair of 2.10 cases - the
       # stream with no cap the binary must leave alone, and the refusal of the raise of a lower
       # cap, naming the field, the cap and the first server taking the change - and the hub's own
-      # reconcile on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). natsgrant has
-      # one test of its own there too: a Legion daemon's grant held to its projects
-      # (natsgrant.WithinProjects), handed out by a stand-in auth callout on the hub's image,
-      # receives no other project's message while today's grant, the control, does (measurement
-      # M5 of dispatch://INFRA-3884's plan). Each package runs only the tests its tag adds:
-      # `-tags natslive ./pkg` would re-run the package's untagged tests, which already run
-      # elsewhere - internal/testnats and natsgrant in the unit step above, and internal/bus in
+      # reconcile on the nats:2.15.1-alpine image the deployment runs (INFRA-1384).
+      # internal/broker/natscallout has one too: that the image the hub runs lets a user with an
+      # empty publish allow list publish anywhere, the fail-open its guard refuses, so the guard is
+      # shown able to fail on the server production runs (INFRA-840). natsgrant has one of its own:
+      # a Legion daemon's grant held to its projects (natsgrant.WithinProjects), handed out by a
+      # stand-in auth callout on the hub's image, receives no other project's message while today's
+      # grant, the control, does (measurement M5 of dispatch://INFRA-3884's plan). Each
+      # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
+      # package's untagged tests, which already run elsewhere - internal/testnats,
+      # internal/broker/natscallout and natsgrant in the unit step above, and internal/bus in
       # envoy-go-race, which the unit step's grep -Ev leaves out - so
       # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
       # source at run time, and no test name is spelled here. Each assignment is a line of its
@@ -5189,6 +5192,8 @@ jobs:
           go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
           grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
           go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
+          callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/broker/natscallout)
+          go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/broker/natscallout/
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)

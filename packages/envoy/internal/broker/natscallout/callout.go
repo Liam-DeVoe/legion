@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 const (
@@ -29,13 +30,29 @@ const (
 	globalAccount = "$G"
 	// connectionName is the name the service's own connection carries in the server's listings.
 	connectionName = "envoy-broker-callout"
-	// decideTimeout bounds one decision, under the server's authorization timeout (the hub's
-	// authorization { timeout: 5 }), so an answer the server would no longer read is not sent.
-	decideTimeout = 4 * time.Second
 	// concurrentDecisions bounds the decisions one replica makes at once: a reconnect storm after
 	// a server restart sends every connection's request together.
 	concurrentDecisions = 64
 )
+
+// decideBudget is how long one decision may take. A Go client fails its connect when the server's
+// answer arrives later than two seconds: nats.go sets one deadline of Opts.Timeout, 2 s by
+// default, over the whole handshake (nats.go, processConnectInit), and the server sends its PONG
+// only once the callout answers; the server gives up on its own at its authorization timeout,
+// nats-server's default of 2 s (server/const.go, AUTH_TIMEOUT), which the hub takes by naming
+// none. So the decision gets 1.5 s, and the dial, the request's trip here and the answer's trip
+// back get the other 0.5 s. A decision that runs past it is answered with a refusal naming the
+// step it was in, never with a late answer.
+//
+// It is a var so a test can raise it: at 2.5 s the same blocking stub makes a client fail its
+// connect, which is the control this budget exists for (deadline_test.go).
+var decideBudget = 1500 * time.Millisecond
+
+// budgetRefusal is what a decision that ran past decideBudget is refused with, naming the step it
+// was in. Its label in the decision counter is "budget" (reasonLabel).
+func budgetRefusal(kind, step string) *Refusal {
+	return refuse(kind, fmt.Sprintf("decision exceeded its %s budget at %s", decideBudget, step))
+}
 
 // Settings is where the service connects and the keys it holds.
 type Settings struct {
@@ -98,7 +115,12 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 		}
 		return "", false
 	}
-	conn, err := bus.Dial(connectionName, settings.URLs, lookup, bus.WithConnectInBackground(), bus.WithSilentCutDetection())
+	// WithImmediateReconnect: every other client of the hub waits on this one. A restart drops
+	// the service's own connection with theirs, and a client that comes back before the service
+	// has resubscribed is refused until it does, so the service retries at once where they wait a
+	// second (internal/bus).
+	conn, err := bus.Dial(connectionName, settings.URLs, lookup,
+		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithImmediateReconnect())
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}
@@ -206,9 +228,15 @@ func (a *answerer) answer(msg *nats.Msg) {
 		Nonce: claims.ClientInformation.Nonce, Token: claims.ConnectOptions.Token, Sig: claims.ConnectOptions.SignedNonce,
 		User: claims.ConnectOptions.Username, Password: claims.ConnectOptions.Password, Host: claims.ClientInformation.Host,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), decideTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), decideBudget)
 	defer cancel()
 	decision, refusal := a.decide(ctx, a.deps, a.services, req)
+	// A decision that ran past the budget is refused, whatever it decided: the client is at or
+	// past the point its connect gives up, and admitting it there would hand the server a user
+	// for a connection that is no longer waiting.
+	if took := time.Since(began); took > decideBudget && refusal == nil {
+		refusal = budgetRefusal(credentialKind(req), "the answer")
+	}
 	reason := ""
 	if refusal != nil {
 		reason = refusal.Error()
@@ -252,6 +280,14 @@ func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal 
 		return "", errors.New("natscallout: the request names no user key")
 	}
 	response.Audience = req.ServerID
+	// The one place every answer passes, so the last guard is here: a grant with an empty allow
+	// list in either direction would be every subject in that direction (natsgrant.OpenDirection),
+	// and it is answered as a refusal naming that direction, never encoded as a user.
+	if refusal == nil {
+		if direction, open := natsgrant.OpenDirection(decision.Grant); open {
+			refusal = errors.New(openDirectionReason(direction))
+		}
+	}
 	if refusal != nil {
 		response.Error = refusal.Error()
 		return response.Encode(issuer)
