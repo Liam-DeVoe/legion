@@ -291,6 +291,34 @@ function focusedRow(container: HTMLElement): string | undefined {
     ?.getAttribute("data-node-id") as string | undefined;
 }
 
+/** A comment with its own address, so its row, focused, draws its acts (Copy reference). */
+function addressedComment(id: string, text: string): TreeNode {
+  return node({
+    id,
+    reference: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+    text,
+    type: "comment",
+  });
+}
+
+/** A control of the page outside the outline - a view control, a control of Details, one under
+ *  the outline - drawn after the tree, and how many times a press fired it. */
+function controlOutside(): { readonly control: HTMLElement; readonly presses: () => number } {
+  let presses = 0;
+  const name = "A control outside the outline";
+  const drawn = render(
+    <button
+      onClick={() => {
+        presses += 1;
+      }}
+      type="button"
+    >
+      {name}
+    </button>
+  );
+  return { control: drawn.getByRole("button", { name }), presses: () => presses };
+}
+
 test("the whole tree is one tab stop, and the focused row's keys work its controls", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -527,18 +555,10 @@ test("a Change the reader typed in comes back with its decision's body", async (
 test("a press on a row draws nothing new until it ends, and then the row opens", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  // Each comment has its own address, so a focused row draws its acts (Copy reference).
-  const comment = (id: string, text: string) =>
-    node({
-      id,
-      reference: buildDispatchReference({ id, key: KEY, kind: "comment" }),
-      text,
-      type: "comment",
-    });
   const root = node({
     children: [
-      comment("comment-1", "The first words."),
-      comment("comment-2", "The words pressed on."),
+      addressedComment("comment-1", "The first words."),
+      addressedComment("comment-2", "The words pressed on."),
     ],
     id: KEY,
     type: "issue",
@@ -566,6 +586,167 @@ test("a press on a row draws nothing new until it ends, and then the row opens",
   await waitFor(() => expect(pressed.querySelector("[data-node-body]")).not.toBeNull());
   expect(pressed.querySelector("[data-row-acts]")).not.toBeNull();
   expect(first.querySelector("[data-node-body]")).toBeNull();
+});
+
+// The architect's decision 105 on R7: a press on a control outside the outline - a view control,
+// a control of Details, one under the outline - focuses that control as it goes down, and the
+// focused row's body closing then shortened the page under the pointer: the press ended on
+// something else, and the control never fired. The body and the row's acts stay drawn while the
+// focus is on another control of the page, until another row takes the focus. happy-dom lays
+// nothing out, so the browser row reads the presses firing (c-focus-opens, `a body opens on
+// focus and nothing opens on hover`); this reads the rule that keeps the page still.
+test("a press on a control outside the outline keeps the focused row's body until another row takes the focus", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const outside = controlOutside();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  const [first] = rowsFor(view.container, "comment-1");
+  const [second] = rowsFor(view.container, "comment-2");
+  if (first === undefined || second === undefined) throw new Error("the rows are not drawn");
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
+
+  await user.pointer({ keys: "[MouseLeft>]", target: outside.control });
+  expect(document.activeElement, "the press did not focus the control it went down on").toBe(
+    outside.control
+  );
+  expect(
+    first.querySelector("[data-node-body]"),
+    "the press on a control outside the outline closed the focused row's body"
+  ).not.toBeNull();
+  expect(
+    first.querySelector("[data-row-acts]"),
+    "the press on a control outside the outline took the focused row's acts away"
+  ).not.toBeNull();
+  await user.pointer({ keys: "[/MouseLeft]" });
+  expect(outside.presses(), "the press did not fire the control").toBe(1);
+  expect(
+    first.querySelector("[data-node-body]"),
+    "the body closed once the press ended"
+  ).not.toBeNull();
+  // The panel goes back to the issue's own facts, as for any focus that leaves the outline for
+  // anything but Details.
+  expect(view.focusedNode()).toBeUndefined();
+
+  // Another row taking the focus closes the body the control kept, and opens its own.
+  await act(async () => second.focus());
+  await waitFor(() => expect(second.querySelector("[data-node-body]")).not.toBeNull());
+  expect(
+    first.querySelector("[data-node-body]"),
+    "the kept body stayed open beside the body of the row that took the focus"
+  ).toBeNull();
+  expect(first.querySelector("[data-row-acts]")).toBeNull();
+});
+
+// Decision 105's end: Escape closes a body the focus kept as it left for another control - an
+// Escape the page gets while the focus is there, and the outline's own Escape, which leaves the
+// outline from its row with nothing open after the focus has been out to a control and back.
+test("Escape closes the body a control outside the outline kept, from the page or from the outline", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const outside = controlOutside();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  const [first] = rowsFor(view.container, "comment-1");
+  if (first === undefined) throw new Error("the first row is not drawn");
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
+
+  await act(async () => outside.control.focus());
+  expect(
+    first.querySelector("[data-node-body]"),
+    "the focus leaving for a control outside the outline closed the focused row's body"
+  ).not.toBeNull();
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
+  expect(first.querySelector("[data-row-acts]")).toBeNull();
+
+  // Out to the control and back by Shift+Tab, to the row the reader left, whose body opens again
+  // and stays drawn while the focus is out; back on it, the outline's own Escape leaves the
+  // outline and closes the body.
+  await user.tab({ shift: true });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
+  await user.tab();
+  expect(document.activeElement).toBe(outside.control);
+  expect(
+    first.querySelector("[data-node-body]"),
+    "Tab out of the outline closed the body"
+  ).not.toBeNull();
+  await user.tab({ shift: true });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("{Escape}");
+  expect(document.activeElement).toBe(document.body);
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
+});
+
+// Safari focuses no button a press lands on, so a press on a control outside the outline takes
+// the focus from the row to no control at all, and the blur names no element. A blur naming no
+// element that a press outside the tree caused is a leave for a control, and keeps the body
+// until another row or Escape; a blur with no press - a script's, as the browser rows'
+// `focusThePage` makes - closes it as it always has.
+test("a press outside the outline that leaves the focus on no control keeps the body, and a blur with no press closes it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  // Something outside the outline that takes no focus, as a button does not in Safari.
+  const words = "Words outside the outline";
+  const plain = render(<p>{words}</p>).getByText(words);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  const [first] = rowsFor(view.container, "comment-1");
+  if (first === undefined) throw new Error("the first row is not drawn");
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
+  const blurredTo: (EventTarget | null)[] = [];
+  first.addEventListener("focusout", (event) => blurredTo.push(event.relatedTarget));
+
+  // A blur with no press closes the body.
+  await act(async () => first.blur());
+  expect(blurredTo).toEqual([null]);
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
+
+  // A press outside the tree, on what takes no focus, blurs the row to no element and keeps it.
+  await act(async () => first.focus());
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
+  await user.pointer({ keys: "[MouseLeft>]", target: plain });
+  expect(blurredTo, "the press did not blur the row to no element").toEqual([null, null]);
+  expect(document.activeElement).toBe(document.body);
+  expect(
+    first.querySelector("[data-node-body]"),
+    "the press outside the outline that left the focus on no control closed the row's body"
+  ).not.toBeNull();
+  await user.pointer({ keys: "[/MouseLeft]" });
+  expect(
+    first.querySelector("[data-node-body]"),
+    "the body closed once the press ended"
+  ).not.toBeNull();
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
 });
 
 // R9, WCAG 2.1.1, decision 69: every control of a row is out of the tab order, so `f` steps
