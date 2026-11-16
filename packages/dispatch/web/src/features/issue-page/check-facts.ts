@@ -54,12 +54,11 @@ export function checkFacts(check: CheckBlock): NodeFact[] {
  *  who ran it where and how, the commit it ran at, what it counted, and its screenshots. The
  *  result's own `observed` is the node's text and is no fact of its own. */
 export function resultFacts(result: CheckResult): NodeFact[] {
-  // "Up to date" is both halves of what the removed `currency` meant: at the commit the work
-  // stands at, and against the words the result proved. A check reworded since the result ran
-  // keeps the first and loses the second, so the result is out of date whatever its commit is
-  // (`check_words_moved`, which `tree-drafts.ts`'s `checkState` reads for the same reason), and
-  // that is read before where its commit stands. The server reads both per result
-  // (`results_comparison.go`).
+  // "Up to date" means both halves: at the commit the work stands at, and against the words the
+  // result proved. A check reworded since the result ran keeps the first and loses the second,
+  // so the result is out of date whatever its commit is (`check_words_moved`, which
+  // `tree-drafts.ts`'s `checkState` reads for the same reason), and that is read before where its
+  // commit stands. The server reads both per result (`results_comparison.go`).
   const stands =
     result.check_words_moved === true
       ? NODE_STATE_WORDS.check.older

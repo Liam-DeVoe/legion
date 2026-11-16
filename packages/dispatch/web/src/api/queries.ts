@@ -144,7 +144,8 @@ export const artifactBlocksQuery = (id: string) =>
 /** The batches `referenceTargetsQuery` reads `named` in, in its order: each at most
  *  `REFERENCE_TARGETS_MAX` references and at most `REFERENCE_TARGETS_MAX_QUERY_CHARS` characters
  *  of query string, written as the client writes it - `ref=<encoded>` for each reference, joined
- *  by `&` - and every reference in exactly one of them. */
+ *  by `&` - except a batch of one address longer than that budget, which goes alone and passes
+ *  it. Every reference is in exactly one batch. */
 function referenceTargetBatches(named: readonly string[]): string[][] {
   const batches: string[][] = [];
   let batch: string[] = [];
