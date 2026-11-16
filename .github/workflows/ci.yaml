@@ -4436,6 +4436,7 @@ jobs:
               - 'packages/dispatch/web/src/features/conversation/MentionField.tsx'
               - 'packages/dispatch/web/src/features/conversation/MentionComposer.tsx'
               - 'packages/dispatch/web/src/features/conversation/ConversationTab.tsx'
+              - 'packages/dispatch/web/src/features/issue-page/IssueComposer.tsx'
               - 'packages/dispatch/web/src/features/inbox/ThreadBody.tsx'
               - 'packages/dispatch/web/src/features/inbox/AskCard.tsx'
               - 'packages/dispatch/web/src/features/inbox/DeclineControl.tsx'

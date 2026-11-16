@@ -104,8 +104,10 @@ export type DispatchReadingSurface =
   | "search-ask-chosen-options"
   | "search-result"
   | "ref-picker-row-label"
+  | "issue-page-composer-target"
   | "agent-message-issue-option"
   | "issue-page-title"
+  | "issue-outline-page-title"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -1010,6 +1012,21 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "ref-picker-row-label",
   },
+  // The new issue page's box (dispatch://INFRA-3949): the one line above its field naming what
+  // it writes to, and the options of the question it answers, each a control the reader presses.
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueComposer.test.tsx",
+      test: "the target line reads the entry, the question and its options as their plain words",
+    },
+    reach:
+      "/issues/<ISSUE> with the new issue page: the box's target line and its answer's options",
+    reason: `The box's target line is one line naming what the box writes to - the entry a reply answers, the statement a comment is on, the comment an edit changes, the question an answer answers, with the options chosen - and an option of that question is a control the reader presses, worded with the option's label. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-page-composer-target",
+  },
   // The five places a record's text is still written into an element that can hold no markup.
   {
     files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
@@ -1026,6 +1043,17 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "issue-page-title",
+  },
+  // A sixth such place, beside it: the new issue page writes the same title bar
+  // (`IssueOutlinePage.tsx`, decision 90 of dispatch://INFRA-1196) for a reader whose
+  // `issue.page` is `outline`.
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/IssueOutlinePage.tsx"],
+    reach: "/issues/<ISSUE> with the new issue page, the browser's title bar",
+    reason: `${NO_MARKUP_REASON} The title bar holds an issue's key and title.`,
+    record: false,
+    rendered: false,
+    surface: "issue-outline-page-title",
   },
   {
     files: ["packages/dispatch/web/src/features/document/DocumentPage.tsx"],
