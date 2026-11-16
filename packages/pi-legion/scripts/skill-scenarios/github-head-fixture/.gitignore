@@ -1,3 +1,0 @@
-# The tester's fixture of 2026-11-16 is kept as the archive it was copied as, byte for byte (its
-# bare remotes' empty ref directories included); the repository ignores *.tgz elsewhere.
-!*.tgz

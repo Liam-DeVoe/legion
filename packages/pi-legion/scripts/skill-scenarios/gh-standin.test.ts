@@ -25,8 +25,15 @@ import {
   worldRouteOf,
 } from "./gh-routes";
 import { type GhSelectors, type GhTable, MODELLED } from "./gh-selectors";
-import { ghUndeclared, guardRefusal, loadRun, offWorldReach, workflowRepositories } from "./health";
-import { REMOVED_NAMES } from "./run-names";
+import {
+  ghUndeclared,
+  guardRefusal,
+  loadRun,
+  offWorldAllowed,
+  offWorldReach,
+  workflowUses,
+} from "./health";
+import { REMOVED_NAMES, WORLD_PROJECT } from "./run-names";
 import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
 
 // GitHub answers the pull request's head as the commit its branch points at, and the worker skill
@@ -1545,13 +1552,17 @@ test("health declares the wrapper's refusal of an owner outside the project for 
 }, 60_000);
 
 /** A run directory whose remote holds, at world.json's seeded head, the world's workflow as rig.sh
- * writes it (fixture_round_files), so the repositories its `uses:` lines name are the fixture's. */
+ * writes it (fixture_round_files), so the repositories its `uses:` lines name and the commits they
+ * pin are the fixture's; and whose world.json names the world as rig.sh's fixture_write does: its
+ * repository and base (rig.sh's worker_repo and worker_base), the first issue of the world's
+ * project (run-names.ts's WORLD_PROJECT) and that issue's branch. */
 function workflowRun(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "gh-standin-workflow-"));
   made.push(dir);
+  const key = `${WORLD_PROJECT}-1`;
   const src = path.join(dir, "src");
   mkdirSync(path.join(src, "docs"), { recursive: true });
-  git(src, "init", "-q", "-b", "legion/LWEVAL-1");
+  git(src, "init", "-q", "-b", `legion/${key}`);
   const wrote = spawnChecked([
     "bash",
     "-c",
@@ -1564,14 +1575,15 @@ function workflowRun(): string {
   git(src, "commit", "-qm", "the seeded head");
   const head = git(src, "rev-parse", "HEAD");
   git(dir, "clone", "-q", "--bare", src, "remote.git");
+  const value = (name: string) => assignment(name).slice(`${name}=`.length);
   writeFileSync(
     path.join(dir, "world.json"),
     JSON.stringify({
-      key: "LWEVAL-1",
-      repo: "example/widgets",
+      key,
+      repo: value("worker_repo"),
       pr: 1001,
-      branch: "legion/LWEVAL-1",
-      base: "main",
+      branch: `legion/${key}`,
+      base: value("worker_base"),
       head,
     })
   );
@@ -1586,15 +1598,15 @@ function workflowRun(): string {
 // seeded head.
 test("rule 13 allows a GET or a HEAD with no body of a repository the world's workflow names on GitHub's hosts, and nothing wider", () => {
   const dir = workflowRun();
-  const repositories = workflowRepositories(dir);
-  expect([...repositories]).toEqual(["actions/checkout", "oven-sh/setup-bun"]);
+  const allowed = offWorldAllowed({ dir, label: "head" });
+  expect([...allowed.uses.repositories]).toEqual(["actions/checkout", "oven-sh/setup-bun"]);
   const loopback = new Set(["127.0.0.1", "localhost", "::1"]);
   const reach = (tool: string, args: Record<string, unknown>) =>
     offWorldReach(
       [{ file: "sessions/reviewer/a.jsonl", tool, args, at: 1 }],
       loopback,
       [dir],
-      repositories
+      allowed
     );
   const bash = (command: string) => reach("bash", { command });
   for (const command of [
@@ -1661,7 +1673,69 @@ test("rule 13 allows a GET or a HEAD with no body of a repository the world's wo
     off("github.com", "https://github.com/actions/cache.git")
   );
   // A run whose world holds no workflow allows none.
-  expect(workflowRepositories(runDir({ fixture: true }).dir).size).toBe(0);
+  const none = workflowUses(runDir({ fixture: true }).dir);
+  expect([none.repositories.size, none.commits.size]).toEqual([0, 0]);
+});
+
+// Catches: a health that calls every web search off the world, where a production reviewer may
+// search for an action the world's own workflow pins, which tells nothing of the scenario: in the
+// rehearsal of 2026-11-16 a subagent of the reviewer searched `actions/checkout 3d3c42e5… v7.0.1`
+// and `oven-sh/setup-bun commit 0c5077e5… v2.2.0`, and rule 13 failed the run for it. And one
+// that allows wider: a query about anything else; a commit named by 6 of its digits, which name
+// none; another repository whose name starts as one of the workflow's does; a word of the world's
+// own beside an action or a commit the workflow pins; or a word of the measurement, by the
+// definition rule 17 reads an agent's sentence by. The repositories, the commits and the world's
+// words are the run's own, read from its remote and its world.json, never written here.
+test("rule 13 allows a web search about what the world's workflow pins, holding no word of the world's own or of the measurement, and no other", () => {
+  const dir = workflowRun();
+  const allowed = offWorldAllowed({ dir, label: "head" });
+  expect([...allowed.uses.commits]).toEqual([
+    "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "0c5077e51419868618aeaa5fe8019c62421857d6",
+  ]);
+  const file = "sessions/reviewer/sub/agent.jsonl";
+  const loopback = new Set(["127.0.0.1", "localhost", "::1"]);
+  const search = (query: string, world = allowed) =>
+    offWorldReach([{ file, tool: "web_search", args: { query }, at: 1 }], loopback, [dir], world);
+  const searched = `off-world network: a web_search call in ${file} searches the web, which no host of the run's world serves`;
+  const unrelated = `${searched}, and its query names no repository the world's workflow names nor a commit it pins (actions/checkout, oven-sh/setup-bun)`;
+  const own = (word: string) =>
+    `${searched}, and its query names "${word}", a word of the world's own`;
+  const measured = (word: string) =>
+    `${searched}, and its query names "${word}", a word of the measurement`;
+  const rows: [string, string | undefined][] = [
+    ["actions/checkout 3d3c42e5aac5ba805825da76410c181273ba90b1 v7.0.1", undefined],
+    ["oven-sh/setup-bun commit 0c5077e51419868618aeaa5fe8019c62421857d6 v2.2.0", undefined],
+    ["actions/checkout v7.0.1 head commit", undefined],
+    ["actions/checkout defect", undefined],
+    ["actions/checkout base ref", undefined],
+    ["actions/checkout main", undefined],
+    ["actions/checkout@3d3c42e", undefined],
+    ["release notes of Actions/Checkout.", undefined],
+    ["commit 3d3c42e", undefined],
+    ["commit 3d3c42", unrelated],
+    ["actions/checkout-evil v7.0.1", unrelated],
+    ["actions/checkout.js v7.0.1", unrelated],
+    ["legion review threads", unrelated],
+    ["text-only head", unrelated],
+    ["actions/checkout text-only head", measured("text-only")],
+    ["actions/checkout defect head", measured("defect head")],
+    ["actions/checkout head defect", measured("head defect")],
+    ["actions/checkout threads-closed", measured("threads-closed")],
+    ["actions/checkout skill-scenarios", measured("skill-scenario")],
+    ["actions/checkout fernbrook/widgets", own("fernbrook/widgets")],
+    ["oven-sh/setup-bun widgets", own("widgets")],
+    ["actions/checkout WID-1", own("wid-1")],
+    ["actions/checkout WID", own("wid")],
+    ["3d3c42e5aac5ba805825da76410c181273ba90b1 fernbrook", own("fernbrook")],
+    ["3d3c42e5aac5ba805825da76410c181273ba90b1 WID-1", own("wid-1")],
+  ];
+  expect(rows.map(([query]) => [query, search(query)])).toEqual(rows);
+  // A run whose world holds no workflow allows no search, with the reason every search had before.
+  const none = offWorldAllowed({ dir: runDir({ fixture: true }).dir, label: "head" });
+  expect(search("actions/checkout 3d3c42e5aac5ba805825da76410c181273ba90b1 v7.0.1", none)).toBe(
+    searched
+  );
 });
 
 // Catches: a health whose push-guard rule takes the Legion gh wrapper's refusal of an owner

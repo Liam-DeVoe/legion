@@ -567,9 +567,10 @@ of a public repository the world's own workflow names in a `uses:` line (read fr
 remote at `world.json`'s seeded head) on `api.github.com`, `github.com`,
 `raw.githubusercontent.com` or `codeload.github.com`, as production reaches it; and no agent says a
 word of the measurement an input gave it: a scenario or case word with a character that is no
-letter or digit (`text-only`, `threads-closed`), a run's name in the old shape, or a case word
-beside a label word (`defect head`), by the same derived words as the guard's (`run-names.ts`'s
-`proseNames`; a plain word alone is the work's own: `head SHA`, `base branch`, `not a defect`),
+letter or digit (`text-only`, `threads-closed`), a removed name (`skill-scenarios`, `LWEVAL`,
+`rig-reviewer`), a run's name in the old shape, or a case word beside a label word (`defect
+head`), by the same derived words as the guard's (`run-names.ts`'s `proseNames`; a plain word
+alone is the work's own: `head SHA`, `base branch`, `not a defect`),
 in its own text or thinking, where its prompt, its system prompt or an entry of a transcript that
 is not an agent's own (a user message, a tool result, a message it was sent, an entry Oh My Pi put
 in its context) held the word before any agent of the run wrote it, its tool calls' arguments
@@ -580,7 +581,14 @@ sentence and names the input. A word the run's agents wrote before any input hel
 (<sentence>); …` names each such run and its first sentence, and the run stays healthy, since the
 preflight at `cc09c638` found "text-only" in three head runs where no skill file, user message or
 tool result held it first. A URL is text until
-something runs it: every `web_search` reaches off the world; a `bash` command, a `read`, a
+something runs it: every `web_search` reaches off the world but one about the world's own
+workflow, as a production reviewer may search for an action it pins: its query names a repository
+the workflow's `uses:` lines name (its name ending where a name's characters end, so
+`actions/checkout-evil` and `actions/checkout.js` are others) or a commit they pin, in full or by
+a word of 7 or more of its leading hexadecimal digits, and holds no word of the world's own (its
+repository's full name and each half, its issue's key and project, its issue branch, read from
+`world.json`; not the base branch) and no word of the measurement as the names rule reads one
+(`proseNames`); a `bash` command, a `read`, a
 `fetch`, an `eval` cell's code, a here-document an interpreter reads on stdin and a file the run
 wrote and then ran are read for the hosts they reach; an `eval` cell's `tool.<name>(…)` call is
 read as a direct call of that tool would be; text a call writes (a `--body`, a commit message, a

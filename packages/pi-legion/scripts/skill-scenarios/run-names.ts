@@ -275,17 +275,20 @@ const literal = (word: string) => word.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 /** A text as the words are matched in it: lower case, an underscore read as a hyphen. */
 const folded = (text: string) => text.toLowerCase().replaceAll("_", "-");
 
+/** The first removed name (REMOVED_NAMES) in `lower`, a text `folded`: where a word starts,
+ * whatever follows it. */
+function removedIn(lower: string): string | undefined {
+  return REMOVED_NAMES.find((word) => new RegExp(`(?<![a-z0-9])${literal(word)}`).test(lower));
+}
+
 /** The first distinctive word of `vocab` in `text`, or of REMOVED_NAMES when `removed` holds:
  * a vocabulary word standing alone (no letter or digit on either side), a removed name where a
- * word starts. */
+ * word starts (`removedIn`). */
 function distinctiveIn(text: string, vocab: Vocabulary, removed: boolean): string | undefined {
   const lower = folded(text);
   for (const word of vocab.distinctive)
     if (new RegExp(`(?<![a-z0-9])${literal(word)}(?![a-z0-9])`).test(lower)) return word;
-  if (removed)
-    for (const word of REMOVED_NAMES)
-      if (new RegExp(`(?<![a-z0-9])${literal(word)}`).test(lower)) return word;
-  return undefined;
+  return removed ? removedIn(lower) : undefined;
 }
 
 /** The first word of `vocab` in `value`, a name or a path an agent can read (a path, an
@@ -306,16 +309,24 @@ export function textWords(text: string, vocab: Vocabulary): string | undefined {
   return distinctiveIn(text, vocab, true);
 }
 
-/** The first word of the measurement an agent's own sentence says, or undefined: a distinctive
- * scenario, case or label word (`text-only`, `threads-closed`); a run's name in rig.sh's old shape
+/** The first word of the measurement a sentence says, or undefined: a distinctive scenario, case
+ * or label word (`text-only`, `threads-closed`); a removed name (REMOVED_NAMES, `removedIn`:
+ * `skill-scenarios`, `LWEVAL`, `rig-reviewer`); a run's name in rig.sh's old shape
  * (`askgate-facts-on-1`); or a case word and a label word side by side, as a run's name puts them
  * (`defect head`, `base text-only`). A plain word alone is the work's own (`head SHA`, `base
- * branch`, `not a defect`), and the removed names are the world's, read where the world is
- * (`worldNames`), not in what an agent says. */
+ * branch`, `not a defect`). It is the one definition of a word that names the measurement for
+ * every reader of what an agent says or sends: health's rule 17, the names an agent's own text
+ * and thinking say, and its rule 13, the words a web search that is part of the world holds none
+ * of. A removed name is one of them, as the tester's reader counts it too (the architect's ruling
+ * of 2026-11-16): the world was rid of each because it told an agent its world was a test, so an
+ * input that hands one to an agent anyway leaks the measurement as a scenario's name does, and a
+ * query that carries one sends the measurement off the world. */
 export function proseNames(sentence: string, vocab: Vocabulary): string | undefined {
   const lower = folded(sentence);
   for (const word of vocab.distinctive)
     if (new RegExp(`(?<![a-z0-9-])${literal(word)}(?![a-z0-9-])`).test(lower)) return word;
+  const removed = removedIn(lower);
+  if (removed !== undefined) return removed;
   const alt = (words: readonly string[]) =>
     [...words]
       .map((word) => literal(word.toLowerCase()))
@@ -339,10 +350,12 @@ export function proseNames(sentence: string, vocab: Vocabulary): string | undefi
  * `proseNames` read in a sentence: where a word starts and ends (no letter or digit beside it, an
  * underscore read as a hyphen), so a path that names a run (`runs/threads-closed-text-fixes-
  * head-1/`) holds its scenario word, and a space in a pair (`defect head`) is a space or a
- * hyphen. */
+ * hyphen; a removed name where a word starts, whatever follows it, as `removedIn` reads it
+ * (`rig-` in `rig-reviewer`). */
 export function holds(text: string, word: string): boolean {
   const pattern = literal(word).replaceAll(" ", "[ -]");
-  return new RegExp(`(?<![a-z0-9])${pattern}(?![a-z0-9])`).test(folded(text));
+  const end = REMOVED_NAMES.includes(word) ? "" : "(?![a-z0-9])";
+  return new RegExp(`(?<![a-z0-9])${pattern}${end}`).test(folded(text));
 }
 
 /** The labels the work directory `work` holds a profile for (`rig.sh profile`), by the names

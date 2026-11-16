@@ -14,7 +14,7 @@ import {
   unfinished,
   writtenBy,
 } from "./health";
-import { vocabulary } from "./run-names";
+import { REMOVED_NAMES, vocabulary } from "./run-names";
 
 /** The world of a run whose pane names only the loopback. */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -1474,6 +1474,38 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
         })
       )
     ).toBe(undefined);
+  });
+
+  // Catches: a removed name read as no word of the measurement (REMOVED_NAMES left out of
+  // run-names.ts's `proseNames`), so an agent that repeats the `rig-reviewer` a tool result
+  // handed it reads healthy, though the world was rid of the name because it told an agent its
+  // world was a test; and a removed name an agent made itself read as a leak, where no input held
+  // it first.
+  test("a removed name an input held before the agent wrote it is a leak, and one the agent wrote first is its own", () => {
+    const said = "The rig-reviewer session holds the claim, so I wait.";
+    expect(
+      namesSaid(
+        runWith({ [FILE]: [result("bash", "claimed by rig-reviewer"), says("text", said)] })
+      )
+    ).toBe(
+      `names: a text part in ${FILE} says "rig-": "${said}", which the result of bash in ${FILE} held before any agent of the run wrote it`
+    );
+    // Every removed name, where a word starts, whatever follows it.
+    const missed = REMOVED_NAMES.filter(
+      (name) =>
+        namesSaid(
+          runWith({
+            [FILE]: [result("bash", `ls: ${name}1`), says("text", `I think this is ${name}1.`)],
+          })
+        ) === undefined
+    );
+    expect(missed).toEqual([]);
+    const coined = "This reads like a skill-scenarios world.";
+    const alone = runWith({ [FILE]: [user("Review the pull request."), says("thinking", coined)] });
+    expect(namesSaid(alone)).toBe(undefined);
+    expect(namesOf(alone).own).toEqual([
+      `a thinking part in ${FILE} says "skill-scenario": "${coined}"`,
+    ]);
   });
 
   test("the brief's control sentences stay healthy, whatever the inputs held of their plain words", () => {

@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
@@ -377,7 +385,8 @@ describe("health's rule 18 over the stand-in's log", () => {
   // Catches absence read as presence: a worker world, whose Dispatch asks GitHub at its seeds,
   // with no record of what it asked, read as one that was refused nothing; and the other
   // direction, a world that starts no stand-in held to one. Each absence is a row of its own,
-  // with the reason the tester's cross-check matches word for word.
+  // with health's own reason pinned word for word here: the tester's reader, which the fixture
+  // below holds health to, is compared with it by verdict alone, and words its reasons its own way.
   test("a worker world whose log is missing is unhealthy, and any other world with none is healthy", () => {
     for (const scenario of WORKER)
       expect(githubRefusal(run(scenario))).toBe(
@@ -482,24 +491,30 @@ describe("health's rule 18 over the stand-in's log", () => {
   });
 });
 
-// The tester's fixture of 2026-11-16 (github-head-fixture/, the archive of its
-// fixture-github-head, made by its build-github-head-fixture.py and read by its world-health.py):
-// 32 cases, 01 to 18 rule 18's and 19 to 32 rule 19's, each a directory holding only what the
-// two rules read, with the tester's verdict and reason in its manifest.json. Where the two readers
-// must agree, this row is the pin: every case reads here as the tester read it but three, each a
-// difference of design the architect ruled on. 01 and 19 are runs of a rig from before the
-// stand-in and the watcher (their services-from names neither): the tester keys a record's being
-// due on the run's own files, and these rules on the rig's scenario table, so a worker world
-// without its record is unhealthy whatever rig it ran on. 15 is the tester's own refusal of a log
-// read with a rig that has no route table, which has no meaning for a reader that is the rig's.
-// The reason of each case is pinned as well, which the tester matches word for word.
+// The tester's fixture of 2026-11-16, made by its builder, which this tree keeps beside the row
+// that reads it (github-head-fixture/build-github-head-fixture.py): 32 cases, 01 to 18 rule 18's
+// and 19 to 32 rule 19's, each a directory holding only what the two rules read, with the verdict
+// and the reason the tester's own reader (its world-health.py, which stays outside this tree) gives
+// it in its manifest.json. Each row builds the fixture afresh, so no copy of it is kept to fall out
+// of step with its builder. Where the two readers must agree, this row is the pin: every case
+// reads here with the tester's verdict but three, each a difference of design the architect ruled
+// on. 01 and 19 are runs of a rig from before the stand-in and the watcher (their services-from
+// names neither): the tester keys a record's being due on the run's own files, and these rules on
+// the rig's scenario table, so a worker world without its record is unhealthy whatever rig it ran
+// on. 15 is the tester's own refusal of a log read with a rig that has no route table, which has
+// no meaning for a reader that is the rig's. The two readers agree on verdicts alone: the tester's
+// reader words each reason its own way, so health's reason for each case is pinned here, against
+// health's own text, and the tester's reason in the manifest is compared with nothing.
 describe("the tester's GitHub and head fixture", () => {
   const DIFFER = ["01-older-rig-no-log", "15-log-norig-table", "19-no-watcher-rig"];
   const line = (n: number, commit: string) =>
     `head: pushes.log:${n} pushed ${commit} to refs/heads/legion/WID-1, and `;
-  const pushed = "655ca2a78bf14a93e798115d663cf4000b22e068";
-  const seeded = "3d203aa2e27b6c5b36c29e875beabaabaf4d2dfb";
-  const REASONS: Readonly<Record<string, string | undefined>> = {
+  /** Health's reason for each case, the fixture's two commits read from what its build made: the
+   * head its world was seeded at and the one its pushes moved the branch to. */
+  const reasonsOf = (
+    seeded: string,
+    pushed: string
+  ): Readonly<Record<string, string | undefined>> => ({
     "01-older-rig-no-log": GITHUB_NOT_KEPT.missing,
     "02-no-log": GITHUB_NOT_KEPT.missing,
     "03-no-dispatch-no-log": undefined,
@@ -540,35 +555,72 @@ describe("the tester's GitHub and head fixture", () => {
     "30-push-other-branch": undefined,
     "31-heads-not-json": "head: logs/heads.log:2 is no line the head watcher writes: garbage",
     "32-no-pushes-log": undefined,
-  };
-  /** The fixture's manifest.json, as the tester's builder writes it. */
-  const manifestOf = (text: string) =>
-    JSON.parse(text) as {
+  });
+  const BUILDER = path.join(import.meta.dir, "github-head-fixture", "build-github-head-fixture.py");
+  /** The fixture the builder makes under `env`, and its manifest.json. python3 runs the builder,
+   * and a host without one fails the row rather than skip it: a fixture nobody builds is a reader
+   * nobody checks. */
+  const built = (env: Record<string, string | undefined> = process.env) => {
+    const fixture = path.join(freshDir("github-head-fixture"), "fixture-github-head");
+    const ran = spawnChecked(["python3", BUILDER, fixture], { env });
+    expect([ran.exitCode, ran.stderr.toString()]).toEqual([0, ""]);
+    const text = readFileSync(path.join(fixture, "manifest.json"), "utf8");
+    const manifest = JSON.parse(text) as {
+      seeded_head: string;
+      pushed_head: string;
       cases: { case: string; rule: "github" | "head"; scenario: string; verdict: string }[];
     };
+    return { fixture, text, manifest };
+  };
 
   test("every case reads as the tester read it, but the three the architect ruled on, each with its reason", () => {
-    const root = freshDir("github-head-fixture");
-    const unpacked = spawnChecked([
-      "tar",
-      "-C",
-      root,
-      "-xzf",
-      path.join(import.meta.dir, "github-head-fixture", "fixture-github-head.tgz"),
-    ]);
-    expect([unpacked.exitCode, unpacked.stderr.toString()]).toEqual([0, ""]);
-    const fixture = path.join(root, "fixture-github-head");
-    const { cases } = manifestOf(readFileSync(path.join(fixture, "manifest.json"), "utf8"));
-    expect(cases.map((one) => one.case)).toEqual(Object.keys(REASONS));
+    const { fixture, manifest } = built();
+    const reasons = reasonsOf(manifest.seeded_head, manifest.pushed_head);
+    expect(manifest.cases.map((one) => one.case)).toEqual(Object.keys(reasons));
     const differ: string[] = [];
-    for (const one of cases) {
+    for (const one of manifest.cases) {
       const read = { dir: path.join(fixture, one.case), scenario: one.scenario };
       const reason = one.rule === "github" ? githubRefusal(read) : headUnmoved(read);
-      expect([one.case, reason]).toEqual([one.case, REASONS[one.case]]);
+      expect([one.case, reason]).toEqual([one.case, reasons[one.case]]);
       if ((reason === undefined ? "healthy" : "unhealthy") !== one.verdict) differ.push(one.case);
     }
     expect(differ).toEqual(DIFFER);
-  });
+  }, 60_000);
+
+  // Catches: a builder that commits under whatever identity its environment carries. git reads
+  // GIT_AUTHOR_*, GIT_COMMITTER_* and the GIT_CONFIG_COUNT pairs over a caller's -c settings, and
+  // a Legion pod exports all of them, so the tester's build of 2026-11-16 committed as the pod's
+  // App and another machine's build made other commits. This builds the fixture under a pod's
+  // identity and under an environment with no GIT_* at all, and requires one fixture of both. And
+  // a fixture that names the directory it was built in, as the tester's archive named its scratch
+  // in the origin url of each of its 13 bare remotes: a path of the machine that built it, which
+  // is no part of any world.
+  test("the builder makes one fixture under any environment its host carries, naming no directory of the build", () => {
+    const pod = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "an-app[bot]",
+      GIT_AUTHOR_EMAIL: "1+an-app[bot]@users.noreply.github.com",
+      GIT_COMMITTER_NAME: "an-app[bot]",
+      GIT_COMMITTER_EMAIL: "1+an-app[bot]@users.noreply.github.com",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "another-app[bot]",
+    };
+    const bare = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))
+    );
+    const fromPod = built(pod);
+    const fromBare = built(bare);
+    expect(fromPod.text).toBe(fromBare.text);
+    for (const { fixture } of [fromPod, fromBare]) {
+      const root = path.dirname(fixture);
+      const naming = readdirSync(fixture, { recursive: true, encoding: "utf8" }).filter((file) => {
+        const full = path.join(fixture, file);
+        return statSync(full).isFile() && readFileSync(full).includes(root);
+      });
+      expect([root, naming]).toEqual([root, []]);
+    }
+  }, 60_000);
 });
 
 // The agent's side, on the world as rig.sh builds and seeds it: rig.sh itself, up to its command
