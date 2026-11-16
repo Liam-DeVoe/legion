@@ -199,9 +199,11 @@ function corpusOf(rows: readonly CaseRow[]): Corpus {
       keptEvents: 1,
       readStartedAt: "2026-11-11T00:00:00Z",
       readFinishedAt: "2026-11-11T01:00:00Z",
+      reserve: null,
     },
     rows: [...rows],
     byCaseId: new Map(rows.map((row) => [row.caseId, row])),
+    reserve: { cases: 0, issues: 0, readUnder: null },
   };
 }
 

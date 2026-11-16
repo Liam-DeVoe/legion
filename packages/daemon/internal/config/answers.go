@@ -150,7 +150,7 @@ func readAnswers(value *yaml.Node, key string) (*answersFile, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "providers", "prices", "conversation_store", "bounds")
+	fields, err := describedMembers(value, key, answersKey)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +181,7 @@ func readAnswerProviders(value *yaml.Node, key string) (map[AnswerProvider]Answe
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping of provider (anthropic, openai) to its base_url and key", key)
 	}
-	named, err := members(value, key, answerProviders...)
+	named, err := describedMembers(value, key, answersKey+".providers")
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +209,7 @@ func readAnswerEndpoint(value *yaml.Node, key string) (AnswerEndpoint, error) {
 	if value.Kind != yaml.MappingNode {
 		return AnswerEndpoint{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "base_url", "api_key_file", "api_key_command")
+	fields, err := describedMembers(value, key, answersKey+".providers.<PROVIDER>")
 	if err != nil {
 		return AnswerEndpoint{}, err
 	}
@@ -276,7 +276,7 @@ func readAnswerPrice(value *yaml.Node, key string) (AnswerPrice, error) {
 	if value.Kind != yaml.MappingNode {
 		return AnswerPrice{}, fmt.Errorf("%s must be a mapping of input, output, cache_write and cache_read", key)
 	}
-	fields, err := members(value, key, "input", "output", "cache_write", "cache_read")
+	fields, err := describedMembers(value, key, answersKey+".prices.<MODEL>")
 	if err != nil {
 		return AnswerPrice{}, err
 	}
@@ -309,7 +309,7 @@ func readConversationStore(value *yaml.Node, key string) (dsnFile, user string, 
 	if value.Kind != yaml.MappingNode {
 		return "", "", fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "dsn_file", "user")
+	fields, err := describedMembers(value, key, conversationStoreKey)
 	if err != nil {
 		return "", "", err
 	}
@@ -332,8 +332,7 @@ func readAnswerBounds(value *yaml.Node, key string) (AnswerBounds, error) {
 	if value.Kind != yaml.MappingNode {
 		return AnswerBounds{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "answer_seconds", "model_calls", "output_tokens", "gh_seconds",
-		"gh_output_chars", "gh_calls", "concurrent", "daily_usd")
+	fields, err := describedMembers(value, key, answersKey+".bounds")
 	if err != nil {
 		return AnswerBounds{}, err
 	}
@@ -414,8 +413,9 @@ func resolveAnswers(file fileConfig, configDir string, cfg *Config) error {
 // runtime keeps them: a postgres:// URL's file under session_store postgres, the file the panes
 // read under runtime tmux's (runtime.tmux.session_dsn_file); its own IAM login on
 // session_database's instance under cloudsql-iam; none under runtime tmux's files store, whose
-// conversations are files on the daemon's own host. Each store refuses the key it does not use, as runtime.kubernetes' session keys do; under runtime tmux the
-// block names nothing, since the daemon reads the conversations where its panes keep them.
+// conversations are files on the daemon's own host. Each store refuses the key it does not use, as
+// runtime.kubernetes' session keys do; under runtime tmux the block names nothing, since the daemon
+// reads the conversations where its panes keep them.
 func conversationStoreOf(read *answersFile, configDir string, rt Runtime) (ConversationStore, error) {
 	k := rt.Kubernetes
 	if k == nil {

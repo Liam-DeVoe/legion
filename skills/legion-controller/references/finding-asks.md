@@ -47,18 +47,20 @@ The work goes to whoever already owns that code. You file an issue only when nob
 3. Find the running tree whose code it is: a root in `admission.trees`, the live trees, whose
    repository and component match, read from `read_state` and `dispatch read`. Read it there
    rather than in `admission.active`, which holds the issues the daemon has started: an issue
-   holds one of the cap's slots from the moment the daemon starts it until its work is past its
-   review, until it is done, or until Dispatch takes it out of the workflow, and a tree runs
+   holds one as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, and a tree runs
    whether or not any issue of it holds one. When one matches, hand it over.
    `envoy_publish` the defect, its evidence reference and the fix to that tree's architect topic,
    `notifications.role.<issues.<KEY>.architect.locator.claim>`. The architect decides whether it
    is a child of the tree or part of an open issue's work. Reply `Handed dispatch://<that KEY>`
    under the evidence only when a live holder took the publish. When the root has no locator, or
-   the listener kept the publish for the role's next holder, reply nothing: no architect reads a
-   comment on its root, so the evidence stays unhandled, and catch-up step 4 lists it again at
-   your next start. Publish it again at your next wake. Once the root leaves `admission.trees`,
-   no running tree owns the code, and step 4 files it. File nothing while a tree owns it: a
-   second issue splits the work.
+   the listener kept the publish because no live session holds the role, reply nothing: no
+   architect reads a comment on its root, so the evidence stays unhandled, and catch-up step 4
+   lists it again at your next start. A kept publish waits one hour, until the `kept_until` its
+   answer names, for the role's next live holder. If no session takes it in that hour, Envoy
+   drops it, and when your publish named your session, sends your session a message that names
+   it, unless it dropped it more than an hour late. Publish it again at your next wake.
+   Once the root leaves `admission.trees`, no running tree owns the code, and step 4 files it.
+   File nothing while a tree owns it: a second issue splits the work.
 4. No running tree owns that code: file it on the repository where the fix belongs, in the
    project that repository maps to:
 

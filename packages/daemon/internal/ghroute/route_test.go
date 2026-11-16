@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
@@ -22,22 +23,9 @@ import (
 // ties its version to the worker image's gh (.github/scripts/check-gh-version.sh).
 var ghHelpDir = filepath.Join("..", "..", "cmd", "legion", "testdata", "gh-help")
 
-// savedGhHelp answers gh's help of path from ghHelpDir as the real gh does: a path it has no file
-// for prints the help of the nearest parent it has (gh's answer to a subcommand it does not know),
-// and one with no such parent at all is an error (gh's `unknown command`, exit 1).
-func savedGhHelp(path []string) (string, error) {
-	if len(path) == 0 {
-		data, err := os.ReadFile(filepath.Join(ghHelpDir, "gh.txt"))
-		return string(data), err
-	}
-	for p := path; len(p) > 0; p = p[:len(p)-1] {
-		data, err := os.ReadFile(filepath.Join(ghHelpDir, strings.Join(p, "_")+".txt"))
-		if err == nil {
-			return string(data), nil
-		}
-	}
-	return "", fmt.Errorf("unknown command %q for \"gh\"", path[0])
-}
+// savedGhHelp answers gh's help of path from ghHelpDir as the real gh does
+// (ghroutetest.SavedHelp, which `legion gh`'s tests read the same directory with).
+var savedGhHelp = ghroutetest.SavedHelp(ghHelpDir)
 
 // editedGhHelp answers gh's help as savedGhHelp does, with old replaced by new in the help of
 // each path edits names (its words joined by spaces, "" for gh's own): the help a gh with other

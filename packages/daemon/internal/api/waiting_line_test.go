@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -170,6 +171,116 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 	}
 }
 
+// mergeWaitState is a state whose two reviewing issues each carry what their round waits on from
+// GitHub — one waiting for GitHub's first answer about the head the approval stands on, one
+// GitHub has held on `blocked`, whose architect and reviewer have been told of it — beside an
+// implementing issue, whose round waits on nothing there and carries no such object.
+func mergeWaitState() State {
+	const (
+		waitingHead = "c7d2a91f480b6e35a2c80d4f9b1e63a7d05c82f4"
+		stuckHead   = "41e9b7c0d8a2f36514be09c7d2a8f0b36e415c9d"
+	)
+	read := time.Date(2026, 11, 9, 7, 30, 0, 0, time.UTC)
+	pushed := time.Date(2026, 11, 9, 7, 12, 0, 0, time.UTC)
+	stood := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	return State{
+		Admission: Admission{Cap: 3, Active: []string{"LEGION-10", "LEGION-20", "LEGION-30"}, Waiting: []string{}},
+		Issues: map[string]Issue{
+			"LEGION-10": {Key: "LEGION-10", Phase: phase.Implementing, Status: "in_progress"},
+			"LEGION-20": {Key: "LEGION-20", Phase: phase.Reviewing, Status: "needs_review",
+				PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 20, Head: waitingHead,
+					State: "open", ReviewDecision: "approved"},
+				MergeWait: &MergeWaitView{WaitsOn: waitingHead, HeadUpdatedAt: &pushed}},
+			"LEGION-30": {Key: "LEGION-30", Phase: phase.Reviewing, Status: "needs_review",
+				PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 30, Head: stuckHead,
+					State: "open", MergeState: "blocked", ReviewDecision: "approved"},
+				MergeWait: &MergeWaitView{WaitsOn: stuckHead, MergeState: "blocked", StateReadAt: &read,
+					HeadUpdatedAt: &stood, CheckRuns: 2, ToldHead: stuckHead, ToldState: "blocked"}},
+		},
+	}
+}
+
+// mergeWaitsServed is what every issue of a state body that carries a `mergeWait` waits on, by
+// issue key. The key is read by name (MergeWaitField) and an issue without it is in no entry,
+// because whether the key is on the wire at all is what the strip is read by: a reader below
+// mergeWaitContract is to be served no such key, whether its own schema would refuse one it does
+// not name or quietly drop it.
+func mergeWaitsServed(t *testing.T, body []byte) map[string]MergeWaitView {
+	t.Helper()
+	var state struct {
+		Issues map[string]map[string]json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	waits := make(map[string]MergeWaitView, len(state.Issues))
+	for key, issue := range state.Issues {
+		raw, carried := issue[MergeWaitField]
+		if !carried {
+			continue
+		}
+		var wait MergeWaitView
+		if err := json.Unmarshal(raw, &wait); err != nil {
+			t.Fatalf("decode the %s of %s, %s: %v", MergeWaitField, key, raw, err)
+		}
+		waits[key] = wait
+	}
+	return waits
+}
+
+// A plugin below mergeWaitContract is served no issue carrying `mergeWait`: one built before
+// sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
+// key it does not name, and one built after strips the key, so the strip is what keeps the object
+// from a caller that did not ask for it. The route authenticates nobody, so it knows that plugin
+// by the pod the request came from: a caller whose pod's claims record a contract below this one
+// is served no issue carrying the key, and a caller whose pod records this contract is served it
+// on every round that waits, with everything the round waits on.
+func TestTheMergeWaitIsStrippedBelowItsContract(t *testing.T) {
+	state := mergeWaitState()
+	behind := stateFrom(t, state, statePodAddr+":4100", podClaims(mergeWaitContract-1))
+	if served := mergeWaitsServed(t, behind); len(served) != 0 {
+		t.Errorf("the pod below %d is served the merge waits %+v, want none: the object is not its contract's",
+			mergeWaitContract, served)
+	}
+
+	at := stateFrom(t, state, statePodAddr+":4100", podClaims(mergeWaitContract))
+	served := mergeWaitsServed(t, at)
+	for key, issue := range state.Issues {
+		wait, carried := served[key]
+		if issue.MergeWait == nil {
+			if carried {
+				t.Errorf("%s is served %s %+v, want no such key: its round waits on nothing at GitHub",
+					key, MergeWaitField, wait)
+			}
+			continue
+		}
+		if !carried {
+			t.Fatalf("the pod at %d is served no %s for %s, want what its round waits on: %s",
+				mergeWaitContract, MergeWaitField, key, at)
+		}
+		if !reflect.DeepEqual(wait, *issue.MergeWait) {
+			t.Errorf("%s's %s = %+v, want the state's %+v", key, MergeWaitField, wait, *issue.MergeWait)
+		}
+	}
+}
+
+// mergeWaitContract is the contract whose entry in version.go added the object, and this daemon's
+// own contract is never below it: a caller at this contract is served what the round waits on.
+func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
+	// The literal is a deliberate pin of the number the version.go entry that added the merge wait
+	// declares: a renumber moves it with the other sites, and the test fails while
+	// mergeWaitContract says another number.
+	const addedMergeWait = 133
+	if mergeWaitContract != addedMergeWait {
+		t.Fatalf("mergeWaitContract = %d, want %d, the contract whose entry in version.go added what a review round waits on from GitHub",
+			mergeWaitContract, addedMergeWait)
+	}
+	if mergeWaitContract > DaemonAPIVersion {
+		t.Fatalf("mergeWaitContract = %d, above DaemonAPIVersion %d: no caller could be served the object",
+			mergeWaitContract, DaemonAPIVersion)
+	}
+}
+
 // Every shipped text that names a contract number beside the waiting line names the one the
 // daemon declares for it. A renumber moves the constants, which the test above holds, and leaves
 // the prose saying the boundary the old number drew: a reader then takes a daemon below the old
@@ -201,6 +312,16 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 // which is the refusal wanted. A second marker is not the answer when that happens; the
 // sentence naming the member it is about is.
 //
+// The texts of packages/daemon are read here; every other text is read out of
+// waiting_line_contract_extract.txt, the copy of their windows committed beside this package.
+// It is read there and never in the text itself: a test that reads a shipped text puts that
+// text in this job's filter — a declared read applies to every compiled source file of a run —
+// and an edit of a guide page or a changelog fragment would then start the whole daemon Go
+// lane. The copy holds those windows in their own bytes, so the scan below reads a section as
+// it read the file, and internal/textcheck's
+// TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts is what keeps the copy the
+// texts', in the job whose subject is a file's words (INFRA-1413).
+//
 // What it does not catch: a number more than 220 bytes from the field's name. A passage that
 // states the boundary a paragraph away from the word `waitingLine` is outside every window this
 // reads, and it is read by nothing else here: this scan names no declaration whose comment the
@@ -229,13 +350,8 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 			"packages/daemon/internal/api/state.go",
 			"packages/daemon/internal/projection/project.go",
 			"packages/daemon/internal/projection/project_test.go",
-			"packages/contracts/src/legion-api.ts",
-			"packages/pi-legion/AGENTS.md",
-			"docs/site/src/content/docs/legion/running-legion.md",
-			"docs/site/src/content/docs/legion/troubleshooting.md",
-			"packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
-			"packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
-			"packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
+			// The windows of every shipped text outside packages/daemon, in their own bytes.
+			"packages/daemon/internal/api/waiting_line_contract_extract.txt",
 		},
 	}, func(name, said, near string, want int) {
 		t.Errorf("%s says `%s` of the %s, want the number %d, the contract that added what the sentence states: %q",

@@ -416,34 +416,6 @@ func subscribeWakes(t *testing.T, conn *nats.Conn) *nats.Subscription {
 	return wakes
 }
 
-// awaitAgentWake reads wakes until an agent_message report names sessionID, and fails when none
-// does within ten seconds.
-func awaitAgentWake(t *testing.T, wakes *nats.Subscription, sessionID string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		left := time.Until(deadline)
-		if left <= 0 {
-			t.Fatalf("no %s wake report named %s within 10s", wakeKindAgent, sessionID)
-		}
-		message, err := wakes.NextMsg(left)
-		if err != nil {
-			t.Fatalf("no %s wake report named %s within 10s: %v", wakeKindAgent, sessionID, err)
-		}
-		var item contracts.Envelope
-		if err := json.Unmarshal(message.Data, &item); err != nil {
-			t.Fatalf("decode a wake report's envelope: %v", err)
-		}
-		var report wakeReport
-		if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
-			t.Fatalf("decode a wake report: %v", err)
-		}
-		if report.Kind == wakeKindAgent && report.Session == sessionID {
-			return
-		}
-	}
-}
-
 // A send to a session gone from the session bucket whose registry entry is released - the daemon
 // released its idle issue pod and keeps the claim to resume (INFRA-945) - is the wake it was
 // before the hand-off existed: answered 404, the wake reported for that session, and nothing

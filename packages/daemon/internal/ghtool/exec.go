@@ -71,10 +71,12 @@ func (a *Answer) toolPath() string {
 // the guard buffers an empty file and asks again (leakguard's askAgain, whose read is skipped for
 // a nil Stdin), and the bytes it answers with are none, which is what gh is given.
 //
-// Neither call `legion gh` lets through unchecked arises here. `gh auth git-credential` is none
-// of the tool's commands, refused by the allow list before any of this; and the shared check's
-// own visibility read is a child of this guard, run with the real gh and never through the
-// wrapper (Answer.guardEnv), so no call of the model's can be it.
+// Of the three calls `legion gh` lets through unchecked, the tool lets none through: every call it
+// makes gets the whole guard, a read included. `gh auth git-credential` is none of the tool's
+// commands, refused by the allow list before any of this; the shared check's own visibility read
+// is a child of this guard, run with the real gh and never through the wrapper
+// (Answer.guardEnv), so no call of the model's can be it; and the exact `gh api rate_limit`, which
+// the model can make, is guarded whole here, since nothing of the tool skips the guard for it.
 func (a *Answer) leakGuard(ctx context.Context, argv []string, target ghroute.Target, configDir string) error {
 	_, err := leakguard.New(leakguard.Options{Check: a.host.LeakCheck, Env: a.guardEnv(configDir)}).GhCall(ctx, leakguard.GhRequest{
 		Args:  argv,

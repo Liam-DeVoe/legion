@@ -121,7 +121,9 @@ func TestPublishRetainedKeepsOneCopyPerMsgID(t *testing.T) {
 		t.Fatalf("stored %s, want the first copy", stored.Data)
 	}
 
-	if _, err := client.PublishRetained(ctx, "notifications.team.deploy-squad", []byte(`{}`), ""); err == nil ||
+	// A role topic is live delivery the listener's role lane owns, and no stream subject captures
+	// it (streamSubjects).
+	if _, err := client.PublishRetained(ctx, "notifications.role.legion-infra-infra-204-tester", []byte(`{}`), ""); err == nil ||
 		!strings.Contains(err.Error(), "does not capture") {
 		t.Fatalf("a subject the stream does not capture = %v, want refused", err)
 	}

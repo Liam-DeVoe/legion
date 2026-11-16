@@ -29,10 +29,27 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
   `--github-token`, the secret's name holds that one account's token, the string an
   `Authorization` header carries. Without `--github-token` the name holds the JSON object of
   installations, and a command that sends that object to GitHub reads `401`.
+- The broker checks a narrowing before the approval request, so a narrowing it cannot serve costs
+  nobody an approval. It refuses the request, nothing runs, and the status is 1, in five cases:
+
+  - an account the secret's `github-owners` tag does not list,
+  - a run that names no GitHub App secret,
+  - a name behind the airlock (the bullet below),
+  - a narrowing GitHub itself refuses, such as a repository the App's installation does not
+    reach, or read access the App does not hold,
+  - an account the App is not installed on, which the message says in the words `has no
+    installation on`. Install the App on that account, or narrow to an account it is on.
+
+  The message says which of the five it is. Two cases keep the older behaviour, where the
+  refusal comes when the grant is read instead: a request every name of which is granted at
+  once, which no person decides, and a request on which the broker reaches no verdict, for
+  example because GitHub is out of reach or refuses the App itself, or because the check passes
+  its own time bounds.
 - A narrowing and the airlock do not go together. Ask for a narrowing in a run whose grant holds
-  a secret behind the airlock (below) and the broker refuses the release, naming that secret;
-  nothing runs. Ask for the GitHub App secret in a run of its own, with no airlocked name beside
-  it.
+  a secret behind the airlock (below) and nothing runs: where a person decides the request,
+  the broker refuses the request, naming that secret, and where the policy grants every name
+  at once, the same refusal comes when the grant is read. Ask for the GitHub App secret in a
+  run of its own, with no airlocked name beside it.
 
 ## The command reads the value, your shell does not
 
@@ -194,12 +211,14 @@ prompt, a skill, or the issue you work on. There is no list to browse and nothin
   secret exists is recorded against your session with the reason you signed, and it reaches a
   person's Inbox unless the model judge decides it first.
 - `UNKNOWN_SECRET` and a denial are final. Do not ask again, and do not try a name of your own.
-- A secret that a service owns, such as `LEGION_SLACK_BOT_TOKEN`, goes to that service's own pods
-  and VMs and to nothing else: `Evaluate` in `packages/envoy/internal/broker/policy/policy.go`
-  grants a service-owned secret at once when the session's own service is the secret's owner, and
-  denies every other session, with no person asked.
+- A secret that a service owns goes to that service's own pods and VMs and to nothing else:
+  `Evaluate` in `packages/envoy/internal/broker/policy/policy.go` grants a service-owned secret at
+  once when the session's own service is the secret's owner, and denies every other session, with
+  no person asked. A shared agent secret, such as `LEGION_SLACK_BOT_TOKEN`, goes at once to every
+  session, a pod's and a person's alike.
 - The `agent-secrets secret` forms (`list`, `show`, `create`, `set`, `retag`, `delete`, `restore`)
-  act under a person's own cloud sign-in. They belong to the secret's owner, not to an agent.
+  call the broker's store under whatever cloud credential the environment gives them, and the
+  store's IAM decides what each may read and write.
 - Slack's read methods go through `curl` under this client. Every post to Slack stays a `slack_post`
   call, which holds the reply to one thread, to 4,000 characters and to one send.
 
@@ -223,12 +242,17 @@ for two reasons:
   `agent-secrets register --wait 10 --exec -- <the agent's command>`.
 
 On `UNKNOWN_SECRET` you stop, as above. You may tell the secret's owner how to find the cause:
-`agent-secrets secret list` and `agent-secrets secret show NAME`, under their own cloud sign-in
-(`gcloud auth login` against a broker on Google Cloud, their `AWS_PROFILE` against one on AWS).
+`agent-secrets secret list` and `agent-secrets secret show NAME`, under a cloud sign-in that may
+read the store (`gcloud auth login` against a broker on Google Cloud, an `AWS_PROFILE` against one
+on AWS).
 
-An owner who must store a secret does every write under their own cloud sign-in.
+A write runs under whatever credential the environment gives the command, and the store's IAM
+decides whether it lands. On Google Cloud that is `CLOUDSDK_AUTH_ACCESS_TOKEN` when it is set, else
+the Application Default Credentials, else the gcloud login; on AWS, `--profile`, else `AWS_PROFILE`.
 `agent-secrets secret set NAME` replaces the value of a secret that exists. A new one is
-`agent-secrets secret create NAME --owner me|shared --tier agent|human`. Both read the value from
+`agent-secrets secret create NAME --owner me|shared|<email> --tier agent|human`. `--owner me` is
+the email of the person the credential names, and is refused where it names none, as a token
+minted for `cloud-platform` alone does: give `--owner <email>` there. Both read the value from
 standard input or from a prompt with echo off, never from an argument. Type it at the prompt, so it
 reaches no shell history.
 
@@ -248,9 +272,8 @@ messages of the thread. A `ts` that names no message answers
 `{"ok":false,"error":"thread_not_found"}`, also at exit 0, which is why the body decides and not the
 status. A thread read needs the app's `channels:history` scope in a public channel and
 `groups:history` in a private one; without them Slack answers `missing_scope`, which only a person
-in the Slack workspace can fix. A session with a broker identity that is not one of the
-`legion-daemon` service's own is denied this token, and the example exits 77; a session with no
-broker identity exits 2.
+in the Slack workspace can fix. `LEGION_SLACK_BOT_TOKEN` is a shared agent secret, so every session
+with a broker identity is granted it; a session with no broker identity exits 2.
 
 Paging: Slack recommends a `limit` of at most 200. While the answer's `has_more` is true, pass its
 `response_metadata.next_cursor` as `cursor` to the next call. Each page repeats the thread's root

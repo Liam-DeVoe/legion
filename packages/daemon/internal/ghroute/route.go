@@ -1,7 +1,8 @@
 // Package ghroute reads which owner's repository a gh command acts on, as gh itself resolves it,
 // so the caller runs gh with that owner's gh directory of a Legion credential bundle and no other:
 // `legion gh`, the gh every pane and pod runs, and the daemon's own gh tool for an agent that is
-// not running.
+// not running. It also says whether the command writes nothing, by a rule proven against the
+// shared leak check the worker image pins (Target.WritesNothing, ReadsProvenCheckSHA256).
 package ghroute
 
 import (
@@ -25,15 +26,20 @@ import (
 // that one repository of that owner, and "" where they named more than one, where one named the
 // owner alone, and where none named a repository at all; Command, the path of the leaf
 // command it runs as gh's own help names it (`pr list` for `pr ls`), nil when it runs none
-// (`gh`, a group alone, `gh help`, `gh --version`); and Files, the files the command would send
+// (`gh`, a group alone, `gh help`, `gh --version`); Files, the files the command would send
 // to GitHub as content (sentFiles), for the leak guard a caller runs before gh
-// (leakguard.GhRequest.Files). A target with no Owner is a command naming
-// none, whose token stays the one GH_CONFIG_DIR already names.
+// (leakguard.GhRequest.Files); and WritesNothing, whether the call is in a read grammar
+// (writesNothing), false for a help call, so that under the shared check that rule was proven
+// against (ReadsProvenCheckSHA256) a caller's guard runs that check alone for it
+// (leakguard.GhRequest.WritesNothing). Such a call sends no file: no grammar names an option of
+// sentFileOptions (TestGhReadGrammarNamesEachOptionAsItsHelpDoes). A target with no Owner is a
+// command naming none, whose token stays the one GH_CONFIG_DIR already names.
 type Target struct {
-	Owner   string
-	Repo    string
-	Command []string
-	Files   []leakguard.GhFile
+	Owner         string
+	Repo          string
+	Command       []string
+	Files         []leakguard.GhFile
+	WritesNothing bool
 }
 
 // sentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
@@ -90,7 +96,8 @@ func sentFiles(parsed ghArgs) []leakguard.GhFile {
 }
 
 // TargetOf reads the Target of the gh command argv (gh's arguments, without `gh`): the owner of
-// the repository it acts on, and the leaf command it runs. It fails closed: whenever it cannot be
+// the repository it acts on, the leaf command it runs, and whether the call writes nothing
+// (writesNothing, over argv as typed and the leaf's path). It fails closed: whenever it cannot be
 // certain which owner the command targets it is an error, which names the argument it could not
 // place, and nothing is sent. `gh --version` alone, and a command whose last --help is true, name
 // none, since gh only prints.
@@ -189,6 +196,8 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 		return Target{}, err
 	}
 	if parsed.help {
+		// No read grammar names --help or -h (readLeaves, apiReadOptions), so a help call is no
+		// call that writes nothing (writesNothing), and a caller's guard reads it whole.
 		return Target{Command: cmd.path}, nil
 	}
 	sel := selectors{api: cmd.isAPI(), owners: map[string]string{}, repos: map[string]bool{}}
@@ -199,12 +208,13 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 		return Target{}, err
 	}
 	files := sentFiles(parsed)
+	reads := writesNothing(argv, cmd.path)
 	switch len(sel.owners) {
 	case 0:
-		return Target{Command: cmd.path, Files: files}, nil
+		return Target{Command: cmd.path, Files: files, WritesNothing: reads}, nil
 	case 1:
 		for owner := range sel.owners {
-			return Target{Owner: owner, Repo: sel.onlyRepository(), Command: cmd.path, Files: files}, nil
+			return Target{Owner: owner, Repo: sel.onlyRepository(), Command: cmd.path, Files: files, WritesNothing: reads}, nil
 		}
 	}
 	var listed []string

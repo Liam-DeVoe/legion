@@ -43,9 +43,9 @@ spec before every approval request: `plan-gap-analyst` for its gaps, and `plan-r
 that the document is a spec, for each factual claim. Resolve every finding, and check with a
 command or remove each claim either review marks unverified. File every child issue of your
 decomposition before you request approval, and, where your `Design gate steps` line gates no
-step, before `register_gate`: the gate's opening starts the root's own first phase unless
-Dispatch shows an open child under it, so a child filed later leaves the root working beside its
-children. Then
+step, before `register_gate`: the gate's opening starts the root's own first phase unless the root
+waits on another issue, an open child under it or a `blocked_by` link to an issue that is not
+`done`, so a child filed later leaves the root working beside its children. Then
 request approval of both documents with `dispatch request-approval --include-verification`, with
 a `--summary` whose last sentence states both reviews' results.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
@@ -63,10 +63,8 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
-Your root holds its admission slot throughout, as every issue holds one of the cap's slots from
-the moment the daemon starts it until its work is past its review — `accepting`, `retro` and
-`merging` hold none — or until it is done or Dispatch takes it out of the
-workflow, so that resume takes no slot
+Your root holds its admission slot throughout, since a root in `awaiting_person` keeps the one the
+daemon gave it ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), so that resume takes no slot
 and comes however full the cap is. An answered root stands in the admission line until the pass
 that resumes it, and nothing is sent to you about that wait: your
 record's `waitingLine` gives the live place in the line and the line's length, and the daemon
@@ -142,14 +140,16 @@ may have merged, so register no document and
 ask no human to approve one: the merge closes the issue, and the production check after the close
 is the tester's, on the pull request, where the project opens one.
 
-Necessary work remains your responsibility until it is complete, and deferral is not allowed: a
-child issue needs a repository or a deploy order of its own, never a place for a to-do, a fix
-found in review, a proof of the root's acceptance or a part of your own work
-(`skill://legion-architect`, section 1). A repeated change is one child, never one per instance.
-Work in a repository this tree already has a pull request in, which waits on a sibling's merge,
-is no child and is not parked in `backlog`: write it into the spec of the issue whose pull
-request carries it, the parent's, or the sibling's when the parent's pull request is in another
-repository. A child that duplicates another issue and is not yet released is never released:
+Necessary work remains your responsibility until it is complete, and deferral is not allowed.
+Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
+Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
+It can also conflict with the default branch.
+Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
+They can conflict with each other, and dependent slices run in sequence.
+A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
+A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A repeated change is one child, never one per instance.
+A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
 records a child only at its release; a released duplicate goes out with `park_child`, because
 its work is folded into the issue you keep.
