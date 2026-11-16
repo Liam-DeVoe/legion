@@ -3290,7 +3290,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `cmd/spec-check/citations.go`, rules of `specgraph.Citations`):
   `--dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed) --reports <dir> --needs <file> [--ties <file>] [--json <file>] [--allow-empty]`.
   Each program check of `<dir>` gets the first rule it breaks:
-  `no-test` (no runner or selector),
+  `no-test` (no runner or selector, or one with no letter and no digit, as `Validate`'s `no-test` reads it),
   `test-lookup-failed` (`go list` in `<root>` cannot list the selector's package, which go answers the same for a package that is gone and for a workspace that lacks the module),
   `test-not-in-code` and `two-tests` (`specgraph.GoCode` counts the top-level funcs of the selector's name that go test runs, in package p and p_test),
   `job-not-in-workflow` and `job-not-awaited` (the check's job is not a job of `--workflow`, or the job `spec-citations` there does not need it, so it cannot read its report),

@@ -109,6 +109,14 @@ func TestCitations(t *testing.T) {
 			check.Test = nil
 			c.tree.Checks = []Check{check}
 		}, want: fault("no-test", "no-test: the check names no test")},
+		{name: "a program check whose runner is only spaces names no test", change: func(c *citationCase) {
+			check := citationCheck
+			check.Test = &Test{Runner: "   ", Selector: "example.com/citations/a TestA", Job: "go-checks"}
+			c.tree.Checks = []Check{check}
+		}, want: fault("no-test", "no-test: the check names no test")},
+		{name: "a program check whose selector is only punctuation names no test", change: func(c *citationCase) {
+			c.test("-", "go-checks")
+		}, want: fault("no-test", "no-test: the check names no test")},
 		{name: "v-citations 5: no code of the tie changed and the job skipped the test", change: func(c *citationCase) {
 			c.changed = []string{"docs/x.md"}
 			c.outcome("skip")

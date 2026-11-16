@@ -42,7 +42,7 @@ const (
 // Citations finds each program check of t that CI refuses at the commit (R48), in the order of
 // t.Checks, with the first rule it breaks of these:
 //
-//   - no-test: the check names no runner or no selector;
+//   - no-test: the check names no runner or no selector, or one with no letter and no digit;
 //   - test-not-in-code, two-tests: code finds no test or more than one for its test part (R6: "a
 //     runner and a selector, which pick one test in the code"); test-lookup-failed: code cannot
 //     search for it, as for a package that go cannot list;
@@ -81,7 +81,7 @@ type citations struct {
 
 // cite is the first rule that the program check c breaks and what it names, or "".
 func (in citations) cite(c Check) (rule, detail string) {
-	if c.Test == nil || c.Test.Runner == "" || c.Test.Selector == "" {
+	if c.Test == nil || !hasWord(c.Test.Runner) || !hasWord(c.Test.Selector) {
 		return citeNoTest, "the check names no test"
 	}
 	test := *c.Test
