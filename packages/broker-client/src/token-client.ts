@@ -83,6 +83,11 @@ const INVALID_DPOP_PROOF = "invalid_dpop_proof";
  *  already retries once with the nonce the answer carried. */
 const USE_DPOP_NONCE = "use_dpop_nonce";
 
+/** The backstop of one exchange whose caller gives no signal, in the seconds `openid-client`
+ *  takes: the Go client's bound of one call to the broker (`callTimeout`,
+ *  packages/envoy/internal/brokerclient/environment.go). */
+const EXCHANGE_BACKSTOP_SECONDS = 30;
+
 /**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
@@ -194,6 +199,36 @@ export function isFinalRefusal(error: unknown): boolean {
   return (
     (error instanceof BrokerRefusedError && error.permanent) || error instanceof SignInEndedError
   );
+}
+
+/** The errors a trade's identity sources threw (`identityReadFailed`), each thrown as it is. */
+const IDENTITY_READS = new WeakSet<object>();
+
+/**
+ * Whether `error` is one a trade's identity source threw while the trade read it — the subject
+ * token or, for a person's sign-in, the machine's own — so no request of that trade reached the
+ * broker. The error is thrown as it is, its class and words its source's own (a
+ * {@link SignInEndedError} stays one), and only marked here.
+ */
+export function identityReadFailed(error: unknown): boolean {
+  return typeof error === "object" && error !== null && IDENTITY_READS.has(error);
+}
+
+/** `error`, marked as one an identity source threw ({@link identityReadFailed}). */
+function identityRead<T>(error: T): T {
+  if (typeof error === "object" && error !== null) IDENTITY_READS.add(error);
+  return error;
+}
+
+/** `promise`, or the reason of `signal` once it aborts first: a caller that joins work another
+ *  caller started still ends at its own signal. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  const { promise: ended, reject } = Promise.withResolvers<never>();
+  const abort = (): void => reject(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  return Promise.race([promise, ended]).finally(() => signal.removeEventListener("abort", abort));
 }
 
 /** One client: the broker it trades at, the identity it trades, and the key it proves. */
@@ -343,7 +378,7 @@ export class BrokerTokenClient {
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;
     if (held !== null && this.#now() < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
-    if (this.#trading !== null) return await this.#trading;
+    if (this.#trading !== null) return await untilAborted(this.#trading, signal);
     const trading = this.#renew(signal);
     this.#trading = trading;
     try {
@@ -390,7 +425,12 @@ export class BrokerTokenClient {
    * process makes with the token it got.
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
-    const subject = await this.#subject.read(signal);
+    let subject: SubjectToken;
+    try {
+      subject = await this.#subject.read(signal);
+    } catch (error) {
+      throw identityRead(error);
+    }
     const form: Record<string, string> = {
       subject_token: subject.token,
       subject_token_type: subject.tokenType,
@@ -409,9 +449,11 @@ export class BrokerTokenClient {
       try {
         actor = await this.#actor.read(signal);
       } catch (error) {
-        throw new Error(`read the machine this person signed in on: ${messageOf(error)}`, {
-          cause: error,
-        });
+        throw identityRead(
+          new Error(`read the machine this person signed in on: ${messageOf(error)}`, {
+            cause: error,
+          })
+        );
       }
       form["actor_token"] = actor.token;
       // The same token under the type that says what it proves here: not who is asking, but which
@@ -430,6 +472,11 @@ export class BrokerTokenClient {
     // The broker is wherever the deployment put it, which in a cluster and on a dev stack is an
     // http origin; the client posts where it is told, as the Go client does.
     allowInsecureRequests(config);
+    // The exchange ends at the caller's signal, which each request of it carries, the retry with a
+    // nonce included (`#send`). A caller with no signal gets the library's own timeout as a
+    // backstop, since a fetch with no signal waits as long as the runtime lets it; beside a signal
+    // that timeout would be a second clock, so it is set only where there is none.
+    if (signal === undefined) config.timeout = EXCHANGE_BACKSTOP_SECONDS;
     config[customFetch] = (url, options) => this.#send(url, options, signal, raw);
     let answered: TokenEndpointResponse;
     try {

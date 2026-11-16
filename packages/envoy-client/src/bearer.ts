@@ -72,11 +72,17 @@ export interface RequestCredential {
    * deregistration before its NATS connection starts draining, and one awaited microtask between
    * the two would reverse that. A caller that cares takes the answer as it comes and awaits only
    * a promise (`transport.ts`).
+   *
+   * `signal` is the call's own cancellation, which ends whatever the credential awaits for this
+   * request: a broker credential's trade, the identity it reads for it, and each ask again of
+   * either, so a caller's bound reaches the trade as it reaches the request. A bearer awaits
+   * nothing and ignores it.
    */
   headers(
     method: string,
     url: string,
-    session?: string
+    session?: string,
+    signal?: AbortSignal
   ): Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>;
   /**
    * Tells the credential that the server said the token it presented for `session` (the same

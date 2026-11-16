@@ -1752,9 +1752,10 @@ export const dispatchToolSpecs = [
       "limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check of the job's " +
       "token (429 BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +
       "is stored is asked again after the answer's Retry-After, or a second. The whole call has " +
-      "one bound, 60 s from its start: the write's own deadline is that bound, and no round " +
-      "starts in its last 5 s; a call turned away until then ends with the last answer, its " +
-      "code named, and exits 1. " +
+      "one bound, 60 s from its start, which the runner's token request, the broker's trade and " +
+      "the write all run under, and no round starts in its last 7 s; a call turned away until " +
+      "then ends with the last answer, its code named, and exits 1, and a bound that ends in the " +
+      "trade says which part of the trade and that nothing was written. " +
       "It reads DISPATCH_URL, AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY " +
       "(github-actions in a GitHub Actions job), AGENT_SECRETS_MACHINE_AUDIENCE, and the runner's " +
       "ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN, or " +

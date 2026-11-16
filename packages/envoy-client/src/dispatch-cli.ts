@@ -1,6 +1,10 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { IDENTITY_GITHUB_ACTIONS } from "@legion/broker-client/environment";
-import { BrokerRefusedError, BrokerTradeFailedError } from "@legion/broker-client/token-client";
+import {
+  BrokerRefusedError,
+  BrokerTradeFailedError,
+  identityReadFailed,
+} from "@legion/broker-client/token-client";
 import {
   askgateState,
   bytesDigest,
@@ -80,23 +84,40 @@ const USAGE = 2;
 
 /**
  * The one bound of a CI job's `dispatch result --project` (`ownIdentityResult`). The whole call
- * ends `totalMs` after it starts, on one clock: each trade, each write with the asks the write
- * client makes again under its key, and each wait after an answer that says "not now" (`notNow`)
- * share it, since the write client's deadline is this bound and not one of its own. No round
- * starts, and the write client asks nothing again, in its last `reserveMs`, the time a last
- * attempt has to be answered before the bound ends it. A job's step of many checks still ends,
- * and the wait of one call stays far below a job's timeout.
+ * ends `totalMs` after it starts: one timeout, made where the call starts, is the signal every
+ * await of it runs under — the runner's token request, the broker's trade, each ask again of
+ * either, each write with the asks the write client makes again under its key, and each wait
+ * after an answer that says "not now" (`notNow`) — since the write client takes that signal as
+ * its deadline and hands it to the credential. No round starts, and the write client asks nothing
+ * again, in its last `reserveMs`, the time a last attempt has to be answered before the bound
+ * ends it. A job's step of many checks still ends, and the wait of one call stays far below a
+ * job's timeout.
  */
 export interface ResultBound {
   readonly totalMs: number;
   readonly reserveMs: number;
 }
 
-/** 60 s in all, the last 5 of them for a last attempt's answer: the write client's own deadline
- *  and reserve (DISPATCH_TOOL_DEADLINE_MS, DISPATCH_WRITE_RETRY.inFlightWithinMs). */
+/** How long Dispatch's check of a broker token waits for the broker before it answers
+ *  `503 BROKER_UNAVAILABLE`, with no handler run: `introspectTimeout`,
+ *  packages/envoy/internal/brokertoken/introspect.go, which a test holds this copy to. */
+export const DISPATCH_TOKEN_CHECK_WAIT_MS = 5_000;
+
+/** The time a last attempt's answer gets beyond the slowest answer Dispatch gives before a
+ *  handler runs: the round trip, and Dispatch's own work before the check. */
+const RESERVE_MARGIN_MS = 2_000;
+
+/**
+ * 60 s in all, the write client's own deadline (DISPATCH_TOOL_DEADLINE_MS). The reserve must be
+ * greater than the slowest answer Dispatch gives before any handler runs, its check of the token
+ * waiting on the broker (`DISPATCH_TOKEN_CHECK_WAIT_MS`): a last ask sent at the edge of a
+ * reserve no longer than that wait can be answered "not checked" only after the bound, which then
+ * ends it as an attempt that may have reached a handler, though none ran. So it is that wait and
+ * a margin, 7 s.
+ */
 const RESULT_BOUND: ResultBound = {
   totalMs: DISPATCH_TOOL_DEADLINE_MS,
-  reserveMs: DISPATCH_TOOL_DEADLINE_MS - DISPATCH_WRITE_RETRY.inFlightWithinMs,
+  reserveMs: DISPATCH_TOKEN_CHECK_WAIT_MS + RESERVE_MARGIN_MS,
 };
 
 /** The wait `ownIdentityResult` takes where an answer that says "not now" names none. */
@@ -130,10 +151,35 @@ function notNow(error: unknown): { readonly why: string; readonly waitMs: number
   return undefined;
 }
 
-/** Waits `ms` on a timer. */
-function timerPause(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
+/**
+ * What the call was doing when its bound ended it before any write went out, or undefined where
+ * that is not so: reading the job's own token (`identityReadFailed`), or the broker's trade, which
+ * the bound cut with no answer (`BrokerTradeFailedError` with no status). Either error came from
+ * the credential before the round's first attempt, or from one the write client gave back as it
+ * was because no attempt of it may have reached Dispatch (`#ended`), and every earlier round
+ * stored nothing, so nothing was written.
+ */
+function tradeCut(error: unknown): string | undefined {
+  if (identityReadFailed(error)) return "it read the job's own token for the secrets broker";
+  if (error instanceof BrokerTradeFailedError && error.status === 0) {
+    return "the secrets broker traded the job's token";
+  }
+  return undefined;
+}
+
+/** Waits `ms`, or less where `signal` aborts first: true when the whole wait passed. */
+function waitWithin(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const ended = (): void => {
+    clearTimeout(timer);
+    resolve(false);
+  };
+  const timer = setTimeout(() => {
+    signal.removeEventListener("abort", ended);
+    resolve(true);
+  }, ms);
+  signal.addEventListener("abort", ended, { once: true });
   return promise;
 }
 
@@ -333,13 +379,15 @@ async function ownIdentityResult(
       parsed.tool
     );
   }
-  // One bound on one clock (`ResultBound`): the write client's deadline is the bound itself, its
-  // asks again under the key stop `reserveMs` before it, and the waits below are read on the same
-  // monotonic clock the client keeps its asks on.
+  // One bound, one signal (`ResultBound`): the timeout made here is the write client's deadline,
+  // which it hands to the credential for each trade and each read of the job's token, and every
+  // wait below ends at it too. The client's asks again under the key stop `reserveMs` before it,
+  // and the rounds below are read on the same monotonic clock the client keeps its asks on.
   const bound = io.resultBound ?? RESULT_BOUND;
+  const ended = AbortSignal.timeout(bound.totalMs);
   const lastRound = performance.now() + bound.totalMs - bound.reserveMs;
   const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch, {
-    deadlineMs: bound.totalMs,
+    deadline: ended,
     writeRetry: {
       ...DISPATCH_WRITE_RETRY,
       withinMs: Math.min(DISPATCH_WRITE_RETRY.withinMs, bound.totalMs - bound.reserveMs),
@@ -369,14 +417,28 @@ async function ownIdentityResult(
           parsed.tool
         );
       }
+      // The bound ended the call in the trade, before any write went out: the line names which
+      // part of the trade, and that nothing was written.
+      const cut = ended.aborted ? tradeCut(error) : undefined;
+      if (cut !== undefined) {
+        return refuse(
+          printableLine(
+            `this command's ${bound.totalMs / 1_000} s ended while ${cut}, and nothing was written: ${messageFor(error)}`
+          ),
+          REFUSED,
+          parsed.tool
+        );
+      }
       // One job writes a result for each of its checks, so it meets the broker's and Dispatch's
       // limits of one address with no fault of its own: a call turned away before anything was
       // stored is sent again after the answer's wait, while the next round starts before the
       // bound's last `reserveMs`. Past that, it ends with the last answer, which names its code.
       const turnedAway = notNow(error);
       if (turnedAway !== undefined) {
-        if (performance.now() + turnedAway.waitMs <= lastRound) {
-          await timerPause(turnedAway.waitMs);
+        if (
+          performance.now() + turnedAway.waitMs <= lastRound &&
+          (await waitWithin(turnedAway.waitMs, ended))
+        ) {
           continue;
         }
         return refuse(
