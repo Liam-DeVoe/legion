@@ -7,6 +7,7 @@ import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { useMediaQuery } from "../shell/useDialog";
+import { ChangeDraftsProvider } from "./DecisionActions";
 import { useSetFocusedNode } from "./focused-node";
 import { bringOnScreen } from "./identity-block";
 import { pathToTarget } from "./issue-address";
@@ -408,12 +409,28 @@ export function IssueTree({
     if (request.id !== undefined) goToNode(request.id);
   }, [goToNode, request, takeRequest]);
 
+  // The first row of the children's group, which their own address names (`issue-address.ts`'s
+  // `pathToTarget`, R6); undefined where the tree the view left holds no child.
+  const firstChild = useMemo(
+    () => pathToTarget(root, { id: root.id, kind: "children" })?.at(-1)?.id,
+    [root]
+  );
   useTreeKeymap({
     container: body,
     holdsEscape,
-    // `t h`: the children's own address, which unfolds the path to the group's first row and
-    // puts the focus on it (`issue-address.ts`'s `pathToTarget`, R20).
-    onChildren: () => navigate(buildIssuePath({ key: root.id, kind: "children" })),
+    // `t h` takes the reader to the children's first row itself, each time it is pressed and
+    // from any zoom (`reach`), and opens their own address too. The address alone moved the
+    // focus once per address and only to a row the tree drew, so a second `t h` after the
+    // reader moved on, or one pressed from a zoom that holds no child, moved nothing (R6, R9).
+    // Where the tree holds no child the key is not offered.
+    ...(firstChild === undefined
+      ? {}
+      : {
+          onChildren: () => {
+            reach(firstChild);
+            navigate(buildIssuePath({ key: root.id, kind: "children" }));
+          },
+        }),
     onCycle: () => setCycle((held) => (held + 1) % CYCLE_STATES),
     onEdit: edit,
     onEditEnd: stopEditing,
@@ -465,7 +482,7 @@ export function IssueTree({
   // question's read has answered. The question is where it stays, and its row is held on screen
   // while the reads still out draw rows above it (`holdOnFocus`): the page scrolls for the
   // question alone.
-  const opening = useRef<{ done: boolean; on?: string }>({ done: false });
+  const opening = useRef<{ done: boolean; row?: HTMLElement }>({ done: false });
   useEffect(() => {
     const settle = new AbortController();
     for (const type of READER_ACTS) {
@@ -489,11 +506,18 @@ export function IssueTree({
       held.done = true;
       return;
     }
+    // The focus is the opening's to place while nothing holds it, or while the row the opening
+    // focused holds it. A focus that fell to the body is the opening's again where that row has
+    // left the page: a later read drew its node under another key - a node sits under the issue
+    // until its parent's read answers, then under that parent - and the browser drops the focus
+    // of an element taken out of the page. Read as somebody else's focus, that ended the
+    // opening, and the page opened with the focus on no row. A row still on the page that lost
+    // the focus lost it to something else, a script's blur among them, which ends the opening.
     const active = document.activeElement;
     const free =
-      held.on === undefined
-        ? active === null || active === document.body
-        : active?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId === held.on;
+      active === null || active === document.body
+        ? held.row?.isConnected !== true
+        : held.row?.contains(active) === true;
     if (!free) {
       held.done = true;
       return;
@@ -501,18 +525,18 @@ export function IssueTree({
     const question = nodesInOrder(root).find((node) => node.type === "ask" && node.waiting);
     if (question !== undefined) {
       held.done = true;
-      held.on = question.id;
       holdOnFocus.current = question.id;
       reach(question.id);
       return;
     }
     const first = rows.find((row) => row.kind === "node");
-    if (first?.kind !== "node" || first.node.id === held.on) return;
+    if (first?.kind !== "node") return;
     const row = body.current?.querySelector<HTMLElement>(
       `[data-node-row][data-row-key="${CSS.escape(rowKeyOf(first))}"]`
     );
-    if (row === null || row === undefined) return;
-    held.on = first.node.id;
+    // The row the opening focused is still the first, and holds the focus.
+    if (row === null || row === undefined || row === held.row) return;
+    held.row = row;
     openingRow.current = rowKeyOf(first);
     row.focus({ preventScroll: true });
     openingRow.current = undefined;
@@ -644,30 +668,35 @@ export function IssueTree({
         ref={body}
         role="tree"
       >
-        <TreeRows
-          artifacts={artifacts}
-          context={context}
-          cycle={cycle}
-          editing={editing}
-          focused={focused}
-          isClosed={isClosed}
-          onFocus={takeFocus}
-          onOpenDeeper={openDeeper}
-          onPin={pin}
-          // A branch opens where it is at every width (R16): below 1024 px the outline draws
-          // one level under the node it is read from, so an opened branch deeper than that is
-          // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.
-          onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
-          {...(openBody === undefined ? {} : { openBody })}
-          pinned={pinned}
-          {...(report === undefined
-            ? {}
-            : { report: { line: report.line, row: report.row ?? tabStop } })}
-          rows={rows}
-          tabStop={tabStop}
-          threads={threads}
-          unplaced={unplaced}
-        />
+        {/* A decision's Change and the words typed in it outlive its row's body, which closes
+            as the focus leaves the row and opens again as it comes back (G's ConversationRows
+            held them the same way): the drafts are the tree's, as the pins are. */}
+        <ChangeDraftsProvider>
+          <TreeRows
+            artifacts={artifacts}
+            context={context}
+            cycle={cycle}
+            editing={editing}
+            focused={focused}
+            isClosed={isClosed}
+            onFocus={takeFocus}
+            onOpenDeeper={openDeeper}
+            onPin={pin}
+            // A branch opens where it is at every width (R16): below 1024 px the outline draws
+            // one level under the node it is read from, so an opened branch deeper than that is
+            // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.
+            onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
+            {...(openBody === undefined ? {} : { openBody })}
+            pinned={pinned}
+            {...(report === undefined
+              ? {}
+              : { report: { line: report.line, row: report.row ?? tabStop } })}
+            rows={rows}
+            tabStop={tabStop}
+            threads={threads}
+            unplaced={unplaced}
+          />
+        </ChangeDraftsProvider>
       </div>
       {root.children.length === 0 ? (
         <p className={`py-1 text-sm ${textMutedOnCanvas}`} {...pageChrome}>

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -23,7 +23,7 @@ import {
   useOutlineWriter,
 } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
-import type { NodeType } from "./page-words";
+import { CONTROL_LABELS, type NodeType } from "./page-words";
 
 /**
  * What a reader does to the tree with the keyboard alone (dispatch://INFRA-1196 R6, R9, R23).
@@ -118,6 +118,12 @@ function IssueScope(): ReactNode {
   return null;
 }
 
+/** Where the page's address stands, which the tree's own navigation moves (`t h`). */
+function AddressProbe({ seen }: { seen: { path?: string } }): ReactNode {
+  seen.path = useLocation().pathname;
+  return null;
+}
+
 function renderTree(
   root: TreeNode,
   { artifacts = [], decisions }: { artifacts?: Artifact[]; decisions?: IssueDecisions } = {}
@@ -127,8 +133,10 @@ function renderTree(
   });
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
+  const seen: { path?: string } = {};
   const view = render(
     <MemoryRouter>
+      <AddressProbe seen={seen} />
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
@@ -151,7 +159,7 @@ function renderTree(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { edited, ...view };
+  return { address: () => seen.path, edited, ...view };
 }
 
 /** What the page-body harness hands back from inside the providers: the Contents list's ask,
@@ -432,6 +440,94 @@ test("Send change keeps the focus on its decision's row while the comment is out
   }
 });
 
+// The outline holds G's `ChangeDraftsProvider` above its rows: a decision's body is drawn while
+// its row has the focus, so a reader who opened Change, typed and moved on closes the body, and
+// Keep and Change go with it. The open form and its words come back with the body when the
+// reader comes back to the row, rather than being dropped with no word said.
+test("a Change the reader typed in comes back with its decision's body", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({ id: "decisions#b-d1", reference: decision.ref, type: "decision", waiting: true }),
+      node({ id: "comment-1", text: "The next words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, {
+    artifacts: [decisionsDocument],
+    decisions: { decisions: [decision], document: null, open_questions: [] },
+  });
+  const [row] = rowsFor(view.container, "decisions#b-d1");
+  if (row === undefined) throw new Error("the decision has no row");
+  await act(async () => row.focus());
+  await view.findByRole("button", { name: "Change" });
+  await user.keyboard("{Shift>}C{/Shift}");
+  const field = await view.findByRole("textbox", { name: "Your change" });
+  await waitFor(() => expect(document.activeElement).toBe(field));
+  await user.keyboard("Say more about the flag.");
+  // Out of the field by the keyboard alone: Tab to the form's Send change, Escape to the row.
+  await user.keyboard("{Tab}{Escape}");
+  expect(document.activeElement).toBe(row);
+
+  // The next row takes the focus and the decision's body closes; the row above opens it again.
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  expect(view.queryByRole("textbox", { name: "Your change" })).toBeNull();
+  await user.keyboard("k");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
+  const back = await view.findByRole("textbox", { name: "Your change" });
+  expect((back as HTMLTextAreaElement).value).toBe("Say more about the flag.");
+});
+
+// R9, WCAG 2.1.1: every control of a row is out of the tab order, so a button that no key of the
+// keymap presses - Copy reference, Change answer, a command's Copy - is a stop of `f`, after the
+// row's links, and Enter on the one it stopped on presses it.
+test("f reaches Copy reference after the row's links, and Enter presses it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const writeText = spyOn({ writeText: async (_text: string) => undefined }, "writeText");
+  const original = navigator.clipboard;
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  const reference = buildDispatchReference({ id: "comment-1", key: KEY, kind: "comment" });
+  const root = node({
+    children: [
+      node({
+        chips: [
+          {
+            answered: true,
+            gone: false,
+            name: "The spec block",
+            ref: `dispatch://${KEY}/spec#b-r1`,
+          },
+        ],
+        id: "comment-1",
+        reference,
+        text: "The first words.",
+        type: "comment",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  try {
+    const view = renderTree(root);
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("f");
+    expect(document.activeElement?.textContent).toBe("The spec block");
+    await user.keyboard("f");
+    expect(document.activeElement?.textContent).toBe(CONTROL_LABELS.copy_reference);
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(reference));
+    // The last stop comes back to the first.
+    await user.keyboard("f");
+    expect(document.activeElement?.textContent).toBe("The spec block");
+  } finally {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: original });
+  }
+});
+
 test("Escape leaves the caret for the placement it was taken from, not the node's first row", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -485,6 +581,83 @@ test("q reaches every open question while the tree is read one node at a time", 
   await waitFor(() => expect(focusedRow(view.container)).toBe("ask-1"));
   await user.keyboard("q");
   await waitFor(() => expect(focusedRow(view.container)).toBe("ask-2"));
+  expect(rowReport(view.container)).toBeUndefined();
+});
+
+/** An issue whose outline holds a comment and then the group of its two children. */
+function childrenTree(): TreeNode {
+  return node({
+    children: [
+      node({
+        children: [node({ id: "comment-1a", text: "Under the first.", type: "comment" })],
+        held: 1,
+        id: "comment-1",
+        text: "The first words.",
+        type: "comment",
+      }),
+      node({ id: "CORE-2", text: "The first child", type: "child_issue" }),
+      node({ id: "CORE-3", text: "The second child", type: "child_issue" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+}
+
+// R6, R9: `t h` opens the children's own address and puts the focus on the group's first row
+// each time it is pressed. The address alone moves the focus once per address, so a second
+// `t h` after the reader had moved on moved nothing.
+test("t h puts the focus on the first child's row, and again after the reader moved on", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(childrenTree());
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+
+  await user.keyboard("th");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("CORE-2"));
+  expect(view.address()).toBe(buildIssuePath({ key: KEY, kind: "children" }));
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("CORE-3"));
+  await user.keyboard("th");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("CORE-2"));
+});
+
+// A zoomed tree is rooted at the node the reader zoomed into, which holds no child, so the
+// children are no rows of it: `t h` leaves the zoom for the whole outline, as every key that
+// takes the reader to a node does.
+test("t h from a zoom into a node puts the focus on the first child's row", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(childrenTree());
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard(".");
+  await waitFor(() => expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull());
+  expect(rowsFor(view.container, "CORE-2")).toHaveLength(0);
+
+  await user.keyboard("th");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("CORE-2"));
+  expect(view.container.querySelector("[data-crumb]")).toBeNull();
+});
+
+// `t h` is offered only where the outline holds a child: on an issue with none it opens no
+// address, moves no focus and draws no line.
+test("t h on an issue with no children changes nothing", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  const before = view.address();
+
+  await user.keyboard("th");
+  expect(view.address()).toBe(before);
+  expect(focusedRow(view.container)).toBe("comment-1");
   expect(rowReport(view.container)).toBeUndefined();
 });
 
@@ -671,6 +844,64 @@ test("the page opens with the focus on the first open question that waits on the
   });
   const view = renderTree(root);
   await waitFor(() => expect(focusedRow(view.container)).toBe("ask-mine"));
+});
+
+// R8: the page's reads answer one after another, and a node whose parent's read has not answered
+// yet sits under the issue until it does. A read that then draws the first row under its parent
+// gives that row another key, and its old element leaves the page with the focus, which the
+// browser drops to the body. The page opened with the focus on no row (the browser row `an open
+// question is unfolded and on the first screen`, at 1440 by 900 and at 390 by 664): the opening
+// read the body as the focus somebody else had placed. It takes it again, on the first row.
+test("the page opens on its first row when a later read draws the row it focused under another key", async () => {
+  setViewport(1440);
+  const reply = node({ id: "comment-2", text: "A reply.", type: "comment" });
+  const later = node({ id: "comment-9", text: "Later words.", type: "comment" });
+  const tree = renderPageTree(node({ children: [reply, later], id: KEY, type: "issue" }));
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-2"));
+
+  // The comments read places the reply under the comment it answers.
+  tree.redraw(
+    node({
+      children: [
+        node({
+          children: [reply],
+          held: 1,
+          id: "comment-1",
+          text: "The first words.",
+          type: "comment",
+        }),
+        later,
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  expect(rowsFor(container, "comment-1")).toHaveLength(1);
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+});
+
+// The opening takes the focus back only from a row that has left the page. A row still on it
+// that lost the focus lost it to something else - here a script's blur, as the browser rows'
+// `focusThePage` makes before they press Tab - and the focus stays where that left it, through
+// the reads that answer after.
+test("a focus taken off the opening's row while the row stays on the page ends the opening", async () => {
+  setViewport(1440);
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  const tree = renderPageTree(node({ children: [first], id: KEY, type: "issue" }));
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+  tree.redraw(
+    node({
+      children: [node({ id: "comment-0", text: "Older words.", type: "comment" }), first],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  expect(rowsFor(container, "comment-0")).toHaveLength(1);
+  expect(document.activeElement).toBe(document.body);
 });
 
 // The tester's F16: what a key reports when it has nowhere to go is drawn at the row it was
