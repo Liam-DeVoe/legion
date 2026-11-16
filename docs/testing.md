@@ -346,7 +346,7 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 
 **The template stays, and that is the one exception to "a test drops every database it makes".**
 Envoy's two harnesses, Dispatch's and the broker's, each clone from one migrated template per migration set, which every test process on the server shares: `pgtemplate` is the one implementation, held by both `storetest` packages and by `internal/dispatch/store`'s own tests.
-Applying the 255 Dispatch migrations, each in its own committed transaction but the four marked `-- pgmigrate:non-transactional`, which each build one index concurrently, costs about 5.5 s of every test process that wants a database.
+Applying the 256 Dispatch migrations, each in its own committed transaction but the four marked `-- pgmigrate:non-transactional`, which each build one index concurrently, costs about 5.5 s of every test process that wants a database.
 That was measured on a two-core pod at 0fbf8a3a against a server with durability on: `TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate` (`packages/envoy/internal/testpg/pgtemplate`) ran in 9.7 to 10.0 s building the template and in 4.2 to 4.5 s cloning one already there, three times each.
 A lane runs about thirty packages on the Dispatch harness and sixteen on the broker's.
 The template is named `dispatch_template_<fingerprint>` or `broker_template_<fingerprint>`, where the fingerprint digests the migration set the build embeds (`store.MigrationsFingerprint`): the first process to want it builds it under an advisory lock every process takes on the server's `postgres` database, under a `…_building_<random>` name it is renamed out of only once every migration is applied, and every process after it clones what is already there.

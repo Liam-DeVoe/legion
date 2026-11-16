@@ -52,6 +52,7 @@ func TestCreateProjectRejectsDuplicateKeyWithProjectExists(t *testing.T) {
 // credential acts for — a caller that reaches the end of them is refused, whichever step answers
 // must name somebody who has signed in, and no write clears a stored default.
 func TestEveryProjectNamesAPerson(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 
 	named := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
