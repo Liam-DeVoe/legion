@@ -48,6 +48,7 @@ import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
+import { CapabilityNote } from "./CapabilityNote";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type Offer, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
@@ -528,7 +529,7 @@ function PaletteDialog({
   // decision acts on, or the two best actions to pick from, as rows above the hits; what they
   // wrote, one line each, under the list. A new issue and a send to this issue's agent stay the
   // two offers below, which always ask, and write through the run where the decision chose them.
-  const { gaps, operations, runHint, shownAnswer } = useGoingBar({
+  const { gaps, operations, runHint, shownAnswer, stale } = useGoingBar({
     context: scope.context,
     enabled: queryEnabled,
     hits: results,
@@ -779,8 +780,9 @@ function PaletteDialog({
             />
           </div>
           {/* What narrows the search and what the words themselves can do, between the box and
-              the hits: the chips the reader has added with the controls for the rest, the three
-              operator forms, and, where meaning search did not run, the one line saying so. */}
+              the hits: the chips the reader has added with the controls for the rest, and the
+              three operator forms. That meaning search did not run is the foot's to say, with
+              the rest of what this bar cannot do (`CapabilityNote`), so it pushes no hit down. */}
           <div className={`shrink-0 border-b ${borderDefault}`}>
             <SearchFilterBar
               filters={filters}
@@ -788,16 +790,6 @@ function PaletteDialog({
               projects={projects.data ?? emptyProjects}
             />
             <SearchOperators inUse={operators} />
-            {degraded ? (
-              <p
-                className={`px-3 pb-2 text-xs ${textMutedOnSurface}`}
-                data-testid="search-degraded"
-                role="status"
-              >
-                Searching words only: meaning search is not running, so a hit that uses other words
-                may be missing.
-              </p>
-            ) : null}
           </div>
           {rows.length === 0 ? null : (
             <div
@@ -897,9 +889,7 @@ function PaletteDialog({
             </div>
           )}
           {operations.panel}
-          {shownAnswer === undefined && gaps.length === 0 ? null : (
-            <AnswerPanel answer={shownAnswer} gaps={gaps} />
-          )}
+          {shownAnswer === undefined ? null : <AnswerPanel answer={shownAnswer} stale={stale} />}
           {/* What the bar says about what it sent and what it made from these words, above the
               message that says the search found none: each is an answer to that search. */}
           {sendToAgent?.said}
@@ -948,6 +938,9 @@ function PaletteDialog({
               />
             </div>
           ) : null}
+          {/* What this bar cannot do here, said once and from the moment it opens, under
+              everything the words brought: no answer carries it, so none is pushed down by it. */}
+          <CapabilityNote degraded={degraded} gaps={gaps} />
           {/* The palette is a keyboard surface and never said so: the keys that drive it sit
               at its foot, quieter than any hit above them - and only where there is a pointer
               that can hover, since a touch reader has none of these keys and the row would

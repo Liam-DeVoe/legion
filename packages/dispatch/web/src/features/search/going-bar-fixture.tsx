@@ -41,12 +41,14 @@ export interface OpenedStream {
   readonly signal: AbortSignal;
 }
 
-/** The api the bar reaches, spied: each run is `run-<n>`, numbered from 1 as it is asked. */
+/** The api the bar reaches, spied: each run is `run-<n>`, numbered from 1 as it is asked, and
+ *  every search answers `BAR_HIT` until a row has it answer otherwise. */
 export interface GoingBarSpies {
   readonly streams: OpenedStream[];
   readonly createGoingRequest: Mock<typeof api.createGoingRequest>;
   readonly cancelGoingRequest: Mock<typeof api.cancelGoingRequest>;
   readonly goingCapability: Mock<typeof api.goingCapability>;
+  readonly search: Mock<typeof api.search>;
   readonly restore: () => void;
 }
 
@@ -69,11 +71,12 @@ export function spyOnGoingBar(): GoingBarSpies {
     id,
   }));
   const goingCapability = spyOn(api, "goingCapability").mockResolvedValue(CONFIGURED_CAPABILITY);
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([BAR_HIT]));
   const spies = [
     createGoingRequest,
     cancelGoingRequest,
     goingCapability,
-    spyOn(api, "search").mockResolvedValue(searchAnswer([BAR_HIT])),
+    search,
     spyOn(api, "getIssueSummary").mockImplementation((key) =>
       Promise.resolve({
         documents: [],
@@ -94,6 +97,7 @@ export function spyOnGoingBar(): GoingBarSpies {
     cancelGoingRequest,
     createGoingRequest,
     goingCapability,
+    search,
     restore: () => {
       for (const spy of spies) spy.mockRestore();
     },

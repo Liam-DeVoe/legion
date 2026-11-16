@@ -5,7 +5,7 @@ import { goingCapabilityQuery } from "../../api/queries";
 import type { GoingContextInput, SearchResult } from "../../api/types";
 import { kbdHint } from "../../theme/classes";
 import { DIALOG_SCOPE, MOD_KEY_LABEL, useKeymap } from "../shell/keymap";
-import { type CapabilityGap, capabilityGaps } from "./AnswerPanel";
+import { type CapabilityGap, capabilityGaps } from "./CapabilityNote";
 import { type GoingOperations, useGoingOperations } from "./OperationRows";
 import { type GoingAnswer, useGoingAnswer } from "./useGoingAnswer";
 
@@ -14,9 +14,14 @@ export interface GoingBar {
   /** The bar's operations, from the answer's decision and proposal (`useGoingOperations`). */
   readonly operations: GoingOperations;
   /** The answer to draw beside the hits: undefined until the hits it sits beside are shown, but
-   *  for the last answer drawn again as the bar opens. */
+   *  for the last answer drawn again as the bar opens, and for an answer to words the person
+   *  typed past, which stays until the answer to the words in the box has something of its own
+   *  to draw (`useGoingAnswer`'s `earlier`). */
   readonly shownAnswer: GoingAnswer | undefined;
-  /** What this Dispatch cannot do, said under the hits of every query. */
+  /** Whether `shownAnswer` answers words the person has typed past. */
+  readonly stale: boolean;
+  /** What this Dispatch cannot do, which the bar's foot says once from the moment it opens
+   *  (`CapabilityNote`): none until the capability read answers. */
   readonly gaps: readonly CapabilityGap[];
   /** The keyboard hint for the bar's submit, among the palette's own: none while there is no
    *  operation to run. */
@@ -29,10 +34,13 @@ export interface GoingBar {
  * all, with the chip the bar acts through and the project the filter chip narrows to. It is drawn
  * once the hits it sits beside are on the screen (`showHits`), so the list paints first and the
  * answer joins it; the last answer drawn again as the bar opens waits on nothing, since an empty
- * box lists no hits. The operations - the one the decision acts on, or the two best actions to
- * pick from, as rows above the hits, and what they wrote, one line each, under the list - run on
- * the bar's submit (`$mod+Enter`) from anywhere in the bar, the box included, so Enter keeps its
- * one meaning, opening the row the highlight is on.
+ * box lists no hits, and nor does an answer to words the person typed past, which the panel
+ * keeps through the pause and the new words' hits until the next answer replaces it. The
+ * operations - the one the decision acts on, or the two best actions to pick from, as rows above
+ * the hits, and what they wrote, one line each, under the list - come from the answer to the
+ * words in the box alone, never from one typed past, and run on the bar's submit (`$mod+Enter`)
+ * from anywhere in the bar, the box included, so Enter keeps its one meaning, opening the row
+ * the highlight is on.
  */
 export function useGoingBar({
   context,
@@ -59,7 +67,7 @@ export function useGoingBar({
   readonly words: string;
 }): GoingBar {
   const capability = useQuery(goingCapabilityQuery());
-  const { answer, askNow } = useGoingAnswer({
+  const { answer, askNow, earlier } = useGoingAnswer({
     context,
     enabled: enabled && capability.data?.answer.configured === true,
     login,
@@ -78,7 +86,7 @@ export function useGoingBar({
     },
   ]);
   return {
-    gaps: showHits && capability.data !== undefined ? capabilityGaps(capability.data) : [],
+    gaps: capability.data === undefined ? [] : capabilityGaps(capability.data),
     operations,
     runHint:
       operations.section === undefined ? null : (
@@ -88,6 +96,8 @@ export function useGoingBar({
           to run
         </span>
       ),
-    shownAnswer: answer !== undefined && (answer.replayed || showHits) ? answer : undefined,
+    shownAnswer:
+      earlier ?? (answer !== undefined && (answer.replayed || showHits) ? answer : undefined),
+    stale: earlier !== undefined,
   };
 }

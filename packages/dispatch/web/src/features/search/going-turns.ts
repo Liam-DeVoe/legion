@@ -3,7 +3,7 @@ import { useSyncExternalStore } from "react";
 import { ApiError, api, goingUndoRequest, goingWriteRequest } from "../../api/client";
 import type { GoingUndoLine, GoingWriteInput, GoingWriteLine } from "../../api/types";
 import { WriteDiscardedError } from "../writes/keyed-write";
-import { plainWrite, type Write, type Writes, writeUnsettled } from "../writes/write-store";
+import { defineWriteKind, type Write, type Writes, writeUnsettled } from "../writes/write-store";
 import { refusalText } from "./offer";
 
 /**
@@ -17,7 +17,9 @@ import { refusalText } from "./offer";
  * reached Dispatch and an undo stops it there (`Writes.discard`) rather than sending it to undo
  * it. A turn's undo waits for the writes that are out, since each may have reached Dispatch, and
  * then asks Dispatch to undo every write of the run that went through
- * (`POST /api/v1/going/runs/{id}/undo`), each by the undo its catalogue row states.
+ * (`POST /api/v1/going/runs/{id}/undo`), each by the undo its catalogue row states. Each write
+ * and each undo that lands has the bar read its hits again (`goingWrite`), so a hit shows what
+ * the turn left rather than what the search read before it.
  */
 
 /** How a write of the bar came to run: at once on submit, as the decision chose it at or above
@@ -70,6 +72,25 @@ export interface LastUndo extends TurnUndo {
 }
 
 const TARGET_PREFIX = "going-run:";
+
+/**
+ * The kind of every write of a turn and of every turn's undo: a plain write that, once it lands,
+ * has the bar read its hits again (`["search", …]`, `useTieredSearch`), since a hit shows the
+ * status and title of the item the write changed or put back, read afresh from Dispatch rather
+ * than patched here. A landing no surface awaits, or one without an answer, reads every query
+ * again, as a plain write's does.
+ */
+const goingWrite = defineWriteKind<null>({
+  kept: (value): value is null => value === null,
+  landed: (client, _write, answer, awaited) => {
+    if (!awaited || answer === null) {
+      void client.invalidateQueries();
+      return;
+    }
+    void client.invalidateQueries({ queryKey: ["search"] });
+  },
+  name: "going-write",
+});
 
 /** The line every write of one run goes out on, in press order. */
 function goingRunTarget(runId: string): string {
@@ -266,7 +287,7 @@ export function runGoingWrite(
     .run({
       detail: null,
       inline: true,
-      kind: plainWrite,
+      kind: goingWrite,
       label: actionOn(spec.action, target),
       presentation: "indicator",
       request: goingWriteRequest(spec.runId, input),
@@ -396,7 +417,7 @@ export async function undoGoingTurn(
     const answer = await writes.run({
       detail: null,
       inline: true,
-      kind: plainWrite,
+      kind: goingWrite,
       label: "Undo the command bar's turn",
       presentation: "indicator",
       request: goingUndoRequest(runId, reason === undefined ? {} : { reason }),

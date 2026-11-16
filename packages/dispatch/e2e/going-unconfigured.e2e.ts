@@ -1,12 +1,5 @@
 import { createIssue, createProject, getGoingCapability, setNewIssueSettings } from "./api";
-import {
-  answerPanel,
-  answerText,
-  bar,
-  countAskedRuns,
-  openBarOver,
-  searchBox,
-} from "./going-panel";
+import { answerText, bar, countAskedRuns, openBarOver, searchBox } from "./going-panel";
 import { usesFakeModels } from "./harness-models";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -52,11 +45,12 @@ test("with nothing configured the bar opens, lists the hits, says what it cannot
     await searchBox(page).fill("quasar sightings");
 
     await expect(bar(page).locator(`[id^="search-option-issue-${issue.key}"]`)).toBeVisible();
-    const panel = answerPanel(page);
-    await expect(panel.getByTestId("going-cannot-answer")).toBeVisible();
-    await expect(panel.getByTestId("going-cannot-decide")).toBeVisible();
-    await expect(panel.getByTestId("going-no-session")).toBeVisible();
-    await expect(panel.getByTestId("going-no-label")).toBeVisible();
+    // Said once, at the bar's foot, as no answer comes to carry it.
+    const cannot = bar(page).getByTestId("going-capability");
+    await expect(cannot.getByTestId("going-cannot-answer")).toBeVisible();
+    await expect(cannot.getByTestId("going-cannot-decide")).toBeVisible();
+    await expect(cannot.getByTestId("going-no-session")).toBeVisible();
+    await expect(cannot.getByTestId("going-no-label")).toBeVisible();
 
     // An absence window: twice the bar's pause, by which a bar that answers has asked already.
     await page.waitForTimeout(ABSENCE_WINDOW_MS);

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, jest, type Mock, test } from "bun:test";
-import { screen, waitFor } from "@testing-library/react";
+import { GOING_ERROR_ANSWER_FAILED } from "@legion/contracts";
+import { screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
@@ -19,8 +20,10 @@ import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 
 // The bar's answer as the person meets it: asked on the pause and never on a keystroke, one run
 // out at a time, cancelled by the next keystroke and by closing the bar, each frame of its stream
-// drawn as its line, and the last answer drawn again as the bar reopens. The clock is held, as in
-// SearchPalette.test.tsx, so which of the bar's timers has fired is the row's to decide.
+// drawn as its line, the answer the person typed past kept, marked as the earlier words', until
+// the next answer's first words take its place, and the last answer drawn again as the bar
+// reopens. The clock is held, as in SearchPalette.test.tsx, so which of the bar's timers has
+// fired is the row's to decide.
 
 let streams: OpenedStream[];
 let createGoingRequest: Mock<typeof api.createGoingRequest>;
@@ -50,6 +53,14 @@ async function type(user: UserEvent, words: string): Promise<void> {
 }
 
 const pauseRest = MEANING_PAUSE_MS - KEYSTROKE_DEBOUNCE_MS;
+
+/** Waits for the panel's mark on an answer kept from words the person typed past, and reads that
+ *  it is a status naming exactly `words`, the words that answer answers. */
+async function expectKeptFor(words: string): Promise<void> {
+  const mark = await screen.findByTestId("going-answer-stale");
+  expect(mark).toHaveAttribute("role", "status");
+  expect(mark).toHaveTextContent(new RegExp(`\\b${words}\\b`));
+}
 
 test("the pause asks once with the chip's context, and the next keystroke cancels the run out", async () => {
   await warmMarkdownRenderer();
@@ -98,6 +109,178 @@ test("the pause asks once with the chip's context, and the next keystroke cancel
     expect(screen.getByTestId("going-answer-text").textContent).toBe("The second answer");
   } finally {
     bar.unmount();
+  }
+});
+
+test("one more letter keeps the answer on the screen as the earlier words', with its link and lines, until the next answer's first words replace it", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    const first = streams[0];
+    for (const frame of [
+      { data: { text: "The first answer" }, event: "text" },
+      {
+        data: { href: "/issues/LEGION-3", id: "LEGION-3", kind: "issue", title: "Instruments" },
+        event: "item",
+      },
+      { data: { age_ms: 4200, source: "live" }, event: "roster" },
+    ] satisfies GoingEvent[]) {
+      first?.send(frame);
+    }
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer-item")).toHaveAttribute("href", "/issues/LEGION-3")
+    );
+
+    // One more letter: the run is cancelled on Dispatch and its stream let go, as ever, and the
+    // panel keeps what it drew of it under a status naming the words it answers.
+    await user.keyboard("s");
+    await waitFor(() => expect(cancelGoingRequest.mock.calls.map(([id]) => id)).toEqual(["run-1"]));
+    expect(first?.signal.aborted).toBe(true);
+    const panel = screen.getByTestId("going-answer");
+    expect(panel).toHaveAttribute("data-state", "stale");
+    expect(panel).toHaveAttribute("aria-busy", "false");
+    await expectKeptFor("astrolabe");
+    expect(within(panel).getByTestId("going-answer-stale")).toBeInTheDocument();
+    expect(within(panel).getByTestId("going-answer-text").textContent).toBe("The first answer");
+    expect([...panel.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual([
+      "/issues/LEGION-3",
+    ]);
+    expect(within(panel).getByTestId("going-answer-roster")).toHaveTextContent("roster 4 s old");
+    // A frame the let-go stream still delivers changes nothing of what the panel keeps.
+    first?.send({ data: { text: " and more" }, event: "text" });
+    await tick(0);
+    expect(screen.getByTestId("going-answer-text").textContent).toBe("The first answer");
+
+    // Through the pause, the next question and its first frame, which is no text, it stays.
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(streams).toHaveLength(2));
+    streams[1]?.send({
+      data: {
+        act: false,
+        actions: [{ action: "none", confidence: 0.9, probability: null }],
+        context: "none",
+        display: { chart: false, choice: "prose", confidence: 0.4 },
+      },
+      event: "decision",
+    });
+    await tick(0);
+    expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "stale");
+    expect(screen.getByTestId("going-answer-text").textContent).toBe("The first answer");
+
+    // The next answer's first words take its place, and nothing of the kept answer stays.
+    streams[1]?.send({ data: { text: "The second answer" }, event: "text" });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer-text").textContent).toBe("The second answer")
+    );
+    expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "streaming");
+    expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("going-answer-item")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("going-answer-roster")).not.toBeInTheDocument();
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("a next run that finds no answer or fails takes the kept answer's place, and one with no words of its own leaves nothing to keep", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
+    streams[0]?.send({ data: { items: 0, words: 3 }, event: "end" });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "ended")
+    );
+    await user.keyboard("s");
+    await expectKeptFor("astrolabe");
+
+    // The model writes no answer to the new words: the panel says so beside the hits, and the
+    // earlier words' answer is gone.
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(streams).toHaveLength(2));
+    streams[1]?.send({ data: {}, event: "none" });
+    await screen.findByTestId("going-answer-none");
+    expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("going-answer-text")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
+    streams[1]?.send({ data: { items: 0, words: 0 }, event: "end" });
+
+    // Typed past an answer that had no words, the panel has nothing to keep.
+    await type(user, "e");
+    expect(screen.queryByTestId("going-answer")).not.toBeInTheDocument();
+
+    // And a failure takes the kept answer's place as a none does.
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(3));
+    streams[2]?.send({ data: { text: "The third answer" }, event: "text" });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The third answer")
+    );
+    await user.keyboard("r");
+    await expectKeptFor("astrolabese");
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(streams).toHaveLength(4));
+    streams[3]?.send({ data: { code: GOING_ERROR_ANSWER_FAILED }, event: "error" });
+    expect(await screen.findByTestId("going-answer-error")).toHaveAttribute("role", "alert");
+    expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("going-answer-text")).not.toBeInTheDocument();
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("emptying the box lets the kept answer go for good, and so does closing the bar", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  const input = () => screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
+    await user.keyboard("s");
+    await expectKeptFor("astrolabe");
+
+    // Emptied: the panel is gone, and typing anew brings nothing of the kept answer back.
+    await user.clear(input());
+    expect(screen.queryByTestId("going-answer")).not.toBeInTheDocument();
+    await type(user, "sextant");
+    expect(screen.queryByTestId("going-answer")).not.toBeInTheDocument();
+
+    // An answer to these words, typed past and kept, then the bar closed.
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(2));
+    streams[1]?.send({ data: { text: "The sextant answer" }, event: "text" });
+    streams[1]?.send({ data: { items: 0, words: 3 }, event: "end" });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "ended")
+    );
+    await user.keyboard("s");
+    await expectKeptFor("sextant");
+  } finally {
+    bar.unmount();
+  }
+
+  // Opened again with an empty box: the bar draws the last answered run again, as ever, and
+  // nothing marks it as typed past.
+  const reopened = renderBar();
+  try {
+    await waitFor(() => expect(streams).toHaveLength(3));
+    expect(await screen.findByTestId("going-answer-replayed")).toHaveTextContent("sextant");
+    expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
+  } finally {
+    reopened.unmount();
   }
 });
 

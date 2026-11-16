@@ -38,6 +38,43 @@ export function answerSettled(answer: GoingAnswer): boolean {
   return answer.state === "ended" || answer.state === "failed";
 }
 
+/** Whether the answer has come to something of its own for the panel to draw: its first words,
+ *  the model writing none, or its end - an `end` or an `error` frame, or a request that never
+ *  reached the stream. Until then the panel keeps the answer to the words before (`earlier`). */
+function answerArrived(answer: GoingAnswer): boolean {
+  return answer.text !== "" || answer.none || answerSettled(answer);
+}
+
+/** What the panel keeps once the person types past `before`, the answer to the words they typed
+ *  past, where it kept `kept` until then: `before` where it has words of its own, as it stood at
+ *  the keystroke; nothing where it came to no words - none, or a failure - since that took the
+ *  place of whatever was kept; and `kept` while it had come to nothing yet. A replay answers no
+ *  words the person typed, so it is never kept. */
+function keptAnswer(
+  before: GoingAnswer | undefined,
+  kept: GoingAnswer | undefined
+): GoingAnswer | undefined {
+  if (before === undefined || before.replayed) {
+    return kept;
+  }
+  if (before.text !== "") {
+    return before;
+  }
+  return answerArrived(before) ? undefined : kept;
+}
+
+/** `answer` where it answers `words`, the words in the box: the replay while the box is empty,
+ *  else the run of those very words. */
+function answerTo(answer: GoingAnswer | undefined, words: string): GoingAnswer | undefined {
+  if (answer === undefined) {
+    return undefined;
+  }
+  if (answer.replayed) {
+    return words === "" ? answer : undefined;
+  }
+  return answer.words === words ? answer : undefined;
+}
+
 /**
  * One run of Dispatch's answer to the words in the bar, as the frames of its stream have built
  * it so far. Every field is a frame's: the text is the `text` frames joined, the items are the
@@ -173,9 +210,14 @@ interface OutRun {
   ended: boolean;
 }
 
-/** What `useGoingAnswer` answers: the answer, and how a submit inside the pause asks at once. */
+/** What `useGoingAnswer` answers: the answer, the earlier answer the panel keeps in its place,
+ *  and how a submit inside the pause asks at once. */
 export interface GoingAnswerHook {
   readonly answer: GoingAnswer | undefined;
+  /** The answer to words the person has typed past, as it stood at the keystroke, which the
+   *  panel keeps marked as theirs while `answer` has come to nothing of its own
+   *  (`answerArrived`); undefined while the box is empty, and never a replay. */
+  readonly earlier: GoingAnswer | undefined;
   /** Asks for the words in the box at once where the pause is still standing, and answers
    *  whether an answer to them is coming or came: false where there is nothing to ask. */
   readonly askNow: () => boolean;
@@ -186,14 +228,21 @@ export interface GoingAnswerHook {
  * before it searches by meaning (`MEANING_PAUSE_MS`), never on a keystroke, so a person typing
  * without stopping costs no model call; the bar has one run out at most, and the next keystroke
  * and closing the bar each cancel it (`POST /api/v1/going/requests/{id}/cancel`), so a run the
- * person typed past stops spending and its frames never reach the panel. A question goes with the
- * chip's `context`, and is asked only where `enabled` says this Dispatch answers at all.
+ * person typed past stops spending and no frame of it reaches the panel after the keystroke. A
+ * question goes with the chip's `context`, and is asked only where `enabled` says this Dispatch
+ * answers at all.
+ *
+ * What the panel drew of the run typed past stays, as it stood at the keystroke, as the `earlier`
+ * answer, until the answer to the words in the box has words of its own, or finds none, or
+ * fails. A run the person typed past with no words drawn yet leaves what was kept before it;
+ * emptying the box, asking the same words of another project and closing the bar keep nothing.
  *
  * A run that answered is kept outside the bar (`lastAnsweredRun`), and the bar opening again with
  * an empty box draws it from the first frame of its stream, as Dispatch still serves it.
  *
- * Answers the run of the words in the box, the replay while the box is empty, or undefined, and
- * `askNow`: a submit made inside the pause asks at once rather than waiting it out.
+ * Answers the run of the words in the box, the replay while the box is empty, or undefined; the
+ * earlier answer; and `askNow`: a submit made inside the pause asks at once rather than waiting
+ * it out.
  */
 export function useGoingAnswer({
   context,
@@ -216,6 +265,13 @@ export function useGoingAnswer({
   readonly words: string;
 }): GoingAnswerHook {
   const [answer, setAnswer] = useState<GoingAnswer | undefined>(undefined);
+  // What the panel keeps of the answer to words the person typed past (`keptAnswer`).
+  const [earlier, setEarlier] = useState<GoingAnswer | undefined>(undefined);
+  // The answer as the last render drew it, and the words the effect below last ran for: the
+  // effect reads what the person typed past from these, as it stood at the keystroke.
+  const answerNow = useRef(answer);
+  answerNow.current = answer;
+  const wordsBefore = useRef(words);
   const out = useRef<OutRun | null>(null);
   // The pause standing for the words in the box, which a submit inside it cuts short.
   const pause = useRef<{ readonly timer: number; readonly ask: () => void } | null>(null);
@@ -344,8 +400,14 @@ export function useGoingAnswer({
   // the next: the same wait the meaning search makes, so a question is asked only of words the
   // person stopped on.
   useEffect(() => {
-    // What the run before drew answers words the person has typed past, so it goes with them;
-    // the replay stays only while the box is still empty.
+    // The run before answers words the person has typed past, so it is cancelled and its answer
+    // let go; the replay stays only while the box is still empty. Where the person typed on, the
+    // panel keeps what it drew of that run as the earlier words' answer (`keptAnswer`); where
+    // they emptied the box, or the chip asks the same words of another project, it keeps none.
+    const typed = wordsBefore.current !== words;
+    wordsBefore.current = words;
+    const before = answerNow.current;
+    setEarlier((kept) => (typed && words !== "" ? keptAnswer(before, kept) : undefined));
     if (out.current?.replayed !== true || words !== "") {
       stop();
     }
@@ -399,11 +461,14 @@ export function useGoingAnswer({
     return run !== null && !run.replayed && run.words === wordsNow.current;
   }, []);
 
-  if (answer === undefined) {
-    return { answer: undefined, askNow };
-  }
-  if (answer.replayed) {
-    return { answer: words === "" ? answer : undefined, askNow };
-  }
-  return { answer: answer.words === words ? answer : undefined, askNow };
+  // The render the words change in comes before the effect above runs, so it already keeps what
+  // that effect will keep, from the answer the effect is about to let go.
+  const keeping =
+    words === "" ? undefined : keptAnswer(answer?.words === words ? undefined : answer, earlier);
+  const current = answerTo(answer, words);
+  return {
+    answer: current,
+    askNow,
+    earlier: current !== undefined && answerArrived(current) ? undefined : keeping,
+  };
 }

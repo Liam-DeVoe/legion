@@ -14,6 +14,7 @@ import type {
   GoingDecisionEvent,
   GoingEvent,
   GoingProposalEvent,
+  GoingUndoAnswer,
   GoingWriteInput,
   GoingWriteLine,
   IssueDetails,
@@ -29,6 +30,7 @@ import {
 import { forgetTurns } from "./going-turns";
 import { OPERATION_OPTION_ID, offerOptionId, useGoingOperations } from "./OperationRows";
 import { useSendToAgentOffer } from "./SendToAgentOffer";
+import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
 import type { SendToAgentOutcome } from "./send-to-agent";
 import { forgetAnsweredRun, type GoingAnswer } from "./useGoingAnswer";
@@ -36,9 +38,10 @@ import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 
 // The bar's operations as the person meets them: the operation the decision acts on is a row of
 // its own above the hits, which the highlight never moves to by itself, and the bar's submit runs
-// it; a submit before the proposal prepares and runs as it lands; below the threshold the two
-// best are offered and only a pick runs one; a missing argument is asked for; and with the
-// person's setting on every write asks first. The clock is held, as in AnswerPanel.test.tsx.
+// it; one the person typed past goes with its run, though the panel keeps that run's answer; a
+// submit before the proposal prepares and runs as it lands; below the threshold the two best are
+// offered and only a pick runs one; a missing argument is asked for; and with the person's
+// setting on every write asks first. The clock is held, as in AnswerPanel.test.tsx.
 
 let streams: OpenedStream[];
 let settings: Mock<typeof api.myGoingSettings>;
@@ -195,6 +198,79 @@ test("at or above the threshold the operation is a row above the hits the highli
     expect(lines[1]).toHaveTextContent("LEGION-4 · status: todo → in_progress");
     // The operation ran, so its row is gone and no second submit runs it again.
     expect(screen.queryByRole("option", { name: /^Run issue update/ })).not.toBeInTheDocument();
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("an operation the person typed past goes with its run while the panel keeps its answer, and the submit runs nothing of it", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(
+      decision(true, ["dispatch_issue_update"]),
+      { data: { text: "On it." }, event: "text" },
+      proposal,
+      ended
+    );
+    await screen.findByRole("option", { name: /^Run issue update/ });
+
+    await user.keyboard("s");
+
+    // The panel keeps the answer, marked as the earlier words'; the operation is not kept.
+    expect(await screen.findByTestId("going-answer-stale")).toHaveTextContent("astrolabe");
+    expect(screen.queryByRole("option", { name: /^Run issue update/ })).not.toBeInTheDocument();
+    await submit(user);
+    await tick(1000);
+    expect(written).not.toHaveBeenCalled();
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("once a turn's writes land the bar reads its hits again, so a hit shows what they left, and an undo that lands does the same", async () => {
+  const user = userOnFakeClock();
+  const undo = answerRoute<(run: string, input: unknown) => Promise<GoingUndoAnswer>>(
+    "POST",
+    "/api/v1/going/runs/*/undo"
+  );
+  undo.mockResolvedValue({
+    lines: ["LEGION-3", "LEGION-4"].map((item, invocation) => ({
+      action: "dispatch_issue_update",
+      fields: [{ field: "status", message: "", ok: true }],
+      item,
+      now: { status: "todo" },
+      outcome: { code: "", message: "", ok: true, status: 200 },
+      undo: "write_back",
+      write_id: `write-${invocation}`,
+    })),
+  });
+  const hitHeader = () => document.getElementById(`search-group-issue:${hit.owner.key}`);
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    expect(hitHeader()).toHaveAttribute("data-status", "todo");
+
+    // Dispatch's search now reads the status the writes leave.
+    spies.search.mockResolvedValue(
+      searchAnswer([{ ...hit, owner: { ...hit.owner, status: "in_progress" } }])
+    );
+    await submit(user);
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-state"))
+      ).toEqual(["done", "done"])
+    );
+    await waitFor(() => expect(hitHeader()).toHaveAttribute("data-status", "in_progress"));
+
+    // And the status the undo leaves, once it lands.
+    spies.search.mockResolvedValue(searchAnswer([hit]));
+    await user.click(screen.getByTestId("going-undo"));
+    await waitFor(() => expect(undo).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(hitHeader()).toHaveAttribute("data-status", "todo"));
   } finally {
     bar.unmount();
   }

@@ -44,8 +44,10 @@ import { expect, type Locator, type Page, test } from "./test";
 // threshold the committed record holds, read from it rather than written here - and the fake
 // writing model to write that action's arguments, then drives the bar as a person does: types,
 // pauses, submits with `$mod+Enter`, and presses the undo key (`$mod+z`) on another page. What a
-// write and its undo did is read back from Dispatch's own routes. Every row runs in the models
-// lane alone, each on a database of its own.
+// write and its undo did is read back from Dispatch's own routes, and one row reads the hit of the
+// issue a write changed, which the bar reads again once the write lands, so the hits never
+// contradict the turn's own lines. Every row runs in the models lane alone, each on a database of
+// its own.
 
 /** A confidence above the action threshold: halfway from it to certainty. */
 function above(): number {
@@ -209,6 +211,33 @@ test("a confident request changes three issues on submit with no approval step, 
       payload: { status: "todo" },
     });
   }
+});
+
+// SLOW(>=2s): a decision, an answer and one write.
+test("once a confident status change lands, the hit of the issue it changed shows the status it left", async ({
+  page,
+}) => {
+  modelsLane();
+  test.setTimeout(90_000);
+  const key = await seedOne();
+  await patchIssue(key, { status: "todo" });
+  await scriptTurn("dispatch_issue_update", [{ issue: key, status: "in_progress" }]);
+
+  // The words are the issue's own title and key, so the search lists it, read at the status the
+  // turn finds.
+  await openBarOver(page, "/projects/CORE/issues");
+  await askAndWait(page, `bearing grease ${key}`);
+  const hit = bar(page).locator(`[id="search-group-issue:${key}"]`);
+  await expect(hit).toHaveAttribute("data-status", "todo");
+  await expect(operationRow(page)).toBeVisible();
+  await submitOperation(page);
+
+  await landed(page, 1);
+  expect(await statuses([key])).toEqual(["in_progress"]);
+  // The bar read its hits again once the write landed, so the hit says the status the write
+  // left, as the write's line does, and not the one the search read before the turn.
+  await expect(writeLines(page).first()).toHaveAttribute("data-now", "in_progress");
+  await expect(hit).toHaveAttribute("data-status", "in_progress");
 });
 
 // SLOW(>=2s): a decision, an answer, a filing, a page load and an undo that closes the issue.
