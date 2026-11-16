@@ -1125,14 +1125,15 @@ func (r *projectionRun) relations(t *testing.T, ctx context.Context, kind string
 // (dispatch://INFRA-3862): an issue, a document, an ask and a message, each written at its own
 // create site, beside the rows it writes. An issue's and a document's row names its node in the
 // node columns migration 20261116092210 added (dispatch://INFRA-1253); an ask's and a message's
-// carries none.
+// carries none. Beside them stands the node of every version a write inserts (dispatch://INFRA-1253),
+// which artifact_versions projects with no node column of its own.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	moved := []string{"block", "block_ref", "comment"}
 	allowed := append(slices.Clone(moved),
 		graphstore.KindPerson, graphstore.KindSession, graphstore.KindRole, graphstore.KindPage,
 		"supertag", "attribute",
-		graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage)
+		graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage, graphstore.KindVersion)
 	for _, column := range []string{"select distinct kind from graph_nodes", "select distinct from_kind from graph_tuples"} {
 		kinds, err := readStrings(ctx, run.database.Pool, column+" order by 1")
 		if err != nil {

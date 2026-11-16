@@ -399,32 +399,36 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 }
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
-// decoded version the route returns to its caller. Uploads keep this separate from
-// docs.writeVersionTx because they own their artifact event and approval move. stamp is what the
-// markdown was rendered from (docs.Ledger.RenderStampOf), stored with the head this transaction's
-// own write left, so a text read of a document still standing there serves the stored markdown
-// rather than rendering the document again.
-func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string, stamp docs.RenderStamp) (model.Version, error) {
+// decoded version the route returns to its caller, and what the row returned beside itself of its
+// document for the version's node (graphstore.VersionOwnerColumns), which the caller writes once
+// the version's block index has written its block nodes (docs.WriteVersionNode). Uploads keep this
+// separate from docs.writeVersionTx because they own their artifact event and approval move. stamp
+// is what the markdown was rendered from (docs.Ledger.RenderStampOf), stored with the head this
+// transaction's own write left, so a text read of a document still standing there serves the
+// stored markdown rather than rendering the document again.
+func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string, stamp docs.RenderStamp) (model.Version, graphstore.VersionOwner, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {
-		return model.Version{}, fmt.Errorf("encode document version authors: %w", err)
+		return model.Version{}, graphstore.VersionOwner{}, fmt.Errorf("encode document version authors: %w", err)
 	}
 	var version model.Version
 	var authorsRaw []byte
+	var owner graphstore.VersionOwner
 	if err := tx.QueryRow(ctx, docs.RenderStampHead+`
 		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+docs.RenderStampColumns+`)
 		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
 			`+docs.RenderStampValues+`, $7, $8)
-		returning number, named, summary, authors, created_at, `+model.VersionSize+`
+		returning number, named, summary, authors, created_at, `+model.VersionSize+`, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
 	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary, stamp.Token, stamp.Renderer).Scan(
-		&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size,
+		append([]any{&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size},
+			owner.Targets()...)...,
 	); err != nil {
-		return model.Version{}, fmt.Errorf("write document version: %w", err)
+		return model.Version{}, graphstore.VersionOwner{}, fmt.Errorf("write document version: %w", err)
 	}
 	if err := json.Unmarshal(authorsRaw, &version.Authors); err != nil {
-		return model.Version{}, fmt.Errorf("decode document version authors: %w", err)
+		return model.Version{}, graphstore.VersionOwner{}, fmt.Errorf("decode document version authors: %w", err)
 	}
-	return version, nil
+	return version, owner, nil
 }
 
 // recordDocumentTaskProgress records the task count of the document a write just stored.
@@ -656,7 +660,8 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		version, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary, ledger.RenderStampOf(artifact.ID, documentMarkdown))
+		var owner graphstore.VersionOwner
+		version, owner, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary, ledger.RenderStampOf(artifact.ID, documentMarkdown))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -678,6 +683,14 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The version's node, after its block index's block nodes, held for the event below with
+		// the document's own node (docs.WriteVersionNode).
+		versionNode, err := docs.WriteVersionNode(r.Context(), tx, owner, version.Number, actor, version.CreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		documentNode = graphstore.Joined(documentNode, versionNode)
 	} else {
 		authors, err := encodeJSON([]model.Actor{actor})
 		if err != nil {
@@ -706,13 +719,14 @@ func (s *server) storeArtifact(
 			}
 		}
 		var versionAuthors []byte
+		var owner graphstore.VersionOwner
 		if err := tx.QueryRow(r.Context(), `
-			insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors, named, summary)
+			insert into artifact_versions as v (artifact_id, number, content, mime, size, sha256, authors, named, summary)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			returning number, named, summary, authors, created_at, size, mime, sha256
+			returning number, named, summary, authors, created_at, size, mime, sha256, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
 		`, artifact.ID, nextNumber, content, input.contentType, size, sha, authors, input.summary != "", summaryValue).Scan(
-			&version.Number, &version.Named, &version.Summary, &versionAuthors, &version.CreatedAt,
-			&version.Size, &version.MIME, &version.SHA256,
+			append([]any{&version.Number, &version.Named, &version.Summary, &versionAuthors, &version.CreatedAt,
+				&version.Size, &version.MIME, &version.SHA256}, owner.Targets()...)...,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -721,6 +735,14 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The version's node, held for the event below with the facts its bytes stated
+		// (docs.WriteVersionNode).
+		versionNode, err := docs.WriteVersionNode(r.Context(), tx, owner, version.Number, actor, version.CreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		documentNode = graphstore.Joined(documentNode, versionNode)
 	}
 	var diff *string
 	if !created && kind == "doc" {

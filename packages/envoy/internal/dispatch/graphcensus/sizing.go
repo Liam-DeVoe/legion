@@ -166,7 +166,11 @@ const movedParents = "block_parent_moved"
 //     moved; a block it drops, its state gone; a block whose parent moved, the retraction of the
 //     old parent and the assertion of the new; and a block reference, the pair's assertion and,
 //     at most, the retraction that ends it, which no table records once the pair is gone;
-//   - dispatch://INFRA-1253's text value and rank value of each block whose text a version wrote;
+//   - dispatch://INFRA-1253's text value and rank value of each block whose text a version wrote,
+//     each version's node with its base attributes, its part_of and its two values
+//     (graphstore.VersionFacts), the mime, size and sha256 values an image's or a file's version
+//     states on its document (graphstore.ArtifactBytes), and the part_of an issue's new document
+//     states (graphstore.ArtifactPartOf);
 //   - dispatch://INFRA-1152's delivered_to of a message, and one tuple for each read mark, clear,
 //     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
 //     a key and no earlier one, so its term counts every key marked inside the window once.
@@ -223,6 +227,19 @@ func storeKinds() []StoreKind {
 		Name: "block_text", MovedBy: movedWithBlocks, Tuples: 2,
 		Driver: "document_block_texts of the versions written in the window, each row with a text: a text value and a rank value",
 		count:  `(select count(*) from sized_texts where written)`,
+	}, {
+		Name: graphstore.KindVersion, MovedBy: movedWithBlocks, Nodes: 1, Tuples: 6,
+		Driver: "artifact_versions.created_at: a version's node, its visibility, its state and its document's project or" +
+			" parties, its part_of its document, and its number and created_at values",
+		count: `(select count(*) from artifact_versions where created_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "version_bytes", MovedBy: movedWithBlocks, Tuples: 3,
+		Driver: "artifact_versions.created_at of an image's or a file's version: its document's mime, size and sha256 values",
+		count:  `(select count(*) from artifact_versions where created_at > ` + sizingWindow + ` and mime is not null)`,
+	}, {
+		Name: "document_part_of", MovedBy: movedWithBlocks, Tuples: 1,
+		Driver: "artifacts.created_at of an issue's document: its part_of its issue",
+		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + ` and issue_key is not null)`,
 	}, {
 		Name: "message_delivery", MovedBy: movedWithInbox, Tuples: 1,
 		Driver: "message_deliveries.created_at, taken by the listener: a delivered_to for each attempt that reached its session",
@@ -319,32 +336,64 @@ type TableSize struct {
 }
 
 // StoreTableGrowth is one of the two store tables projected forward: what it holds now, how
-// many rows a day the kinds above put in it, the bytes a row it is measured at and where that
-// figure came from, and the size it reaches in a year.
+// many rows a day the kinds above put in it, the rows the backfills still owe it once, the bytes a
+// row it is measured at and where that figure came from, and the size it reaches in a year.
 type StoreTableGrowth struct {
 	Name            string
 	Bytes, Rows     int64
 	RowsADay        float64
+	BackfillRows    int64
 	BytesARow       int64
 	BytesARowSource string
 	YearBytes       int64
 	Past            bool
 }
 
+// StoreBackfill is one backfill pass of this branch the sizing counts the rows of: the rows its
+// next run writes once, which the database's history holds now and no steady rate counts. Owed is
+// how many projection rows still lack what the pass writes, and Nodes and Tuples what it writes
+// for each.
+type StoreBackfill struct {
+	Name, MovedBy, Driver string
+	Nodes, Tuples         int
+	Owed                  int64
+}
+
 // SizingReport is what the sizing pass read. Every figure in it comes from a count or from a
 // timestamp the database already holds, so two runs over one unchanged database print the same
 // report.
 type SizingReport struct {
-	Limit    int64
-	Events   []EventRate
-	Tables   []TableSize
-	Kinds    []StoreKind
-	Growth   []StoreTableGrowth
-	Backlog  BlockIndexBacklog
-	Refusals []string
+	Limit     int64
+	Events    []EventRate
+	Tables    []TableSize
+	Kinds     []StoreKind
+	Backfills []StoreBackfill
+	Growth    []StoreTableGrowth
+	Backlog   BlockIndexBacklog
+	Refusals  []string
 }
 
 func (s *SizingReport) Refused() bool { return len(s.Refusals) > 0 }
+
+// versionBackfillOwed counts the versions the version backfill writes a node for (backfillVersions):
+// every version inside the address bound whose node the store does not hold, or every one of them
+// on a database the store does not exist in yet, which R4 takes its readings on.
+func versionBackfillOwed(ctx context.Context, tx pgx.Tx) (int64, error) {
+	var held bool
+	if err := tx.QueryRow(ctx, `select to_regclass('graph_nodes') is not null`).Scan(&held); err != nil {
+		return 0, fmt.Errorf("look up the store: %w", err)
+	}
+	read := `select count(*) ` + missingVersionsSQL
+	if !held {
+		read = `select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
+			where octet_length(` + versionAddress + `) <= ` + addressBound
+	}
+	var owed int64
+	if err := tx.QueryRow(ctx, read).Scan(&owed); err != nil {
+		return 0, fmt.Errorf("count the versions the backfill owes a node: %w", err)
+	}
+	return owed, nil
+}
 
 // readSizing reads the growth pass in the census's own snapshot: the write rate by kind over
 // the last 28 days of events, the size of every table this branch's migrations touch, the
@@ -393,24 +442,43 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 			report.Kinds[index].Share = report.Kinds[index].TuplesADay / tuplesADay
 		}
 	}
+	// The version backfill writes its rows once, beside the rate: a node and six tuples for every
+	// version a build before the version nodes stored (backfillVersions, graphstore.VersionFacts).
+	owed, err := versionBackfillOwed(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	report.Backfills = []StoreBackfill{{
+		Name: graphstore.KindVersion, MovedBy: movedWithBlocks, Nodes: 1, Tuples: 6, Owed: owed,
+		Driver: "artifact_versions whose version node the store does not hold: the node, its visibility, its state and" +
+			" its document's project or parties, its part_of its document, and its number and created_at values",
+	}}
+	var backfillTuples, backfillNodes int64
+	for _, backfill := range report.Backfills {
+		backfillTuples += backfill.Owed * int64(backfill.Tuples)
+		backfillNodes += backfill.Owed * int64(backfill.Nodes)
+	}
 	for _, growth := range []struct {
-		name     string
-		rowsADay float64
-	}{{"graph_tuples", tuplesADay}, {"graph_nodes", nodesADay}} {
+		name         string
+		rowsADay     float64
+		backfillRows int64
+	}{{"graph_tuples", tuplesADay, backfillTuples}, {"graph_nodes", nodesADay, backfillNodes}} {
 		size, measured := sizes[growth.name]
 		if !measured {
 			return nil, fmt.Errorf("the sizing projects %s, which branchTables does not name", growth.name)
 		}
 		projected := StoreTableGrowth{
 			Name: growth.name, Bytes: size.Bytes, Rows: size.Rows, RowsADay: growth.rowsADay,
+			BackfillRows: growth.backfillRows,
 		}
 		projected.BytesARow, projected.BytesARowSource = bytesARow(size)
-		projected.YearBytes = size.Bytes + int64(growth.rowsADay*sizingYearDays)*projected.BytesARow
+		projected.YearBytes = size.Bytes +
+			(int64(growth.rowsADay*sizingYearDays)+growth.backfillRows)*projected.BytesARow
 		projected.Past = projected.YearBytes >= report.Limit
 		if projected.Past {
 			report.Refusals = append(report.Refusals, fmt.Sprintf(
-				"%s reaches %s within a year at %.2f rows a day, past the census limit of %s",
-				projected.Name, bytesText(projected.YearBytes), projected.RowsADay, bytesText(report.Limit)))
+				"%s reaches %s within a year at %.2f rows a day and %d backfilled rows, past the census limit of %s",
+				projected.Name, bytesText(projected.YearBytes), projected.RowsADay, projected.BackfillRows, bytesText(report.Limit)))
 		}
 		report.Growth = append(report.Growth, projected)
 	}
@@ -787,8 +855,17 @@ func (s *SizingReport) Write(w io.Writer) {
 		fmt.Fprintf(w, "census: sizing share kind=%s moved_by=%s writes_in_window=%d share_of_tuples=%.4f%s\n",
 			kind.Name, kind.MovedBy, kind.Writes, kind.Share, replay)
 	}
+	// What a backfill writes once, beside the rates: a line of its own, so the lines above keep
+	// the fields a driver reads them by.
+	for _, backfill := range s.Backfills {
+		fmt.Fprintf(w, "census: sizing backfill kind=%s moved_by=%s owed_rows=%d nodes_a_row=%d tuples_a_row=%d"+
+			" nodes=%d tuples=%d driver=%s\n",
+			backfill.Name, backfill.MovedBy, backfill.Owed, backfill.Nodes, backfill.Tuples,
+			backfill.Owed*int64(backfill.Nodes), backfill.Owed*int64(backfill.Tuples), backfill.Driver)
+	}
 	for _, growth := range s.Growth {
 		fmt.Fprintf(w, "census: sizing rows-a-day table=%s rows_a_day=%.2f\n", growth.Name, growth.RowsADay)
+		fmt.Fprintf(w, "census: sizing backfill-rows table=%s rows=%d\n", growth.Name, growth.BackfillRows)
 		fmt.Fprintf(w, "census: sizing bytes-a-row table=%s bytes_a_row=%d source=%s\n",
 			growth.Name, growth.BytesARow, growth.BytesARowSource)
 		verdict := "inside"

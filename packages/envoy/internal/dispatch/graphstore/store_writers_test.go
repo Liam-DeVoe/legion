@@ -98,12 +98,12 @@ var storeWriteCallSites = []string{
 	// node written, after the owner row and that row read FOR SHARE and before the event
 	// storeArtifact appends, which causes them (dispatch://INFRA-1253; api's
 	// TestALaterVersionStatesItsBytesInTheStoreLockOrder proves its steps, and that a later version
-	// waits for a backfill naming its node). removedDocumentNode is a removal's node of the
-	// document stated gone, after the issue's row and before the document's row is deleted, and
-	// removeArtifact appends what it stated under the artifact.removed event, through Caused
-	// (api's TestARemovalStatesItsDocumentGoneInTheStoreLockOrder).
+	// waits for a backfill naming its node). removedDocumentNodes is a removal's nodes of the
+	// document and of its versions stated gone, after the issue's row and before any row of the
+	// document is deleted, and removeArtifact appends what it stated under the artifact.removed
+	// event, through Caused (api's TestARemovalStatesItsDocumentGoneInTheStoreLockOrder).
 	"api/artifact_removal.go#removeArtifact",
-	"api/artifact_removal.go#removedDocumentNode",
+	"api/artifact_removal.go#removedDocumentNodes",
 	"api/artifacts.go#statedVersionBytes",
 	"api/broadcasts.go#writeBroadcast",
 	"api/message_delivery.go#insertSessionReply",
@@ -111,6 +111,17 @@ var storeWriteCallSites = []string{
 	"api/messages.go#writeMessageNode",
 	"api/reviews.go#openApprovalAsk",
 	"docs/ask_blocks.go#createAskBlock",
+	// The node of every version a write inserts, in the row's transaction (dispatch://INFRA-1253):
+	// the one writer every insert of a version calls (docs.WriteVersionNode) - a version write
+	// (writeVersionTx), an upload (api's writeDocumentVersion and storeArtifact) and an issue's spec
+	// (api's createIssue) - after the owner row its caller holds and the block nodes of the
+	// version's index, with its facts held for the event the caller appends and causes them with,
+	// through Caused at the sites listed above. Its address is drawn from the version's own number,
+	// so no other transaction holds it; api's TestEveryObjectNodeWriterTakesTheStoreLockOrder and
+	// TestALaterVersionStatesItsBytesInTheStoreLockOrder hold an upload's and an issue create's
+	// steps around it, and api's TestEveryVersionRowIsTheProjectionOfAVersionNode holds its node to
+	// its row's transaction at each site.
+	"docs/mutation.go#WriteVersionNode",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
@@ -138,10 +149,19 @@ var storeWriteCallSites = []string{
 	// TestTheObjectBatchTakesTheStoreLockOrder proves; an ask's or a message's takes no other row.
 	"graphcensus/projects.go#writeObjectBatch",
 	"graphcensus/projects.go#writeScopeBatch",
+	// The backfill's pass over the versions an older build stored with no node
+	// (dispatch://INFRA-1253): the owner rows of the batch's documents first, then the version
+	// rows read again under them, then the version nodes and their facts, in one graphstore.Write
+	// per batch (graphcensus' TestTheVersionBatchTakesTheStoreLockOrder).
+	"graphcensus/census_versions.go#writeVersionBatch",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).
 	"grapherase/erase.go#apply",
+	// The erase's end of the versions it deletes: each one's node stated gone, in the erase's
+	// transaction, under the owner rows the erase takes first (dispatch://INFRA-1253; grapherase's
+	// TestTheEraseOfABlockAVersionHeldEndsThatVersionsNode).
+	"grapherase/erase.go#endErasedVersions",
 	// This package's own writers that run another of them: Authored and SessionRecorded are
 	// arms of one statement, and Reached is SessionRecorded for an attempt that was sent.
 	"graphstore/people.go#Authored",

@@ -452,11 +452,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// from (docs.Ledger.RenderStampOf): a text read of a document still standing there serves the
 	// stored markdown rather than rendering the document again.
 	stamp := ledger.RenderStampOf(artifactID, markdown)
-	if _, err := tx.Exec(r.Context(), docs.RenderStampHead+`
+	var specCreated time.Time
+	if err := tx.QueryRow(r.Context(), docs.RenderStampHead+`
 		insert into artifact_versions (artifact_id, number, markdown, authors, doc_update_version, `+docs.RenderStampColumns+`)
 		values ($1, 1, $2, $3, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
 			`+docs.RenderStampValues+`, $4, $5)
-	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer); err != nil {
+		returning created_at
+	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer).Scan(&specCreated); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -478,6 +480,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The spec's first version is the projection of its version node, written after the spec's
+	// block nodes and caused by the issue's own event with them (docs.WriteVersionNode). The spec's
+	// node was written above as a document's.
+	specVersion, err := docs.WriteVersionNode(r.Context(), tx, graphstore.VersionOwner{RefKey: specRefKey, Project: input.Project},
+		1, actor, specCreated)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	specBlocks = graphstore.Joined(specBlocks, specVersion)
 	issue, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
 		s.writeHandlerError(w, err)

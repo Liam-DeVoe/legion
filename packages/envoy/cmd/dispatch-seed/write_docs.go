@@ -39,8 +39,14 @@ func (r *seedRun) writeDocuments(ctx context.Context) error {
 // markdown the renderer was given, because refs.IndexBlocks indexes `markdown[block.From:block.To]`
 // and those offsets are into that render: a row holding anything else would index the wrong
 // bytes. Every document the seed writes is markdown, so its node carries no bytes values
-// (graphstore.ArtifactBytes). marked is whether artifacts carries the node columns
-// (carriesNodeMarker).
+// (graphstore.ArtifactBytes).
+//
+// marked is whether artifacts carries the node columns (carriesNodeMarker), which is whether the
+// database is this release's or the one before it. On this release's, the document's row names its
+// node, its node hangs under its issue, and each version is the projection of a version node, as
+// this release's server writes them (dispatch://INFRA-1253). On the one before, each is written as
+// that release's server writes it, a document's node and nothing of the tree, so the backfill this
+// release runs over the data set writes the rest, and the sizing reads what it will write.
 func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marked bool) error {
 	document := r.plan.documents[index]
 	var issueKey *string
@@ -58,7 +64,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	refKey := graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug)
 	node := graphstore.ArtifactNode(refKey, projectKey, "", seedAuthor, created)
 	var facts []graphstore.Tuple
-	if issueKey != nil {
+	if marked && issueKey != nil {
 		facts = append(facts, graphstore.ArtifactPartOf(refKey, *issueKey, seedAuthor, created))
 	}
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, facts); err != nil {
@@ -80,6 +86,9 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	var latest string
 	var blocks []model.ArtifactBlock
 	rows := make([][]any, 0, document.Versions)
+	var versionNodes []graphstore.Node
+	var versionFacts []graphstore.Tuple
+	versionOwner := graphstore.VersionOwner{RefKey: refKey, Project: projectKey}
 	for number := 1; number <= document.Versions; number++ {
 		bytes, band := r.versionBytes(document, number)
 		r.bands[band]++
@@ -98,11 +107,18 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 			latest, blocks = rendered, offsets
 			markdown = rendered
 		}
+		versionCreated := created.Add(time.Duration(number-1) * versionStep)
 		rows = append(rows, []any{
 			uuidFor("artifact_version", index*versionsPerManyVersionDocument+number),
-			document.ID, number, markdown, "[]", number%7 == 0,
-			created.Add(time.Duration(number-1) * versionStep),
+			document.ID, number, markdown, "[]", number%7 == 0, versionCreated,
 		})
+		if !marked {
+			continue
+		}
+		versionNode, stated, ok := graphstore.VersionFacts(versionFacts, versionOwner, number, seedAuthor, versionCreated)
+		if ok {
+			versionNodes, versionFacts = append(versionNodes, versionNode), stated
+		}
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"artifact_versions"},
 		[]string{"id", "artifact_id", "number", "markdown", "authors", "named", "created_at"},
@@ -123,6 +139,13 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// and tuple store carries the sentinel, the cause of a write no event recorded.
 	if err := graphstore.Caused(ctx, tx, blockWrite, graphstore.NoEvent); err != nil {
 		return fmt.Errorf("record what the block index stated: %w", err)
+	}
+	// Each version's node, after the block nodes so the transaction's node rows stay in ascending
+	// (kind, id), as the server's version write orders them (docs.WriteVersionNode).
+	if len(versionNodes) > 0 {
+		if err := graphstore.Write(ctx, tx, versionNodes, versionFacts); err != nil {
+			return fmt.Errorf("version nodes: %w", err)
+		}
 	}
 	// The version write records the blocks and leaves their windows to the block-index tick's
 	// window arm (refs.IndexBlocks), so the seed writes them here as that arm would: a seeded

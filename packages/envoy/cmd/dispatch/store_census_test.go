@@ -54,11 +54,14 @@ import (
 // share refuses to start (processes.Register).
 const censusSigningKey = "store-census-signing-key"
 
-// censusKinds are the kinds this child moves, as the census names them. Each must carry a
-// population in this run: a census that checked no row of a kind proves nothing about it, so a
-// kind that checks zero rows fails this test with that kind reported. The list is the test's
-// own, so a kind the census stops checking is read by a person before this test agrees with it.
-var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page"}
+// censusKinds are the kinds this child moves, as the census names them, and the documents and
+// versions dispatch://INFRA-1253 makes nodes of (graphcensus' versionProjections), which the older
+// build's issues, specs and project documents populate and the backfill gives their nodes. Each
+// must carry a population in this run: a census that checked no row of a kind proves nothing about
+// it, so a kind that checks zero rows fails this test with that kind reported. The list is the
+// test's own, so a kind the census stops checking is read by a person before this test agrees with
+// it.
+var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page", "artifact", "version"}
 
 // censusRole is the role this run addresses, and censusSession the session that writes one of
 // its comments. The role is addressed through this build alone: the older build records the

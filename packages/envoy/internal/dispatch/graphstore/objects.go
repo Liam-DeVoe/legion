@@ -2,7 +2,9 @@ package graphstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -100,6 +102,182 @@ func ArtifactBytes(tuples []Tuple, refKey, mime string, size int64, sha256 strin
 		})
 	}
 	return tuples
+}
+
+// KindVersion is what this store calls one version of a document: one accepted write of it, which
+// its artifact_versions row projects (R16 of dispatch://INFRA-1253). A version's address is its
+// document's ref_key, `@v` and its number (VersionID).
+const KindVersion = "version"
+
+// The supertags a version and a query carry (the root's R21 list): a version of a document is a
+// document version, and a version of a query node is a query version; a document that a query
+// replaces becomes a query node (QueryNode). `document version` is seeded with the closed list
+// (20261109051232); `query` and `query version` are this child's
+// (20261116121500_issue_tree_query_supertags).
+const (
+	SupertagDocumentVersion = "document version"
+	SupertagQuery           = "query"
+	SupertagQueryVersion    = "query version"
+)
+
+// The attributes a version node and a query node carry, each a value of the node, since none
+// points at anything: a version's number and the time its row was written, each named as the
+// artifact_versions column that holds it; a query's name, the supertags it takes, and the node its
+// walk starts at. The last is `subtree` and not `from`, because no attribute of that name stands
+// among the store's type nodes (R2).
+const (
+	AttributeNumber    = "number"
+	AttributeCreatedAt = "created_at"
+	AttributeQuery     = "query"
+	AttributeTakes     = "takes"
+	AttributeSubtree   = "subtree"
+)
+
+// The four queries of an issue (R8): each is a query node, a view of the issue's one tree.
+const (
+	QuerySpec         = "spec"
+	QueryVerification = "verification"
+	QueryPlan         = "plan"
+	QueryDecisions    = "decisions"
+)
+
+// queryTakes is the supertags each query takes out of the issue's tree, in the order its
+// definition names them: the spec its memo callout, its criteria and its requirements; the
+// verification its checks and their results; the plan its plan nodes; and the decisions the asks,
+// the decisions and the readings under an agent's decision (dispatch://INFRA-1150's supertags).
+var queryTakes = map[string][]string{
+	QuerySpec:         {"callout", "criterion", "requirement"},
+	QueryVerification: {"check", "result"},
+	QueryPlan:         {"plan_task"},
+	QueryDecisions:    {"ask", "decision", "reading"},
+}
+
+// QueryTakes is the supertags the query named query takes, nil for a name that is no query.
+func QueryTakes(query string) []string { return slices.Clone(queryTakes[query]) }
+
+// QueryNode is the node of a document a query replaces, addressed by its ref_key as the document's
+// node is (ArtifactRefKey), in the issue's project: supertag `query`, and as values the query's
+// name, the supertags it takes (QueryTakes) and the node its walk starts at, `issue:<KEY>`, the
+// root of the issue's tree (R1, R8). The issue is read off refKey, `<issue key>/<slug>`, since a
+// query node is always an issue's and no issue key holds a `/`. The values ride on the node's
+// Attributes, which its row projects, and AttributeFacts states them as the tuples they are, so a
+// writer writes the node with AttributeFacts(nil, node). No column of its artifacts row holds a
+// role (R8).
+//
+// A document's node becomes a query node through Write, whose node move rewrites a stored node's
+// supertag and attributes, never through WriteArms, whose node arm moves nothing on a node already
+// there.
+func QueryNode(refKey, project, query string, who model.Actor, at time.Time) Node {
+	issue, _, _ := strings.Cut(refKey, "/")
+	node := objectNode(KindArtifact, refKey, SupertagQuery, project, nil, who, at)
+	node.Attributes = map[string]any{
+		AttributeQuery:   query,
+		AttributeTakes:   QueryTakes(query),
+		AttributeSubtree: KindIssue + ":" + issue,
+	}
+	return node
+}
+
+// VersionID is the address of a document's version node: the document's ref_key, `@v` and the
+// version's number, which no ref_key holds since a slug holds no `@`.
+func VersionID(refKey string, number int) string { return refKey + "@v" + strconv.Itoa(number) }
+
+// VersionOwner is what a version's node takes of its document (VersionFacts): the document's
+// address, its project or its conversation's session, and whether the document's node is a query
+// node, which makes its versions query versions.
+type VersionOwner struct {
+	RefKey, Project, Session string
+	Query                    bool
+}
+
+// VersionOwnerColumns is the select list that reads VersionOwner of the document the SQL
+// expression artifactID names, in the order Targets scans it. A version's insert returns it beside
+// the row, so its writer reads what the version's node needs in the statement that writes the
+// version and in no round trip of its own.
+func VersionOwnerColumns(artifactID string) string {
+	owner := func(column string) string {
+		return `(select ` + column + ` from artifacts owner where owner.id = ` + artifactID + `)`
+	}
+	return owner("owner.ref_key") + ", " + owner("coalesce(owner.project_key, '')") + ", " +
+		owner("coalesce(owner.session_id, '')") + `, exists (
+			select 1 from artifacts owner
+			join graph_nodes n on n.kind = '` + KindArtifact + `' and n.id = owner.ref_key
+			where owner.id = ` + artifactID + ` and n.supertag = '` + SupertagQuery + `')`
+}
+
+// Targets are the scan targets of VersionOwnerColumns, in its order.
+func (o *VersionOwner) Targets() []any { return []any{&o.RefKey, &o.Project, &o.Session, &o.Query} }
+
+// VersionFacts is what this store holds of one version of a document (R16): its node, addressed by
+// VersionID, supertag `document version`, or `query version` where its document is a query node,
+// in its document's project or between its conversation's parties, made by who at at, the time its
+// row was written; and, appended to tuples, its part_of its document's node and its number and its
+// time as values (AttributeFacts). A version is a fact of the write that stored it, which owns it
+// whole; the node restates the version (Node.Restates) all the same, so a write of it again keeps
+// a state a later write gave it. ok is false where the version's address is past the store's
+// bound, of which nothing is stated. The cause is Caused's to fill, or the sentinel where no event
+// recorded the write.
+func VersionFacts(tuples []Tuple, owner VersionOwner, number int, who model.Actor, at time.Time) (node Node, facts []Tuple, ok bool) {
+	id := VersionID(owner.RefKey, number)
+	if !AddressFits(id) {
+		return Node{}, tuples, false
+	}
+	supertag := SupertagDocumentVersion
+	if owner.Query {
+		supertag = SupertagQueryVersion
+	}
+	var parties []string
+	if owner.Session != "" {
+		parties = []string{PartySession(owner.Session)}
+	}
+	node = objectNode(KindVersion, id, supertag, owner.Project, parties, who, at)
+	node.Attributes = map[string]any{
+		AttributeNumber:    number,
+		AttributeCreatedAt: at.UTC().Format(time.RFC3339Nano),
+	}
+	tuples = append(tuples, Tuple{
+		FromKind: KindVersion, FromID: id, Kind: TuplePartOf,
+		ToKind: KindArtifact, ToID: owner.RefKey,
+		At: at, Who: who, SourceEvent: NoEvent, Asserted: true,
+	})
+	return node, AttributeFacts(tuples, node), true
+}
+
+// AttributeFacts appends to tuples each attribute node carries, in name order, as the value tuple
+// it is: its name the tuple's kind, and its value as text, a string as itself and any other value
+// as its JSON, as every type node's values are written (20261109051232). A node row's attributes
+// column is the projection of these tuples, so a writer that gives a node attributes states them
+// with it. Each carries the node's own time, writer and cause. A value that has no JSON states no
+// tuple here, and the write of the node carrying it refuses it (nodeParams), so neither lands.
+func AttributeFacts(tuples []Tuple, node Node) []Tuple {
+	for _, name := range slices.Sorted(maps.Keys(node.Attributes)) {
+		value, isText := node.Attributes[name].(string)
+		if !isText {
+			encoded, err := json.Marshal(node.Attributes[name])
+			if err != nil {
+				continue
+			}
+			value = string(encoded)
+		}
+		tuples = append(tuples, Tuple{
+			FromKind: node.Kind, FromID: node.ID, Kind: name,
+			ToKind: KindValue, ToID: value,
+			At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
+		})
+	}
+	return tuples
+}
+
+// Joined is several writes held for one cause as one write held for it: Caused moves the nodes of
+// each and appends the facts of each under that cause, in the order given. A writer whose caller
+// causes one write it answers adds its own to it here.
+func Joined(writes ...Uncaused) Uncaused {
+	var joined Uncaused
+	for _, write := range writes {
+		joined.Nodes = append(joined.Nodes, write.Nodes...)
+		joined.Tuples = append(joined.Tuples, write.Tuples...)
+	}
+	return joined
 }
 
 // AskNode is an ask's node, addressed by the ask's id, in the project of the issue or the document

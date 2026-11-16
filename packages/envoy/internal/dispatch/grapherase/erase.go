@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 )
 
@@ -200,7 +201,8 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 // the texts it removes or rewrites (treeSums) and deletes the node's embedding rows
 // (forgetEmbeddings). Then go the whole text of the node's block, the rows that cannot exist
 // without a projection row, the projection rows, and the approvals and the versions they stood
-// on. Then it rewrites what it may not remove - the blocks holding the node's block and the
+// on, each such version's node stated gone (endErasedVersions). Then it rewrites what it may not
+// remove - the blocks holding the node's block and the
 // mentions whose excerpt was cut from it, the events about it, the search vectors that stood on
 // a version that went, the embedding rows of what it leaves (restateEmbeddings), and the live
 // state of every document whose history it replaces - counts the term statistics of every
@@ -260,6 +262,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 			return fmt.Errorf("delete the versions holding the erased text: %w", err)
 		}
 		e.removed("artifact_versions", tag.RowsAffected())
+		if err := e.endErasedVersions(ctx, tx, read); err != nil {
+			return err
+		}
 	}
 	if err := e.redactBlocks(ctx, tx, read); err != nil {
 		return err
@@ -304,6 +309,48 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 		insert into graph_erasures (node_kind, node_id, removed, ran_by, ran_at)
 		values ($1, $2, $3, $4, $5)`, e.Kind, e.ID, removed, ranBy, e.RanAt); err != nil {
 		return fmt.Errorf("record the erase: %w", err)
+	}
+	return nil
+}
+
+// eraseActor is who the erase records as the writer of the state it moves on a version's node. The
+// run is an operator's act at a database credential, which names no person or session of
+// Dispatch, so it writes as the system, as the backfill does.
+var eraseActor = model.Actor{Kind: "system", ID: "dispatch-erase"}
+
+// endErasedVersions states gone, in the erase's transaction, the node of each version whose row the
+// erase deleted, as the removal of a document states its versions' nodes gone (api's
+// removedDocumentNodes): no row projects such a node any more, so a live one would be a node the
+// census finds no row for. Each is written with the supertag and the attributes the store holds of
+// it, its number and its time, at the run's time, with no event (the run appends none). A version
+// the store holds no node of, or holds gone, writes nothing. A later version that takes a freed
+// number restates the node live with its own row's created_at as a value (docs.WriteVersionNode).
+func (e *Erasure) endErasedVersions(ctx context.Context, tx pgx.Tx, read erasedRead) error {
+	if read.document == nil {
+		return nil
+	}
+	var nodes []graphstore.Node
+	for _, number := range read.numbers {
+		id := graphstore.VersionID(read.document.refKey, int(number))
+		if !graphstore.AddressFits(id) {
+			continue
+		}
+		version, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindVersion, id)
+		if err != nil {
+			return fmt.Errorf("read the node of the erased version %s: %w", id, err)
+		}
+		if !held || version.State == graphstore.StateGone {
+			continue
+		}
+		version.State, version.MadeAt, version.MadeBy = graphstore.StateGone, e.RanAt, eraseActor
+		version.SourceEvent, version.Restates = graphstore.NoEvent, true
+		nodes = append(nodes, version)
+	}
+	if len(nodes) == 0 {
+		return nil
+	}
+	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+		return fmt.Errorf("state the nodes of the erased versions gone: %w", err)
 	}
 	return nil
 }

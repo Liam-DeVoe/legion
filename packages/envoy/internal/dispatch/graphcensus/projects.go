@@ -541,14 +541,21 @@ func heldObjects(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map
 // the bytes of the newest version of each image and file it named, and answers them as the values
 // its node states (graphstore.ArtifactBytes), dated at that version and by its first author, or by
 // the row's author where the version names none. A version row missing its mime, its size or its
-// sha256 states none of them.
+// sha256 states none of them. A newest version with no present node of its own, none or one held
+// gone (presentVersionNode), is the version pass's to state, with that node (writeVersionBatch),
+// so the bytes of one version are stated once whichever of the two passes reaches it; but a
+// version whose address (its document's
+// ref_key, `@v` and its number) is past the store's bound is no node of the store and no row the
+// version pass reads, so its bytes are stated here, as its upload states them on its document's
+// node (api's statedVersionBytes).
 //
 // The read follows the update, under the owner rows the batch took first: an upload of a later
 // version takes its issue's row, or its project document's own row, before it writes, and reads its
 // document's row FOR SHARE, which the update's lock conflicts with, before it states that
 // version's bytes on the node the row names (api's statedVersionBytes). So either the upload
-// commits first and this read, a statement after it, finds its version as the newest, or the
-// upload waits for this transaction, sees the node named, and states its bytes after these.
+// commits first and this read, a statement after it, finds its version, with the node the upload
+// wrote for it, as the newest, or the upload waits for this transaction, sees the node named, and
+// states its bytes after these.
 func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]graphstore.Tuple, error) {
 	rows, err := tx.Query(ctx, `
 		update artifacts set node_kind = $2, node_address = ref_key
@@ -581,10 +588,12 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 		select a.ref_key, v.mime, v.size, v.sha256, v.created_at, coalesce(v.authors->0, a.created_by)
 		from artifacts a
 		cross join lateral (
-			select mime, size, sha256, created_at, authors from artifact_versions
+			select number, mime, size, sha256, created_at, authors from artifact_versions
 			where artifact_id = a.id order by number desc limit 1
 		) v
 		where a.id = any($1::uuid[]) and v.mime is not null and v.size is not null and v.sha256 is not null
+		  and (`+presentVersionNode+`
+		       or octet_length(a.ref_key || '@v' || v.number) > `+addressBound+`)
 	`, files)
 	if err != nil {
 		return nil, fmt.Errorf("read the newest bytes of a batch's images and files: %w", err)

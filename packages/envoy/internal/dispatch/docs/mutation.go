@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 	"weak"
 
 	"github.com/jackc/pgx/v5"
@@ -2344,19 +2345,22 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		return versionWriteResult{}, fmt.Errorf("encode document version authors: %w", err)
 	}
 	// What the version's markdown was rendered from, so a text read of a document still standing
-	// there serves it rather than rendering the document again (storedText).
+	// there serves it rather than rendering the document again (storedText). The row returns
+	// beside itself what its version node needs of its document (graphstore.VersionOwnerColumns).
 	stamp := renderStampOf(artifactID, tree)
 	var version model.Version
 	var authorsRaw []byte
+	var owner graphstore.VersionOwner
 	if err := tx.QueryRow(ctx, RenderStampHead+`
 		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+RenderStampColumns+`)
 		select $1, coalesce(max(number), 0) + 1, $2, $3, $4, $5,
 			coalesce($6, (select max(version) from doc_updates where artifact_id = $1), 0),
 			`+RenderStampValues+`, $7, $8
 		from artifact_versions where artifact_id = $1
-		returning number, named, summary, authors, created_at, `+model.VersionSize+`
+		returning number, named, summary, authors, created_at, `+model.VersionSize+`, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
 	`, artifactID, markdown, encodedAuthors, write.named, write.summary, write.docUpdateVersion, stamp.Token, stamp.Renderer).Scan(
-		&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size,
+		append([]any{&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size},
+			owner.Targets()...)...,
 	); err != nil {
 		return versionWriteResult{}, fmt.Errorf("write document version: %w", err)
 	}
@@ -2379,6 +2383,14 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	if err != nil {
 		return versionWriteResult{}, err
 	}
+	// The row is the projection of its version node (R16 of dispatch://INFRA-1253), written in the
+	// row's transaction after the block nodes, so its node rows stay in ascending (kind, id), and
+	// caused by the event the caller appends for the version, with the block index's facts.
+	versionNode, err := WriteVersionNode(ctx, tx, owner, version.Number, actor, version.CreatedAt)
+	if err != nil {
+		return versionWriteResult{}, err
+	}
+	blocks = graphstore.Joined(blocks, versionNode)
 	if !write.closedIssue {
 		// The open approval request follows the document version without leaving its thread or
 		// opening another Inbox row. The request then waits on its agent until it is handed back,
@@ -2425,6 +2437,38 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		}
 	}
 	return versionWriteResult{version: version, changes: changes, blocks: blocks}, nil
+}
+
+// WriteVersionNode writes the node of the version of a document a write has just inserted, in that
+// write's transaction: the node and its facts as graphstore.VersionFacts states them, held for the
+// event the write appends for the version (graphstore.Caused), or at the sentinel where no event
+// records it. owner is what the version's insert returned of its document
+// (graphstore.VersionOwnerColumns), number and at its row's own number and created_at, and who the
+// writer of the version. It is the one writer of a version's node for every insert of a version:
+// writeVersionTx's, an upload's (api's writeDocumentVersion and storeArtifact) and an issue's spec
+// (api's createIssue).
+//
+// The node's address is drawn from the version's own number, which the insert took under the
+// document's owner row. The address can be one the store already holds a gone node at: the next
+// version after an erase deleted a document's newest (grapherase's endErasedVersions), or the
+// first version of a document made under the name of one a removal took out (api's
+// removedDocumentNodes), whose slug, and so whose ref_key, the new row takes. The write then
+// restates that node (graphstore.Node.Restates), which brings it back live with this row's number
+// and created_at as its current values, while its made_at stays its first write's; the census reads
+// the values and not made_at (graphcensus' versionProjections). No live writer holds a version
+// node of a number not yet inserted, and the backfill writes the node of a row only once the row
+// has committed and names none (graphcensus' backfillVersions). A version past the store's address
+// bound writes nothing.
+func WriteVersionNode(ctx context.Context, tx pgx.Tx, owner graphstore.VersionOwner, number int, who model.Actor, at time.Time) (graphstore.Uncaused, error) {
+	node, facts, ok := graphstore.VersionFacts(nil, owner, number, who, at)
+	if !ok {
+		return graphstore.Uncaused{}, nil
+	}
+	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, facts)
+	if err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("write the node of version %d of %s: %w", number, owner.RefKey, err)
+	}
+	return written, nil
 }
 
 func actorKey(actor model.Actor) string {

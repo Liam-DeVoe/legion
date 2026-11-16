@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -41,7 +42,7 @@ func TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues(t *testing.T) {
 	const key = "TREE-1"
 
 	// A create refused at its commit rolls back the issue, its spec and their nodes and tuples.
-	refuseCommits(t, database, func() {
+	refuseCommits(t, database, "artifacts", func() {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 			"project": "TREE", "title": "A tree of documents", "spec": "The spec.\n",
 		}, "alice")
@@ -100,7 +101,7 @@ func TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues(t *testing.T) {
 		return count
 	}
 	before := underTheIssue()
-	refuseCommits(t, database, func() {
+	refuseCommits(t, database, "artifacts", func() {
 		for _, refused := range []*httptest.ResponseRecorder{
 			dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]string{
 				"name": "notes.md", "content": "# Notes\n",
@@ -242,6 +243,70 @@ func TestARemovedDocumentIsNoLongerANodeOfItsIssue(t *testing.T) {
 	}
 }
 
+// TestADocumentMadeAgainAfterItsRemovalIsANodeAgain holds a document of an issue made, removed
+// and made again under the same name (dispatch://INFRA-1253, R16): the removal frees the slug, so
+// the new row takes the ref_key of the node the removal stated gone, and its first version the
+// address of that version's gone node. The create writes both again as their writers restate a
+// node (graphstore.Node.Restates), which brings a node stored gone back live: the document's node
+// reads live, named on the new row and part_of its issue under the new artifact.created event; its
+// first version's node reads live with the new row's number and created_at as its current values;
+// and the store census reads zero.
+func TestADocumentMadeAgainAfterItsRemovalIsANodeAgain(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "AGAIN", "A document made twice", "The spec.\n")
+	first := emptyDocument(t, handler, issue.Key, "Notes")
+	removedDocument(t, handler, first.ID)
+	version := graphstore.VersionID(first.RefKey, 1)
+	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindVersion, version); err != nil || !held || node.State != graphstore.StateGone {
+		t.Fatalf("after the removal the store holds %s as %+v (held %t, %v), want it held and gone", version, node, held, err)
+	}
+
+	second := emptyDocument(t, handler, issue.Key, "Notes")
+	if second.RefKey != first.RefKey || second.ID == first.ID {
+		t.Fatalf("the document made again is %s at %s, want a new row at the removed one's address %s", second.ID, second.RefKey, first.RefKey)
+	}
+	created := artifactCreated(t, database, second.ID)
+	document, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, second.RefKey)
+	if err != nil || !held || document.State != graphstore.StateLive || document.Supertag != graphstore.SupertagDocument {
+		t.Errorf("the document made again has node %+v (held %t, %v), want a live %s node", document, held, err, graphstore.SupertagDocument)
+	}
+	placed := readPlacement(t, database, second.ID)
+	if deref(placed.nodeKind) != graphstore.KindArtifact || deref(placed.nodeAddress) != second.RefKey || !placed.nodeHeld {
+		t.Errorf("the document made again names node %q/%q (held %t), want %s/%s", deref(placed.nodeKind), deref(placed.nodeAddress),
+			placed.nodeHeld, graphstore.KindArtifact, second.RefKey)
+	}
+	if n := len(placed.causes); n == 0 || placed.causes[n-1] != created || placed.partOf[n-1] != "issue:"+issue.Key {
+		t.Errorf("the document made again is part_of %v under the events %v, want its newest to issue:%s under the new artifact.created event %d",
+			placed.partOf, placed.causes, issue.Key, created)
+	}
+	versionNode, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindVersion, version)
+	if err != nil || !held || versionNode.State != graphstore.StateLive {
+		t.Errorf("the first version of the document made again has node %+v (held %t, %v), want it live", versionNode, held, err)
+	}
+	var createdAt time.Time
+	if err := database.Pool.QueryRow(ctx, `select created_at from artifact_versions where artifact_id = $1::uuid and number = 1`, second.ID).Scan(&createdAt); err != nil {
+		t.Fatalf("read the new row's first version: %v", err)
+	}
+	for attribute, want := range map[string]func(string) bool{
+		graphstore.AttributeNumber: func(value string) bool { return value == "1" },
+		graphstore.AttributeCreatedAt: func(value string) bool {
+			stated, err := time.Parse(time.RFC3339Nano, value)
+			return err == nil && stated.Equal(createdAt)
+		},
+	} {
+		value, stated, err := graphstore.CurrentValue(ctx, database.Pool, graphstore.KindVersion, version, attribute)
+		if err != nil || !stated || !want(value) {
+			t.Errorf("%s states %s %q (stated %t, %v), want the new row's (created at %s)", version, attribute, value, stated, err, createdAt)
+		}
+	}
+	requireStoreCensusZero(t, database, "after the document was made again")
+	incomplete, err := graphcensus.ProjectComplete(ctx, database.Pool)
+	if err != nil || len(incomplete) != 0 {
+		t.Errorf("after the document was made again the project census names %v (%v), want nothing", incomplete, err)
+	}
+}
+
 // placement is what one statement reads of a document after its request: its row's address and
 // marker, whether the store holds its node, and the part_of tuples out of that node, each as
 // `<to_kind>:<to_id>` and its cause, in the order they were appended.
@@ -312,11 +377,11 @@ func requireNothingOf(t *testing.T, database *store.Store, refKey string) {
 	}
 }
 
-// refuseCommits runs during with a deferred constraint trigger in place on artifacts, which
-// refuses at commit every transaction that inserted an artifacts row: after the handler has
-// written its rows, appended its event and every tuple through graphstore.Caused, and called
-// commit. It takes the trigger away after.
-func refuseCommits(t *testing.T, database *store.Store, during func()) {
+// refuseCommits runs during with a deferred constraint trigger in place on table, which refuses at
+// commit every transaction that inserted a row of it: after the handler has written its rows,
+// appended its event and every tuple through graphstore.Caused, and called commit. It takes the
+// trigger away after.
+func refuseCommits(t *testing.T, database *store.Store, table string, during func()) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
@@ -324,14 +389,14 @@ func refuseCommits(t *testing.T, database *store.Store, during func()) {
 		begin
 		  raise exception 'the test refuses this commit';
 		end $$;
-		create constraint trigger zz_refuse_commit after insert on artifacts
+		create constraint trigger zz_refuse_commit after insert on `+table+`
 		deferrable initially deferred
 		for each row execute function test_refuse_commit();
 	`); err != nil {
 		t.Fatalf("install the trigger that refuses a commit: %v", err)
 	}
 	during()
-	if _, err := database.Pool.Exec(ctx, `drop trigger zz_refuse_commit on artifacts`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `drop trigger zz_refuse_commit on `+table); err != nil {
 		t.Fatalf("take the trigger that refuses a commit away: %v", err)
 	}
 }

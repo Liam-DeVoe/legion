@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,28 @@ func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 			t.Fatalf("seed version %d of the image: %v", version.number, err)
 		}
 	}
+	// An image whose ref_key is inside the store's bound but whose version's address, `@v1` after
+	// it, is past it: its version is no node of the store and no row the version pass reads, so the
+	// object pass states its bytes.
+	long := "OLD-1/" + strings.Repeat("s", graphstore.MaxAddressBytes-len("OLD-1/")-1)
+	longContent := []byte("\x89PNG\r\n\x1a\nthe picture under a long name")
+	longAt := created.Add(3 * time.Minute)
+	longSum := sha256.Sum256(longContent)
+	if _, err := database.Pool.Exec(ctx, `
+		with made as (
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by, created_at)
+			values ('OLD-1', 'OLD', $1, $1, 'image', '{"kind":"user","id":"alice"}', $2)
+			returning id
+		)
+		insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors, created_at)
+		select id, 1, $3, 'image/png', $4, $5, '[{"kind":"user","id":"alice"}]', $6 from made
+	`, strings.TrimPrefix(long, "OLD-1/"), created, longContent, len(longContent), hex.EncodeToString(longSum[:]), longAt); err != nil {
+		t.Fatalf("seed the image under a long name: %v", err)
+	}
+	if !graphstore.AddressFits(long) || graphstore.AddressFits(graphstore.VersionID(long, 1)) {
+		t.Fatalf("the long image's ref_key fits %t and its version's address fits %t, want the ref_key inside the bound and the version past it",
+			graphstore.AddressFits(long), graphstore.AddressFits(graphstore.VersionID(long, 1)))
+	}
 	// INFRA-3862's upload wrote the document's node before its row and named it nowhere, and stated
 	// no part_of: its row's missing marker is what the run walks.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -83,7 +106,7 @@ func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed the document an INFRA-3862 build wrote: %v", err)
 	}
-	documents := []string{"OLD-1/notes-md", "OLD-1/shot-png", "OLD-1/plan-md", "OLD/runbook-md"}
+	documents := []string{"OLD-1/notes-md", "OLD-1/shot-png", "OLD-1/plan-md", "OLD/runbook-md", long}
 	for _, refKey := range documents {
 		if partOf := artifactPartOf(t, database, refKey); len(partOf) != 0 {
 			t.Fatalf("before the run %s is part_of %+v, want nothing: the corpus holds no tuple of it", refKey, partOf)
@@ -145,6 +168,39 @@ func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 				t.Errorf("the markdown document %s states %s %+v (%v), want none", document, attribute, stated, err)
 			}
 		}
+	}
+	// The long image's node holds its version's bytes, which the object pass stated, though no node
+	// of that version stands, and the census reads the row and its node alike, its version counted
+	// past the bound.
+	for attribute, want := range map[string]string{
+		graphstore.AttributeMIME:   "image/png",
+		graphstore.AttributeSize:   strconv.Itoa(len(longContent)),
+		graphstore.AttributeSHA256: hex.EncodeToString(longSum[:]),
+	} {
+		history, err := graphstore.History(ctx, database.Pool, graphstore.KindArtifact, long, attribute)
+		if err != nil {
+			t.Fatalf("read the %s of the long image: %v", attribute, err)
+		}
+		if len(history) != 1 || history[0].ToID != want || !history[0].At.Equal(longAt) || history[0].Who != alice {
+			t.Errorf("after the run the long image states %s %+v, want %q once, at its version's %s, by %v",
+				attribute, history, want, longAt, alice)
+		}
+	}
+	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindVersion, graphstore.VersionID(long, 1)); err != nil || held {
+		t.Errorf("the store holds a node of the long image's version past the bound (held %t, %v), want none", held, err)
+	}
+	report := storeCensusOf(t, database)
+	for _, name := range []string{graphstore.KindArtifact, graphstore.KindVersion} {
+		kind := censusKind(t, report, name)
+		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+			t.Errorf("after the run the census reads a difference of kind %s at %s: %s", name, difference.At, difference.Cause)
+		}
+		if kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+			t.Errorf("after the run the census of %s reads %d row and %d node difference(s), want none", name, kind.RowDifferences, kind.NodeDifferences)
+		}
+	}
+	if versions := censusKind(t, report, graphstore.KindVersion); versions.PastBound != 1 {
+		t.Errorf("the census counts %d version(s) past the bound, want the long image's one", versions.PastBound)
 	}
 
 	// A second run reads no row the first marked.

@@ -165,11 +165,14 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	}
 }
 
-// The seed writes issues and documents as the server writes them (dispatch://INFRA-1253): each
-// row names its node, and each document an issue owns hangs under that issue through its part_of.
-// On the schema before the marker migration (20261116092210), which the measurement protocol
-// seeds with --no-migrate, the rows are written without the columns that schema lacks, and the
-// nodes and their part_of the same.
+// The seed writes issues, documents and versions as the server of the schema it fills writes them
+// (dispatch://INFRA-1253): on this release's, each issue's and document's row names its node, each
+// document an issue owns hangs under that issue through its part_of, and each version is the
+// projection of a version node hanging under its document. On the schema before the marker
+// migration (20261116092210), the release before this one's, which the measurement protocol seeds
+// with --no-migrate, the rows are written without the columns that schema lacks and nothing of the
+// tree is written, as that release's server writes none, so the backfill this release runs over the
+// data set is what writes it.
 func TestSeedWritesTheIssueTreeMarkersWhereTheSchemaCarriesThem(t *testing.T) {
 	ctx := context.Background()
 	for _, schema := range []struct {
@@ -189,25 +192,31 @@ func TestSeedWritesTheIssueTreeMarkersWhereTheSchemaCarriesThem(t *testing.T) {
 			if _, err := seed(ctx, database, testScale, io.Discard); err != nil {
 				t.Fatalf("seed on %s: %v", schema.name, err)
 			}
-			var documents, hanging, unhung int
+			var documents, issueDocuments, hanging, unhung, versions, versionNodes int
 			if err := database.Pool.QueryRow(ctx, `
-				select count(*),
+				select count(*), count(*) filter (where a.issue_key is not null),
 				       count(*) filter (where exists (
 				         select 1 from graph_tuples t where t.from_kind = 'artifact' and t.from_id = a.ref_key
 				           and t.kind = 'part_of' and t.to_kind = 'issue' and t.to_id = a.issue_key and t.asserted)),
 				       count(*) filter (where a.issue_key is null and exists (
-				         select 1 from graph_tuples t where t.from_kind = 'artifact' and t.from_id = a.ref_key and t.kind = 'part_of'))
+				         select 1 from graph_tuples t where t.from_kind = 'artifact' and t.from_id = a.ref_key and t.kind = 'part_of')),
+				       (select count(*) from artifact_versions),
+				       (select count(*) from artifact_versions v join artifacts owner on owner.id = v.artifact_id
+				        join graph_nodes n on n.kind = 'version' and n.id = owner.ref_key || '@v' || v.number
+				        where n.made_at = v.created_at and exists (
+				          select 1 from graph_tuples t where t.from_kind = 'version' and t.from_id = n.id
+				            and t.kind = 'part_of' and t.to_kind = 'artifact' and t.to_id = owner.ref_key and t.asserted))
 				from artifacts a
-			`).Scan(&documents, &hanging, &unhung); err != nil {
-				t.Fatalf("read the seeded documents' part_of: %v", err)
+			`).Scan(&documents, &issueDocuments, &hanging, &unhung, &versions, &versionNodes); err != nil {
+				t.Fatalf("read the seeded documents' and versions' tree: %v", err)
 			}
-			var issueDocuments int
-			if err := database.Pool.QueryRow(ctx, `select count(*) from artifacts where issue_key is not null`).Scan(&issueDocuments); err != nil {
-				t.Fatalf("count the seeded issues' documents: %v", err)
+			wantHanging, wantVersionNodes := issueDocuments, versions
+			if schema.before {
+				wantHanging, wantVersionNodes = 0, 0
 			}
-			if issueDocuments == 0 || hanging != issueDocuments || unhung != 0 {
-				t.Errorf("on %s, %d of the %d documents of an issue hang under it and %d documents of no issue hang under one, want all %d and none",
-					schema.name, hanging, issueDocuments, unhung, issueDocuments)
+			if issueDocuments == 0 || versions == 0 || hanging != wantHanging || unhung != 0 || versionNodes != wantVersionNodes {
+				t.Errorf("on %s, %d of the %d documents of an issue hang under it, %d documents of no issue hang under one, and %d of the %d versions are the projection of a version node; want %d, none and %d",
+					schema.name, hanging, issueDocuments, unhung, versionNodes, versions, wantHanging, wantVersionNodes)
 			}
 			if schema.before {
 				return

@@ -5,12 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -338,6 +343,84 @@ func TestTheEraseRefusesABlockThatHoldsBlocksUntilTheyGo(t *testing.T) {
 	requireErased(t, database, refs.BlockNodeKind, seeded.inner)
 	requireErased(t, database, refs.BlockNodeKind, seeded.outer)
 	requireCensusZero(t, database, "after the erases")
+}
+
+// R5, and R16 of dispatch://INFRA-1253: an erase that deletes a version ends that version's node.
+// The spec's second version, which no build indexed, holds the inner block's text, and the backfill
+// gave it its node; the erase of the inner block deletes that version (Erasure.Versions) and states
+// its node gone in the erase's transaction (endErasedVersions), so the census reads zero after it
+// as before it. The second version was the newest, so the next version takes the freed number:
+// its write (docs.WriteVersionNode) restates the node live with the new row's number and
+// created_at, and the census reads the node as that row's.
+func TestTheEraseOfABlockAVersionHeldEndsThatVersionsNode(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1::uuid, 2, 'Written before the store existed.'||chr(10)||chr(10)||'Block inner.', '[{"kind":"user","id":"alice"}]')
+	`, seeded.document.artifactID); err != nil {
+		t.Fatalf("write version 2 of %s, holding the inner block's text: %v", seeded.document.refKey, err)
+	}
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill version 2's node: %v", err)
+	}
+	version := graphstore.VersionID(seeded.document.refKey, 2)
+	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindVersion, version); err != nil || !held || node.State != graphstore.StateLive {
+		t.Fatalf("before the erase the store holds %s as %+v (held %t, %v), want a live node", version, node, held, err)
+	}
+	requireCensusZero(t, database, "before the erase")
+
+	erasure, err := confirmedErase(t, database, refs.BlockNodeKind, seeded.inner, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase %s:%s: %v", refs.BlockNodeKind, seeded.inner, err)
+	}
+	if !erasure.Applied || len(erasure.Versions) != 1 || erasure.Versions[0].Version != 2 {
+		t.Fatalf("the erase answered applied %t and the versions %+v (blockers %q), want it applied ending version 2 alone",
+			erasure.Applied, erasure.Versions, erasure.Blockers)
+	}
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindVersion, version)
+	if err != nil || !held || node.State != graphstore.StateGone {
+		t.Errorf("after the erase the store holds %s as %+v (held %t, %v), want it held and gone", version, node, held, err)
+	}
+	requireCensusZero(t, database, "after the erase")
+
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	var number int
+	var at time.Time
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		var owner graphstore.VersionOwner
+		if err := tx.QueryRow(ctx, `
+			insert into artifact_versions as v (artifact_id, number, markdown, authors)
+			select $1::uuid, coalesce(max(number), 0) + 1, 'Written again.', '[{"kind":"user","id":"alice"}]'
+			from artifact_versions where artifact_id = $1::uuid
+			returning number, created_at, `+graphstore.VersionOwnerColumns("v.artifact_id"),
+			seeded.document.artifactID).Scan(append([]any{&number, &at}, owner.Targets()...)...); err != nil {
+			return err
+		}
+		written, err := docs.WriteVersionNode(ctx, tx, owner, number, alice, at)
+		if err != nil {
+			return err
+		}
+		return graphstore.Caused(ctx, tx, written, graphstore.NoEvent)
+	}); err != nil {
+		t.Fatalf("write the next version of %s: %v", seeded.document.refKey, err)
+	}
+	if number != 2 {
+		t.Fatalf("the next version of %s took number %d, want the freed number 2", seeded.document.refKey, number)
+	}
+	node, held, err = graphstore.ReadNode(ctx, database.Pool, graphstore.KindVersion, version)
+	if err != nil || !held || node.State != graphstore.StateLive {
+		t.Errorf("after the next version the store holds %s as %+v (held %t, %v), want it live again", version, node, held, err)
+	}
+	stated, statedHeld, err := graphstore.CurrentValue(ctx, database.Pool, graphstore.KindVersion, version, graphstore.AttributeCreatedAt)
+	if err != nil || !statedHeld {
+		t.Fatalf("read the created_at of %s: held %t, %v", version, statedHeld, err)
+	}
+	if value, err := time.Parse(time.RFC3339Nano, stated); err != nil || !value.Equal(at) {
+		t.Errorf("after the next version %s states created_at %q (%v), want the new row's %s", version, stated, err, at)
+	}
+	requireCensusZero(t, database, "after the next version took the freed number")
 }
 
 // A block another block cites is the far end of the citing block's mentions tuple and of its

@@ -2,6 +2,7 @@ package graphcensus
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,13 @@ func TestCensusCountsEveryNodeThatIsNotGone(t *testing.T) {
 		}
 	}
 	moveStates(t, database, document, moves...)
+	requireStatesHeld(t, database, document, states)
+	// The spec's row and its two versions are written by SQL, as a build before their nodes wrote
+	// them (dispatch://INFRA-1253): the backfill gives each its node, and reads no block row, every
+	// one of which the index named, so the census below reads the blocks as the index left them.
+	if _, err := Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the spec and its versions: %v", err)
+	}
 	requireStatesHeld(t, database, document, states)
 	requireTheCensusCountsEveryBlockNotGone(t, database, document, "the census over one block at each state", kept)
 

@@ -32,14 +32,17 @@ const versionBytesStatement = "select node_address from artifacts where id = $1 
 // artifact.version event, then the bytes under it.
 //
 // It then races the upload against the real backfill (graphcensus.Backfill) over a row an older
-// build wrote, with no node and no marker: the backfill names the node on the row and states the
-// first version's bytes, and is held at its commit, by a deferred trigger waiting on a lock the
-// test holds, while the upload of the second version runs. An issue's image waits for the
-// backfill at its owner row, the issue's, which the backfill took first; a conversation's file,
-// whose upload takes no owner row, waits at its artifacts row. Let go, the upload reads the node
-// the backfill named and states its bytes after the backfill's, so the node's newest bytes are the
-// second version's. Without the FOR SHARE the conversation's upload reads no node, states nothing,
-// and the node keeps the first version's bytes for good.
+// build wrote, with no node, no marker and no version node: the backfill names the node on the row,
+// and states no bytes there, since the version the row's newest is has no node of its own and its
+// bytes are the version pass's to state with that node (nameArtifactNodes). It is held at the
+// commit of that object pass, by a deferred trigger waiting on a lock the test holds, while the
+// upload of the second version runs. An issue's image waits for the backfill at its owner row, the
+// issue's, which the backfill took first; a conversation's file, whose upload takes no owner row,
+// waits at its artifacts row. Let go, the upload reads the node the backfill named and states its
+// bytes there, and the version pass, which then finds the first version no longer the newest,
+// states none: the node's bytes are the second version's alone.
+// Without the FOR SHARE the conversation's upload reads no node, states nothing, and the node
+// holds no bytes for good.
 func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
@@ -83,7 +86,7 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 			if race.kind == "image" {
 				name = rig.fresh("raced") + ".png"
 			}
-			refKey, firstAt := seedOlderVersionedFile(t, rig, race.owner, session, name, race.kind, race.mime, race.first)
+			refKey := seedOlderVersionedFile(t, rig, race.owner, session, name, race.kind, race.mime, race.first)
 
 			// The backfill's connection is made before the holder, so the holder's release, a
 			// cleanup too, runs first and a failed assertion never leaves the backfill's pool closing
@@ -128,24 +131,22 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 				}
 			}
 
-			firstSum, secondSum := sha256.Sum256(race.first), sha256.Sum256(race.second)
-			for attribute, values := range map[string][2]string{
-				graphstore.AttributeMIME:   {race.mime, race.mime},
-				graphstore.AttributeSize:   {strconv.Itoa(len(race.first)), strconv.Itoa(len(race.second))},
-				graphstore.AttributeSHA256: {hex.EncodeToString(firstSum[:]), hex.EncodeToString(secondSum[:])},
+			secondSum := sha256.Sum256(race.second)
+			for attribute, value := range map[string]string{
+				graphstore.AttributeMIME:   race.mime,
+				graphstore.AttributeSize:   strconv.Itoa(len(race.second)),
+				graphstore.AttributeSHA256: hex.EncodeToString(secondSum[:]),
 			} {
 				history, err := graphstore.History(ctx, rig.database.Pool, graphstore.KindArtifact, refKey, attribute)
 				if err != nil {
 					t.Fatalf("read the %s of %s: %v", attribute, refKey, err)
 				}
-				if len(history) != 2 || history[0].ToID != values[0] || !history[0].At.Equal(firstAt) ||
-					history[0].SourceEvent != graphstore.NoEvent || history[1].ToID != values[1] {
-					t.Errorf("%s states %s %+v, want the first version's %q from the backfill, at its own time %s, then the second version's %q",
-						refKey, attribute, history, values[0], firstAt, values[1])
+				if len(history) != 1 || history[0].ToID != value {
+					t.Errorf("%s states %s %+v, want the second version's %q alone", refKey, attribute, history, value)
 				}
 				current, held, err := graphstore.CurrentValue(ctx, rig.database.Pool, graphstore.KindArtifact, refKey, attribute)
-				if err != nil || !held || current != values[1] {
-					t.Errorf("%s's %s is %q (held %t, %v), want the second version's %q", refKey, attribute, current, held, err, values[1])
+				if err != nil || !held || current != value {
+					t.Errorf("%s's %s is %q (held %t, %v), want the second version's %q", refKey, attribute, current, held, err, value)
 				}
 			}
 		})
@@ -244,9 +245,9 @@ func (r *storeWriterRig) laterImageVersion() storeWriter {
 
 // seedOlderVersionedFile writes, by SQL in the shape a build before the store wrote it, an image
 // or a file of the rig's issue (owner "issue") or of the conversation session (owner "session"),
-// and its first version: a row naming no node and no node for it. It answers the row's ref_key
-// and the first version's time.
-func seedOlderVersionedFile(t *testing.T, rig *storeWriterRig, owner, session, name, kind, mime string, content []byte) (string, time.Time) {
+// and its first version: a row naming no node, and no node for it or for its version. It answers
+// the row's ref_key.
+func seedOlderVersionedFile(t *testing.T, rig *storeWriterRig, owner, session, name, kind, mime string, content []byte) string {
 	t.Helper()
 	ctx := context.Background()
 	var issueKey, project, sessionID *string
@@ -256,7 +257,6 @@ func seedOlderVersionedFile(t *testing.T, rig *storeWriterRig, owner, session, n
 		sessionID = &session
 	}
 	var refKey string
-	var at time.Time
 	sum := sha256.Sum256(content)
 	if err := rig.database.Pool.QueryRow(ctx, `
 		with made as (
@@ -266,10 +266,10 @@ func seedOlderVersionedFile(t *testing.T, rig *storeWriterRig, owner, session, n
 		)
 		insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors)
 		select made.id, 1, $7, $8, $9, $10, '[{"kind":"user","id":"alice"}]' from made
-		returning (select ref_key from made), created_at
+		returning (select ref_key from made)
 	`, issueKey, project, sessionID, artifactSlug(name), name, kind, content, mime, len(content),
-		hex.EncodeToString(sum[:])).Scan(&refKey, &at); err != nil {
+		hex.EncodeToString(sum[:])).Scan(&refKey); err != nil {
 		t.Fatalf("seed %s as an older build wrote it: %v", name, err)
 	}
-	return refKey, at
+	return refKey
 }

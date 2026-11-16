@@ -310,6 +310,9 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// version 2 moved one paragraph out of the callout.
 		movedParents: {tuples: 2, writes: 1, read: 2},
 		"block_ref":  {tuples: 2}, "block_text": {tuples: 2, writes: 7},
+		// Each of the two versions writes its node and six tuples (graphstore.VersionFacts); neither
+		// is a file's, and the one document is an issue's, created inside the window.
+		"version": {tuples: 6, writes: 2}, "version_bytes": {tuples: 3}, "document_part_of": {tuples: 1, writes: 1},
 		// The comment moves its author's read_through on its thread (migration 0095's trigger),
 		// which is a read mark of its own.
 		"message_delivery": {tuples: 1}, "read_mark": {tuples: 1, writes: 1}, "clear": {tuples: 1, writes: 1},
@@ -335,6 +338,18 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	if wantADay := fmt.Sprintf("%.2f", float64(tuples)/sizingWindowDays); match == nil || match[1] != wantADay {
 		t.Errorf("the sizing projects graph_tuples at %v rows a day, want %s: the sum of every term's writes times its tuples, %d, over %d days\n%s",
 			match, wantADay, tuples, sizingWindowDays, printed)
+	}
+	// The history's two versions were written before the store held a version node, so the
+	// version backfill owes each its node and six tuples once, and the year projects those beside
+	// the rate (backfillVersions).
+	for _, line := range []string{
+		"census: sizing backfill kind=version moved_by=" + movedWithBlocks + " owed_rows=2 nodes_a_row=1 tuples_a_row=6 nodes=2 tuples=12 ",
+		"census: sizing backfill-rows table=graph_tuples rows=12\n",
+		"census: sizing backfill-rows table=graph_nodes rows=2\n",
+	} {
+		if !strings.Contains(printed, line) {
+			t.Errorf("the sizing prints no line %q:\n%s", line, printed)
+		}
 	}
 }
 

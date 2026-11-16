@@ -125,7 +125,7 @@ func storeCensusOf(t *testing.T, database *store.Store) *StoreReport {
 // reads, each of which must count rows and live nodes: a kind that read zero of either compared
 // nothing, and its zero differences would prove nothing.
 var seededKinds = []string{"comment", "block", "block_ref", graphstore.KindPerson, graphstore.KindSession,
-	graphstore.KindRole, graphstore.KindPage}
+	graphstore.KindRole, graphstore.KindPage, "artifact", graphstore.KindVersion}
 
 // requireTheCensusAgrees fails the test unless the census read no difference in either direction
 // over any kind, read rows and live nodes of every kind the fixture seeded, and passes.
