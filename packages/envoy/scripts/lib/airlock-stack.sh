@@ -16,63 +16,100 @@
 # without privilege; airlock_stands_start says so and answers 1, and a caller that only needs the
 # proxy's own answers (a CONNECT refused, or not) goes on with no bound host at all.
 
-# airlock_stands_start starts cmd/dev-airlock-stands in work_dir and sets, for the caller:
-#   AIRLOCK_STANDS_PID        the process, to stop
+# airlock_stands_start starts cmd/dev-airlock-stands and sets, for the caller:
+#   AIRLOCK_STANDS_CONTAINER  the container to stop, "" for a run on this machine
+#   AIRLOCK_STANDS_PID        the process to stop, "" for a run in a container
 #   AIRLOCK_CA_CERT_FILE      the authority the proxy decrypts with
 #   AIRLOCK_CA_KEY_FILE       its key
-#   AIRLOCK_RECORDS_URL       the stands' recording routes
-#   AIRLOCK_S_HOST            the one bound host's name, when address is not empty
-#   AIRLOCK_S_URL             https://<that name>, when address is not empty
-#   AIRLOCK_DIAL_ALLOW        what the proxy may dial although it resolves to loopback
+#   AIRLOCK_S_HOST            the bound host's name, "" for a run that binds none
+#   AIRLOCK_S_URL             https://<that name>, "" for a run that binds none
+#   AIRLOCK_DIAL_ALLOW        what the proxy may dial although it is not a public address
 #   AIRLOCK_RESOLVE           where that name is
-# $1 is the stands binary, $2 the work directory, $3 the bound host's name and $4 its address
-# (host:port, port 443) or "" for a run that binds no upstream.
+#
+# $1 is the stands binary, $2 the work directory, $3 the bound host's name, $4 the image a
+# container run uses ("" to run on this machine), and $5 a name for the container.
+#
+# How a bound host gets port 443. On a machine whose ip_unprivileged_port_start is above 443, or
+# whose 443 another listener holds, nothing this script runs can bind it: the measurements are in
+# the pull request of dispatch://INFRA-3862. So the stands run in an ordinary bridge container
+# instead, binding 0.0.0.0:443 inside a network namespace of their own, and the broker on this
+# machine dials the container's own address, which a bridge network routes to. The proxy refuses
+# every private address it is not told about, so that address is named in both
+# BROKER_AIRLOCK_TEST_RESOLVE and BROKER_AIRLOCK_TEST_DIAL_ALLOW, which exist for exactly this.
+# The work directory is bind-mounted writable, since the broker on this machine reads the
+# certificate authority the stands write into it.
 airlock_stands_start() {
-  local binary="$1" work_dir="$2" host="$3" address="$4"
-  local stands_json="$work_dir/stands.json" stands_log="$work_dir/stands.log"
-  local -a bound=()
-  if [ -n "$address" ]; then
-    local port="${address##*:}"
-    if [ "$port" != 443 ]; then
-      echo "airlock-stack: a bound host listens on 443, not $port: the proxy refuses any other port as a host header mismatch" >&2
-      return 1
-    fi
-    if ! python3 -c "import socket,sys; s=socket.socket(); s.bind(('${address%:*}', 443)); s.close()" 2>/dev/null; then
-      echo "airlock-stack: this machine does not let ${address} be bound: a bound host needs port 443, which needs privilege here (/proc/sys/net/ipv4/ip_unprivileged_port_start)" >&2
-      return 1
-    fi
-    bound=(--address "s=$address" --host "s=$host")
-  fi
+  local binary="$1" work_dir="$2" host="$3" image="$4" container="$5"
+  local stands_dir="$work_dir/stands" stands_json="$work_dir/stands.json" stands_log="$work_dir/stands.log"
+  mkdir -p "$stands_dir"
   : >"$stands_log"
-  "$binary" --dir "$work_dir/stands" "${bound[@]}" \
-    >"$stands_json" 2> >(trap '' TERM INT; exec tee -a "$stands_log" >&2) &
-  AIRLOCK_STANDS_PID=$!
-  local waited=0
-  while [ "$waited" -lt 120 ]; do
-    grep -q 'stands listening records=' "$stands_log" 2>/dev/null && break
-    kill -0 "$AIRLOCK_STANDS_PID" 2>/dev/null || {
-      echo "airlock-stack: dev-airlock-stands exited during startup; see $stands_log" >&2
+  AIRLOCK_STANDS_CONTAINER=""
+  AIRLOCK_STANDS_PID=""
+  if [ -n "$image" ]; then
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    if ! docker run -d --name "$container" \
+      -v "$binary:/dev-airlock-stands:ro" -v "$stands_dir:/stands" \
+      "$image" /dev-airlock-stands --dir /stands --address "s=0.0.0.0:443" --host "s=$host" \
+      >"$work_dir/stands-container" 2>"$stands_log"; then
+      echo "airlock-stack: docker refused to start the stands; see $stands_log" >&2
       return 1
-    }
+    fi
+    AIRLOCK_STANDS_CONTAINER="$container"
+  else
+    "$binary" --dir "$stands_dir" --address "s=0.0.0.0:443" --host "s=$host" \
+      >"$stands_json" 2> >(trap '' TERM INT; exec tee -a "$stands_log" >&2) &
+    AIRLOCK_STANDS_PID=$!
+  fi
+  local waited=0 listening=""
+  while [ "$waited" -lt 120 ]; do
+    if [ -n "$AIRLOCK_STANDS_CONTAINER" ]; then
+      # The stands write their JSON to stdout and their lines to stderr; docker keeps the two
+      # apart, so each is read on its own and neither is parsed as the other.
+      docker logs "$container" >"$stands_json" 2>"$stands_log" || true
+    fi
+    if grep -q 'stands listening records=' "$stands_log" 2>/dev/null; then
+      listening=yes
+      break
+    fi
     sleep 0.5
     waited=$((waited + 1))
   done
-  if ! grep -q 'stands listening records=' "$stands_log" 2>/dev/null; then
+  if [ -z "$listening" ]; then
     echo "airlock-stack: dev-airlock-stands never logged its addresses within 60s; see $stands_log" >&2
     return 1
   fi
+  # The stands name each file by the path they wrote it at, which inside a container is the
+  # container's. The bind mount makes /stands this run's own directory, so the paths the broker
+  # is given are this machine's.
   AIRLOCK_CA_CERT_FILE="$(jq -r .ca_cert_file "$stands_json")"
   AIRLOCK_CA_KEY_FILE="$(jq -r .ca_key_file "$stands_json")"
-  AIRLOCK_RECORDS_URL="$(jq -r .records_url "$stands_json")"
-  AIRLOCK_S_HOST=""
-  AIRLOCK_S_URL=""
-  AIRLOCK_DIAL_ALLOW=""
-  AIRLOCK_RESOLVE=""
-  if [ -n "$address" ]; then
-    AIRLOCK_S_HOST="$host"
-    AIRLOCK_S_URL="https://$host"
-    AIRLOCK_DIAL_ALLOW="$host:443"
-    AIRLOCK_RESOLVE="$host=${address%:*}"
+  if [ -n "$AIRLOCK_STANDS_CONTAINER" ]; then
+    AIRLOCK_CA_CERT_FILE="${stands_dir}${AIRLOCK_CA_CERT_FILE#/stands}"
+    AIRLOCK_CA_KEY_FILE="${stands_dir}${AIRLOCK_CA_KEY_FILE#/stands}"
+  fi
+  if [ ! -s "$AIRLOCK_CA_CERT_FILE" ] || [ ! -s "$AIRLOCK_CA_KEY_FILE" ]; then
+    echo "airlock-stack: the stands wrote no certificate authority this machine can read ($AIRLOCK_CA_CERT_FILE)" >&2
+    return 1
+  fi
+  local address="127.0.0.1"
+  if [ -n "$AIRLOCK_STANDS_CONTAINER" ]; then
+    address="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container" 2>/dev/null | head -n1)"
+    if [ -z "$address" ]; then
+      echo "airlock-stack: the stands container $container has no address of its own" >&2
+      return 1
+    fi
+  fi
+  AIRLOCK_S_HOST="$host"
+  AIRLOCK_S_URL="https://$host"
+  AIRLOCK_DIAL_ALLOW="$host:443"
+  AIRLOCK_RESOLVE="$host=$address"
+}
+
+# airlock_stands_stop stops whichever of the two a start left behind.
+airlock_stands_stop() {
+  [ -z "${AIRLOCK_STANDS_CONTAINER:-}" ] || docker rm -f "$AIRLOCK_STANDS_CONTAINER" >/dev/null 2>&1 || true
+  if [ -n "${AIRLOCK_STANDS_PID:-}" ] && kill -0 "$AIRLOCK_STANDS_PID" 2>/dev/null; then
+    kill -TERM "$AIRLOCK_STANDS_PID" 2>/dev/null || true
   fi
 }
 
