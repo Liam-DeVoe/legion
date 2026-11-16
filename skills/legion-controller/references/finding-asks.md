@@ -90,9 +90,8 @@ The work goes to whoever already owns that code. You file an issue only when nob
 ## Link an issue to its approved root
 
 A class root is an issue whose spec states a class of work, so that each issue of that class is
-its child. dispatch://INFRA-3118 is one: each fix of the daemon's task delivery, holds and pod
-updates is its child. Before you file an issue, or give one to a tree, find the root it belongs
-to. That is a class root whose class holds it, or the root of a running tree whose unfinished work
+its child: for example, a root whose spec says that each fix of one subsystem is its child.
+Before you file an issue, or give one to a tree, find the root it belongs to. That is a class root whose class holds it, or the root of a running tree whose unfinished work
 holds it. Such a root counts only when a person approved its spec. A mention of the class in prose
 is not a link. Only a Dispatch `child_of` link is one.
 
@@ -114,8 +113,8 @@ is not a link. Only a Dispatch `child_of` link is one.
   is not `done`, so a child of such an issue never runs.
 
 A class root that must take new members is a Legion root with no code of its own
-(`skill://legion-architect/references/decomposition.md#a-root-with-no-code-of-its-own`), as
-dispatch://INFRA-3118 and dispatch://INFRA-3418 are, and not an issue that holds only a design.
+(`skill://legion-architect/references/decomposition.md#a-root-with-no-code-of-its-own`), and not
+an issue that holds only a design.
 A member under an issue that holds only a design never runs, for the reason above. So file such a
 class root with `--label legion`, and write in its spec that it has no code of its own. Do this
 also when a request or a proposal asks for an issue that holds only a design, and say why in its

@@ -166,8 +166,8 @@ Plan no code for the root in that case, and do not create a child only to give t
 ## Class members and links
 
 A class root is an issue whose spec states a class of work, so that each issue of that class is
-its child. A class root that must take new members is a Legion root with no code of its own, as
-dispatch://INFRA-3118 and dispatch://INFRA-3418 are ([A root with no code of its own](#a-root-with-no-code-of-its-own)).
+its child. A class root that must take new members is a Legion root with no code of its own
+([A root with no code of its own](#a-root-with-no-code-of-its-own)).
 It is never an issue that holds only a design. The controller's intake takes no issue under an
 ancestor that is not `done`, so a member under such an issue never runs.
 
