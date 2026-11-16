@@ -6,16 +6,16 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
-import type { Comment, Decision, DecisionKeep } from "../../../api/types";
+import type { Actor, Comment, Decision, DecisionKeep } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
-import type { TreeNode } from "../issue-tree";
+import type { NodeChip, TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { KEY_REPORTS } from "../page-structure";
-import { DECISIONS_WORDS } from "../page-words";
+import { CONTROL_LABELS, DECISIONS_WORDS, GLYPH_NAMES, GLYPH_TOKENS } from "../page-words";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
   answeredAsk,
@@ -60,9 +60,17 @@ const KEPT: DecisionKeep = {
   kept_by: READER,
 };
 
+/** The chip a decision's node holds for the statement of block `block`, named as the page's
+ *  chips name it (`tree-drafts.ts`'s `chipOf`): by the statement's first line unless the case
+ *  names it otherwise. */
+function chip(block: string, name = `The page draws ${block}.`): NodeChip {
+  return { answered: true, gone: false, name, ref: specRef(block) };
+}
+
 /** One issue that holds an entry of every part: an open question, two decisions a statement
  *  rests on that wait, one the reader kept, an answered ask with the agent's write-up of it
- *  under it, a declined ask, and two decisions no statement rests on. */
+ *  under it, a declined ask, and two decisions no statement rests on. Each decision's node
+ *  holds a chip for each statement its decision's links name, as the page's tree does. */
 function wholeIssue(): {
   asks: DecisionsAsk[];
   children: TreeNode[];
@@ -94,11 +102,15 @@ function wholeIssue(): {
         }
       ),
       ask("a-declined", { state: "declined", text: "On a phone, where does the box sit?" }),
-      decisionNode("first", { at: "2026-11-10T12:00:00Z" }),
-      decisionNode("second", { at: "2026-11-11T12:00:00Z", unsure: true }),
-      decisionNode("kept"),
+      decisionNode("first", { at: "2026-11-10T12:00:00Z", chips: [chip("s1")] }),
+      decisionNode("second", {
+        at: "2026-11-11T12:00:00Z",
+        chips: [chip("s1"), chip("s2"), chip("s3")],
+        unsure: true,
+      }),
+      decisionNode("kept", { chips: [chip("s2")] }),
       decisionNode("minor"),
-      decisionNode("replaced"),
+      decisionNode("replaced", { chips: [chip("s1")] }),
     ],
     made: [
       decision("reading", { asks: ["a-answered"], kind: "person", waiting_review: false }),
@@ -392,13 +404,13 @@ test("a decision reads how it stands in the three states the page names", async 
     };
   };
   expect(state(D("second"))).toEqual({
-    shape: "Waiting for review decision",
+    shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.waiting_review],
     token: "waiting_review",
     word: "Waiting for review",
   });
   // The name is the person's own, drawn as an author's text and never as an id of the page's.
   expect(state(D("kept"))).toEqual({
-    shape: "Kept decision",
+    shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.kept],
     token: "kept",
     word: "Kept by alice",
   });
@@ -406,7 +418,7 @@ test("a decision reads how it stands in the three states the page names", async 
     rowOf(view, D("kept")).querySelector("[data-kept-by][data-author-text]")?.textContent
   ).toBe("alice");
   expect(state(D("replaced"))).toEqual({
-    shape: "Replaced decision",
+    shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.replaced],
     token: "replaced",
     word: "Replaced",
   });
@@ -600,6 +612,77 @@ test("a decision reaches each statement it shaped, and every entry links to its 
       (row) => row.querySelectorAll("a[data-entry-link]").length !== 1
     )
   ).toEqual([]);
+});
+
+// R5 (c), ruling 5: a decision's row draws no author in its margin, so its focused body says
+// the model holds none, in the page's own words; an agent's margin names it by its role's word
+// alone, so its focused body gives the session's whole title.
+test("a focused row says Author unknown for a decision with no author, and gives an agent's whole title", async () => {
+  const planner: Actor = {
+    id: "session-planner",
+    kind: "session",
+    origin: { session_title: "Legion planner · INFRA-1" },
+  };
+  const view = renderBody({
+    children: [
+      statement("s1"),
+      openAsk("q-planner", true, { author: planner }),
+      decisionNode("first", { chips: [chip("s1")] }),
+    ],
+    made: [decision("first", { links: [shaped(specRef("s1"))] })],
+  });
+
+  const decided = rowOf(view, D("first"));
+  await act(async () => decided.focus());
+  expect(words(decided.querySelector("[data-node-body] [data-node-author]"))).toBe(
+    CONTROL_LABELS.unknown_author
+  );
+  expect(decided.querySelector("[data-node-margin] [data-node-author]")).toBeNull();
+
+  const asked = rowOf(view, "q-planner");
+  await act(async () => asked.focus());
+  expect(words(asked.querySelector("[data-node-margin] [data-node-author]"))).toBe("planner");
+  expect(words(asked.querySelector("[data-node-body] [data-node-author-title]"))).toBe(
+    "Legion planner · INFRA-1"
+  );
+  // The whole title is the body's alone: the margin names the agent by its role's word.
+  expect(asked.querySelector("[data-node-margin] [data-node-author-title]")).toBeNull();
+});
+
+// R5 (e), R22: a statement on a decision's "informs" line is named as the page's chips name it,
+// cut at a word within 32 characters, and never by its own words where the chip names it
+// otherwise, nor by an address; a statement the chips give no words draws nothing there.
+test("each statement on the informs line is named within 32 characters", () => {
+  const view = renderBody({
+    children: [
+      // Its own words, "The page draws s1. …", are not the chip's.
+      statement("s1"),
+      statement("s2"),
+      decisionNode("first", {
+        chips: [
+          chip("s1", "Requirement 1 of the redesign stands on a row of its own."),
+          chip("s2", ""),
+        ],
+      }),
+    ],
+    made: [decision("first", { links: [shaped(specRef("s1")), shaped(specRef("s2"))] })],
+  });
+
+  const informs = rowOf(view, D("first")).querySelector("[data-decision-informs]");
+  const names = [...(informs?.querySelectorAll("a") ?? [])].map((link) => link.textContent ?? "");
+  expect(names.length).toBe(1);
+  const name = names[0] ?? "";
+  expect(name.length).toBeLessThanOrEqual(32);
+  expect(name.endsWith("…")).toBe(true);
+  expect(name.startsWith("Requirement 1 of the redesign")).toBe(true);
+  expect(name).not.toContain("dispatch://");
+  expect(name).not.toContain("#b-");
+  // The statement the chips give no words draws nothing on the line.
+  expect(
+    [...(informs?.querySelectorAll("[data-decision-statement]") ?? [])].map((shape) =>
+      shape.getAttribute("data-decision-statement")
+    )
+  ).toEqual([statement("s1").id]);
 });
 
 // R9: the list is one tab stop and the outline's own keys work it: `j` and `k` move through

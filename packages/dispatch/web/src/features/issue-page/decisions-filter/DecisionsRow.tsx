@@ -24,6 +24,7 @@ import {
   useClamp,
   useRowOnScreen,
 } from "../NodeRow";
+import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
@@ -65,12 +66,16 @@ export interface RowPerson {
  *
  * A decision draws its words - whole where it waits for the reader's review, cut as an agent's
  * words are anywhere else (ruling 6) - how it stands in the states the page declares
- * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each a link to that
- * statement. A decision of the review list draws Keep and Change with no focus, as the picture
- * does; no other row draws either (R35). The two controls are `DecisionActions.tsx`'s own, so
- * the writes are the ones every other Keep and Change of the page makes. A decision a person
- * asked to change draws what they asked under its words, with a link to it in the conversation
- * (the tester's F6).
+ * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the words
+ * the page's chips name it by, cut as a chip's are, and each a link to that statement. A
+ * decision of the review list draws Keep and Change with no focus, as the picture does; no
+ * other row draws either (R35). The two controls are `DecisionActions.tsx`'s own, so the writes
+ * are the ones every other Keep and Change of the page makes. A decision a person asked to
+ * change draws what they asked under its words, with a link to it in the conversation (the
+ * tester's F6).
+ *
+ * The focus opens the row's body, for a decision as for an ask: who made the node where the
+ * margin does not say it whole, and the control that keeps the body open.
  *
  * Every entry ends on a link to the node that holds it, in the conversation. Nothing inside a
  * row takes the tab order (R9): the row's own keys reach what it holds (`useTreeKeymap.ts`).
@@ -93,6 +98,7 @@ export function DecisionsRow({
   pinned,
   report,
   review,
+  statementNames,
   tabStop,
   threadRead,
 }: {
@@ -126,6 +132,9 @@ export function DecisionsRow({
   report?: string;
   /** Whether this decision is an entry of the review list, which draws Keep and Change. */
   review: boolean;
+  /** The words each statement of the issue is named by, by its node id, as the page's chips
+   *  name it (`DecisionsFilterBody.tsx`); a statement it holds no words for is not named. */
+  statementNames: ReadonlyMap<string, string>;
   /** Whether this row is the list's one tab stop. */
   tabStop: boolean;
   /** The thread whose newest write this row draws, which a dwell on the row marks read. */
@@ -146,6 +155,12 @@ export function DecisionsRow({
   const clamped = clamp !== undefined && !opened && !body;
   const standing = entry.kind === "decision" ? entry.standing : undefined;
   const tone = entry.kind === "ask" ? "question" : "decision";
+  // Each statement the entry shaped by the chip's words, and none the chips give no words: no
+  // address, slug or id is drawn in a statement's place (R22).
+  const statements = entry.shapes.flatMap((shape) => {
+    const name = chipWords(statementNames.get(shape.id) ?? "");
+    return name === "" ? [] : [{ name, shape }];
+  });
   return (
     <div
       aria-level={level}
@@ -154,7 +169,6 @@ export function DecisionsRow({
       data-node-row=""
       data-node-state={entry.kind === "ask" ? node.state : standing}
       data-node-type={node.type}
-      data-row-key={node.id}
       onFocus={onFocus}
       onPointerDown={press}
       ref={row}
@@ -226,7 +240,8 @@ export function DecisionsRow({
             <Changed by={changer} change={entry.change} />
           )}
           {/* The node's parent in the conversation, as one line: its kind's word and its first
-              line (R2, R1's first-line rule). */}
+              line (R2, R1's first-line rule). A parent with no words of its own is named by its
+              kind alone, never by its id (R7). */}
           {entry.parent === undefined ? null : (
             <p
               className={`flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
@@ -237,12 +252,14 @@ export function DecisionsRow({
               <span className="shrink-0" {...pageChrome}>
                 {NODE_TYPE_NAMES[entry.parent.type]}
               </span>
-              <span className="min-w-0 break-words" {...authorText}>
-                {entry.parent.line}
-              </span>
+              {entry.parent.line === entry.parent.id ? null : (
+                <span className="min-w-0 break-words" {...authorText}>
+                  {entry.parent.line}
+                </span>
+              )}
             </p>
           )}
-          {entry.shapes.length === 0 ? null : (
+          {statements.length === 0 ? null : (
             <p
               className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}`}
               data-decision-informs=""
@@ -250,7 +267,7 @@ export function DecisionsRow({
               <span className="shrink-0" {...pageChrome}>
                 {DECISIONS_WORDS.informs}
               </span>
-              {entry.shapes.map((shape) => (
+              {statements.map(({ name, shape }) => (
                 <span
                   className="min-w-0 break-words"
                   data-decision-statement={shape.id}
@@ -262,7 +279,7 @@ export function DecisionsRow({
                     <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span>
                   ) : null}
                   {shape.path === undefined ? (
-                    <span {...authorText}>{shape.line}</span>
+                    <span {...authorText}>{name}</span>
                   ) : (
                     <Link
                       className={`dispatch-inline-link font-semibold hover:underline ${pageKindTag.statement}`}
@@ -270,7 +287,7 @@ export function DecisionsRow({
                       to={shape.path}
                       {...authorText}
                     >
-                      {shape.line}
+                      {name}
                     </Link>
                   )}
                 </span>
@@ -302,15 +319,39 @@ export function DecisionsRow({
               </Link>
             )}
           </div>
-          {/* What the focus adds to an ask: what each option says beside its name and the rest
-              of a cut question, with the control that keeps them open (R6). A decision's row
-              holds nothing back, so it draws no body. */}
-          {body && entry.kind === "ask" ? (
+          {/* What the focus adds to the row, as the outline's body adds it (`NodeRow.tsx`'s
+              `NodeBody`), for a decision as for an ask: who made the node where the margin does
+              not say it whole - "Author unknown", with its own shape, where the model holds no
+              author, and an agent's whole session title where the margin names it by its role's
+              word alone (ruling 5) - and the control that keeps the body open (R6). The open
+              body also draws the rest of a cut text and what each option says beside its name,
+              in their own places above. */}
+          {body ? (
             <div
               className="mt-1 flex min-w-0 flex-col gap-1 text-sm"
               data-node-body=""
               data-pinned={pinned ? "" : undefined}
             >
+              {author.kind === "unknown" ? (
+                <p
+                  className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
+                  data-author-kind={author.kind}
+                  data-node-author=""
+                >
+                  <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.unknown} />
+                  <span {...pageChrome}>{author.name}</span>
+                </p>
+              ) : author.kind === "agent" && agentRoleWord(author.name) !== author.name ? (
+                <p
+                  className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
+                  data-node-author-title=""
+                >
+                  <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.agent} />
+                  <span className="min-w-0 break-words" {...authorText}>
+                    {author.name}
+                  </span>
+                </p>
+              ) : null}
               <p>
                 <button
                   className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}

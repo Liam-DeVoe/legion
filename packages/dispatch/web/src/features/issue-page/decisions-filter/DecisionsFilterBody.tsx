@@ -33,9 +33,11 @@ import {
   CONTROL_LABELS,
   DECISIONS_WORDS,
   isReader,
+  NODE_TYPE_NAMES,
   nodeStateWord,
   PRESET_NAMES,
 } from "../page-words";
+import { treeContext } from "../tree-drafts";
 import type { DrawnRow } from "../tree-fold";
 import { useTreeKeymap } from "../useTreeKeymap";
 import { DecisionsRow, type RowPerson } from "./DecisionsRow";
@@ -135,6 +137,25 @@ export function DecisionsFilterBody({
   });
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
+  // The words each statement is named by on a decision's "informs" line: the name the page's
+  // own chips give it (`tree-drafts.ts`, through the tree `useIssueTree.ts` built), so a
+  // statement reads the same here as on every chip of the outline. A chip names its target
+  // alone, so the first chip that names a statement names it everywhere; a chip whose target is
+  // gone, or that the reads have given no words yet, names nothing.
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
+    const names = new Map<string, string>();
+    const walk = (node: TreeNode): void => {
+      for (const chip of node.chips) {
+        if (chip.gone || chip.name === "") continue;
+        const id = nodeIdOf(chip.ref);
+        if (id !== undefined && !names.has(id)) names.set(id, chip.name);
+      }
+      for (const child of node.children) walk(child);
+    };
+    walk(root);
+    return names;
+  }, [nodeIdOf, root]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
@@ -187,7 +208,8 @@ export function DecisionsFilterBody({
         ...(item === undefined ? {} : { item }),
         ...(node.reference === undefined ? {} : { reference: node.reference }),
         ...(state === undefined ? {} : { state }),
-        title: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
+        // A node with no words of its own is named by its kind, never by an id (R7).
+        title: node.text === "" ? NODE_TYPE_NAMES[node.type] : firstLineOf(nodeWords(node)).line,
         type: node.type,
       });
     },
@@ -367,6 +389,7 @@ export function DecisionsFilterBody({
         pinned={pinned.has(id)}
         {...(report?.row === id ? { report: report.line } : {})}
         review={part === "review"}
+        statementNames={statementNames}
         tabStop={tabStop === id}
         {...(mark === undefined ? {} : { threadRead: mark })}
       />
@@ -380,7 +403,7 @@ export function DecisionsFilterBody({
     // and the focus are read over the whole of it.
     <section
       aria-label={PRESET_NAMES.decisions}
-      className="mx-auto mt-3.5 mb-[120px] flex w-full max-w-[960px] min-w-0 flex-col max-[760px]:mt-2.5"
+      className="mx-auto mt-3.5 mb-[120px] flex w-full max-w-[960px] min-w-0 flex-col max-[761px]:mt-2.5"
       data-decisions-body=""
       onBlur={releaseFocus}
       ref={body}
@@ -409,7 +432,7 @@ export function DecisionsFilterBody({
                   it holds. Its name is the group's; a tree holds rows and groups alone, so it
                   is no element with a role of its own. */}
               <div
-                className="mt-[22px] mb-1 flex min-w-0 items-baseline gap-2.5 max-[760px]:mt-[18px]"
+                className="mt-[22px] mb-1 flex min-w-0 items-baseline gap-2.5 max-[761px]:mt-[18px]"
                 data-decisions-heading=""
               >
                 <span
@@ -438,7 +461,7 @@ export function DecisionsFilterBody({
               it holds and whether they are drawn, and unfolds them. It is a plain button in
               the tab order, as the prototype's is, so Tab reaches it where the foot is all the
               list holds; the key that cycles how much is drawn unfolds it too. */}
-          <div className="mt-[22px] mb-1 flex min-w-0 max-[760px]:mt-[18px]" data-decisions-foot="">
+          <div className="mt-[22px] mb-1 flex min-w-0 max-[761px]:mt-[18px]" data-decisions-foot="">
             <button
               aria-controls={footShown ? footRows : undefined}
               aria-expanded={footShown}
