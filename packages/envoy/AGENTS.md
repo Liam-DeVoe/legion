@@ -3172,7 +3172,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   without it, a line on stderr says that no id was checked against them.
   `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`.
   `spec-check checks --dir <dir> --job <job>` prints the program checks that name the job as one line of JSON, `[]` for none.
-  Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read and for arguments it does not take.
+  Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read, for arguments it does not take, and for a standard output that does not take all of its text, with `spec-check: <subcommand>: cannot write standard output: <error>` on stderr.
   Those two read a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory:
   the first change that adds a spec file lists each statement as `added`, and a checkout with no spec file has no program check.
   Each entry that is not a spec file is a warning on stderr, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
@@ -3217,8 +3217,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The built-binary tests start each child without `GITHUB_ACTIONS` and with `CI` as the test process has it (`childEnv` in `cmd/spec-check/main_test.go`), and the row "compare does not run in a CI job" sets each variable.
 
 - `spec-check guard --root <dir>` is the other part of the refusal above: it reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`), every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
-  `specgraph.CIFilesThatCompare` names each line that holds `spec-check`, under any path, then white space and the word `compare`, reading each line as the shell reads it:
-  a quote is removed and a backslash escape reads as the character it escapes, so `spec-check "compare"` is named, and a line that ends in an odd number of backslashes goes on in the next.
+  `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) names each line that holds `spec-check`, under any path, then white space and the word `compare`.
+  It reads each literal word of a line, quoted or not:
+  a quote is removed, a backslash escape reads as the character it escapes, Bash's `$'…'` reads as the text its ANSI-C escapes decode to and `$"…"` as the quoted text, so `spec-check "compare"`, `spec-check $'compare'` and `spec-check $'com\x70are'` are named, and a line that ends in an odd number of backslashes goes on in the next.
+  It does not expand a brace, a glob, a variable or a command substitution, and the reviewer of a change to the CI files reads those.
   It also reads each `run:` value of a `.yml` or `.yaml` file as YAML reads it, so a plain, quoted or folded value over two lines is one line, named at the line where the value starts, and a literal block names its own line.
   It reads the documents of a file up to the first one that YAML cannot read, and keeps the lines of the documents before it.
   From that document on, it reads the file as text alone, since GitHub runs no step of a file it cannot read.

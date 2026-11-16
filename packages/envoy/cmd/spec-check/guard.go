@@ -8,8 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-
-	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
 // workflowsDir is the directory of a repository, from its root, that holds its workflows.
@@ -80,7 +78,7 @@ func runGuard(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	hits := specgraph.CIFilesThatCompare(files)
+	hits := ciFilesThatCompare(files)
 	for _, hit := range hits {
 		say(stderr, "%s: this line runs the comparison of the files with the approved spec, which no CI job does (R2)", filepath.Join(root, hit))
 	}
