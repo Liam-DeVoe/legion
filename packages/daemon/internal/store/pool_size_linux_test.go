@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -145,11 +146,23 @@ func asKeywords(t *testing.T, dsn string) string {
 	return strings.Join(pairs, " ")
 }
 
-// Settings that name pool_max_conns keep their own number, as pgx reads them: in a URL and in a
-// keyword/value string. Text inside a quoted value names nothing, and settings that name no size
-// get poolConns. The deployed daemons name 32 in their DSN; a deployment that needs another
-// number writes it there.
+// poolServiceFile writes a pg_service.conf whose service poolsize names pool_max_conns=7, and
+// points PGSERVICEFILE at it for t.
+func poolServiceFile(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pg_service.conf")
+	if err := os.WriteFile(path, []byte("[poolsize]\npool_max_conns=7\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PGSERVICEFILE", path)
+}
+
+// Settings that name pool_max_conns keep their own number, as pgx reads them: in a URL, in a
+// keyword/value string, and in the service file a `service=` entry names. Text inside a quoted
+// value names nothing, and settings that name no size get poolConns. The deployed daemons name 32
+// in their DSN; a deployment that needs another number writes it there.
 func TestADSNsPoolMaxConnsOutranksTheStoresSize(t *testing.T) {
+	poolServiceFile(t)
 	for _, tc := range []struct {
 		name, dsn string
 		names     bool
@@ -162,6 +175,7 @@ func TestADSNsPoolMaxConnsOutranksTheStoresSize(t *testing.T) {
 		{"a keyword/value string with spaces around the =", "host=h pool_max_conns = 7", true},
 		{"a keyword/value string that does not", "host=h dbname=db", false},
 		{"the key inside a quoted value", "host=localhost application_name='worker pool_max_conns=7'", false},
+		{"a service whose file names it", "host=h service=poolsize", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := namesPoolMaxConns(tc.dsn); got != tc.names {
@@ -180,6 +194,7 @@ func TestADSNsPoolMaxConnsOutranksTheStoresSize(t *testing.T) {
 		{"the test database as given, naming 7", withSetting(t, database, poolMaxConnsKey, "7"), 7},
 		{"a keyword/value string naming 7", withSetting(t, keywords, poolMaxConnsKey, "7"), 7},
 		{"the key inside a quoted value", withSetting(t, keywords, "application_name", "worker pool_max_conns=7"), poolConns},
+		{"a service whose file names 7", withSetting(t, keywords, "service", "poolsize"), 7},
 	} {
 		t.Run("Open, "+tc.name, func(t *testing.T) {
 			s, err := Open(t.Context(), tc.dsn)
