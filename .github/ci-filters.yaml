@@ -1469,6 +1469,8 @@ dispatch_ui:
   - 'scripts/third-party-notices.ts'
   # why: .github/ci-notes/ci.md#dispatch_ui-the-dashboards-tsc-program-compiles-legionenvoy-clients
   - 'packages/envoy-client/src/**'
+  # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
+  - 'packages/broker-client/**'
   - 'packages/envoy-client/test/**'
 # why: .github/ci-notes/ci.md#dispatch_browser-the-browser-suite-dispatch-browser-which-githubworkflowsdispatch-browseryaml
 dispatch_browser:

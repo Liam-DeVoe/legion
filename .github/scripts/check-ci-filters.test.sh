@@ -2106,6 +2106,7 @@ SOURCE = "packages/broker-client/src/token-client.ts"
 # ./src/<module>.ts.
 COMPILERS = (
     ("claude-envoy", "claude_envoy"),
+    ("dispatch-ui", "dispatch_ui"),
     ("envoy-client", "envoy_client"),
     ("envoy-session-stall", "envoy_session_stall"),
     ("pi-envoy", "pi_envoy"),
