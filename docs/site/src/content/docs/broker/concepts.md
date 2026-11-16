@@ -537,9 +537,10 @@ a tagged secret is checked again on every release: once the project turns privat
 does not name it, or its person leaves the access list, the grant ends for good, and making the
 project public again does not bring it back. The airlock is held to the same rule: a connection of
 such a grant is refused, and a pod holding its values asks the broker again within ten minutes.
-While Dispatch cannot be reached, a tagged secret is neither granted nor released
-(`503 PROJECT_ACCESS_UNAVAILABLE`) and its grants stay live; a secret with no tag is served as
-before. A broker with no `BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing about projects.
+While Dispatch cannot be reached, or answers a project's visibility as neither `public` nor
+`private`, a tagged secret is neither granted nor released (`503 PROJECT_ACCESS_UNAVAILABLE`) and
+its grants stay live; a secret with no tag is served as before. A broker with no
+`BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing about projects.
 
 A secret tagged `project-channels` is limited by the projects the credential names, whatever
 project the secret itself belongs to. A credential that names a private project, whether or not

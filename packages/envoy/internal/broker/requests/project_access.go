@@ -210,13 +210,17 @@ func (m *Machine) collectProjectFacts(ctx context.Context, e enrollmentRow, name
 	for _, project := range asking {
 		answer, held := answers[project]
 		facts.asked = projectaccess.Oldest(facts.asked, answer.AskedAt)
+		// Only a project Dispatch answered "public" is public: any other visibility, an empty one
+		// included, is no state, and the facts fail closed as when Dispatch cannot be asked.
 		switch {
 		case !held || answer.Missing:
 			facts.states[project] = policy.ProjectMissing
 		case answer.Private():
 			facts.states[project] = policy.ProjectPrivate
-		default:
+		case answer.Public():
 			facts.states[project] = policy.ProjectPublic
+		default:
+			return projectFacts{}, fmt.Errorf("%w: %w: %q for %s", ErrProjectAccessUnavailable, projectaccess.ErrUnknownVisibility, answer.Visibility, project)
 		}
 	}
 	for _, project := range named {

@@ -95,6 +95,11 @@ var (
 	// projects that name them, so no caller reads it as any of the three, and none mints or
 	// enrolls through it.
 	ErrUnknownMemberKind = errors.New("projectaccess: dispatch answered a member kind this broker does not know")
+	// ErrUnknownVisibility is Dispatch answering a project's visibility as anything but
+	// VisibilityPublic or VisibilityPrivate, an answer with no visibility at all included. The
+	// broker cannot tell whether such a project is private, so no caller reads it as either: it
+	// is never kept, and each caller fails as it does when Dispatch cannot be asked.
+	ErrUnknownVisibility = errors.New("projectaccess: dispatch answered a project visibility this broker does not know")
 	// ErrUnchecked is ListAllowed's answer for an empty list whose person's member kind Dispatch
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
@@ -129,7 +134,8 @@ func (e *ProjectNotFoundError) Unwrap() error { return ErrProjectNotFound }
 type Answer struct {
 	// Project is the project's key.
 	Project string `json:"project"`
-	// Visibility is "public" or "private".
+	// Visibility is VisibilityPublic or VisibilityPrivate: *Client answers ErrUnknownVisibility
+	// for any other, and never an Answer.
 	Visibility string `json:"visibility"`
 	// Owner is the owner's login.
 	Owner string `json:"owner"`
@@ -161,8 +167,18 @@ type Answer struct {
 	Missing bool `json:"-"`
 }
 
+// The two visibilities Dispatch answers a project with.
+const (
+	VisibilityPublic  = "public"
+	VisibilityPrivate = "private"
+)
+
 // Private reports whether the project is private.
-func (a Answer) Private() bool { return a.Visibility == "private" }
+func (a Answer) Private() bool { return a.Visibility == VisibilityPrivate }
+
+// Public reports whether the project is public. A project is public only when Dispatch says so:
+// a caller reads no other visibility, an empty one included, as public.
+func (a Answer) Public() bool { return a.Visibility == VisibilityPublic }
 
 // Access is every question a broker reader asks Dispatch; *Client answers all three.
 type Access interface {
@@ -275,6 +291,11 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 		return Answer{}, &ProjectNotFoundError{Project: project, AskedAt: asked}
 	}
 	answer := wire.Answer
+	// A visibility that is neither of the two is no answer: it is never kept, and no caller can
+	// read it as public, which is what a missing field would otherwise decode to beside Private.
+	if !answer.Public() && !answer.Private() {
+		return Answer{}, fmt.Errorf("%w: %q for %s", ErrUnknownVisibility, answer.Visibility, project)
+	}
 	if wire.SlackChannels != nil {
 		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
 	}

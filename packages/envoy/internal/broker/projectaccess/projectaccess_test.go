@@ -329,6 +329,48 @@ func TestStatesAnswersOneEntryPerProject(t *testing.T) {
 	}
 }
 
+// TestAccessRefusesAVisibilityItDoesNotKnow is the side review's finding 1 on
+// cybermonklabs/legion#4135 (review 5927943331): Dispatch answers a project's visibility as
+// "public" or "private", and a 200 answer with no visibility, an empty one or another word is
+// neither. The broker reads none of them as public: Access answers ErrUnknownVisibility, which is
+// no answer and is never kept, so States and Visible fail with it too and each later question
+// asks Dispatch again, as an answer with an unknown member kind does.
+func TestAccessRefusesAVisibilityItDoesNotKnow(t *testing.T) {
+	for _, c := range []struct{ name, body string }{
+		{"an answer with no visibility field", `{"project":"PRIV","owner":"carol@example.com","member_kind":"full","visible":true}`},
+		{"an empty visibility", `{"project":"PRIV","visibility":"","owner":"carol@example.com","member_kind":"full","visible":true}`},
+		{"a visibility of another word", `{"project":"PRIV","visibility":"internal","owner":"carol@example.com","member_kind":"full","visible":true}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				mu.Lock()
+				calls++
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(c.body))
+			}))
+			t.Cleanup(server.Close)
+			client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+			if answer, err := client.Access(t.Context(), "PRIV", ""); !errors.Is(err, projectaccess.ErrUnknownVisibility) {
+				t.Fatalf("Access of %s = %+v, %v; want ErrUnknownVisibility, never an answer read as public", c.body, answer, err)
+			}
+			if states, err := client.States(t.Context(), []string{"PRIV"}); !errors.Is(err, projectaccess.ErrUnknownVisibility) {
+				t.Fatalf("States of %s = %+v, %v; want ErrUnknownVisibility", c.body, states, err)
+			}
+			if err := projectaccess.Visible(t.Context(), client, "carol@example.com", []string{"PRIV"}); !errors.Is(err, projectaccess.ErrUnknownVisibility) || errors.Is(err, projectaccess.ErrNotVisible) {
+				t.Fatalf("Visible of %s = %v; want ErrUnknownVisibility, a failure to ask and no refusal", c.body, err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if calls != 3 {
+				t.Fatalf("Dispatch was asked %d times for three questions; want 3: an answer the broker cannot read is never kept", calls)
+			}
+		})
+	}
+}
+
 // TestAccessRefusesAnOversizedAnswer: an answer past 64 KiB is not Dispatch's and is refused
 // rather than read.
 func TestAccessRefusesAnOversizedAnswer(t *testing.T) {

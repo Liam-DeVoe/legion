@@ -11,8 +11,9 @@ body: |-
   it twice. A live grant of a tagged secret is checked again on every release, so a project turning
   private, or its person leaving the access list, ends the grant for good. The airlock does the
   same: a connection of such a grant is refused, and a pod holding its values checks again within
-  ten minutes. While Dispatch cannot be reached, a tagged secret is neither granted nor released
-  and its grant stays live; an untagged one is served as before. A request of a private project,
+  ten minutes. While Dispatch cannot be reached, or answers a project's visibility as neither
+  `public` nor `private`, a tagged secret is neither granted nor released and its grant stays
+  live; an untagged one is served as before. A request of a private project,
   by its secrets, the projects its credential names (a pod's included) or an issue key its reason
   names, is left off the pending and grant lists of everyone outside the project, who may neither
   read nor decide it. To tell, the broker reads from Dispatch, for the person reading, the project
