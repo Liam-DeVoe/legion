@@ -265,11 +265,11 @@ test("an edited post's hit carries the edited mark, and a post nobody edited doe
   }
 });
 
-// A post an earlier build deleted keeps the windows that delete left behind, so it is a meaning
-// hit until the next index pass drops them, and its snippet is then empty; a post this Dispatch
-// deleted is no hit at all. The hit draws the deleted line where the snippet would be, naming
-// who deleted it and when, and no edited mark beside its kind; a post nobody deleted draws its
-// snippet and no deleted line.
+// A deleted post is no hit once its delete commits, which takes its windows with its body; a
+// window that outlives the delete some other way still matches, and such a hit's snippet is
+// empty. The hit draws the deleted line where the snippet would be, naming who deleted it and
+// when, and no edited mark beside its kind; a post nobody deleted draws its snippet and no
+// deleted line.
 test("a deleted post's hit draws the deleted line where its snippet would be", async () => {
   const user = userOnFakeClock();
   const deleted: SearchResult = {

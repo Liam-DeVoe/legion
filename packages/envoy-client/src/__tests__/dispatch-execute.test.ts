@@ -15871,6 +15871,46 @@ for (const [tool, args] of [
   });
 }
 
+// Dispatch answers a correction of a post it does not hold `404 NOT_FOUND` with the word
+// "not found", which names neither the post nor the id, so a reader cannot tell a post that is
+// gone from an issue or a route that is not there. The refusal names the id the call used.
+for (const [tool, args, named] of [
+  [
+    "dispatch_edit_comment",
+    { comment: "11111111-2222-4333-8444-555555555555", body: "corrected text" },
+    "comment 11111111-2222-4333-8444-555555555555",
+  ],
+  [
+    "dispatch_delete_message",
+    { message: "11111111-2222-4333-8444-555555555555" },
+    "message 11111111-2222-4333-8444-555555555555",
+  ],
+] as const) {
+  test(`${tool} names the post Dispatch does not hold`, async () => {
+    const fetchImpl = async (_url: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      response({ code: "NOT_FOUND", error: "not found" }, 404);
+    const error: unknown = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      sleep: async () => {},
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(`this Dispatch holds no ${named}`);
+    expect((error as Error).message).not.toContain("predates post corrections");
+  });
+}
+
 test("dispatch delete-comment against a Dispatch without the route says that server predates corrections", async () => {
   await expect(
     olderDispatch("dispatch_delete_comment", { comment: correctedComment })

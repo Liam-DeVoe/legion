@@ -231,10 +231,10 @@ function ResultOption({
   // The route table carries the kind as a plain string; a kind this build has no icon or label
   // for keeps its own word and draws no icon, rather than borrowing another kind's.
   const kind = searchResultKind(result.kind);
-  // A delete takes the post's windows with its body, so a post deleted by this Dispatch is no
-  // hit at all; one an earlier build deleted is a meaning hit until the next index pass drops
-  // the windows left behind, its snippet is then empty, and the deleted line stands where the
-  // snippet would, as it does in the referenced-by list.
+  // A delete takes the post's windows with its body, so a deleted post is no hit once the
+  // delete commits. A window that outlives it some other way still matches, and such a hit's
+  // snippet is empty: the deleted line stands where the snippet would, as it does in the
+  // referenced-by list.
   const deleted = postDeletion(result);
 
   return (

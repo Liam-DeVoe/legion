@@ -470,8 +470,8 @@ type goingCatalogueBody struct {
 	Actions []GoingAction `json:"actions"`
 }
 
-// getGoingCatalogue serves the catalogue whole. Twenty-four actions is a list a reader scans, so
-// there is nothing to search and nothing to page.
+// getGoingCatalogue serves the catalogue whole. It is a list a reader scans, so there is nothing
+// to search and nothing to page.
 func (s *server) getGoingCatalogue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

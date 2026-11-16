@@ -128,7 +128,17 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
     case "dispatch_edit_comment":
     case "dispatch_delete_comment": {
       const comment = optionalString(args, "comment");
-      if (comment?.startsWith("dispatch://") && parseDispatchRef(comment)?.kind !== "comment") {
+      // A blank id names no comment and puts the request at /api/v1/comments/, which every
+      // build answers with its router's no-route 404, whatever its age. Read as an answer,
+      // that 404 is this release's own tell for a server without the correction routes, so a
+      // blank id would be reported as the server predating them (dispatch://INFRA-1523). It is
+      // what a failed shell substitution passes, so it is refused here, before any request.
+      if (comment !== undefined && comment.trim() === "") {
+        problems.push(commentIdProblem);
+      } else if (
+        comment?.startsWith("dispatch://") &&
+        parseDispatchRef(comment)?.kind !== "comment"
+      ) {
         problems.push(itemRefProblem(comment) ?? commentIdProblem);
       }
       break;

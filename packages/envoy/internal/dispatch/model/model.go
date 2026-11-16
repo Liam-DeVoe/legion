@@ -783,12 +783,11 @@ type SearchResult struct {
 	EditedAt *time.Time `json:"edited_at,omitempty"`
 	// DeletedAt and DeletedBy are the mark of a comment or a message its author deleted, as the
 	// reads of the post itself carry them (Comment, Message), absent on a hit of another kind and
-	// on a post that stands. A delete of this release clears the body and drops the post's
-	// windows in the same transaction (api's clearDeletedPostBody, refs.WriteItemWindows), so
-	// neither arm finds such a post. A post an earlier release deleted keeps the windows that
-	// delete left behind, so the meaning arm returns it until the block-index tick drops them:
-	// such a hit's Snippet is empty, and the mark is what tells its reader the post is deleted
-	// rather than blank.
+	// on a post that stands. The delete clears the body and drops the post's windows in the same
+	// transaction (api's clearDeletedPostBody, refs.WriteItemWindows), so neither arm finds the
+	// post once it commits. A window that outlives the delete some other way still matches, and
+	// that hit is what this mark is for: its Snippet is empty, and the mark is what tells its
+	// reader the post is deleted rather than blank.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	DeletedBy *Actor     `json:"deleted_by,omitempty"`
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and

@@ -82,7 +82,8 @@ const OLDER_COMMENT_EDIT_ACTOR = 'invalid JSON body: json: unknown field "actor"
 export async function throughPostCorrections<T>(
   tool: string,
   url: string,
-  call: Promise<T>
+  call: Promise<T>,
+  post?: { readonly kind: "comment" | "message"; readonly id: string }
 ): Promise<T> {
   try {
     return await call;
@@ -94,6 +95,12 @@ export async function throughPostCorrections<T>(
           error.code === "INVALID_JSON" &&
           error.message === OLDER_COMMENT_EDIT_ACTOR));
     if (!(error instanceof DispatchNoRouteError) && !commentEditIsAge) {
+      // Dispatch's own `not found` names neither the post nor the id, so a reader cannot tell a
+      // post that is not there from an issue or a route that is not: the id the call used says
+      // which (dispatch://INFRA-1523).
+      if (post !== undefined && dispatchAnswered(error, 404) && error.code === "NOT_FOUND") {
+        throw refusalWithCode(error, `this Dispatch holds no ${post.kind} ${post.id}`);
+      }
       throw error;
     }
     throw new Error(

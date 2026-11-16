@@ -142,7 +142,8 @@ export async function editCommentCommand(context: CommandContext): Promise<Dispa
   const comment = await throughPostCorrections(
     input.tool,
     configUrl,
-    client.editComment(id, { body: stringArg(args, "body"), actor })
+    client.editComment(id, { body: stringArg(args, "body"), actor }),
+    { kind: "comment", id }
   );
   const { label, details } = await commentOwnerResult(client, comment, document);
   // The answer proves the edit landed and nothing else. A build that takes the edit and keeps no
@@ -159,7 +160,8 @@ export async function deleteCommentCommand(context: CommandContext): Promise<Dis
   const comment = await throughPostCorrections(
     input.tool,
     configUrl,
-    client.deleteComment(id, actor)
+    client.deleteComment(id, actor),
+    { kind: "comment", id }
   );
   const { label, details } = await commentOwnerResult(client, comment, document);
   return {
@@ -181,7 +183,8 @@ export async function editMessageCommand(context: CommandContext): Promise<Dispa
   const message = await throughPostCorrections(
     input.tool,
     configUrl,
-    client.editMessage(id, { body: stringArg(args, "body"), actor })
+    client.editMessage(id, { body: stringArg(args, "body"), actor }),
+    { kind: "message", id }
   );
   const issue = messageIssueKey(message);
   // The answer proves the edit landed; what became of the body it replaced is the history read's
@@ -205,7 +208,8 @@ export async function deleteMessageCommand(context: CommandContext): Promise<Dis
   const message = await throughPostCorrections(
     input.tool,
     configUrl,
-    client.deleteMessage(id, actor)
+    client.deleteMessage(id, actor),
+    { kind: "message", id }
   );
   const issue = messageIssueKey(message);
   return {
