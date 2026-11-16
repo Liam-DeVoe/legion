@@ -126,8 +126,11 @@ export function IssueHeader({
       data-issue-header=""
       data-testid="issue-header"
     >
+      {/* The band stays from 761 px up and scrolls away at 760 px and below (R5): `min-[761px]`
+          and no `max-[760px]`, which Tailwind builds as `width < 760px` and so leaves 760 px
+          itself sticky. */}
       <div
-        className={`sticky top-0 z-20 flex min-w-0 flex-col px-3.5 pt-2 pb-0.5 max-[760px]:static min-[761px]:px-7 min-[761px]:pt-[7px] min-[761px]:pb-px ${pagePaperBg} ${pageInkText} ${
+        className={`z-20 flex min-w-0 flex-col px-3.5 pt-2 pb-0.5 min-[761px]:sticky min-[761px]:top-0 min-[761px]:px-7 min-[761px]:pt-[7px] min-[761px]:pb-px ${pagePaperBg} ${pageInkText} ${
           condensed ? "shadow-[0_1px_0_var(--color-page-line),0_6px_14px_rgba(28,25,23,0.06)]" : ""
         }`}
         data-identity-block=""
