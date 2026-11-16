@@ -25,7 +25,9 @@
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
 // It exits 1 for a refused tree, with one line for each problem on standard error, "spec-check:
 // <dir>/<file>:<line>: <node>: <detail>", where the detail begins with the rule, and the count line
-// ending "; the tree is refused". With --allow-empty, a directory that does not exist or holds no
+// ending "; the tree is refused". A file above the size bound gives the line "spec-check: file
+// too large: <dir>/<file> is <n> bytes (limit 1048576)" in place of the problems, and the counts
+// are 0: no file is parsed. With --allow-empty, a directory that does not exist or holds no
 // spec file is the empty tree, exit 0, ending "; the tree is empty"; without it, exit 2. --retired
 // names a file of the ids the approved spec removed, one id a line, "#" lines and blank lines
 // passed over; without it, a line on standard error says that no id was checked against them.
@@ -35,7 +37,10 @@
 // "spec-check: no statement changed", and exits 0; a statement that only moved to another file is
 // no change. checks prints the program checks that name the job as one line of JSON,
 // [{"id","runner","selector","job","procedure_sha256"}], [] when none, and exits 0. Both exit 2,
-// with the problems on standard error, when a tree they read has any problem.
+// with the problems on standard error, when a tree they read has any problem. Both read a
+// directory that does not exist as the empty tree, with a line on standard error that says so,
+// since git keeps no empty directory: the first change that adds a spec file lists each of its
+// statements as added, and a checkout with no spec file has no program check.
 //
 // compare compares the files of one directory with an approved spec in the form of approved.json
 // (specgraph.ReadApproved). It exits 1 when the files hold a node in a text that the approved spec

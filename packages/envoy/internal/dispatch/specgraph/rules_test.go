@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -130,6 +131,13 @@ func TestTheOtherRules(t *testing.T) {
 		}
 		return c
 	}
+	// program makes the check a program check of a go test, with procedure as its procedure.
+	program := func(procedure string) func(*Check) {
+		return func(c *Check) {
+			c.Procedure, c.ProcedureText = ProcedureProgram, procedure
+			c.Test = &Test{Runner: "go", Selector: "example.com/acme/daemon TestARestartKeepsTheClaim", Job: "go-checks"}
+		}
+	}
 	component := func(id string, edit func(*Component)) Component {
 		c := Component{ID: id, Name: "Part " + id, Purpose: "It does one thing.", Pos: pos(20)}
 		if edit != nil {
@@ -137,6 +145,8 @@ func TestTheOtherRules(t *testing.T) {
 		}
 		return c
 	}
+	// says makes the leaf's text text.
+	says := func(text string) func(*Statement) { return func(s *Statement) { s.Text = text } }
 	for _, row := range []struct {
 		name string
 		tree Tree
@@ -148,6 +158,26 @@ func TestTheOtherRules(t *testing.T) {
 			want: Problem{pos(1), "a-claim-survives-a-restart", "no-text", "no-text: a statement has a text"},
 		},
 		{
+			name: "a statement that names a symbol with an underscore",
+			tree: Tree{Statements: []Statement{leaf(says("read_set gives each claim one owner."))}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "code-in-text", "code-in-text: text names code: read_set"},
+		},
+		{
+			name: "a statement that names a symbol in lower camel case",
+			tree: Tree{Statements: []Statement{leaf(says("readSet gives each claim one owner."))}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "code-in-text", "code-in-text: text names code: readSet"},
+		},
+		{
+			name: "a statement that names a package and its symbol",
+			tree: Tree{Statements: []Statement{leaf(says("pmdoc.ReadSet gives each claim one owner."))}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "code-in-text", "code-in-text: text names code: pmdoc.ReadSet"},
+		},
+		{
+			name: "a statement that names a call",
+			tree: Tree{Statements: []Statement{leaf(says("ReadSet() gives each claim one owner."))}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "code-in-text", "code-in-text: text names code: ReadSet()"},
+		},
+		{
 			name: "a block with no id",
 			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil)}, Terms: []Term{{Name: "work unit", Definition: "A work unit is work.", Pos: pos(9)}}},
 			want: Problem{pos(9), "-", "bad-id", "bad-id: the block has no id"},
@@ -156,6 +186,24 @@ func TestTheOtherRules(t *testing.T) {
 			name: "a statement that serves one that the files do not hold",
 			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.Serves = []string{"legion-keeps-each-claim"} })}, Checks: []Check{check(nil)}},
 			want: Problem{pos(1), "a-claim-survives-a-restart", "missing-target", `missing-target: serves names "legion-keeps-each-claim", which the files do not hold`},
+		},
+		{
+			name: "a statement that another statement serves and that has no check of its own",
+			tree: servedTree(false),
+			want: Problem{Position{"x.md", 10}, "legion-keeps-each-claim", "supported-without-check", "supported-without-check: other statements serve it and no check serves it"},
+		},
+		{
+			name: "a leaf that another statement serves and that has no check, named once",
+			tree: Tree{
+				Statements: []Statement{leaf(nil), {
+					ID: "a-lost-claim-is-reported", Text: "Legion reports each lost claim.", Kind: KindBehavior,
+					Serves: []string{"a-claim-survives-a-restart"}, Pos: pos(20),
+				}},
+				Checks: []Check{check(func(c *Check) {
+					c.ID, c.Serves, c.Pos = "a-lost-claim-is-in-the-log", "a-lost-claim-is-reported", pos(25)
+				})},
+			},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "leaf-without-check", "leaf-without-check: no statement is under it and no check serves it"},
 		},
 		{
 			name: "a statement about a node that is no component",
@@ -176,6 +224,16 @@ func TestTheOtherRules(t *testing.T) {
 			name: "a check and a statement that share an id",
 			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil), check(func(c *Check) { c.ID = "a-claim-survives-a-restart"; c.Pos = pos(9) })}},
 			want: Problem{pos(9), "a-claim-survives-a-restart", "doubled-id", "doubled-id: also at x.md:1"},
+		},
+		{
+			name: "a program procedure that names the go test of its own selector",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(program("The program runs TestARestartKeepsTheClaim, which claims one issue and starts the daemon again."))}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "code-in-text", "code-in-text: procedure names code: TestARestartKeepsTheClaim"},
+		},
+		{
+			name: "a program procedure that names another go test",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(program("The program TestAClaimAtTheTimeLimitStays claims one issue and starts the daemon again."))}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "code-in-text", "code-in-text: procedure names code: TestAClaimAtTheTimeLimitStays"},
 		},
 		{
 			name: "a check with no claim",
@@ -201,6 +259,48 @@ func TestTheOtherRules(t *testing.T) {
 			name: "a term with no definition",
 			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil)}, Terms: []Term{{ID: "work-unit", Name: "work unit", Pos: pos(9)}}},
 			want: Problem{pos(9), "work-unit", "bad-term", "bad-term: a term has a name and a definition"},
+		},
+		{
+			name: "a term whose name names code",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil)}, Terms: []Term{{ID: "work-unit", Name: "read_set", Definition: "A work unit is work.", Pos: pos(9)}}},
+			want: Problem{pos(9), "work-unit", "code-in-text", "code-in-text: name names code: read_set"},
+		},
+		{
+			name: "a program procedure that names its go test in curly quotes",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(program("The program runs \u201cTestARestartKeepsTheClaim\u201d. It must find the claim."))}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "code-in-text", "code-in-text: procedure names code: TestARestartKeepsTheClaim"},
+		},
+		{
+			name: "a component whose name is only spaces",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Name = "   " })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
+			name: "a component whose purpose is only a zero-width space",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Purpose = "\u200b" })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
+			name: "a component whose purpose is two sentences",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) {
+				c.Purpose = "It keeps each message until its session reads it. It also deletes each message after a week."
+			})}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
+			name: "a component whose purpose is two sentences on two lines",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Purpose = "It keeps each issue.\nDoes it keep each result?" })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
+			name: "a component whose purpose is two sentences joined by a no-break space",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Purpose = "It keeps each issue.\u00a0It keeps each result." })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
+			name: "a component whose purpose is two sentences joined by a narrow no-break space",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Purpose = "It keeps each issue.\u202fIt keeps each result." })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
 		},
 		{
 			name: "a component whose parent is an interface",
@@ -244,6 +344,80 @@ func TestTheOtherRules(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A purpose of one sentence is valid, also on two lines and with a dot inside a word: the controls
+// of the two-sentence rows of TestTheOtherRules.
+func TestAPurposeOfOneSentenceIsValid(t *testing.T) {
+	t.Parallel()
+	for _, purpose := range []string{
+		"It keeps each message until its session reads it.",
+		"It keeps each message\nuntil its session reads it.",
+		"It keeps version 1.2 of each message for Node.js clients",
+	} {
+		tree := Tree{Components: []Component{{ID: "dispatch", Name: "Dispatch", Purpose: purpose, Pos: Position{File: "x.md", Line: 1}}}}
+		if problems := Validate(tree, Options{}); len(problems) != 0 {
+			t.Errorf("purpose %q: %+v, want none", purpose, problems)
+		}
+	}
+}
+
+// The white space after a stop is each of the 29 code points that Python's \s matches, where
+// ste-lint splits a line into its sentences: each one ends the first of two sentences of a purpose.
+// A format character that Python's \s does not match, such as U+200B, ends none.
+func TestEachWhiteSpaceThatSteLintSplitsAtEndsASentence(t *testing.T) {
+	t.Parallel()
+	purpose := func(between rune) []Component {
+		return []Component{{ID: "dispatch", Name: "Dispatch", Purpose: "It keeps each issue." + string(between) + "It keeps each result.", Pos: Position{File: "x.md", Line: 1}}}
+	}
+	for _, space := range []rune{
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680,
+		0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+		0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+	} {
+		if got := Validate(Tree{Components: purpose(space)}, Options{}); len(got) != 1 || got[0].Rule != "bad-component" {
+			t.Errorf("U+%04X between two sentences: %+v, want one bad-component", space, got)
+		}
+	}
+	for _, other := range []rune{0x200b, 0x180e, 0xfeff, 0x2060} {
+		if got := Validate(Tree{Components: purpose(other)}, Options{}); len(got) != 0 {
+			t.Errorf("U+%04X after the stop: %+v, want none", other, got)
+		}
+	}
+}
+
+// R5: "A statement that other statements support still has checks of its own." With a check of
+// its own, the served statement of servedTree is valid: the control of the supported-without-check
+// row of TestTheOtherRules.
+func TestAServedStatementWithACheckOfItsOwnIsValid(t *testing.T) {
+	t.Parallel()
+	if problems := Validate(servedTree(true), Options{}); len(problems) != 0 {
+		t.Errorf("Validate: %+v, want none", problems)
+	}
+}
+
+// servedTree is a statement with one child and a statement that serves it, each leaf with a check,
+// and a check of the served statement's own when checked is true.
+func servedTree(checked bool) Tree {
+	pos := func(line int) Position { return Position{File: "x.md", Line: line} }
+	check := func(id, serves string, line int) Check {
+		return Check{
+			ID: id, Serves: serves, Claim: "The daemon reads the claim.", ProcedureText: "An agent reads the claims.",
+			FailingExample: "A daemon with no store.", Subject: SubjectCode, Procedure: ProcedureAgent, Pos: pos(line),
+		}
+	}
+	tree := Tree{
+		Statements: []Statement{
+			{ID: "a-claim-survives-a-restart", Text: "Legion keeps each claim after a restart.", Kind: KindBehavior, Parent: "legion-keeps-each-claim", Pos: pos(1)},
+			{ID: "a-lost-claim-is-reported", Text: "Legion reports each lost claim.", Kind: KindBehavior, Serves: []string{"legion-keeps-each-claim"}, Pos: pos(20)},
+			{ID: "legion-keeps-each-claim", Text: "Legion keeps each claim in Dispatch.", Kind: KindBehavior, Pos: pos(10)},
+		},
+		Checks: []Check{check("a-lost-claim-is-in-the-log", "a-lost-claim-is-reported", 25), check("a-restart-keeps-the-claim", "a-claim-survives-a-restart", 5)},
+	}
+	if checked {
+		tree.Checks = append(tree.Checks, check("dispatch-holds-each-claim", "legion-keeps-each-claim", 15))
+	}
+	return tree
 }
 
 // A program check of another runner than go keeps its selector as its runner writes it: the go
@@ -292,4 +466,51 @@ func parseDir(t *testing.T, dir string) Tree {
 		t.Fatalf("Parse(%s): %+v", dir, problems)
 	}
 	return tree
+}
+
+// A required text with no letter and no digit is a missing one, in each place where a rule of
+// Validate asks for a text: a statement's text, a check's claim, procedure and failing example, a
+// component's name and purpose, and a term's name and definition. Each row gives the one problem
+// that an empty text gives, for each of three empty shapes.
+func TestATextWithNoLetterOrDigitIsMissing(t *testing.T) {
+	t.Parallel()
+	pos := Position{File: "x.md", Line: 1}
+	tree := func() Tree {
+		return Tree{
+			Statements: []Statement{{ID: "a-claim-survives-a-restart", Text: "Legion keeps each claim.", Kind: KindBehavior, Pos: pos}},
+			Checks: []Check{{
+				ID: "a-restart-keeps-the-claim", Serves: "a-claim-survives-a-restart", Claim: "The daemon reads the claim.",
+				ProcedureText: "An agent reads the claims.", FailingExample: "A daemon with no store.",
+				Subject: SubjectCode, Procedure: ProcedureAgent, Pos: pos,
+			}},
+			Components: []Component{{ID: "dispatch", Name: "Dispatch", Purpose: "It keeps each issue.", Pos: pos}},
+			Terms:      []Term{{ID: "work-unit", Name: "work unit", Definition: "A work unit is work.", Pos: pos}},
+		}
+	}
+	for _, place := range []struct {
+		name, node, detail string
+		set                func(*Tree, string)
+	}{
+		{"a statement's text", "a-claim-survives-a-restart", "no-text: a statement has a text", func(t *Tree, s string) { t.Statements[0].Text = s }},
+		{"a check's claim", "a-restart-keeps-the-claim", "no-claim: the check has no claim", func(t *Tree, s string) { t.Checks[0].Claim = s }},
+		{"a check's procedure", "a-restart-keeps-the-claim", "no-procedure: the check has no procedure", func(t *Tree, s string) { t.Checks[0].ProcedureText = s }},
+		{"a check's failing example", "a-restart-keeps-the-claim", "no-failing-example: the check has no failing example", func(t *Tree, s string) { t.Checks[0].FailingExample = s }},
+		{"a component's name", "dispatch", "bad-component: a component has a name and one sentence of purpose", func(t *Tree, s string) { t.Components[0].Name = s }},
+		{"a component's purpose", "dispatch", "bad-component: a component has a name and one sentence of purpose", func(t *Tree, s string) { t.Components[0].Purpose = s }},
+		{"a term's name", "work-unit", "bad-term: a term has a name and a definition", func(t *Tree, s string) { t.Terms[0].Name = s }},
+		{"a term's definition", "work-unit", "bad-term: a term has a name and a definition", func(t *Tree, s string) { t.Terms[0].Definition = s }},
+	} {
+		for shape, empty := range map[string]string{"only spaces": "   ", "only U+200B": "\u200b", "only punctuation": "...!?"} {
+			tr := tree()
+			place.set(&tr, empty)
+			got := Validate(tr, Options{})
+			rule, _, _ := strings.Cut(place.detail, ":")
+			if want := []Problem{{pos, place.node, rule, place.detail}}; !reflect.DeepEqual(got, want) {
+				t.Errorf("%s of %s:\n got %+v\nwant %+v", place.name, shape, got, want)
+			}
+		}
+	}
+	if got := Validate(tree(), Options{}); len(got) != 0 {
+		t.Errorf("control, every text present: %+v, want none", got)
+	}
 }
