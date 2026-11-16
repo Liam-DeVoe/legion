@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -135,23 +134,11 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.DeliveryWaitingPRView{}):     "DeliveryWaitingPR",
 	reflect.TypeOf(itemblocks.Carried{}):                 "CarriedBlock",
 
-	// The Legion section's and the Legion view's shapes, whose Go packages carry the word
-	// `Legion` in their import path and not in their type names: `Report`, `WorkTime` and
-	// `Settings` are what metrics and legion call them, and `LegionMetricsResponse`,
-	// `LegionWorkTime` and `LegionSetting` are what a client imports. The board's own types
-	// (legionBoardResponse and its members) already carry the word and take their Go names.
-	reflect.TypeOf(legion.Settings{}):       "LegionSetting",
-	reflect.TypeOf(metrics.Report{}):        "LegionMetricsResponse",
-	reflect.TypeOf(metrics.WorkTime{}):      "LegionWorkTime",
-	reflect.TypeOf(metrics.WorkTimeIssue{}): "LegionWorkTimeIssue",
-	reflect.TypeOf(metrics.PhaseTime{}):     "LegionPhaseTime",
-	reflect.TypeOf(metrics.RoleBar{}):       "LegionRoleBar",
-	reflect.TypeOf(metrics.Segments{}):      "LegionSegments",
-	reflect.TypeOf(metrics.Rework{}):        "LegionRework",
-	reflect.TypeOf(metrics.ReworkIssue{}):   "LegionReworkIssue",
-	reflect.TypeOf(metrics.Splitting{}):     "LegionSplitting",
-	reflect.TypeOf(metrics.SplittingWeek{}): "LegionSplittingWeek",
-	reflect.TypeOf(metrics.FiledIssue{}):    "LegionFiledIssue",
+	// The Legion daemon setting's shape, whose Go package carries the word `Legion` in its import
+	// path and not in its type name: `Settings` is what legion calls it, and `LegionSetting` is
+	// what a client imports. The board's own types (legionBoardResponse and its members) already
+	// carry the word and take their Go names.
+	reflect.TypeOf(legion.Settings{}): "LegionSetting",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an

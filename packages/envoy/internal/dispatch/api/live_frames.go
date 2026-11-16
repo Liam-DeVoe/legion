@@ -329,12 +329,12 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// The Legion board is one project's small, whole picture, so every field of it but its
 	// computed_at is sent whole: its ten columns are a fixed order rather than a list a page
 	// merges by id (the page's applyDelta sorts each list it knows, which a column order would
-	// have to be taught), and the header, the settings the daemon reports and where each came
-	// from each move as a block.
+	// have to be taught), and the header and the settings the daemon reports each move as a
+	// block.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
 		whole: map[string][]string{
-			"project": nil, "header": nil, "columns": nil, "settings": nil, "setting_sources": nil,
+			"project": nil, "header": nil, "columns": nil, "settings": nil,
 		},
 		out:                 []string{"computed_at"},
 		project:             true,

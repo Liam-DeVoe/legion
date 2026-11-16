@@ -35,7 +35,8 @@ func TestTheOperatorsSpawnDrawsTheMemoryGroupOfTheTreeItOpens(t *testing.T) {
 		config.Experiment{Name: "plan-length", Mode: config.ExperimentOn, Unit: config.ExperimentIssue, OnVariant: "short",
 			Variants: []config.Variant{{Name: "short", Weight: 1}, {Name: "long", Weight: 1}}})
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: operatorSettings(),
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Pool: h.store.Pool(), Record: records, Releaser: h.runtime, Trees: h.store,
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Experiments: declared,

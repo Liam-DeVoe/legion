@@ -60,15 +60,15 @@ package supervise
 // minute would sit out the rest of that minute for nothing.
 //
 // It lives in this package rather than in internal/daemon because Deps already carries the rest
-// of the lane's facts (PluginContract, the PluginRelaunchable read, NoPluginInstall, WakePace)
-// and because internal/daemon imports this package: one gate per daemon serves both of the
-// lane's askers, the daemon's own pass over every stale claim (refreshStalePlugins) and the
-// machine that holds a stale relaunch back until the turn in flight ends (holdStaleRelaunch,
-// refreshPlugin). The machine's own lines to it are at the foot of this file (admitRefresh,
-// releaseRefresh, endRefreshLane) but for one: the Release refreshPlugin makes itself for a post
-// that arrives over a credit already held. The credit each machine may hold is one, because a
-// claim that holds a wake is decided nothing and that second admission never becomes a second
-// credit (Machine.refreshCredit, refreshPlugin).
+// of the lane's facts (PluginContract, PluginRelaunchable, NoPluginInstall, WakePace) and because
+// internal/daemon imports this package: one gate per daemon serves both of the lane's askers, the
+// daemon's own pass over every stale claim (refreshStalePlugins) and the machine that holds a
+// stale relaunch back until the turn in flight ends (holdStaleRelaunch, refreshPlugin). The
+// machine's own lines to it are at the foot of this file (admitRefresh, releaseRefresh,
+// endRefreshLane) but for one: the Release refreshPlugin makes itself for a post that arrives
+// over a credit already held. The credit each machine may hold is one, because a claim that
+// holds a wake is decided nothing and that second admission never becomes a second credit
+// (Machine.refreshCredit, refreshPlugin).
 
 import "sync"
 

@@ -2512,9 +2512,6 @@ runtime.kubernetes.plugins or run a release build` when it does not.
 A Kubernetes daemon that knows no pair is in a degraded mode:
 it still records every claim's contract and still writes one Error per stale claim, `supervise: the process speaks another plugin contract, and this daemon
 knows no plugin versions to relaunch it onto; set runtime.kubernetes.plugins`, but relaunches nothing and refuses nothing.
-Whether the daemon knows a pair is asked at every decision that turns on it rather than once at boot: each build of the launch specs reads the pair from the configuration it is given, and a stale registration, a call a stale contract would refuse and each stale-plugin sweep ask those specs whether a relaunch would install a pair now (docs/deployment.md, "What a change of each `legion.yaml` key needs").
-So a pair named under a running daemon, through the settings route or the file, relaunches each stale claim at the next sweep onto that pair, and a pair it stops naming, which only a build that links none can leave unset, puts the daemon in the degraded mode above from the next decision on, where a stale registration is accepted and charged nothing.
-A change of the pair records nothing in any pod, so it opens no update round and replaces no pod: a pod launched after it, and a pod replaced for any other reason, load the image's own copies, and the new pair reaches a running process only through its next stale-plugin relaunch into the pod that relaunch keeps (docs/deployment.md, "What a change of each `legion.yaml` key needs").
 Under `runtime: tmux` a relaunch is always possible regardless:
 the pane resumes on the host's own `pi-legion`, which the boot gate already holds to the daemon's contract, so there is no install to source a pair for.
 A Claude Code pane is exempt from nothing there:
@@ -3100,35 +3097,6 @@ the check before the pane seed is written also has each daemon consume a Dispatc
 `legion-pane` is never granted the daemon's subjects above.
 Reversed, a daemon holding only the `legion-pane` seed connects as `legion-pane`, and each refused subject logs the error line above (a refused consumer or subscription never delivers).
 
-### The settings route
-
-A running daemon applies a `legion.yaml` change without being restarted, and `docs/deployment.md` ("What a change of each `legion.yaml` key needs") gives every key's class: applied at the next decision, the holder built again for it, the next launch of a pod or a pane, or refused by name.
-`settings_route` is who may ask for one through `PUT /legion/v1/operator/settings` besides the bearer `operator_token_file` names:
-
-```yaml
-settings_route:
-  oidc_issuer: https://<the cluster's own OIDC issuer>   # as its projected tokens' iss claim writes it
-  audience: legion-daemon                                # the audience the caller's token was projected for
-  service_accounts:
-    - system:serviceaccount:<namespace>:<name>           # every ServiceAccount admitted, as a token's sub writes it
-```
-
-The three are one admission rule and are configured together (`packages/daemon/internal/config/settings_route.go`):
-an absent or null block admits nobody and leaves the route to the operator bearer alone, and a block carrying one of the three is refused naming the key it lacks (`settings_route.audience is required: the issuer, the audience and the ServiceAccounts are one admission rule, and a daemon that read only part of it would admit a caller the deployment did not name`), since an issuer with no ServiceAccounts would admit every account of the cluster and ServiceAccounts with no issuer a token nobody checked.
-An `oidc_issuer` that is not an absolute URL with a host, and a `service_accounts` entry that is not `system:serviceaccount:<namespace>:<name>`, are refused naming the key and the value.
-The issuer must be `https`, a loopback or `localhost` issuer excepted for a test, because the daemon reads that issuer's signing keys from it and checks every admitted token against them: over `http` anyone on the path could answer with keys of their own and mint a token the daemon would take.
-A token the route admits this way may change fewer keys than the operator bearer does: only keys whose value is plain data, refused by name for a key naming a command, a credential or its file, an address, the route's own admission rule, or a value a holder of the daemon keeps a copy of, `gates.design` among them (`docs/deployment.md`, "What a change of each `legion.yaml` key needs").
-The daemon checks a presented token's signature against that issuer's discovery document, as the secrets broker checks its own tokens (`packages/envoy/oidc`), and reads the document at the first token it verifies, so neither the boot nor a rebuild of the verifier costs a network read.
-A change of any of the three is a `rebuild` of the `api-server` holder: the verifier is built again under the requests the daemon is serving, and the API's socket is never rebound.
-A call whose bearer is neither the operator token nor a token of an admitted ServiceAccount is `403 Invalid operator token or ServiceAccount token`, which never says which of the two failed;
-the daemon's log says, naming the reason or the subject it would not take.
-
-Dispatch is the caller this exists for, and it holds no copy of the daemon's operator token.
-The Dispatch component projects a ServiceAccount token of its own into the app pod for the audience its `legionDaemonAudience` input names (`legion-daemon` when a stack sets none), in a projected volume of its own with `expirationSeconds: 3600`, written to `daemon-token` and mounted read-only at `/var/run/secrets/legion`;
-`DISPATCH_LEGION_DAEMON_TOKEN_FILE` names `/var/run/secrets/legion/daemon-token`, which Dispatch reads at call time, so the kubelet's rewrite of that file in place needs no restart and no token is stored (`packages/envoy/infra/README.md`).
-So `settings_route.audience` is that same string, and `settings_route.service_accounts` names the ServiceAccount the Dispatch app's pod runs as.
-The relay is Dispatch's `PUT /api/v1/projects/{key}/legion/settings`, which sends that token as its bearer and answers the daemon's own per-key result — applied `at-once`, `rebuilt` or `next-launch`, `failed` with the error of the holder the daemon took the value and could not carry it into, or refused with the reason — unchanged (`packages/envoy/cmd/dispatch/AGENTS.md`).
-
 ### The deployment's capability report
 
 `packages/daemon/internal/capabilities` is the one list of what a Legion worker can do (LEGION-578:
@@ -3478,8 +3446,7 @@ of these eleven names its agent carries no `LEGION_WORKSPACE`, because it is tol
 [Daemon-launched controller](#daemon-launched-controller) has the rest of it.
 
 The token behind `DISPATCH_TOKEN_FILE` is the daemon's own, not the role's.
-Every build of the runtime, the boot's and each rebuild, reads it from `dispatch_token_file` (`readDispatchToken`, `packages/daemon/internal/daemon/bootreads.go`, called from `prepareSandbox`'s build in `kubernetes.go`) and puts it in every launch's secrets as `DISPATCH_TOKEN` (`secrets[dispatchTokenKey]`, `packages/daemon/internal/runtime/sandbox/manifest.go`, the key from `names.go`), and the role's launcher writes it into the generation's `g<generation>` directory beside the generation's other launch credentials.
-A change of `dispatch_token_file` rebuilds the runtime, and so does a rotation of the file it names in place (docs/deployment.md, "What a change of each `legion.yaml` key needs"), so the next launch carries the new bearer.
+The daemon reads it once at boot from `dispatch_token_file` (`readBoot`, `packages/daemon/internal/daemon/bootreads.go`) and puts it in every launch's secrets as `DISPATCH_TOKEN` (`secrets[dispatchTokenKey]`, `packages/daemon/internal/runtime/sandbox/manifest.go`, the key from `names.go`), and the role's launcher writes it into the generation's `g<generation>` directory beside the generation's other launch credentials.
 The daemon-launched controller takes the same path, because `prepare` adds that secret to every launch it builds, whichever kind of pod the role names.
 So every role of every issue of the project, and that controller, present the same bytes.
 
@@ -3813,8 +3780,8 @@ a launcher dials it and never redials elsewhere.
 The other five reach a generation's Oh My Pi in the start command its launcher receives, never in the pod spec, so they are fixed for that generation's life:
 `LEGION_DAEMON_URL` (`daemon_url`), `ENVOY_NATS_URL` (`nats_urls`), `ENVOY_URL` (`envoy_url`), `DISPATCH_URL` (`dispatch_url`) and, when the runtime enrolls pods, `AGENT_SECRETS_URL` (`runtime.kubernetes.agent_secrets.url`);
 the daemon-launched controller's generation also carries `LEGION_SLACK_CHANNELS` (the project's `slack_channels`), recorded and compared like these.
-Each moves when its key changes, at the next build of the runtime, which a settings change of the key makes under the running daemon (docs/deployment.md, "What a change of each `legion.yaml` key needs") and a restart makes at boot, and with no `advertise_host` set the stream also moves when the daemon restarts on another host.
-A daemon that restarts re-adopts each live claim by its recorded locator (the boot orphan sweep), as a runtime built again under a running daemon adopts every process the one it replaced supervised, and re-adoption alone would leave the role holding the old addresses:
+Each moves when the daemon restarts with its key changed, and with no `advertise_host` set the stream also moves when the daemon restarts on another host.
+A daemon that restarts re-adopts each live claim by its recorded locator (the boot orphan sweep), and re-adoption alone would leave the role holding the old addresses:
 a launcher dialling a stale stream never reaches the new daemon, and a stale `LEGION_DAEMON_URL` fails every call the agent makes to the daemon's API (its phase completion, its record read) while its stream still works.
 
 So the runtime compares a role's addresses with what it hands now on every evaluation of the role (each watch event, the probe-interval sweep, each probe):
@@ -3840,7 +3807,7 @@ path=token, now audience=agent-secrets-next expiry=3600s path=token`).
 The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, adding `xxxxx@` when userinfo is present.
 Path, query and fragment never appear, which also protects a value an earlier daemon accepted before the current endpoint grammar refused queries and fragments, and a value that yields no scheme and host is named only `xxxxx`.
 `ENVOY_NATS_URL` is named entry by entry from the URLs the loader accepted, never by splitting the joined value, since raw commas are valid in userinfo.
-A role the runtime now running started always compares equal, so only the roles a runtime built from another configuration started are ever reported, from the boot that re-adopts them or from the first evaluation of each by a runtime a settings change built again; nobody runs a command for it.
+A role this daemon started always compares equal, so only the roles a daemon under another configuration started are ever reported, from the boot that re-adopts them; nobody runs a command for it.
 The operator's own variables (`runtime.kubernetes.pod.env`) are not compared: a change there reaches the pods created after it.
 
 The supervisor relaunches each reported claim at once, through the launch path a death uses:
@@ -3848,7 +3815,7 @@ a `Resume` of its recorded session, or a `Spawn` when it has not registered yet.
 What the relaunch replaces follows from what moved.
 An issue pod whose launcher dials a stale stream, or which runs the layout before one container, cannot run its roles as a pod created now would, and no worker of it can be asked to push first:
 such a launcher never redials, so it never reaches this daemon to be tasked, and that layout's workers predate the contract that added the op (`movedInPod`, `packages/daemon/internal/runtime/sandbox/addresses.go`).
-Every role of such a pod is reported at once, from the boot that re-adopts them or the runtime built again for the change:
+Every role of such a pod is reported at once, from the boot that re-adopts them:
 the first of them relaunched replaces the pod, under the pod's launch turn, and the others, whose relaunches wait on that turn, resume into the new pod, whose launcher dials the current stream for every role.
 None of them is charged, and none is found gone when the pod is replaced under it.
 What an issue pod lacks that its workers can be asked about first — the broker enrollment its roles are started against now, the operator mount holding a file `role_config_files` names for any of its roles, and the session store it was created under — is drift rather than a moved address (`driftedInPod`):
@@ -5888,7 +5855,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The daemon logs in with that token at boot, on a background context, and again halfway through each credential's life and whenever the broker refuses it, reading the file each time so it presents the kubelet's current token;
   no person approves any of it, a restart included, so the block names no approver and a file that sets `operator` is refused at load naming the key.
   The broker logs the daemon in only while its `BROKER_SERVICE_LOGINS` names the daemon's ServiceAccount for `legion-daemon` (the broker's operate page, "What to run"), and keeps each account's one launcher credential across logins.
-  The daemon keeps one key for as long as its login stands, in memory only, and proves it again at each renewal, so a renewal changes only the credential's expiry and an enrollment in flight never waits for one;
+  The daemon keeps one key for its process's life, in memory only, and proves it again at each renewal, so a renewal changes only the credential's expiry and an enrollment in flight never waits for one;
   a restart brings a new key, which the next login moves the credential to, so the pods the daemon enrolled before the restart stay its own.
   Each login is logged (`agent-secrets: logged in with the daemon's ServiceAccount
   token`, or `agent-secrets: the token login failed; retrying` with the class the failure was sorted into, the schedule that class takes and the cause), and `GET /legion/v1/state`'s `agentSecretsLogin` reads its `state`:
@@ -5901,10 +5868,6 @@ each issue's pod (every role of it alike) and the image probe's.
   One line is logged per failed login: its class (`broker-unavailable`, `daemon-side-fault`, `broker-refusal` or `login-not-made`), the schedule that class takes (`short` or `long`), the wait before the next login, and the cause.
   Running the daemon off the cluster (the Stage 4a live proof), `token_file` holds a token the operator mints, at most an hour long, for a ServiceAccount of the proof's own that `BROKER_SERVICE_LOGINS` lists for `legion-daemon` and no running daemon uses, with `kubectl create token <account> -n <namespace> --audience agent-secrets --duration 1h`:
   each account holds one credential, so a proof logging in as a running daemon's account would take that daemon's credential.
-
-- **A change of the block under a running daemon** builds the daemon's login again from the configuration the change settles (`agent-secrets-login`, docs/deployment.md, "What a change of each `legion.yaml` key needs"):
-  a change of `url` or `token_file` starts a new login with a new key at the broker and the file it names, so every pod enrolled after it is enrolled at the broker it is told, and a block removed ends the login, after which an enrollment is refused for good.
-  The kubelet's rewrite of the token in place keeps a login that holds a live credential, whose next renewal reads the new token under the key it holds, and replaces one that holds none, which logs in at once on the new token rather than at the end of its retry's wait.
 
 - A held enrollment can come long after the shim's hello, which carries the pod's projected token as the shim read it then, and that token lives `token_expiry_seconds` from when the kubelet wrote it;
   the broker refuses an expired one as `POD_TOKEN_EXPIRED`, naming its expiry.
@@ -6291,7 +6254,6 @@ The controller is the one Legion session a person talks to.
 `controller` in `legion.yaml` says who launches it:
 `operator` (the default), a person running `legion controller start` on a machine of theirs ([Operator-launched controller](#operator-launched-controller)), or `daemon`, the daemon itself, as an Agent Sandbox pod it supervises ([Daemon-launched controller](#daemon-launched-controller)), or under `runtime: tmux` as a pane in a window of its own (docs/deployment.md, "The `runtime.tmux` block").
 `controller: daemon` needs `dispatch_url` (`controller: daemon needs dispatch_url: …`), and the loader refuses any value but the two.
-The daemon reads the key at boot alone: a change of it under a running daemon is refused by name and takes effect at the next restart (docs/deployment.md, "Why a fixed key is refused").
 
 Under either mode a controller reads its daemon's resolved settings
 — `review_round_cap`, `worker_boot_timeout_seconds`, `admission_cap`, `hooks` (each hook's `name`, `on`, `moves`, `every`, `roles` and `prompt_file`, and never the words it puts in front of its roles) and the rest of `legion.yaml`, with every credential, credential source and credential file path left out
@@ -6301,7 +6263,7 @@ Under either mode a controller reads its daemon's resolved settings
 
 Under either `controller` mode the daemon checks the project's controller every minute:
 it reads the controller's record and, while a session holds it, that session's liveness from the Envoy role registry.
-While no session holds the current capability, or the registry says the session is gone, it logs `controller not registered; run legion controller start` at most once per `worker_boot_timeout_seconds`, read as each line falls due, so a change of that key under a running daemon moves the next line.
+While no session holds the current capability, or the registry says the session is gone, it logs `controller not registered; run legion controller start` at most once per `worker_boot_timeout_seconds`.
 Under `controller: daemon` the line goes on with that mode's remedy, `… only under controller: operator; this daemon launches its own controller and relaunches it`, and names the state of the controller's claim as the daemon's store holds it (`claimState`):
 `launching` while a launch is in flight, `failed` or `retired` while the daemon waits to retry it, so a launch or a backoff reads apart from a death.
 A boot under `controller: daemon` with no live controller logs the line from its first check until its first launch registers, and again each `worker_boot_timeout_seconds` while scheduling and the image pull take longer than that.

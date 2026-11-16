@@ -58,7 +58,8 @@ func newAdoptionHarness(t *testing.T, cap int) *adoptionHarness {
 	// are the daemon's own, in its order (daemon/workflow.go): the mirror writes what each
 	// observation says an issue waits on before the engine behind it judges that issue.
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testProject, Settings: operatorSettings(),
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
 		Handlers: []intake.Handler{blockers.NewMirror(records, testProject), engine, admission}, Dispatch: statuses,
 	}).Handler

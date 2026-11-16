@@ -118,7 +118,7 @@ func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *tes
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := run(ctx, config.Settled(cfg), Build{}, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
+	err := run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
 	if err == nil {
 		t.Fatal("the daemon booted on a cluster without Agent Sandbox")
 	}
@@ -182,7 +182,7 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := run(ctx, config.Settled(cfg), Build{}, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
+	err := run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
 	if err == nil || !strings.Contains(err.Error(), "legacy issue Sandbox "+legacy) {
 		t.Fatalf("boot = %v, want the refusal naming the legacy Sandbox %s", err, legacy)
 	}
@@ -209,15 +209,12 @@ func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := run(ctx, config.Settled(cfg), Build{}, quietLogger(), o)
+	err := run(ctx, cfg, quietLogger(), o)
 	if err == nil || !strings.Contains(err.Error(), "the plugin declares contract 3") {
 		t.Fatalf("boot = %v, want the image probe's refusal", err)
 	}
-	// The probe is handed the runtime behind its holder, which is what every reader of the
-	// runtime holds now (runtimeHolder, and the issueResourceHolder shape in front of a Sandbox
-	// runtime): what it asks of the Sandbox runtime it asks through it.
-	if holder, held := probed.(heldRuntime); !held || holder.get() != rt {
-		t.Errorf("the probe was handed %v, want the holder over the runtime the daemon built", probed)
+	if probed != rt {
+		t.Errorf("the probe was handed %v, want the runtime the daemon built", probed)
 	}
 	if count, _ := boots(t, cfg); count != 0 {
 		t.Errorf("a boot whose image was refused was recorded %d times", count)
@@ -241,7 +238,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 	logger := slog.New(slog.NewJSONHandler(&logged, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, config.Settled(cfg), Build{}, logger, o) }()
+	go func() { done <- run(ctx, cfg, logger, o) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -388,7 +385,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 	o.workflowTokens, o.githubAPI = &workflowTokenRecorder{}, repositoriesGitHub(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, config.Settled(cfg), Build{}, quietLogger(), o) }()
+	go func() { done <- run(ctx, cfg, quietLogger(), o) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -408,56 +405,6 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 		t.Errorf("the worker stream does not accept on 127.0.0.1 at the advertised port of %s: %v", address, err)
 	} else {
 		conn.Close()
-	}
-}
-
-// `advertise_host` is a launch key the runtime holds: the address every pod's shim dials is the
-// one each build of the runtime is handed (openSupervision's buildRuntime, shimAddress), which the
-// Sandbox runtime writes into every pod it creates as the launcher's and the shim's `--connect`
-// (sandboxRuntime's Options.StreamURL, runtime/sandbox's connectFlag). So the route answers a
-// change of it next-launch naming the runtime (config.Classes' row), and the runtime built for it
-// hands the next pod the new host at the listener's own port. Computed once at boot and captured
-// by every build instead, each pod launched after the change dialled the host the daemon booted
-// on. The change reaches the daemon's rebuilder as an apply hands it the applied rows
-// (rebuilder.observe, under the settings holder's lock), over the boot's configuration with that
-// one key moved: a Kubernetes file a holder could re-read names no loopback address, and this
-// daemon's Dispatch, NATS and API listen on nothing else.
-func TestAChangedAdvertiseHostReachesTheNextPodsConnect(t *testing.T) {
-	cfg := workflowConfig(t, workflowNATS(t))
-	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
-	cfg.Bind, cfg.AdvertiseHost = "0.0.0.0", "legion-daemon-a.legion.svc"
-	cfg.Port = holdPortOn(t, "0.0.0.0")
-	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
-	record := &built{}
-	o := fakeRuntime(fake.NewRuntime(), record)
-	o.workflowTokens = &workflowTokenRecorder{}
-	var rebuild *rebuilder
-	o.settingsRebuilder = func(r *rebuilder) { rebuild = r }
-	d := startDaemonWithin(t, cfg, o, quietLogger(), 30*time.Second)
-	handed := func() string {
-		record.mu.Lock()
-		defer record.mu.Unlock()
-		return record.address
-	}
-	booted := handed()
-	port, ok := strings.CutPrefix(booted, "tcp://legion-daemon-a.legion.svc:")
-	if !ok || port == "" || port == "0" {
-		t.Fatalf("the boot's runtime hands every pod's shim %q, want the booted advertise_host at the listener's port", booted)
-	}
-	if rebuild == nil {
-		t.Fatal("the daemon handed the test no rebuild observer")
-	}
-	change := changeOfPath(t, "advertise_host")
-	if change.Outcome != config.OutcomeNextLaunch || change.Holder != config.HolderRuntime {
-		t.Fatalf("the class table answers advertise_host %+v, want next-launch naming the runtime", change)
-	}
-
-	moved := *d.live.Snapshot()
-	moved.AdvertiseHost = "legion-daemon-b.legion.svc"
-	d.live.WhileSettled(func(*config.Config) { rebuild.observe(&moved, []config.Change{change}) })
-
-	if want, got := "tcp://legion-daemon-b.legion.svc:"+port, handed(); got != want {
-		t.Fatalf("the runtime built for the change hands every pod's shim %q, want %q: the new advertise_host at the listener's own port", got, want)
 	}
 }
 
@@ -991,89 +938,16 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 	if opts.AgentSecrets == nil || opts.AgentSecrets.URL != "https://s" || opts.AgentSecrets.Audience != "agent-secrets" || opts.AgentSecrets.TokenExpiry != time.Hour {
 		t.Fatalf("AgentSecrets = %+v, want only the URL, audience and token lifetime the pod's own client needs", opts.AgentSecrets)
 	}
-	login := newSecretsLogin(cfg, quietLogger())
-	held := login.current.Load()
-	if held == nil {
-		t.Fatal("the daemon holds no login under the block")
+	enroller, client := newSecretsLogin(cfg, quietLogger())
+	if enroller == nil || client == nil {
+		t.Fatalf("enroller %v, client %v; want both", enroller, client)
 	}
-	t.Cleanup(held.stop)
-	if held.client.URL != "https://s" || held.client.TokenFile != cfg.Runtime.Kubernetes.AgentSecrets.TokenFile {
-		t.Fatalf("client = %+v, want only the configured URL and token file, never a key or a bearer", held.client)
+	if client.URL != "https://s" || client.TokenFile != cfg.Runtime.Kubernetes.AgentSecrets.TokenFile {
+		t.Fatalf("client = %+v, want only the configured URL and token file, never a key or a bearer", client)
 	}
-}
-
-// A Kubernetes daemon whose configuration names no broker holds a login holder with no login in
-// it, so a block added under the running daemon has a holder to be built in (secretsLoginHolder):
-// the state reports no login, and an enrollment or a revocation asked of it is refused for good,
-// since no retry finds a broker the configuration does not name. A tmux daemon holds none.
-func TestALoginHolderWithNoBrokerRefusesEveryEnrollmentForGood(t *testing.T) {
-	login := newSecretsLogin(kubernetesConfig(t, "https://127.0.0.1:1"), quietLogger())
-	if login == nil {
-		t.Fatal("a Kubernetes daemon with no broker holds no login holder, want one holding no login")
-	}
-	if state, held := login.loginState(); held {
-		t.Fatalf("the holder reports a login %q, want none", state)
-	}
-	var permanent supervise.PermanentError
-	if _, err := login.Enroll(t.Context(), supervise.PodEnrollment{PodUID: "pod"}); !errors.As(err, &permanent) || !permanent.Permanent() {
-		t.Fatalf("an enrollment with no broker = %v, want a permanent refusal", err)
-	}
-	if err := login.Revoke(t.Context(), "enrollment"); !errors.As(err, &permanent) || !permanent.Permanent() {
-		t.Fatalf("a revocation with no broker = %v, want a permanent refusal", err)
-	}
-	tmux := newSecretsLogin(config.Config{Runtime: config.Runtime{Name: "tmux"}}, quietLogger())
-	if tmux != nil {
-		t.Fatalf("a tmux daemon holds the login holder %+v, want none", tmux)
-	}
-	if state, held := tmux.loginState(); held {
-		t.Fatalf("a tmux daemon reports a login %q, want none", state)
-	}
-}
-
-// A rebuild keeps the login whose broker and token file the configuration still names while that
-// login holds a live credential, which is what the file watcher finds at each rewrite of the
-// projected token by the kubelet: the client reads the file at every login, so its next renewal
-// presents the rotated token under the key it proves already, and no login is made at the rotation
-// itself. A configuration that names no broker any more ends the login it held.
-func TestALiveLoginIsKeptAcrossARotationOfItsTokenAndEndedWithItsBlock(t *testing.T) {
-	broker := newSecretsBroker(t)
-	tokenFile := filepath.Join(t.TempDir(), "agent-secrets-token")
-	if err := os.WriteFile(tokenFile, []byte("the-first-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
-		URL: broker.URL, TokenFile: tokenFile, Audience: "agent-secrets", TokenExpirySeconds: 3600,
-	}
-	login := newSecretsLogin(cfg, quietLogger())
-	testwait.Eventually(t, "the boot's login", func() bool {
-		state, _ := login.loginState()
-		return state == "issued"
-	})
-	booted := login.current.Load()
-	rebuild := newRebuilder(quietLogger(), config.Settled(cfg))
-	rebuild.register(login)
-
-	if err := os.WriteFile(tokenFile, []byte("the-kubelet's-next-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	rebuild.rereadCredentials(&cfg)
-	if login.current.Load() != booted {
-		t.Fatal("a rotation of the token under a live credential replaced the login, and with it the key the broker holds the credential to")
-	}
-	if broker.loggedIn("the-kubelet's-next-token") {
-		t.Fatal("a rotation of the token under a live credential logged in at once, want the token read at the login's own next renewal")
-	}
-
-	removed := cfg
-	block := *removed.Runtime.Kubernetes
-	block.AgentSecrets = nil
-	removed.Runtime.Kubernetes = &block
-	rebuild.observe(&removed, []config.Change{
-		changeOfPath(t, "runtime.kubernetes.agent_secrets.token_file"), changeOfPath(t, "runtime.kubernetes.agent_secrets.url"),
-	})
-	if state, held := login.loginState(); held {
-		t.Fatalf("the login holder reports %q after the block was removed, want no login", state)
+	cfg.Runtime.Kubernetes.AgentSecrets = nil
+	if enroller, client := newSecretsLogin(cfg, quietLogger()); enroller != nil || client != nil {
+		t.Fatalf("without the block: %v, %v; want nil, nil", enroller, client)
 	}
 }
 
@@ -1108,15 +982,14 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 		URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", TokenExpirySeconds: 3600,
 	}
 	var logged lockedBuffer
-	login := newSecretsLogin(cfg, slog.New(slog.NewJSONHandler(&logged, nil)))
-	if login == nil || login.current.Load() == nil {
-		t.Fatal("want a login holding a login")
+	enroller, client := newSecretsLogin(cfg, slog.New(slog.NewJSONHandler(&logged, nil)))
+	if enroller == nil || client == nil {
+		t.Fatal("want an enroller and a client")
 	}
-	t.Cleanup(login.current.Load().stop)
 	deadline := time.Now().Add(2 * time.Second)
-	for state, _ := login.loginState(); !strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") || state != "issued"; state, _ = login.loginState() {
+	for !strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") || client.LoginStatus().State != "issued" {
 		if time.Now().After(deadline) {
-			t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), state)
+			t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -1128,234 +1001,6 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	if strings.Contains(logged.String(), "enter code") {
 		t.Fatalf("log = %s, want no confirmation code", logged.String())
 	}
-}
-
-// secretsBroker is a secrets broker's token-login and enrollment routes as the daemon's login
-// reaches them: it records the token each login presents and the pod of each enrollment, refuses
-// a login presenting one of refused (401 TOKEN_INVALID, which the login waits out on its long
-// schedule, 30 s doubling to five minutes), and issues every other login a credential of an hour.
-type secretsBroker struct {
-	*httptest.Server
-	mu          sync.Mutex
-	logins      []string
-	enrollments []string
-}
-
-func newSecretsBroker(t *testing.T, refused ...string) *secretsBroker {
-	t.Helper()
-	b := &secretsBroker{}
-	b.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/launcher-credentials/token":
-			var body struct {
-				Token string `json:"token"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			b.mu.Lock()
-			b.logins = append(b.logins, body.Token)
-			b.mu.Unlock()
-			if slices.Contains(refused, body.Token) {
-				w.WriteHeader(http.StatusUnauthorized)
-				_ = json.NewEncoder(w).Encode(map[string]string{"code": "TOKEN_INVALID", "error": "the token does not verify"})
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "cred-1", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/enrollments":
-			var body struct {
-				RuntimeID string `json:"runtime_id"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			b.mu.Lock()
-			b.enrollments = append(b.enrollments, body.RuntimeID)
-			b.mu.Unlock()
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{"enrollment_id": "enrollment-" + body.RuntimeID, "lease_expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(b.Close)
-	return b
-}
-
-// loggedIn is whether a token login presenting token has reached the broker.
-func (b *secretsBroker) loggedIn(token string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return slices.Contains(b.logins, token)
-}
-
-// enrolled is whether an enrollment of pod has reached the broker.
-func (b *secretsBroker) enrolled(pod string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return slices.Contains(b.enrollments, pod)
-}
-
-// secretsDaemon boots a Kubernetes daemon on the fake runtime whose agent_secrets block names the
-// broker at url, with token as the daemon's own ServiceAccount token in a file of its own, and
-// answers the daemon, its rebuild observer and that token file.
-func secretsDaemon(t *testing.T, url, token string) (*daemon, *rebuilder, string) {
-	t.Helper()
-	return secretsDaemonLogging(t, url, token, quietLogger())
-}
-
-// secretsDaemonLogging is secretsDaemon writing the daemon's log to log.
-func secretsDaemonLogging(t *testing.T, url, token string, log *slog.Logger) (*daemon, *rebuilder, string) {
-	t.Helper()
-	tokenFile := filepath.Join(t.TempDir(), "agent-secrets-token")
-	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
-		URL: url, TokenFile: tokenFile, Audience: "agent-secrets", TokenExpirySeconds: 3600,
-	}
-	o := fakeRuntime(fake.NewRuntime(), &built{})
-	var rebuild *rebuilder
-	o.settingsRebuilder = func(r *rebuilder) { rebuild = r }
-	d := startDaemonLogging(t, cfg, o, log)
-	if rebuild == nil {
-		t.Fatal("the daemon handed the test no rebuild observer")
-	}
-	return d, rebuild, tokenFile
-}
-
-// loginState is the daemon's own agent-secrets login as its state reports it, "" for none.
-func loginState(d *daemon) string {
-	if login := d.state().AgentSecretsLogin; login != nil {
-		return login.State
-	}
-	return ""
-}
-
-// A change of `runtime.kubernetes.agent_secrets.url` reaches the daemon's own login and every
-// pod enrollment it makes after it: the login reads the broker from the configuration it is
-// built again from (config.Classes' row names it beside the runtime, which tells the pods the
-// same address), and the enroller the daemon's machines hold is that login's holder. Built once
-// at boot instead, the daemon went on logging in to and enrolling every pod with the broker it
-// booted on, while each pod launched after the change was told the new one. The change reaches
-// the rebuild observer as an apply hands it (rebuilder.observe, under the settings holder's
-// lock), over the boot's configuration with that one key moved.
-func TestAChangedSecretsBrokerURLReachesTheDaemonsOwnEnrollment(t *testing.T) {
-	const token = "the-daemon's-token"
-	booted, moved := newSecretsBroker(t), newSecretsBroker(t)
-	d, rebuild, _ := secretsDaemon(t, booted.URL, token)
-	testwait.Eventually(t, "the boot's login at the broker it booted on", func() bool {
-		return booted.loggedIn(token) && loginState(d) == "issued"
-	})
-
-	next := *d.live.Snapshot()
-	block := *next.Runtime.Kubernetes
-	agentSecrets := *block.AgentSecrets
-	agentSecrets.URL = moved.URL
-	block.AgentSecrets = &agentSecrets
-	next.Runtime.Kubernetes = &block
-	d.live.WhileSettled(func(*config.Config) {
-		rebuild.observe(&next, []config.Change{changeOfPath(t, "runtime.kubernetes.agent_secrets.url")})
-	})
-
-	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the daemon's login at the broker the change names", func() bool {
-		return moved.loggedIn(token) && loginState(d) == "issued"
-	})
-	enroller, held := rebuild.holders["agent-secrets-login"].(supervise.Enroller)
-	if !held {
-		t.Fatalf("the daemon registered no login that enrolls its pods; it registered %v", rebuild.order)
-	}
-	if _, err := enroller.Enroll(t.Context(), supervise.PodEnrollment{PodUID: "pod-after-the-change", Thumbprint: "thumbprint", PodToken: "a.b.c"}); err != nil {
-		t.Fatalf("enroll a pod after the change: %v", err)
-	}
-	if !moved.enrolled("pod-after-the-change") || booted.enrolled("pod-after-the-change") {
-		t.Fatal("the pod launched after the change was enrolled with the broker the daemon booted on, want the one the change names")
-	}
-}
-
-// A change of `runtime.kubernetes.agent_secrets.token_file` builds the daemon's own login again on
-// the file the change names, and builds nothing else. The login is the path's one reader: it logs
-// in with the daemon's own projected token, which the file holds, and every pod enrollment goes
-// through it. No pod reads the path, since each pod is handed a projected token of its own, so the
-// path's row names the login alone (config.Classes), the route answers `rebuilt` naming it, and
-// the runtime — which records every launch key in each pod's launch-settings annotation, the
-// record an update round reads a pod's drift from — is not built again. Held by the runtime too,
-// as a launch key, the change rebuilt the runtime on a record carrying the path's digest, and
-// every pod of the fleet read as drifted: an update round over all of them, for a value none of
-// them reads.
-//
-// The boot's login holds a live credential, so it is replaced because its file moved and for no
-// other reason (secretsLoginHolder.rebuild), and the broker sees the token only the new file
-// holds. The change reaches the rebuild observer as an apply hands it, as the url's does above.
-func TestAChangedSecretsTokenFileRebuildsTheDaemonsLoginAndNothingElse(t *testing.T) {
-	const booted, routed = "the-daemon's-token", "the-token-at-the-new-path"
-	broker := newSecretsBroker(t)
-	logs := &syncBuffer{}
-	d, rebuild, _ := secretsDaemonLogging(t, broker.URL, booted, slog.New(slog.NewJSONHandler(logs, nil)))
-	testwait.Eventually(t, "the boot's login on the boot's token file", func() bool {
-		return broker.loggedIn(booted) && loginState(d) == "issued"
-	})
-	routedFile := filepath.Join(t.TempDir(), "agent-secrets-token")
-	if err := os.WriteFile(routedFile, []byte(routed+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	next := *d.live.Snapshot()
-	block := *next.Runtime.Kubernetes
-	agentSecrets := *block.AgentSecrets
-	agentSecrets.TokenFile = routedFile
-	block.AgentSecrets = &agentSecrets
-	next.Runtime.Kubernetes = &block
-	change := changeOfPath(t, "runtime.kubernetes.agent_secrets.token_file")
-	before := len(logs.String())
-	d.live.WhileSettled(func(*config.Config) {
-		rebuild.observe(&next, []config.Change{change})
-	})
-
-	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the daemon's login on the token the new file holds", func() bool {
-		return broker.loggedIn(routed) && loginState(d) == "issued"
-	})
-	login, held := rebuild.holders[config.HolderSecretsLogin].(*secretsLoginHolder)
-	if !held {
-		t.Fatalf("the daemon registered no login that enrolls its pods; it registered %v", rebuild.order)
-	}
-	if file := login.current.Load().client.TokenFile; file != routedFile {
-		t.Fatalf("the login every enrollment goes through reads %s, want the file the change names, %s", file, routedFile)
-	}
-	if _, err := login.Enroll(t.Context(), supervise.PodEnrollment{PodUID: "pod-after-the-change", Thumbprint: "thumbprint", PodToken: "a.b.c"}); err != nil {
-		t.Fatalf("enroll a pod after the change: %v", err)
-	}
-	if !broker.enrolled("pod-after-the-change") {
-		t.Fatal("the pod launched after the change was not enrolled")
-	}
-	if after := logs.String()[before:]; strings.Contains(after, `"msg":"legion settings: holder rebuilt","holder":"runtime"`) {
-		t.Fatalf("a change of the daemon's own token file built the runtime again, whose record of each pod's launch it is no key of:\n%s", after)
-	}
-	if change.Class != config.ClassRebuild || change.Outcome != config.OutcomeRebuilt || change.Holder != config.HolderSecretsLogin {
-		t.Fatalf("the route answers a change of token_file %+v, want rebuilt naming the daemon's login", change)
-	}
-}
-
-// The daemon's own token (`runtime.kubernetes.agent_secrets.token_file`) is a credential file of
-// the holder of its login: a file rotated in place, which changes no setting, builds the login
-// again at the file watcher's next reread (rebuilder.rereadCredentials), so a login the broker
-// refused presents the token the kubelet wrote at once. Named by no holder's credentials, the
-// rotated token waited for the refused login's own retry, 30 s and doubling to five minutes,
-// while every pod enrollment waited behind it.
-func TestASecretsTokenRotatedInPlaceRebuildsTheDaemonsLogin(t *testing.T) {
-	const refused, rotated = "an-expired-token", "the-kubelet's-new-token"
-	broker := newSecretsBroker(t, refused)
-	d, rebuild, tokenFile := secretsDaemon(t, broker.URL, refused)
-	testwait.Eventually(t, "the broker's refusal of the boot's login", func() bool {
-		return broker.loggedIn(refused) && loginState(d) == "failed"
-	})
-
-	if err := os.WriteFile(tokenFile, []byte(rotated+"\n"), 0o600); err != nil {
-		t.Fatalf("rotate the daemon's token: %v", err)
-	}
-	d.live.WhileSettled(rebuild.rereadCredentials)
-
-	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "a login on the rotated token", func() bool {
-		return broker.loggedIn(rotated) && loginState(d) == "issued"
-	})
 }
 
 // lockedBuffer is a log a test reads while a goroutine writes it.

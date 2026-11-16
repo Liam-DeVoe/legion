@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import {
   errorFrame,
@@ -18,9 +18,7 @@ import type {
   DeliveryTimingCell,
   LiveSubscribe,
 } from "../../api/types";
-import type { ChartRange } from "./Chart";
-import type { WindowChoice } from "./lib/window";
-import { PipelineSection, PipelineView } from "./PipelineSection";
+import { PipelinePage, PipelineView } from "./PipelinePage";
 
 let sockets: FakeLiveSockets;
 beforeEach(() => {
@@ -236,9 +234,12 @@ const PIPELINE: DeliveryPipelineResponse = {
 
 function view(pipeline: DeliveryPipelineResponse = PIPELINE): HTMLElement {
   const at = Date.parse("2026-10-02T12:00:00Z");
-  // The body draws no freshness row of its own (the page draws one at its head), so it reads
-  // nothing from a query client.
-  render(<PipelineView nowMs={at} pipeline={pipeline} />);
+  // The freshness row reads the live connection's state from the query client.
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PipelineView nowMs={at} pipeline={pipeline} readAtMs={at} />
+    </QueryClientProvider>
+  );
   return document.body;
 }
 
@@ -376,30 +377,18 @@ test("names the shown days in the header", () => {
   expect(document.body).toHaveTextContent("Last 7 days, Sep 26 to Oct 2 (UTC)");
 });
 
-/** The window a test renders the section for: the fixture's seven days, as the page's window
- *  control writes a custom range. */
-const WINDOW: WindowChoice = {
-  kind: "custom",
-  from: "2026-09-26T00:00:00.000Z",
-  to: "2026-10-03T00:00:00.000Z",
-};
-
-/** The Delivery page's part: it holds the one compare range its sections share. */
-function Host({ window: chosen }: { window: WindowChoice }): ReactNode {
-  const [compare, setCompare] = useState<ChartRange | null>(null);
-  return <PipelineSection compare={compare} onCompare={setCompare} window={chosen} />;
-}
-
-function renderSection(chosen: WindowChoice = WINDOW) {
+function renderPage(path = "/pipeline") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <Host window={chosen} />
+      <MemoryRouter initialEntries={[path]}>
+        <PipelinePage />
+      </MemoryRouter>
     </QueryClientProvider>
   );
 }
 
-/** The section's live socket, accepted, and the pipeline subscription it sent on it. */
+/** The page's live socket, accepted, and the pipeline subscription it sent on it. */
 async function subscribed(): Promise<{ socket: FakeLiveSocket; frame: LiveSubscribe }> {
   await waitFor(() => expect(sockets.sockets.length).toBeGreaterThan(0));
   const socket = sockets.latest();
@@ -408,95 +397,41 @@ async function subscribed(): Promise<{ socket: FakeLiveSocket; frame: LiveSubscr
   return { socket, frame };
 }
 
-test("the section subscribes the route for the page's window, and measures a failure's age from its end", async () => {
-  renderSection();
-  expect(
-    await screen.findByRole("heading", { level: 2, name: "Pipeline: CI and deploy" })
-  ).toBeDefined();
+test("the page subscribes the pipeline, forwarding a pinned at from its URL, and titles the tab", async () => {
+  renderPage("/pipeline?at=2026-10-02T12:00:00Z");
+  expect(await screen.findByRole("heading", { level: 1, name: "Pipeline" })).toBeDefined();
   const { socket, frame } = await subscribed();
-  expect(frame.view).toEqual({
-    kind: "pipeline",
-    window: { from: WINDOW.from, to: WINDOW.to },
-  });
+  expect(frame.view).toEqual({ kind: "pipeline", at: "2026-10-02T12:00:00Z" });
   act(() => socket.receive(snapshotFrame(frame.sub, PIPELINE)));
   await screen.findByText("PR CI");
-  // The window stops at Oct 3 00:00, which the route looks its 24 hours back from, so the Oct 2
-  // 11:40 failure is 12 hours old here rather than the 20 minutes a clock at 12:00 would read.
+  // A failure's age is measured from the pinned at (11:40 against 12:00), not the clock.
   expect(document.querySelector('[data-failing-job="build / unit"] a')?.textContent).toBe(
-    "12 h ago"
+    "20 min ago"
   );
+  expect(document.title).toBe("Pipeline · Dispatch");
 });
 
-test("a preset window subscribes by its days", async () => {
-  renderSection({ kind: "preset", preset: "28d" });
+test("without at in its URL the page subscribes today's pipeline", async () => {
+  renderPage();
   const { socket, frame } = await subscribed();
-  expect(frame.view).toEqual({ kind: "pipeline", window: { preset: 28 } });
+  expect(frame.view).toEqual({ kind: "pipeline" });
   act(() => socket.receive(snapshotFrame(frame.sub, PIPELINE)));
   await screen.findByText("PR CI");
   expect(socket.subscribes()).toHaveLength(1);
 });
 
-test("a card's comparison reads the range the reader names as a second view", async () => {
-  const user = userEvent.setup();
-  renderSection();
-  const { socket, frame } = await subscribed();
-  act(() => socket.receive(snapshotFrame(frame.sub, PIPELINE)));
-  await screen.findByText("PR CI");
-
-  // The route reads a from and a to, so the reader compares the preceding days or a range of
-  // their own.
-  const compare = screen.getByLabelText("PR CI comparison");
-  expect(Array.from(compare.querySelectorAll("option"), (option) => option.textContent)).toEqual([
-    "No comparison",
-    "Previous 7 days",
-    "Custom range…",
-  ]);
-
-  // A range of the reader's own: the route reads it as the window it is.
-  await user.selectOptions(compare, "custom");
-  await user.click(screen.getByLabelText("From"));
-  await user.paste("2026-09-01");
-  await user.click(screen.getByLabelText("To"));
-  await user.paste("2026-09-14");
-  await user.click(screen.getByRole("button", { name: "Apply" }));
-  await waitFor(() => {
-    expect(socket.subscribed("pipeline").view).toEqual({
-      kind: "pipeline",
-      window: { from: "2026-09-01T00:00:00.000Z", to: "2026-09-15T00:00:00.000Z" },
-    });
-  });
-
-  // And the preceding days are the window they are: Sep 19 to Sep 26.
-  await user.selectOptions(compare, "preceding");
-  const compared = await waitFor(() => {
-    const again = socket.subscribed("pipeline");
-    expect(again.view).toEqual({
-      kind: "pipeline",
-      window: { from: "2026-09-19T00:00:00.000Z", to: "2026-09-26T00:00:00.000Z" },
-    });
-    return again;
-  });
-  act(() => socket.receive(snapshotFrame(compared.sub, PIPELINE)));
-
-  await waitFor(() =>
-    expect(document.querySelectorAll('[data-chart-range="compare"]').length).toBeGreaterThan(0)
-  );
-});
-
-test("an unconfigured delivery says what the section reads, with no retry", async () => {
-  renderSection();
+test("an unconfigured delivery points at the settings that set it up", async () => {
+  renderPage();
   const { socket, frame } = await subscribed();
   act(() =>
     socket.receive(errorFrame(frame.sub, "DELIVERY_NOT_CONFIGURED", "delivery is not configured"))
   );
-  expect(
-    await screen.findByText(/reads the delivery timeline's deploy repository and workflows/)
-  ).toBeDefined();
-  expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  const link = await screen.findByRole("link", { name: "Set up the delivery timeline" });
+  expect(link).toHaveAttribute("href", "/delivery");
 });
 
 test("while the snapshot is out the page says it is loading, and shows nothing else", async () => {
-  renderSection();
+  renderPage();
   await subscribed();
   expect(await screen.findByText("Loading pipeline…")).toBeDefined();
   expect(screen.queryByText("PR CI")).not.toBeInTheDocument();
@@ -505,13 +440,13 @@ test("while the snapshot is out the page says it is loading, and shows nothing e
 
 test("a refused subscription says so with Retry, and Retry subscribes again", async () => {
   const user = userEvent.setup();
-  renderSection();
+  renderPage();
   const { socket, frame } = await subscribed();
   act(() => socket.receive(errorFrame(frame.sub, "UNAVAILABLE", "try later")));
   const alert = await screen.findByRole("alert");
   expect(alert).toHaveTextContent("Couldn't load the pipeline.");
   expect(
-    screen.queryByText(/reads the delivery timeline's deploy repository/)
+    screen.queryByRole("link", { name: "Set up the delivery timeline" })
   ).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Retry" }));

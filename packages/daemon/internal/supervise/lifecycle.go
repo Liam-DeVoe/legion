@@ -129,7 +129,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
-	m.relaunchLater(m.deps.timeouts().Probe, m.retryHolding(m.pluginRelaunch, relaunch))
+	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(m.pluginRelaunch, relaunch))
 	return errors.Join(err, m.persist(ctx))
 }
 
@@ -166,7 +166,7 @@ func (m *Machine) watchAgain() {
 	switch m.claim.State {
 	case StateLaunching, StateShimConnected:
 		if !armed(TimerBoot) {
-			m.arm(TimerBoot, m.deps.timeouts().Boot, "")
+			m.arm(TimerBoot, m.deps.Timeouts.Boot, "")
 		}
 		if !armed(TimerRegistration) {
 			m.armRegistration()
@@ -177,7 +177,7 @@ func (m *Machine) watchAgain() {
 		}
 	}
 	if p := m.claim.Pending; p != nil && m.outstandingPrompt(p.ID) && p.ConfirmedAt.IsZero() && !armed(TimerTurn) {
-		m.arm(TimerTurn, m.deps.timeouts().RPC, p.ID)
+		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}
 }
 

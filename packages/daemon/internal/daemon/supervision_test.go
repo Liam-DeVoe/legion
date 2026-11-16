@@ -115,7 +115,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 			testCase.change(&cfg, &o)
 			want := strings.NewReplacer("{state}", cfg.StateDir, "{seed}", cfg.NatsNkeySeedFile).Replace(testCase.want)
 
-			err := run(context.Background(), config.Settled(cfg), Build{}, quietLogger(), o)
+			err := run(context.Background(), cfg, quietLogger(), o)
 
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("run = %v, want a refusal naming %q", err, want)
@@ -955,11 +955,9 @@ func TestRunPrunesTheSecretFilesOfClaimsWithNoProcess(t *testing.T) {
 	}
 }
 
-// Provider keys are resolved at boot, before anything can launch, into a set of the daemon-held
-// directory every pane's shim is pointed at — and boot's pruning of the pane secret files, which
-// runs after, leaves that directory alone: it is the daemon's, not any claim's. What an earlier
-// daemon left in it — a set of its own, and a file written straight into the directory before
-// sets — is no set any runtime of this daemon is built on, and the boot's write removes it.
+// Provider keys are resolved at boot, before anything can launch, into the daemon-held directory
+// every pane's shim is pointed at — and boot's pruning of the pane secret files, which runs after,
+// leaves that directory alone: it is the daemon's, not any claim's.
 func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ProviderKeys = []config.ProviderKey{{Env: "AGENT_ENV", Secret: "AGENT_KEY"}}
@@ -974,31 +972,21 @@ func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) 
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.environ = []string{"PATH=" + bin + ":/usr/bin:/bin"}
 	writeFile(t, filepath.Join(cfg.StateDir, "secrets", "left-by-a-crash"))
-	writeFile(t, filepath.Join(cfg.StateDir, "secrets", "provider-env", "keys-earlier", "AGENT_ENV"))
-	writeFile(t, filepath.Join(cfg.StateDir, "secrets", "provider-env", "AGENT_ENV"))
 
 	startDaemon(t, cfg, o)
 
-	keys, err := filepath.Glob(filepath.Join(cfg.StateDir, "secrets", "provider-env", "*", "AGENT_ENV"))
-	if err != nil || len(keys) != 1 {
-		t.Fatalf("the provider keys after boot: %q (%v), want the boot's one set", keys, err)
-	}
-	if got, err := os.ReadFile(keys[0]); err != nil || string(got) != "agent-value" {
+	key := filepath.Join(cfg.StateDir, "secrets", "provider-env", "AGENT_ENV")
+	if got, err := os.ReadFile(key); err != nil || string(got) != "agent-value" {
 		t.Fatalf("the provider key after boot: %q (%v)", got, err)
-	}
-	if entries, err := os.ReadDir(filepath.Join(cfg.StateDir, "secrets", "provider-env")); err != nil || len(entries) != 1 || filepath.Join(cfg.StateDir, "secrets", "provider-env", entries[0].Name()) != filepath.Dir(keys[0]) {
-		t.Errorf("after boot the provider-env directory holds %v (%v), want the boot's set alone: an earlier daemon's set and its flat files are no runtime's", entries, err)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.StateDir, "secrets", "left-by-a-crash")); !os.IsNotExist(err) {
 		t.Errorf("boot's prune left a file no claim names (stat: %v)", err)
 	}
 }
 
-// The shipped daemon writes the one Dispatch bearer panes share before any pane can launch — at
-// the boot's build of the runtime, which every rebuild of it repeats (prepareTmux's runtimeFor,
-// writePaneDispatchToken) — and boot's claim-secret prune leaves it alone because it belongs to
-// the daemon rather than a claim.
-func TestTheRuntimeBuildWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
+// The shipped daemon writes the one Dispatch bearer panes share before any pane can launch, and
+// boot's claim-secret prune leaves it alone because it belongs to the daemon rather than a claim.
+func TestPrepareWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.DispatchURL = "http://127.0.0.1:18766"
 	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
@@ -1006,12 +994,8 @@ func TestTheRuntimeBuildWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing
 		t.Fatal(err)
 	}
 
-	p, err := prepare(cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{}))
-	if err != nil {
+	if _, err := prepare(cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{})); err != nil {
 		t.Fatalf("prepare: %v", err)
-	}
-	if _, err := p.runtimeFor(cfg); err != nil {
-		t.Fatalf("the boot's build of the runtime: %v", err)
 	}
 	want := filepath.Join(cfg.StateDir, "secrets", "dispatch-token")
 	if info, err := os.Stat(want); err != nil || info.Mode().Perm() != 0o600 {

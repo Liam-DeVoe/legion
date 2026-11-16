@@ -36,11 +36,8 @@ const (
 
 // ProberOptions are what a Prober reads the listener with.
 type ProberOptions struct {
-	// Envoy answers the listener's base URL and its bearer ("" sends none) as the daemon reaches
-	// the listener now. The Prober asks it at every probe and keeps neither, so a probe after a
-	// change of `envoy_url` or `envoy_token_file` asks the listener the change names, with its
-	// bearer.
-	Envoy func() (url, token string)
+	// EnvoyURL is the listener's base URL; EnvoyToken its bearer ("" sends none).
+	EnvoyURL, EnvoyToken string
 	// Project is the project token (claim.ProjectToken): the lookup is its controller token.
 	Project string
 	// Log receives each non-alive verdict's reason; nil is slog.Default().
@@ -56,9 +53,8 @@ type ProberOptions struct {
 // (`ENVOY_SESSION_LIVE_WINDOW`), and names the holder's state in the 404 it answers for any
 // other, so the daemon keeps no staleness window of its own to drift from it.
 type Prober struct {
-	envoy func() (string, string)
-	// role is the lookup's path under the listener's base URL, the project's controller token.
-	role   string
+	lookup string
+	token  string
 	log    *slog.Logger
 	client *http.Client
 }
@@ -66,8 +62,8 @@ type Prober struct {
 // NewProber is a Prober over opts.
 func NewProber(opts ProberOptions) *Prober {
 	p := &Prober{
-		envoy:  opts.Envoy,
-		role:   "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
+		lookup: strings.TrimRight(opts.EnvoyURL, "/") + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
+		token:  opts.EnvoyToken,
 		log:    opts.Log,
 		client: &http.Client{Timeout: probeTimeout},
 	}
@@ -95,22 +91,19 @@ type roleHolder struct {
 
 // Probe says whether session — the one registered with the current controller capability — is
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
-// both sessions or the holder's state. It asks the listener the daemon reaches now
-// (ProberOptions.Envoy).
+// both sessions or the holder's state.
 func (p *Prober) Probe(ctx context.Context, session string) Liveness {
-	base, token := p.envoy()
-	lookup := strings.TrimRight(base, "/") + p.role
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, lookup, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.lookup, nil)
 	if err != nil {
-		p.log.Warn("controller liveness: build the role lookup", "url", lookup, "error", err)
+		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", err)
 		return Unknown
 	}
-	if token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
+	if p.token != "" {
+		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", lookup, "error", err)
+		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", err)
 		return Unknown
 	}
 	defer response.Body.Close()
@@ -122,24 +115,24 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		}
 		if refusal.HolderState == notify.StateUnresponsive {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
-				"url", lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
+				"url", p.lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
 			return Unknown
 		}
 		p.log.Info("controller liveness: the controller role has no live holder; the controller is gone",
-			"url", lookup, "session", session, "reason", refusal.Reason, "holderState", refusal.HolderState)
+			"url", p.lookup, "session", session, "reason", refusal.Reason, "holderState", refusal.HolderState)
 		return Gone
 	}
 	if response.StatusCode != http.StatusOK {
 		reason := "the Envoy listener refused the controller role lookup"
-		if token == "" {
+		if p.token == "" {
 			reason += " with no bearer token sent"
 		}
-		p.log.Warn("controller liveness: "+reason, "url", lookup, "status", response.StatusCode)
+		p.log.Warn("controller liveness: "+reason, "url", p.lookup, "status", response.StatusCode)
 		return Unknown
 	}
 	var answer roleHolder
 	if readErr != nil || json.Unmarshal(body, &answer) != nil || answer.Holder == "" || answer.LastSeen == nil {
-		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", lookup)
+		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", p.lookup)
 		return Unknown
 	}
 	if answer.Holder != session {

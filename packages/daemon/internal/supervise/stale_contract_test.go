@@ -191,7 +191,7 @@ func TestAStaleRegistrationNoInstallCanMoveIsAcceptedAtAnyContract(t *testing.T)
 			h := updateHarness(t, testCase.declared)
 			h.reach(StateReady)
 			h.m.deps.PluginContract = PodUpdateContract + 2
-			h.m.deps.PluginRelaunchable = func() bool { return true }
+			h.m.deps.PluginRelaunchable = true
 			h.m.deps.NoPluginInstall = func(Claim) bool { return true }
 			// The mark a relaunch of this claim already left, which is what turns the next
 			// stale registration into the charged path (relaunchAfterFailure).

@@ -59,13 +59,12 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	if root == nil || !claim.IsTreeRoot(root.Key, root.Tree) || root.Lingers() || record.OutOfWorkflow(root.Status) {
 		return intake.Result{}, nil
 	}
-	settings := e.settings()
 	now := e.now()
 	var paced time.Time
-	if fact.Paced && settings.Reserve != nil {
-		paced = settings.Reserve(now)
+	if fact.Paced && e.cfg.Reserve != nil {
+		paced = e.cfg.Reserve(now)
 	}
-	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, settings.Steps, *root, fact.Launch, fact.Relaunch, now, paced)
+	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *root, fact.Launch, fact.Relaunch, now, paced)
 }
 
 // QueueCatchUp is the one composer of a root architect's catch-up, which both the ready
@@ -215,7 +214,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // Lifecycle section of the root AGENTS.md.
 func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Project != e.settings().Project || record.OutOfWorkflow(issue.Status) {
+	if err != nil || issue == nil || issue.Project != e.cfg.Project || record.OutOfWorkflow(issue.Status) {
 		return err
 	}
 	role := RoleFor(issue.Phase)

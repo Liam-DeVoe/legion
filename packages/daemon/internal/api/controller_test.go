@@ -38,7 +38,8 @@ func newControllerHarness(t *testing.T, launched bool) *harness {
 func (h *harness) serve(controllerLaunched bool) {
 	h.t.Helper()
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: operatorSettings(),
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: controllerLaunched,
 	}).Handler
 }
@@ -125,7 +126,8 @@ func newControllerCredentialHarness(t *testing.T, tokens appauth.Tokens, launche
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: operatorSettings(),
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: launched,
 		Tokens: tokens, GitHubRepositories: func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
@@ -512,7 +514,8 @@ func TestControllerGitHubCredential(t *testing.T) {
 func TestControllerGitHubCredentialWithoutAnOwner(t *testing.T) {
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: operatorSettings(),
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Tokens: handoffTokens{}, GitHubRepositories: func() []ghrepo.Repository { return nil },
 	}).Handler
 	secret := h.mintedSecret()
@@ -549,8 +552,8 @@ func TestControllerGitHubCredentialWhenTheMintFails(t *testing.T) {
 func (h *harness) serveSteps(steps []record.DesignStep) {
 	h.t.Helper()
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: settingsGating(steps),
-		Controller: h.store, Grants: credential.New(nil),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil), Steps: steps,
 	}).Handler
 }
 

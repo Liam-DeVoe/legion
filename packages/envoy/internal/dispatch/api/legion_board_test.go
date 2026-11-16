@@ -118,7 +118,7 @@ func seedLegionBoard(t *testing.T, database *store.Store, project string, now ti
 // legionBoardOf is the board the route answers for project.
 func legionBoardOf(t *testing.T, handler http.Handler, project string) legionBoardResponse {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/board?project="+project, nil, "alice")
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/"+project+"/legion/board", nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET the board of %s: status=%d body=%s", project, response.Code, response.Body.String())
 	}
@@ -263,7 +263,7 @@ func TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded(t *testing.T)
 	seedLegionObservation(t, database, "INFRA", key, "pull_request.checks_verdict", `"failing"`, now.Add(-time.Minute))
 	seedLegionRead(t, database, "INFRA", now, "")
 
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/board?project=INFRA", nil, "alice")
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/INFRA/legion/board", nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET the board of INFRA: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -368,11 +368,7 @@ const newAdmissionShapeState = `{
     "INFRA-3": {"key": "INFRA-3", "phase": "admitted", "status": "todo", "tree": "INFRA-3"},
     "INFRA-4": {"key": "INFRA-4", "phase": "admitted", "status": "todo", "tree": "INFRA-1"}
   },
-  "settings": {"admission_cap": 6, "review_round_cap": 3, "gates": {"design": true}},
-  "settingSources": {
-    "admission_cap": {"source": "route", "by": "alice", "at": "2026-11-03T12:00:00Z"},
-    "review_round_cap": {"source": "file", "at": "2026-11-03T06:00:00Z"}
-  }
+  "settings": {"admission_cap": 6, "review_round_cap": 3, "gates": {"design": true}}
 }`
 
 // TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape: the board is built from what the loose
@@ -435,17 +431,6 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	if err := json.Unmarshal(board.Settings["gates"], &gates); err != nil || !gates["design"] {
 		t.Errorf("the board's gates setting = %s (%v), want the object the daemon sent", board.Settings["gates"], err)
 	}
-	var source struct {
-		Source string `json:"source"`
-		By     string `json:"by"`
-		At     string `json:"at"`
-	}
-	if err := json.Unmarshal(board.SettingSources["admission_cap"], &source); err != nil {
-		t.Fatalf("decode admission_cap's source: %v", err)
-	}
-	if source.Source != "route" || source.By != "alice" || source.At != "2026-11-03T12:00:00Z" {
-		t.Errorf("admission_cap came from %+v, want the route, alice and the moment the daemon named", source)
-	}
 }
 
 // TestTheLegionBoardOfADaemonThatNeverAnsweredIsEmptyWithItsFailure: a project whose daemon has a
@@ -472,9 +457,8 @@ func TestTheLegionBoardOfADaemonThatNeverAnsweredIsEmptyWithItsFailure(t *testin
 	if header.SlotsInUse != 0 || header.SlotCap != nil || header.QueueLength != 0 {
 		t.Errorf("the header = %+v, want no slot, no cap and an empty queue", header)
 	}
-	if board.Settings == nil || len(board.Settings) != 0 || board.SettingSources == nil || len(board.SettingSources) != 0 {
-		t.Errorf("the board's settings = %v and sources = %v, want two empty objects rather than null",
-			board.Settings, board.SettingSources)
+	if board.Settings == nil || len(board.Settings) != 0 {
+		t.Errorf("the board's settings = %v, want an empty object rather than null", board.Settings)
 	}
 }
 
@@ -485,7 +469,7 @@ func TestTheLegionBoardOfAProjectWithNoDaemonIsRefused(t *testing.T) {
 	seedLegionProjects(t, handler, "INFRA", "LINUX")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/board?project=LINUX", nil, "alice")
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/LINUX/legion/board", nil, "alice")
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("the board of a project with no daemon: status=%d body=%s", response.Code, response.Body.String())
 	}

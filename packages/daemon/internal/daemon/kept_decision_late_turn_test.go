@@ -23,7 +23,7 @@ const heldTaskTurnBound = 5 * time.Second
 func heldTaskClock(clock *heldClock) heldTaskOption {
 	return func(r *heldTaskRig) {
 		r.sup.deps.Clock = clock
-		moveBudgets(r.sup, func(_ *supervise.Limits, timeouts *supervise.Timeouts) { timeouts.RPC = heldTaskTurnBound })
+		r.sup.deps.Timeouts.RPC = heldTaskTurnBound
 	}
 }
 

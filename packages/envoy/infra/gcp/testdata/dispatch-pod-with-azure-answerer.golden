@@ -120,10 +120,6 @@
             }
           },
           {
-            "name": "DISPATCH_LEGION_DAEMON_TOKEN_FILE",
-            "value": "/var/run/secrets/legion/daemon-token"
-          },
-          {
             "name": "DISPATCH_ANSWERER",
             "value": "azure"
           },
@@ -234,11 +230,6 @@
             "readOnly": true
           },
           {
-            "mountPath": "/var/run/secrets/legion",
-            "name": "legion-daemon-token",
-            "readOnly": true
-          },
-          {
             "mountPath": "/var/run/secrets/azure-federation",
             "name": "azure-federation",
             "readOnly": true
@@ -320,20 +311,6 @@
           }
         },
         "name": "nats-seed"
-      },
-      {
-        "name": "legion-daemon-token",
-        "projected": {
-          "sources": [
-            {
-              "serviceAccountToken": {
-                "audience": "legion-daemon",
-                "expirationSeconds": 3600,
-                "path": "daemon-token"
-              }
-            }
-          ]
-        }
       },
       {
         "name": "azure-federation",

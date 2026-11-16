@@ -43,7 +43,7 @@ func TestAStaleClaimHoldsItsTaskUntilItsReplacementRegistersOnThisDaemonsContrac
 	// contract, and can relaunch onto its plugin. The harness's own register() walk records the
 	// daemon's contract, so the replacement below comes up current.
 	h.deps.PluginContract, h.m.deps.PluginContract = refreshContract, refreshContract
-	h.m.deps.PluginRelaunchable = func() bool { return true }
+	h.m.deps.PluginRelaunchable = true
 
 	h.must(RequestDeliver{Claim: h.token, Task: next, ID: "outbox:42", Row: 42, Generation: 7})
 
@@ -98,7 +98,7 @@ func TestAClaudeCodeRolesClaimInAPodIsSentItsTaskOnAnEarlierContract(t *testing.
 	h.reach(StateIdle)
 	sent := len(h.prompts())
 	h.m.deps.PluginContract = refreshContract
-	h.m.deps.PluginRelaunchable = func() bool { return true }
+	h.m.deps.PluginRelaunchable = true
 	h.m.deps.NoPluginInstall = func(Claim) bool { return true }
 
 	h.must(RequestDeliver{Claim: h.token, Task: next, ID: "outbox:42", Row: 42, Generation: 7})
@@ -124,8 +124,8 @@ func TestAStaleClaimOnADaemonThatCanRelaunchOntoNoPluginIsSentItsTask(t *testing
 	h.reach(StateIdle)
 	sent := len(h.prompts())
 	h.m.deps.PluginContract = refreshContract
-	// PluginRelaunchable is left as the harness leaves it, nil, which answers false: this daemon
-	// knows no plugin versions to relaunch anything onto.
+	// PluginRelaunchable is left as the harness leaves it, false: this daemon knows no plugin
+	// versions to relaunch anything onto.
 
 	h.must(RequestDeliver{Claim: h.token, Task: next, ID: "outbox:42", Row: 42, Generation: 7})
 

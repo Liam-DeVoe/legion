@@ -91,7 +91,6 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/projects/{key}/default-assignee",
 	"PUT /api/v1/projects/{key}/gated-steps",
 	"PUT /api/v1/projects/{key}/legion/daemon",
-	"PUT /api/v1/projects/{key}/legion/settings",
 	"PUT /api/v1/settings/delivery",
 	"PUT /api/v1/settings/repo-projects/{owner}/{repo}",
 }

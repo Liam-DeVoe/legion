@@ -126,7 +126,7 @@ func TestARelaunchRecordsAStalePluginRelaunch(t *testing.T) {
 			h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 		}},
 		{name: "the stale registration", relaunch: func(h *harness) {
-			h.m.deps.PluginRelaunchable = func() bool { return true }
+			h.m.deps.PluginRelaunchable = true
 			err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
 				SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 24})
 			if err == nil {

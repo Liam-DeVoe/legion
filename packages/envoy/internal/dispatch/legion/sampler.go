@@ -94,14 +94,13 @@ func (s *Sampler) read(ctx context.Context, setting Settings) {
 }
 
 // keepClients leaves one client per state URL the settings name, keeping the client each URL
-// already had. The sampler's clients hold no token file: `GET /legion/v1/state` authenticates
-// nobody, so a read presents no credential.
+// already had. A read presents no credential: `GET /legion/v1/state` authenticates nobody.
 func (s *Sampler) keepClients(settings []Settings) {
 	kept := make(map[string]*Client, len(settings))
 	for _, setting := range settings {
 		client, held := s.clients[setting.StateURL]
 		if !held {
-			client = New(setting.StateURL, "")
+			client = New(setting.StateURL)
 		}
 		kept[setting.StateURL] = client
 	}

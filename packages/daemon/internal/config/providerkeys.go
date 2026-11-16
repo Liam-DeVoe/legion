@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
@@ -18,18 +16,15 @@ import (
 )
 
 // ProviderEnvDir is the daemon-held directory of provider keys, under the state directory's
-// secrets: one directory per set of keys a write made (MaterializeProviderKeys), each holding
-// one 0600 file per key, named for the key. Every pane's shim is pointed at one set
-// (`--provider-env-dir`) and exports each of its files into OMP's environment alone.
+// secrets: one 0600 file per key, named for the key. Every pane's shim is pointed at it
+// (`--provider-env-dir`) and exports each file into OMP's environment alone.
 func ProviderEnvDir(stateDir string) string {
 	return filepath.Join(runtime.SecretsDir(stateDir), "provider-env")
 }
 
-// MaterializeProviderKeys resolves each provider key and writes its value to a file named for the
-// variable OMP reads, in a new directory under ProviderEnvDir, and returns that directory — or ""
-// when there are none, writing nothing. Boot calls it before any pane can launch, and a build of
-// the tmux runtime again whenever the keys or their files have moved since (internal/daemon's
-// providerKeyFiles, which also decides which sets stay: RemoveProviderKeysBut).
+// MaterializeProviderKeys resolves each provider key and writes its value to a file in
+// ProviderEnvDir named for the variable OMP reads, returning that directory — or "" when there are
+// none, having removed any a previous boot left. Boot calls it once, before any pane can launch.
 // A pane never reaches the secret store: under tmux, identity reaches panes as daemon-held files
 // (LEGION-208 spec, Identity), because the store's age identity would decrypt every agent-tier
 // secret on the box.
@@ -45,14 +40,17 @@ func ProviderEnvDir(stateDir string) string {
 // session the daemon was started from. There is no daemon-imposed timeout; secretsd's own approval
 // window is the failure.
 //
-// Every key is resolved before any file is written, so a write that refuses writes nothing. The
-// directory is this write's own and holds exactly the configured variables: it is whole before it
-// is answered, so nothing can be told it earlier, and nothing writes it afterwards, so a shim that
-// reads it reads the whole set — never part of one, nor a mix of two. ProviderEnvDir and each set
-// are 0700 and each file 0600. Every refusal names the entry — the variable and its secretsd key
-// or file — and never the value.
+// Every key is resolved before any file is written, so a boot that refuses writes nothing. Each
+// file is written atomically (a temporary file renamed into place), the directory is 0700 and
+// each file 0600, and a file for a variable no longer configured is removed: the directory holds
+// exactly the configured variables. Every refusal names the entry — the variable and its secretsd
+// key or file — and never the value.
 func MaterializeProviderKeys(keys []ProviderKey, stateDir string, environ []string, log *slog.Logger) (string, error) {
+	dir := ProviderEnvDir(stateDir)
 	if len(keys) == 0 {
+		if err := os.RemoveAll(dir); err != nil {
+			return "", fmt.Errorf("provider_keys: remove %s: %w", dir, err)
+		}
 		return "", nil
 	}
 	env := make([]string, 0, len(environ))
@@ -74,67 +72,29 @@ func MaterializeProviderKeys(keys []ProviderKey, stateDir string, environ []stri
 		values[key.Env] = value
 	}
 
-	parent := ProviderEnvDir(stateDir)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return "", fmt.Errorf("provider_keys: create %s: %w", parent, err)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("provider_keys: create %s: %w", dir, err)
 	}
-	if err := os.Chmod(parent, 0o700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", fmt.Errorf("provider_keys: %w", err)
 	}
-	dir, err := os.MkdirTemp(parent, "keys-")
-	if err != nil {
-		return "", fmt.Errorf("provider_keys: create a directory under %s: %w", parent, err)
-	}
 	for _, key := range keys {
-		if err := writeKeyFile(filepath.Join(dir, key.Env), values[key.Env]); err != nil {
-			os.RemoveAll(dir)
+		if err := writeAtomically(filepath.Join(dir, key.Env), values[key.Env]); err != nil {
 			return "", fmt.Errorf("provider_keys.%s: write its file: %w", key.Env, err)
 		}
 	}
-	return dir, nil
-}
-
-// RemoveProviderKeysBut removes every set of keys under ProviderEnvDir that keep does not name,
-// with anything else the directory holds (the files a daemon before sets wrote straight into it),
-// and the directory itself when keep names none of its entries. Each is moved out of its place
-// before it is removed, so a shim reading a set as it goes reads all of it or is refused its read
-// (shim.ReadProviderEnv), never a part of it.
-func RemoveProviderKeysBut(stateDir string, keep []string) error {
-	parent := ProviderEnvDir(stateDir)
-	entries, err := os.ReadDir(parent)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("provider_keys: list %s: %w", parent, err)
+		return "", fmt.Errorf("provider_keys: list %s: %w", dir, err)
 	}
-	kept := false
 	for _, entry := range entries {
-		path := filepath.Join(parent, entry.Name())
-		if slices.Contains(keep, path) {
-			kept = true
-			continue
-		}
-		gone := filepath.Join(parent, ".removed-"+entry.Name())
-		if err := os.RemoveAll(gone); err != nil {
-			return fmt.Errorf("provider_keys: remove %s: %w", gone, err)
-		}
-		if err := os.Rename(path, gone); errors.Is(err, fs.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return fmt.Errorf("provider_keys: move %s out of its place: %w", path, err)
-		}
-		if err := os.RemoveAll(gone); err != nil {
-			return fmt.Errorf("provider_keys: remove %s: %w", gone, err)
+		if _, configured := values[entry.Name()]; !configured {
+			if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+				return "", fmt.Errorf("provider_keys: remove %s, which no configured variable names: %w", entry.Name(), err)
+			}
 		}
 	}
-	if kept {
-		return nil
-	}
-	if err := os.Remove(parent); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("provider_keys: remove %s, which holds no key: %w", parent, err)
-	}
-	return nil
+	return dir, nil
 }
 
 // secretsStatus is what `secrets get <KEY> --no-request` prints: the key and its tier.
@@ -223,21 +183,28 @@ func pathValue(env []string) string {
 	return path
 }
 
-// writeKeyFile writes value to path, a new 0600 file, synced before it is closed. Its directory
-// is a set no shim is told until every file of it is written (MaterializeProviderKeys), so the
-// file needs no rename into place.
-func writeKeyFile(path, value string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+// writeAtomically replaces path with a 0600 file holding value: a temporary file beside it, synced
+// and renamed into place, so a shim reading the directory never sees half a key.
+func writeAtomically(path, value string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
 	}
-	if _, err := file.WriteString(value); err != nil {
-		file.Close()
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := file.Sync(); err != nil {
-		file.Close()
+	if _, err := tmp.WriteString(value); err != nil {
+		tmp.Close()
 		return err
 	}
-	return file.Close()
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }

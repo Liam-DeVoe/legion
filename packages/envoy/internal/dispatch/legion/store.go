@@ -26,7 +26,7 @@ type Settings struct {
 const settingsColumns = `project, state_url, created_by, updated_at`
 
 // ErrNoSettings is "this project names no Legion daemon": the sampler reads nothing for it and
-// the operator relay has nowhere to send a change.
+// the board has nothing to show.
 var ErrNoSettings = errors.New("this project has no Legion daemon configured")
 
 // StateChannel is the Postgres notification channel one read of a daemon's state announces itself

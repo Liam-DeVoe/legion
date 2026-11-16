@@ -123,7 +123,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 	}
 	m.claim.PendingCause = cause
 	m.claim.Budgets.LaunchFailures++
-	if m.claim.Budgets.LaunchFailures >= m.deps.limits().LaunchFailures {
+	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
 	return m.launchAfter(ctx, true, false, ending)
@@ -156,12 +156,11 @@ func (m *Machine) chargeDeath() bool {
 	if !task && !open {
 		return false
 	}
-	limit := m.deps.limits().LaunchFailures
 	m.claim.Budgets.Deaths++
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.log.Warn("supervise: the agent died with work outstanding", "deaths", m.claim.Budgets.Deaths,
-		"limit", limit, "pending", pendingID(m.claim.Pending), "turnOpen", open)
-	return m.claim.Budgets.Deaths >= limit
+		"limit", m.deps.Limits.LaunchFailures, "pending", pendingID(m.claim.Pending), "turnOpen", open)
+	return m.claim.Budgets.Deaths >= m.deps.Limits.LaunchFailures
 }
 
 // turnOpen is whether the agent began a turn it has not ended: the claim is working, which is the
@@ -184,17 +183,17 @@ func (m *Machine) turnOpen() bool {
 // whose failure then finds no process left to record. The launch that follows lets nothing go.
 func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	failures := m.claim.Budgets.PromptFailures + 1
-	if failures < m.deps.limits().PromptFailures {
+	if failures < m.deps.Limits.PromptFailures {
 		m.claim.Budgets.PromptFailures = failures
 		m.log.Warn("supervise: prompt failure", "why", why, "promptFailures", failures,
-			"limit", m.deps.limits().PromptFailures)
+			"limit", m.deps.Limits.PromptFailures)
 		return m.persist(ctx)
 	}
 	if m.held != nil {
 		return m.suspendHeld(ctx)
 	}
 	retires := m.claim.Budgets.PromptRetires + 1
-	last := retires >= m.deps.limits().PromptRetires
+	last := retires >= m.deps.Limits.PromptRetires
 	retirement := m.suspendProcess
 	if last {
 		retirement = m.endProcess // the last retirement fails the claim, which does not run again
@@ -206,7 +205,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	}
 	m.claim.Budgets.PromptRetires = retires
 	m.log.Warn("supervise: retired after prompt failures", "why", why, "promptFailures", failures,
-		"relaunchCycle", retires, "limit", m.deps.limits().PromptRetires)
+		"relaunchCycle", retires, "limit", m.deps.Limits.PromptRetires)
 	if last {
 		m.claim.Budgets.PromptFailures = failures
 		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")

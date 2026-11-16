@@ -67,14 +67,11 @@ const shellHandlers: RequestHandler[] = [
   // no gate, which is what a page with no `api.listProjects` spy drew before, and every row that
   // asserts on project content spies that method above MSW.
   http.get("/api/v1/projects", () => Response.json([])),
-  // Three pages read a project's Legion daemon with no `enabled` guard beyond the project being
-  // known, so the read happens wherever one of them is drawn: the Delivery page's Legion section
-  // and the Settings page's daemon section, which read every project's (`useLegionDaemons`), and
-  // the Issues page's view selector, which reads its own project's to ask whether it has a Legion
-  // view (`ProjectPage`'s `legionDaemon` query). `null` is a project that names no daemon, not a
-  // failure (`legionDaemonQuery`'s own doc), and that is what those pages drew before MSW: no view
-  // button, no Legion section, an empty daemon list. Every row that asserts on a daemon spies
-  // `api.getLegionDaemon` above MSW and never reaches this.
+  // The Settings page's daemon section reads every project's Legion daemon with no `enabled` guard
+  // beyond the project being known (`useLegionDaemons`), so the read happens wherever that section
+  // is drawn. `null` is a project that names no daemon, not a failure (`legionDaemonQuery`'s own
+  // doc), and that is what the page drew before MSW: an empty daemon list. Every row that asserts
+  // on a daemon spies `api.getLegionDaemon` above MSW and never reaches this.
   http.get("/api/v1/projects/:key/legion/daemon", () => Response.json(null)),
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),

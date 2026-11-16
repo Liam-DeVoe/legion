@@ -1057,7 +1057,7 @@ func (m *Machine) putPending(ctx context.Context) error {
 // streaming asks the agent whether a turn is in flight; answered is false when the agent could not
 // say (the ask failed or timed out), and each caller decides what an unanswered ask means for it.
 func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, answered bool) {
-	asking, cancel := context.WithTimeout(ctx, m.deps.timeouts().RPC)
+	asking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
 	defer cancel()
 	state, err := conn.GetState(asking)
 	if err != nil {
@@ -1097,7 +1097,7 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 			err = m.adopt(working, role, loc, &d)
 		}
 		if err == nil {
-			sending, cancel := context.WithTimeout(working, m.deps.timeouts().RPC)
+			sending, cancel := context.WithTimeout(working, m.deps.Timeouts.RPC)
 			err = conn.Prompt(sending, d.ID, prompt)
 			cancel()
 		}

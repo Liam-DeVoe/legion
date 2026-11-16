@@ -1,6 +1,7 @@
-// legion_board.go serves GET /api/v1/legion/board, the Legion view on the project Issues page
-// (dispatch://INFRA-1077, the spec's "The Legion view on the Issues page"), and the body the
-// fourth live view kind sends (live_frames.go's legionBoardView).
+// legion_board.go serves GET /api/v1/projects/{key}/legion/board, one project's Legion board from
+// what the sampler recorded (dispatch://INFRA-1077), and the body the `legion` live view kind
+// sends (live_frames.go's legionBoardView). This pull request ships no page that draws it; the
+// board is the data a later tree's Legion view reads.
 //
 // The answer is read from what Dispatch holds, never from the daemon: the sampler reads each
 // daemon once a minute under a lease (internal/dispatch/legion) and records what moved, and this
@@ -92,27 +93,24 @@ var legionPhaseColumns = func() map[string]string {
 }()
 
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
-// Legion daemon gets, whichever route or live view asked (getLegionBoard,
-// putLegionProjectSettings, the live hub's worker).
+// Legion daemon gets, whichever route or live view asked (getLegionBoard, the live hub's worker).
 const (
 	legionNotConfiguredCode    = "LEGION_NOT_CONFIGURED"
 	legionNotConfiguredMessage = "this project has no Legion daemon; set one through PUT /api/v1/projects/{key}/legion/daemon"
 )
 
-// legionBoardResponse is GET /api/v1/legion/board: the project the board shows, its header, its
-// columns, the settings its daemon reports with where each came from, and when it was computed.
+// legionBoardResponse is GET /api/v1/projects/{key}/legion/board: the project the board shows, its header, its
+// columns, the settings its daemon reports, and when it was computed.
 // Mirrors packages/contracts/src/dispatch-api.ts's LegionBoardResponse exactly.
 type legionBoardResponse struct {
 	Project string              `json:"project"`
 	Header  legionBoardHeader   `json:"header"`
 	Columns []legionBoardColumn `json:"columns"`
-	// Settings is the settings the daemon reports, which hold no secret, and SettingSources where
-	// each came from — the file or the route, who changed it and when. Both are the daemon's own
-	// bytes, key by key, and both are {} until a read records them, so a project whose daemon has
-	// never answered still renders. The settings control on the Legion view reads them.
-	Settings       map[string]json.RawMessage `json:"settings"`
-	SettingSources map[string]json.RawMessage `json:"setting_sources"`
-	ComputedAt     time.Time                  `json:"computed_at"`
+	// Settings is the settings the daemon reports, which hold no secret: the daemon's own bytes,
+	// key by key, and {} until a read records them, so a project whose daemon has never answered
+	// still renders. The settings panel on the Legion view shows them.
+	Settings   map[string]json.RawMessage `json:"settings"`
+	ComputedAt time.Time                  `json:"computed_at"`
 }
 
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the live
@@ -172,15 +170,16 @@ type legionBoardWait struct {
 	AnsweredAt *time.Time `json:"answered_at"`
 }
 
-// getLegionBoard answers GET /api/v1/legion/board. Its one parameter is `project`; with none it
-// reads the first project that names a Legion daemon (legionBoardProject). A project that names
-// no daemon is 404 LEGION_NOT_CONFIGURED, which is what shows no view; a project whose daemon has
-// never answered is answered the board with empty columns and the read's failure in its header.
+// getLegionBoard answers GET /api/v1/projects/{key}/legion/board, the project its path names
+// (R2, R26: everything of one project under a path). A project that names no daemon is 404
+// LEGION_NOT_CONFIGURED, which is what shows no view; a project whose daemon has never answered
+// is answered the board with empty columns and the read's failure in its header; a project that
+// does not exist is 404 NOT_FOUND, and a malformed key 400 LEGION_SETTING_INPUT.
 func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	project, ok := s.legionBoardProject(w, r)
+	project, ok := s.legionProject(w, r)
 	if !ok {
 		return
 	}
@@ -196,26 +195,6 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, legionBoardCompute(population, time.Now().UTC()))
 }
 
-// legionBoardProject is the project a board call draws: the `project` parameter where it names
-// one, which must be a project key of a project that exists, and otherwise the first project with
-// a Legion setting — empty where the deployment has none. dispatch://INFRA-2915 moves the board
-// under /api/v1/projects/{key}/, where the path names the project and this goes.
-func (s *server) legionBoardProject(w http.ResponseWriter, r *http.Request) (string, bool) {
-	project := strings.TrimSpace(r.URL.Query().Get("project"))
-	if project == "" {
-		settings, err := legion.ListSettings(r.Context(), s.deps.Store.Pool)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return "", false
-		}
-		if len(settings) == 0 {
-			return "", true
-		}
-		return settings[0].Project, true
-	}
-	return s.legionProjectNamed(w, r, project, "INVALID_QUERY")
-}
-
 // legionBoardPopulation is every read one board answer makes: the project's Legion setting, the
 // newest read of its daemon, the newest value of every field the sampler recorded, and the
 // project's own issues in Dispatch's rank order.
@@ -226,9 +205,9 @@ type legionBoardPopulation struct {
 	// admission is the daemon's admission block as the newest read recorded it, nil while no read
 	// has recorded one: before the first read of a daemon, and for a daemon that sends none.
 	admission *legion.Admission
-	// settings and settingSources are the daemon's own two blocks as the newest read recorded
-	// them, nil while no read has recorded either.
-	settings, settingSources map[string]json.RawMessage
+	// settings is the daemon's own settings block as the newest read recorded it, nil while no
+	// read has recorded one.
+	settings map[string]json.RawMessage
 	// issues is every issue the daemon reported, by key, with what Dispatch holds of it beside the
 	// observations.
 	issues map[string]*legionBoardIssue
@@ -323,8 +302,8 @@ func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, pool *store.
 
 // readObservations reads the newest value of every field the sampler recorded for the project: one
 // row per issue and field, which the unique index (project, issue_key, field, observed_at) answers
-// in order. The rows under legion.AdmissionKey belong to no issue: the admission block, the
-// daemon's settings and where each setting came from.
+// in order. The rows under legion.AdmissionKey belong to no issue: the admission block and the
+// daemon's settings.
 func (p *legionBoardPopulation) readObservations(ctx context.Context, pool *store.Pool) error {
 	rows, err := pool.Query(ctx, `
 		select distinct on (issue_key, field) issue_key, field, value, observed_at
@@ -368,8 +347,6 @@ func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 		}
 	case legion.FieldSettings:
 		_ = json.Unmarshal(value, &p.settings)
-	case legion.FieldSettingSources:
-		_ = json.Unmarshal(value, &p.settingSources)
 	}
 }
 
@@ -533,7 +510,7 @@ func (c *legionBoardCards) nearestCard(key string) string {
 	return ""
 }
 
-// legionBoardCompute is GET /api/v1/legion/board's body for a population read for it. It reads
+// legionBoardCompute is GET /api/v1/projects/{key}/legion/board's body for a population read for it. It reads
 // nothing: the live hub answers the same body from the population it already holds, and now is
 // only computed_at.
 //
@@ -667,18 +644,15 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		at := read.at.UTC()
 		header.ReadAt, header.ReadOK, header.ReadError = &at, read.ok, read.failure
 	}
-	// Both blocks are objects, empty rather than null, so a page reads one shape whether or not a
-	// read has recorded them.
-	settings, sources := p.settings, p.settingSources
+	// The block is an object, empty rather than null, so a page reads one shape whether or not a
+	// read has recorded it.
+	settings := p.settings
 	if settings == nil {
 		settings = map[string]json.RawMessage{}
 	}
-	if sources == nil {
-		sources = map[string]json.RawMessage{}
-	}
 	return legionBoardResponse{
 		Project: p.project, Header: header, Columns: columns,
-		Settings: settings, SettingSources: sources, ComputedAt: now,
+		Settings: settings, ComputedAt: now,
 	}
 }
 

@@ -408,13 +408,13 @@ test("an error frame rejects the query with an ApiError carrying the code", asyn
 });
 
 // While a release rolls out, the socket can reach a process of an older build that refuses one view
-// this page subscribes with `INVALID_FRAME`, as a build before INFRA-1077 refuses a pipeline view
-// that names a window. The refusal is that view's alone: the socket stays open, and every view the
-// process does serve is still answered on it. The refused view is sent again on the page's next
-// socket, here the one a rotation opens, which can reach a process that serves it.
+// this page subscribes with `INVALID_FRAME` — a view kind or a member it does not know. The refusal
+// is that view's alone: the socket stays open, and every view the process does serve is still
+// answered on it. The refused view is sent again on the page's next socket, here the one a rotation
+// opens, which can reach a process that serves it.
 test("an INVALID_FRAME fails that view alone: the socket stays, its other views answer, and the next socket sends it again", async () => {
   jest.useFakeTimers();
-  const pipelineView: DeliveryLiveView = { kind: "pipeline", window: { preset: 28 } };
+  const pipelineView: DeliveryLiveView = { kind: "pipeline" };
   const pipelineKey = ["delivery", "pipeline", pipelineView] as const;
   const timeline = observe();
   const pipeline = observe(pipelineView, pipelineKey);
@@ -425,7 +425,7 @@ test("an INVALID_FRAME fails that view alone: the socket stays, its other views 
       type: "error",
       sub: refused,
       code: "INVALID_FRAME",
-      message: "a pipeline view names at most an at",
+      message: "this build does not serve that view",
     });
     await settle();
     const failed = pipeline.observer.getCurrentResult();

@@ -31,13 +31,13 @@ func TestNewMachineRefusesADepsWithAnUnsetBound(t *testing.T) {
 			deps := base()
 			switch field {
 			case "Limits.LaunchFailures":
-				moveBudgets(&deps, func(l *Limits, _ *Timeouts) { l.LaunchFailures = 0 })
+				deps.Limits.LaunchFailures = 0
 			case "Limits.PromptFailures":
-				moveBudgets(&deps, func(l *Limits, _ *Timeouts) { l.PromptFailures = 0 })
+				deps.Limits.PromptFailures = 0
 			case "Limits.PromptRetires":
-				moveBudgets(&deps, func(l *Limits, _ *Timeouts) { l.PromptRetires = 0 })
+				deps.Limits.PromptRetires = 0
 			case "Timeouts.RegistrationIntervals":
-				moveBudgets(&deps, func(_ *Limits, t *Timeouts) { t.RegistrationIntervals = 0 })
+				deps.Timeouts.RegistrationIntervals = 0
 			case "PluginContract":
 				deps.PluginContract = 0
 			}

@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -19,7 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -73,14 +71,7 @@ type sandboxReads struct {
 // My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file (a
 // pod reads its bearer from its claim's Secret), no secretsd provider keys (a pod mounts its keys
 // from the providers Secret), and no host gh, git, or jj (a pod runs the image's).
-//
-// A configuration that is not this runtime's is refused rather than read (ownRuntime): the
-// block every value below comes out of is dereferenced on the next line, and this read is
-// where boot and every rebuild of the Sandbox runtime pass (prepareSandbox's runtimeFor).
 func readSandbox(cfg config.Config, project, dispatchToken, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
-	if err := ownRuntime("kubernetes", cfg); err != nil {
-		return sandboxReads{}, err
-	}
 	k := *cfg.Runtime.Kubernetes
 	rc, err := kubeClient(k)
 	if err != nil {
@@ -107,11 +98,9 @@ const (
 // one (PluginsFromFile), else the binary's linked pair when main filled cfg.Runtime.Kubernetes.Plugins
 // from it (cmd/legion's piLegionVersion/piEnvoyVersion, PluginsFromBinary field true; PluginsFromBinary
 // source), else nil pair and "" source — the daemon knows no plugin versions, and every stale claim is
-// recorded and reported, never relaunched or refused (supervise.Deps.PluginRelaunchable answers
-// false while the launch specs resolve no pair). Nil under tmux, whose pane always resumes on the
-// plugin installed on the daemon's host. legion start --check-config and the boot log read this,
-// and so does each build of the launch specs, from the configuration it is given (buildSpecs),
-// which is the pair a stale-plugin relaunch installs.
+// recorded and reported, never relaunched or refused (supervise.Deps.PluginRelaunchable false). Nil
+// under tmux, whose pane always resumes on the plugin installed on the daemon's host. legion start
+// --check-config and the boot log both read this.
 func ResolvedPlugins(cfg config.Config) (*runtime.PluginInstall, string) {
 	k := cfg.Runtime.Kubernetes
 	if k == nil || k.Plugins == nil {
@@ -185,42 +174,18 @@ func logPlugins(log *slog.Logger, plugins *runtime.PluginInstall, source string)
 // prepareSandbox is the runtime over readSandbox's client and Options, and the part of boot its
 // worker pod can refuse (sandboxBootOf). The worker stream listens on tcp://<bind>:<worker_stream_port>;
 // openSupervision hands the factory the address every pod dials (shimAddress).
-func prepareSandbox(cfg config.Config, log *slog.Logger, o overrides, reads bootReads, p *plan) error {
+func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan) error {
 	p.stream = "tcp://" + net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.WorkerStreamPort))
 	if o.runtime != nil {
-		p.probe = o.probe
-		// A test handed the daemon its runtime: every build answers that one.
-		p.runtimeFor = func(config.Config) (runtimeFactory, error) { return o.runtime, nil }
+		p.newRuntime, p.probe = o.runtime, o.probe
 		return nil
 	}
-	boot, err := sandboxBootOf(cfg, reads.sandbox)
+	boot, err := sandboxBootOf(cfg, reads)
 	if err != nil {
 		return err
 	}
-	// The boot's own runtime and every rebuild of it are built here (config.HolderRuntime): the
-	// cluster client, the Dispatch bearer every claim's Secret carries and every pod option are
-	// read from the configuration the build is given, through the same boot read, so a changed
-	// kubeconfig or `dispatch_token_file`, or either file rotated in place
-	// (runtimeHolder.credentials), is read again and the boot and a rebuild can never build
-	// different things. The pane seed's NATS user is the boot's, since the boot's image probe is
-	// its one reader (sandbox.Options.NATSUser). GitHub's REST root the shared public leak check
-	// is read under is no setting but the boot's own (overrides.githubAPI), so every build is
-	// handed the one boot holds.
-	lookup := environLookup(o.environment())
-	p.runtimeFor = func(c config.Config) (runtimeFactory, error) {
-		dispatchToken, err := readDispatchToken(c)
-		if err != nil {
-			return nil, err
-		}
-		next, err := readSandbox(c, p.project, dispatchToken, reads.nats.paneNatsUser, lookup, log)
-		if err != nil {
-			return nil, err
-		}
-		if o.buildSandbox != nil {
-			return o.buildSandbox(next), nil
-		}
-		return sandboxRuntime(next.client, next.opts, p.repositories.Accepted, p.repositories.serving, c.RepositoryRenames, o.githubAPI), nil
-	}
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, o.githubAPI)
+	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
 		if err != nil {
@@ -232,7 +197,7 @@ func prepareSandbox(cfg config.Config, log *slog.Logger, o overrides, reads boot
 		return nil
 	}
 	p.probe = func(ctx context.Context, rt runtime.Runtime) (bootprobe.ImageReport, error) {
-		sandboxed, ok := sandboxOf(rt)
+		sandboxed, ok := rt.(*sandbox.Runtime)
 		if !ok {
 			return bootprobe.ImageReport{}, fmt.Errorf("the image probe needs the Agent Sandbox runtime, not %T", rt)
 		}
@@ -245,11 +210,10 @@ func prepareSandbox(cfg config.Config, log *slog.Logger, o overrides, reads boot
 // refusals and the image probe. prepareSandbox hands both to the boot plan, and probe-boot
 // (probeBoot) runs them alone, so the two run one check and one probe by construction.
 type sandboxBoot struct {
-	// clusterCheck is the cluster's half of boot's refusals (clusterFence, which boot runs at
-	// daemon.go's run), each read-only: Agent Sandbox is installed, and no Sandbox of a layout
-	// before this runtime's remains in the namespace for the project. The census logs what it
-	// accepts but will not keep — an issue Sandbox whose next launch replaces its disk — to the
-	// runtime's own logger.
+	// clusterCheck is the cluster's half of boot's refusals (plan.clusterCheck), each read-only:
+	// Agent Sandbox is installed, and no Sandbox of a layout before this runtime's remains in the
+	// namespace for the project. The census logs what it accepts but will not keep — an issue
+	// Sandbox whose next launch replaces its disk — to the runtime's own logger.
 	clusterCheck func(context.Context) error
 	// probe is the image probe the runtime runs (sandbox.ImageProbe), over the references of the
 	// role prompts every worker pod is handed (prompts.RoleReferences).
@@ -262,48 +226,15 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 	if err != nil {
 		return sandboxBoot{}, err
 	}
-	return sandboxBoot{clusterCheck: clusterCheckOf(cfg, reads.client, reads.opts.Namespace, reads.opts.Project, reads.opts.Log), probe: probe}, nil
-}
-
-// clusterCheckOf is the cluster's refusals themselves, each read-only: Agent Sandbox is
-// installed, and no Sandbox of a layout before issue pods remains in the project's namespace.
-// A booting daemon runs them through clusterFence and `legion probe-boot` through sandboxBoot,
-// so both run the one check.
-func clusterCheckOf(cfg config.Config, client *rest.Config, namespace, project string, log *slog.Logger) func(context.Context) error {
-	return func(ctx context.Context) error {
+	clusterCheck := func(ctx context.Context) error {
 		checking, cancel := context.WithTimeout(ctx, cfg.SlowCommandTimeout)
 		defer cancel()
-		if err := sandbox.CheckInstalled(checking, client, agentSandbox); err != nil {
+		if err := sandbox.CheckInstalled(checking, reads.client, agentSandbox); err != nil {
 			return err
 		}
-		return sandbox.CensusLegacyIssueSandboxes(ctx, client, namespace, project, log)
+		return sandbox.CensusLegacyIssueSandboxes(ctx, reads.client, reads.opts.Namespace, reads.opts.Project, reads.opts.Log)
 	}
-}
-
-// clusterFence is the cluster's refusals of a Kubernetes daemon, built from cfg and nothing
-// else: nil for a tmux daemon, and for a test that handed the daemon its runtime, neither of
-// which has a cluster to refuse.
-//
-// It is built and run before the daemon dials Postgres, so what it reads is the file's own
-// configuration rather than the settled one — the store has to open before the route overlay can
-// be laid back over the file, and an operator whose cluster still holds per-claim Sandboxes must
-// be told that rather than shown a Postgres connection error. Nothing is built from what it
-// reads: the runtime's own client and Options are read again from the settled configuration a
-// few lines later (prepareSandbox's readSandbox), so a route change of a `runtime.kubernetes`
-// key still reaches the runtime the daemon runs on.
-func clusterFence(cfg config.Config, o overrides, log *slog.Logger) (func(context.Context) error, error) {
-	if cfg.Runtime.Name != "kubernetes" || cfg.Runtime.Kubernetes == nil || o.runtime != nil {
-		return nil, nil
-	}
-	project, err := claim.ProjectToken(cfg.Project)
-	if err != nil {
-		return nil, err
-	}
-	client, err := kubeClient(*cfg.Runtime.Kubernetes)
-	if err != nil {
-		return nil, err
-	}
-	return clusterCheckOf(cfg, client, cfg.Runtime.Kubernetes.Namespace, project, log), nil
+	return sandboxBoot{clusterCheck: clusterCheck, probe: probe}, nil
 }
 
 // probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
@@ -422,20 +353,15 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		Setup:                   k.Setup,
 		SkillsRepository:        k.SkillsRepository,
 		TestPostgres:            k.TestPostgres,
-		// Every launch key of the configuration this runtime is built from, which each pod
-		// template records and an update round reads a pod's launch-key drift from
-		// (sandbox.LaunchSettings, runtime/sandbox's drift.go). A change of one of them rebuilds
-		// the runtime (config.HolderRuntime), which is what settles this again.
-		LaunchSettings:        sandbox.LaunchSettings(&cfg),
-		BootTimeout:           cfg.WorkerBootTimeout,
-		RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
-		BusyBackoff:           busyBackoffFirst,
-		TerminationGrace:      cfg.WorkerStopTimeout,
-		ProbeInterval:         cfg.ProbeInterval,
-		AdoptTimeout:          cfg.SlowCommandTimeout,
-		AgentSecrets:          agentSecrets,
-		RepositoryCache:       cache,
-		Log:                   log,
+		BootTimeout:             cfg.WorkerBootTimeout,
+		RegistrationIntervals:   cfg.WorkerBootRegistrationDeadlineIntervals,
+		BusyBackoff:             busyBackoffFirst,
+		TerminationGrace:        cfg.WorkerStopTimeout,
+		ProbeInterval:           cfg.ProbeInterval,
+		AdoptTimeout:            cfg.SlowCommandTimeout,
+		AgentSecrets:            agentSecrets,
+		RepositoryCache:         cache,
+		Log:                     log,
 	}
 	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
@@ -469,116 +395,32 @@ func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []s
 	return nil
 }
 
-// secretsLoginHolder is the daemon's own login at the secrets broker (config.HolderSecretsLogin):
-// the agentsecrets.Client that logs the daemon in at the broker `runtime.kubernetes.agent_secrets`
-// names (`url`) with the daemon's own projected ServiceAccount token (`token_file`), and keeps
-// logging in before each credential expires; no person approves any of it, a restart included.
-// Every login logs its own outcome (agentsecrets.Client.Login); one that fails is retried by the
-// client, and pod enrollment waits for it. It is the machines' Enroller (supervise.Deps.Secrets)
-// and the login whose state the state route and the capability report read (loginState), so each
-// of them reaches the login the configuration names now. Never part of launchSecrets, so no pod
-// is ever handed the daemon's key, token or credential.
-//
-// Each build reads the block of the configuration it is given (rebuild). A changed `url` logs in
-// and enrolls every pod at the new broker, and builds the runtime in that same apply, since a
-// pod is told the broker it enrols at; a changed `token_file` builds this login alone, because
-// the daemon's own projected token is a value no pod reads and no launch carries
-// (config.Classes). The token file is the holder's credential file (credentials), so a rotation
-// in place builds the login again as well. A
-// Kubernetes daemon always holds one, with no login while the configuration names no broker, so
-// a block an operator adds under a running daemon enrolls the pods launched after it.
-type secretsLoginHolder struct {
-	log     *slog.Logger
-	current atomic.Pointer[secretsLogin]
+// newSecretsLogin is the daemon's agent-secrets login as the machines' Enroller: it constructs the
+// client from runtime.kubernetes.agent_secrets and starts it at boot on a background context, so
+// the daemon logs in with its own projected ServiceAccount token (token_file) and keeps logging in
+// before each credential expires; no person approves any of it, a restart included. Every login
+// logs its own outcome (agentsecrets.Client.Login); one that fails is retried by the client, and
+// pod enrollment waits for it. The client itself is returned too, read-only, so the state route can
+// show the login's current status (source.State, agentsecrets.Client.LoginStatus). Never part of
+// launchSecrets, so no pod is ever handed the daemon's key, token or credential. Nil, nil without
+// the block.
+func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, *agentsecrets.Client) {
+	k := cfg.Runtime.Kubernetes
+	if k == nil || k.AgentSecrets == nil {
+		return nil, nil
+	}
+	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: &http.Client{Timeout: 30 * time.Second}, TokenFile: k.AgentSecrets.TokenFile, Log: log}
+	go func() { _ = client.Start(context.Background()) }()
+	return brokerEnroller{client: client}, client
 }
 
-// secretsLogin is one login of the holder's: its client, the broker and the token file it was
-// built from, and the stop that ends its login loop.
-type secretsLogin struct {
-	client         *agentsecrets.Client
-	url, tokenFile string
-	stop           context.CancelFunc
-}
+// brokerEnroller is agentsecrets.Client as supervise.Enroller; an *agentsecrets.APIError is a
+// PermanentError when its status says so, which is how the machine tells a refusal from an outage,
+// and an ExpiredTokenError for POD_TOKEN_EXPIRED, a stale token under a key that stands.
+type brokerEnroller struct{ client *agentsecrets.Client }
 
-var _ supervise.Enroller = (*secretsLoginHolder)(nil)
-
-// newSecretsLogin is a Kubernetes daemon's login holder, which logs in at once when the
-// configuration names a broker; nil under tmux, which enrolls no process.
-func newSecretsLogin(cfg config.Config, log *slog.Logger) *secretsLoginHolder {
-	if cfg.Runtime.Kubernetes == nil {
-		return nil
-	}
-	h := &secretsLoginHolder{log: log}
-	h.current.Store(startSecretsLogin(cfg, log))
-	return h
-}
-
-// startSecretsLogin is the login cfg names, its loop started on a context of its own; nil when
-// cfg names no broker.
-func startSecretsLogin(cfg config.Config, log *slog.Logger) *secretsLogin {
-	block := agentSecretsOf(&cfg)
-	if block == nil {
-		return nil
-	}
-	client := &agentsecrets.Client{URL: block.URL, HTTP: &http.Client{Timeout: 30 * time.Second}, TokenFile: block.TokenFile, Log: log}
-	living, stop := context.WithCancel(context.Background())
-	go func() { _ = client.Start(living) }()
-	return &secretsLogin{client: client, url: block.URL, tokenFile: block.TokenFile, stop: stop}
-}
-
-// agentSecretsOf is cfg's broker block, nil when it names none.
-func agentSecretsOf(cfg *config.Config) *config.AgentSecretsConfig {
-	if k := cfg.Runtime.Kubernetes; k != nil {
-		return k.AgentSecrets
-	}
-	return nil
-}
-
-func (h *secretsLoginHolder) holder() string { return config.HolderSecretsLogin }
-
-// credentials is the daemon's own token file, which every login reads again
-// (agentsecrets.Client.TokenFile): the kubelet rewrites it in place, and the file watcher's reread
-// builds the login again when it moved (rebuilder.rereadCredentials).
-func (h *secretsLoginHolder) credentials(cfg *config.Config) string {
-	file := ""
-	if block := agentSecretsOf(cfg); block != nil {
-		file = block.TokenFile
-	}
-	return credentialDigest(file)
-}
-
-// rebuild starts the login cfg names, swaps it in, and ends the one it replaced: a call already
-// inside the old client finishes there, and the next enrollment reaches the new one.
-//
-// The one login it keeps is one of the same broker and token file that holds a live credential,
-// which is what a rotation of the token in place finds: the client reads the file at every login,
-// so its next renewal presents the rotated token under the key it proves already, and no
-// enrollment in flight is refused for a key the broker has moved to a new login. A login holding
-// no live credential — refused, failed or not yet finished — is replaced, so a rotated token is
-// presented at once rather than at the end of that login's wait (30 s, doubling to five minutes,
-// after a refusal).
-func (h *secretsLoginHolder) rebuild(cfg *config.Config) error {
-	held := h.current.Load()
-	if block := agentSecretsOf(cfg); held != nil && block != nil && block.URL == held.url && block.TokenFile == held.tokenFile &&
-		held.client.LoginStatus().State == "issued" {
-		return nil
-	}
-	h.current.Store(startSecretsLogin(*cfg, h.log))
-	if held != nil {
-		held.stop()
-	}
-	return nil
-}
-
-// Enroll enrolls a pod through the login the configuration names now. An *agentsecrets.APIError
-// is a PermanentError when its status says so, which is how the machine tells a refusal from an
-// outage, and an ExpiredTokenError for POD_TOKEN_EXPIRED, a stale token under a key that stands.
-func (h *secretsLoginHolder) Enroll(ctx context.Context, e supervise.PodEnrollment) (string, error) {
-	login := h.current.Load()
-	if login == nil {
-		return "", noSecretsBroker{}
-	}
-	enrolled, err := login.client.Enroll(ctx, agentsecrets.PodEnrollment{
+func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (string, error) {
+	enrolled, err := b.client.Enroll(ctx, agentsecrets.PodEnrollment{
 		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session,
 	})
 	if err != nil {
@@ -587,40 +429,7 @@ func (h *secretsLoginHolder) Enroll(ctx context.Context, e supervise.PodEnrollme
 	return enrolled.ID, nil
 }
 
-// Revoke ends an enrollment through the login the configuration names now.
-func (h *secretsLoginHolder) Revoke(ctx context.Context, id string) error {
-	login := h.current.Load()
-	if login == nil {
-		return noSecretsBroker{}
-	}
-	return login.client.Revoke(ctx, id)
-}
-
-// loginState is the login's state as agentsecrets.LoginState names it (`none`, `issued` or
-// `failed`), and false for a daemon holding no login: a tmux daemon, whose holder is nil, and a
-// Kubernetes daemon whose configuration names no broker now.
-func (h *secretsLoginHolder) loginState() (string, bool) {
-	if h == nil {
-		return "", false
-	}
-	login := h.current.Load()
-	if login == nil {
-		return "", false
-	}
-	return login.client.LoginStatus().State, true
-}
-
-// noSecretsBroker answers an enrollment or a revocation while the configuration names no broker:
-// a permanent refusal (supervise.PermanentError), since no retry finds a broker the configuration
-// does not name. A pod launched before the block was removed is then enrolled nowhere, and an
-// enrollment made before it ends with its lease.
-type noSecretsBroker struct{}
-
-func (noSecretsBroker) Error() string {
-	return "runtime.kubernetes.agent_secrets names no secrets broker, so the daemon is logged in to none"
-}
-
-func (noSecretsBroker) Permanent() bool { return true }
+func (b brokerEnroller) Revoke(ctx context.Context, id string) error { return b.client.Revoke(ctx, id) }
 
 // providerSecretKeys are provider_keys as the runtime takes them: each variable Oh My Pi reads,
 // to the key of the providers Secret that holds it; nil when the file names none.
@@ -691,9 +500,9 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // replacement pod's launcher is sent and what its restore drops, and registers its launcher
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
-// check (clusterFence): Agent Sandbox is installed and no Sandbox of a layout before this one —
-// per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST root
-// ("" is https://api.github.com), which the shared public leak check is read under
+// check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
+// one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
+// root ("" is https://api.github.com), which the shared public leak check is read under
 // (leakCheckSource).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string) runtimeFactory {

@@ -112,9 +112,7 @@ type Config struct {
 	// the one hook a deployment that writes no key runs is the configuration's default
 	// (config.DefaultHooks), never this engine's, so a deployment that configures none gets
 	// none. Every hook's words arrive resolved, so the engine never reads a file and never sees
-	// a path, and the list is the one its caller built at boot rather than a decision-class
-	// value: `hooks` is fixed for the process, and the words a hook reads from a file are read
-	// only there (internal/daemon's openWorkflow).
+	// a path.
 	Hooks []Hook
 	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// of which every issue-unit one is drawn for each issue this engine records for the first
@@ -130,71 +128,15 @@ type Config struct {
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
 type Engine struct {
 	store record.Store
-	// readConfig is where a decision's configuration comes from: the value New was given, or the
-	// read of the daemon's settings holder NewReading was given. A decision-class setting — the
-	// review round cap, the linger, the production-check bound, the design gate — is never
-	// copied into this struct, so a change of it takes effect at the next decision.
-	readConfig func() Config
-	// settled is the one configuration this decision reads, read once as the decision began
-	// (decision); nil in the engine the daemon holds, which no decision is running on.
-	settled *Config
-	log     *slog.Logger
+	cfg   Config
+	log   *slog.Logger
 }
 
 var _ intake.Handler = (*Engine)(nil)
 
-// New constructs a workflow engine on one configuration, taking the shipped review round cap,
-// production check bound and clock for every one of them a caller omits.
+// New constructs a workflow engine, taking the shipped review round cap, production check bound
+// and clock for every one of them a caller omits.
 func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
-	settled := cfg
-	return NewReading(store, func() Config { return settled }, log)
-}
-
-// NewReading constructs a workflow engine that reads its configuration through read at every
-// decision, in place of a value settled once: the daemon hands a read of its settings holder
-// (config.Live.Snapshot) composed into a workflow.Config, so a change of `review_round_cap`,
-// `linger_hours`, `production_check_hours` or `gates.design` reaches the next decision with
-// nothing rebuilt. Each read is given the same defaults New fills.
-func NewReading(store record.Store, read func() Config, log *slog.Logger) *Engine {
-	if log == nil {
-		log = slog.Default()
-	}
-	return &Engine{store: store, readConfig: func() Config { return defaulted(read()) }, log: log}
-}
-
-// decision is this engine reading one configuration for the whole of one decision: the
-// configuration is read once, here, and every step of that decision reads the same one, so a
-// change applied while a fact is being decided moves nothing under it. The engine itself holds
-// no decision's configuration — two facts are decided at once, each on its own — so this is a
-// copy of it, which is three fields and the one read.
-//
-// An engine that is already a decision's answers itself. Every exported method that reads the
-// configuration begins here, and a decision calls them — Apply reaches ReenterChild, which
-// reaches Ancestry, which reaches NoteRepositoryKept, and AdoptionRefusal and Ancestry reach
-// RanAsRoot — so without this the decision would read the holder again partway through and
-// finish on a configuration it did not start on.
-func (e *Engine) decision() *Engine {
-	if e.settled != nil {
-		return e
-	}
-	settled := e.readConfig()
-	return &Engine{store: e.store, readConfig: e.readConfig, settled: &settled, log: e.log}
-}
-
-// settings is the configuration this decision reads: the one place the engine asks for it. A
-// call outside a decision reads the holder as it stands now; the daemon's own reads of the
-// engine, which are no fact's, each begin a decision of their own all the same.
-func (e *Engine) settings() Config {
-	if e.settled != nil {
-		return *e.settled
-	}
-	return e.readConfig()
-}
-
-// defaulted is cfg with the shipped caps, bound, clock and random source filled where the caller
-// omitted them. Every read runs through it, so a configuration read again under a running daemon
-// is defaulted exactly as the one New was given.
-func defaulted(cfg Config) Config {
 	if cfg.ReviewRoundCap <= 0 {
 		cfg.ReviewRoundCap = 3
 	}
@@ -207,21 +149,23 @@ func defaulted(cfg Config) Config {
 	if cfg.ExperimentSource == nil {
 		cfg.ExperimentSource = experiment.CryptoSource
 	}
-	return cfg
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Engine{store: store, cfg: cfg, log: log}
 }
 
-func (e *Engine) now() time.Time { return e.settings().Clock().UTC() }
+func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
 
 // byReviewApp says whether login is the review App's bot (Config.ReviewAppLogin). With no login
 // configured, it is no one's.
 func (e *Engine) byReviewApp(login string) bool {
-	app := e.settings().ReviewAppLogin
-	return app != "" && login == app
+	return e.cfg.ReviewAppLogin != "" && login == e.cfg.ReviewAppLogin
 }
 
 // sameRepository is whether a and b name one repository: the same name, compared without case as
 // GitHub compares names, or the two names of a configured rename (Config.RepositoryRenames).
-func (e *Engine) sameRepository(a, b string) bool { return e.settings().RepositoryRenames.Same(a, b) }
+func (e *Engine) sameRepository(a, b string) bool { return e.cfg.RepositoryRenames.Same(a, b) }
 
 // Apply changes workflow-owned phase state for one durable intake fact. It never performs I/O;
 // every externally visible consequence is an outbox row committed with the record change.
@@ -232,7 +176,6 @@ func (e *Engine) sameRepository(a, b string) bool { return e.settings().Reposito
 // cannot silently stop the ladder, and so the facts that ask are one list the compiler checks
 // rather than nine calls and a comment (dispatch://INFRA-714 R3).
 func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	e = e.decision()
 	result, err := e.apply(ctx, tx, fact)
 	if err != nil {
 		return result, err
@@ -572,7 +515,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 		// lifecycle still stands open: where no tree runs, an outside session's write is a person's
 		// move, which is the whole of the question.
 		waiting := claim.IsTreeRoot(issue.Key, issue.Tree) && issue.AwaitingPerson() && !issue.Lingers()
-		if admitted, err := record.TreeRunning(ctx, e.store, tx, issue, e.settings().Steps); err != nil || !admitted && !waiting {
+		if admitted, err := record.TreeRunning(ctx, e.store, tx, issue, e.cfg.Steps); err != nil || !admitted && !waiting {
 			return false, err
 		}
 	}
@@ -666,7 +609,7 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *root, e.settings().Steps)
+	live, err := record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
 	if err != nil || !live {
 		return intake.Result{}, err
 	}
@@ -729,12 +672,11 @@ func recordedResolution(issue record.Issue) Resolution {
 // (markCheckClosed). The run's generation fences a completion left by an interrupted phase, and
 // the closed check refuses an old look's report, so both claims stay live.
 func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue, fact intake.DispatchIssue) error {
-	e = e.decision()
 	root, err := e.store.Issue(ctx, tx, child.Tree)
 	if err != nil || root == nil {
 		return err
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *root, e.settings().Steps)
+	live, err := record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
 	if err != nil || !live {
 		return err
 	}
@@ -808,8 +750,7 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 // no part of this: they are drawn once for the whole tree, when the tree is opened (admit's
 // promoteHolds).
 func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) error {
-	settings := e.settings()
-	return experiment.DrawAndRecord(ctx, tx, e.store, issue, settings.Experiments, config.ExperimentIssue, settings.ExperimentSource, e.now())
+	return experiment.DrawAndRecord(ctx, tx, e.store, issue, e.cfg.Experiments, config.ExperimentIssue, e.cfg.ExperimentSource, e.now())
 }
 
 // leftItsPhase says whether role's completion of a phase its issue has already left is recorded
@@ -1573,7 +1514,6 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 // waited, which the notice's reason says instead. A tree's own root gets no notice: the
 // architect this would tell is the worker being started, and its own task says it is starting.
 func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, waited []string) error {
-	e = e.decision()
 	if err := e.gateOpened(ctx, tx, issue); err != nil {
 		return err
 	}
@@ -1660,7 +1600,7 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 // configured one makes the second only when the first finds nothing, which is the common case —
 // an event of a pull request this daemon does not record at all.
 func (e *Engine) pullRequest(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
-	pr, err := ghrepo.Under(e.settings().RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
+	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestByNumber(ctx, tx, name, number)
 	})
 	if err != nil || pr == nil {
@@ -1673,7 +1613,7 @@ func (e *Engine) pullRequest(ctx context.Context, tx pgx.Tx, repo string, number
 // on repo. It reads under the same names as pullRequest, in the same order and for the same
 // reason.
 func (e *Engine) pullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.PullRequest, error) {
-	pr, err := ghrepo.Under(e.settings().RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
+	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestByBranch(ctx, tx, name, branch)
 	})
 	if err != nil || pr == nil {

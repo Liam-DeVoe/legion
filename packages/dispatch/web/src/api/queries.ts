@@ -22,8 +22,6 @@ import type {
   DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
-  LegionBoardResponse,
-  LegionMetricsScope,
   MyRepliesResponse,
 } from "./types";
 
@@ -418,18 +416,19 @@ interface DeliveryLiveBodies {
   readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
-  readonly legion: LegionBoardResponse;
 }
 
-/** The live view's answer, which is the body of the GET route its kind mirrors. */
-function subscribeLive<V extends DeliveryLiveView>(
+/** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
+ *  this page subscribes — timeline, measures and pipeline — are keyed here; the socket serves
+ *  other kinds this page does not read. */
+function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
-  view: V
-): Promise<DeliveryLiveBodies[V["kind"]]> {
+  view: DeliveryLiveView & { readonly kind: K }
+): Promise<DeliveryLiveBodies[K]> {
   // The socket answers each view with its own route's body (packages/contracts DeliveryLiveView);
   // the frame carries the union, and the view's kind names the member.
   return liveSocketFor(context.client).subscribe(context.queryKey, view) as Promise<
-    DeliveryLiveBodies[V["kind"]]
+    DeliveryLiveBodies[K]
   >;
 }
 
@@ -476,38 +475,6 @@ export const deliverySettingsQuery = () =>
   queryOptions({
     queryKey: ["delivery-settings"],
     queryFn: () => api.getDeliverySettings(),
-  });
-
-/** The Legion view on a project's Issues page, live: one subscription per project, since the
- *  board has no window and `project` is all `GET /api/v1/legion/board` reads. Its answer carries
- *  the columns in the order the view draws them — the queue in the daemon's own order, which the
- *  view never re-sorts — the header's slots and queue length, the last read's freshness or
- *  failure, and the daemon's settings with where each came from. A settings change arrives as a
- *  delta on this same subscription, so the settings panel reads nothing of its own. */
-export const legionBoardQuery = (view: DeliveryLiveView & { kind: "legion" }) =>
-  queryOptions({
-    ...LIVE,
-    queryKey: ["legion", "board", view],
-    queryFn: (context) => subscribeLive(context, view),
-  });
-
-/** The Delivery page's Legion section, by GET: the four metrics of one project over one range
- *  and one scope. Not live — the section draws a window of closed issues rather than what the
- *  daemon says now, and the page reads it a second time for its compare range, as the Pipeline
- *  section reads its own route twice. The key holds every parameter, so a project, a range or a
- *  scope the reader picks is its own entry and the one before it stays cached. */
-export const legionMetricsQuery = ({
-  project,
-  ...query
-}: {
-  project: string;
-  from: string;
-  to: string;
-  scope: LegionMetricsScope;
-}) =>
-  queryOptions({
-    queryKey: ["legion", "metrics", { project, ...query }],
-    queryFn: () => api.getLegionMetrics(project, query),
   });
 
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each

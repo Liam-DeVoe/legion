@@ -78,10 +78,10 @@ func answersOf(t *testing.T, pool *pgxpool.Pool, key string) []string {
 // experimentEngine is testEngine declaring experiments and drawing them from source.
 func experimentEngine(t *testing.T, declared []config.Experiment, source func(uint64) (uint64, error)) *Engine {
 	t.Helper()
-	cfg := testEngine(config.DesignGateRootIssues, nil).settings()
-	cfg.Experiments = declared
-	cfg.ExperimentSource = source
-	return NewReading(record.NewStore(), func() Config { return cfg }, nil)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	engine.cfg.Experiments = declared
+	engine.cfg.ExperimentSource = source
+	return engine
 }
 
 // An issue-unit experiment is drawn for each issue the daemon records, against that issue's own

@@ -64,11 +64,6 @@ const (
 	// azureFederationAudience is unset: the one Entra's federated credentials expect by default.
 	defaultAzureFederationAudience = "api://AzureADTokenExchange"
 
-	// defaultLegionDaemonAudience is the audience of the token the app presents to the Legion
-	// daemon's settings route when legionDaemonAudience is unset: the name a daemon that reads
-	// no audience of its own accepts.
-	defaultLegionDaemonAudience = "legion-daemon"
-
 	// dispatchAnswererAzure and dispatchAnswererEndpoint are the two places Dispatch generates
 	// text, the values DISPATCH_ANSWERER takes: a chat deployment of an Azure AI Foundry resource
 	// (azureChatEndpoint), or any OpenAI-shaped chat completions service (chatEndpoint). With
@@ -189,17 +184,6 @@ type DispatchArgs struct {
 	// no token is an input, a stored secret or part of the component's state. Set both or neither.
 	AgentSecretsUrl      string `pulumi:"agentSecretsUrl,optional"`
 	AgentSecretsAudience string `pulumi:"agentSecretsAudience,optional"`
-
-	// LegionDaemonAudience is the audience of the projected ServiceAccount token Dispatch
-	// presents to the Legion daemon's settings route, legion-daemon when unset. The kubelet
-	// mints the token for it and rewrites it in place, so no token is an input, a stored secret
-	// or part of the component's state, and Dispatch reads the file
-	// DISPATCH_LEGION_DAEMON_TOKEN_FILE names at call time, as it reads the broker's. The
-	// daemon's own settings name the audience it accepts, so the two move together. Unlike the
-	// broker's pair, this one renders always: the daemon is reached at a URL a Dispatch setting
-	// names at run time rather than at one a stack input names, so the component cannot know
-	// whether a deployment calls it.
-	LegionDaemonAudience string `pulumi:"legionDaemonAudience,optional"`
 
 	// OidcAudience turns on Dispatch's own service-account verifier, the one the secrets
 	// broker's judge reads Dispatch with: DISPATCH_OIDC_AUDIENCE is the audience a projected
@@ -426,7 +410,6 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"signInDomain", args.SignInDomain},
 		{"agentSecretsUrl", args.AgentSecretsUrl},
 		{"agentSecretsAudience", args.AgentSecretsAudience},
-		{"legionDaemonAudience", args.LegionDaemonAudience},
 		{"oidcAudience", args.OidcAudience},
 		{"oidcIssuer", args.OidcIssuer},
 		{"appClientId", args.AppClientId},
@@ -538,7 +521,6 @@ type dispatchSettings struct {
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
-	legionDaemonAudience                        string
 	oidcAudience, oidcIssuer                    string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
@@ -847,7 +829,6 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"natsSeedSecret", args.NatsSeedSecret != nil},
 		{"agentSecretsUrl", args.AgentSecretsUrl != ""},
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
-		{"legionDaemonAudience", args.LegionDaemonAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
 		{"oidcIssuer", args.OidcIssuer != ""},
 		{"appClientId", args.AppClientId != ""},
@@ -1183,16 +1164,15 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	}
 
 	s := dispatchSettings{
-		frontDoor:            frontDoor,
-		signInOn:             signInOn,
-		hostname:             args.Hostname,
-		tailnetDNSName:       args.TailnetDnsName,
-		region:               args.Region,
-		tags:                 args.Tags,
-		databaseVersion:      defaultDispatchDatabaseVersion,
-		databaseTier:         defaultDispatchDatabaseTier,
-		namespace:            defaultDispatchNamespace,
-		legionDaemonAudience: defaultLegionDaemonAudience,
+		frontDoor:       frontDoor,
+		signInOn:        signInOn,
+		hostname:        args.Hostname,
+		tailnetDNSName:  args.TailnetDnsName,
+		region:          args.Region,
+		tags:            args.Tags,
+		databaseVersion: defaultDispatchDatabaseVersion,
+		databaseTier:    defaultDispatchDatabaseTier,
+		namespace:       defaultDispatchNamespace,
 	}
 	s.images.envoy = args.EnvoyImage
 	s.images.tailscale = args.TailscaleImage
@@ -1202,9 +1182,6 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.signIn.domain = args.SignInDomain
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = args.AgentSecretsAudience
-	if args.LegionDaemonAudience != "" {
-		s.legionDaemonAudience = args.LegionDaemonAudience
-	}
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
 	s.appClientID = args.AppClientId

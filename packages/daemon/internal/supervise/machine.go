@@ -715,51 +715,16 @@ type Timeouts struct {
 	ClaimWrite time.Duration
 }
 
-// Settings is where a decision reads the limits it is held to and the waits it times: the
-// daemon's settings holder, asked as the decision is made rather than copied when the machine was
-// built, so a change of `launch_failure_limit`, `prompt_failure_limit`, `prompt_retire_limit`,
-// `worker_boot_timeout_seconds` or `worker_rpc_timeout_seconds` reaches the next decision with no
-// machine rebuilt.
-//
-// It is the one source of both: a Deps that carried copies beside it would read them wherever it
-// was built without one, which is how a production reader of such a copy came to read zero
-// (dispatch://INFRA-1077, round 5). A caller whose budgets never change — every test's — hands
-// FixedSettings.
-type Settings interface {
-	Limits() Limits
-	Timeouts() Timeouts
-}
-
-// FixedSettings is a Settings that answers limits and timeouts that never move: what a caller
-// with no settings holder hands Deps. The daemon hands its own holder instead (liveBudgets), so
-// a change of one of those keys reaches the next decision.
-func FixedSettings(limits Limits, timeouts Timeouts) Settings {
-	return fixedSettings{limits: limits, timeouts: timeouts}
-}
-
-type fixedSettings struct {
-	limits   Limits
-	timeouts Timeouts
-}
-
-func (f fixedSettings) Limits() Limits     { return f.limits }
-func (f fixedSettings) Timeouts() Timeouts { return f.timeouts }
-
 // Deps is what a machine is built from.
 type Deps struct {
-	Runtime runtime.Runtime
-	Conns   runtime.Conns
-	Store   Store
-	Specs   Specs
-	Clock   Clock
-	Log     *slog.Logger
-	// Settings is where every decision reads the limits it is held to and the waits it times,
-	// and the one place it does: the daemon hands its settings holder, so a change of one of
-	// those settings takes effect at once, and a caller whose budgets never change hands
-	// FixedSettings. It is required (check), because a Deps that could also carry copies of
-	// them read the copies wherever it was built without a holder, and outside this package
-	// those copies were always zero.
-	Settings Settings
+	Runtime  runtime.Runtime
+	Conns    runtime.Conns
+	Store    Store
+	Specs    Specs
+	Clock    Clock
+	Log      *slog.Logger
+	Limits   Limits
+	Timeouts Timeouts
 	// WakePace is how fast the daemon lets this machine's launches out (reserveWake); its zero
 	// value is the pacing off.
 	WakePace WakePace
@@ -844,15 +809,12 @@ type Deps struct {
 	// cannot import api), compared against each claim's recorded PluginContract to decide whether a
 	// registration or a restored claim is stale.
 	PluginContract int
-	// PluginRelaunchable is whether this daemon can relaunch a stale process onto a plugin at all,
-	// asked at each decision that turns on it (pluginRelaunchable), since the plugin pair a relaunch
-	// installs can change under a running daemon: true under tmux always (the pane resumes on the
-	// host's own plugin, which the boot gate holds to this daemon's contract), and under Kubernetes
-	// iff the launch a relaunch is built from names a plugin pair to install now. False means a
-	// stale claim is recorded and reported, never relaunched or refused — relaunching nothing it
-	// cannot build, and refusing nothing a relaunch is not already under way to fix. nil answers
-	// false, as a daemon that states nothing can relaunch onto nothing.
-	PluginRelaunchable func() bool
+	// PluginRelaunchable is whether this daemon can relaunch a stale process onto a plugin at all:
+	// true under tmux always (the pane resumes on the host's own plugin, which the boot gate holds
+	// to this daemon's contract), and under Kubernetes iff a plugin pair to install is known. False
+	// means a stale claim is recorded and reported, never relaunched or refused — relaunching
+	// nothing it cannot build, and refusing nothing a relaunch is not already under way to fix.
+	PluginRelaunchable bool
 	// NoPluginInstall is whether a launch of this claim installs no plugin at all: it runs in a
 	// pod whose image carries its plugin, which no install reaches (a Claude Code role's
 	// claude-envoy under Kubernetes). Only the daemon knows a role's backend and the runtime it
@@ -922,28 +884,15 @@ type Deps struct {
 	Worker func(context.Context) context.Context
 }
 
-// limits is the limits this decision is held to, and timeouts the waits it times, both read from
-// the settings holder as the decision is made. Every read of either goes through them, so a
-// decision is never held to a budget settled before the machine was built.
-//
-// check refuses a Deps with no holder, so neither can be reached with nothing to read.
-func (d Deps) limits() Limits { return d.Settings.Limits() }
-
-func (d Deps) timeouts() Timeouts { return d.Settings.Timeouts() }
-
 func (d Deps) check() error {
-	if d.Settings == nil {
-		return errors.New("supervise: Deps.Settings is required: it is where every decision reads its limits and its waits (FixedSettings for budgets that never change)")
-	}
-	limits, timeouts := d.limits(), d.timeouts()
 	for _, bound := range []struct {
 		name  string
 		value int
 	}{
-		{"Limits.LaunchFailures", limits.LaunchFailures},
-		{"Limits.PromptFailures", limits.PromptFailures},
-		{"Limits.PromptRetires", limits.PromptRetires},
-		{"Timeouts.RegistrationIntervals", timeouts.RegistrationIntervals},
+		{"Limits.LaunchFailures", d.Limits.LaunchFailures},
+		{"Limits.PromptFailures", d.Limits.PromptFailures},
+		{"Limits.PromptRetires", d.Limits.PromptRetires},
+		{"Timeouts.RegistrationIntervals", d.Timeouts.RegistrationIntervals},
 		{"PluginContract", d.PluginContract},
 	} {
 		if bound.value < 1 {
@@ -954,11 +903,11 @@ func (d Deps) check() error {
 		name  string
 		value time.Duration
 	}{
-		{"Timeouts.Boot", timeouts.Boot},
-		{"Timeouts.RPC", timeouts.RPC},
-		{"Timeouts.Probe", timeouts.Probe},
-		{"Timeouts.Stop", timeouts.Stop},
-		{"Timeouts.LaunchBackoff", timeouts.LaunchBackoff},
+		{"Timeouts.Boot", d.Timeouts.Boot},
+		{"Timeouts.RPC", d.Timeouts.RPC},
+		{"Timeouts.Probe", d.Timeouts.Probe},
+		{"Timeouts.Stop", d.Timeouts.Stop},
+		{"Timeouts.LaunchBackoff", d.Timeouts.LaunchBackoff},
 	} {
 		if wait.value <= 0 {
 			return fmt.Errorf("supervise: %s must be positive, got %s", wait.name, wait.value)
@@ -978,14 +927,13 @@ func (d Deps) check() error {
 // the claim write is marked and made again at the claim's next decision (owes, repair).
 const defaultClaimWrite = 5 * time.Second
 
-// claimWrite is the ClaimWrite of the timeouts this decision reads (Deps.timeouts), or
-// defaultClaimWrite when they name none. It is a fallback rather than a check, so a Deps built
-// without it still writes under the deadline.
+// claimWrite is Deps.Timeouts.ClaimWrite, or defaultClaimWrite when it names none. It is a
+// fallback rather than a check, so a Deps built without it still writes under the deadline.
 func (d Deps) claimWrite() time.Duration {
-	if d.timeouts().ClaimWrite <= 0 {
+	if d.Timeouts.ClaimWrite <= 0 {
 		return defaultClaimWrite
 	}
-	return d.timeouts().ClaimWrite
+	return d.Timeouts.ClaimWrite
 }
 
 // RefusedError is a request the claim does not allow — the answer an API route gives its caller
@@ -2302,7 +2250,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			}
 			m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
 				"generation", m.claim.Generation, "error", err)
-			m.relaunchLater(m.deps.timeouts().Probe, m.retryHolding(intent, func(ctx context.Context) error {
+			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
 				return m.launchAfter(ctx, charged, exempt, noEnd)
 			}))
 			return err
@@ -2349,10 +2297,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		}
 		err = errors.Join(err, m.stopPrevious(starting))
 		m.claim.Budgets.LaunchFailures++
-		limit := m.deps.limits().LaunchFailures
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
-			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", limit)
-		if m.claim.Budgets.LaunchFailures >= limit {
+			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
+		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 			// The refusal is this claim's own cause only where nothing else is already being
 			// relaunched after: a claim that died and whose relaunch the runtime then refused
 			// reads died (Claim.PendingCause).
@@ -2504,7 +2451,7 @@ func (m *Machine) leftPodRoundAt(loc runtime.Locator) {
 // the daemon's stop ends forgives nothing: the next boot launches that claim again, as it does a
 // launch its context cut short.
 func (m *Machine) backOff(ctx context.Context) error {
-	wait := backoff.Wait(m.deps.timeouts().LaunchBackoff, m.claim.Budgets.LaunchFailures)
+	wait := backoff.Wait(m.deps.Timeouts.LaunchBackoff, m.claim.Budgets.LaunchFailures)
 	m.log.Info("supervise: waiting before the next launch", "after", wait, "launchFailures", m.claim.Budgets.LaunchFailures)
 	if err := m.deps.Clock.Sleep(ctx, wait); err != nil {
 		m.log.Info("supervise: the wait before the next launch was cut short; its context ended", "error", err)
@@ -3121,7 +3068,7 @@ func (m *Machine) probe(ctx context.Context, alive func(context.Context) error, 
 func nothing(context.Context) error { return nil }
 
 func (m *Machine) armBoot() {
-	m.arm(TimerBoot, m.deps.timeouts().Boot, "")
+	m.arm(TimerBoot, m.deps.Timeouts.Boot, "")
 	m.armRegistration()
 }
 
@@ -3136,7 +3083,7 @@ func (m *Machine) armRegistration() {
 	if m.claim.State == StateLaunching {
 		grace = m.deps.Runtime.ProvisionBound()
 	}
-	m.arm(TimerRegistration, runtime.RegistrationDeadline(m.deps.timeouts().Boot, m.deps.timeouts().RegistrationIntervals, grace), "")
+	m.arm(TimerRegistration, runtime.RegistrationDeadline(m.deps.Timeouts.Boot, m.deps.Timeouts.RegistrationIntervals, grace), "")
 }
 
 // arm schedules one timer of a kind, replacing any of that kind already armed. Its event carries

@@ -111,7 +111,6 @@ on:
       - 'packages/daemon/internal/runtime/tmux/*'
       - 'packages/daemon/internal/runtime/workerbin/*'
       - 'packages/daemon/internal/sessionproxy/*'
-      - 'packages/daemon/internal/settings/*'
       - 'packages/daemon/internal/shim/*'
       - 'packages/daemon/internal/shimwire/*'
       - 'packages/daemon/internal/store/**'
@@ -134,7 +133,6 @@ on:
       - 'packages/envoy/internal/googleidentity/*'
       - 'packages/envoy/listenfd/*'
       - 'packages/envoy/migrationid/*'
-      - 'packages/envoy/oidc/*'
       - 'packages/envoy/roleholder/*'
       - 'packages/envoy/sessiontiming/*'
       # ci.yaml's *dispatch_server:

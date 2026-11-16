@@ -201,11 +201,6 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
-			Name: settingsRouteKey, Default: "only the operator bearer may change a setting through the settings route", RequiredBy: "no",
-			Description: "Who besides the operator bearer may change this daemon's settings through `PUT /legion/v1/operator/settings`: a projected Kubernetes ServiceAccount token the cluster's OIDC issuer signed, for the audience this block names, naming one of the ServiceAccounts it lists, which is how Dispatch changes a setting without a copy of the operator token; the three are one rule, written together or not at all.",
-			Read:        reads(readSettingsRoute, func(f *fileConfig, v *SettingsRoute) { f.SettingsRoute = v }),
-		},
-		{
 			Name: "dispatch_url", Default: "the daemon runs no workflow", RequiredBy: "when runtime is kubernetes: the workflow is what launches every pod",
 			Description: "Dispatch's service base URL, never its `/mcp` endpoint, which its clients append themselves; setting it configures the workflow, which then requires `dispatch_token_file`, `nats_urls` and a `projects` entry for the daemon's own project.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.DispatchURL = v }),
@@ -512,14 +507,6 @@ var nestedKeys = []memberGroup{
 			Description: "A command that prints an installation token the daemon uses in the App's place; its own answer names each installation, which is why `installations` may not be set beside it."},
 		{Name: "installations", Default: "the daemon finds each owner's installation itself", RequiredBy: "no",
 			Description: "The App's installation id for each owner, where the deployment pins them rather than letting the daemon look each one up."},
-	}},
-	{Path: settingsRouteKey, Members: []member{
-		{Name: "oidc_issuer", Default: "none: a block that names no issuer is refused", RequiredBy: "yes",
-			Description: "The cluster's OIDC issuer as its tokens' `iss` claim writes it, which the daemon reads the signing keys of every admitted token from: an `https` URL, or plain `http` on a loopback host alone."},
-		{Name: "audience", Default: "none: a block that names no audience is refused", RequiredBy: "yes",
-			Description: "The audience a presented token must have been projected for, the daemon's own, which the calling pod's projected volume names."},
-		{Name: "service_accounts", Default: "none: a block that names no ServiceAccount is refused", RequiredBy: "yes",
-			Description: "Every ServiceAccount the route admits, each written `system:serviceaccount:<namespace>:<name>` as a token's `sub` names it; a token naming any other subject is refused."},
 	}},
 	{Path: "projects.<KEY>", Members: []member{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",

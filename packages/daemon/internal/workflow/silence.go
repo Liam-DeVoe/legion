@@ -82,8 +82,7 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
-	cfg := e.settings()
-	project, err := claim.ProjectToken(cfg.Project)
+	project, err := claim.ProjectToken(e.cfg.Project)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +96,7 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
-	return &phaseWorkerReading{issue: *issue, root: *root, gate: record.TreeGate{Steps: cfg.Steps, Rows: rows}, run: run, row: row}, nil
+	return &phaseWorkerReading{issue: *issue, root: *root, gate: record.TreeGate{Steps: e.cfg.Steps, Rows: rows}, run: run, row: row}, nil
 }
 
 // phaseWorkerReading is what phaseWorkerRecord answers.

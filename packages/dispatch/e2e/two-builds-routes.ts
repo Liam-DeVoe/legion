@@ -36,7 +36,7 @@ export const walkRoutes = [
   { page: "MachineLoginRoute", path: "/credentials/machine" },
   { page: "SettingsPage", path: "/settings" },
   { page: "DeliveryPage", path: "/delivery" },
-  { page: "PipelineRedirect", path: "/pipeline" },
+  { page: "PipelinePage", path: "/pipeline" },
   { page: "NotFoundPage", path: "*" },
 ] as const satisfies readonly WalkRoute[];
 

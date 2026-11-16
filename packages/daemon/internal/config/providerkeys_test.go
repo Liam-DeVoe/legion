@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -65,9 +64,9 @@ func readStub(t *testing.T, stubDir, name string) string {
 // secretsd (config.ts runSecretsGet and resolvePrivateKeySecret): the tier first, never costing a
 // tap; then the value, under the daemon's own environment less its session token, with the daemon's
 // stdin — secretsd scopes a tokenless caller by its terminal. Each value lands in its own 0600 file
-// in a 0700 directory of its own under the 0700 ProviderEnvDir, named for the variable OMP reads
-// — not for the secretsd key, which a deployment names per environment. A human-tier key is
-// announced first, and nothing logged carries a value.
+// in a 0700 directory, named for the variable OMP reads — not for the secretsd key, which a
+// deployment names per environment. A human-tier key is announced first, and nothing logged carries
+// a value.
 func TestMaterializeProviderKeysWritesEachValueAsADaemonHeldFile(t *testing.T) {
 	environ, stubDir := secretsStub(t)
 	stateDir := filepath.Join(t.TempDir(), "state")
@@ -89,15 +88,13 @@ func TestMaterializeProviderKeysWritesEachValueAsADaemonHeldFile(t *testing.T) {
 		t.Fatalf("MaterializeProviderKeys: %v", err)
 	}
 
-	if parent := filepath.Join(stateDir, "secrets", "provider-env"); filepath.Dir(dir) != parent {
-		t.Errorf("dir = %q, want a directory of its own under %q", dir, parent)
+	if want := filepath.Join(stateDir, "secrets", "provider-env"); dir != want {
+		t.Errorf("dir = %q, want %q", dir, want)
 	}
-	for _, path := range []string{filepath.Dir(dir), dir} {
-		if info, err := os.Stat(path); err != nil {
-			t.Errorf("%s: %v", path, err)
-		} else if info.Mode().Perm() != 0o700 {
-			t.Errorf("%s: mode %v, want 0700", path, info.Mode().Perm())
-		}
+	if info, err := os.Stat(dir); err != nil {
+		t.Errorf("provider-env directory: %v", err)
+	} else if info.Mode().Perm() != 0o700 {
+		t.Errorf("provider-env directory mode %v, want 0700", info.Mode().Perm())
 	}
 	for name, want := range map[string]string{"AGENT_ENV": "agent-value", "HUMAN_ENV": "human-value"} {
 		path := filepath.Join(dir, name)
@@ -112,7 +109,7 @@ func TestMaterializeProviderKeysWritesEachValueAsADaemonHeldFile(t *testing.T) {
 		}
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 2 {
-		t.Errorf("the set holds %d entries, want exactly the two variables (no temporary files, nothing named for a secretsd key)", len(entries))
+		t.Errorf("provider-env holds %d entries, want exactly the two variables (no temporary files, nothing named for a secretsd key)", len(entries))
 	}
 
 	if calls := readStub(t, stubDir, "calls"); calls != "get AGENT_KEY --no-request\nget AGENT_KEY --value\nget HUMAN_KEY --no-request\nget HUMAN_KEY --value" {
@@ -138,59 +135,34 @@ func TestMaterializeProviderKeysWritesEachValueAsADaemonHeldFile(t *testing.T) {
 	}
 }
 
-// Each write is a set of its own holding exactly the keys it was given, and an earlier set is
-// left as it was, since a pane may be reading it; no keys at all write nothing. Every set but
-// those the caller keeps is removed, whatever else the directory holds with them, and with none
-// kept the directory goes too — a pane is never handed a key nobody configured.
-func TestMaterializeProviderKeysWritesEachSetWholeAndRemovesTheSetsNotKept(t *testing.T) {
+// The directory holds exactly the configured keys: one dropped from the file is removed at the
+// next boot, and no keys at all is no directory — a pane is never handed a key nobody configured.
+func TestMaterializeProviderKeysKeepsExactlyTheConfiguredKeys(t *testing.T) {
 	environ, _ := secretsStub(t)
 	stateDir := filepath.Join(t.TempDir(), "state")
 	log := slog.New(slog.NewTextHandler(&strings.Builder{}, nil))
 
 	agent := ProviderKey{Env: "AGENT_ENV", Secret: "AGENT_KEY"}
-	both, err := MaterializeProviderKeys([]ProviderKey{agent, {Env: "HUMAN_ENV", Secret: "HUMAN_KEY"}}, stateDir, environ, log)
+	dir, err := MaterializeProviderKeys([]ProviderKey{agent, {Env: "HUMAN_ENV", Secret: "HUMAN_KEY"}}, stateDir, environ, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	one, err := MaterializeProviderKeys([]ProviderKey{agent}, stateDir, environ, log)
-	if err != nil {
+	if _, err := MaterializeProviderKeys([]ProviderKey{agent}, stateDir, environ, log); err != nil {
 		t.Fatal(err)
 	}
-	if one == both {
-		t.Fatalf("two writes answered the one directory %s", one)
+	if _, err := os.Stat(filepath.Join(dir, "HUMAN_ENV")); !os.IsNotExist(err) {
+		t.Errorf("a key dropped from provider_keys is still on disk (stat: %v)", err)
 	}
-	for dir, want := range map[string][]string{both: {"AGENT_ENV", "HUMAN_ENV"}, one: {"AGENT_ENV"}} {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var got []string
-		for _, entry := range entries {
-			got = append(got, entry.Name())
-		}
-		if !slices.Equal(got, want) {
-			t.Errorf("%s holds %q, want %q", dir, got, want)
-		}
-	}
-	if none, err := MaterializeProviderKeys(nil, stateDir, environ, log); err != nil || none != "" {
-		t.Fatalf("no provider keys = (%q, %v), want no directory", none, err)
+	if _, err := os.Stat(filepath.Join(dir, "AGENT_ENV")); err != nil {
+		t.Errorf("a configured key is gone: %v", err)
 	}
 
-	parent := ProviderEnvDir(stateDir)
-	if err := os.WriteFile(filepath.Join(parent, "HUMAN_ENV"), []byte("written by a daemon before sets"), 0o600); err != nil {
-		t.Fatal(err)
+	none, err := MaterializeProviderKeys(nil, stateDir, environ, log)
+	if err != nil || none != "" {
+		t.Fatalf("no provider keys = (%q, %v), want no directory", none, err)
 	}
-	if err := RemoveProviderKeysBut(stateDir, []string{one}); err != nil {
-		t.Fatal(err)
-	}
-	if entries, err := os.ReadDir(parent); err != nil || len(entries) != 1 || filepath.Join(parent, entries[0].Name()) != one {
-		t.Errorf("after keeping %s the directory holds %v (%v), want that set alone", one, entries, err)
-	}
-	if err := RemoveProviderKeysBut(stateDir, []string{""}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(parent); !os.IsNotExist(err) {
-		t.Errorf("the provider-env directory outlived its last set (stat: %v)", err)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the provider-env directory outlived its last key (stat: %v)", err)
 	}
 }
 
@@ -229,8 +201,8 @@ func TestMaterializeProviderKeysRefuses(t *testing.T) {
 			if strings.Contains(err.Error(), "-value\n") || strings.Contains(err.Error(), "agent-value") {
 				t.Errorf("the refusal carries a value: %v", err)
 			}
-			if _, statErr := os.Stat(ProviderEnvDir(stateDir)); !os.IsNotExist(statErr) {
-				t.Errorf("a refused write still wrote a set (stat: %v)", statErr)
+			if _, statErr := os.Stat(filepath.Join(stateDir, "secrets", "provider-env", "AGENT_ENV")); !os.IsNotExist(statErr) {
+				t.Errorf("a refused boot still wrote AGENT_ENV (stat: %v)", statErr)
 			}
 		})
 	}
@@ -350,8 +322,8 @@ func TestMaterializeProviderKeysRefusesAFileKeyItCannotUse(t *testing.T) {
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
-			if _, statErr := os.Stat(ProviderEnvDir(stateDir)); !os.IsNotExist(statErr) {
-				t.Errorf("a refused write still wrote a set (stat: %v)", statErr)
+			if _, statErr := os.Stat(filepath.Join(stateDir, "secrets", "provider-env", "AGENT_ENV")); !os.IsNotExist(statErr) {
+				t.Errorf("a refused boot still wrote AGENT_ENV (stat: %v)", statErr)
 			}
 		})
 	}

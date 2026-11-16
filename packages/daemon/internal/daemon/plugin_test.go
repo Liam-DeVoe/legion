@@ -43,31 +43,25 @@ import (
 )
 
 // newPluginSupervisor is a bare supervisor over the fake runtime, deps set for the stale-plugin
-// trigger: contract is the daemon's own (supervise.Deps.PluginContract) and relaunchable what its
-// PluginRelaunchable answers — the registration path's own switch (staleRegistration); the boot
-// pass reads s.plan.pluginRelaunchable instead, which the boot tests below set on the bare
-// *supervision they build around this supervisor.
+// trigger: contract is the daemon's own (supervise.Deps.PluginContract) and relaunchable its
+// PluginRelaunchable — the registration path's own switch (staleRegistration); the boot pass reads
+// s.plan.pluginRelaunchable instead, which the boot tests below set on the bare *supervision they
+// build around this supervisor.
 func newPluginSupervisor(t *testing.T, contract int, relaunchable bool) (*supervisor, *fake.Runtime) {
 	t.Helper()
 	rt := fake.NewRuntime()
 	sup := newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: fake.NewConns(), Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-		Settings: supervise.FixedSettings(
-			supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-			supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond}),
+		Limits:             supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract:     contract,
-		PluginRelaunchable: relaunching(relaunchable),
+		PluginRelaunchable: relaunchable,
 		RefreshGate:        supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	return sup, rt
 }
-
-// relaunching is a stand-in for the daemon's read of whether it can relaunch a stale process
-// onto a plugin (supervise.Deps.PluginRelaunchable, plan.pluginRelaunchable) that always answers
-// can.
-func relaunching(can bool) func() bool { return func() bool { return can } }
 
 func pluginTestLocator(token claim.Token) *runtime.Locator {
 	return &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "4242:1", Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}
@@ -320,7 +314,7 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 	if _, err := sup.restore(context.Background(), []supervise.Claim{c}); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: relaunching(true)},
+	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true},
 		refreshGate: supervise.NewRefreshGate(0)}
 
 	s.refreshStalePlugins(s.claims, "boot")
@@ -388,7 +382,7 @@ func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing
 		t.Fatalf("restore: %v", err)
 	}
 	logs := &syncBuffer{}
-	s := &supervision{log: jsonLogger(logs), supervisor: sup, claims: claims, plan: plan{pluginRelaunchable: relaunching(true)},
+	s := &supervision{log: jsonLogger(logs), supervisor: sup, claims: claims, plan: plan{pluginRelaunchable: true},
 		refreshGate: supervise.NewRefreshGate(0)}
 
 	s.endPluginRounds(s.claims)
@@ -461,7 +455,7 @@ func TestBootSuspendsAStaleClaimWhoseSuspensionIsHeldAtItsTurnsEnd(t *testing.T)
 	if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator}); !errors.Is(err, supervise.ErrSuspendHeld) {
 		t.Fatalf("suspend mid-turn = %v, want ErrSuspendHeld", err)
 	}
-	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: relaunching(true)},
+	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true},
 		refreshGate: supervise.NewRefreshGate(0)}
 
 	s.refreshStalePlugins(s.claims, "boot")
@@ -627,13 +621,13 @@ func TestARelaunchedProcessStillStaleIsChargedUntilWorkerDied(t *testing.T) {
 	}
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PluginContract = 24
-	sup.deps.PluginRelaunchable = relaunching(true)
-	moveBudgets(sup, func(l *supervise.Limits, _ *supervise.Timeouts) { l.LaunchFailures = 2 })
+	sup.deps.PluginRelaunchable = true
+	sup.deps.Limits.LaunchFailures = 2
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	// The terminal hook carries the deployment's limits into the fact, as the boot's attach does
 	// (workflowRuntime.attach), so the notice below names each count against its own limit.
-	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger(), limits: sup.deps.Settings.Limits}).claimDurableState)
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger(), limits: sup.deps.Limits}).claimDurableState)
 	planner, err := claim.NewToken("legion", issue.Key, claim.RolePlanner)
 	if err != nil {
 		t.Fatal(err)
@@ -713,25 +707,19 @@ func TestARelaunchedProcessStillStaleIsChargedUntilWorkerDied(t *testing.T) {
 	}
 }
 
-// prepare() resolves plan.plugins and plan.pluginsSource, which the boot log names, from the
+// prepare() resolves plan.plugins, plan.pluginsSource and plan.pluginRelaunchable from the
 // configuration alone: the file's runtime.kubernetes.plugins when set ("legion.yaml"), nil and ""
-// when it is not. Whether a stale-plugin claim can be relaunched is no boot's to decide: prepare
-// leaves plan.pluginRelaunchable to the launch specs openSupervision builds
-// (TestTheLaunchSpecsDecideWhetherAStaleProcessCanBeRelaunched), whatever the pair, and sets it
-// only where a test forces an answer (overrides.pluginRelaunchable).
+// when it is not (the daemon knows no pair, and pluginRelaunchable is false under kubernetes);
+// tmux is always relaunchable and resolves no pair at all, since the tmux runtime never installs
+// one.
 func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
-	kubernetes := func(t *testing.T) config.Config {
-		t.Helper()
+	t.Run("kubernetes, the file names a pair", func(t *testing.T) {
 		cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 		cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
 		if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
-		return cfg
-	}
-	t.Run("kubernetes, the file names a pair", func(t *testing.T) {
-		cfg := kubernetes(t)
 		cfg.Runtime.Kubernetes.Plugins = &config.PluginsConfig{PiLegion: "9.7.0", PiEnvoy: "9.6.1"}
 
 		p, err := prepare(cfg, quietLogger(), overrides{environ: []string{}})
@@ -739,55 +727,26 @@ func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
 			t.Fatalf("prepare: %v", err)
 		}
 		want := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
-		if p.plugins == nil || *p.plugins != *want || p.pluginsSource != "legion.yaml" || p.pluginRelaunchable != nil {
-			t.Fatalf("plugins = %+v, source %q, relaunchable decided %t; want %+v, \"legion.yaml\", left to the launch specs",
-				p.plugins, p.pluginsSource, p.pluginRelaunchable != nil, want)
+		if p.plugins == nil || *p.plugins != *want || p.pluginsSource != "legion.yaml" || !p.pluginRelaunchable {
+			t.Fatalf("plugins = %+v, source %q, relaunchable %t; want %+v, \"legion.yaml\", true", p.plugins, p.pluginsSource, p.pluginRelaunchable, want)
 		}
 	})
 	t.Run("kubernetes, the file names none", func(t *testing.T) {
-		p, err := prepare(kubernetes(t), quietLogger(), overrides{environ: []string{}})
-		if err != nil {
-			t.Fatalf("prepare: %v", err)
+		cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+		cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
+		if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
+			t.Fatal(err)
 		}
-		if p.plugins != nil || p.pluginsSource != "" || p.pluginRelaunchable != nil {
-			t.Fatalf("plugins = %+v, source %q, relaunchable decided %t; want nil, \"\", left to the launch specs",
-				p.plugins, p.pluginsSource, p.pluginRelaunchable != nil)
-		}
-	})
-	t.Run("a test forces the answer", func(t *testing.T) {
-		forced := true
-		p, err := prepare(kubernetes(t), quietLogger(), overrides{environ: []string{}, pluginRelaunchable: &forced})
-		if err != nil {
-			t.Fatalf("prepare: %v", err)
-		}
-		if p.pluginRelaunchable == nil || !p.pluginRelaunchable() {
-			t.Fatal("prepare with a forced answer leaves the daemon unable to relaunch, want the forced true")
-		}
-	})
-}
+		cfg.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
 
-// Whether a stale process can be relaunched onto a plugin at all is the launch specs' own answer
-// (specs.pluginRelaunchable), read from the configuration each build of them is given: under tmux
-// always, since a pane resumes on the host's plugin, and under Kubernetes iff the configuration
-// names a pair to install, so the relaunch it decides and the install it needs come from one
-// build.
-func TestTheLaunchSpecsDecideWhetherAStaleProcessCanBeRelaunched(t *testing.T) {
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
-	for _, tc := range []struct {
-		name  string
-		specs specs
-		want  bool
-	}{
-		{"tmux", specs{runtimeName: "tmux"}, true},
-		{"kubernetes, a pair named", specs{runtimeName: "kubernetes", plugins: pair}, true},
-		{"kubernetes, none named", specs{runtimeName: "kubernetes"}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.specs.pluginRelaunchable(); got != tc.want {
-				t.Fatalf("pluginRelaunchable = %t, want %t", got, tc.want)
-			}
-		})
-	}
+		p, err := prepare(cfg, quietLogger(), overrides{environ: []string{}})
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		if p.plugins != nil || p.pluginsSource != "" || p.pluginRelaunchable {
+			t.Fatalf("plugins = %+v, source %q, relaunchable %t; want nil, \"\", false", p.plugins, p.pluginsSource, p.pluginRelaunchable)
+		}
+	})
 }
 
 // ResolvedPlugins is nil, "" without the kubernetes block or without a pair, the file's pair with
@@ -813,170 +772,6 @@ func TestResolvedPlugins(t *testing.T) {
 				t.Fatalf("ResolvedPlugins = %+v, %q; want %+v, %q", pair, source, tc.wantPair, tc.wantSource)
 			}
 		})
-	}
-}
-
-// A change of the plugin pair reaches the next stale-plugin relaunch: the launch specs hand the
-// launch of a claim on another contract the pair to install (stalePluginInstall), and each build
-// of them resolves the pair from the configuration it is given (ResolvedPlugins), so the pair's
-// rows name the specs (config.Classes). Resolved once at boot and copied into every build
-// instead, the next relaunch of a stale process installed the pair the daemon booted on, whatever
-// had been applied since. The launch is read through the launch specs the daemon's machines hold,
-// the holder the rebuild observer builds again (rebuilder.holders).
-func TestAChangedPluginPairReachesTheNextStalePluginInstall(t *testing.T) {
-	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-	cfg.Runtime.Kubernetes.Plugins = &config.PluginsConfig{PiLegion: "9.7.0", PiEnvoy: "9.6.1"}
-	o := fakeRuntime(fake.NewRuntime(), &built{})
-	var rebuild *rebuilder
-	o.settingsRebuilder = func(r *rebuilder) { rebuild = r }
-	d := startDaemon(t, cfg, o)
-	if rebuild == nil {
-		t.Fatal("the daemon handed the test no rebuild observer")
-	}
-	launchSpecs, held := rebuild.holders[config.HolderLaunchSpecs].(supervise.Specs)
-	if !held {
-		t.Fatalf("the daemon registered no launch specs with its rebuild observer; it registered %v", rebuild.order)
-	}
-	project, err := claim.ProjectToken(cfg.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	issue := cfg.Project + "-1"
-	token, err := claim.NewToken(project, issue, claim.RoleImplementer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stale := supervise.Claim{Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleImplementer,
-		State: supervise.StateReady, Session: "ses_stale", PluginContract: api.DaemonAPIVersion - 1}
-	installs := func() *runtime.PluginInstall {
-		t.Helper()
-		spec, err := launchSpecs.SpawnSpec(t.Context(), stale)
-		if err != nil {
-			t.Fatalf("the launch of the stale claim: %v", err)
-		}
-		return spec.Plugins
-	}
-	if got, want := installs(), (runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}); got == nil || *got != want {
-		t.Fatalf("the boot's stale-plugin relaunch installs %+v, want the file's pair %+v", got, want)
-	}
-
-	moved := *d.live.Snapshot()
-	block := *moved.Runtime.Kubernetes
-	block.Plugins = &config.PluginsConfig{PiLegion: "9.8.0", PiEnvoy: "9.7.2"}
-	moved.Runtime.Kubernetes = &block
-	d.live.WhileSettled(func(*config.Config) {
-		rebuild.observe(&moved, []config.Change{
-			changeOfPath(t, "runtime.kubernetes.plugins.pi_envoy"), changeOfPath(t, "runtime.kubernetes.plugins.pi_legion"),
-		})
-	})
-
-	if got, want := installs(), (runtime.PluginInstall{PiLegion: "9.8.0", PiEnvoy: "9.7.2", Contract: api.DaemonAPIVersion}); got == nil || *got != want {
-		t.Fatalf("the stale-plugin relaunch after the change installs %+v, want the pair the change names %+v", got, want)
-	}
-}
-
-// pluginDaemon boots cfg, a Kubernetes daemon, on rt with its orphan sweep — the pass that posts
-// every stale claim's relaunch again — every 100 ms and seeded in its store first, and answers the
-// daemon, its rebuild observer and its log.
-func pluginDaemon(t *testing.T, cfg config.Config, rt *fake.Runtime, seeded ...supervise.Claim) (*daemon, *rebuilder, *syncBuffer) {
-	t.Helper()
-	for _, c := range seeded {
-		putClaim(t, cfg, c)
-	}
-	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 100 * time.Millisecond
-	var rebuild *rebuilder
-	o.settingsRebuilder = func(r *rebuilder) { rebuild = r }
-	logs := &syncBuffer{}
-	d := startDaemonLogging(t, cfg, o, jsonLogger(logs))
-	if rebuild == nil {
-		t.Fatal("the daemon handed the test no rebuild observer")
-	}
-	return d, rebuild, logs
-}
-
-// setPlugins is a change of the running daemon's plugin pair to plugins (nil for none), as an
-// apply hands it to the rebuild observer (rebuilder.observe, under the settings holder's lock).
-func setPlugins(t *testing.T, d *daemon, rebuild *rebuilder, plugins *config.PluginsConfig) {
-	t.Helper()
-	moved := *d.live.Snapshot()
-	block := *moved.Runtime.Kubernetes
-	block.Plugins = plugins
-	moved.Runtime.Kubernetes = &block
-	d.live.WhileSettled(func(*config.Config) {
-		rebuild.observe(&moved, []config.Change{
-			changeOfPath(t, "runtime.kubernetes.plugins.pi_envoy"), changeOfPath(t, "runtime.kubernetes.plugins.pi_legion"),
-		})
-	})
-}
-
-// Whether a stale process can be relaunched onto a plugin at all is read at each decision, so a
-// pair the configuration names after boot relaunches a stale claim at the next stale-plugin
-// sweep, installing that pair. Decided once at boot instead, a daemon that booted knowing no
-// pair relaunched nothing for the rest of its life, whatever pair was applied since.
-func TestAPluginPairNamedAfterBootRelaunchesAStaleClaimAtTheNextSweep(t *testing.T) {
-	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-	project, err := claim.ProjectToken(cfg.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt := fake.NewRuntime()
-	d, rebuild, logs := pluginDaemon(t, cfg, rt, supervise.Claim{
-		Token: token, Project: project, Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateReady, Session: "ses_impl", SessionFile: "/sessions/impl.jsonl",
-		PluginContract: 1, Locator: pluginTestLocator(token),
-	})
-	if lines := loggedLines(t, logs.String(), supervise.NoPluginSourceMessage); len(lines) != 1 {
-		t.Fatalf("the boot's no-source lines = %+v, want one: the daemon booted knowing no pair", lines)
-	}
-	if testwait.Holds(500*time.Millisecond, testwait.Poll, func() bool { return len(resumesOf(rt, token)) > 0 }) {
-		t.Fatal("a sweep relaunched the stale claim while the configuration named no pair to install")
-	}
-
-	pair := &config.PluginsConfig{PiLegion: "9.8.0", PiEnvoy: "9.7.2"}
-	setPlugins(t, d, rebuild, pair)
-
-	testwait.Eventually(t, "the next sweep's relaunch of the stale claim", func() bool { return len(resumesOf(rt, token)) == 1 })
-	want := runtime.PluginInstall{PiLegion: pair.PiLegion, PiEnvoy: pair.PiEnvoy, Contract: api.DaemonAPIVersion}
-	if got := resumesOf(rt, token)[0].Spec.Plugins; got == nil || *got != want {
-		t.Fatalf("the sweep's relaunch installs %+v, want the pair the change names %+v", got, want)
-	}
-	if budgets := d.claim(token).Budgets; budgets.LaunchFailures != 0 || budgets.Deaths != 0 {
-		t.Fatalf("budgets after the relaunch = %+v, want zero", budgets)
-	}
-}
-
-// A pair the configuration stops naming after boot stops the relaunches it was installing: a
-// stale registration after the change is accepted and charged nothing, as on a daemon that never
-// knew a pair, and no sweep relaunches the claim after it. Decided once at boot instead, the
-// registration was relaunched with no install, which brings the same plugin back, registers
-// stale again and is charged, the claim walking its launch budget down to worker-died for an
-// install no launch of this configuration can make.
-func TestAPluginPairDroppedAfterBootRelaunchesNoStaleProcess(t *testing.T) {
-	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-	cfg.Runtime.Kubernetes.Plugins = &config.PluginsConfig{PiLegion: "9.7.0", PiEnvoy: "9.6.1"}
-	rt := fake.NewRuntime()
-	d, rebuild, _ := pluginDaemon(t, cfg, rt)
-
-	setPlugins(t, d, rebuild, nil)
-
-	token := d.spawn(architect())
-	launch := lastLaunch(t, rt, token)
-	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: "ses_architect", OmpSessionFile: "/sessions/architect.jsonl", AgentID: "agent", PluginContract: 1,
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("a stale registration once the pair is dropped = %d %s, want 200 (accepted)", status, body)
-	}
-	if testwait.Holds(500*time.Millisecond, testwait.Poll, func() bool { return len(resumesOf(rt, token)) > 0 || d.claim(token).Generation != 1 }) {
-		t.Fatal("the stale claim was relaunched with no pair to install")
-	}
-	if c := d.claim(token); c.PluginContract != 1 || c.Budgets.LaunchFailures != 0 {
-		t.Fatalf("the stale claim = %+v, want pluginContract 1 recorded and uncharged", c)
 	}
 }
 

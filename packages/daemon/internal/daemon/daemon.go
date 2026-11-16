@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -50,7 +51,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
-	"github.com/sjawhar/legion/daemon/internal/settings"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -62,12 +62,10 @@ import (
 const (
 	// bootTimeout bounds the work between the plugin gate passing and the API listening: an
 	// unreachable Postgres refuses in milliseconds, but a reachable one that never answers must
-	// not leave the daemon hanging with nothing on stderr. The cluster fence and the store's open
-	// and restore, which come before the gate, each have a budget of their own of that length. The
-	// gate is not bounded by it — it waits out host load for as long as that lasts (pluginGate) —
-	// nor are the GitHub App tokens' mint and the image probe, which wait out GitHub's and the
-	// cluster's transient trouble within retries of their own (appMintRetry, imageProbeRetry); the
-	// work after each has a budget anew.
+	// not leave the daemon hanging with nothing on stderr. The gate is not bounded by it — it waits
+	// out host load for as long as that lasts (pluginGate) — nor are the GitHub App tokens' mint
+	// and the image probe, which wait out GitHub's and the cluster's transient trouble within
+	// retries of their own (appMintRetry, imageProbeRetry); the work after each has a budget anew.
 	bootTimeout = 30 * time.Second
 	// catchUpAttemptBound bounds one attempt of the boot's catch-up of the roots that run or wait on
 	// a person. Each root has bootTimeout of its own and the roots finished survive a retry, so this
@@ -179,22 +177,6 @@ type overrides struct {
 	// probe stands in for the worker image probe when runtime is replaced under kubernetes: nil is
 	// none. With the Agent Sandbox runtime, the probe is always the real one.
 	probe func(ctx context.Context, rt runtime.Runtime) (bootprobe.ImageReport, error)
-	// buildSandbox stands in for the construction of the Agent Sandbox runtime under kubernetes
-	// (sandboxRuntime): it is handed what each build of the runtime read from the configuration
-	// it was given — the cluster client and the Options (prepareSandbox's runtimeFor,
-	// readSandbox) — and answers the factory that build runs. nil, in production, builds the
-	// real runtime. It is how a test reads what a rebuild read, the Dispatch bearer every pod's
-	// Secret carries and the addresses every pod is told among it, which no runtime built over
-	// a cluster answers a caller.
-	buildSandbox func(sandboxReads) runtimeFactory
-	// buildTmux stands in for the construction of the tmux runtime (tmuxRuntime): it is handed
-	// the Options each build of the runtime read from the configuration it was given — the
-	// launchers among them, with the set of provider keys the build is built on and the Dispatch
-	// token file the build wrote (prepareTmux's runtimeFor) — and answers the factory that build
-	// runs. nil, in production, builds the real runtime. It is how a test reads the launchers a
-	// rebuild holds, and so the command a pane it opens would run, on a machine with no tmux to
-	// open one on.
-	buildTmux func(tmux.Options) runtimeFactory
 	// workflowTokens replaces the GitHub App token manager in a workflow integration test. The
 	// production daemon always mints through appauth.New.
 	workflowTokens appauth.Tokens
@@ -211,11 +193,6 @@ type overrides struct {
 	// whether it logged or not (reportStranded); nil, in production, is nothing. The report runs
 	// beside the API, so a test that asserts on its line waits for this rather than for /healthz.
 	strandedReported func()
-	// settingsRebuilder is handed the daemon's one rebuild observer once boot has built it, so a
-	// test can ask it to read the credential files again (rebuilder.rereadCredentials), which is
-	// what the file watcher does for a rotation of a file whose path did not change. nil, in
-	// production, is nobody.
-	settingsRebuilder func(*rebuilder)
 	// beforeServingLatched runs once the goroutine that serves the API has begun and before the
 	// daemon's readiness latch is set (serve, servingLatch), on a context that ends when serving
 	// does, so a hook that waits never outlives the daemon's stop; nil, in production, is nothing.
@@ -223,10 +200,9 @@ type overrides struct {
 	// ready, which is what /readyz answers 503 for.
 	beforeServingLatched func(ctx context.Context)
 	// pluginRelaunchable overrides whether a stale-plugin claim can be relaunched onto a plugin
-	// (supervise.Deps.PluginRelaunchable), bypassing the launch specs' own answer: nil keeps that
-	// answer, read from the plugin pair each build of the specs resolves. A test forces it to
-	// drive a relaunch with no install under a runtime it replaced, or to pin the degraded mode
-	// whatever the configuration names.
+	// (supervise.Deps.PluginRelaunchable), bypassing the configuration-derived default: nil keeps
+	// that default, which a kubernetes-runtime test without a real cluster has no other way to
+	// drive, since such a test configures no runtime.kubernetes.plugins and links no plugin pair.
 	pluginRelaunchable *bool
 	// checkLaunch stands in for the store's own CheckLaunch (supervise.Store), wrapping the real
 	// store so every launch's recheck refuses first when this does, then asks the real store
@@ -237,19 +213,10 @@ type overrides struct {
 	checkLaunch func(context.Context, supervise.Claim) error
 }
 
-// Build is what the binary knows of its own build: Revision, the commit it was built from, set
-// only by a release build (cmd/legion's ldflags-stamped revision) and empty in every other. The
-// state's `daemon` block names it (api.DaemonInfo.Commit), so a reader can tell which release
-// runs; a zero Build names none.
-type Build struct {
-	Revision string
-}
-
-// Run is the daemon. It refuses what it cannot run on before it migrates anything — the
-// configuration first, then the cluster fence, then the store's open (refusing by the host it
-// could not reach) with the settings route's stored changes laid back over the file, then, under
-// tmux, the plugin gate, which holds the Oh My Pi plugin every pane will load to this daemon's
-// contract — then migrates, takes its API listener and its worker stream, builds the runtime (under
+// Run is the daemon. It refuses what it cannot run on before it touches anything — the
+// configuration first, then, under tmux, the plugin gate, which holds the Oh My Pi plugin every
+// pane will load to this daemon's contract — then opens the store (refusing by the host it could
+// not reach), migrates, takes its API listener and its worker stream, builds the runtime (under
 // kubernetes, once Agent Sandbox's install check passes), proves the worker image under
 // kubernetes, records the boot, supervises every claim the store holds, serves the API, and blocks
 // until ctx is done. Then it stops: it says so, cancels the decisions it makes itself, drains the
@@ -268,20 +235,12 @@ type Build struct {
 // mint, or the image probe waits ends the daemon there, cleanly: it has served nothing and records
 // nothing.
 //
-// build is the binary's own build (Build), the commit the state's `daemon` block names.
-//
 // listener, when not nil, is the API listener the daemon serves on in place of binding cfg's bind
 // and port: the socket `legion start` inherited (LEGION_LISTEN_FD), which it checked names both.
 // Run closes it once it stops serving, as it closes a listener it binds; a refusal before the
 // listener is taken leaves it to the caller to close.
-// live is the daemon's one settings holder (config.Live): the resolved configuration it boots
-// on, the route overlay laid over it, and the pointer every reader of a value that can change
-// while the daemon runs goes through. Boot reads a snapshot of it wherever it genuinely reads
-// once; a decision reads it as the decision is made; and one observer of it builds each holder
-// of a changed setting again (rebuilder). Nothing in the daemon resolves the configuration a
-// second way.
-func Run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, listener net.Listener) error {
-	return run(ctx, live, build, log, overrides{listen: handed(listener)})
+func Run(ctx context.Context, cfg config.Config, log *slog.Logger, listener net.Listener) error {
+	return run(ctx, cfg, log, overrides{listen: handed(listener)})
 }
 
 // handed is the listen of a daemon handed listener: it takes listener, whatever address it is
@@ -305,68 +264,14 @@ func bootBudget(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
 }
 
-// whyNoWorkflowDispatchURL is why a daemon that booted with no dispatch_url refuses a change of
-// it by name (config.Live.RefusePath): openWorkflow opened nothing, so the daemon built no
-// Dispatch client, App manager or NATS intake, and a change of the key would name the
-// dispatch-client holder this daemon never built and reach nothing until a restart opens a
-// workflow from the new URL.
-const whyNoWorkflowDispatchURL = "the daemon booted with no dispatch_url and runs no workflow, so it built no Dispatch client for a change of this key to reach: the key reaches nothing until a restart opens a workflow from it"
-
-func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, o overrides) error {
+func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	// The cluster's refusals come first, before the daemon dials anything: Agent Sandbox must be
-	// installed, and no per-claim Sandbox of the layout before issue pods may remain. They are
-	// read-only and build nothing, and they run against the file's own configuration, which is
-	// all the daemon holds until its store is open (clusterFence). An operator whose cluster
-	// still carries that layout is told so, rather than shown whatever the daemon met next. The
-	// fence has a budget of its own, as the store's open and restore below have theirs.
-	fencing, cancelFencing := bootBudget(ctx)
-	defer cancelFencing()
-	fence, err := clusterFence(*live.Snapshot(), o, log)
-	if err != nil {
-		return err
-	}
-	if fence != nil {
-		if err := fence(fencing); err != nil {
-			return err
-		}
-	}
-	// The store opens next, and before anything is built from the configuration: the settings
-	// changes this daemon took from its route are laid back over the file here, so the holders
-	// the boot then builds, the credentials it reads and the launch specs it settles are built
-	// from what the daemon is actually running on, and not from a file a change of that key sits
-	// above (internal/settings' Keeper.Restore). Nothing of the schema is written yet — the
-	// claims' half of the layout fence and Migrate both still come later.
-	opening, cancelOpening := bootBudget(ctx)
-	defer cancelOpening()
-	st, err := store.Open(opening, live.Snapshot().PostgresDSN)
-	if err != nil {
-		return err
-	}
-	keeper := settings.New(live, settings.NewStore(st.Pool(), live.Snapshot().Project), log)
-	restored, err := keeper.Restore(opening)
-	if err != nil {
-		st.Close()
-		return err
-	}
-	// The boot-time value, read once the route overlay is back over the file: every read that
-	// happens once — the sockets, the state directory, the runtime's own options — is this one,
-	// and every reader that must see a change goes through live instead.
-	cfg := *live.Snapshot()
-	rebuild := newRebuilder(log, live)
-	live.OnChange(rebuild.observe)
-	if o.settingsRebuilder != nil {
-		o.settingsRebuilder(rebuild)
-	}
 	plan, err := prepare(cfg, log, o)
 	if err != nil {
-		st.Close()
 		return err
 	}
-	plan.settings, plan.restored = keeper, restored
-	plan.live, plan.rebuild, plan.commit = live, rebuild, build.Revision
 	if cfg.Runtime.Name == "kubernetes" {
 		logPlugins(log, plan.plugins, plan.pluginsSource)
 		logProbeBudget(log, cfg)
@@ -376,7 +281,6 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 	}
 	if plan.gate != nil {
 		if err := plan.gate(ctx); err != nil {
-			st.Close()
 			if ctx.Err() != nil {
 				log.Info("legion daemon stopped before its plugin gate passed", "project", cfg.Project)
 				return nil
@@ -385,13 +289,25 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		}
 	}
 
-	// The boot's next budget starts once the plugin gate has passed, which no budget bounds
+	// The boot's first budget starts once the plugin gate has passed, which no budget bounds
 	// (bootTimeout). The loops the boot starts take marks of their own, since they run beside each
 	// other (store.ForConcurrentWorker).
 	boot, cancelBoot := bootBudget(ctx)
 	defer cancelBoot()
-	// The claims' half of the layout fence, before the schema is migrated: no stored claim may
-	// still carry a per-claim Sandbox locator.
+	// The cluster's refusals run before the store opens, so before any schema write, image probe or
+	// reconcile: Agent Sandbox must be installed, and no per-claim Sandbox of the layout before issue
+	// pods may remain. The claims' half of that layout fence runs once the store opens, before it
+	// migrates.
+	if plan.clusterCheck != nil {
+		if err := plan.clusterCheck(boot); err != nil {
+			return err
+		}
+	}
+
+	st, err := store.Open(boot, cfg.PostgresDSN)
+	if err != nil {
+		return err
+	}
 	if plan.claimsCheck != nil {
 		if err := plan.claimsCheck(boot, st); err != nil {
 			st.Close()
@@ -432,7 +348,7 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
 	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
 	// probe: the work after them has a budget of its own.
-	workflow, err := openWorkflow(ctx, cfg, live, rebuild, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -462,12 +378,6 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
-	}
-	if workflow == nil {
-		// No workflow opened (cfg.DispatchURL unset), so nothing holds dispatch_url: refuse a
-		// change of it by name on this daemon, for the route and the file arm alike, rather than
-		// answer `rebuilt` for a Dispatch client this daemon never built (whyNoWorkflowDispatchURL).
-		live.RefusePath("dispatch_url", whyNoWorkflowDispatchURL)
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
@@ -563,7 +473,7 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		probing := store.WithTransactionTracking(ctx)
 		err := bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
 			readinessAttempt(func(attempt context.Context) error {
-				return workflow.connect(attempt, *live.Snapshot(), rebuild, environLookup(plan.environ))
+				return workflow.connect(attempt, cfg, plan.nats)
 			}, bootTimeout, natsauth.Unreachable))
 		if err == nil {
 			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
@@ -772,24 +682,6 @@ func closeStore(st *store.Store, log *slog.Logger) {
 
 // plan is what the daemon resolved from its configuration before touching anything.
 type plan struct {
-	// live is the daemon's settings holder, and rebuild the one observer of it that builds each
-	// holder of a changed setting again. run sets both once prepare has returned, so everything
-	// the boot builds after that registers its holder with the rebuilder and reads what it must
-	// read live through live.
-	live    *config.Live
-	rebuild *rebuilder
-	// settings is the daemon's two settings arms over live: the route's (the settings route's
-	// ApplySettings) and the file's (the watcher's), and the store that keeps what the route
-	// changed. restored is what Restore laid back over the file at this boot, which the state's
-	// provenance takes as the source of those paths (api.SettingProvenance.Restore).
-	settings *settings.Keeper
-	restored []settings.Change
-	// commit is the commit this binary was built from (Build.Revision), which the state's daemon
-	// block names so a reader can tell which release runs; "" in a build that is not a release.
-	commit string
-	// environ is the environment the daemon's own reads resolve under (overrides.environment):
-	// the launch secrets a rebuilt launch spec reads again are read under it, as boot's were.
-	environ []string
 	// identity is the role's App bot identity for the owner whose installation holds the
 	// repository it works, from the workflow's token source (workflowRuntime.identity, which maps
 	// the record's repository to the one GitHub serves); nil without one.
@@ -832,38 +724,33 @@ type plan struct {
 	secrets       map[string]string
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.
-	nats natsConnection
+	nats         natsConnection
+	instructions string
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
-	// hook name (readBoot): the engine is given words and never a path, in the hook list boot
-	// builds once from them (openWorkflow, engineHooks).
+	// hook name (readBoot): the engine is given words and never a path (engineConfig).
 	hookPrompts map[string]string
 	prompts     *prompts.Composer
 	// roleReferences are the task agents and skills the shared role prompts name
 	// (prompts.RoleReferences), which the gate on either runtime resolves beside the plugin's own.
 	roleReferences promptrefs.Names
 	// stream is the worker stream's address: the listener binds it, and every agent's shim dials
-	// it, or the advertise_host of the configuration each build of the runtime is given, at its
-	// port, when that configuration sets one (shimAddress, openSupervision's buildRuntime).
-	stream string
-	// runtimeFor is the factory this daemon's runtime is built with, for the configuration it is
-	// built from: the boot's own build and every rebuild call it (config.HolderRuntime), so the
-	// two can never build different things. What it is built from is read from that
-	// configuration — the launchers each harness is started by under tmux (paneLaunchers), the
-	// provider key directory, the cluster client — each resolved again where the configuration
-	// moved what it is resolved from; only what no setting names, the gh boot resolved among it,
-	// is the boot's. A test that hands the daemon its runtime answers that one for every
-	// configuration.
-	runtimeFor func(cfg config.Config) (runtimeFactory, error)
-	// gate is the plugin gate, run once the store is open and before the schema is migrated
-	// (pluginGate), on no boot budget; nil under a runtime with no host Oh My Pi, and for a
-	// replaced runtime without one.
+	// it, or advertise_host at its port when the file sets one (shimAddress).
+	stream     string
+	newRuntime runtimeFactory
+	// gate is the plugin gate run before anything is opened (pluginGate); nil under a runtime with
+	// no host Oh My Pi, and for a replaced runtime without one.
 	gate func(ctx context.Context) error
 	// probe proves the runtime's worker image once the runtime is built and before the boot is
 	// recorded, answering what its OK line reported of the image; nil under tmux, and for a
 	// replaced runtime without one.
 	probe func(ctx context.Context, rt runtime.Runtime) (bootprobe.ImageReport, error)
+	// clusterCheck is the Kubernetes runtime's refusals before the store opens: Agent Sandbox's
+	// install check, then the census of Sandboxes of a layout before this one — per-claim pods, or
+	// issue pods on one tree volume (sandbox.CensusLegacyIssueSandboxes). Nil under tmux, and for a
+	// replaced runtime.
+	clusterCheck func(ctx context.Context) error
 	// claimsCheck is the Kubernetes runtime's refusal once the store has opened, before it
 	// migrates: no stored claim may still carry a per-claim Sandbox locator of the layout before
 	// issue pods (store.HasLegacySandboxClaims). Nil under tmux, and for a replaced runtime.
@@ -879,25 +766,25 @@ type plan struct {
 	controllerRetry time.Duration
 	// stopBudget is how long the stop waits for the daemon's own work once it begins (stopBudget).
 	stopBudget time.Duration
-	// secretsLogin is the daemon's own login at the secrets broker (secretsLoginHolder): the
-	// machines' Enroller, the login whose state the state route and the capability report read,
-	// and a holder the rebuild observer builds again. Nil under tmux, which enrolls no process.
-	secretsLogin *secretsLoginHolder
-	// pluginRelaunchable is supervise.Deps.PluginRelaunchable, and what the API and the
-	// stale-plugin pass ask too: whether this daemon can relaunch a stale-plugin claim onto a
-	// plugin at all, as the launch specs a relaunch is built from answer it now (specs'
-	// pluginRelaunchable), so a pair the configuration names after boot relaunches and a pair it
-	// stops naming stops relaunching. prepare sets it only from overrides.pluginRelaunchable;
-	// openSupervision fills it from the launch specs it builds otherwise.
-	pluginRelaunchable func() bool
-	// plugins is the Kubernetes plugin pair the boot resolved (ResolvedPlugins), with Contract
-	// already api.DaemonAPIVersion, which the boot log names. The launch specs resolve the pair a
-	// stale-plugin relaunch installs, and whether there is one, from the configuration each build
-	// of them is given (buildSpecs), never from this. nil under tmux, and under Kubernetes when
-	// the boot knew no pair (LEGION-164's degraded mode); pluginsSource is "legion.yaml" or
-	// "binary" with a pair, "" without one.
+	// secretsEnroller is the daemon's agent-secrets token login as the machines' Enroller
+	// (newSecretsLogin); nil when the deployment enrolls no pod.
+	secretsEnroller supervise.Enroller
+	// pluginRelaunchable is supervise.Deps.PluginRelaunchable: whether this daemon can relaunch a
+	// stale-plugin claim onto a plugin at all. True under tmux always; under Kubernetes, true iff
+	// a plugin pair to install is known — plugins below, resolved by ResolvedPlugins from the
+	// file's runtime.kubernetes.plugins or the release's linked pair.
+	pluginRelaunchable bool
+	// plugins is this daemon's resolved Kubernetes plugin pair (ResolvedPlugins), with Contract
+	// already api.DaemonAPIVersion: what specs.SpawnSpec installs for a stale-plugin relaunch, and
+	// what the boot log and `legion start --check-config` name. nil under tmux, and under
+	// Kubernetes when the daemon knows no pair (LEGION-164's degraded mode); pluginsSource is
+	// "legion.yaml" or "binary" with a pair, "" without one.
 	plugins       *runtime.PluginInstall
 	pluginsSource string
+	// secretsLogin is the same login's client, read-only, for the state route to show its
+	// current status (source.State, agentsecrets.Client.LoginStatus); nil when the deployment
+	// enrolls no pod.
+	secretsLogin *agentsecrets.Client
 	// strandedReported is overrides.strandedReported; nil runs nothing.
 	strandedReported func()
 	// beforeServingLatched is overrides.beforeServingLatched; nil runs nothing.
@@ -923,9 +810,13 @@ type runtimeFactory func(ctx context.Context, listener *stream.Listener, address
 // then what writes or runs something: the state directory, the instructions copy, and what the
 // runtime needs) — all before the plugin gate runs and before any agent can launch.
 func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
+	getenv := o.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
 	// A test that replaced the runtime runs no host Oh My Pi, so boot resolves no OMP invocation.
 	hostOMP := o.runtime == nil
-	reads, err := readBoot(cfg, environLookup(o.environment()), o.invocationEnvironment(), hostOMP, log)
+	reads, err := readBoot(cfg, environLookup(o.environment()), getenv, hostOMP, log)
 	if err != nil {
 		return plan{}, err
 	}
@@ -937,12 +828,9 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		return plan{}, fmt.Errorf("construct role prompts: %w", err)
 	}
 
-	// The copy every launch's prompt ends with is written here with boot's other writes, so a
-	// state directory that will not take it refuses the boot before the plugin gate runs. Its
-	// path is no boot's to keep: every build of the launch specs writes the copy again from the
-	// configuration it is given, or none (buildSpecs).
+	instructions := ""
 	if reads.instructions != nil {
-		if _, err := config.WriteDeploymentInstructions(reads.instructions, cfg.StateDir, cfg.Project); err != nil {
+		if instructions, err = config.WriteDeploymentInstructions(reads.instructions, cfg.StateDir, cfg.Project); err != nil {
 			return plan{}, err
 		}
 	}
@@ -974,26 +862,25 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if stop == 0 {
 		stop = stopBudget
 	}
-	secretsLogin := newSecretsLogin(cfg, log)
+	secretsEnroller, secretsLogin := newSecretsLogin(cfg, log)
 	plugins, pluginsSource := ResolvedPlugins(cfg)
-	var pluginRelaunchable func() bool
-	if forced := o.pluginRelaunchable; forced != nil {
-		pluginRelaunchable = func() bool { return *forced }
+	pluginRelaunchable := cfg.Runtime.Name == "tmux" || plugins != nil
+	if o.pluginRelaunchable != nil {
+		pluginRelaunchable = *o.pluginRelaunchable
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
-		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats,
+		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
-		secretsLogin: secretsLogin, strandedReported: o.strandedReported,
+		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		environ: o.environment(),
 	}
 	if cfg.Runtime.Name == "kubernetes" {
-		err = prepareSandbox(cfg, log, o, reads, &p)
+		err = prepareSandbox(cfg, o, reads.sandbox, &p)
 	} else {
-		err = prepareTmux(cfg, log, o, reads.tmux, &p)
+		err = prepareTmux(cfg, log, o, reads.dispatchToken, reads.tmux, &p)
 	}
 	if err != nil {
 		return plan{}, err
@@ -1002,38 +889,41 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 }
 
 // prepareTmux is what panes on this host need beyond readBoot's: the plugin gate on the OMP
-// invocation readBoot resolved, the provider keys resolved from secretsd or their files into a
-// set of the directory every pane's shim reads (providerKeyFiles), and the runtime's build, which
-// writes the Dispatch bearer where every pane reads it (writePaneDispatchToken), builds the
-// runtime on a set of keys written whole for it, writing one again when the keys have moved, and
-// resolves a Launcher for each backend its configuration's roles run on (paneLaunchers), the
-// boot's own build taking the ones readBoot resolved (tmuxReads.launches).
-// The worker stream is a unix socket under the state directory (decision 2 — no configuration
-// key). The gate and the model-fallback read are Oh My Pi's, since the architect runs on it alone
-// (runtime.Backends), and are the boot's: neither runs again.
-func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, reads tmuxReads, p *plan) error {
+// invocation readBoot resolved, the Dispatch bearer written where every pane reads it, and the
+// provider keys resolved from secretsd into the files every pane's shim reads. The worker stream is
+// a unix socket under the state directory (decision 2 — no configuration key). The runtime gets a
+// Launcher for each backend readBoot resolved (tmuxReads.launches); the gate and the model-fallback
+// read are Oh My Pi's, since the architect runs on it alone (runtime.Backends).
+func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken string, reads tmuxReads, p *plan) error {
 	invocation := reads.launches[runtime.BackendOmp].invocation
-	p.gate = o.gate
+	p.newRuntime, p.gate = o.runtime, o.gate
 	p.stream = "unix://" + filepath.Join(cfg.StateDir, streamSocket)
-	launchers := newPaneLaunchers(cfg, reads.launches, environLookup(o.environment()), o.invocationEnvironment(), log)
-	if o.runtime == nil {
-		for _, backend := range cfg.Backends() {
-			if read, ok := reads.launches[backend]; ok {
-				read.log(log)
-			}
+	launchers := map[runtime.Backend]tmux.Launcher{}
+	for _, backend := range cfg.Backends() {
+		read, ok := reads.launches[backend]
+		if !ok {
+			continue
+		}
+		launchers[backend] = read.launcher
+		if p.newRuntime == nil {
+			read.log(log)
+		}
+	}
+	dispatchTokenFile := ""
+	if dispatchToken != "" {
+		var err error
+		if dispatchTokenFile, err = runtime.WriteDispatchTokenFile(cfg.StateDir, dispatchToken); err != nil {
+			return fmt.Errorf("write the pane Dispatch token file: %w", err)
 		}
 	}
 	// Last of the refusals: resolving a human-tier key may cost a YubiKey tap, which a
-	// configuration refused a line earlier should never have asked for. The gate reads the keys
-	// before the runtime is built, so the boot writes them here, and the boot's build is handed
-	// the set the gate read.
-	keys := &providerKeyFiles{stateDir: cfg.StateDir, environ: o.environment(), log: log}
-	booted, err := keys.write(cfg.ProviderKeys)
+	// configuration refused a line earlier should never have asked for.
+	providerEnvDir, err := config.MaterializeProviderKeys(cfg.ProviderKeys, cfg.StateDir, o.environment(), log)
 	if err != nil {
 		return err
 	}
-	if o.runtime == nil {
-		env, err := gateEnvironment(os.Environ(), cfg.StateDir, booted.dir, cfg.Runtime.Tmux)
+	if p.newRuntime == nil {
+		env, err := gateEnvironment(os.Environ(), cfg.StateDir, providerEnvDir, cfg.Runtime.Tmux)
 		if err != nil {
 			return err
 		}
@@ -1065,211 +955,9 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, reads tmuxRea
 			}
 			return state
 		}
-	}
-	// Everything but the configuration — the gh boot resolved — is this boot's; the rest is read
-	// again from the configuration each build is given, the boot's own included. The Dispatch
-	// bearer, the provider keys and the launchers are among the rest: each build reads the bearer
-	// from the file the configuration names and writes it again where every pane reads it, builds
-	// the runtime on a set of provider keys written for the keys it names, writing one again when
-	// they have moved (providerKeyFiles), and resolves a launcher for every backend the
-	// configuration's roles run on where `omp_invocation`, `omp_launch_prefix` or
-	// `worker_backends` has moved (paneLaunchers). So a change of `dispatch_token_file`,
-	// `provider_keys` or a launch key, or a rotation in place of a file the first two name,
-	// reaches the next pane (config.Classes' rows, runtimeHolder.credentials), and a build that
-	// refuses leaves the panes of the runtime the daemon keeps the keys they read. A
-	// configuration that is not this runtime's is refused rather than built from (ownRuntime), as
-	// the Sandbox build refuses one (readSandbox). A test that handed the daemon its runtime has
-	// every build answer that one, since nothing of it comes from the configuration, once the
-	// panes' files are written.
-	p.runtimeFor = func(c config.Config) (runtimeFactory, error) {
-		if err := ownRuntime("tmux", c); err != nil {
-			return nil, err
-		}
-		dispatchTokenFile, err := writePaneDispatchToken(c)
-		if err != nil {
-			return nil, err
-		}
-		set, err := keys.write(c.ProviderKeys)
-		if err != nil {
-			return nil, err
-		}
-		if o.runtime != nil {
-			return keys.builds(set, c, o.runtime), nil
-		}
-		resolved, err := launchers.resolve(c)
-		if err != nil {
-			return nil, err
-		}
-		opts := tmuxOptions(c, p.project, resolved, set.dir, dispatchTokenFile, log)
-		if o.buildTmux != nil {
-			return keys.builds(set, c, o.buildTmux(opts)), nil
-		}
-		return keys.builds(set, c, tmuxRuntime(opts, c.RepositoryRenames, p.tools["gh"], p.repositories.Accepted, log)), nil
+		p.newRuntime = tmuxRuntime(cfg, p.project, launchers, providerEnvDir, dispatchTokenFile, p.tools["gh"], p.repositories.Accepted, log)
 	}
 	return nil
-}
-
-// writePaneDispatchToken writes the Dispatch bearer c names, read from its file now
-// (readDispatchToken), where every pane reads it (runtime.WriteDispatchTokenFile), and answers
-// that path, every pane's DISPATCH_TOKEN_FILE; "" for a daemon with no Dispatch, which writes
-// none. The file is replaced whole, so a pane reading it while a rebuild writes it reads the old
-// bearer or the new, never part of one (runtime.WriteSecretFiles). It is written before the
-// runtime is built, so a build that then fails leaves the panes of the runtime the daemon keeps
-// reading the bearer the configuration names now, the one the Dispatch client is built on.
-func writePaneDispatchToken(c config.Config) (string, error) {
-	token, err := readDispatchToken(c)
-	if err != nil || token == "" {
-		return "", err
-	}
-	file, err := runtime.WriteDispatchTokenFile(c.StateDir, token)
-	if err != nil {
-		return "", fmt.Errorf("write the pane Dispatch token file: %w", err)
-	}
-	return file, nil
-}
-
-// providerKeyFiles are the provider keys every pane's shim reads (`--provider-env-dir`), as the
-// tmux runtime's builds keep them (config.MaterializeProviderKeys): one set per write, each in a
-// directory of its own, written at boot, before the plugin gate reads it, and again by each build
-// whose keys have moved since a set was written for them — a change of `provider_keys`, or a
-// key's file rotated in place (runtimeHolder.credentials) — so the next pane reads the keys the
-// configuration names now.
-//
-// Each build is handed one set and builds its runtime on it (providerKeyFiles.builds), and every
-// pane a runtime opens is told the set it was built on. A set is written whole before any build
-// is handed it — MaterializeProviderKeys resolves every key before it writes any, into a
-// directory nothing names yet — and is never written again. So a build that refuses (a key the
-// runtime's construction refuses, a launch this host cannot resolve beside it) leaves the panes
-// of the runtime the daemon keeps reading the set they read, and a pane reads one whole set,
-// never part of one: a runtime's set takes the place of its predecessor's only as the holder
-// swaps that runtime in (runtimeHolder.rebuild), and no file is replaced under a reader. A
-// rewrite in place gave neither: the build wrote before it could refuse, and a pane launched
-// during a rewrite could read one key new and another old.
-//
-// A build whose keys have not moved writes nothing: it is handed the set already written for
-// them, the one the runtime it replaces was built on or the one a refused build wrote for the
-// same keys. Resolving a secretsd key of the human tier may cost a person a YubiKey tap, and the
-// runtime is built again for every change of a row it holds — its boot build right after the
-// gate's write among them, and every build after a refused one — so a write at every build would
-// ask for a tap over a change that moved no key. A secretsd key's value is no file of this host's,
-// so a change of it inside secretsd alone reaches the panes at the next change of
-// `provider_keys` or the next boot, as it did before the runtime wrote the keys again.
-//
-// A set stays while a runtime built on it holds it, and a runtime holds its set past its own
-// stop. The holder stops a runtime once it has swapped in its successor and the calls inside it
-// have returned (runtimeHolder.rebuild), but a pane a tmux Spawn opened has not read its set when
-// that call returns: Spawn answers once the pane's process runs its command, and the shim reads
-// `--provider-env-dir` after that, before it dials the daemon (workerShimConfig). So a runtime
-// releases its set the registration deadline after it is stopped — `worker_boot_timeout_seconds`
-// times `worker_boot_registration_deadline_intervals`, as the configuration it was built from
-// sets them, both rows of the runtime's own — the bound by which every pane it opened has said
-// hello, having read its set first, or has been retired by its claim's machine (supervise's
-// armRegistration). Removed at the stop, the set could go from under a pane opened a moment
-// before, whose shim would then refuse to start and spend one of the claim's launch failures on
-// the daemon's own tidying. The last write's set is never released, so the set of the runtime
-// the daemon serves at its stop stays for the next boot to clear.
-//
-// What no runtime holds goes — a refused build's set once a write answers another, a key no
-// longer configured once the last runtime built on its set has released it (config.
-// RemoveProviderKeysBut) — and the boot's write removes whatever an earlier daemon left, the
-// files it wrote straight into the directory before sets among them.
-//
-// Builds never overlap — the boot's runs before any settings change can, and every rebuild runs
-// under the settings holder's lock — and the lock here is for the releases, each of which runs on
-// a timer of its own.
-type providerKeyFiles struct {
-	stateDir string
-	environ  []string
-	log      *slog.Logger
-	mu       sync.Mutex
-	// latest is the set the last write answered, which no release removes; sets are every set
-	// written and not yet removed, latest among them.
-	latest *providerKeySet
-	sets   []*providerKeySet
-}
-
-// providerKeySet is one set of provider keys a write made: the entries it was written from and
-// their files' digest read before the write (so a file rotated during it is written again at the
-// next build), the directory MaterializeProviderKeys answered ("" for no keys), and how many
-// runtimes built on it have not yet released it.
-type providerKeySet struct {
-	keys  []config.ProviderKey
-	files string
-	dir   string
-	held  int
-}
-
-// write answers the set a build of keys is handed — the one written for them and their files,
-// else a new one — and removes every set no runtime holds but that one. A write that refuses
-// removes nothing.
-func (f *providerKeyFiles) write(keys []config.ProviderKey) (*providerKeySet, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	files := credentialDigest(providerKeyFilesOf(keys)...)
-	i := slices.IndexFunc(f.sets, func(s *providerKeySet) bool { return s.files == files && slices.Equal(s.keys, keys) })
-	if i < 0 {
-		dir, err := config.MaterializeProviderKeys(keys, f.stateDir, f.environ, f.log)
-		if err != nil {
-			return nil, err
-		}
-		f.sets = append(f.sets, &providerKeySet{keys: slices.Clone(keys), files: files, dir: dir})
-		i = len(f.sets) - 1
-	}
-	f.latest = f.sets[i]
-	f.removeUnheld()
-	return f.latest, nil
-}
-
-// builds is factory, the build of a runtime on set from c: each runtime it builds holds the set
-// until the registration deadline c sets has passed after the runtime is stopped, which ends the
-// context the factory is handed.
-func (f *providerKeyFiles) builds(set *providerKeySet, c config.Config, factory runtimeFactory) runtimeFactory {
-	hold := runtime.RegistrationDeadline(c.WorkerBootTimeout, c.WorkerBootRegistrationDeadlineIntervals, 0)
-	return func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
-		rt, err := factory(ctx, listener, address, tokens, repository, st, mapped)
-		if err != nil {
-			return nil, err
-		}
-		f.mu.Lock()
-		set.held++
-		f.mu.Unlock()
-		context.AfterFunc(ctx, func() {
-			time.AfterFunc(hold, func() {
-				f.mu.Lock()
-				defer f.mu.Unlock()
-				set.held--
-				f.removeUnheld()
-			})
-		})
-		return rt, nil
-	}
-}
-
-// removeUnheld removes every set but the latest and those a runtime still holds, with whatever
-// else the directory holds (config.RemoveProviderKeysBut). What it could not remove is logged and
-// found again by the next removal, since that keeps only the sets it names. The caller holds mu.
-func (f *providerKeyFiles) removeUnheld() {
-	f.sets = slices.DeleteFunc(f.sets, func(s *providerKeySet) bool { return s != f.latest && s.held == 0 })
-	keep := make([]string, 0, len(f.sets))
-	for _, s := range f.sets {
-		keep = append(keep, s.dir)
-	}
-	if err := config.RemoveProviderKeysBut(f.stateDir, keep); err != nil {
-		f.log.Error("provider_keys: a set of keys no runtime holds could not be removed; the next removal tries again", "error", err)
-	}
-}
-
-// providerKeyFilesOf are the files keys name (`file:/abs/path`), in order; a secretsd key names
-// none.
-func providerKeyFilesOf(keys []config.ProviderKey) []string {
-	var files []string
-	for _, key := range keys {
-		if key.File != "" {
-			files = append(files, key.File)
-		}
-	}
-	return files
 }
 
 // checkPaneRoleOverlays is the boot gate's read of the overlays each role names beyond the
@@ -1355,20 +1043,22 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 	}
 }
 
-// tmuxRuntime builds the tmux runtime over the worker stream from opts, the Options one build
-// read from its configuration (tmuxOptions): the listener is its connection directory, and the
-// listener's address is the `--connect` every pane's shim is started with. The workflow's App
-// tokens, when the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential)
-// and the controller pane's own (appauth.ControllerCredential), which its refresh asks by the
-// default owner its launch recorded, both built over repos (the project's mapping's served
-// repositories) and the build's renames, with gh, the real gh boot resolved (daemonTools), the
-// one each pane's `legion gh` runs, and the repository each claim's issue works
-// (claimRepository over the workflow's repository), which a pane adopted after a restart holds
-// its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes hold no
-// gh files. The private server's environment is scrubbed before anything is launched on it.
-func tmuxRuntime(opts tmux.Options, renames ghrepo.Renames, gh string, repos func() []ghrepo.Repository, log *slog.Logger) runtimeFactory {
+// tmuxRuntime builds the tmux runtime over the worker stream: the listener is its connection
+// directory, and the listener's address is the `--connect` every pane's shim is started with;
+// providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
+// the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential) and the
+// controller pane's own (appauth.ControllerCredential), which its refresh asks by the default
+// owner its launch recorded, both built over
+// repos (the project's mapping's served repositories), with gh, the real gh boot resolved
+// (daemonTools), the one each pane's `legion gh` runs, and the repository each claim's issue
+// works (claimRepository over the workflow's repository), which a pane adopted after a restart
+// holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
+// hold no gh files. The private server's environment is scrubbed before anything is launched on
+// it.
+func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, repos func() []ghrepo.Repository, log *slog.Logger) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Tokens,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
 		if tokens != nil {
 			// The one record of what the mints found GitHub refuses, shared by both credentials
@@ -1377,8 +1067,8 @@ func tmuxRuntime(opts tmux.Options, renames ghrepo.Renames, gh string, repos fun
 			// directory left out of one pane's bundle is left out of the next pane's by the
 			// mint, not by this record.
 			left := appauth.NewLeftOut()
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, renames, left, log), gh
-			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, renames, left, log)
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, cfg.RepositoryRenames, left, log), gh
+			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, cfg.RepositoryRenames, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 		}
 		rt, err := tmux.New(opts)
@@ -1500,9 +1190,6 @@ func sharedClones(stateDir string) ([]workspace.Workspace, error) {
 // supervision is everything that runs a claim: the worker stream, the runtime, and the machines,
 // with the goroutines that feed them.
 type supervision struct {
-	// cfg is the configuration boot settled, which everything boot settled is read from: the
-	// project, the state directory, the runtime it supervises in. A value a change must reach
-	// at once is read through live instead, never from here.
 	cfg        config.Config
 	log        *slog.Logger
 	plan       plan
@@ -1511,10 +1198,6 @@ type supervision struct {
 	supervisor *supervisor
 	tokens     *api.BootTokens
 	claims     []supervise.Claim
-	// envoy is the Envoy listener every reader of it reads through at each call
-	// (publisherHolder): the machines' clean stop of a dead role's session, the outbox the
-	// workflow attaches here, the settings announcer and the controller's liveness probe.
-	envoy *publisherHolder
 	// refreshGate is the daemon's one stale-plugin refresh gate, the same object every machine of
 	// this supervision holds on its Deps (supervise.RefreshGate, built in run and handed to
 	// openSupervision beside the wake limiter). Supervision keeps the reference because the
@@ -1606,19 +1289,6 @@ type supervision struct {
 	haltOnce  sync.Once
 	wg        sync.WaitGroup
 	stopOnce  sync.Once
-}
-
-// live is the configuration the daemon is running on now (plan.live): where every decision of
-// this supervision reads a value the class table answers `at once` for — the deployment's
-// recorded capability decisions — so an operator's change reaches the next read of the state
-// with nothing rebuilt. The update round's bound is not one: its class is fixed, because the
-// round states its end in the ask it sends each role, so the sweep reads it off cfg.
-//
-// Every supervision is built with that holder, a test's own as much as the daemon's: cfg is
-// what boot settled and nothing moves it, so reading a live value from it would answer the
-// boot's value for ever.
-func (s *supervision) live() *config.Config {
-	return s.plan.live.Snapshot()
 }
 
 // promptAgents is the sorted names of every task agent the role prompts dispatch
@@ -1741,138 +1411,42 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
-	// The listener's RPC bound is a holder of its own: the socket is bound once here and never
-	// rebound, and a change of worker_rpc_timeout_seconds swaps the bound alone
-	// (workerStreamHolder), so no worker connection drops. A hello's store reads take the same
-	// bound from the settings holder at each hello, so a change reaches them too.
 	listener, err := stream.Listen(draining, p.stream,
-		sup.helloResolver(tokens, func() time.Duration { return p.live.Snapshot().WorkerRPCTimeout }),
-		stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
+		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
 	if err != nil {
 		cancel()
 		endDrain()
 		return nil, err
 	}
-	// buildRuntime is the one way this daemon's runtime is built, the boot's build and every
-	// rebuild alike: the factory for the configuration it is given, over this same listener, on a
-	// context of the runtime's own. The address every shim of that runtime dials is read from the
-	// same configuration (shimAddress: `advertise_host` at the listener's port), since the
-	// listener is bound once and the host pods reach it at is a launch key the runtime holds
-	// (config.Classes' row): read once here, every pod launched after a change of it would dial
-	// the host the daemon booted on. That context is supervision's lifetime cut short by the stop
-	// the build answers, so the holder can end the informers, the caches and the credential
-	// refresher of a runtime it replaces (runtimeHolder.rebuild).
-	buildRuntime := func(c config.Config) (runtime.Runtime, context.CancelFunc, error) {
-		dial, err := shimAddress(listener.Addr(), c.AdvertiseHost)
-		if err != nil {
-			return nil, nil, err
-		}
-		factory, err := p.runtimeFor(c)
-		if err != nil {
-			return nil, nil, err
-		}
-		living, stop := context.WithCancel(supervising)
-		next, err := factory(living, listener, dial, apps, p.repository, st, p.repositories.Accepted)
-		if err != nil {
-			stop()
-			return nil, nil, err
-		}
-		return next, stop, nil
+	dial, err := shimAddress(listener.Addr(), cfg.AdvertiseHost)
+	if err != nil {
+		cancel()
+		endDrain()
+		return nil, err
 	}
-	built, stopBuilt, err := buildRuntime(cfg)
+	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted)
 	if err != nil {
 		cancel()
 		endDrain()
 		return nil, fmt.Errorf("build the %s runtime: %w", cfg.Runtime.Name, err)
 	}
-	// The runtime behind its holder: a change of a key the runtime holds builds the runtime again
-	// over this same listener and swaps it, and every reader — the machines, the supervision, the
-	// API's tree releaser — holds the holder.
-	rt := newRuntimeHolder(built, stopBuilt, log, buildRuntime)
-	// The launch specs behind theirs: everything a launch reads that the claim does not carry,
-	// built again from the configuration a change of a key they hold settled, read by the next
-	// launch. The instructions and the plugin pair a stale-plugin relaunch installs are each read
-	// from the configuration the build is given, so a change of either, a removal included,
-	// reaches the next launch that reads it: the instructions every launch, and the pair the next
-	// stale-plugin relaunch alone, these specs being its one holder (config.Classes).
-	//
-	// A change that names both holders builds the two and makes them current together
-	// (rebuilder.rebuildPair), so this build runs while the holder above is still serving the
-	// runtime it is replacing, and the ProvisionsWorkspaces it asks below is that runtime's.
-	// Safe only because the runtime's kind is fixed for the process (`runtime` is a ClassFixed
-	// row), so the runtime being built beside these specs answers it exactly as the one they
-	// read it from: a reader who reclassed that row would have to hand this build the runtime
-	// staged beside it.
-	buildSpecs := func(c config.Config) (specs, error) {
-		secrets, err := readLaunchSecrets(c, environLookup(p.environ))
-		if err != nil {
-			return specs{}, err
-		}
-		// readInstructions answers nil only for a configuration that names no instructions: a
-		// file it names that the daemon cannot read, or that holds nothing, is an error, which
-		// fails this build and leaves the specs the daemon has serving. So a key removed is a
-		// launch told no instructions, and never the copy an earlier build wrote.
-		instructions := ""
-		if contents, err := readInstructions(c); err != nil {
-			return specs{}, err
-		} else if contents != nil {
-			if instructions, err = config.WriteDeploymentInstructions(contents, c.StateDir, c.Project); err != nil {
-				return specs{}, err
-			}
-		}
-		plugins, _ := ResolvedPlugins(c)
-		return specs{
-			stateDir: c.StateDir, project: p.project, instructions: instructions, secrets: secrets, prompts: p.prompts,
+	sup.deps = supervise.Deps{
+		Runtime: rt,
+		Conns:   listener,
+		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
+		Specs: specs{
+			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.repository,
 			repositories: func() api.RepositoriesView { return p.repositories.view(nil) },
-			designSteps:  c.Gates.Steps(), slackChannels: c.Projects[c.Project].SlackChannels,
-			runtimeName: c.Runtime.Name, plugins: plugins,
-			commitIssueTrailerRepos: c.Projects[c.Project].CommitIssueTrailerRepos, same: p.repositories.same,
-			backend: c.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, c.ExperimentsDeclared(), c.StateDir),
-		}, nil
-	}
-	settled, err := buildSpecs(cfg)
-	if err != nil {
-		cancel()
-		endDrain()
-		return nil, err
-	}
-	launchSpecs := newSpecsHolder(settled, buildSpecs)
-	// Whether a stale-plugin claim can be relaunched onto a plugin at all is asked of these specs
-	// at each decision, rather than of the configuration: they are what the relaunch is built
-	// from, so the decision to relaunch and the install that relaunch needs come from one build.
-	// A rebuild of the specs that failed then relaunches nothing without an install — the specs
-	// the daemon keeps answer for the pair they would install — and a pair named or dropped
-	// after boot decides the next relaunch as soon as the specs are built from it.
-	if p.pluginRelaunchable == nil {
-		p.pluginRelaunchable = func() bool { return launchSpecs.current.Load().pluginRelaunchable() }
-	}
-	// The Envoy listener behind its holder, built here so that every reader of it holds the one
-	// holder: the machines' clean stop below, the outbox the workflow attaches to this supervision
-	// (workflowRuntime.attach), and the settings announcer and the controller's liveness probe
-	// serve starts. A change of `envoy_url` or `envoy_token_file` swaps the client inside it.
-	envoy := newPublisherHolder(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"])
-	// The daemon's own login at the secrets broker is a holder of its own, registered after the
-	// runtime: a change of `agent_secrets.url` builds the runtime that tells new pods the broker
-	// first and the login that enrolls them second, and a new pod takes the seconds of its boot
-	// to say hello, so it is enrolled where it was told to look (secretsLoginHolder). Under tmux
-	// there is none, and the machines enroll nothing.
-	var secrets supervise.Enroller
-	holders := []rebuilt{newWorkerStreamHolder(listener), rt}
-	if p.secretsLogin != nil {
-		secrets = p.secretsLogin
-		holders = append(holders, p.secretsLogin)
-	}
-	p.rebuild.register(append(holders, launchSpecs, envoy)...)
-	sup.deps = supervise.Deps{
-		Runtime:                 rt,
-		Conns:                   listener,
-		Store:                   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
-		Specs:                   launchSpecs,
+			designSteps:  cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
+			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
+			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
+			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
+		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
-		Secrets:                 secrets,
+		Secrets:                 p.secretsEnroller,
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
@@ -1882,17 +1456,25 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
-		SessionGone:             cleanSessionStop(supervising, envoy, log),
+		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		Clock:                   p.clock,
 		Log:                     log,
-		// Every budget and every bound a machine's decision is held to is read as that decision
-		// is made (liveBudgets): `launch_failure_limit`, `worker_rpc_timeout_seconds` and their
-		// neighbours take effect at once, with no machine rebuilt. The update round's bound is
-		// the sweep's rather than a machine's, and the sweep reads it off cfg.
-		Settings: liveBudgets{live: p.live},
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
+		Limits: supervise.Limits{
+			LaunchFailures: cfg.LaunchFailureLimit,
+			PromptFailures: cfg.PromptFailureLimit,
+			PromptRetires:  cfg.PromptRetireLimit,
+		},
+		Timeouts: supervise.Timeouts{
+			Boot:                  cfg.WorkerBootTimeout,
+			RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
+			RPC:                   cfg.WorkerRPCTimeout,
+			Probe:                 cfg.ProbeInterval,
+			Stop:                  cfg.WorkerStopTimeout,
+			LaunchBackoff:         launchBackoffFirst,
+		},
 		WakePace: supervise.WakePace{
 			Reserve: reserve,
 			Rate:    cfg.WorkerWakesPerMinute,
@@ -1901,11 +1483,11 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RefreshGate:        refreshGate,
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, p.live, c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
-		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, envoy: envoy, tokens: tokens, claims: claims,
+		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop,
@@ -1920,10 +1502,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // cleanSessionStop is what a machine calls once a probe has judged a claim's agent process gone
 // (supervise.Deps.SessionGone): it deletes that session's registration from the Envoy listener,
 // so the listener reads the session `gone` at once instead of holding its role claim and its
-// issue claims for the whole live window (dispatch://INFRA-392). It asks the listener through
-// the Envoy holder every notice of the daemon's goes through (publisherHolder), at each stop, so
-// a stop after a change of `envoy_url` or `envoy_token_file` reaches the listener the change
-// names, with its bearer.
+// issue claims for the whole live window (dispatch://INFRA-392). It runs on the same client the
+// daemon's notices go through (notify.New), beside controller.NewProber, on the same base URL
+// and bearer.
 //
 // The machine calls it inside its own decision, under its lock, so the call is made on a
 // goroutine of its own, on supervising — supervision's lifetime, not the decision's context,
@@ -1949,31 +1530,23 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 //
 // A listener that refuses the delete, keeps the registration, or cannot be reached costs the
 // session nothing beyond the wait it already had: the registration lapses on its own at the
-// gone horizon. While the configuration names no listener, nothing is told.
-func cleanSessionStop(supervising context.Context, envoy *publisherHolder, log *slog.Logger) func(string) {
-	stop := sessionStop{sessions: envoy, log: log}
+// gone horizon. With no listener configured nothing is told.
+func cleanSessionStop(supervising context.Context, envoyURL, token string, log *slog.Logger) func(string) {
+	if envoyURL == "" {
+		return nil
+	}
+	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log}
 	return func(session string) {
-		if listener, _ := envoy.endpoint(); listener == "" {
-			return
-		}
 		goneAt := time.Now()
 		go stop.send(supervising, session, goneAt)
 	}
 }
 
-// sessionStop is one role's clean stop in flight: the listener it goes to, and the log that says
-// what became of it.
+// sessionStop is one role's clean stop in flight: the listener client it goes to, and the log
+// that says what became of it.
 type sessionStop struct {
-	sessions envoySessions
+	sessions *notify.HTTPPublisher
 	log      *slog.Logger
-}
-
-// envoySessions is what a clean stop asks the Envoy listener: the registration it holds for a
-// session, and the delete of it. The daemon's Envoy holder is one (publisherHolder), and so is
-// the client of one listener (notify.HTTPPublisher).
-type envoySessions interface {
-	ReadSessionRegistration(ctx context.Context, session string) (notify.SessionRegistration, error)
-	DeleteSession(ctx context.Context, session string, conditions notify.DeleteConditions) (notify.SessionDeleted, error)
 }
 
 // send is the goroutine cleanSessionStop starts, with goneAt the moment the probe judged the
@@ -2193,11 +1766,10 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // reads as and why, because the count of what the lane has left must name the claims this pass
 // posts and no others (claimsToRefresh).
 //
-// A daemon that cannot relaunch onto a plugin now (PluginRelaunchable false, LEGION-164's
-// degraded Kubernetes mode) posts nothing; it logs one Error line per stale claim at boot only,
-// since a sweep's finding would repeat that line every minute. The answer is asked at every pass,
-// so a pair the configuration names after boot is posted at the next sweep, and a pair it stops
-// naming stops the posts at the next one.
+// A daemon that cannot relaunch onto a plugin (PluginRelaunchable false, LEGION-164's degraded
+// Kubernetes mode) posts nothing; it logs one Error line per stale claim at boot only — a sweep's
+// finding would only repeat a line the boot already wrote, since nothing relaunchable has changed
+// in between.
 //
 // Every claim it does post takes a credit of the refresh gate but the two named below, and a
 // claim the gate refuses is not posted at all (supervise.RefreshGate, dispatch://INFRA-2712
@@ -2264,7 +1836,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // running wave relies on. It is posted mid-turn as well, since its turn is never waited out
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger string) {
-	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, s.plan.live, c) }
+	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) }
 	parked, refreshes := s.parkedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
@@ -2272,7 +1844,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 		if !staleForTheLane(c, noInstall) {
 			continue
 		}
-		if relaunchable := s.plan.pluginRelaunchable; relaunchable == nil || !relaunchable() {
+		if !s.plan.pluginRelaunchable {
 			if trigger == "boot" {
 				s.log.Error(supervise.NoPluginSourceMessage,
 					"claim", c.Token, "incarnation", c.Locator.Incarnation, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion)
@@ -2357,7 +1929,7 @@ func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bo
 // and a count that left it out would read as a drained lane over a fleet still working.
 //
 // Whether this daemon can relaunch onto a plugin at all is deliberately not a term of it
-// (plan.pluginRelaunchable). On a daemon that cannot now, the pass posts nothing and writes one
+// (plan.pluginRelaunchable). On a daemon that cannot, the pass posts nothing and writes one
 // Error line per stale claim at boot, and this count is what that gap costs, standing at the
 // claims the lane cannot act on beside those lines. A count zeroed there would read as a lane
 // with nothing left, which is the one thing such a daemon is not.
@@ -2421,18 +1993,8 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // function); and the API's stale-caller refusal, which would otherwise hold such a worker's
 // grants, its handoff_complete and its ready on a relaunch that never comes
 // (api.Options.NoPluginInstall, api's staleClaim).
-//
-// Being one rule, it reads each half from the one configuration that half lives in, and every
-// site hands it both: the runtime name from the configuration the daemon booted on, since
-// `runtime` is fixed for the process and no pod moves to another runtime; and the role's
-// backend from the settings holder at the moment of the call, since `worker_backends` is a
-// launch key a route change moves under the running daemon. Each site reading a configuration
-// of its own is what this signature refuses: the API answering for the backend an operator
-// just set while the stale-plugin pass went on answering for the one the daemon booted on
-// relaunches a claim the machine then charges for the registration that follows.
-func noPluginInstall(boot config.Config, live *config.Live, c supervise.Claim) bool {
-	return boot.Runtime.Name == "kubernetes" &&
-		runtime.Of(live.Snapshot().BackendFor(c.Role)) == runtime.BackendClaude
+func noPluginInstall(cfg config.Config, c supervise.Claim) bool {
+	return cfg.Runtime.Name == "kubernetes" && runtime.Of(cfg.BackendFor(c.Role)) == runtime.BackendClaude
 }
 
 // reconcileBootOrphans retries only the boot reconciliation, boundedly. A listing error does not
@@ -2718,50 +2280,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
 		githubAPI = workflow.githubAPI
-		consumerLag = workflow.nats.Lag
+		consumerLag = workflow.consumers.Lag
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
-	// its ready. The liveness sweep runs beside it under either mode, never behind it. The launch
-	// mode is fixed for the process (config's whyCtlMode), so boot builds the keeper or does not,
-	// and the API is told which once; the tick's wake is the one value of the controller's that a
-	// holder keeps (keeperHolder).
+	// its ready. The liveness sweep runs beside it under either mode, never behind it.
 	var keeper *controllerKeeper
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
 		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
-	}
-	// The settings the API server holds, behind the pointer its routes read through: the operator
-	// bearer, the design gate, the repository equivalence and the settings route's own admission
-	// rule. Its socket is the one boot took and is never rebound.
-	held := newAPIHolder(cfg, p.operatorToken)
-	p.rebuild.register(held)
-	// What the state reports as `settings`, rebuilt from the configuration at every applied
-	// change rather than read at every request: a change through either arm moves the value the
-	// state shows, which is what a reader of the Legion view's settings control sees (A5).
-	reported := newReportedSettings(cfg)
-	p.live.OnChange(reported.observe)
-	// Where each setting of the running daemon came from, which the state carries beside its
-	// settings: the file this boot read, until a change of that path names another source. It is
-	// an observer of the one settings holder, as the rebuilder is, so a change by the file and a
-	// change by the route are recorded on the one path both take (config.Live.Apply). The route
-	// changes this boot laid back over the file are its first word: they are what the daemon is
-	// running on, and the state names them the route's, with who asked and when.
-	sources := api.NewSettingProvenance(startedAt)
-	sources.Restore(restoredSources(p.restored))
-	p.live.OnChange(sources.Observe)
-	group, serving := errgroup.WithContext(ctx)
-	keeping := newKeeperHolder(cfg.ControllerWakeInterval)
-	p.rebuild.register(keeping)
-	if workflow != nil {
-		workflow.keeper = keeping
-	} else {
-		// The project's repository mapping as a holder of the deployment's repository
-		// equivalence: a change of `repository_renames` reaches it as it reaches the API
-		// server's settings, the intake consumers and the runtime's gh bundles
-		// (config.Row.Also). This is the registration of a daemon with no workflow, which
-		// holds no intake consumers for the mapping to be ordered against; a daemon with one
-		// registers the same holder as it opens them, before them and for the order's sake
-		// (workflowRuntime.connect).
-		p.rebuild.register(newMappingHolder(p.repositories))
 	}
 	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
 	// this runs the runtime is built and the launcher acceptor installed, and what is left of the
@@ -2774,7 +2299,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			project:      cfg.Project,
 			projectToken: p.project,
 			runtime:      cfg.Runtime.Name,
-			admissionCap: func() int { return p.live.Snapshot().AdmissionCap },
+			admissionCap: cfg.AdmissionCap,
 			startedAt:    startedAt,
 			secretsLogin: p.secretsLogin,
 			deployment:   s.deployment,
@@ -2782,38 +2307,30 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			wakes:        s.waitingWakes,
 			repositories: p.repositories,
 			caches:       repositoryCachesOf(s.runtime),
-			live:         p.live,
+			gatedSteps:   cfg.Gates.Steps(),
 			experiments:  cfg.ExperimentsDeclared(),
-			settings:     reported.get,
-			sources:      sources,
-			commit:       p.commit,
+			settings:     api.SettingsOf(cfg),
 			// The same rule the lane itself reads, over the same configuration, so the count
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
-			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, p.live, c) },
+			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 		},
-		StateTransactions: st,
-		ConsumerLag:       consumerLag,
-		CallerPod:         callerPodOf(s.runtime),
-		Ready:             ready.serving,
-		Supervisor:        s.supervisor,
-		PodUpdateRounds:   s.podUpdateRoundsView,
-		BootTokens:        s.tokens,
-		Project:           p.project,
-		DispatchProject:   cfg.Project,
-		Settings:          held.settings,
-		// Through the rebuild observer, so a path whose holder the change could not build again
-		// is answered failed and not `rebuilt` (rebuilder.route).
-		ApplySettings:      p.rebuild.route(p.settings.Route),
+		StateTransactions:  st,
+		ConsumerLag:        consumerLag,
+		CallerPod:          callerPodOf(s.runtime),
+		Ready:              ready.serving,
+		Supervisor:         s.supervisor,
+		PodUpdateRounds:    s.podUpdateRoundsView,
+		BootTokens:         s.tokens,
+		Project:            p.project,
+		DispatchProject:    cfg.Project,
+		OperatorToken:      p.operatorToken,
 		Controller:         st,
+		Steps:              cfg.Gates.Steps(),
 		ControllerLaunched: keeper != nil,
-		PluginRelaunchable: s.plan.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, p.live, c) },
-		// The harness a role's claims run on is read as the route asks, like every other value
-		// the live holder keeps. `worker_backends` is a launch key, so between a change and a
-		// role's relaunch this answers for the new harness while the session still runs the old
-		// one; the claim records no backend, so the live value is the closest there is.
-		Backend:            func(role claim.Role) runtime.Backend { return p.live.Snapshot().BackendFor(role) },
+		PluginRelaunchable: p.pluginRelaunchable,
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		Backend:            cfg.BackendFor,
 		Stopping:           s.stopping,
 		Drained:            s.draining,
 		Decisions:          s.decided,
@@ -2828,6 +2345,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Dispatch:           client,
 		Tokens:             tokens,
 		GitHubRepositories: p.repositories.Accepted,
+		RepositoryRenames:  cfg.RepositoryRenames,
 		Serving:            p.repositories.serving,
 		GitHubAPI:          githubAPI,
 		Grants:             grants,
@@ -2842,39 +2360,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ClaimActivity:      st,
 	})
 
+	group, serving := errgroup.WithContext(ctx)
 	serverStarted := make(chan struct{})
 	group.Go(func() error {
 		close(serverStarted)
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("serve the API on %s: %w", server.Addr, err)
 		}
-		return nil
-	})
-	// Every applied settings change, by either arm, reaches the daemon's log and the project's
-	// controller (settingsAnnouncer), and the file under the daemon is watched for the other arm
-	// (settings.Watcher). Both are registered here, after the boot's own restore: what the boot
-	// laid back over the file is what the daemon booted on, not a change to announce.
-	// The controller's topic is the project token's, as every other notice of its is
-	// (notify.ControllerTopic), never the Dispatch project key. The announcer publishes through
-	// the supervision's Envoy holder (openSupervision), the one the outbox publishes through.
-	announcer := newSettingsAnnouncer(p.project, s.envoy, s.log)
-	p.live.OnChange(announcer.observe)
-	group.Go(func() error {
-		announcer.run(serving)
-		return nil
-	})
-	watcher := settings.NewWatcher(p.settings, s.log)
-	// A credential rotated in place names no changed setting — its path is what the
-	// configuration holds, and the path has not moved — so the file arm is also what asks every
-	// holder that reads a credential file to read it again (rebuilder.rereadCredentials). It
-	// runs under the settings holder's own lock (config.Live.WhileSettled), where an applied
-	// change's rebuilds run, so a reread and a route change never build one holder at once.
-	watcher.Settled = func([]config.Change) { p.live.WhileSettled(p.rebuild.rereadCredentials) }
-	// The file arm writes what the file took back through the pool (internal/settings'
-	// Keeper.File), and runs beside every other goroutine of this group for the life of the
-	// process, so it takes a hold mark of its own (store.ForConcurrentWorker).
-	group.Go(func() error {
-		watcher.Run(store.ForConcurrentWorker(serving))
 		return nil
 	})
 	// The daemon serves from the moment that goroutine has begun, which is what the latch
@@ -2942,18 +2434,14 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			return nil
 		})
 	}
-	// The keeper's loop, where this daemon launches the controller itself. It runs beside every
-	// other goroutine of the process, so it takes a hold mark of its own
-	// (store.ForConcurrentWorker), and the supervision's stop waits for it.
 	if keeper != nil {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		group.Go(func() error {
 			keeper.run(store.ForConcurrentWorker(serving), p.orphanSweep)
-		}()
+			return nil
+		})
 	}
 	group.Go(func() error {
-		watchController(store.ForConcurrentWorker(serving), st, cfg, p, s.envoy, s.log)
+		watchController(store.ForConcurrentWorker(serving), st, cfg, p, s.log)
 		return nil
 	})
 	return group.Wait()
@@ -2969,14 +2457,11 @@ type source struct {
 	project      string
 	projectToken string
 	runtime      string
-	// admissionCap is the cap the state reports, read at every read of the state: a change of
-	// `admission_cap` takes effect at once, with nothing rebuilt.
-	admissionCap func() int
+	admissionCap int
 	startedAt    time.Time
-	// secretsLogin is the daemon's own agent-secrets login (secretsLoginHolder), whose state the
-	// state route reports as it stands at each read; nil under tmux, and it holds no login while
-	// the configuration names no broker.
-	secretsLogin *secretsLoginHolder
+	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
+	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
+	secretsLogin *agentsecrets.Client
 	// deployment is the deployment's capabilities as this boot knows them (supervision.deployment),
 	// whose report the state carries.
 	deployment func() capabilities.Deployment
@@ -2992,28 +2477,16 @@ type source struct {
 	// caches is the Kubernetes runtime's repository caches with their last health reads
 	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
 	caches func() []sandbox.CacheStatus
-	// live is the daemon's settings holder, which the state's design-gate steps are read from
-	// (`gates.design`, gatedStepsOf): the steps the deployment gates, which every root of the
-	// state answers its own state of, and the empty list gates none. They are read at every read
-	// of the state, so an operator's change of the gate reaches the next read with nothing
-	// rebuilt. A source a test built by hand holds none, and reads the shipped list.
-	live *config.Live
-	// settings is the resolved configuration as the state shows it, read at every read of the
-	// state: it is rebuilt at every applied settings change (reportedSettings), so the state
-	// reports the value the daemon is running on beside where that value came from.
-	settings func() api.Settings
-	// sources is where each setting came from (api.SettingProvenance), read at every read of the
-	// state: it moves with every change the daemon applies, so the state names the file or the
-	// route per path as it stands now.
-	sources *api.SettingProvenance
-	// commit is the commit this daemon's binary was built from, which the daemon block names.
-	commit string
+	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
+	// root of the state answers its own state of; the empty list gates none.
+	gatedSteps []record.DesignStep
 	// experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// whose order every issue's `assignments` ride in; the empty list declares none. It is read
-	// once at boot, unlike the settings above: the names and the order it carries are those of
-	// the `experiments` key and the `memory` block's mode, both fixed for the process (config's
-	// whyExperim and whyMemory), so every later reading carries the list boot settled.
+	// once at boot for the reason settings is.
 	experiments []config.Experiment
+	// settings is the resolved configuration as the state shows it, built once here: Load reads
+	// legion.yaml once and an edit to it restarts the daemon, so once-at-boot is live.
+	settings api.Settings
 	// noPluginInstall is whether a claim's launch installs no plugin at all (the package's
 	// noPluginInstall over this daemon's configuration), the one term of the stale-plugin lane's
 	// own rule that the claim itself does not carry, which State needs to count what that lane
@@ -3076,20 +2549,6 @@ func (s projectRecords) Enqueue(ctx context.Context, tx pgx.Tx, row record.Outbo
 		return err
 	}
 	s.wakeOnCommit(ctx, row)
-	return nil
-}
-
-// EnqueueGatedSteps wakes the board lane as Enqueue does. Its row belongs to no issue — its
-// issue column is the bare project key (record.GatedStepsPublish) — and it is written by the
-// boot, where there is no outbox yet and the wake reaches nothing, and by the holder of
-// `gates.design`, where a live change of the design gate would otherwise wait on the lane's
-// next sweep before a person reading Dispatch saw what the deployment now holds work for
-// (gatedStepsHolder).
-func (s projectRecords) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish record.GatedStepsPublish, nextAt time.Time) error {
-	if err := s.Store.EnqueueGatedSteps(ctx, tx, publish, nextAt); err != nil {
-		return err
-	}
-	s.wakeOnCommit(ctx, record.OutboxRow{Issue: publish.Project, Kind: record.OutboxKindGatedStepsPublish})
 	return nil
 }
 
@@ -3195,9 +2654,6 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
-	// The gate is read once for this state, so the issues' steps and the stranded claims' are
-	// the same list even if an operator moves the gate while the body is being built.
-	steps := gatedStepsOf(s.live)
 	// What nothing will wake, judged before the projection and handed to it: an issue whose
 	// claim is stranded carries that answer on its own view (api.WhyView), and the judgement is
 	// the daemon's own over the store, the gated steps and the released wakes, which
@@ -3208,11 +2664,11 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	stranded, err := workflow.Stranded(ctx, tx, records, s.project, steps, claims, resumes, now)
+	stranded, err := workflow.Stranded(ctx, tx, records, s.project, s.gatedSteps, claims, resumes, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, steps, s.experiments, claims, stranded, s.reports(), now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, s.experiments, claims, stranded, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -3230,34 +2686,23 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		held = s.wakes()
 	}
 	state.WakesWaiting = api.WakesWaitingOf(held, paced)
-	commit := s.commit
 	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
 	state.Daemon = api.DaemonInfo{
 		Project:       s.project,
-		Commit:        &commit,
 		SchemaVersion: version,
 		Boots:         boots,
 		FirstBootAt:   firstBootAt,
 		StartedAt:     s.startedAt,
 	}
-	if s.settings != nil {
-		state.Settings = s.settings()
-	}
-	// Written whatever it holds for a caller at the contract that added it, so the map is never
-	// nil here: nil is what withoutSettingSources leaves on the copy served below that contract,
-	// and it is the only thing that takes the field off the wire (api.State's `omitzero`).
-	state.SettingSources = map[string]api.SettingSource{}
-	if s.sources != nil {
-		state.SettingSources = s.sources.Sources()
-	}
-	state.Admission.Cap = s.admissionCap()
+	state.Settings = s.settings
+	state.Admission.Cap = s.admissionCap
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
 		return api.State{}, nil, err
 	}
 	state.ControllerLocator = api.ControllerLocatorOf(s.runtime, controller)
-	if login, held := s.secretsLogin.loginState(); held {
-		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: login}
+	if s.secretsLogin != nil {
+		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}
 	state.Capabilities = api.CapabilityStatesOf(s.deployment().Report())
 	if s.repositories != nil {
@@ -3288,37 +2733,20 @@ func adoptIdentity(identity func(context.Context, claim.Role, ghrepo.Repository)
 	}
 }
 
-// repositoryCachesOf is rt's repository caches when rt is the Sandbox runtime, the one runtime
-// that keeps them, and nil under any other, so the caller hands the API nothing to ask.
-//
-// The caches are read over the Sandbox runtime behind rt at the moment of the call (sandboxOf),
-// which is what makes the answer follow a rebuild of the runtime: the holder's readers hold the
-// holder, and the runtime inside it is replaced under them. A runtime that is no Sandbox one by
-// then answers nothing. callerPodOf reads its pod the same way.
+// repositoryCachesOf is rt's repository caches when rt is the Sandbox runtime, the one runtime that
+// keeps them, and nil under any other.
 func repositoryCachesOf(rt runtime.Runtime) func() []sandbox.CacheStatus {
-	if _, sandboxed := sandboxOf(rt); !sandboxed {
-		return nil
+	if keeper, ok := rt.(*sandbox.Runtime); ok {
+		return keeper.RepositoryCaches
 	}
-	return func() []sandbox.CacheStatus {
-		sandboxed, ok := sandboxOf(rt)
-		if !ok {
-			return nil
-		}
-		return sandboxed.RepositoryCaches()
-	}
+	return nil
 }
 
-// callerPodOf is rt's pod at an address when rt is the Sandbox runtime, the one runtime that
-// runs pods, and nil under any other (api's Options.CallerPod).
+// callerPodOf is rt's pod at an address when rt is the Sandbox runtime, the one runtime that runs
+// pods, and nil under any other (api's Options.CallerPod).
 func callerPodOf(rt runtime.Runtime) func(netip.Addr) (string, bool) {
-	if _, sandboxed := sandboxOf(rt); !sandboxed {
-		return nil
+	if pods, ok := rt.(*sandbox.Runtime); ok {
+		return pods.PodAt
 	}
-	return func(addr netip.Addr) (string, bool) {
-		sandboxed, ok := sandboxOf(rt)
-		if !ok {
-			return "", false
-		}
-		return sandboxed.PodAt(addr)
-	}
+	return nil
 }

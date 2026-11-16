@@ -1790,23 +1790,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/legion/board": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** @description The Legion view on the Issues page for ?project= (the first project naming a daemon when none is given), from what the sampler recorded of that project's daemon: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon. */
-    get: operations["getApiV1LegionBoard"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/v1/limits": {
     parameters: {
       query?: never;
@@ -2581,6 +2564,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/legion/board": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The Legion view on the Issues page for the project its path names, from what the sampler recorded of that project's daemon: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 404 NOT_FOUND for a project that does not exist. */
+    get: operations["getApiV1ProjectsByKeyLegionBoard"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects/{key}/legion/daemon": {
     parameters: {
       query?: never;
@@ -2595,40 +2595,6 @@ export interface paths {
     post?: never;
     /** @description Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none. */
     delete: operations["deleteApiV1ProjectsByKeyLegionDaemon"];
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v1/projects/{key}/legion/metrics": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** @description The Delivery page's Legion section for this project, [from, to) (default the last 7 days) and ?scope=all|roots|children: over the issues that closed in the window with Legion phase work, the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle in that order (CI wait is not measured and is 0 on every bar, its hours going to waiting on children or idle), the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week; a project with nothing measured answers an empty report. 400 INVALID_QUERY for a malformed window, scope or project key, 404 NOT_FOUND for a project that does not exist. */
-    get: operations["getApiV1ProjectsByKeyLegionMetrics"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v1/projects/{key}/legion/settings": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    /** @description Relay an operator's legion.yaml change {changes: {<dotted path>: <value>}} to this project's Legion daemon, with the caller's login as the change's author, and answer the daemon's status and per-key result (applied at-once, rebuilt or next-launch, failed with the error of the holder the daemon took the value and could not carry it into, or refused with a reason) unchanged; 404 LEGION_NOT_CONFIGURED when the project names no daemon, 503 LEGION_DAEMON_UNAVAILABLE when it could not be reached. */
-    put: operations["putApiV1ProjectsByKeyLegionSettings"];
-    post?: never;
-    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -5387,9 +5353,6 @@ export interface components {
       computed_at: string;
       header: components["schemas"]["LegionBoardHeader"];
       project: string;
-      setting_sources: {
-        [key: string]: unknown;
-      } | null;
       settings: {
         [key: string]: unknown;
       } | null;
@@ -5401,157 +5364,12 @@ export interface components {
       /** Format: date-time */
       since: null | string;
     };
-    LegionFiledIssue: {
-      /** Format: date-time */
-      at: string;
-      /** @enum {string} */
-      class: "in_tree_at_design" | "in_tree_later" | "out_of_tree" | "by_the_controller";
-      /** @enum {string} */
-      filer:
-        | "architect"
-        | "planner"
-        | "implementer"
-        | "tester"
-        | "reviewer"
-        | "merger"
-        | "controller";
-      filer_issue: string;
-      /** @enum {string} */
-      filer_phase:
-        | ""
-        | "queued"
-        | "design"
-        | "planning"
-        | "implementing"
-        | "testing"
-        | "reviewing"
-        | "accepting"
-        | "merging"
-        | "awaiting_person"
-        | "held"
-        | "done";
-      key: string;
-      title: string;
-    };
-    LegionMetricsResponse: {
-      /** Format: date-time */
-      computed_at: string;
-      finished: number;
-      /** Format: date-time */
-      from: string;
-      phase_time: components["schemas"]["LegionPhaseTime"];
-      project: string;
-      rework: components["schemas"]["LegionRework"];
-      /** @enum {string} */
-      scope: "all" | "roots" | "children";
-      splitting: components["schemas"]["LegionSplitting"];
-      /** Format: date-time */
-      to: string;
-      work_time: components["schemas"]["LegionWorkTime"];
-    };
-    LegionPhaseTime: {
-      bars: components["schemas"]["LegionRoleBar"][] | null;
-      /** Format: double */
-      idle_share: number;
-    };
-    LegionRework: {
-      /** Format: double */
-      hours_after_first_review: number;
-      issues: components["schemas"]["LegionReworkIssue"][] | null;
-      /** Format: double */
-      median_hours_after_first_review: number;
-      /** Format: double */
-      median_review_rounds: number;
-      /** Format: double */
-      sent_back_share: number;
-    };
-    LegionReworkIssue: {
-      /** Format: double */
-      implementing_hours_after_first_review: number;
-      key: string;
-      review_rounds: number;
-      sent_back: boolean;
-      /** Format: double */
-      testing_hours_after_first_review: number;
-    };
-    LegionRoleBar: {
-      /** Format: double */
-      hours: number;
-      issues: number;
-      /** Format: double */
-      median_hours_per_issue: number;
-      /** @enum {string} */
-      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger" | "no_role";
-      segments: components["schemas"]["LegionSegments"];
-    };
-    LegionSegments: {
-      /** Format: double */
-      ci_wait: number;
-      /** Format: double */
-      idle: number;
-      /** Format: double */
-      in_a_turn: number;
-      /** Format: double */
-      waiting_on_children: number;
-      /** Format: double */
-      waiting_on_person: number;
-    };
     LegionSetting: {
       created_by: components["schemas"]["Actor"];
       project: string;
       state_url: string;
       /** Format: date-time */
       updated_at: string;
-    };
-    LegionSettingsRelayInput: {
-      actor?: components["schemas"]["Actor"] | null;
-      changes: {
-        [key: string]: unknown;
-      } | null;
-    };
-    LegionSplitting: {
-      /** Format: double */
-      children_per_root: number;
-      filed: components["schemas"]["LegionFiledIssue"][] | null;
-      finished_roots: number;
-      /** Format: double */
-      median_hours_roots_with_children: number;
-      /** Format: double */
-      median_hours_roots_without_children: number;
-      weeks: components["schemas"]["LegionSplittingWeek"][] | null;
-    };
-    LegionSplittingWeek: {
-      filed: {
-        [key: string]: number;
-      } | null;
-      finished: number;
-      /** Format: date-time */
-      week: string;
-    };
-    LegionWorkTime: {
-      issues: components["schemas"]["LegionWorkTimeIssue"][] | null;
-      /** Format: double */
-      median_hours: number;
-      /** Format: double */
-      p90_hours: number;
-    };
-    LegionWorkTimeIssue: {
-      /** Format: date-time */
-      closed_at: string;
-      /** Format: double */
-      hours: number;
-      key: string;
-      /** Format: date-time */
-      merged_at: null | string;
-      /** Format: double */
-      parked_hours: number;
-      priority: null | number;
-      /** Format: double */
-      queued_hours: number;
-      root: boolean;
-      /** Format: date-time */
-      started_at: string;
-      title: string;
     };
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
@@ -9224,8 +9042,6 @@ export interface operations {
     parameters: {
       query?: {
         at?: string;
-        from?: string;
-        to?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11091,39 +10907,6 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["IssueReferenceSummary"];
-        };
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
-  getApiV1LegionBoard: {
-    parameters: {
-      query?: {
-        project?: string;
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description OK */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["LegionBoardResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13104,6 +12887,40 @@ export interface operations {
       };
     };
   };
+  getApiV1ProjectsByKeyLegionBoard: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionBoardResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ProjectsByKeyLegionDaemon: {
     parameters: {
       query?: {
@@ -13196,81 +13013,6 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
-  getApiV1ProjectsByKeyLegionMetrics: {
-    parameters: {
-      query?: {
-        from?: string;
-        to?: string;
-        scope?: "all" | "roots" | "children";
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path: {
-        key: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description OK */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["LegionMetricsResponse"];
-        };
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
-  putApiV1ProjectsByKeyLegionSettings: {
-    parameters: {
-      query?: {
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path: {
-        key: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["LegionSettingsRelayInput"];
-      };
-    };
-    responses: {
-      /** @description the Legion daemon's own answer, relayed byte for byte with its status: the per-key verdicts of its operator settings route, which Dispatch does not model */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": unknown;
-        };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -14367,19 +14109,7 @@ export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
-export type LegionFiledIssue = components["schemas"]["LegionFiledIssue"];
-export type LegionMetricsResponse = components["schemas"]["LegionMetricsResponse"];
-export type LegionPhaseTime = components["schemas"]["LegionPhaseTime"];
-export type LegionRework = components["schemas"]["LegionRework"];
-export type LegionReworkIssue = components["schemas"]["LegionReworkIssue"];
-export type LegionRoleBar = components["schemas"]["LegionRoleBar"];
-export type LegionSegments = components["schemas"]["LegionSegments"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
-export type LegionSettingsRelayInput = components["schemas"]["LegionSettingsRelayInput"];
-export type LegionSplitting = components["schemas"]["LegionSplitting"];
-export type LegionSplittingWeek = components["schemas"]["LegionSplittingWeek"];
-export type LegionWorkTime = components["schemas"]["LegionWorkTime"];
-export type LegionWorkTimeIssue = components["schemas"]["LegionWorkTimeIssue"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];

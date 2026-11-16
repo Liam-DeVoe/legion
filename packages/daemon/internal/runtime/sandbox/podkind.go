@@ -9,7 +9,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
@@ -46,17 +45,8 @@ type podKind interface {
 	// secretAnnotations are the annotations each of the pod's Secrets carries.
 	secretAnnotations(l launch) map[string]string
 	// resources are the reservation every container of the pod carries, its init containers'
-	// included (Options.Resources). The dotted `legion.yaml` key each kind's reservation is read
-	// from is named with the kinds' own launch keys, one key per kind (issueLaunchPaths,
-	// controllerLaunchPaths).
+	// included (Options.Resources).
 	resources(r *Runtime) corev1.ResourceRequirements
-	// readsLaunchPath is whether a launch of this kind reads the launch key path, one of the keys
-	// a pod's template records (LaunchSettings). It is the whole rule the record a pod of this
-	// kind carries is filtered by (launchSettingsFor), so a pod is replaced for a change of a key
-	// its own launch reads and for no other (INFRA-1077's acceptance A5). Both kinds' launches
-	// read most of the keys; the few one kind alone reads are named with the kinds themselves
-	// (issueLaunchPaths, controllerLaunchPaths).
-	readsLaunchPath(path string) bool
 	// initContainers are the pod's init containers, and initVolumes the volumes only they mount,
 	// besides the pod's own volume and config home.
 	initContainers(r *Runtime, l launch) []corev1.Container
@@ -94,75 +84,6 @@ func podKindOf(labels map[string]string) (podKind, error) {
 		labelIssue, labels[labelIssue], labelTree, labels[labelTree], labelRole, labels[labelRole])
 }
 
-// The launch keys (LaunchSettings) one kind's launch reads and the other kind's does not, which
-// is the whole of what the two kinds' readsLaunchPath answer differently. Every other key a pod's
-// template records is read by both launches, so a change of it drifts both pods: the image; the
-// storage class and `runtime.kubernetes.issue_volume`, which size the issue pod's own ephemeral
-// claim and the claim template the controller's Sandbox owns alike (diskSpec, issuePod.disk,
-// controllerPod.disk); the session store; `runtime.kubernetes.setup`, which wraps the start of
-// every role's agent, the controller's included (launcherCommand, startArgv); the scheduling; the
-// operator's `runtime.kubernetes.pod` block; the secrets broker; and `instructions`,
-// `role_config_files` (which names the controller as well as every issue role), `provider_keys`,
-// `daemon_url`, `advertise_host`, `omp_invocation` and `omp_launch_prefix`.
-//
-// Each is named by the class table's own path (config.Row.Path), which is what readsLaunchPath
-// compares a recorded key's row by (launchKeyOf): a key inside the `projects` map is recorded at
-// the daemon's own project (podLaunchPath), `projects.LEGION.memory.config_files`, and named here
-// by its template, `projects.<KEY>.memory.config_files`.
-//
-// issueLaunchPaths are the six keys an issue pod's launch alone reads, each read by a manifest
-// or a launch the controller's pod has none of:
-//
-//   - its own reservation, which no container of the controller's pod carries
-//     (issuePod.resources, controllerPod.resources);
-//   - `runtime.kubernetes.skills_repository`, which the skills-fetch init container clones and
-//     the roles container mounts, neither of which the controller's pod has
-//     (issuePod.initContainers, issuePod.launcherContainer, controllerPod.initContainers); its
-//     kind names no repository at all (controllerPod.skillsRepository), so a role of its own
-//     installs no skills (launch.skillsInstall) whatever the key says;
-//   - `runtime.kubernetes.test_postgres`, which gives an issue pod alone the launcher's
-//     `--test-postgres`, the cluster's volume and the role's LEGION_TEST_PG_DSN
-//     (issuePod.launcherContainer, issuePod.mainVolumes, mainEnvironment, which reads it for an
-//     issue pod only);
-//   - `worker_backends`, which names issue roles and nothing else — the file refuses any other
-//     name (config.readWorkerBackends) and a launch refuses the controller on Claude Code
-//     (runtime.ValidateSpawnSpec) — so the controller's launch is Oh My Pi's however it moves;
-//   - the project's `commit_issue_trailer_repos`, which the launch specs turn into a role's
-//     issue key (internal/daemon's issueTrailer, runtime.SpawnSpec.IssueTrailer) and
-//     issuePod.agentEnv tells every role of the pod as LEGION_ISSUE_TRAILER, while
-//     controllerPod.agentEnv tells nothing of it and a controller's spec carrying one is refused
-//     (runtime's validateControllerShape: the controller works no repository and no issue);
-//   - the project's `memory.config_files`, which a launch names in PI_CONFIG_FILES only where
-//     its tree is in the memory group (launch.overlays, runtime.SpawnSpec.Memory), and the
-//     controller runs in no tree: a controller's spec in a memory group is refused
-//     (validateControllerShape), and neither the image probe nor the overlay-mount check reads
-//     the files for it (probeManifest, movedRoleOverlays).
-//
-// controllerLaunchPaths is the one key the controller pod's launch alone reads, its own
-// reservation.
-var (
-	issueLaunchPaths = []string{
-		"projects.<KEY>.commit_issue_trailer_repos",
-		"projects.<KEY>.memory.config_files",
-		"runtime.kubernetes.resources.issue",
-		"runtime.kubernetes.skills_repository",
-		"runtime.kubernetes.test_postgres",
-		"worker_backends",
-	}
-	controllerLaunchPaths = []string{"runtime.kubernetes.resources.controller"}
-)
-
-// launchKeyOf is the class table's own path of the recorded launch key path: the template of a
-// key the record holds at the daemon's own project, and the path itself for every other key,
-// one the table does not hold among them (config.ClassOf), so the two kinds' lists name each key
-// once whatever the project is called.
-func launchKeyOf(path string) string {
-	if row, known := config.ClassOf(path); known {
-		return row.Path
-	}
-	return path
-}
-
 // issuePod is an issue's pod: every workflow role of the issue, working in the issue's workspace
 // on the issue's disk, the pod's own generic ephemeral volume, created with the pod and deleted
 // with it, in one container whose PID 1 is one `legion launcher` holding a connection of each
@@ -181,12 +102,6 @@ func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.res
 
 func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token, error) {
 	return claim.NewToken(project, issue, role)
-}
-
-// readsLaunchPath: an issue pod's launch reads every launch key a pod's template records but the
-// controller pod's own (controllerLaunchPaths).
-func (issuePod) readsLaunchPath(path string) bool {
-	return !slices.Contains(controllerLaunchPaths, launchKeyOf(path))
 }
 
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
@@ -535,14 +450,6 @@ func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return 
 
 func (controllerPod) claimToken(project, _ string, _ claim.Role) (claim.Token, error) {
 	return claim.ControllerToken(project), nil
-}
-
-// readsLaunchPath: the controller pod's launch reads every launch key a pod's template records
-// but the six an issue pod's launch alone reads (issueLaunchPaths), so a change of the skills
-// repository, the test database, the issue reservation, the workers' backends, or the project's
-// trailer repositories or memory overlays replaces no controller pod.
-func (controllerPod) readsLaunchPath(path string) bool {
-	return !slices.Contains(issueLaunchPaths, launchKeyOf(path))
 }
 
 // prepare works in the root of the controller's own volume.

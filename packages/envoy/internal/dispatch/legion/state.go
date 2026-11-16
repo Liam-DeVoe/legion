@@ -24,7 +24,7 @@ import (
 //     issues' parent chain instead.
 
 // State is a daemon's state as Dispatch records it: its issues, its admission block, the settings
-// it reports with where each came from, and nothing else of the document.
+// it reports, and nothing else of the document.
 type State struct {
 	Issues map[string]Issue `json:"issues"`
 	// Admission is the daemon's admission block, absent from a document that carries none: the
@@ -36,10 +36,6 @@ type State struct {
 	// bytes the daemon sent: the view shows them and Dispatch models none of them, so a key added
 	// to legion.yaml is recorded the day a daemon sends it.
 	Settings map[string]json.RawMessage `json:"settings,omitempty"`
-	// SettingSources is where each setting's value came from, by the same key: the file or the
-	// route, who changed it and when (the spec's contract 4). A daemon before that contract sends
-	// none, which is no source rather than an empty one.
-	SettingSources map[string]json.RawMessage `json:"settingSources,omitempty"`
 }
 
 // Admission is the admission block in the members Dispatch records. Every member is optional and
@@ -114,11 +110,10 @@ const (
 	// AdmissionKey rather than on any issue: the waiting line's order, the blockers and the cap
 	// belong to the project, not to one issue.
 	FieldAdmission = "admission"
-	// FieldSettings and FieldSettingSources are the settings the daemon reports and where each
-	// came from, observed under AdmissionKey beside the admission block: they belong to the
-	// project's daemon, not to an issue, and the settings control on the Legion view reads them.
-	FieldSettings       = "settings"
-	FieldSettingSources = "setting_sources"
+	// FieldSettings is the settings the daemon reports, observed under AdmissionKey beside the
+	// admission block: they belong to the project's daemon, not to an issue, and the settings
+	// panel on the Legion view shows them.
+	FieldSettings = "settings"
 	// ClaimFieldPrefix starts the field of one role's claim state: `claim.architect`,
 	// `claim.implementer`.
 	ClaimFieldPrefix = "claim."
@@ -166,7 +161,7 @@ func JSONString(raw []byte) string {
 }
 
 // AdmissionKey is the issue key every project-level observation is written under — the admission
-// block, the settings and their sources: the empty string, which no issue key can be
+// block and the settings: the empty string, which no issue key can be
 // (legion_observations.issue_key is free text with no foreign key, so the rows cost no issue).
 const AdmissionKey = ""
 
@@ -192,15 +187,14 @@ type Observation struct {
 // read an issue's status from Dispatch's own events (metrics' readStatusMarks).
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
-	// The three fields every issue carries and one claim each, and the project's three.
-	observations := make([]Observation, 0, len(keys)*4+3)
+	// The three fields every issue carries and one claim each, and the project's two.
+	observations := make([]Observation, 0, len(keys)*4+2)
 	for _, project := range []struct {
 		field string
 		value any
 	}{
 		{FieldAdmission, s.Admission},
 		{FieldSettings, s.Settings},
-		{FieldSettingSources, s.SettingSources},
 	} {
 		observations = append(observations, Observation{
 			IssueKey: AdmissionKey, Field: project.field, Value: encodeValue(project.value),

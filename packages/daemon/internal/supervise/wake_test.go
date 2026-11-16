@@ -876,7 +876,7 @@ func TestATakeBackTheStoreRefusesAtTheTurnLeavesNoMarkBehind(t *testing.T) {
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", ID: "outbox:7", Row: 7, Generation: 7})
 	sent := h.pending().ID
 	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = func() bool { return true }
+	h.m.deps.PluginRelaunchable = true
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 	waiting := h.wantWaitingWake(WakePluginRefresh)
 	h.must(StreamTurnStart{Claim: h.token, DeliveryID: sent})
@@ -1302,7 +1302,7 @@ func TestALaunchRefusedAtItsTurnBindsTheTurnItsAcknowledgedPromptAwaits(t *testi
 		t.Fatal("the acknowledged prompt waits for its turn on nothing, want the bound armed")
 	}
 	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = func() bool { return true }
+	h.m.deps.PluginRelaunchable = true
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 	waiting := h.wantWaitingWake(WakePluginRefresh)
@@ -1562,7 +1562,7 @@ func TestAStalePluginRelaunchRefusedAtItsTurnLeavesNoMarkBehind(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = func() bool { return true }
+	h.m.deps.PluginRelaunchable = true
 	store := &unansweredCheckLaunchStore{memStore: h.store}
 	h.m.deps.Store = store
 
@@ -1623,7 +1623,7 @@ func TestARefusedRelaunchOnTheChargedPathKeepsTheMarkOfTheRelaunchThatRan(t *tes
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = func() bool { return true }
+	h.m.deps.PluginRelaunchable = true
 	store := &unansweredCheckLaunchStore{memStore: h.store}
 	h.m.deps.Store = store
 
@@ -2113,7 +2113,7 @@ func TestAReRegistrationInsideAStalePluginRelaunchsWaitIsChargedNothing(t *testi
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = func() bool { return true }
+	h.m.deps.PluginRelaunchable = true
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 
@@ -2164,7 +2164,7 @@ func TestAStalePluginRelaunchThatRunsMarksTheClaim(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = func() bool { return true }
+	h.m.deps.PluginRelaunchable = true
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 	waiting := h.wantWaitingWake(WakePluginRefresh)
@@ -2216,7 +2216,7 @@ func TestAStalePluginRelaunchAHeldSuspensionEndsMarksNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateWorking)
 	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = func() bool { return true }
+	h.m.deps.PluginRelaunchable = true
 
 	// The operator's suspend arrives in a turn and is held for that turn's end, and the stop the
 	// end runs is refused by the runtime, so the hold stands over a claim that still records its

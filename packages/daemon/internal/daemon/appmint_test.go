@@ -139,7 +139,7 @@ func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Tokens, gith
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, config.Settled(cfg), Build{}, log, overrides{
+		done <- run(ctx, cfg, log, overrides{
 			listen:         heldListen,
 			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 			clock:          stillClock{},

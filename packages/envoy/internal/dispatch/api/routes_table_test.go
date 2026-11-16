@@ -138,22 +138,12 @@ const legionSegment = "legion"
 // projectPathPrefix is where R26 addresses everything that belongs to one project.
 const projectPathPrefix = "/api/v1/projects/{key}/"
 
-// outsideTheProjectPath is every route this change adds that may stand outside
-// projectPathPrefix, by `METHOD path`, with the reason it may. R26 permits one cross-project read
-// outside a project path, and a second needs the root spec (dispatch://INFRA-979/artifact/spec)
-// to say so first. No entry of this list is that read today: R34 names GET /api/v1/evals, which
-// another child carries. The board's entry is a move waiting on dispatch://INFRA-2915, and it
-// goes when that tree lands.
-var outsideTheProjectPath = map[string]string{
-	"GET /api/v1/legion/board": "moved to GET /api/v1/projects/{key}/legion/board by " +
-		"dispatch://INFRA-2915, on that tree's branch and not yet merged into this one; delete " +
-		"this entry when INFRA-2915 lands",
-}
-
 // legionRoutesOutsideTheProjectPath names each line of a route index, as routeIndexGolden holds
-// them, that is this change's and is not under projectPathPrefix, less the routes
-// outsideTheProjectPath allows. A line that is not `METHOD path auth` is named too, so an index
-// this cannot read is never passed for one with nothing to refuse.
+// them, that is this change's and is not under projectPathPrefix. R26 of
+// dispatch://INFRA-979/artifact/spec puts everything of one project under a project path and
+// permits no Legion route outside it, so there is nothing to allow: every such line is refused.
+// A line that is not `METHOD path auth` is named too, so an index this cannot read is never
+// passed for one with nothing to refuse.
 func legionRoutesOutsideTheProjectPath(index string) []string {
 	var refused []string
 	for _, line := range strings.Split(strings.TrimSuffix(index, "\n"), "\n") {
@@ -162,31 +152,28 @@ func legionRoutesOutsideTheProjectPath(index string) []string {
 			refused = append(refused, line+" (not `METHOD path auth`)")
 			continue
 		}
-		method, path := fields[0], fields[1]
+		path := fields[1]
 		if !slices.Contains(strings.Split(path, "/"), legionSegment) || strings.HasPrefix(path, projectPathPrefix) {
 			continue
 		}
-		if _, allowed := outsideTheProjectPath[method+" "+path]; !allowed {
-			refused = append(refused, line)
-		}
+		refused = append(refused, line)
 	}
 	return refused
 }
 
 // TestEveryLegionRouteIsUnderTheProjectPath reads the committed route index and refuses a route
-// this change adds that is not under /api/v1/projects/{key}/ (R26), unless outsideTheProjectPath
-// names it. It is held first to the five routes R26 moved, so a rule that stopped refusing them
-// fails here rather than passing every index.
+// this change adds that is not under /api/v1/projects/{key}/ (R26), with no allowance: everything
+// of one project is under its path. It is held first to the four routes R26 moved, so a rule that
+// stopped refusing them fails here rather than passing every index.
 func TestEveryLegionRouteIsUnderTheProjectPath(t *testing.T) {
 	moved := []string{
 		"GET /api/v1/settings/legion any",
 		"DELETE /api/v1/settings/legion/{project} any",
 		"PUT /api/v1/settings/legion/{project} any",
-		"PUT /api/v1/legion/{project}/settings any",
-		"GET /api/v1/legion/metrics any",
+		"GET /api/v1/legion/board any",
 	}
 	if refused := legionRoutesOutsideTheProjectPath(strings.Join(moved, "\n") + "\n"); !slices.Equal(refused, moved) {
-		t.Fatalf("the rule refuses %q of the routes R26 moved, want all five", refused)
+		t.Fatalf("the rule refuses %q of the routes R26 moved, want all four", refused)
 	}
 	index, err := os.ReadFile(routeIndexGolden)
 	if err != nil {

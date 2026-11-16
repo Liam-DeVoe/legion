@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -37,13 +38,14 @@ func newCredentialHarness(t *testing.T, tokens appauth.Tokens) *harness {
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor,
-		BootTokens: h.tokens,
-		Project:    testProject,
-		Settings:   operatorSettings(),
-		Controller: h.store,
-		Grants:     credential.New(nil),
-		Tokens:     tokens,
+		Steps:         config.DesignGateRootIssues.Steps(),
+		Supervisor:    h.supervisor,
+		BootTokens:    h.tokens,
+		Project:       testProject,
+		OperatorToken: testOperatorToken,
+		Controller:    h.store,
+		Grants:        credential.New(nil),
+		Tokens:        tokens,
 	}).Handler
 	return h
 }

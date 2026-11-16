@@ -36,7 +36,6 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
-  LegionBoardResponse,
   LiveServerFrame,
   LiveSubscribe,
 } from "../web/src/api/types";
@@ -160,7 +159,6 @@ const COUNTS = ["facet_counts", "color_counts"] as const satisfies readonly Deli
 
 type MeasureField = Exclude<keyof DeliveryMeasuresResponse, "window" | "computed_at" | "freshness">;
 type PipelineField = Exclude<keyof DeliveryPipelineResponse, "computed_at" | "freshness">;
-type LegionField = Exclude<keyof LegionBoardResponse, "computed_at">;
 
 /** The measures every comparison holds equal: each field but the window, computed_at and
  *  freshness, which a live body keeps as they were last sent. A record, so a field the response
@@ -182,15 +180,6 @@ const PIPELINE_FIELDS: Readonly<Record<PipelineField, true>> = {
   staging_apply: true,
   staging_e2e: true,
   targets: true,
-};
-/** The board's header, columns and settings: every field but computed_at, which a live body keeps
- *  as it was last sent. */
-const LEGION_FIELDS: Readonly<Record<LegionField, true>> = {
-  columns: true,
-  header: true,
-  project: true,
-  setting_sources: true,
-  settings: true,
 };
 
 const SERVER_FRAME_TYPES: Readonly<Record<DeliveryServerFrame["type"], true>> = {
@@ -240,7 +229,6 @@ const isTimeline = (body: DeliveryLiveBody): body is DeliveryTimelineWithMeasure
 const isMeasures = (body: DeliveryLiveBody): body is DeliveryMeasuresResponse =>
   "flags_source" in body;
 const isPipeline = (body: DeliveryLiveBody): body is DeliveryPipelineResponse => "days" in body;
-const isLegion = (body: DeliveryLiveBody): body is LegionBoardResponse => "columns" in body;
 
 function mapValues<V, W>(
   record: Readonly<Record<string, V>>,
@@ -732,19 +720,10 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
         })),
       ];
     }
-    case "legion": {
-      if (!isLegion(body)) throw new Error("the legion view's snapshot is not a board body");
-      return [
-        read<LegionBoardResponse>(
-          `/api/v1/legion/board?${new URLSearchParams({ project: view.project })}`,
-          (answer) => ({
-            measures: compareFields(body, answer, LEGION_FIELDS),
-            prs: null,
-            runs: null,
-          })
-        ),
-      ];
-    }
+    default:
+      // The delivery-live probe drives only the timeline, measures and pipeline views; the
+      // `/ws/live` `legion` view this pull request adds is read by no page and no probe row.
+      throw new Error(`the delivery-live probe drives no ${view.kind} view`);
   }
 }
 

@@ -1203,7 +1203,7 @@ func observe(m *Machine, ctx context.Context, ev Event) error {
 			return m.askTurnOver(ctx, ev)
 		}
 		return m.sendPending(ctx)
-	}, TimerProbe, m.deps.timeouts().Probe)
+	}, TimerProbe, m.deps.Timeouts.Probe)
 }
 
 // helloed is the shim's first connection: StateLaunching to StateShimConnected, and the only path
@@ -1327,11 +1327,11 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 }
 
 func closed(m *Machine, ctx context.Context, _ Event) error {
-	return m.probe(ctx, nothing, TimerProbe, m.deps.timeouts().Probe)
+	return m.probe(ctx, nothing, TimerProbe, m.deps.Timeouts.Probe)
 }
 
 func reprobe(m *Machine, ctx context.Context, _ Event) error {
-	return m.probe(ctx, nothing, TimerProbe, m.deps.timeouts().Probe)
+	return m.probe(ctx, nothing, TimerProbe, m.deps.Timeouts.Probe)
 }
 
 // acked is the prompt taken: the task is marked read, the wait for its turn is armed, and the
@@ -1348,7 +1348,7 @@ func acked(m *Machine, ctx context.Context, _ Event) error {
 	p := m.claim.Pending
 	m.awaitResult(p.ID)
 	m.markRead(p)
-	m.arm(TimerTurn, m.deps.timeouts().RPC, p.ID)
+	m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	return m.putPending(ctx)
 }
 
@@ -2240,9 +2240,9 @@ func (m *Machine) resultPending() bool {
 
 func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 	return m.probe(ctx, func(context.Context) error {
-		m.arm(TimerBoot, m.deps.timeouts().Boot, "")
+		m.arm(TimerBoot, m.deps.Timeouts.Boot, "")
 		return nil
-	}, TimerBoot, m.deps.timeouts().Boot)
+	}, TimerBoot, m.deps.Timeouts.Boot)
 }
 
 // registrationDeadline is a process that has had its boot intervals and whose agent never became
@@ -2264,17 +2264,17 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	}
 	return m.probe(ctx, func(ctx context.Context) error {
 		if err := m.checkLaunch(ctx); err != nil {
-			m.arm(TimerRegistration, m.deps.timeouts().Probe, "")
+			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose agent %s: %w", m.claim.Token, never, err)
 		}
 		incarnation := m.claim.Locator.Incarnation
 		if err := m.suspendProcess(ctx, endNeverReady(never)); err != nil {
-			m.arm(TimerRegistration, m.deps.timeouts().Probe, "")
+			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
 		}
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
 		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd)
-	}, TimerRegistration, m.deps.timeouts().Probe)
+	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
 func noTurn(m *Machine, ctx context.Context, _ Event) error {
@@ -2285,7 +2285,7 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 	// session's next — its start confirms the task and its result settles it. The charge and the
 	// next trigger's send stand as they were: nothing here holds the task for that prompt, so one
 	// that never starts a turn and never answers still walks the budget to the retirement.
-	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.timeouts().RPC), taskRead)
+	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.Timeouts.RPC), taskRead)
 }
 
 func spawn(m *Machine, ctx context.Context, ev Event) error {
@@ -2434,7 +2434,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
-	if fresh, why := freshSession(ev, m.claim, m.deps.limits().LaunchFailures); fresh {
+	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
 		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
 			"refusedRun", m.claim.RefusedRun())
 		// The failure the claim carries is the fuller answer where it has one — it names how many

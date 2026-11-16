@@ -355,7 +355,6 @@ func (e *Engine) byReviewer(review intake.PullRequestReview, reviewerSession str
 // (RoundRefusal.AtEveryHead): an account's standing and a session's claim are not things the
 // record's next head changes.
 func (e *Engine) DecidesRound(review intake.PullRequestReview, reviewerSession string) bool {
-	e = e.decision()
 	return e.byReviewer(review, reviewerSession) || review.AuthorCanWrite
 }
 
@@ -384,7 +383,6 @@ type RoundRefusal struct {
 // narrower rule than the other, and neither asks a second one to learn how long a refusal stands:
 // the answer carries that (RoundRefusal.AtEveryHead).
 func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession string) RoundRefusal {
-	e = e.decision()
 	if !e.DecidesRound(review, reviewerSession) {
 		if e.byReviewApp(review.Author) {
 			return RoundRefusal{Reason: "the review App submitted it from a session that is not the reviewer's", AtEveryHead: true}
@@ -435,7 +433,6 @@ func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullReq
 // by itself. The daemon's read of a pull request's reviews reads it before it judges one
 // (RefusesRound), as review does, so both judge a review-App review alike.
 func (e *Engine) ReviewerSession(ctx context.Context, tx pgx.Tx, issue string) (string, error) {
-	e = e.decision()
 	reviewer, err := e.phaseRow(ctx, tx, issue, claim.RoleReviewer)
 	if err != nil {
 		return "", err
@@ -934,7 +931,7 @@ func told(row record.PhaseRow, r round) bool {
 // walk (basePush), since the record it overwrites as it goes is what tells a redelivered push
 // from a first delivery.
 func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
-	if e.settings().ReadMergeState == nil {
+	if e.cfg.ReadMergeState == nil {
 		return nil
 	}
 	var pr *record.PullRequest
@@ -967,8 +964,7 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 // guard on a daemon with no reader is here as well as in askMergeState, because a base push
 // reaches this from its handler's walk rather than through that switch (basePush).
 func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest) error {
-	read := e.settings().ReadMergeState
-	if read == nil || pr.State != record.PullRequestOpen {
+	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
@@ -983,7 +979,7 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 		return nil
 	}
 	key := issue.Key
-	intake.OnCommit(ctx, func() { read(key) })
+	intake.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
 	return nil
 }
 
@@ -1065,17 +1061,16 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *r
 		return e.store.PutPhase(ctx, tx, row)
 	}
 	counted := row.Rounds - row.ConflictRounds
-	roundCap := e.settings().ReviewRoundCap
-	tell := counted >= roundCap && row.CapTold != roundCap
+	tell := counted >= e.cfg.ReviewRoundCap && row.CapTold != e.cfg.ReviewRoundCap
 	if tell {
-		row.CapTold = roundCap
+		row.CapTold = e.cfg.ReviewRoundCap
 	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
 	if tell {
 		message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
-			roundCap, counted, row.ConflictRounds)
+			e.cfg.ReviewRoundCap, counted, row.ConflictRounds)
 		if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
 			return err
 		}

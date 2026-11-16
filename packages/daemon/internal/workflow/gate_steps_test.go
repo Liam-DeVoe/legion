@@ -202,7 +202,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		if err != nil {
 			t.Fatalf("list issues: %v", err)
 		}
-		facts, err := record.ReadLineFacts(scoped, tx, store, "LEGION", issues, engine.settings().Steps)
+		facts, err := record.ReadLineFacts(scoped, tx, store, "LEGION", issues, engine.cfg.Steps)
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}

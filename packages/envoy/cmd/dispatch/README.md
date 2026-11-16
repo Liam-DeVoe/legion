@@ -3672,12 +3672,6 @@ Each item below names a path with its method and identity, then its purpose.
   The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
   `AGENTS.md` gives the rest, including why neither write emits an event.
 
-- `/api/v1/projects/{key}/legion/settings` (PUT; cookie, trusted header, or bearer)
-
-  Relay an operator's `legion.yaml` change `{changes: {<dotted path>: <value>}}` to that project's Legion daemon, with the caller's login as the change's author, and answer the daemon's status and its per-key result unchanged: applied `at-once`, `rebuilt` or `next-launch`, `failed` with the error of the holder the daemon took the value and could not carry it into, or refused with the reason.
-  The bearer is Dispatch's own projected Kubernetes service-account token, minted for the daemon's audience, which `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names and the relay reads at call time, so a rotation needs no restart; unset, it sends no bearer and whatever the daemon answers is what the caller sees.
-  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `503 LEGION_DAEMON_UNAVAILABLE` when it could not be reached.
-
 - `/api/v1/projects/{key}/legion/metrics?from=&to=&scope=` (GET; cookie, trusted header, or bearer)
 
   The Delivery page's Legion section for this project over `[from, to)` (default the last 7 days) and `scope=all|roots|children`; a project with nothing measured answers an empty report.

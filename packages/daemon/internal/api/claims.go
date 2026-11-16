@@ -668,10 +668,9 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // claim live and stale in that window longer, and the orphan sweep re-posts its relaunch every
 // interval until one starts (refreshStalePlugins in internal/daemon), so the sentence this
 // refusal carries stays true for as long as the caller can authenticate. A daemon that can
-// relaunch nothing now (PluginRelaunchable false, LEGION-164's degraded Kubernetes mode, asked
-// at each call since the pair can change under a running daemon) never starts that relaunch, so
-// a stale claim there is left running and answered as any other: refusing it would stall agents
-// that work today.
+// relaunch nothing (PluginRelaunchable false, LEGION-164's degraded Kubernetes mode) never
+// starts that relaunch, so a stale claim there is left running and answered as any other:
+// refusing it would stall agents that work today.
 //
 // Three of its four terms are the rule internal/supervise holds for both readers of it
 // (supervise.StaleRefusesCalls): the recorded contract is not this daemon's, the claim is in no
@@ -708,8 +707,7 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // asked has answered it already: a pending delivery is handed to no claim that is not ready or
 // idle (supervise's staleRefusesClaim, sendPending).
 func (s *server) staleClaim(c supervise.Claim) (int, bool) {
-	relaunchable := s.pluginRelaunchable != nil && s.pluginRelaunchable()
-	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion, relaunchable, s.noPluginInstall) &&
+	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall) &&
 		c.State != supervise.StateWorking
 }
 

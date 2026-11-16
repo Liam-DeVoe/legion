@@ -66,16 +66,13 @@ func newTransferHandoffHarness(t *testing.T, api string, renames ghrepo.Renames,
 		return renames.Serving(recorded, func(repo ghrepo.Repository) bool { return ghrepo.Serves(repositories, repo) })
 	}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject,
-		Settings: NewLiveSettings(HeldSettings{
-			OperatorToken: testOperatorToken, RepositoryRenames: renames,
-			Steps: config.DesignGateRootIssues.Steps(),
-		}),
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
-		Handlers: []intake.Handler{facts}, Dispatch: h.handoffs, PluginRelaunchable: func() bool { return true },
+		Handlers: []intake.Handler{facts}, Dispatch: h.handoffs, PluginRelaunchable: true,
 		Tokens: handoffTokens{}, GitHubAPI: api,
-		GitHubRepositories: func() []ghrepo.Repository { return repositories },
-		Serving:            serving,
+		GitHubRepositories: func() []ghrepo.Repository { return repositories }, RepositoryRenames: renames,
+		Serving: serving,
 	}).Handler
 	return h, facts
 }

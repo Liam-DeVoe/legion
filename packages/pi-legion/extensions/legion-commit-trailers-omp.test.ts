@@ -354,7 +354,6 @@ const MERGING = {
   daemon: {
     project: "TRAILERS",
     schemaVersion: 1,
-    commit: "",
     boots: 1,
     firstBootAt: "2026-10-30T14:03:27Z",
     startedAt: "2026-10-31T09:15:02Z",
@@ -384,7 +383,6 @@ const MERGING = {
     caches: [],
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
-  settingSources: {},
   consumers: [],
 } satisfies LegionState;
 

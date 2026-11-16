@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
@@ -63,23 +61,15 @@ func parseDeliveryWindowView(spec *deliveryLiveSpec, view DeliveryLiveView) *Liv
 	return nil
 }
 
-// parsePipelineLiveView reads a pipeline view: it names its window as a timeline view does, or an
-// at, which is the seven days ending on its day, or neither, which is the seven days ending at
-// the present. It reads no query: the Pipeline page follows none of the timeline's facets.
+// parsePipelineLiveView reads a pipeline view: it names at most an at, which is the seven days
+// ending on that day; with none it is the seven days ending at the present. It reads no window
+// and no query, since the Pipeline page follows neither the timeline's window nor its facets.
 func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
-	if view.Query != nil {
-		return invalidLiveView("INVALID_FRAME", "a pipeline view names a window or an at, not a query")
+	if view.Window != nil || view.Query != nil {
+		return invalidLiveView("INVALID_FRAME", "a pipeline view names at most an at")
 	}
-	switch {
-	case view.Window != nil && view.At != nil:
-		return invalidLiveView("INVALID_FRAME", "a pipeline view names a window or an at, not both")
-	case view.Window != nil:
-		named, refusal := spec.readWindow(view.Window)
-		if refusal != nil {
-			return refusal
-		}
-		spec.key = "pipeline|" + named + "|"
-	case view.At != nil:
+	spec.key = "pipeline|now|"
+	if view.At != nil {
 		at, err := parseOptionalRFC3339(url.Values{"at": {*view.At}}, "at", time.Time{})
 		if err != nil {
 			return invalidLiveView("INVALID_QUERY", err.Error())
@@ -87,14 +77,12 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 		at = at.UTC()
 		spec.at = &at
 		spec.key = "pipeline|" + at.Format(time.RFC3339Nano) + "|"
-	default:
-		spec.key = "pipeline|now|"
 	}
 	return nil
 }
 
 // parseLegionLiveView reads a legion view: it names the project whose board it shows and nothing
-// else, since the board has no window and the project is all GET /api/v1/legion/board reads.
+// else, since the board has no window and the project is all GET /api/v1/projects/{key}/legion/board reads.
 func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	if view.Window != nil || view.At != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a legion view names a project, not a window, an at or a query")
@@ -136,25 +124,4 @@ func (spec *deliveryLiveSpec) readWindow(window *DeliveryLiveWindow) (string, *L
 	default:
 		return refuse("INVALID_FRAME", "a window is a preset or a from and to")
 	}
-}
-
-// pipelineWindowAt is a pipeline view's window at now: its preset's days or its pinned at's seven,
-// ending at the present, or the custom range it named, which never moves.
-func (spec deliveryLiveSpec) pipelineWindowAt(now time.Time) pipelineWindow {
-	switch {
-	case !spec.to.IsZero():
-		return pipelineWindowBetween(spec.from, spec.to)
-	case spec.at != nil:
-		return pipelineWindowEndingAt(*spec.at, measures.ShownDayCount)
-	case spec.preset > 0:
-		return pipelineWindowEndingAt(now, spec.preset)
-	default:
-		return pipelineWindowEndingAt(now, measures.ShownDayCount)
-	}
-}
-
-// pipelineRolls is whether a pipeline view's window ends at the present, so it moves at midnight
-// and as a result leaves the failing-jobs table; a pinned at and a custom range never move.
-func (spec deliveryLiveSpec) pipelineRolls() bool {
-	return spec.at == nil && spec.to.IsZero()
 }

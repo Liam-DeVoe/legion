@@ -5,7 +5,6 @@ import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { answerRequests } from "../../__tests__/network";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow } from "../../api/types";
@@ -73,9 +72,7 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
 /** `sources` is what `GET /projects/CORE/architecture-sources` answers: the project's sources (a
  *  non-empty list opens it on Architecture; `[]`, the default, on Issues, as every render here
  *  expects unless it says otherwise), an `ApiError` for a failure, or `"pending"` for a lookup
- *  that never settles. `legionProjects` names the projects whose
- *  `GET /api/v1/projects/{key}/legion/daemon` names a daemon: only those have a Legion view, and
- *  every other project's answers `null`. */
+ *  that never settles. */
 function renderPage(
   path: string,
   projects = [
@@ -89,8 +86,7 @@ function renderPage(
   ],
   login: string | null = "alice",
   inboxRows: InboxRow[] = [],
-  sources: ArchitectureSource[] | ApiError | "pending" = [],
-  legionProjects: readonly string[] = []
+  sources: ArchitectureSource[] | ApiError | "pending" = []
 ) {
   // The project's issue list is read through `api.listIssues`, which the spy below answers -
   // except for a fetch the last assertion of a test starts: its query function awaits the
@@ -121,18 +117,6 @@ function renderPage(
   const getArchitecture = spyOn(api, "getArchitecture").mockImplementation(
     () => Promise.withResolvers<never>().promise
   );
-  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockImplementation((project) =>
-    Promise.resolve(
-      legionProjects.includes(project)
-        ? {
-            created_by: { id: "alice", kind: "user" as const },
-            project,
-            state_url: "http://legion-daemon.example:13370",
-            updated_at: "2026-11-01T00:00:00Z",
-          }
-        : null
-    )
-  );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={[path]}>
@@ -151,7 +135,6 @@ function renderPage(
     getInbox.mockRestore();
     getMyState.mockRestore();
     listIssues.mockRestore();
-    getLegionDaemon.mockRestore();
     listProjectArtifacts.mockRestore();
     listProjects.mockRestore();
     whoAmI.mockRestore();
@@ -161,7 +144,6 @@ function renderPage(
     getInbox,
     getMyState,
     listIssues,
-    getLegionDaemon,
     listProjectArtifacts,
     listProjects,
     restore,
@@ -548,83 +530,5 @@ test("the Lanes toggle lives in Board view only and persists per signed-in user"
     window.localStorage.removeItem(lanesKey);
     window.localStorage.removeItem("dispatch.project.issue-view:bob");
     window.localStorage.removeItem("dispatch.project.board-lanes:bob");
-  }
-});
-
-test("a project that names no Legion daemon is offered no Legion view", async () => {
-  const page = renderPage("/projects/CORE");
-  try {
-    await screen.findByRole("heading", { name: "Core" });
-    // This project's own daemon read has answered, with `null`.
-    await waitFor(() => expect(page.getLegionDaemon).toHaveBeenCalledWith("CORE"));
-    expect(screen.getByRole("button", { name: "List" })).toBeDefined();
-    expect(screen.getByRole("button", { name: "Board" })).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
-  } finally {
-    page.restore();
-  }
-});
-
-test("a project that names a Legion daemon gets a third view button, and v cycles three ways", async () => {
-  const viewKey = "dispatch.project.issue-view:alice";
-  const user = userEvent.setup();
-  const sockets = installFakeLiveSockets();
-  const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
-  try {
-    await screen.findByRole("heading", { name: "Core" });
-    const legion = await screen.findByRole("button", { name: "Legion" });
-    expect(legion.getAttribute("aria-pressed")).toBe("false");
-
-    await user.keyboard("v");
-    expect(screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("true");
-
-    await user.keyboard("v");
-    expect(screen.getByRole("button", { name: "Legion" }).getAttribute("aria-pressed")).toBe(
-      "true"
-    );
-    expect(window.localStorage.getItem(viewKey)).toBe("legion");
-    expect(await screen.findByRole("region", { name: "Legion" })).toBeDefined();
-
-    await user.keyboard("v");
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
-    expect(window.localStorage.getItem(viewKey)).toBe("list");
-  } finally {
-    page.restore();
-    sockets.restore();
-    window.localStorage.removeItem(viewKey);
-  }
-});
-
-test("the Legion view replaces the list, its board and the filter strip", async () => {
-  const viewKey = "dispatch.project.issue-view:alice";
-  const user = userEvent.setup();
-  const sockets = installFakeLiveSockets();
-  const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
-  try {
-    await screen.findByRole("heading", { name: "Core" });
-    await user.click(await screen.findByRole("button", { name: "Legion" }));
-
-    expect(await screen.findByRole("region", { name: "Legion" })).toBeDefined();
-    expect(screen.queryByRole("search")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Show lanes" })).toBeNull();
-  } finally {
-    page.restore();
-    sockets.restore();
-    window.localStorage.removeItem(viewKey);
-  }
-});
-
-test("a stored Legion preference on a project that names no daemon falls back to the list", async () => {
-  const viewKey = "dispatch.project.issue-view:alice";
-  window.localStorage.setItem(viewKey, "legion");
-  const page = renderPage("/projects/CORE");
-  try {
-    await screen.findByRole("heading", { name: "Core" });
-    await waitFor(() => expect(page.getLegionDaemon).toHaveBeenCalledWith("CORE"));
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
-  } finally {
-    page.restore();
-    window.localStorage.removeItem(viewKey);
   }
 });
