@@ -415,9 +415,12 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
 // conversation list @phone`: each question and each of the reader's own threads is an entry, a
 // press or Enter goes to its node in the outline, the entry the reader is in is marked, and Focus
 // branch draws that branch alone, then the whole outline again. Below 1024 px the list is in the
-// Outline sheet, which a choice closes. No view is turned on between the two readings of Focus
-// branch: the outline drawn again after a view is part I's (reading (k) of the part's plan).
-// SLOW(>=2s): the whole seeded issue, two loads of the page, and five moves of the focus and the
+// Outline sheet, which a choice closes. A choice there by pointer or by Enter leaves the focused
+// row below the sticky view row, not behind it (decision 113), a reading owed until part D's
+// `scroll-padding-top` and part G's `useRowOnScreen` correction are under J. No view is turned on
+// between the two readings of Focus branch: the outline drawn again after a view is part I's
+// (reading (k) of the part's plan).
+// SLOW(>=2s): the whole seeded issue, two loads of the page, and six moves of the focus and the
 // toggle, each waited on until the outline redraws.
 test("a Contents entry goes to its node, and Focus branch draws that branch alone @phone", async ({
   browser,
@@ -486,6 +489,14 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    const viewRow = issuePage(page).locator("[data-filter-row]");
+    // The focused row's top less the sticky view row's bottom, which is -1 or more where the
+    // row stands below the view row.
+    const belowViewRow = async (): Promise<number> => {
+      const row = await nodeRow(page, question).first().boundingBox();
+      const bar = await viewRow.boundingBox();
+      return (row?.y ?? Number.NaN) - ((bar?.y ?? Number.NaN) + (bar?.height ?? 0));
+    };
     await outlineControl(page).click();
     const chosen = outlineSheet(page).locator(`[data-contents-entry="${question}"]`);
     await expect(chosen, "the Outline sheet does not list the open question").toHaveCount(1);
@@ -496,6 +507,60 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
         message: "a choice in the Outline sheet went to no node",
       })
       .toBe(question);
+    // Where the focused row stands is part D's `scroll-padding-top` - the larger of the band's
+    // and the view row's heights - and part G's `useRowOnScreen` correction; until both are
+    // under J the reading is owed.
+    const root = await page.evaluate(() => {
+      const style = getComputedStyle(document.documentElement);
+      return {
+        padding: style.scrollPaddingTop,
+        viewRow: style.getPropertyValue("--issue-view-row-height").trim(),
+      };
+    });
+    const owed = root.viewRow === "" || root.padding === "auto";
+    if (owed) {
+      test.info().annotations.push({
+        description:
+          "the Outline sheet's focused row needs part D's scroll-padding-top and part G's useRowOnScreen correction (decision 113)",
+        type: "owed",
+      });
+    } else {
+      await expect
+        .poll(belowViewRow, {
+          message:
+            "a choice in the Outline sheet by pointer puts the focused row under the sticky view row",
+        })
+        .toBeGreaterThanOrEqual(-1);
+    }
+
+    // The same choice by Enter, from the foot of the page, so the choice itself must bring the
+    // row back on screen rather than find it where the pointer's choice left it.
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await outlineControl(page).click();
+    await expect(
+      chosen,
+      "the Outline sheet opened again does not list the open question"
+    ).toHaveCount(1);
+    await chosen.focus();
+    await expect(chosen).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(
+      outlineSheet(page),
+      "a choice in the Outline sheet by Enter left it open"
+    ).toHaveCount(0);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "a choice in the Outline sheet by Enter went to no node",
+      })
+      .toBe(question);
+    if (!owed) {
+      await expect
+        .poll(belowViewRow, {
+          message:
+            "a choice in the Outline sheet by Enter puts the focused row under the sticky view row",
+        })
+        .toBeGreaterThanOrEqual(-1);
+    }
   });
 });
 
