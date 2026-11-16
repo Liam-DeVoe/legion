@@ -95,7 +95,7 @@ BUNDLES = [
 LISTED = [
     ("dispatch_ui", "packages/contracts/src", ("dispatch_ui",),
      "the dashboard's and the proof editor's typechecks, tests and SPA build compile the contracts modules "
-     "these two programs import and what those import, and no other: packages/dispatch/web/vite.config.ts:117-175 "
+     "these two programs import and what those import, and no other: packages/dispatch/web/vite.config.ts:117-176 "
      "aliases the entries the dashboard imports to the same sources"),
     # The browser suite has no tsc program of its own. Its rows drive the SPA built from
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
@@ -107,7 +107,7 @@ LISTED = [
     # loads are its bundle's, which BUNDLES pairs with dispatch_two_builds_go, so the block is
     # the union of the two sets: a module only the command loads is one the suite loads too.
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
-    # which bundles the entries packages/dispatch imports (web/vite.config.ts:117-175 aliases each
+    # which bundles the entries packages/dispatch imports (web/vite.config.ts:117-176 aliases each
     # of them) and so compiles nothing outside dispatch_ui's set: not
     # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A
     # change that breaks the package's full `build` fails the contracts job's own
@@ -124,9 +124,9 @@ LISTED = [
      "the contracts modules that entry's bundle loads and no other"),
     # The two-build job runs that Go step and a browser half, which is dispatch_browser's case: it
     # builds the SPA from packages/dispatch and runs the Playwright config and the e2e helpers of
-    # packages/dispatch/e2e (`bun run e2e:multiprocess -- cross-build.multiprocess`), and its
-    # `Build contracts for dispatch e2e` step runs `build:dispatch`, as dispatch_browser's row
-    # says. Its block is the union of the two, so it holds every file the Go step's block holds.
+    # packages/dispatch/e2e (`build:web`, then `e2e:multiprocess:run -- cross-build.multiprocess`),
+    # and its `Build contracts for dispatch e2e` step runs `build:dispatch`, as dispatch_browser's
+    # row says. Its block is the union of the two, so it holds every file the Go step's block holds.
     ("dispatch_two_builds", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the job's browser half runs the SPA built from packages/dispatch and the Playwright config and e2e helpers "
      "of packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its Go step "

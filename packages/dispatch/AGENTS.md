@@ -1106,9 +1106,11 @@ agents: the server sends a session title, a session group or a placeholder, neve
 so there is no one agent to link and they stay text.
 
 A lint rule holds the boundary. The root `biome.json`'s last four `overrides` hold it: the first
-three turn on `style.noRestrictedImports` at `error` for `packages/dispatch/web/src/**`, and the
-fourth turns the rule off for `features/shell/chunk-loads.ts`, the one module that may import
-React's `lazy`, which takes the ban below off that file too.
+turns on `style.noRestrictedImports` at `error` for `packages/dispatch/web/src/**`, the second sets
+the rule again for `app.tsx` without the `AGENT_LIVE_PATH` pattern and the `fireEvent` keys, the
+third sets it again for `features/refs/AgentName.tsx` and `features/refs/routes.ts` with the
+`react` key alone, and the fourth turns the rule off for `features/shell/chunk-loads.ts`, the one
+module that may import React's `lazy`, which takes the ban below off that file too.
 Tests are included: no import of `actorAttribution`, `actorLabel`, `actorName`, `sessionLabel` or
 `shortSessionId` from
 either specifier that answers them (the package index `@legion/contracts` and
@@ -2841,12 +2843,13 @@ Its two halves are scripts of their own: `build:web-b` writes the second bundle,
 The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs `e2e:multiprocess:run`
 and builds no bundle, on the full lane alone: its one build is `@legion/contracts` (the step
 `Build contracts for dispatch e2e`), and both bundles come out of the `binaries` job's artefact
-(dispatch://INFRA-1109). CI's `dispatch-two-builds` job runs `cross-build.multiprocess` twice,
-with `DISPATCH_E2E_BINARY_B` and `DISPATCH_E2E_WEB_DIST_B` naming the previous release's build
-and then the first-rollout release's, the newest release before the one that registers its
-schema numbers (`e2e/cross-build.multiprocess.e2e.ts`: each direction's page against the other
-build's server, writable or read-only as the live registry's numbers admit it, and, with both
-processes on this tree, a document holding newer content).
+(dispatch://INFRA-1109). CI's `dispatch-two-builds` job builds `web/dist` once and runs
+`cross-build.multiprocess` twice through `e2e:multiprocess:run`, with `DISPATCH_E2E_BINARY_B`
+and `DISPATCH_E2E_WEB_DIST_B` naming the previous release's build and then the first-rollout
+release's, the newest release before the one that registers its schema numbers
+(`e2e/cross-build.multiprocess.e2e.ts`: each direction's page against the other build's server,
+writable or read-only as the live registry's numbers admit it, and, with both processes on this
+tree, a document holding newer content).
 The second run also sets `DISPATCH_E2E_FIRST_ROLLOUT_COMMIT` to the job's `FIRST_ROLLOUT_COMMIT`,
 which holds that run to the first-rollout build's commit and to a registry that reads version 0
 while B is live: each direction fails when B's `COMMIT` is another commit or the live registry's

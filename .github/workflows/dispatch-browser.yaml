@@ -1421,10 +1421,9 @@ jobs:
   # visual job of run 43045412941, which the multiprocess job's head says no later run splits
   # out) inside a budget set for rows whose step took 16 to 26 s in CI then, and 35 s at most
   # (job 132024655331, run 43465266476) over every run of this job at this shape on pull request
-  # #3513's branch,
-  # 112 of them from 2026-11-11T18:09Z to 2026-11-16T06:37Z - and the borrowed maximum for the
-  # steps without one is the multiprocess job's 94 s, the 135 s with the downloads and the
-  # chmod added and the `Initialize containers`, setup-go and Go cache restore taken off, as
+  # #3513's branch, 112 of them from 2026-11-11T18:09Z to 2026-11-16T06:37Z - and the borrowed
+  # maximum for the steps without one is the multiprocess job's 94 s, the 135 s with the downloads
+  # and the chmod added and the `Initialize containers`, setup-go and Go cache restore taken off, as
   # that job's head says. 8 min plus 94 s is 9 min 34 s, which rounds up to 10 minutes. This
   # job's own steps without a budget read 51 s summed at their maxima over those 112 runs.
   #

@@ -226,10 +226,10 @@ def cache_steps(document: dict, action: str) -> list:
 def restores_of(documents: dict) -> dict:
     """Every restore of ci.yaml's run, as family -> [(where it is, its with:)]. Where a restore
     can be is where its job's steps are, which is the document set the engine loads: ci.yaml,
-    and each local workflow one of its jobs calls - dispatch-browser.yaml's binaries and
-    multiprocess jobs restore the go-envoy-test family for ci.yaml's dispatch-browser job - so a
-    save paired against ci.yaml alone would read as a fill nobody wants. The set holds each
-    called file once however many of ci.yaml's jobs name it, so each restore is taken once."""
+    and each local workflow one of its jobs calls - dispatch-browser.yaml's binaries job
+    restores the go-envoy-test family for ci.yaml's dispatch-browser job - so a save paired
+    against ci.yaml alone would read as a fill nobody wants. The set holds each called file once
+    however many of ci.yaml's jobs name it, so each restore is taken once."""
     restores = defaultdict(list)
     for path, document in documents.items():
         for job_id, family, given in cache_steps(document, "restore"):
