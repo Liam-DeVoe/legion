@@ -112,6 +112,24 @@ func TestTheBuiltBinary(t *testing.T) {
 		}
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{stdout: validLine(dir), stderr: "spec-check: " + dir + noList})
 	})
+	t.Run("tree refuses a file that is not UTF-8 or holds a NUL byte, naming the file and the line", func(t *testing.T) {
+		t.Parallel()
+		for name, content := range map[string]string{
+			"Latin-1": ":::term{#cafe-term name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n",
+			"NUL":     ":::term{#nul-term name=\"nul term\"}\nA nul\x00term is a word.\n:::\n",
+		} {
+			dir := copyOf(t, valid)
+			writeFile(t, filepath.Join(dir, "bytes.md"), []byte(content))
+			got := runBinary(t, binary, "", "tree", "--dir", dir)
+			if want := (result{
+				code:   1,
+				stdout: "spec-check: " + dir + ": 3 statements, 4 checks, 2 components, 1 interface, 2 terms; the tree is refused\n",
+				stderr: "spec-check: " + dir + noList + "spec-check: " + filepath.Join(dir, "bytes.md") + ":2: -: bad-encoding: a spec file is UTF-8 text with no NUL byte\n",
+			}); got != want {
+				t.Errorf("%s: exit %d, stdout %q, stderr %q\nwant exit %d, stdout %q, stderr %q", name, got.code, got.stdout, got.stderr, want.code, want.stdout, want.stderr)
+			}
+		}
+	})
 	t.Run("tree with --retired names a retired id", func(t *testing.T) {
 		t.Parallel()
 		dir := fixture(t, "trees", "retired-id")
@@ -359,4 +377,14 @@ func writeFile(t *testing.T, path string, content []byte) {
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// copyOf is a copy of the files of dir in a new temporary directory.
+func copyOf(t *testing.T, dir string) string {
+	t.Helper()
+	copied := filepath.Join(t.TempDir(), filepath.Base(dir))
+	if err := os.CopyFS(copied, os.DirFS(dir)); err != nil {
+		t.Fatal(err)
+	}
+	return copied
 }

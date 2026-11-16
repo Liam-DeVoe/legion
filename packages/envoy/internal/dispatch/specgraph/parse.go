@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // blockAttributes is each block the spec files hold, with every attribute it takes after its id,
@@ -39,6 +40,7 @@ const (
 	detailBadBlockLine     = "bad-block-line: the line opens no block"
 	detailBadField         = "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order"
 	detailClaimOneLine     = "bad-field: a claim is one line"
+	detailBadEncoding      = "bad-encoding: a spec file is UTF-8 text with no NUL byte"
 )
 
 // Parse reads the spec files, keyed by their names directly in the spec directory, and gives the
@@ -48,8 +50,10 @@ const (
 // pmdoc.ParseTypedDirectiveOpen reads, and closes on the next line that is exactly ":::". Outside a
 // block a file holds only headings and blank lines. A file's leading byte order mark is dropped, a
 // CRLF or a lone CR ends a line as an LF does, each line loses its trailing white space, and a body
-// loses its leading and trailing blank lines. A block whose opening line the grammar refuses, or
-// whose name is not one of the four, gives no node, and its lines up to its closing line are its
+// loses its leading and trailing blank lines. A file that is not UTF-8, or that holds a NUL byte,
+// is refused at its first such line, as the importer of .dispatch/architecture refuses it
+// (text.StorableBytes), and is read all the same. A block whose opening line the grammar refuses,
+// or whose name is not one of the four, gives no node, and its lines up to its closing line are its
 // own; every other block gives its node even when Parse finds a problem in it, so one fault does
 // not make others appear.
 func Parse(files map[string][]byte) (Tree, []Problem) {
@@ -109,6 +113,9 @@ func (r *reader) file(name string, content []byte) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if number := unstorableLine(lines); number > 0 {
+		r.problem(Position{File: name, Line: number}, "-", detailBadEncoding)
+	}
 	var open *block
 	inParagraph := false
 	for i, raw := range lines {
@@ -152,6 +159,17 @@ func (r *reader) file(name string, content []byte) {
 		r.problem(open.pos, open.node(), detailUnclosedBlock)
 		r.finish(open)
 	}
+}
+
+// unstorableLine is the 1-based number of the first of lines that is not text Dispatch can store,
+// UTF-8 with no NUL byte (text.Storable), and 0 when each line is.
+func unstorableLine(lines []string) int {
+	for i, l := range lines {
+		if !text.Storable(l) {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // openingLine reads text as the opening line of a block: exactly three colons, then what
