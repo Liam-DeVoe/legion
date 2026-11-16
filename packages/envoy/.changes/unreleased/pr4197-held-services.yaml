@@ -12,7 +12,11 @@ body: |-
   (`grant_not_holdable`).
   A dispatch or listener entry with `-` is now refused at startup, as a measurement entry's is.
   No connection waits on Dispatch: the broker asks it about every such project at its start and
-  every 20 seconds after, and keeps the last answer while Dispatch cannot be reached. Dispatch's
-  grant there may also write the private-projects bucket, a listener's may read it, and a daemon
-  entry with `*` is also granted its account's own reply prefix. List a Legion daemon with `*`
-  until plan C's t-c-10 release gate opens: `-` names consumers today's daemon does not open.
+  every 20 seconds after, and keeps the last answer while Dispatch cannot be reached. While
+  Dispatch refuses the broker's own account token (a 401 or 403), as the token exchange refuses
+  every trade then, each such connection is refused under `project_access_refused`, naming that
+  refusal, and the broker logs it at error once each round; Dispatch's next answer clears it.
+  Dispatch's grant there may also write the private-projects bucket, a listener's may read it,
+  and a daemon entry with `*` is also granted its account's own reply prefix. List a Legion
+  daemon with `*` until plan C's t-c-10 release gate opens: `-` names consumers today's daemon
+  does not open.
