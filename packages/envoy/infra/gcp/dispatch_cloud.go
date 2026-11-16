@@ -43,12 +43,7 @@ type dispatchDatabase struct {
 	// verifies.
 	signing    []*random.RandomPassword
 	agentToken *random.RandomPassword
-	// listenerToken, the bearer the app and its listener share, is nil with listenerAudience, and
-	// seedAccessor, the grant that lets the pods' principal read the NATS seed, is nil with
-	// natsAudience: newDispatchKubernetes reads each only without its setting.
-	listenerToken *random.RandomPassword
-	principal     pulumi.StringOutput
-	seedAccessor  *secretmanager.SecretIamMember
+	principal  pulumi.StringOutput
 	// azureKeyAccessor is set only with azureEmbedKeySecret, and chatTokenAccessor only with
 	// chatTokenSecret: each is the per-secret grant that one feature's mounted secret needs.
 	azureKeyAccessor  *secretmanager.SecretIamMember
@@ -154,8 +149,9 @@ func dispatchKubeconfig(dispatch string, cluster *container.Cluster) pulumi.Stri
 
 // newDispatchDatabase registers what Dispatch itself runs on, which clusterOnly builds none of:
 // the private services range and its peering, the Cloud SQL instance with its database and user,
-// the generated passwords, and the Secret Manager grants the pods' principal needs. It takes the
-// cluster half's resources and answers with its own.
+// the generated passwords, and the Secret Manager grants the pods' principal needs. The NATS
+// and listener credentials are prepared whole, their password and grant among them, in
+// dispatch_credentials.go. It takes the cluster half's resources and answers with its own.
 func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster) (*dispatchDatabase, error) {
 	dispatch := dispatchType + " " + name
 	child := pulumi.Parent(comp)
@@ -224,17 +220,6 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	if err != nil {
 		return nil, err
 	}
-	// The listener binds 0.0.0.0 in a pod of its own, where its API refuses to start without a
-	// bearer or an OIDC pair, and its credential is its own, never a key of the Secret holding the
-	// database URL and the signing key. With listenerAudience the app presents its own token,
-	// which the listener verifies, so no bearer is generated at all.
-	var listenerToken *random.RandomPassword
-	if s.listenerAudience == "" {
-		listenerToken, err = random.NewRandomPassword(ctx, s.hostname+"-listener-token", &random.RandomPasswordArgs{Length: pulumi.Int(48), Special: pulumi.Bool(false)}, child)
-		if err != nil {
-			return nil, err
-		}
-	}
 	// deletionProtection also keeps the database itself: PREVENT refuses its delete, which an
 	// instance replacement would otherwise make first.
 	databasePolicy := "DELETE"
@@ -251,13 +236,13 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	}
 	// The principal lives in the cluster's Workload Identity pool, which Google creates with the
 	// cluster. It is built from the cluster's own WorkloadIdentityConfig, so it resolves only once
-	// the pool exists, and the component's own seed grant below, built from it, waits for the
-	// cluster: IAM may refuse a member of a pool that does not exist yet (unproven: the plan's
-	// hardening ledger). A consumer's grant taken from the `principal` output would resolve later
-	// still, once every child has registered, the app Deployment's readiness wait included, and
-	// that wait needs roles/cloudsql.client already granted, so the consumer grants that role from
-	// the principal's known form, not from the output; whether IAM accepts it before the pool
-	// exists is the same unproven question.
+	// the pool exists, and the component's own grants, built from it (here, and the NATS seed's in
+	// newDispatchNATSCredential), wait for the cluster: IAM may refuse a member of a pool that does
+	// not exist yet (unproven: the plan's hardening ledger). A consumer's grant taken from the
+	// `principal` output would resolve later still, once every child has registered, the app
+	// Deployment's readiness wait included, and that wait needs roles/cloudsql.client already
+	// granted, so the consumer grants that role from the principal's known form, not from the
+	// output; whether IAM accepts it before the pool exists is the same unproven question.
 	principal := pulumi.All(project.Number(), cluster.WorkloadIdentityConfig.WorkloadPool()).ApplyT(func(values []interface{}) (string, error) {
 		parts, err := outputStrings(dispatch, values, "the project's number", "the cluster's Workload Identity pool")
 		if err != nil {
@@ -265,15 +250,6 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		}
 		return fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/subject/ns/%s/sa/%s", parts[0], parts[1], s.namespace, s.hostname), nil
 	}).(pulumi.StringOutput)
-	// With natsAudience the pods present their projected token to the auth service and read no
-	// seed, so there is no secret to grant.
-	var seedAccessor *secretmanager.SecretIamMember
-	if s.natsAudience == "" {
-		seedAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn([]pulumi.Resource{cluster}))
-		if err != nil {
-			return nil, err
-		}
-	}
 	var azureKeyAccessor *secretmanager.SecretIamMember
 	if s.azure.key {
 		// The Azure key is read by the app at run time through the CSI driver, so the pods'
@@ -293,9 +269,7 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		}
 	}
 	return &dispatchDatabase{
-		instance: instance, password: password, signing: signing,
-		agentToken: agentToken, listenerToken: listenerToken,
-		principal: principal, seedAccessor: seedAccessor,
-		azureKeyAccessor: azureKeyAccessor, chatTokenAccessor: chatTokenAccessor,
+		instance: instance, password: password, signing: signing, agentToken: agentToken,
+		principal: principal, azureKeyAccessor: azureKeyAccessor, chatTokenAccessor: chatTokenAccessor,
 	}, nil
 }
