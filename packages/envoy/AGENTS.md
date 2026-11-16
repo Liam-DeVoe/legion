@@ -7397,9 +7397,10 @@ The variables, all unset by default, in which case every program works exactly a
 
 | Variable | Form | Default | What it does |
 | --- | --- | --- | --- |
-| `AGENT_SECRETS_MACHINE_IDENTITY` | `kubernetes`, `metadata` or `pool` | unset | the identity this machine proves at the exchange; unset, it proves none |
-| `AGENT_SECRETS_MACHINE_TOKEN_FILE` | a path | unset | the projected Kubernetes service-account token `kubernetes` reads and `pool` federates |
-| `AGENT_SECRETS_MACHINE_AUDIENCE` | an audience | unset | the `aud` of this machine's Google identity token, which `metadata` mints for and `pool` names on its mint |
+| `AGENT_SECRETS_MACHINE_IDENTITY` | `kubernetes`, `metadata`, `pool` or `github-actions` | unset | the identity this machine proves at the exchange; unset, it proves none |
+| `AGENT_SECRETS_MACHINE_TOKEN_FILE` | a path | unset | the projected Kubernetes service-account token `kubernetes` reads and `pool` federates, and the workflow run's token a `github-actions` job with no runner endpoint reads |
+| `AGENT_SECRETS_MACHINE_AUDIENCE` | an audience | unset | the `aud` of this machine's Google identity token, which `metadata` mints for and `pool` names on its mint, and of the OIDC token a `github-actions` job's runner mints |
+| `ACTIONS_ID_TOKEN_REQUEST_URL`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` | a URL, a bearer | set by the runner | the runner's OIDC token endpoint and the bearer it takes, which GitHub sets in a job granted `id-token: write` and `github-actions` asks at every trade |
 | `AGENT_SECRETS_POOL_AUDIENCE` | `//iam.googleapis.com/projects/…` | unset | the workload identity pool provider an external credential is traded at |
 | `AGENT_SECRETS_POOL_ACCOUNT` | a service account | unset | the managed identity `generateIdToken` is called on, with `includeEmail` |
 | `AGENT_SECRETS_SESSION` | a session name | unset | the session a trade writes under for a caller that acts as no session of its own; a caller that is a session writes under its own id and reads this for nothing, and a person's trade never writes under it |
@@ -7411,6 +7412,7 @@ The variables, all unset by default, in which case every program works exactly a
 
 The TypeScript client (`packages/broker-client`, `environment.ts` and `signins.ts`) reads the same variables with the same meanings, so a deployment writes one set of values for both clients.
 Both clients federate at a workload identity pool under `pool`: the TypeScript client's `pool-identity.ts` is a port of `pool.go`, and asks the same two services with the same bodies.
+Both read a GitHub Actions job's own OIDC token under `github-actions` (`internal/brokerclient/github_actions.go`, `packages/broker-client/src/github-actions.ts`) and present it as a workflow run's token (`urn:envoy:params:oauth:token-type:github-workflow-run`), which the broker takes once, so each trade asks the runner for a new one.
 Both trade a person's sign-in where the store holds one, with the sign-in's box key, the person's renewed identity token as the subject and this machine's identity as the actor.
 The TypeScript client trades under the caller's own session where it has one, else under `SessionFor`'s name, because the Envoy listener holds a session's writes to the session its token names (`packages/envoy/cmd/listener/brokerauth.go`, `sessionNotBound`).
 It never falls back to this machine's identity while a sign-in record is on the machine: where the Go helper enrols a session under the machine after a refusal, the TypeScript client fails the call, naming `agent-secrets login`.

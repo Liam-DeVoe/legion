@@ -692,7 +692,7 @@ With no bearer configured at all, the session's credential is traded at the secr
 instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
-behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
+behaves exactly as it did. The machine's identity is one of four (`machineIdentity` in
 `@legion/broker-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
@@ -700,6 +700,11 @@ a Google identity token through a workload identity pool, as the Go client's `Po
 does (`pool-identity.ts`), for a machine with no Google service account of its own, such as an
 Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
+`github-actions` asks a GitHub Actions job's runner for its OIDC token of the audience
+`AGENT_SECRETS_MACHINE_AUDIENCE` at every trade (`github-actions.ts`): the runner's endpoint is
+`ACTIONS_ID_TOKEN_REQUEST_URL` and its bearer `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, which GitHub sets
+in a job granted `id-token: write`. A job with no endpoint reads the run's token from
+`AGENT_SECRETS_MACHINE_TOKEN_FILE`.
 An identity with one of its variables missing is an error that names the variable.
 
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
@@ -839,6 +844,22 @@ Under Claude Code the whole output stays under 25,000 characters: the result tex
 the full text written to a file the output names, and the picture lines and follow notice kept.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
+
+`dispatch result --project <KEY> --check <id> --verdict pass|fail|could_not_run --commit <sha>`
+is a CI job's record of its result of a check of the spec files, and the one call that is no
+session's (`ownIdentityResult` in `dispatch-cli.ts`). It reads no `DISPATCH_HOST`, no session id,
+no envoy.json and no session state, and it asks no AskGate and no listener. Dispatch is
+`DISPATCH_URL`, and the credential is this machine's own identity traded at the secrets broker
+(`ownIdentityDispatch` in `dispatch-config.ts`: `AGENT_SECRETS_URL` with
+`AGENT_SECRETS_MACHINE_IDENTITY`, `github-actions` in a GitHub Actions job). It reads no bearer and
+trades no person's sign-in, and the trade names no session, since the broker's result entry fixes
+it. The body is `{commit, check, verdict, observed}` and nothing else. It prints the stored result
+as JSON and exits 0, or prints Dispatch's refusal as `<CODE>: <message>` and exits 1. A refusal of
+its arguments, or an identity with a variable missing, sends nothing and exits 2. `--observed`
+text that opens with `-`, such as a test's `--- FAIL` line, goes as `--observed=<text>` or
+through `--observed-file`. `dispatch results --project <KEY> --commit <sha> [--check <id>]` is a
+session's read of those results, one line each, newest first, or the stored results as JSON with
+`--json`.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
