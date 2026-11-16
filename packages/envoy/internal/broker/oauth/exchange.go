@@ -674,11 +674,15 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	} else {
 		session.Extra[ClaimMachine] = claims.Actor
 	}
+	// Every exchange constructor sets the scope; an unset one is a decision nobody made, and is
+	// the broker's own failure rather than a token whose empty list reads as either scope.
 	switch claims.Scope {
 	case exchange.ProjectScopeNamed:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNamed
-	default:
+	case exchange.ProjectScopePerson:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopePerson
+	default:
+		return "", oauth2.ErrServerError.WithDebugf("the exchange decided %s for %s", claims.Scope, claims.Principal)
 	}
 	session.Extra[ClaimProjects] = oauthwire.JoinProjects(claims.Projects)
 	return claims.Principal, nil
