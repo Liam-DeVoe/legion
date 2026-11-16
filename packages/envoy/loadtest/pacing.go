@@ -11,15 +11,16 @@ import (
 
 // overScheduleLimit is the set-aside rule's threshold: a step is set aside when, in any second
 // of its measured window, the generator sent more requests, or more event writes, than that
-// second's schedule held by more than this share of it. It is a tenth, the architect's threshold
-// (dispatch://INFRA-592, 2026-11-15), because a tenth lies far from both of the things it tells
-// apart. A generator that keeps to its schedule sends in each second what the schedule put there,
-// give or take the few arrivals sent a moment late across a second's edge. A generator the box
-// stalled sends, once it runs again, every arrival it owes at once (openLoop: sleepUntil returns
-// at once for a time already past), so the second after a stall holds the seconds it missed: in
-// the failing 10x step /proc/net/snmp counted 700 to 3,540 new connections a second against a
-// schedule of 640. Such a step did not deliver the load it claims, and its connection failures
-// measure the test bed rather than Dispatch.
+// second's schedule held by more than this share of it - and also, whatever its seconds, when a
+// kind it was to send recorded nothing scheduled (judgePacing, paceTargets). It is a tenth, the
+// architect's threshold (dispatch://INFRA-592, 2026-11-15), because a tenth lies far from both of
+// the things it tells apart. A generator that keeps to its schedule sends in each second what the
+// schedule put there, give or take the few arrivals sent a moment late across a second's edge. A
+// generator the box stalled sends, once it runs again, every arrival it owes at once (openLoop:
+// sleepUntil returns at once for a time already past), so the second after a stall holds the
+// seconds it missed: in the failing 10x step /proc/net/snmp counted 700 to 3,540 new connections
+// a second against a schedule of 640. Such a step did not deliver the load it claims, and its
+// connection failures measure the test bed rather than Dispatch.
 const overScheduleLimit = 0.10
 
 // minJudgedSchedule is the smallest schedule a second is judged against. Below ten arrivals one
@@ -44,7 +45,16 @@ const minJudgedSchedule = 10
 // 5 ms lateness was set aside in 18 of 400 seeds, at 12 ms in 241. A generator the box stalled is
 // seconds late, and the second it catches up in holds 5.5 to 18 times its schedule. So 100 ms
 // moves the rate edge's carry-over back to the second it belongs to, and leaves a stalled
-// generator's burst in the second it lands in.
+// generator's burst in the second it lands in - all but the newest 100 ms of its backlog, which
+// is sent within the tolerance and counts back in the seconds its schedule put it in (record).
+// So a stall shorter than about 200 ms is seldom set aside. What a stall moves into the second it
+// ends in is the arrivals it held up for more than 100 ms that the schedule put in an earlier
+// second: at most the stall's length less 100 ms of arrivals, which at a steady rate passes the
+// rule's tenth of a second's schedule (100 ms of arrivals) only once the stall passes 200 ms, and
+// then only when it crosses a second's start. That costs the rule nothing it is for: a generator
+// on time is milliseconds late, a stall under 200 ms still sends every arrival it held up within
+// a fifth of a second of its time, and a stall that takes from a step the load it claims is
+// seconds long, as the failing 10x step's were.
 const lateTolerance = 100 * time.Millisecond
 
 // The two kinds of arrival the rule judges, as summary.json and arrivals.json name them.

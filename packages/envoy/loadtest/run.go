@@ -680,10 +680,10 @@ type summary struct {
 	// row does not measure the load.
 	StackExits []stackExit `json:"stack_exits,omitempty"`
 	// Pacing is what the generators sent each second against their schedule (pacing.go), and
-	// SetAside, present only when a second of the window broke the set-aside rule, why the step
-	// is set aside: neither a pass nor a failure. Accept is the API listener's accept backlog and
-	// the box's TCP opens over the window (accept.go). All three are nil in a summary.json from
-	// before them.
+	// SetAside, present only when a second of the window broke the set-aside rule or a kind the
+	// step was to send recorded nothing scheduled (judgePacing), why the step is set aside:
+	// neither a pass nor a failure. Accept is the API listener's accept backlog and the box's TCP
+	// opens over the window (accept.go). All three are nil in a summary.json from before them.
 	Pacing   *pacingSummary   `json:"pacing"`
 	SetAside *setAsideSummary `json:"set_aside,omitempty"`
 	Accept   *acceptSummary   `json:"accept"`

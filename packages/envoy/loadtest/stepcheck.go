@@ -95,8 +95,8 @@ const (
 
 // clauseVerdict is one clause's result: n/a is a clause the step's own load leaves nothing to
 // judge (the baseline step drives no unit session), which is no failure, and set aside is the
-// set-aside rule's verdict on a step whose generator broke its schedule, which is neither a pass
-// nor a failure (pacing.go).
+// set-aside rule's verdict on a step whose generator broke its schedule, or recorded nothing
+// scheduled of a kind the step was to send, which is neither a pass nor a failure (pacing.go).
 type clauseVerdict string
 
 const (
@@ -1069,7 +1069,7 @@ func (sc *stepCheck) voidClause() stepClause {
 // pacing at all, since then nothing says its generator kept its schedule, as the void rule holds
 // of a step that records no generator.
 func (sc *stepCheck) setAsideClause() stepClause {
-	name := fmt.Sprintf("R8 set-aside rule: no second of the window over its schedule by more than %s", percent(overScheduleLimit))
+	name := fmt.Sprintf("R8 set-aside rule: every kind the step was to send recorded, and no second of the window over its schedule by more than %s", percent(overScheduleLimit))
 	s := sc.step.sum
 	switch {
 	case s.SetAside != nil:

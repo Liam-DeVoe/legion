@@ -535,7 +535,7 @@ func TestStepCheckReadsCriterionFFromWhatTheStepHolds(t *testing.T) {
 // failed for it, yet the command does not pass the step either. A step whose summary records no
 // pacing at all fails the clause, since nothing says its generator kept its schedule.
 func TestStepCheckSetsAsideAStepWhoseGeneratorBrokeItsSchedule(t *testing.T) {
-	const rule = "R8 set-aside rule: no second of the window over its schedule by more than 10%"
+	const rule = "R8 set-aside rule: every kind the step was to send recorded, and no second of the window over its schedule by more than 10%"
 	f := newStepFixture()
 	_, f.sum.SetAside = judgePacing(arrivalsFile{Window: []arrivalSecond{{Second: 95, RequestsScheduled: 640, RequestsSent: 3540}}}, paceTargets{requests: true})
 	out, failed := f.check(t, "2x-stalled")

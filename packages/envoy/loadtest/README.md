@@ -484,9 +484,10 @@ the test bed. So every step records what its generators sent, beside what they w
   late, and the second it catches up in holds 5.5 to 18 times its schedule. 100 ms lies far above
   the first and far below the second, so the tolerance moves a rate edge's carry-over back to the
   second it belongs to (at 12 ms every second of that drop step sends exactly what it scheduled)
-  and leaves a stalled generator's burst in the second it lands in. The largest lateness of an
-  arrival of each kind, of the window's and of the warm-up's schedule apart, is recorded beside the
-  counts.
+  and leaves a stalled generator's burst in the second it lands in, all but the newest 100 ms of its backlog, which counts back in the seconds its schedule put it in.
+  So **a stall shorter than about 200 ms is seldom set aside**: what a stall moves into the second it ends in is the arrivals it held up for more than 100 ms that the schedule put in an earlier second, at most the stall's length less 100 ms of arrivals, which at a steady rate passes the rule's tenth (100 ms of a second's arrivals) only once the stall passes 200 ms, and then only when it crosses a second's start.
+  That loses the rule nothing it is for: a generator on time is milliseconds late, a stall under 200 ms still sends every arrival it held up within a fifth of a second of its time, and a stall that takes from a step the load it claims is seconds long.
+  The largest lateness of an arrival of each kind, of the window's and of the warm-up's schedule apart, is recorded beside the counts.
 - **The rule.** A step is **set aside** when, in any second of its measured window, the requests or
   the event writes sent exceed that second's schedule by **more than a tenth** (`pacing.go`
   `overScheduleLimit`, 0.1). A generator on time sends each second what it scheduled; a stalled one
@@ -3660,9 +3661,9 @@ its cores and working set from `cgroup.json`. It also holds:
   ran on different generators still reads right. A step naming a role its `cgroup.json` holds no
   series for is an error, not a step that can silently never be void.
 - **The set-aside rule** (every series; The set-aside rule, above): a step whose `summary.json`
-  carries `set_aside` — its generator sent more than a tenth over a second's schedule — is **set
-  aside**: neither a pass nor a failure. The Pass table and `curves.csv`'s `passes` read
-  `set aside`, `CURVES.md` and `KNEES.md` list it with why, and it is no knee and ends no bracket.
+  carries `set_aside` — its generator sent more than a tenth over a second's schedule, or a kind it
+  was to send recorded nothing scheduled — is **set aside**: neither a pass nor a failure.
+  The Pass table and `curves.csv`'s `passes` read `set aside`, `CURVES.md` and `KNEES.md` list it with why, and it is no knee and ends no bracket.
   A step from before the rule carries no `set_aside` and reads as it always has.
 - A step's factor is `loadgen run -loop-factor`, which `summary.json` records as
   `config.loop_factor`: the factor of its series' grid that the step stands at, which is where
