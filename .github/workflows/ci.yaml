@@ -1496,13 +1496,13 @@ jobs:
               - 'packages/daemon/docker/legion-testpg'
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
             # checks, the seven shell-script tests, and the build and pack of the envoy commands,
-            # with the tests of internal/dispatch/architecture/notes and cmd/architecture-check
-            # (envoy-go's unit step tests them again in the merge queue) and the architecture-note
-            # check over this repository's own notes through the composite action
-            # .github/actions/architecture-check. gofmt -l . walks every .go file under
-            # packages/envoy, those tests and the scripts they drive live there, and `go build
-            # ./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as the
-            # action's build of cmd/architecture-check does.
+            # with the tests of internal/dispatch/architecture/notes, internal/runnerlog and
+            # cmd/architecture-check (envoy-go's unit step tests them again in the merge queue)
+            # and the architecture-note check over this repository's own notes through the
+            # composite action .github/actions/architecture-check. gofmt -l . walks every .go
+            # file under packages/envoy, those tests and the scripts they drive live there, and
+            # `go build ./cmd/dispatch ./cmd/listener` compiles packages of that module alone,
+            # as the action's build of cmd/architecture-check does.
             envoy_go_checks:
               - '.github/workflows/ci.yaml'
               - *bun_install
@@ -1537,6 +1537,10 @@ jobs:
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
+              # The Dispatch server imports internal/dispatch/architecture/notes, so the natslive
+              # run compiles that package and the check counts its testdata among what this job
+              # reads.
+              - 'packages/envoy/internal/dispatch/architecture/notes/testdata/**'
               - 'packages/envoy/internal/dispatch/githubapp/**'
               # delivery/pull_request_heads.go imports internal/dispatch/refs, which imports
               # internal/dispatch/text, so the natslive run compiles that package and the check
@@ -1745,6 +1749,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/api/testdata/**'
               - 'packages/envoy/internal/dispatch/architecture/*'
               - 'packages/envoy/internal/dispatch/architecture/notes/*'
+              - 'packages/envoy/internal/dispatch/architecture/notes/testdata/**'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -4831,15 +4836,15 @@ jobs:
 
   # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
   # shell-script tests and the build and pack of the envoy commands. It also runs the tests of
-  # internal/dispatch/architecture/notes and cmd/architecture-check, which envoy-go's unit step
-  # tests again in the merge queue, and the architecture-note check over this repository's own
-  # .dispatch/architecture through the composite action .github/actions/architecture-check,
-  # which other repositories call. The slow half below (the module's unit tests, the
-  # container-backed NATS matrix and the integration suite) is one of the nine slow suites,
-  # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
-  # must come back on every push. No Postgres service: nothing here opens a database. It
-  # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
-  # binary of every package of the envoy module).
+  # internal/dispatch/architecture/notes, internal/runnerlog and cmd/architecture-check, which
+  # envoy-go's unit step tests again in the merge queue, and the architecture-note check over
+  # this repository's own .dispatch/architecture through the composite action
+  # .github/actions/architecture-check, which other repositories call. The slow half below (the
+  # module's unit tests, the container-backed NATS matrix and the integration suite) is one of
+  # the nine slow suites, which run in the merge queue and on a pull request labelled
+  # `full-ci`, while these checks must come back on every push. No Postgres service: nothing
+  # here opens a database. It restores go-envoy rather than go-envoy-test, which is the slow
+  # half's family alone (the test binary of every package of the envoy module).
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -4903,13 +4908,13 @@ jobs:
             exit 1
           fi
         working-directory: packages/envoy
-      # These two packages need no database, so they run here on every push. envoy-go's unit
-      # step tests every package of the module but the race lane's, these two among them, so they
-      # run again in the merge queue: leaving them out there would add a second exclusion list to
-      # the grep that picks that step's packages, to save a few seconds a group. This step accepts
-      # the overlap, as the display-tree fixture check below does for pmdoc.
+      # These three packages need no database, so they run here on every push. envoy-go's unit
+      # step tests every package of the module but the race lane's, these three among them, so
+      # they run again in the merge queue: leaving them out there would add a second exclusion
+      # list to the grep that picks that step's packages, to save a few seconds a group. This
+      # step accepts the overlap, as the display-tree fixture check below does for pmdoc.
       - name: Test the architecture-note rules and their command
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./cmd/architecture-check/
+        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./cmd/architecture-check/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
