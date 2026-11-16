@@ -60,6 +60,12 @@ export interface DispatchStackOptions {
    * `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
+  /**
+   * Variables merged into the server's environment over the stack's own, for a stack that
+   * points the server at more than this file starts: the CI results stack names its secrets
+   * broker and its stand-in of GitHub here. A name the stack sets too takes the caller's value.
+   */
+  readonly env?: Record<string, string>;
 }
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
@@ -68,8 +74,9 @@ const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
 // that never answered stopped.
 const DISPATCH_READY: ReadyBudget = { timeoutMs: 120_000, tailLines: 20 };
 
-/** The test server's DSN, or the error that says the run has none. */
-function testDatabaseServer(): string {
+/** The test server's DSN, or the error that says the run has none. The CI results stack makes
+ *  its secrets broker's database on the same server. */
+export function testDatabaseServer(): string {
   if (DISPATCH_TEST_DATABASE_URL === undefined || DISPATCH_TEST_DATABASE_URL === "") {
     throw new Error(
       "the Dispatch stack needs DISPATCH_TEST_DATABASE_URL, the Postgres it makes its own database on"
@@ -87,7 +94,8 @@ function testDatabaseServer(): string {
  * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
  * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
  * person's write is the header alone. Nothing of the caller's Dispatch, Envoy or NATS environment
- * reaches it, since the child is given the environment below and nothing else.
+ * reaches it, since the child is given the environment below, with `options.env` over it, and
+ * nothing else.
  *
  * The stack works in `options.work`, which the caller reserved with
  * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it when the file
@@ -145,6 +153,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
         DISPATCH_PORT: String(port),
         DISPATCH_SERVER_URL: url,
         DISPATCH_WEB_DIST: WEB_DIST,
+        ...options.env,
       },
       stdout: out,
       stderr: out,
