@@ -184,33 +184,58 @@ check "names the test and both shards" \
   "$(contains "$err" "^go-test-shards.py: TestAlpha is in shards [123] and 4 of 4: each of those legs runs it$")"
 check "names no other test" "$(is "$(grep -c 'is in' <<<"$err")" 1)"
 
-echo "case: control - the check matches as Go's -run does, not as the pattern's author meant"
-# '^TestE' is no alternation of whole names: Go's regexp selects TestEpsilon and TestEta by it,
-# so beside the split's own patterns each of them is in two shards.
-run_shards "$root" check . -- "${patterns[@]}" '^TestE'
-check "exits 1" "$(is "$status" 1)"
-check "TestEpsilon is in two shards" "$(contains "$err" '^go-test-shards.py: TestEpsilon is in shards [123] and 4 of 4')"
-check "and so is TestEta" "$(contains "$err" '^go-test-shards.py: TestEta is in shards [123] and 4 of 4')"
-check "and nothing else" "$(is "$(grep -c 'is in' <<<"$err")" 2)"
-
-echo "case: control - a pattern holding a / fails the check, by pattern"
-# -test.list matches each top-level name against the whole pattern, so it lists TestAlpha under
-# '^TestAlpha$' alone. go test -run splits '^TestBeta$|^TestAlpha$/child' at the / and starts
-# TestAlpha for its subtest too, so the two legs would both run TestAlpha while every listing said
-# once.
-root_slash=$(module slash)
-tests "$root_slash/slash_test.go" TestAlpha TestBeta
-run_shards "$root_slash" check . -- '^TestAlpha$' '^TestBeta$|^TestAlpha$/child'
-check "exits 1" "$(is "$status" 1)"
-check "prints nothing on standard output" "$(is "$out" "")"
-# shellcheck disable=SC2016 # literal backticks and $ of the message, no expansion wanted
-check "names the pattern and the /" \
-  "$(contains "$err" '^go-test-shards.py: pattern 2 of 2, `^TestBeta\$|^TestAlpha\$/child`, holds a `/`: ')"
-check "and names nothing else" "$(is "$(grep -c '^go-test-shards.py: ' <<<"$err")" 1)"
-run_shards "$root_slash" check . -- '^TestAlpha$' '^TestBeta$'
-check "the same tests without the / pass" "$(is "$status" 0)"
-run_shards "$root_slash" pattern 0 1 .
-check "and the pattern the split prints holds no /" "$(is "$(grep -c / <<<"$out" || true)" 0)"
+echo "case: control - a pattern of any shape but the split's fails the check, by pattern"
+# -test.list matches each top-level name against the whole pattern, while go test -run first splits
+# the pattern at every | and / outside brackets and parentheses. Measured on Go 1.27 with these two
+# tests: '^TestBeta$|^TestAlpha$/child' lists TestBeta and runs both (a / starts a test for its
+# subtests); '^TestBeta$|^\QTestAlpha|\Qjunk\E$' lists TestBeta and runs both (the split cuts the
+# quote in two); '(?i)^TestAlpha$|^Testbeta$' lists both and runs TestAlpha alone ((?i) covers its
+# own part). Each listing said every test once while a leg ran one twice or not at all. So only
+# the split's own shape, ^(Name|Name|...)$ of whole test names, is read.
+root_shape=$(module shape)
+tests "$root_shape/shape_test.go" TestAlpha TestBeta
+# refused <number> <total> <pattern>: whether the last run's error names that pattern as not of
+# the one shape. A fixed string, since the pattern holds what a grep pattern would read.
+refused() {
+  grep -qF -- "go-test-shards.py: pattern $1 of $2, \`$3\`, is not ^(Name|Name|...)\$ of whole test names" \
+    <<<"$err" && echo true || echo false
+}
+# shape_case <description> <pattern>...: runs check over the patterns, every one of them not of
+# the shape, and holds the run to exit 1, nothing on standard output, and one line naming each.
+shape_case() {
+  local what=$1 p number=0
+  shift
+  run_shards "$root_shape" check . -- "$@"
+  check "$what: exits 1" "$(is "$status" 1)"
+  check "$what: prints nothing on standard output" "$(is "$out" "")"
+  for p in "$@"; do
+    number=$((number + 1))
+    # The refusal writes a line break of the pattern as \n, so the line it prints is one line.
+    check "$what: names pattern $number, ${p//$'\n'/\\n}" "$(refused "$number" "$#" "${p//$'\n'/\\n}")"
+  done
+  check "$what: and nothing else" "$(is "$(grep -c '^go-test-shards.py: ' <<<"$err")" "$#")"
+}
+shape_case "the / pair" '^TestAlpha$' '^TestBeta$|^TestAlpha$/child'
+shape_case "the split \\Q quote" '^TestAlpha$' '^TestBeta$|^\QTestAlpha|\Qjunk\E$'
+shape_case "the (?i) flag" '(?i)^TestAlpha$|^Testbeta$'
+shape_case "a prefix, not a name" '^TestE'
+shape_case "the shape with a / in a name" '^(TestAlpha/child|TestBeta)$'
+shape_case "the shape with a regexp in a name" '^(Test.*)$'
+shape_case "the shape with a quote in a name" '^(\QTestAlpha\E|TestBeta)$'
+shape_case "the shape with an empty name" '^(TestAlpha||TestBeta)$'
+shape_case "the shape with a name of no test prefix" '^(Alpha|TestBeta)$'
+shape_case "the shape with a newline after it" $'^(TestAlpha|TestBeta)$\n'
+# Both of the shape, so the listing decides: the shape rule names neither, and the test the two
+# select is named as one two legs run.
+run_shards "$root_shape" check . -- '^(TestBeta)$' '^(TestAlpha|TestBeta)$'
+check "two patterns of the shape that share a test: exits 1 with one line" \
+  "$(is "$status/$(grep -c '^go-test-shards.py: ' <<<"$err")" "1/1")"
+check "  naming the test in two shards, not a shape" \
+  "$(contains "$err" '^go-test-shards.py: TestBeta is in shards 1 and 2 of 2: each of those legs runs it$')"
+run_shards "$root_shape" check . -- '^(TestAlpha)$' '^(TestBeta)$'
+check "the same two tests in the shape pass" "$(is "$status" 0)"
+run_shards "$root_shape" pattern 0 1 .
+check "and the pattern the split prints is of the shape" "$(is "$out" '^(TestAlpha|TestBeta)$')"
 
 echo "case: a test whose name is not ASCII is split and checked like any other"
 # go test runs TestÉclair, Test日本 and TestᲉ: cmd/go asks only that the rune after `Test` is not
