@@ -60,8 +60,9 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // read from the block index (document_blocks and block_refs), which every accepted write leaves
 // in step with the document it wrote; the requirements' order and words come from the live spec.
 // trees is the reader of a request that answers the requirements' trees, nil for every other
-// caller: each requirement registers its whole content with it (blockContent) where it stands in
-// the answer, and the caller resolves it.
+// caller: each requirement registers with it, where it stands in the answer, the markdown
+// typedBlocksIn reads the block's tree from, which is the rule GET /api/v1/reference-targets
+// reads the same block's tree by, and the caller resolves it.
 func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
 	err := q.QueryRow(ctx, `
@@ -142,14 +143,16 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 
 // requirementBlocksIn is every `requirement` block of one document, in document order, with its
 // words, read live out of the document's markdown (typedBlocksIn), and beside them, for a caller
-// that answers trees, each block's whole content in the same order (blockContent).
+// that answers trees, the markdown each block's tree is read from in the same order: what
+// typedBlocksIn hands over from the block's stored text, so a requirement answers here the tree
+// the batched reference read answers for it.
 func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees bool) ([]model.RequirementCoverage, []string, error) {
 	var requirements []model.RequirementCoverage
 	var contents []string
-	err := s.typedBlocksIn(ctx, artifactID, "requirement", func(node *pmdoc.Node, id string) {
+	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees, func(node *pmdoc.Node, id, content string) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
 		if trees {
-			contents = append(contents, blockContent(node))
+			contents = append(contents, content)
 		}
 	})
 	if err != nil {

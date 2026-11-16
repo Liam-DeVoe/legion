@@ -1146,14 +1146,15 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 // determined by the key the walk already carries, so `union` removes exactly the rows it
 // removed before.
 //
-// A child's blockers are one lateral over issue_links keyed by the child's own key, which the
-// table's primary key (issue_key, kind, target_key) leads with, so the statement makes one
-// keyed read per child and no read of the table by anything else: this is the single-issue
-// read, where issueProgressLateral counts one issue's children the same way and the listing
-// counts its whole page's in one grouped read instead (issueSummaryJoins). Written as that
-// grouped read, over the direct children the rollup already names, the planner dropped the
-// child keys from the condition and read issue_links by kind alone. The claim is two columns of
-// the child's own row, which this statement already reads, so it costs no join at all.
+// A child's `needs`, the keys of the issues it waits on, are one lateral over issue_links keyed
+// by the child's own key, which the table's primary key (issue_key, kind, target_key) leads
+// with, so the statement makes one keyed read per child and no read of the table by anything
+// else: this is the single-issue read, where issueProgressLateral counts one issue's children
+// the same way and the listing counts its whole page's in one grouped read instead
+// (issueSummaryJoins). Written as that grouped read, over the direct children the rollup
+// already names, the planner dropped the child keys from the condition and read issue_links by
+// kind alone. The claim is two columns of the child's own row, which this statement already
+// reads, so it costs no join at all.
 var issueChildrenStatement = `
 		with recursive subtree as (
 			select key as root, key, 1 as depth, status, updated_at from issues where parent_key = $1

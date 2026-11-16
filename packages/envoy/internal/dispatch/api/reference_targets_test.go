@@ -126,8 +126,9 @@ func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
 }
 
 // A set at the cap is read, one past it is refused naming the cap, and a reference the grammar
-// cannot read is refused naming it. The cap is counted before anything is parsed, so a set past
-// it costs no reference's parse.
+// cannot read - an external URL, or a reference to a person, which it reads none of - is refused
+// naming it. The cap is counted before anything is parsed, so a set past it costs no
+// reference's parse.
 func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -158,6 +159,15 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 		!strings.Contains(unreadable.Body.String(), "https://example.com/notes") {
 		t.Fatalf("a reference the grammar cannot read answered status=%d body=%s, want 400 INVALID_REFERENCE naming it",
 			unreadable.Code, unreadable.Body.String())
+	}
+
+	const person = "dispatch://person/alice@example.com"
+	personal := referenceTargetsRequest(t, handler, []string{reference, person}, "")
+	if personal.Code != http.StatusBadRequest ||
+		!strings.Contains(personal.Body.String(), `"code":"INVALID_REFERENCE"`) ||
+		!strings.Contains(personal.Body.String(), person) {
+		t.Fatalf("a reference to a person answered status=%d body=%s, want 400 INVALID_REFERENCE naming it",
+			personal.Code, personal.Body.String())
 	}
 
 	none := referenceTargetsRequest(t, handler, nil, "")
