@@ -104,7 +104,7 @@ as the fingerprint decides (*The reviewer*, below, and
   The daemon's own count in the issue's `mergeWait`, `checkRuns`, is only the runs a CI settlement applied, so a zero there is no evidence of what GitHub holds: read the two lists on GitHub before you act.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   A check carrying `ci_check` is CI's: the one result that `dispatch results` derives from the named run decides it (`skill://legion-worker/references/ci-checks.md`). While that run has not concluded, wait for it by its name, and do not approve or request changes for that check. Wait the same way where GitHub could not be read. When no run of that name answers after the head's checks settle, tell the architect as a finding and request no changes for it.
-  A check whose `run` is a whole test suite and has no pass standing at the head has wrong words, which the architect rewrites: tell the architect as a finding, wait for the rewrite with a `WAITING` line naming it, and request no changes for it. One that has a pass standing at the head is a finding for the architect too, and its pass decides the check, so the review goes on.
+  A check whose `run` is a whole test suite has wrong words, which the architect rewrites: tell the architect as a finding, wait for the rewrite with a `WAITING` line naming it, and request no changes for it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
   A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head; which head proves which check is *An issue is proved by its own checks* in `skill://legion-worker/references/pr-body.md`.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
@@ -117,17 +117,6 @@ as the fingerprint decides (*The reviewer*, below, and
   `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
   and a `comments[]` array of `{path, line, side, body}`, one entry per
   finding — never one `pr review` call per finding (each submission fires a `pr-review` wake).
-  That `head` is the full 40-character SHA of the head whose diff and checks you read, which is
-  the `commit_id` you submit with, and never the head GitHub shows at the moment you submit:
-  read `gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid` before you
-  submit, and where it names another head a push landed under you, so review that head and
-  submit at it rather than renaming the footer to a head you have not read.
-  The daemon takes that head as the review's own word for the code it read, and cannot take GitHub's
-  `commit_id` for the review instead, which GitHub rewrites onto the pull request's current head,
-  so its record of a review can name a head the review never saw.
-  A review whose footer names another head, or no head, decides no round:
-  it is set aside, the round stays open and the
-  architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
   A `COMMENT` decides nothing. After a
   forward merge, compute the fingerprint (*The unchanged-diff check* in
   `skill://legion-worker/references/conflicts-and-rewrites.md`) at the head your last submitted
@@ -178,7 +167,7 @@ as the fingerprint decides (*The reviewer*, below, and
   commit of the reviewer's is a new head, so the passes the tester and the checks recorded at the
   head before it do not stand at it, and on a base whose rules want each change approved by
   someone other than its author, the reviewer's approval cannot cover a commit it wrote, so
-  GitHub holds the merge. So a red check is a `REQUEST_CHANGES` whatever broke it, a prose fault
+  GitHub holds the merge. So a red required check is a `REQUEST_CHANGES` whatever broke it, a prose fault
   included, and the round goes on at the implementer's push.
 
 Every round records a handoff and takes this order: read CI as above; write the handoff and record
