@@ -177,6 +177,23 @@ func TestCheckState(t *testing.T) {
 		}, want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
 		{name: "v-state 15, no author: the fault names no author", change: func(c *checkCase) { c.Results[1].FaultAuthor = "" },
 			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		// R9: "An agent that did not write the test writes the fault." A failing example whose record
+		// names no author of the test cannot show that, so it does not count: the check reads unknown,
+		// as it does when the author of the test wrote the fault (the row above) or the fault names no
+		// author. A complete record of another agent counts.
+		{name: "v-state 15, no author of the test: the record names no test authors", change: func(c *checkCase) { c.Results[1].TestAuthors = nil },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		{name: "v-state 15, no author of the test: the list of test authors is empty", change: func(c *checkCase) { c.Results[1].TestAuthors = []string{} },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		{name: "v-state 15, no author of the test: the list of test authors holds only an empty name", change: func(c *checkCase) { c.Results[1].TestAuthors = []string{""} },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		{name: "v-state 15, a complete record: an agent that wrote no part of the test wrote the fault", change: func(c *checkCase) {
+			c.Results[1].TestAuthors = []string{"author-a", "author-c"}
+		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		{name: "v-state 15, production: the failing example of a program check of production names no author of the test", change: func(c *checkCase) {
+			c.productionProgram("docs/x.md", "c1")
+			c.Results[3].TestAuthors = nil
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "fault_by_test_author"}},
 		{name: "v-state 16: the emptied test passes on the fault", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/restart_test.go")
 			c.Subject.Commit = "c2"

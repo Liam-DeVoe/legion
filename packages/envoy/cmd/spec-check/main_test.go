@@ -1139,6 +1139,52 @@ func TestAnApprovedLeafWithNoCheckReadsNotBuilt(t *testing.T) {
 	}
 }
 
+// R9: "An agent that did not write the test writes the fault." Through the command, carry's failing
+// example counts at c2 and m2 only while its record names an author of the test and the fault is by
+// another agent: with no test_authors, or an empty list, the check reads unknown, as it does when
+// the author of the test wrote the fault (the control). carry itself, a complete record of another
+// agent, reads true (TestScenarios).
+func TestAFailingExampleThatNamesNoTestAuthorDoesNotCount(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	for _, row := range []struct {
+		name   string
+		change func(fault map[string]any)
+	}{
+		{"control: the author of the test wrote the fault", func(fault map[string]any) { fault["fault_author"] = "agent-a" }},
+		{"the author of the test wrote the fault, and the record names no test_authors", func(fault map[string]any) {
+			fault["fault_author"] = "agent-a"
+			delete(fault, "test_authors")
+		}},
+		{"another agent wrote the fault, and the record names no test_authors", func(fault map[string]any) { delete(fault, "test_authors") }},
+		{"another agent wrote the fault, and test_authors is empty", func(fault map[string]any) { fault["test_authors"] = []any{} }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := copyScenario(t, "carry")
+			path := filepath.Join(dir, "results.json")
+			var results []map[string]any
+			readJSONFile(t, path, &results)
+			i := slices.IndexFunc(results, func(r map[string]any) bool { return r["kind"] == "failing_example" })
+			if i < 0 {
+				t.Fatalf("%s holds no failing example", path)
+			}
+			row.change(results[i])
+			writeJSONFile(t, path, results)
+			got := runBinary(t, binary, "", "state", "--scenario", dir)
+			if got.code != 0 || got.stderr != "" {
+				t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+			}
+			line := "  check a-restart-loses-no-message: unknown (fault_by_test_author)"
+			for _, subject := range []string{"c2, the head of listener-restart", "m2, the head of main"} {
+				if lines := subjectLines(got.stdout, subject); !slices.Contains(lines, line) {
+					t.Errorf("at subject %s: %q, want the line %q", subject, lines, line)
+				}
+			}
+		})
+	}
+}
+
 // R29: "That wait ends when main holds the statement's approved text and its own checks read true
 // there." R10: "Only the checks that read the subject count." At the head of main an own check of
 // production decides nothing, so the wait reads the own checks that read main. It ends beside a
