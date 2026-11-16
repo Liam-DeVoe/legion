@@ -793,7 +793,8 @@ func TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies(t *testing.T) 
 // the claim stops there; a cursor written once at the end of the walk let both of them forward
 // everything they had read.
 func TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the second listener's drain reaches its wait on the first's
+	// claim within its 3 s context; a deadline inside one of its reads is that drain's error).
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-two-drains"

@@ -893,7 +893,9 @@ func (kv *sessionBucketThatStalls) Get(string) (natsgo.KeyValueEntry, error) {
 // a pause. Quieting that read too ended ten minutes of a claimed role's lane failing with nothing
 // above Debug, where the same failure whose window ended in a pause was reported at Error.
 func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *testing.T) {
-	t.Parallel()
+	// Serial: its stalled row holds a wall-clock window: that row is about a deadline that lands
+	// inside a read, and its 3 s window (3 * roleKeepDrainRetryPause) ends inside its second read
+	// only when its first read and the 1 s pause that read earns end inside the window.
 	for _, test := range []struct {
 		name           string
 		shutdown       bool
@@ -906,6 +908,8 @@ func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *t
 		{name: "stalled", stalled: true, wantErr: true, wantErrorLines: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			// Serial: in its stalled row the 3 s window ends inside the second read, the row's
+			// subject, only when the first read and its 1 s pause end inside it.
 			harness := newListenerDeliveryHarness(t)
 			role := "kept-shutdown-" + test.name
 			holder := "ses_kept_shutdown_" + test.name

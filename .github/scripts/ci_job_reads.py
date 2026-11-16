@@ -925,7 +925,7 @@ TWO_BUILDS_JOB = "dispatch-two-builds"
 TWO_BUILDS_STEP = "Two-build tests of the Dispatch server"
 TWO_BUILDS_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} twobuild ./cmd/dispatch)
-go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch"""
+go test -tags twobuild -count=1 -timeout 18m -run "$pattern" ./cmd/dispatch"""
 BROKER_MP_STEP = "Two-process tests of the secrets broker"
 BROKER_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/broker)
@@ -1386,8 +1386,8 @@ class RaceJob(NamedTuple):
 # reading of the branch rather than of one pair is the same rule applied to every measurement
 # taken, and it is what makes the number settle, since a later pair moves it only by reading
 # higher than every pair before it. Each -timeout is the smallest whole minute at which that
-# call's slowest package takes at most half of it: internal/bus 463.2 s -> 16m (run
-# 43733795306, job 132871904364), internal/dispatch/api 955.794 s -> 32m (run 43657875798, job
+# call's slowest package takes at most half of it: internal/bus 466.5 s -> 16m (run
+# 43882413752, job 133398892179), internal/dispatch/api 955.794 s -> 32m (run 43657875798, job
 # 132640445932), and internal/dispatch/docs 1795.4 s -> 60m (run 43810293311,
 # job 133110320511), where every earlier reading was less, 1746.1 s at most (run 43737129665,
 # job 132882140098). Each figure is read from that job's own `go test -json` artifact, the

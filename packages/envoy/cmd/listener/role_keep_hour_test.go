@@ -620,7 +620,8 @@ func (s *deadLetterSeam) assertTakenOver(t *testing.T, held laneCopy) []deadLett
 // row runs two listeners on a stream of its own, sweeping every second where the row sweeps, and
 // moves their clock rather than waiting an hour.
 func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a quiet window, in each row but a and f: nothing more happens in
+	// letSweepsRun's 2.5 s, or no frame past the ones a holder is sent comes within 2.5 s.
 	t.Run("a a publish to a role with no claim is answered 202 with kept_until one hour after the keep", func(t *testing.T) {
 		rig := newHourRig(t)
 		const role = "hour-unclaimed"
@@ -635,6 +636,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("b a claim made 50 minutes after the keep gets the copy once with kept_at and the forward line names the sender's session", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s,
+		// and no frame past the claimant's copy comes within 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-claimed-late"
@@ -680,6 +683,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("c the first sweep after the hour drops the copy and tells its sender", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-dropped"
@@ -719,6 +723,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("d copies from two senders that end before one sweep each get a dead letter on their own sender's subject", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const role = "hour-two-senders"
 		senders := []string{"ses_hour_first_sender", "ses_hour_second_sender"}
@@ -751,6 +756,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("e a copy that named no session and a copy the outbox wrote are counted and logged once with no dead letter", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const role = "hour-no-letter"
 		answer := rig.kept(rig.listeners[0], roleMessage(role, "", "a publish that names no session"))
@@ -834,6 +840,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("g both listeners walk the same lane over several sweeps and each copy gets one dead letter one count and one drop line", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-walked-twice"
@@ -871,6 +878,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("h a dead letter whose first publish fails is stored once by a walk after the claim ages out", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-letter-retried"
@@ -912,6 +920,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("i a dead letter the stream refuses for good ends its copy with one line and a later copy reaches the live holder", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: no frame past the later copy reaches the holder
+		// within 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-letter-refused"
@@ -951,6 +961,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("j a holder that does not take the copy's delivery mode claims the role and the copy is dropped with a dead letter naming that holder and the mode", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-mode-refused"
@@ -983,6 +994,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("m a copy whose hour ended more than an hour before the first sweep is dropped as stale with no dead letter", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-stale"
@@ -1010,6 +1022,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("n a dead letter whose first publish fails while the clock moves two hours on is stored once and the copy is not stale", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-letter-late"
@@ -1049,6 +1062,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("o a route publish naming source dispatch and a source_session is kept and gets its dead letter when its hour ends", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-dispatch-source"
@@ -1085,6 +1099,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("p a copy that does not decode is ended with its sequence logged once and counted once", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const role = "hour-undecodable"
 		ack, err := rig.client().JS().Publish(bus.KeptRoleSubject(role), []byte("not an envelope"), natsgo.MsgId("hour-undecodable-"+id.New()))
@@ -1105,6 +1120,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("q 250 copies whose hours ended are all ended over the sweeps that follow each counted once", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-many-ended"
@@ -1142,6 +1158,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("r with two listeners and a live holder each forward is counted once", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: no frame past the three copies reaches the
+		// holder within 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-forwarded"
@@ -1185,6 +1203,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	// the dead letter that is stored says that, and does not say that no session held the role or
 	// that the hour ended before the holder took it.
 	t.Run("s a delivery mode dead letter sent again after the copy's hour still names the delivery mode", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-mode-letter-late"
@@ -1227,6 +1246,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	// error that can pass, the walk that takes its claim over sends the same dead letter, which
 	// must still say so, and not that no session held the role.
 	t.Run("t a forwarded copy's dead letter sent again by a second takeover still says the message may have reached the holder", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-forward-letter-late"
@@ -1277,6 +1297,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	// reached the session that held the role when the forward was claimed: the dead letter's
 	// claim carries that through both takeovers (delivery_mode_unconfirmed).
 	t.Run("u a delivery mode dead letter of a copy whose forward was claimed still says the message may have reached the holder", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-forward-mode-letter"
@@ -1467,7 +1488,8 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 // that copy, and one that repeats the key of a copy that was forwarded or whose hour ended is kept
 // as a copy of its own, however many times.
 func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a quiet window, in its row l: no frame past its copy reaches the
+	// first holder within 500 ms, nor the next holder or the second lane's within 2.5 s.
 	t.Run("k a repeat inside the copy's hour is answered with the first copy and the lane holds one copy", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (
@@ -1495,6 +1517,8 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 	})
 
 	t.Run("l a repeat after a copy was forwarded or its hour ended is kept as a new copy each time", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: no frame past its copy reaches the first holder
+		// within 500 ms, nor the next holder or the second lane's within 2.5 s.
 		rig := newHourRig(t)
 		const (
 			forwarded   = "hour-repeat-forwarded"
@@ -1596,8 +1620,12 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 // makes it live, so its registration would not read it as returning, and it is handed the copy
 // at that refresh though the claim is refused (roleSetHandler).
 func TestALapsedHolderIsKeptFor(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a quiet window, in each row but c: no frame past the kept copy
+	// reaches its holder within 100 ms, and in rows a, b, d and e nothing more happens in
+	// letSweepsRun's 2.5 s either.
 	t.Run("a a publish to a role whose holder deleted its record is kept and reaches that session once it registers again", func(t *testing.T) {
+		// Serial: its assertion is a quiet window (returnTo): nothing more happens in
+		// letSweepsRun's 2.5 s, and no frame past the kept copy comes within 100 ms.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-lapsed-gone"
@@ -1614,6 +1642,8 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 	})
 
 	t.Run("b a copy kept for a gone holder reaches the session that claims the role after the reaper frees it", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: nothing more happens in letSweepsRun's 2.5 s,
+		// and no frame past the kept copy reaches the successor within 100 ms.
 		rig := newHourRig(t)
 		const (
 			role      = "hour-lapsed-reaped"
@@ -1661,6 +1691,8 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 	})
 
 	t.Run("d a raw role lane message to a gone holder is kept and reaches that session once it registers again", func(t *testing.T) {
+		// Serial: its assertion is a quiet window (returnTo): nothing more happens in
+		// letSweepsRun's 2.5 s, and no frame past the kept copy comes within 100 ms.
 		rig := newHourRig(t)
 		const (
 			role   = "hour-lapsed-lane"
@@ -1677,6 +1709,8 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 	})
 
 	t.Run("e a publish to an unresponsive holder is kept and reaches that session once it registers again", func(t *testing.T) {
+		// Serial: its assertion is a quiet window (returnTo): nothing more happens in
+		// letSweepsRun's 2.5 s, and no frame past the kept copy comes within 100 ms.
 		var registered atomic.Int64
 		rig := newHourRig(t, session.WithSessionClock(func() time.Time { return time.Now().Add(time.Duration(registered.Load())) }))
 		const (
@@ -1698,6 +1732,8 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 	})
 
 	t.Run("g a holder that answers again gets its kept copy at its registration with no sweep", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: no frame past the kept copy reaches the holder
+		// within 100 ms.
 		var registered atomic.Int64
 		rig := newHourRig(t, session.WithSessionClock(func() time.Time { return time.Now().Add(time.Duration(registered.Load())) }))
 		const (
@@ -1738,6 +1774,8 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 	})
 
 	t.Run("h a holder resumed by a new process gets its kept copy at its registration with no sweep", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: no frame past the kept copy reaches the holder
+		// within 100 ms.
 		rig := newHourRig(t)
 		const (
 			role    = "hour-lapsed-resumed"
@@ -1793,6 +1831,8 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 	})
 
 	t.Run("i a holder whose resumed process claims before it registers gets its kept copy with no sweep, even when the claim is refused", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: no frame past the kept copy reaches the holder
+		// within 100 ms.
 		rig := newHourRig(t)
 		const (
 			role    = "hour-lapsed-claimed-again"
@@ -1943,8 +1983,11 @@ func (r *hourRig) keepWakes(role string) []string {
 // once in each 5-minute interval across both listeners. A copy that is taken, or whose hour has
 // ended, and a copy Dispatch's outbox wrote, wake nothing.
 func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a quiet window, in its row f: a step that wakes no role raises no
+	// wake report in letSweepsRun's 2.5 s.
 	t.Run("f a kept copy wakes its role once in each interval of its first forty minutes until it is taken or ends", func(t *testing.T) {
+		// Serial: its assertion is a quiet window: a step that wakes no role raises no wake report
+		// in letSweepsRun's 2.5 s.
 		rig := newHourRig(t)
 		const (
 			routed = "hour-wake-routed"

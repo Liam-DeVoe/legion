@@ -346,7 +346,7 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 
 **The template stays, and that is the one exception to "a test drops every database it makes".**
 Envoy's two harnesses, Dispatch's and the broker's, each clone from one migrated template per migration set, which every test process on the server shares: `pgtemplate` is the one implementation, held by both `storetest` packages and by `internal/dispatch/store`'s own tests.
-Applying the 253 Dispatch migrations, each in its own committed transaction but the four marked `-- pgmigrate:non-transactional`, which each build one index concurrently, costs about 5.5 s of every test process that wants a database.
+Applying the 255 Dispatch migrations, each in its own committed transaction but the four marked `-- pgmigrate:non-transactional`, which each build one index concurrently, costs about 5.5 s of every test process that wants a database.
 That was measured on a two-core pod at 0fbf8a3a against a server with durability on: `TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate` (`packages/envoy/internal/testpg/pgtemplate`) ran in 9.7 to 10.0 s building the template and in 4.2 to 4.5 s cloning one already there, three times each.
 A lane runs about thirty packages on the Dispatch harness and sixteen on the broker's.
 The template is named `dispatch_template_<fingerprint>` or `broker_template_<fingerprint>`, where the fingerprint digests the migration set the build embeds (`store.MigrationsFingerprint`): the first process to want it builds it under an advisory lock every process takes on the server's `postgres` database, under a `…_building_<random>` name it is renamed out of only once every migration is applied, and every process after it clones what is already there.
@@ -427,9 +427,10 @@ It still runs beside the tests of every other package binary on the same machine
 
 A test stays serial when any of these is true of it:
 
-- Its assertion is a wall-clock window or limit: an answer within a second, a quiet window of 500 ms, a give-up close to a deadline.
+- Its assertion is a wall-clock window or limit the test itself writes and states as its subject: an answer within a second, a quiet window of 500 ms, a give-up close to a deadline.
   Parallel tests' load stretches the time it measures, so it would fail for the machine's load rather than for a defect.
   It keeps its bound and stays serial: a bound widened to a give-up wait can no longer fail for the defect the test exists for.
+  A window a shared helper of the package owns, and that stands for the product's own interval rather than for this test's claim — `noException`'s 250 ms in `cmd/listener`, the frame waits of its `expectFrames`, and the absence windows `internal/dispatch/docs` takes from `roomWait(t)` — is not such an assertion, and a test whose only clock reading is one of those runs parallel: 33 such tests do, and each has passed in both runs of every measurement pair this change has taken (runs 43793235477 and 43797411630, 43810293311 and 43814304800, 43882061650 and 43882413752).
 
 - It reads the whole process: a dump of every goroutine (`runtime.Stack(buf, true)`), a goroutine count or `runtime.ReadMemStats`, which count a parallel test's goroutines and allocations as its own.
 

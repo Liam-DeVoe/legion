@@ -28,12 +28,14 @@ const DatabaseURLEnv = "DISPATCH_TEST_DATABASE_URL"
 
 // testPoolSize bounds the shared pool of every store Open hands a test, in place of production's
 // sharedPoolSize. A store per test database against one Postgres is what the harness holds, and
-// that server bounds them all: the Postgres services of .github/workflows/ci.yaml start with
+// that server bounds them all: every Postgres service of the jobs .github/workflows/ci.yaml runs,
+// each declared in that job's own .github/workflows/ci-job-<job>.yaml, starts with
 // max_connections=500, less the 3 slots it reserves for superusers, and the envoy-go job's unit
-// call runs eight package binaries at once, each running up to twelve of its tests at once
-// (`go test -p 8 -parallel 12`), so the live stores are many, not one. Sixteen is the fewest one
-// test passes with: TestConcurrentSendsUnderOneKeyMakeOneMessage holds every connection of the
-// pool at once (below). A larger pool would let each of those many stores ask the server for more.
+// call (.github/workflows/ci-job-envoy-go.yaml) runs eight package binaries at once, each running
+// up to twelve of its tests at once (`go test -p 8 -parallel 12`), so the live stores are many,
+// not one. Sixteen is the fewest one test passes with: TestConcurrentSendsUnderOneKeyMakeOneMessage
+// holds every connection of the pool at once (below). A larger pool would let each of those many
+// stores ask the server for more.
 // The pools Pool.separate opens - the rooms, their appends, the listener, the leases, the outbox,
 // the compaction, the display-tree fill and the horizon pools, and the health probe's own - keep
 // their own sizes, so this bounds the shared pool alone.

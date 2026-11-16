@@ -16,8 +16,9 @@
 #
 # `--throwaway [port]` starts the other server this script knows, which is not that container: a
 # PostgreSQL cluster of its own under TMPDIR, from this host's server binaries, on port 55433
-# unless another is named, with the five settings every Postgres service of
-# .github/workflows/ci.yaml runs with. It prints the DATABASE_URL it serves, its data directory,
+# unless another is named, with the five settings every Postgres service of the jobs
+# .github/workflows/ci.yaml runs starts with, each service declared in that job's own
+# .github/workflows/ci-job-<job>.yaml. It prints the DATABASE_URL it serves, its data directory,
 # the pid to stop it by, and a `kill` of that pid with an `rm -rf` of the directory that holds the
 # data directory and the server's log. The cluster is thrown away after the run, so nothing it
 # holds has to survive a crash, which is what makes the forced checkpoints a Go test's database
@@ -91,7 +92,8 @@ if [ "${1:-}" = --throwaway ]; then
   if ! "${bindir}/initdb" -D "${root}/data" -U postgres -A trust -E UTF8 --no-sync >"${root}/initdb.log" 2>&1; then
     refuse "initdb failed in ${root}; its output:" "$(cat "${root}/initdb.log")"
   fi
-  # The five settings every Postgres service of .github/workflows/ci.yaml runs with, with their
+  # The five settings every Postgres service of the jobs .github/workflows/ci.yaml runs starts
+  # with (each declared in that job's own .github/workflows/ci-job-<job>.yaml), with their
   # values: a server a run throws away keeps nothing a crash could cost, and with those three off
   # a forced checkpoint writes nothing durable, while the connection and prepared-transaction
   # limits are the ones a whole module's packages at once need.

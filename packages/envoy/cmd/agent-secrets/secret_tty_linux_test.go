@@ -514,6 +514,7 @@ func TestPromptWordEraseAndControlBytes(t *testing.T) {
 // that names the Tab, says it is at the end of the value, and says that a paste often adds one
 // there; the terminal is left with nothing unread.
 func TestPromptNamesATabAPasteEndsWith(t *testing.T) {
+	t.Parallel()
 	_, terminal, got := typeAtPromptInWrites(t, 50*time.Millisecond, "\x1b[200~sk-live-key\t\x1b[201~", "\r")
 	var refused promptControlByteError
 	if got.line != nil || !errors.As(got.err, &refused) || refused.c != '\t' || !refused.textBefore || refused.textAfter {

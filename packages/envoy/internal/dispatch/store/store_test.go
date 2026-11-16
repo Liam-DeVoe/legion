@@ -98,10 +98,11 @@ var testLocking = pgmigrate.Locking{Timeout: 500 * time.Millisecond, Attempts: 3
 // testPoolSize bounds the shared pool of every store these tests open, in place of
 // production's sharedPoolSize, for the reason storetest bounds its own at the same number: the
 // tests of this package run beside each other, against one Postgres every package of the run
-// shares (its max_connections is 500 on the services of .github/workflows/ci.yaml), and a test
-// that fully acquires a 64-connection pool (TestListenerIsServedWhileTheSharedPoolIsFullyAcquired)
-// would hold that many of the server's connections while the tests beside it open their own. The
-// pools Pool.separate opens keep their own sizes.
+// shares (its max_connections is 500 on the service of envoy-go-race, the job that runs this
+// package, in .github/workflows/ci-job-envoy-go-race.yaml), and a test that fully acquires a
+// 64-connection pool (TestListenerIsServedWhileTheSharedPoolIsFullyAcquired) would hold that many
+// of the server's connections while the tests beside it open their own. The pools Pool.separate
+// opens keep their own sizes.
 const testPoolSize = 16
 
 // randomDatabaseSuffix is sixteen random hex digits, for a database, a login or an address no

@@ -54,9 +54,10 @@ import (
 // installs two, Dispatch's and the broker's (TestMain below, brokerstoretest.MainWith), so up to
 // sixteen admin connections. At PostgreSQL's default max_connections of 100, sixteen tests at
 // once reached that limit - a test opening a database of its own was refused "sorry, too many
-// clients already" - and twelve did not. Every CI job that runs this package starts its server
-// at max_connections=500 (.github/workflows/ci.yaml, envoy-go and envoy-go-race-api), so the
-// bound is five times what it was and this is twenty-four.
+// clients already" - and twelve did not. The one CI job that runs this package against a Postgres
+// server, envoy-go-race-api, starts it at max_connections=500
+// (.github/workflows/ci-job-envoy-go-race-api.yaml), so the bound is five times what it was and
+// this is twenty-four.
 //
 // A -parallel on the command line still wins: go test parses its flags inside M.Run, which
 // storetest.Main calls after this.

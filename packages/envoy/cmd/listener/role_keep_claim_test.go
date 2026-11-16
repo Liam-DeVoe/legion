@@ -198,7 +198,9 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 // wrote it can still be forwarding that copy, no other drain forwards it a second time, and once
 // it cannot be, the copy reaches the role's holder rather than nobody.
 func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the drain that finds the claim outstanding reaches its wait
+	// out of bus.KeptRoleClaimWindow within its 3 s context; a deadline inside one of its reads is
+	// that drain's error).
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-claim-abandoned"
