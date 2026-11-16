@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import type { Actor, Artifact, IssueDetails } from "../../../api/types";
+import type { Artifact, IssueDetails } from "../../../api/types";
 import {
   focusVisibleRing,
   pageInkText,
@@ -25,22 +25,16 @@ import type { OutlineRequest } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
 import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
 import { DETAILS_ATTRIBUTE } from "../margin-slot";
+import { chipWords } from "../node-row-chip";
 import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
 import { conversationItem, useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
-import {
-  authorKind,
-  CONTROL_LABELS,
-  DECISIONS_WORDS,
-  isReader,
-  NODE_TYPE_NAMES,
-  nodeStateWord,
-  PRESET_NAMES,
-} from "../page-words";
+import { CONTROL_LABELS, DECISIONS_WORDS, NODE_TYPE_NAMES, PRESET_NAMES } from "../page-words";
 import type { DrawnRow } from "../tree-fold";
+import { nodesInOrder } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
-import { DecisionsRow, type RowPerson } from "./DecisionsRow";
+import { DecisionsRow } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   conversationPath,
@@ -49,6 +43,7 @@ import {
   type NamedEntry,
   waitingOrder,
 } from "./decisions-parts";
+import { entryStanding } from "./entry-standing";
 
 /** The three parts drawn under a heading of their own, in the view's order; the fourth, the
  *  foot, is headed by the control that unfolds it. */
@@ -136,31 +131,25 @@ export function DecisionsFilterBody({
 }): ReactNode {
   const navigate = useNavigate();
   const parts = useDecisionsEntries({ issue, reader, root, view });
-  // Each row's people by the page's one rule for naming one (`AgentText.author`), read once for
-  // every row: a name and a shape, never an id (R9, R22).
+  // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
+  // focused row name its keeper by: a name, never an id (R9, R22).
   const agentText = useAgentText();
-  const person = (actor: Actor | undefined): RowPerson => ({
-    kind: authorKind(actor),
-    name: agentText.author(actor),
-    reader: isReader(actor, reader),
-  });
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
-  // The words each statement takes on a decision's "informs" line: the statement node's own
-  // words (`nodeWords`), which the row cuts with G's `chipWords` (decision 83). Where the
-  // coverage read sent the server's reading of a statement they are that reading's words, so
-  // they draw none of the marks its author typed; and the tree already holds them, so a
-  // statement is named with no read of names to wait for. A statement drawn under two parents
-  // is one node, so its first placement names it. Once F's `lineWords(node)` is under this
-  // branch the row reads `chipWords(lineWords(node))`.
-  const statementWords = useMemo<ReadonlyMap<string, string>>(() => {
-    const words = new Map<string, string>();
-    const walk = (node: TreeNode): void => {
-      if (node.type === "requirement" && !words.has(node.id)) words.set(node.id, nodeWords(node));
-      for (const child of node.children) walk(child);
-    };
-    walk(root);
-    return words;
+  // The name each statement takes on a decision's "informs" line: the statement node's own
+  // words (`nodeWords`) cut by G's `chipWords` (decision 83), which each row draws as it is.
+  // Where the coverage read sent the server's reading of a statement they are that reading's
+  // words, so they draw none of the marks its author typed; and the tree already holds them, so
+  // a statement is named with no read of names to wait for. A statement drawn under two parents
+  // is one node, so its first placement in the page's reading order names it. Once F's
+  // `lineWords(node)` is under this branch the name is `chipWords(lineWords(node))`.
+  const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
+    const names = new Map<string, string>();
+    for (const node of nodesInOrder(root)) {
+      if (node.type === "requirement" && !names.has(node.id))
+        names.set(node.id, chipWords(nodeWords(node)));
+    }
+    return names;
   }, [root]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
@@ -217,8 +206,11 @@ export function DecisionsFilterBody({
   // behind, goes with a move to another row, so it never moves the focus on later.
   const ownReview = useRef<string | undefined>(undefined);
   const takeFocus = useCallback(
-    (entry: DecisionsEntry | NamedEntry, state: string | undefined) => {
+    (entry: DecisionsEntry | NamedEntry) => {
       const node = entry.node;
+      // How the node stands, as the panel's facts of the focused node say it: the row's own
+      // reading of it, so the two never differ.
+      const state = entryStanding(entry, agentText.author)?.words;
       setFocused(node.id);
       setStop(node.id);
       if (ownReview.current !== node.id) ownReview.current = undefined;
@@ -236,7 +228,7 @@ export function DecisionsFilterBody({
         type: node.type,
       });
     },
-    [setFocusedNode]
+    [agentText, setFocusedNode]
   );
   // The focus leaving the list closes what it opened and takes away what a key reported, and
   // the panel goes back to the issue's own facts, unless it went to Details, where a reader
@@ -452,46 +444,25 @@ export function DecisionsFilterBody({
     const id = node.id;
     const place = documentOfNode(id, artifacts);
     const mark = threads.get(id);
-    const keeper =
-      entry.kind === "decision" && entry.keptBy !== undefined
-        ? agentText.author(entry.keptBy)
-        : undefined;
-    // How the node stands, as the panel's facts of the focused node say it. The node an address
-    // names is drawn for its words, and with no state.
-    const standing =
-      entry.kind === "named" ? undefined : entry.kind === "ask" ? node.state : entry.standing;
-    const state =
-      standing === undefined
-        ? undefined
-        : `${nodeStateWord(standing)}${keeper === undefined ? "" : ` ${keeper}`}`;
     return (
       <DecisionsRow
-        {...(node.answer === undefined ? {} : { answerer: agentText.author(node.answer.by) })}
-        author={person(node.author)}
         body={focused === id || pinned.has(id) || everything}
-        {...(entry.kind === "decision" && entry.change !== undefined
-          ? { changer: person(entry.change.by) }
-          : {})}
-        {...(entry.kind === "ask" && entry.declined !== undefined
-          ? { decliner: person(entry.declined.by) }
-          : {})}
         {...(place === undefined ? {} : { document: place.artifact })}
         entry={entry}
         focused={focused === id}
         isClosed={isClosed}
-        {...(keeper === undefined ? {} : { keeper })}
         key={id}
         level={part === "agents" ? 2 : 1}
-        onFocus={() => takeFocus(entry, state)}
+        onFocus={() => takeFocus(entry)}
         onPin={() => pin(id)}
         onReviewed={() => {
           ownReview.current = id;
         }}
-        ownAnswer={isReader(node.answer?.by, reader)}
         pinned={pinned.has(id)}
+        reader={reader}
         {...(report?.row === id ? { report: report.line } : {})}
         review={part === "review"}
-        statementWords={statementWords}
+        statementNames={statementNames}
         tabStop={tabStop === id}
         {...(mark === undefined ? {} : { threadRead: mark })}
       />

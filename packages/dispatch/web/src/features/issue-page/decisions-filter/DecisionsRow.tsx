@@ -1,7 +1,7 @@
 import { type ReactNode, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { Artifact } from "../../../api/types";
+import type { Actor, Artifact } from "../../../api/types";
 import {
   pageFocusedRow,
   pageInkText,
@@ -13,6 +13,7 @@ import {
   pageStateText,
   pageWordsText,
 } from "../../../theme/classes";
+import { useAgentText } from "../../refs/AgentName";
 import { agentRoleWord } from "../agent-role";
 import { DecisionActions, rowActionSelector } from "../DecisionActions";
 import { NodeGlyph } from "../NodeGlyph";
@@ -24,26 +25,27 @@ import {
   useClamp,
   useRowOnScreen,
 } from "../NodeRow";
-import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
 import {
   type AuthorKind,
+  authorKind,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   GLYPH_TOKENS,
+  isReader,
   NODE_TYPE_NAMES,
   type NodeType,
-  nodeStateWord,
 } from "../page-words";
 import { RowText } from "../RowText";
 import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
+import { type EntryStanding, entryStanding } from "./entry-standing";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
  *  whether they are the reader, whose name is drawn in the ink (R9, R34). */
-export interface RowPerson {
+interface RowPerson {
   readonly kind: AuthorKind;
   readonly name: string;
   readonly reader: boolean;
@@ -67,14 +69,12 @@ export interface RowPerson {
  *
  * A decision draws its words - whole where it waits for the reader's review, cut as an agent's
  * words are anywhere else (ruling 6) - how it stands in the states the page declares
- * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the
- * statement's own words cut by G's `chipWords` (decision 83), and each a link to that
- * statement; once F's `lineWords(node)` is under this branch the row reads
- * `chipWords(lineWords(node))`. A decision of the review list draws Keep and Change with
- * no focus, as the picture does; no other row draws either (R35). The two controls are
- * `DecisionActions.tsx`'s own, so the writes are the ones every other Keep and Change of the
- * page makes. A decision a person asked to change draws what they asked under its words, with
- * a link to it in the conversation (the tester's F6).
+ * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the name
+ * the body gives it (`DecisionsFilterBody.tsx`) and each a link to that statement. A decision
+ * of the review list draws Keep and Change with no focus, as the picture does; no other row
+ * draws either (R35). The two controls are `DecisionActions.tsx`'s own, so the writes are the
+ * ones every other Keep and Change of the page makes. A decision a person asked to change draws
+ * what they asked under its words, with a link to it in the conversation (the tester's F6).
  *
  * The node an address names where it is neither a question nor a decision, a comment say, is
  * drawn as the outline draws a node for its context (`NodeRow.tsx`): marked as one, in its grey,
@@ -89,47 +89,32 @@ export interface RowPerson {
  * row takes the tab order (R9): the row's own keys reach what it holds (`useTreeKeymap.ts`).
  */
 export function DecisionsRow({
-  answerer,
-  author,
   body,
-  changer,
-  decliner,
   document,
   entry,
   focused,
   isClosed,
-  keeper,
   level,
   onFocus,
   onPin,
   onReviewed,
-  ownAnswer,
   pinned,
+  reader,
   report,
   review,
-  statementWords,
+  statementNames,
   tabStop,
   threadRead,
 }: {
-  /** The name of the person whose answer this ask carries, where it carries one. */
-  answerer?: string;
-  /** Who made the node. */
-  author: RowPerson;
   /** Whether this row draws what its focus adds: it has the focus, the reader pinned it open,
    *  or the cycle key opens every body. */
   body: boolean;
-  /** The person who asked this decision to change, where one did. */
-  changer?: RowPerson;
-  /** The person who declined this ask, where it was declined. */
-  decliner?: RowPerson;
   /** The decisions document a decision is a block of, which its Keep writes against. */
   document?: Artifact;
   entry: DecisionsEntry | NamedEntry;
   focused: boolean;
   /** Whether the issue is closed, which Keep and Change are refused on. */
   isClosed: boolean;
-  /** The name of the person who kept this decision, where it stands kept. */
-  keeper?: string;
   /** How deep the row sits: 1, or 2 under the foot's own row (`aria-level`). */
   level: number;
   onFocus: () => void;
@@ -138,24 +123,34 @@ export function DecisionsRow({
    *  with words in it. Either takes it off the review list, and only the reader's own review
    *  moves the focus on to the next decision there. */
   onReviewed: () => void;
-  /** Whether the answer this ask carries is the reader's own, which carries the ink rule. */
-  ownAnswer: boolean;
   pinned: boolean;
+  /** Who is reading, whose own name is drawn in the ink and whose own words carry the ink rule
+   *  (R34). */
+  reader: string | undefined;
   /** What a key pressed on this row reported when it had nowhere to go. */
   report?: string;
   /** Whether this decision is an entry of the review list, which draws Keep and Change. */
   review: boolean;
-  /** Each statement's own words by its node id (`nodeWords`, read in `DecisionsFilterBody.tsx`),
-   *  which the row cuts with G's `chipWords` (decision 83); a statement whose words are `""` is
-   *  not named. Once F's `lineWords(node)` is under this branch the row reads
-   *  `chipWords(lineWords(node))`. */
-  statementWords: ReadonlyMap<string, string>;
+  /** Each statement's name by its node id, as the body names it (`DecisionsFilterBody.tsx`),
+   *  drawn as it is; a statement whose name is `""` is not named. */
+  statementNames: ReadonlyMap<string, string>;
   /** Whether this row is the list's one tab stop. */
   tabStop: boolean;
   /** The thread whose newest write this row draws, which a dwell on the row marks read. */
   threadRead?: ThreadMark;
 }): ReactNode {
   const node = entry.node;
+  // Each person the row names, by the page's one rule for naming one (`AgentText.author`): a
+  // name and a shape, never an id, and whether they are the reader (R9, R22, R34).
+  const agentText = useAgentText();
+  const person = (actor: Actor | undefined): RowPerson => ({
+    kind: authorKind(actor),
+    name: agentText.author(actor),
+    reader: isReader(actor, reader),
+  });
+  const author = person(node.author);
+  const ownAnswer = isReader(node.answer?.by, reader);
+  const standing = entryStanding(entry, agentText.author);
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   // Where the reader writes: an open question's options and Answer set it (R16).
@@ -168,19 +163,18 @@ export function DecisionsRow({
   // words.
   const cuttable =
     entry.kind === "ask"
-      ? node.state === "answered" && !node.waiting
+      ? standing?.token === "answered" && !node.waiting
       : entry.kind === "decision"
         ? !review
         : false;
   const clamp = useClamp(words, cuttable);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
-  const standing = entry.kind === "decision" ? entry.standing : undefined;
   const tone = toneOf(entry);
-  // Each statement the entry shaped by its own first words, and none whose node holds no words:
-  // no address, slug or id is drawn in a statement's place (R22).
+  // Each statement the entry shaped by its name, and none whose node holds no words: no
+  // address, slug or id is drawn in a statement's place (R22).
   const statements = entry.shapes.flatMap((shape) => {
-    const name = chipWords(statementWords.get(shape.id) ?? "");
+    const name = statementNames.get(shape.id) ?? "";
     return name === "" ? [] : [{ name, shape }];
   });
   return (
@@ -190,7 +184,7 @@ export function DecisionsRow({
       data-node-context={entry.kind === "named" ? "" : undefined}
       data-node-id={node.id}
       data-node-row=""
-      data-node-state={entry.kind === "ask" ? node.state : standing}
+      data-node-state={standing?.token}
       data-node-type={node.type}
       onFocus={onFocus}
       onPointerDown={press}
@@ -210,7 +204,7 @@ export function DecisionsRow({
               says so (the prototype's `.replaced`). */}
           <div
             className={`relative text-[15px] leading-6 ${
-              standing === "replaced" ? `line-through ${pageQuietText}` : pageWordsText
+              standing?.token === "replaced" ? `line-through ${pageQuietText}` : pageWordsText
             } ${clamped ? "overflow-clip" : ""}`}
             data-node-words=""
             ref={words}
@@ -252,15 +246,13 @@ export function DecisionsRow({
             <NodeOptions body={body} node={node} writer={writer} />
           )}
           {node.answer === undefined ? null : (
-            <AskAnswer answerer={answerer ?? ""} node={node} own={ownAnswer} />
+            <AskAnswer answerer={agentText.author(node.answer.by)} node={node} own={ownAnswer} />
           )}
-          {entry.kind !== "ask" || entry.declined === undefined || decliner === undefined ? null : (
-            <Declined by={decliner} note={entry.declined.note} />
+          {entry.kind !== "ask" || entry.declined === undefined ? null : (
+            <Declined by={person(entry.declined.by)} note={entry.declined.note} />
           )}
-          {entry.kind !== "decision" ||
-          entry.change === undefined ||
-          changer === undefined ? null : (
-            <Changed by={changer} change={entry.change} />
+          {entry.kind !== "decision" || entry.change === undefined ? null : (
+            <Changed by={person(entry.change.by)} change={entry.change} />
           )}
           {/* The node's parent in the conversation, as one line: its kind's word and its first
               line (R2, R1's first-line rule). A parent with no words of its own is named by its
@@ -429,7 +421,7 @@ export function DecisionsRow({
             </p>
           )}
         </div>
-        <RowMargin author={author} entry={entry} keeper={keeper} review={review} tone={tone} />
+        <RowMargin author={author} entry={entry} review={review} standing={standing} tone={tone} />
         {threadRead === undefined ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
@@ -464,8 +456,9 @@ function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
 /**
  * The row's kind as one tag, who made it by a name and a shape, and when, on one line; and
  * under them how it stands, by a word and a shape (R6, R9, R34, the prototype's `.mg`), laid
- * out as the outline's row lays them out (`NODE_ROW_LAYOUT`). An ask reads the word the
- * conversation draws for its state. A decision reads the page's word for how it stands
+ * out as the outline's row lays them out (`NODE_ROW_LAYOUT`). How the entry stands is
+ * `entryStanding`'s, which the row's own mark and the panel's facts read too: an ask reads the
+ * word the conversation draws for its state, and a decision the page's word for how it stands
  * (`NODE_STATE_WORDS.decision`), "Kept by" with the name of the person who kept it. The state
  * is drawn wherever the decision is, and in the decisions' violet where it asks something of
  * the reader or says what a person did with it: on a decision of the review list, on one a
@@ -477,23 +470,33 @@ function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
 function RowMargin({
   author,
   entry,
-  keeper,
   review,
+  standing,
   tone,
 }: {
   author: RowPerson;
   entry: DecisionsEntry | NamedEntry;
-  keeper: string | undefined;
   review: boolean;
+  standing: EntryStanding | undefined;
   tone: Tone;
 }): ReactNode {
   const node = entry.node;
   const time = node.at === undefined ? "" : shortDay(node.at);
-  const standing = entry.kind === "decision" ? entry.standing : undefined;
-  const asked = entry.kind === "ask" ? node.state : undefined;
   const unsure = entry.kind === "decision" && node.unsure === true;
-  const askGlyphs: Readonly<Record<string, string>> = GLYPH_TOKENS.states.ask;
-  const askGlyph = asked === undefined ? undefined : askGlyphs[asked];
+  // The state's shape, from the table of the entry's own kind.
+  const stateGlyphs: Readonly<Record<string, string>> =
+    entry.kind === "ask" ? GLYPH_TOKENS.states.ask : GLYPH_TOKENS.states.decision;
+  const stateGlyph = standing === undefined ? undefined : stateGlyphs[standing.token];
+  // An ask is in the waiting colour while it waits on the reader; a decision in the decisions'
+  // violet where it asks something of the reader or says what a person did with it.
+  const stateTone: keyof typeof pageStateText =
+    entry.kind === "ask"
+      ? node.waiting
+        ? "waiting"
+        : "quiet"
+      : review || standing?.token === "kept" || standing?.token === "change_requested"
+        ? "decision"
+        : "quiet";
   const authored = author.kind !== "unknown";
   const context = tone === "context";
   return (
@@ -539,44 +542,24 @@ function RowMargin({
           </span>
         )}
       </div>
-      {asked === undefined && standing === undefined && !unsure ? null : (
+      {standing === undefined && !unsure ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
-          {asked === undefined ? null : (
-            <span
-              className={`inline-flex items-center gap-1 ${
-                node.waiting ? pageStateText.waiting : pageStateText.quiet
-              }`}
-            >
-              {askGlyph === undefined ? null : (
-                <NodeGlyph className="size-3 shrink-0" token={askGlyph} />
-              )}
-              <span data-node-state={asked} {...pageChrome}>
-                {nodeStateWord(asked)}
-              </span>
-            </span>
-          )}
           {standing === undefined ? null : (
-            <span
-              className={`inline-flex items-center gap-1 ${
-                review || standing === "kept" || standing === "change_requested"
-                  ? pageStateText.decision
-                  : pageStateText.quiet
-              }`}
-            >
-              <NodeGlyph
-                className="size-3 shrink-0"
-                token={GLYPH_TOKENS.states.decision[standing]}
-              />
-              <span data-node-state={standing} {...pageChrome}>
-                {nodeStateWord(standing)}
-                {standing === "kept" && keeper !== undefined ? (
+            <span className={`inline-flex items-center gap-1 ${pageStateText[stateTone]}`}>
+              {stateGlyph === undefined ? null : (
+                <NodeGlyph className="size-3 shrink-0" token={stateGlyph} />
+              )}
+              <span data-node-state={standing.token} {...pageChrome}>
+                {standing.word}
+                {/* The keeper is an author's text of its own inside the state's words. */}
+                {standing.keeper === undefined ? null : (
                   <>
                     {" "}
                     <span data-kept-by="" {...authorText}>
-                      {keeper}
+                      {standing.keeper}
                     </span>
                   </>
-                ) : null}
+                )}
               </span>
             </span>
           )}

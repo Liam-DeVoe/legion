@@ -17,7 +17,16 @@ import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
-import { CONTROL_LABELS, DECISIONS_WORDS, GLYPH_NAMES, GLYPH_TOKENS } from "../page-words";
+import {
+  CONTROL_LABELS,
+  DECISIONS_WORDS,
+  EMPTY_STATE_LINES,
+  GLYPH_NAMES,
+  GLYPH_TOKENS,
+  NODE_STATE_WORDS,
+  NODE_TYPE_NAMES,
+  PRESET_NAMES,
+} from "../page-words";
 import { presetView } from "../presets";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
@@ -51,7 +60,14 @@ import type { DecisionsAsk } from "./decisions-parts";
  * browser suite's c-row, c-decisions and c-review-list read them.
  */
 
-const EMPTY_LINE = "This issue has no decisions yet.";
+/** The page's line for an issue the view draws nothing for, which the slot hands the body. */
+const EMPTY_LINE = EMPTY_STATE_LINES.decisions;
+
+/** The link every entry ends on: the page's words and the mark after them. */
+const IN_CONVERSATION = `${DECISIONS_WORDS.in_conversation} ›`;
+
+/** The foot's control, by the page's words it ends on, whatever count it holds. */
+const FOOT_CONTROL = { name: (name: string) => name.endsWith(DECISIONS_WORDS.agents_many) };
 
 /** What the person wrote, with the line breaks and the spaces they typed. */
 const STORED = "Keep the rail.\n\n  It is 56 px wide -  no wider.\n";
@@ -318,25 +334,30 @@ test("the four parts are drawn under their headings, in order, and no sentence e
     ),
   }));
   expect(parts).toEqual([
-    { count: "1", heading: "Open questions", part: "open_questions", rows: ["q-open"] },
+    {
+      count: "1",
+      heading: DECISIONS_WORDS.parts.open_questions,
+      part: "open_questions",
+      rows: ["q-open"],
+    },
     // Newest first, by the time each was made.
     {
       count: "2",
-      heading: "Waiting for your review",
+      heading: DECISIONS_WORDS.parts.review,
       part: "review",
       rows: [D("second"), D("first")],
     },
     // The decision the reader kept, then the asks by the time each closed.
     {
       count: "3",
-      heading: "Your decisions",
+      heading: DECISIONS_WORDS.parts.yours,
       part: "yours",
       rows: [D("kept"), "a-answered", "a-declined"],
     },
     // Folded at the foot: its heading says how many it holds, and none is drawn.
     {
       count: "2",
-      heading: "▸ 2 agent decisions that no statement rests on",
+      heading: `▸ 2 ${DECISIONS_WORDS.agents_many}`,
       part: "agents",
       rows: [],
     },
@@ -357,10 +378,10 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   // One landmark named by the filter holds the list (R19), and in it one tree under the
   // outline's own name, each headed part a group named by its heading, and every entry a row
   // of it.
-  expect(view.getByRole("region", { name: "Decisions" })).toBe(
+  expect(view.getByRole("region", { name: PRESET_NAMES.decisions })).toBe(
     view.container.querySelector("[data-decisions-body]") as HTMLElement
   );
-  const tree = view.getByRole("tree", { name: "Issue tree" });
+  const tree = view.getByRole("tree", { name: CONTROL_LABELS.tree });
   expect(view.getAllByRole("tree").length).toBe(1);
   expect(
     [...tree.querySelectorAll('[role="group"]')].map((group) =>
@@ -368,7 +389,11 @@ test("the four parts are drawn under their headings, in order, and no sentence e
         view.container.ownerDocument.getElementById(group.getAttribute("aria-labelledby") ?? "")
       )
     )
-  ).toEqual(["Open questions", "Waiting for your review", "Your decisions"]);
+  ).toEqual([
+    DECISIONS_WORDS.parts.open_questions,
+    DECISIONS_WORDS.parts.review,
+    DECISIONS_WORDS.parts.yours,
+  ]);
   expect(
     [...tree.querySelectorAll("[data-node-row]")].every(
       (row) => row.getAttribute("role") === "treeitem"
@@ -391,14 +416,14 @@ test("the four parts are drawn under their headings, in order, and no sentence e
 
   // The foot unfolds from its own control, which is a plain button in the tab order, and
   // folds again. Its rows stand after it and are the tree's own.
-  const foot = view.getByRole("button", { name: /agent decisions that no statement rests on/ });
+  const foot = view.getByRole("button", FOOT_CONTROL);
   expect(foot.getAttribute("aria-expanded")).toBe("false");
   expect(foot.hasAttribute("tabindex")).toBe(false);
   expect(tree.hasAttribute("aria-owns")).toBe(false);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
   expect(foot.getAttribute("aria-expanded")).toBe("true");
-  expect(words(foot)).toBe("▾ 2 agent decisions that no statement rests on");
+  expect(words(foot)).toBe(`▾ 2 ${DECISIONS_WORDS.agents_many}`);
   const footRows = view.container.querySelector('[data-decisions-part="agents"] [role="group"]');
   expect(tree.getAttribute("aria-owns")).toBe(footRows?.id ?? "no group");
   expect(footRows?.getAttribute("aria-labelledby")).toBe(foot.id);
@@ -421,7 +446,7 @@ test("the four parts are drawn under their headings, in order, and no sentence e
 test("the foot's heading agrees with how many decisions it holds", () => {
   const view = renderBody({ children: [decisionNode("minor")], made: [decision("minor")] });
   expect(words(view.container.querySelector('[data-decisions-part="agents"] button'))).toBe(
-    "▸ 1 agent decision that no statement rests on"
+    `▸ 1 ${DECISIONS_WORDS.agents_one}`
   );
 });
 
@@ -441,7 +466,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   expect(none.container.querySelectorAll("[data-decisions-part]").length).toBe(0);
   expect(none.getByText(EMPTY_LINE)).toBeTruthy();
   // The outline's tree is still on the page, as it is under every filter.
-  expect(none.getByRole("tree", { name: "Issue tree" })).toBeTruthy();
+  expect(none.getByRole("tree", { name: CONTROL_LABELS.tree })).toBeTruthy();
 });
 
 // R2: wherever a decision is drawn, one waiting for a person's review reads "Waiting for
@@ -450,7 +475,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
 test("a decision reads how it stands in the three states the page names", async () => {
   const user = userEvent.setup();
   const view = renderBody(wholeIssue());
-  await user.click(view.getByRole("button", { name: /agent decisions/ }));
+  await user.click(view.getByRole("button", FOOT_CONTROL));
 
   const state = (id: string) => {
     const row = rowOf(view, id);
@@ -464,13 +489,13 @@ test("a decision reads how it stands in the three states the page names", async 
   expect(state(D("second"))).toEqual({
     shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.waiting_review],
     token: "waiting_review",
-    word: "Waiting for review",
+    word: NODE_STATE_WORDS.decision.waiting_review,
   });
   // The name is the person's own, drawn as an author's text and never as an id of the page's.
   expect(state(D("kept"))).toEqual({
     shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.kept],
     token: "kept",
-    word: "Kept by alice",
+    word: `${NODE_STATE_WORDS.decision.kept} alice`,
   });
   expect(
     rowOf(view, D("kept")).querySelector("[data-kept-by][data-author-text]")?.textContent
@@ -478,13 +503,15 @@ test("a decision reads how it stands in the three states the page names", async 
   expect(state(D("replaced"))).toEqual({
     shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.replaced],
     token: "replaced",
-    word: "Replaced",
+    word: NODE_STATE_WORDS.decision.replaced,
   });
   // A decision that waits and is tied to nothing reads the model's own state where it stands
   // (R35: "a second rule decides the mark on a row").
-  expect(state(D("minor")).word).toBe("Waiting for review");
+  expect(state(D("minor")).word).toBe(NODE_STATE_WORDS.decision.waiting_review);
   // The one word the model holds for an agent's doubt, on the decision it marks.
-  expect(words(rowOf(view, D("second")).querySelector("[data-node-unsure]"))).toBe("Unsure");
+  expect(words(rowOf(view, D("second")).querySelector("[data-node-unsure]"))).toBe(
+    CONTROL_LABELS.unsure
+  );
   expect(rowOf(view, D("first")).querySelector("[data-node-unsure]")).toBeNull();
 });
 
@@ -494,7 +521,7 @@ test("a decision reads how it stands in the three states the page names", async 
 test("Keep and Change are drawn on the review list's rows and on no other", async () => {
   const user = userEvent.setup();
   const view = renderBody(wholeIssue());
-  await user.click(view.getByRole("button", { name: /agent decisions/ }));
+  await user.click(view.getByRole("button", FOOT_CONTROL));
 
   const controls = (id: string) =>
     [...rowOf(view, id).querySelectorAll("button[data-row-action]")].map((button) => [
@@ -504,8 +531,8 @@ test("Keep and Change are drawn on the review list's rows and on no other", asyn
   expect(document.activeElement?.closest("[data-node-row]") ?? null).toBeNull();
   for (const id of [D("second"), D("first")]) {
     expect(controls(id)).toEqual([
-      ["keep", "Keep"],
-      ["change", "Change"],
+      ["keep", CONTROL_LABELS.keep_decision],
+      ["change", CONTROL_LABELS.change_decision],
     ]);
   }
   for (const id of [D("kept"), D("minor"), D("replaced"), "q-open", "a-answered", "a-declined"]) {
@@ -562,7 +589,7 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
     expect(rowsOfPart(view, "yours")).toEqual([D("second"), D("kept"), "a-answered", "a-declined"]);
     expect(
       words(rowOf(view, D("second")).querySelector("[data-node-margin] [data-node-state]"))
-    ).toBe("Kept by alice");
+    ).toBe(`${NODE_STATE_WORDS.decision.kept} alice`);
     expect(rowOf(view, D("second")).querySelectorAll("button[data-row-action]").length).toBe(0);
     await waitFor(() => expect(focusedRow(view)).toBe(D("first")));
   } finally {
@@ -615,7 +642,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   expect(rowsOfPart(kept, "yours")).toContain(D("second"));
   expect(
     words(rowOf(kept, D("second")).querySelector("[data-node-margin] [data-node-state]"))
-  ).toBe("Kept by bob");
+  ).toBe(`${NODE_STATE_WORDS.decision.kept} bob`);
   expect(focusedRow(kept)).toBe(D("second"));
   kept.unmount();
 
@@ -675,7 +702,16 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
   expect(row.querySelector("[data-answer-text]")?.textContent).toBe(STORED);
   // (the two marks are the options' own: the one chosen and the one not).
   expect(chromeOf(row).sort()).toEqual(
-    ["question", "·", "Answered", "○", "●", "Answer", "in the conversation ›", "Keep open"].sort()
+    [
+      NODE_TYPE_NAMES.ask,
+      "·",
+      NODE_STATE_WORDS.ask.answered,
+      "○",
+      "●",
+      CONTROL_LABELS.answer,
+      IN_CONVERSATION,
+      CONTROL_LABELS.keep_open,
+    ].sort()
   );
 
   // The agent's write-up of the answer is drawn nowhere in the filter.
@@ -690,10 +726,14 @@ test("a declined ask says who declined it and draws no answer", () => {
   const row = rowOf(view, "a-declined");
 
   expect(row.getAttribute("data-node-state")).toBe("declined");
-  expect(words(row.querySelector("[data-node-margin] [data-node-state]"))).toBe("Declined");
-  expect(words(row.querySelector("[data-ask-declined] p"))).toBe("alice declined to answer");
+  expect(words(row.querySelector("[data-node-margin] [data-node-state]"))).toBe(
+    NODE_STATE_WORDS.ask.declined
+  );
+  expect(words(row.querySelector("[data-ask-declined] p"))).toBe(
+    `alice ${DECISIONS_WORDS.declined}`
+  );
   expect(row.querySelector("[data-declined-by] svg")?.getAttribute("data-glyph")).toBe(
-    "author-person"
+    GLYPH_TOKENS.authors.person
   );
   expect(row.querySelector("[data-declined-note]")?.textContent).toBe(
     "The release owner decides this one."
@@ -707,11 +747,11 @@ test("a declined ask says who declined it and draws no answer", () => {
 test("a decision reaches each statement it shaped, and every entry links to its node", async () => {
   const user = userEvent.setup();
   const view = renderBody(wholeIssue());
-  await user.click(view.getByRole("button", { name: /agent decisions/ }));
+  await user.click(view.getByRole("button", FOOT_CONTROL));
 
   expect(view.container.querySelectorAll(`[data-node-id="${D("second")}"]`).length).toBe(1);
   const informs = rowOf(view, D("second")).querySelector("[data-decision-informs]");
-  expect(words(informs?.querySelector("[data-page-chrome]"))).toBe("informs");
+  expect(words(informs?.querySelector("[data-page-chrome]"))).toBe(DECISIONS_WORDS.informs);
   expect(
     [...(informs?.querySelectorAll("a") ?? [])].map((link) => [
       link.textContent,
@@ -731,10 +771,10 @@ test("a decision reaches each statement it shaped, and every entry links to its 
     const found = rowOf(view, id).querySelector("a[data-entry-link]");
     return [words(found), found?.getAttribute("href") ?? null];
   };
-  expect(link("q-open")).toEqual(["in the conversation ›", `/issues/${KEY}/asks/q-open`]);
-  expect(link("a-answered")).toEqual(["in the conversation ›", `/issues/${KEY}/asks/a-answered`]);
-  expect(link(D("first"))).toEqual(["in the conversation ›", `/issues/${KEY}#b-first`]);
-  expect(link(D("minor"))).toEqual(["in the conversation ›", `/issues/${KEY}#b-minor`]);
+  expect(link("q-open")).toEqual([IN_CONVERSATION, `/issues/${KEY}/asks/q-open`]);
+  expect(link("a-answered")).toEqual([IN_CONVERSATION, `/issues/${KEY}/asks/a-answered`]);
+  expect(link(D("first"))).toEqual([IN_CONVERSATION, `/issues/${KEY}#b-first`]);
+  expect(link(D("minor"))).toEqual([IN_CONVERSATION, `/issues/${KEY}#b-minor`]);
   // Every row the body draws carries one.
   expect(
     [...view.container.querySelectorAll("[data-node-row]")].filter(
@@ -909,7 +949,7 @@ test("an address that names a comment draws its row first and focuses it", async
   );
 
   const first = view
-    .getByRole("tree", { name: "Issue tree" })
+    .getByRole("tree", { name: CONTROL_LABELS.tree })
     .querySelector<HTMLElement>("[data-node-row]");
   expect(first?.getAttribute("data-node-id")).toBe(said.id);
   expect(first?.closest("[data-decisions-part]") ?? null).toBeNull();
@@ -928,7 +968,7 @@ test("an address that names a comment draws its row first and focuses it", async
   expect(row.hasAttribute("data-node-state")).toBe(false);
   expect(row.querySelector("[data-node-margin] [data-node-state]")).toBeNull();
   const link = row.querySelector("a[data-entry-link]");
-  expect(words(link)).toBe("in the conversation ›");
+  expect(words(link)).toBe(IN_CONVERSATION);
   expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/${said.id}`);
   expect(row.querySelectorAll("button[data-row-action]").length).toBe(0);
   // No heading and no count stand over it, and the issue says it holds no decision.
@@ -971,7 +1011,7 @@ test("a list that holds only the foot gives the focus to the foot's control", as
 
   (document.activeElement as HTMLElement).blur();
   expect(document.activeElement).not.toBe(control(view));
-  await act(async () => view.getByRole("tree", { name: "Issue tree" }).focus());
+  await act(async () => view.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
   expect(document.activeElement).toBe(control(view));
   view.unmount();
 
@@ -1052,8 +1092,8 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     const change = rowOf(view, D("second")).querySelector('button[data-row-action="change"]');
     if (change === null) throw new Error("the review row draws no Change");
     await user.click(change);
-    await user.type(view.getByLabelText("Your change"), "Name the read, please.");
-    await user.click(view.getByRole("button", { name: "Send change" }));
+    await user.type(view.getByLabelText(CONTROL_LABELS.your_change), "Name the read, please.");
+    await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
     // The comment is anchored to the decision's own words in the decisions document.
     expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
@@ -1073,7 +1113,7 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     const row = rowOf(view, D("second"));
     expect(row.getAttribute("data-node-state")).toBe("change_requested");
     expect(words(row.querySelector("[data-node-margin] [data-node-state]"))).toBe(
-      "Change requested"
+      NODE_STATE_WORDS.decision.change_requested
     );
     expect(row.querySelectorAll("button[data-row-action]").length).toBe(0);
     expect(row.querySelector("[data-change-words]")?.textContent).toBe("Name the read, please.");
@@ -1178,7 +1218,7 @@ test("the body draws the entries the filter's view left", async () => {
 test("nothing the body draws is hidden at a width", async () => {
   const user = userEvent.setup();
   const view = renderBody(wholeIssue());
-  await user.click(view.getByRole("button", { name: /agent decisions/ }));
+  await user.click(view.getByRole("button", FOOT_CONTROL));
 
   const hiding = /(^|\s)(\S+:)?(hidden|invisible|sr-only)(\s|$)/;
   expect(

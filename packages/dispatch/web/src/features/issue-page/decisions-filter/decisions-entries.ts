@@ -8,6 +8,7 @@ import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { decisionChanges } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
+import { nodesInOrder } from "../tree-keys";
 import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./decisions-parts";
 
 /**
@@ -85,19 +86,17 @@ export function useDecisionsEntries({
  * `entries` with the newest first, in the order G's model keeps each part
  * (`decisions-parts.ts`'s `newestFirst`), so the reader's decisions and another person's read as
  * one part: an entry the model holds no time for stands last, and two entries of one moment
- * stand in the order their nodes first stand in a depth-first walk of `root`, which is the order
- * the outline draws them in. The same reads always draw the same list.
+ * stand in the order their nodes first stand in the page's reading order (`nodesInOrder`),
+ * which is the order the outline draws them in. The same reads always draw the same list.
  */
 function newestFirst(
   entries: readonly DecisionsEntry[],
   root: TreeNode
 ): readonly DecisionsEntry[] {
+  // Each node's place in the reading order; a node drawn under two parents is one node, so its
+  // first placement is its place.
   const place = new Map<string, number>();
-  const walk = (node: TreeNode): void => {
-    if (!place.has(node.id)) place.set(node.id, place.size);
-    for (const child of node.children) walk(child);
-  };
-  walk(root);
+  for (const node of nodesInOrder(root)) if (!place.has(node.id)) place.set(node.id, place.size);
   return [...entries].sort((one, other) => {
     const left = one.at;
     const right = other.at;

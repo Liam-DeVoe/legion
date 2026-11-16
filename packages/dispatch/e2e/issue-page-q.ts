@@ -24,9 +24,7 @@ import { longWords, READER } from "./issue-page-g";
  * - **Keep and Change** `button[data-row-action="keep" | "change"]` on each row of the review
  *   part, drawn with no focus on the row.
  * - **A decision's "informs" line**, each statement it shaped a link in
- *   `[data-decision-statement]`, named by the statement's own words cut by G's `chipWords`
- *   (decision 83); once F's `lineWords(node)` is under this branch the row reads
- *   `chipWords(lineWords(node))`.
+ *   `[data-decision-statement]`, named as the body names it (its `statementNames`).
  * - **The Decisions control's flag** `[data-preset-flag="to_review"]` in D's view row, whose
  *   number is how many decisions wait for the reader's review.
  *
