@@ -82,6 +82,11 @@ import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
 
 /** One edge of a node that is not the spine, drawn beside the node as its target's name. */
 export interface NodeChip {
+  /** Whether the batched reference read could not tell which of several targets a short
+   *  reference names: two or more carry the id it writes short, and the read answers it gone and
+   *  ambiguous (`ReferenceTarget.ambiguous`). The chip draws the reference as written
+   *  (dispatch://INFRA-1196 decision 62). Absent for every other reference. */
+  readonly ambiguous?: true;
   /** Whether the batched reference read has answered for this reference. A target it answered
    *  with no text of its own (`name` empty, or `gone`) is told apart from one whose answer is
    *  still out by this and by nothing else, and the two are drawn differently: the first is
@@ -291,36 +296,56 @@ export const FIRST_LINE_LIMIT = 100;
  * one unbroken token, a URL or an identifier - is cut at the limit itself, because there is no
  * word boundary to cut at and the limit is the row's whole budget, and one unit short of it
  * where the limit falls inside a surrogate pair, as `textHead` cuts. `cut` says whether the
- * text carries on past the line, which is what the row draws its ellipsis for.
+ * text carries on past the line, and `sentence` whether the line ends at a sentence end, the
+ * first one after any label: the two are what the row draws its ellipsis by (`drawnLine`). A
+ * line the limit cut, at a word or at the limit itself, ends at none, whatever its last
+ * character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as `x.yyyy` cut
+ * after its dot does.
  */
-export function firstLineOf(text: string): { readonly cut: boolean; readonly line: string } {
+export function firstLineOf(text: string): {
+  readonly cut: boolean;
+  readonly line: string;
+  readonly sentence: boolean;
+} {
   const whole = text.replace(/\s+/gu, " ").trim();
   const label = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u.exec(whole)?.[0] ?? "";
   const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(label.length))?.[0];
-  const sentence = rest === undefined ? undefined : `${label}${rest}`;
-  if (sentence !== undefined && sentence.length <= FIRST_LINE_LIMIT) {
-    return { cut: sentence.length < whole.length, line: sentence };
+  const first = rest === undefined ? undefined : `${label}${rest}`;
+  if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {
+    return { cut: first.length < whole.length, line: first, sentence: true };
   }
   if (whole.length <= FIRST_LINE_LIMIT) {
-    return { cut: false, line: whole };
+    return { cut: false, line: whole, sentence: false };
   }
   const window = whole.slice(0, FIRST_LINE_LIMIT + 1);
   const lastSpace = window.lastIndexOf(" ");
-  if (lastSpace > label.length) return { cut: true, line: window.slice(0, lastSpace) };
+  if (lastSpace > label.length) {
+    return { cut: true, line: window.slice(0, lastSpace), sentence: false };
+  }
   const last = whole.charCodeAt(FIRST_LINE_LIMIT - 1);
   const end = last >= 0xd800 && last <= 0xdbff ? FIRST_LINE_LIMIT - 1 : FIRST_LINE_LIMIT;
-  return { cut: true, line: whole.slice(0, end) };
+  return { cut: true, line: whole.slice(0, end), sentence: false };
 }
 
 /**
  * A first line as a place that draws one line for a node draws it (R1, the architect's ruling
  * 1): an ellipsis where the text carries on past a line the cut ended inside a sentence, and none
  * where the line is a whole sentence, whose own mark already ends it - "Thread 1 opens here.…"
- * reads as four dots. A line ending on its sentence's mark is a whole sentence; what follows it
- * is the node's next sentence, which its row or its body holds.
+ * reads as four dots. What follows a whole sentence is the node's next sentence, which its row
+ * or its body holds. Whether the line ends at a sentence end is `firstLineOf`'s `sentence`,
+ * since a line cut inside a sentence can end on a `.`, `!` or `?` that ends none; a line handed
+ * in without it is read by its last character, a sentence's mark ending a whole sentence.
  */
-export function drawnLine({ cut, line }: { readonly cut: boolean; readonly line: string }): string {
-  return cut && !/[.!?]$/u.test(line) ? `${line}…` : line;
+export function drawnLine({
+  cut,
+  line,
+  sentence = /[.!?]$/u.test(line),
+}: {
+  readonly cut: boolean;
+  readonly line: string;
+  readonly sentence?: boolean;
+}): string {
+  return cut && !sentence ? `${line}…` : line;
 }
 
 /** The node's own words as a reader reads them: the words of the server's reading of its text

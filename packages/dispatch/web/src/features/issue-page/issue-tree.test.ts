@@ -523,6 +523,34 @@ test("a pointer whose target is gone is drawn as a chip that says so", () => {
   ]);
 });
 
+// Decision 62: the batched read answers a short reference whose id two or more targets carry as
+// gone and ambiguous, and the chip says it is ambiguous, so it can draw the reference as written
+// rather than as a target deleted. A target that is gone and no more carries no `ambiguous`.
+test("a chip of an ambiguous short reference says so, and a gone target's chip does not", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const ambiguous = `dispatch://${KEY}/artifact/plan-md#b-abcd1234`;
+  const gone = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const root = buildIssueTree({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [block("t1", "plan_task", { needs: `${ambiguous} ${gone}` })],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+    targets: [
+      { ambiguous: true, gone: true, kind: "block", name: "", ref: ambiguous },
+      { gone: true, kind: "block", name: "", ref: gone },
+    ],
+  });
+
+  expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips).toStrictEqual([
+    { ambiguous: true, answered: true, gone: true, label: "needs", name: "", ref: ambiguous },
+    { answered: true, gone: true, label: "needs", name: "", ref: gone },
+  ]);
+});
+
 // R21: a typed block is a directive, and the reference read names a block by its stored excerpt,
 // which is its source: `:::plan_task{#t1 serves="…" needs="…"}`, its words, and the closing
 // fence. The opening line and the fence are markup, so a block's row carries its words alone,
@@ -761,6 +789,7 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   expect(firstLineOf("One sentence. And another.")).toEqual({
     cut: true,
     line: "One sentence.",
+    sentence: true,
   });
   const long =
     "Every property of the issue that carries a value is visible at every width the page draws, " +
@@ -770,16 +799,28 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   expect(first.line.length).toBeLessThanOrEqual(100);
   expect(long.startsWith(first.line)).toBe(true);
   expect(long.charAt(first.line.length)).toBe(" ");
-  expect(firstLineOf("Short enough.")).toEqual({ cut: false, line: "Short enough." });
-  expect(firstLineOf("")).toEqual({ cut: false, line: "" });
+  expect(firstLineOf("Short enough.")).toEqual({
+    cut: false,
+    line: "Short enough.",
+    sentence: true,
+  });
+  expect(firstLineOf("")).toEqual({ cut: false, line: "", sentence: false });
 
   // An unbroken token past the limit holds no word boundary to cut at, so the line is the
   // limit's own 100 characters rather than the whole token.
   const unbroken = "a".repeat(FIRST_LINE_LIMIT + 20);
-  expect(firstLineOf(unbroken)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
+  expect(firstLineOf(unbroken)).toEqual({
+    cut: true,
+    line: "a".repeat(FIRST_LINE_LIMIT),
+    sentence: false,
+  });
   // A space at the limit's own edge is a word boundary, and the line ends before it.
   const atTheEdge = `${"a".repeat(FIRST_LINE_LIMIT)} tail`;
-  expect(firstLineOf(atTheEdge)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
+  expect(firstLineOf(atTheEdge)).toEqual({
+    cut: true,
+    line: "a".repeat(FIRST_LINE_LIMIT),
+    sentence: false,
+  });
 });
 
 // R1: a cut at the limit falls between two characters, never inside one. A character outside the
@@ -789,12 +830,16 @@ test("a first line cut at the limit never ends inside a surrogate pair", () => {
   const face = "\u{1F600}";
   // The run starts one unit in, so the limit falls between the two units of its 50th face.
   const line = firstLineOf(`a${face.repeat(75)}`);
-  expect(line).toEqual({ cut: true, line: `a${face.repeat(49)}` });
+  expect(line).toEqual({ cut: true, line: `a${face.repeat(49)}`, sentence: false });
   const last = line.line.charCodeAt(line.line.length - 1);
   expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
   expect(decodeURIComponent(encodeURIComponent(line.line))).toBe(line.line);
   // A run whose pairs end at the limit keeps every one of them.
-  expect(firstLineOf(face.repeat(75))).toEqual({ cut: true, line: face.repeat(50) });
+  expect(firstLineOf(face.repeat(75))).toEqual({
+    cut: true,
+    line: face.repeat(50),
+    sentence: false,
+  });
 });
 
 // R1 and decision 51: a statement opens on its label - `R1.`, `12.`, `1.2.` - and the label is
@@ -804,8 +849,9 @@ test("a leading label is no sentence end", () => {
   expect(firstLineOf("R1. Draw the tree from one read. Then the rest.")).toEqual({
     cut: true,
     line: "R1. Draw the tree from one read.",
+    sentence: true,
   });
-  expect(firstLineOf("12. Twelve.")).toEqual({ cut: false, line: "12. Twelve." });
+  expect(firstLineOf("12. Twelve.")).toEqual({ cut: false, line: "12. Twelve.", sentence: true });
   expect(firstLineOf("t3. Cut the patch.").line).toBe("t3. Cut the patch.");
   expect(firstLineOf("1.2. Nested.").line).toBe("1.2. Nested.");
   expect(firstLineOf("Mr. Smith went home.").line).toBe("Mr.");
@@ -822,6 +868,7 @@ test("a leading label is no sentence end", () => {
   expect(firstLineOf(`R1. ${"a".repeat(200)}`)).toEqual({
     cut: true,
     line: `R1. ${"a".repeat(96)}`,
+    sentence: false,
   });
 });
 
@@ -837,6 +884,9 @@ test("a first line draws its ellipsis only where the cut ended inside a sentence
   expect(inside.cut).toBe(true);
   expect(drawnLine(inside)).toBe(`${inside.line}…`);
   expect(drawnLine({ cut: false, line: "No mark at its end" })).toBe("No mark at its end");
+  // A token cut hard at the limit whose last kept character is a dot ends no sentence, so its
+  // line draws the ellipsis all the same.
+  expect(drawnLine(firstLineOf(`${"x".repeat(99)}.yyyy more words here`)).endsWith("…")).toBe(true);
 });
 
 // A decision's reading opens with its own `##` heading, and the words of the whole reading join
@@ -882,7 +932,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
   expect(line).toBe("Keep it");
   // The heading is the whole of its block, so nothing of the line is cut and, by `drawnLine`'s
   // rule, it draws no ellipsis.
-  expect(firstLineOf(line)).toEqual({ cut: false, line: "Keep it" });
+  expect(firstLineOf(line)).toEqual({ cut: false, line: "Keep it", sentence: false });
   expect(drawnLine(firstLineOf(line))).toBe("Keep it");
   // Where the read sent no reading the line is the stored text's first block, and the heading's
   // marker is markup and no word of it.

@@ -347,6 +347,48 @@ test("The names are read in one batched request, after every other read has answ
   }
 });
 
+// dispatch://INFRA-1196 R9 and decision 55: the batched read resolves an id a comment writes
+// short in the owner the reference names, and answers under the reference as the request wrote
+// it. So the names read is asked for the short address itself, and the page publishes its answer
+// under that address, which is the one a row links it by.
+test("a short address a comment cites is read as written and named from that answer", async () => {
+  const cited = `dispatch://${KEY}/comment/c0b271c7`;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      return {
+        targets: namedTargets(refs).targets.map((target) =>
+          target.ref === cited
+            ? { ...target, kind: "comment", name: "The comment its short id names" }
+            : target
+        ),
+      };
+    },
+    { comments: [{ ...comment, body: `Read ${cited} first.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current).toBe("The comment its short id names"));
+    expect(asked[0]).toContain(cited);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // A plan task has no words until the names read answers, so what its words cite is in no address
 // that read was given. One more read names those addresses alone, once the first has answered,
 // and the page publishes its answer too.

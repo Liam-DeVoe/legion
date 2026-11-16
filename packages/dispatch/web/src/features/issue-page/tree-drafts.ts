@@ -92,6 +92,9 @@ export interface Draft {
   /** A person's answer to this ask, which the ask's own row and body draw (`TreeNode.answer`). */
   answer?: NodeAnswer;
   chips: NodeChip[];
+  /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
+   *  every other draft, a `requirement` block no coverage row holds among them, which is how the
+   *  review list tells a statement from a block (`treeDrafts`). */
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
@@ -188,7 +191,10 @@ export interface TreeContext {
  *
  * A chip names its target by the words a reader reads it by, and never by markup:
  *
- * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone.
+ * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone. A short
+ *   reference two or more targets carry the id of is such a target, which the read answers
+ *   `ambiguous` as well, and its chip carries `ambiguous` so it can draw the reference as
+ *   written rather than as a target deleted (dispatch://INFRA-1196 decision 62).
  * - **A block** - the reference names one, or the read answers that its target is one - by
  *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`). Where the read
  *   answered and sent no reading, or one that holds no words, a block of this issue whose
@@ -265,6 +271,7 @@ export function treeContext(
       const target = names.get(reference);
       const gone = target?.gone ?? false;
       return {
+        ...(target?.ambiguous === true ? { ambiguous: true } : {}),
         answered: target !== undefined,
         gone,
         name: gone ? "" : nameOf(reference, target),
@@ -375,8 +382,13 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addChecks(drafts, reads, context);
   // What waits for the reader's review is the review list's one rule (R35): the tie to a
   // statement decides it, and a decision the reader asked to change waits on its agent, not on
-  // the reader (`decision-review.ts`). It is read once every statement has its draft. Nothing
-  // waits on a reader whose login has not resolved, as `waiting.ts` counts it.
+  // the reader (`decision-review.ts`). A statement is a requirement the coverage read holds - a
+  // draft `addRequirements` gave that read's counts - as the header's count is handed the
+  // coverage read's statements (`waitingOnReader`'s `isStatement`): a spec's `requirement` block
+  // drawn before that read answers, and one of another document, which no coverage row holds, is
+  // a block and nothing more, and a tie to it puts no decision on the list. It is read once every
+  // statement has its draft. Nothing waits on a reader whose login has not resolved, as
+  // `waiting.ts` counts it.
   for (const decision of reads.decisions?.decisions ?? []) {
     const draft = drafts.get(context.nodeIdOf(decision.ref) ?? "");
     if (draft === undefined) continue;
@@ -384,7 +396,7 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
       context.viewer !== undefined &&
       inReviewList(
         decision,
-        (reference) => drafts.get(context.nodeIdOf(reference) ?? "")?.type === "requirement",
+        (reference) => drafts.get(context.nodeIdOf(reference) ?? "")?.counts !== undefined,
         changes.has(decision.ref)
       );
   }

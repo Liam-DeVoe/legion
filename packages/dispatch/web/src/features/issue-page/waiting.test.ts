@@ -215,10 +215,14 @@ const change: Comment = {
 };
 
 /** Whether `reference` names a statement of the issue, as the header reads it: by the coverage
- *  read's statements, each addressed as the tree addresses it. */
+ *  read's statements, each addressed as the tree addresses it, and none while that read has not
+ *  answered. */
 const nodeIdOf = treeContext({ issue }).nodeIdOf;
-const statements = new Set(coverage.requirements?.map((one) => nodeIdOf(one.ref)));
-const isStatement = (reference: string): boolean => statements.has(nodeIdOf(reference));
+function statementsOf(read: IssueCoverage | undefined): (reference: string) => boolean {
+  const statements = new Set(read?.requirements?.map((one) => nodeIdOf(one.ref)));
+  return (reference) => statements.has(nodeIdOf(reference));
+}
+const isStatement = statementsOf(coverage);
 
 /** The id of every node of `root` that waits on the reader. */
 function waitingIn(root: TreeNode): string[] {
@@ -324,4 +328,62 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
   expect(decisionChangeComments(both, [unplaced], issue.artifacts, documents)).toEqual(
     new Map([["c-change", first.ref]])
   );
+});
+
+// R7, R13 and R35: a statement is a requirement the coverage read holds, as the header's count is
+// handed the statements. A decision tied only to a `requirement` block of the plan, which no
+// coverage row holds, is on no review list; nor is one tied to the spec's `r1` while the coverage
+// read has not answered, though the spec's blocks read has drawn that block already. The tree
+// marks neither and the count counts neither, and the decision tied to `r1` once the coverage
+// read holds it waits, in the tree as in the count.
+test("a tie to a requirement the coverage read does not hold puts no decision on the review list", () => {
+  const plan = issueDocument("artifact-plan", "plan-md");
+  const planned: IssueDetails = {
+    ...issue,
+    artifacts: [spec, made, plan],
+    plan_artifact_id: plan.id,
+  };
+  const requirementBlock = (id: string): ArtifactBlock => ({
+    attributes: [],
+    from: 0,
+    id,
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: id,
+    type: "requirement",
+  });
+  const documents: DocumentBlocks[] = [
+    { artifactId: spec.id, blocks: [requirementBlock("r1")] },
+    { artifactId: plan.id, blocks: [requirementBlock("p1")] },
+  ];
+  const tiedToPlan = waitingDecision("planned", ["p1"]);
+  const toPlan: Decision = {
+    ...tiedToPlan,
+    links: (tiedToPlan.links ?? []).map((link) => ({
+      ...link,
+      to: { ...link.to, id: plan.id, ref: `dispatch://${KEY}/artifact/plan-md#b-p1` },
+    })),
+  };
+  const both: IssueDecisions = {
+    ...decisions,
+    decisions: [waitingDecision("listed", ["r1"]), toPlan],
+  };
+  const waitingDecisions = (read: IssueCoverage | undefined): string[] =>
+    waitingIn(
+      buildIssueTree({
+        ...(read === undefined ? {} : { coverage: read }),
+        decisions: both,
+        documents,
+        issue: planned,
+        viewer: "alice",
+      })
+    ).filter((id) => id.startsWith("decisions-md#"));
+
+  expect(waitingDecisions(coverage)).toEqual(["decisions-md#b-listed"]);
+  expect(waitingOnReader(planned, "alice", both, isStatement, [], documents).decisions).toBe(1);
+
+  expect(waitingDecisions(undefined)).toEqual([]);
+  expect(
+    waitingOnReader(planned, "alice", both, statementsOf(undefined), [], documents).decisions
+  ).toBe(0);
 });
