@@ -104,16 +104,21 @@ type specCheckRunAnswer struct {
 
 // specGitHub is the GitHub the route reads: the installation of the repository, its check runs by
 // id, and the tree and blobs of .dispatch/spec at a commit. A status set in checkRunStatus or
-// filesStatus answers every read of that kind with it. It counts each read, so a test can see a
-// cached read made once.
+// filesStatus answers every read of that kind with it. truncated marks each tree listing
+// truncated, as GitHub marks one past its own bounds, and padding lists that many entries beside
+// the files that are no spec files (nested directories). It counts each read, so a test can see a
+// cached read made once, and a file read that never happened.
 type specGitHub struct {
 	mu             sync.Mutex
 	checkRuns      map[int64]specCheckRunAnswer
 	files          map[string]map[string]string
 	checkRunStatus int
 	filesStatus    int
+	truncated      bool
+	padding        int
 	checkRunReads  int
 	treeReads      int
+	blobReads      int
 }
 
 func (g *specGitHub) serve(t *testing.T) string {
@@ -166,11 +171,15 @@ func (g *specGitHub) serve(t *testing.T) string {
 		for _, name := range slices.Sorted(maps.Keys(files)) {
 			entries = append(entries, map[string]any{"path": name, "mode": "100644", "type": "blob", "sha": "blob-" + commit + "-" + name, "size": len(files[name])})
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"sha": "tree-" + commit, "truncated": false, "tree": entries})
+		for i := range g.padding {
+			entries = append(entries, map[string]any{"path": fmt.Sprintf("nested-%04d-%s", i, strings.Repeat("d", 200)), "mode": "040000", "type": "tree", "sha": fmt.Sprintf("%040d", i)})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sha": "tree-" + commit, "truncated": g.truncated, "tree": entries})
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/git/blobs/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
+		g.blobReads++
 		commit, name, _ := strings.Cut(strings.TrimPrefix(r.PathValue("sha"), "blob-"), "-")
 		content, ok := g.files[commit][name]
 		if !ok {
@@ -492,6 +501,111 @@ func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
 	const want = "have 2 problems, so they hold no check to write a result for. The first: file too large: .dispatch/spec/big-a.md is 1048577 bytes (limit 1048576)"
 	if !strings.Contains(refusal.Error, want) {
 		t.Fatalf("the refusal %q does not say %q", refusal.Error, want)
+	}
+}
+
+// TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead: the route holds the spec files of a
+// commit to the two bounds of the set that spec-check holds them to (notes.CheckSet), from GitHub's
+// listing: a listing of one file more than notes.MaxFiles, or whose sizes sum to one byte more
+// than notes.MaxSetSize while each file is within notes.MaxFileSize, is 409 SPEC_FILES_REFUSED
+// with that one finding, and GitHub is asked for no file. The files of a commit at each bound
+// write their result.
+func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
+	// The probe spec and blank files up to count files in all.
+	padded := func(count int) map[string]string {
+		files := maps.Clone(specResultsFiles)
+		for i := 0; len(files) < count; i++ {
+			files[fmt.Sprintf("n%04d.md", i)] = "\n"
+		}
+		return files
+	}
+	// The probe spec and files of blank lines, each within notes.MaxFileSize, summing to total.
+	summing := func(total int) map[string]string {
+		files := maps.Clone(specResultsFiles)
+		left := total - len(files["probe.md"])
+		for i := 0; left > 0; i++ {
+			size := min(left, notes.MaxFileSize)
+			files[fmt.Sprintf("blank-%02d.md", i)] = strings.Repeat("\n", size)
+			left -= size
+		}
+		return files
+	}
+	const refusedAs = "have 1 problem, so they hold no check to write a result for. The first: set too large: .dispatch/spec holds "
+	for _, row := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{name: "one file over MaxFiles", files: padded(notes.MaxFiles + 1), want: refusedAs + "1001 files (limit 1000)"},
+		{name: "one byte over MaxSetSize", files: summing(notes.MaxSetSize + 1), want: refusedAs + "16777217 bytes in its files (limit 16777216)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			rig.github.files[specResultsCommit] = row.files
+			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusConflict, "SPEC_FILES_REFUSED")
+			if !strings.Contains(refusal.Error, row.want) {
+				t.Errorf("the refusal %q does not say %q", refusal.Error, row.want)
+			}
+			rig.github.mu.Lock()
+			defer rig.github.mu.Unlock()
+			if rig.github.blobReads != 0 {
+				t.Errorf("GitHub was asked for %d files, want none: the listing refuses the set", rig.github.blobReads)
+			}
+		})
+	}
+	for _, row := range []struct {
+		name  string
+		files map[string]string
+	}{
+		{name: "MaxFiles files", files: padded(notes.MaxFiles)},
+		{name: "files summing MaxSetSize", files: summing(notes.MaxSetSize)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			rig.github.files[specResultsCommit] = row.files
+			stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)))
+		})
+	}
+}
+
+// TestASpecDirectoryGitHubCannotListWholeIsRefused: a listing GitHub truncates, and a listing
+// over the 1 MiB Dispatch reads of one listing, here from entries that are no spec files, answer
+// the same at every read of that commit, so a write again can never be judged: each is 409
+// SPEC_FILES_REFUSED saying why, and no file is read, not a 503 that asks for the write again.
+func TestASpecDirectoryGitHubCannotListWholeIsRefused(t *testing.T) {
+	const refusedAs = "have 1 problem, so they hold no check to write a result for. The first: set too large: "
+	for _, row := range []struct {
+		name   string
+		setUp  func(*specGitHub)
+		reason string
+	}{
+		{name: "a truncated listing", setUp: func(g *specGitHub) { g.truncated = true }, reason: "GitHub truncated its listing of .dispatch/spec, as it does past 100,000 entries or 7 MB; a set holds at most 1000 files"},
+		{name: "a listing over 1 MiB", setUp: func(g *specGitHub) { g.padding = 4000 }, reason: "GitHub's listing of .dispatch/spec is over 1048576 bytes, the most Dispatch reads of one listing; a set holds at most 1000 files, whose listing fits"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			row.setUp(rig.github)
+			for range 2 {
+				refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusConflict, "SPEC_FILES_REFUSED")
+				if !strings.Contains(refusal.Error, refusedAs+row.reason) {
+					t.Errorf("the refusal %q does not say %q", refusal.Error, refusedAs+row.reason)
+				}
+			}
+			rig.github.mu.Lock()
+			defer rig.github.mu.Unlock()
+			if rig.github.blobReads != 0 {
+				t.Errorf("GitHub was asked for %d files, want none", rig.github.blobReads)
+			}
+		})
+	}
+}
+
+// TestTheSetBoundFitsTheChecksCache: notes.MaxSetSize is the bytes of the checks cache, which
+// keeps no entry larger than itself, so the judged files of a set within the bound are kept and
+// read once for each commit (notes.MaxSetSize's doc).
+func TestTheSetBoundFitsTheChecksCache(t *testing.T) {
+	if notes.MaxSetSize != specChecksCacheBytes {
+		t.Fatalf("notes.MaxSetSize is %d and the checks cache holds %d bytes: change the two together", notes.MaxSetSize, specChecksCacheBytes)
 	}
 }
 

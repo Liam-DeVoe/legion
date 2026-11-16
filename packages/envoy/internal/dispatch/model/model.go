@@ -71,7 +71,7 @@ type Credential struct {
 	// one the secrets broker minted from a read entry, naming a service and a session and no
 	// person and no project. Dispatch serves it on the routes its read list names
 	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
-	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
+	// (refuseLimitedToken), before anything else the route does. The scope itself is not among
 	// Scopes: those are what a route can require of a credential, and read meets no route's
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
@@ -81,7 +81,7 @@ type Credential struct {
 	// CI run, naming a person, one project and the run. The person stays inside the server: a
 	// result, an answer and the access log name the run (ResultRecorder). Dispatch serves it on
 	// the routes its results list names (resultsScopeRoutes) alone and answers it 403
-	// RESULTS_ONLY_TOKEN on every other (refuseResultsOnlyToken), before anything else the route
+	// RESULTS_ONLY_TOKEN on every other (refuseLimitedToken), before anything else the route
 	// does. False for every other credential.
 	ResultsOnly bool
 	// CI is the run a ResultsOnly credential was minted for, as the broker answered it: what that

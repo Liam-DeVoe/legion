@@ -90,12 +90,14 @@ const USE_DPOP_NONCE = "use_dpop_nonce";
  */
 export class BrokerRefusedError extends Error {
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
-   *  person's sign-in on it. */
+   *  person's sign-in on it. `retryAfterMs` is the wait the answer's `Retry-After` names, which
+   *  the broker's 429 carries, and null where it names none. */
   constructor(
     readonly status: number,
     readonly code: string,
     readonly description: string,
-    refused: string
+    refused: string,
+    readonly retryAfterMs: number | null = null
   ) {
     super(
       description === ""
@@ -131,6 +133,31 @@ export class BrokerRefusedError extends Error {
       this.code !== INVALID_DPOP_PROOF &&
       this.code !== USE_DPOP_NONCE
     );
+  }
+}
+
+/** The wait a `Retry-After` value names (RFC 9110 Section 10.2.3), at `now`: a number of seconds,
+ *  or a date, none for a date passed; null for no value, or one that is neither. */
+function retryAfterWait(value: string | null, now: number): number | null {
+  const text = value?.trim() ?? "";
+  if (/^\d+$/.test(text)) return Number(text) * 1000;
+  const at = Date.parse(text);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
+/**
+ * A trade that ended with no refusal of the broker's: no answer, a 5xx, or an answer that is not
+ * this grant's. `status` is the HTTP status of the answer, 0 for none. A 5xx says the broker
+ * could not answer now, and a trade stores nothing, so a caller may trade again.
+ */
+export class BrokerTradeFailedError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = "BrokerTradeFailedError";
   }
 }
 
@@ -412,15 +439,20 @@ export class BrokerTokenClient {
         error.status,
         error.error,
         error.error_description ?? "",
-        this.#subject.describe()
+        this.#subject.describe(),
+        retryAfterWait(error.response.headers.get("Retry-After"), Date.now())
       );
     }
     const status = statusOf(error);
     const message = messageOf(error);
     const said = status === 0 ? message : `HTTP ${status}: ${message}`;
-    return new Error(`trade ${this.#subject.describe()} at ${endpoint}: ${said}`, {
-      cause: error,
-    });
+    return new BrokerTradeFailedError(
+      `trade ${this.#subject.describe()} at ${endpoint}: ${said}`,
+      status,
+      {
+        cause: error,
+      }
+    );
   }
 
   /**

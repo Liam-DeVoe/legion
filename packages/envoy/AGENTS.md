@@ -428,10 +428,14 @@ Each item below names a task and where its code is, then notes on it.
   the project, which must be the token's (`withinProjectScope`), maps the run's repository, compared lowercased on both sides as every comparison of a repository is (`403 REPOSITORY_NOT_THE_PROJECTS`);
   GitHub names the token's check run at that commit (`githubapp.Client.CheckRun`, `403 CHECK_RUN_NOT_THE_RUNS`);
   the graph logic takes the files, as spec-check reads them (`specgraph.Judge`, `409 SPEC_FILES_REFUSED` naming the first problem), each file over `notes.MaxFileSize` one problem;
+  before it reads any file, GitHub's listing of the directory is held to at most `notes.MaxFiles` (1,000) files, since Dispatch reads a listing as one GitHub answer of at most 1 MiB, and to `notes.MaxSetSize` (16 MiB) in sum, since the cache of a commit's judged checks keeps no entry over that size, a set over either one problem (`notes.CheckSet`), as spec-check holds a checkout's, and a listing GitHub truncates or one over that 1 MiB is one problem too, since no read of that commit answers otherwise;
   the files hold the check (`409 CHECK_NOT_IN_FILES`);
   and the check's job is the check run's name without its matrix values, cut at its last ` (` (`409 CHECK_NOT_THIS_JOBS`).
   A check run or files GitHub does not answer is `503 CHECK_RUN_UNREADABLE` or `503 FILES_UNREADABLE`, and nothing is stored.
   A check run's name and commit, and what a commit's files hold, are kept for the life of the process in byte-bounded caches, since neither changes.
+
+- **The stored result of a spec check**: `internal/dispatch/api/spec_results.go`, `internal/dispatch/api/result_attestation.go`, `store/migrations/20261116094741_spec_check_results.up.sql`
+
   The result is stored as a new row of `spec_check_results` (`insertSpecCheckResult`, its one writer), with Dispatch's record number `seq` and an in-toto Statement v1 of the run (`attestedResult.statement`): its subject the repository at the commit, and its predicate the check, its procedure digest (`specgraph.Check.Digest`), its test part, the verdict, `observed`, the job and the leg, the run, the recorder, and `recorded_at`.
   The recorder is the run's session and principal, and no person: the person of the result entry is the broker's configuration, who ran no test, so no result, no answer and no access-log line names that person (the line names the run's session as the caller), and the run's keys are its own (`requestKeyLogin`).
   The principal is read by the broker's own rule from the run it authenticated: the workflow_ref without the repository and without `@` and the run's ref (`oauthwire.WorkflowPath`, `oauthwire.ResultPrincipal`), so a workflow file or a branch whose name holds an `@` is recorded as the broker authenticated it.
@@ -3130,13 +3134,6 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The architecture importer (`internal/dispatch/architecture`, migrations `0037` and `0117`) imports each architecture source of a project on its own:
   a project has any number of sources, one per repository (`architecture_sources` keyed `(project_key, id)`, unique on `(project_key, repo)`;
   a source that predates `0117` is `id` 0), and its component model is every source's components together, each `components` row carrying `source_id`, a foreign key to its source with `on delete cascade`.
-  What a note is, how large one may be and whether a set is valid are the rules of one note set, which live in a package of their own, `internal/dispatch/architecture/notes`:
-  pure, with no database and no network, it imports nothing outside the standard library but `gopkg.in/yaml.v3` and `internal/dispatch/text`.
-  `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
-  `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
-  and `Parse` validates the set.
-  `ReadSet` reads one directory of a checkout by that rule and bound, for `cmd/architecture-check`.
-  `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bound through those two, and it calls `notes.Parse` itself.
   For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
   GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
   slug file names, text PostgreSQL can store (`text.Storable`:
@@ -3151,6 +3148,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the first problems and a count of the rest, the same text the `sync_failed` payload carries);
   the source's previous projection, and every other source's, stays up.
   `graph_edges` gains the `part_of`/`depends_on` arms over node kind `component` (`<project>/<id>`), never rows in `refs`.
+
+- What a note is, how large one may be and whether a set is valid are the rules of one note set, which live in a package of their own, `internal/dispatch/architecture/notes`:
+  pure, with no database and no network, it imports nothing outside the standard library but `gopkg.in/yaml.v3` and `internal/dispatch/text`.
+  `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
+  `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
+  `CheckSet` refuses a set of more than `MaxFiles` notes, 1,000, or of more than `MaxSetSize` bytes in sum, 16 MiB, with one `ErrSetTooLarge`, whose text is `set too large`: the server lists a directory in one GitHub response of at most 1 MiB, which holds 1,000 entries of the longest names, and it keeps the checks of a commit's spec files in a cache of 16 MiB;
+  and `Parse` validates the set.
+  `ReadSet` reads one directory of a checkout by that rule and those bounds, checking the set and each note from the listing before it reads any note, for `cmd/architecture-check` and `cmd/spec-check`.
+  `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks the listing with `CheckSet`, each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bounds through those two, and it calls `notes.Parse` itself.
 
 - `cmd/architecture-check` reads one directory of architecture notes from disk, a checkout's `.dispatch/architecture`, and judges it by the rules the importer applies to that directory on GitHub (`cmd/architecture-check/main.go`).
   `architecture-check [--allow-empty] <directory>` makes the directory absolute before it reads anything, and every line it prints about the directory or an entry of it names that absolute path.
@@ -3198,7 +3204,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a test that go test killed, or that started and has no end, could not run and never reads as a failure.
 
 - `cmd/spec-check` runs those rules over directories of spec files on disk (`cmd/spec-check/main.go`).
-  It reads each directory with `notes.ReadSet`, so the entries it reads and the 1 MiB bound are the architecture importer's.
+  It reads each directory with `notes.ReadSet`, so the entries it reads and its bounds are the architecture importer's and the results route's: at most 1 MiB a file, and at most 1,000 files and 16 MiB in sum (`notes.MaxFiles`, `notes.MaxSetSize`), a set over either one problem before any file is read.
   `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
   a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one and an interface being a component with `kind="interface"`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
@@ -3910,7 +3916,7 @@ A results token is the token a result entry mints (`BROKER_EXCHANGE_RESULT_WORKF
 A verifier built with `brokertoken.Options.ServesResults` accepts it and marks its caller `brokertoken.Caller.ResultsOnly`, with the run as `brokertoken.Caller.CI`;
 a verifier built without that switch answers it `brokertoken.ErrNotASession`, as a build before the switch does.
 Dispatch's verifier sets the switch, so Dispatch serves a results token on the routes its results list names (`resultsScopeRoutes`), `POST /api/v1/projects/{key}/results` and `POST /api/v1/issues/{key}/results`;
-`brokerTokenActor` carries the mark as `model.Credential.ResultsOnly`, with the run as `model.Credential.CI` and no OAuth scope, and `refuseResultsOnlyToken` answers the token `403 RESULTS_ONLY_TOKEN` on every other route and on `/ws/live`, before the route's handler, its sign-in check and its idempotency key.
+`brokerTokenActor` carries the mark as `model.Credential.ResultsOnly`, with the run as `model.Credential.CI` and no OAuth scope, and `refuseLimitedToken` answers the token `403 RESULTS_ONLY_TOKEN` on every other route and on `/ws/live`, before the route's handler, its sign-in check and its idempotency key.
 The person a results token names stays inside Dispatch: the result it writes names the run as its recorder (on `POST /api/v1/issues/{key}/results`, the row's `attestation` names the run's session and principal as its recorder, and the row and its `result.recorded` event carry the run's session as their actor, with no `owner`), and its access-log line names the run's session as the caller.
 `GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
 A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and the live socket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
@@ -3943,7 +3949,7 @@ A read-only token reaches the routes that `api/routes_table.go`'s `readScopeRout
 The list stands beside `routeScopes` and is not a value of it, because a scope there is one the caller must hold and no person holds `read`.
 `routes()` stamps it onto `apiRoute.ReadScope`, and `GET /api/v1`, the OpenAPI document and the reference generated from it do not carry it.
 `register` refuses to mount a table whose list names anything but a GET row it mounts (`readRoutesNotMountedAsGET`), so a route added later stays closed to such a token until someone lists it.
-`api.refuseReadOnlyToken` is the gate, and it is the outermost check of every row:
+`api.refuseLimitedToken` is the gate, and it is the outermost check of every row:
 `register` wraps every row in it outside `gateRouteScopes` and every layer inside that, and inside the drain and `varyOnDisplayTrees` (`routeHandler`), and puts it on `GET /ws/live` just inside `decideBrokerToken`, before the upgrade (`liveSocketHandler`).
 On every row the list does not name, and on `/ws/live`, a read-only token is `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`), with no `WWW-Authenticate` challenge, since no scope makes the route the token's to call.
 That answer comes before the row's scopes, a `Dispatch-Login` check, an id prefix's lookup, the sign-in, project and session checks, the `Idempotency-Key` and the handler, so the refused request claims no key and writes nothing.

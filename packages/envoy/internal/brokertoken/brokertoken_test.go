@@ -484,7 +484,8 @@ func TestAResultsScopeBesideANamedProjectScopeIsRefused(t *testing.T) {
 	twoWords := resultsToken(caller.jkt, time.Hour)
 	twoWords.Scope = "results machine"
 	named := liveToken(caller.jkt, time.Hour)
-	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Project: "INFRA", ProjectScope: brokertoken.ProjectScopeNamed}
+	named.Person = "ada@example.com"
+	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "ada@example.com", Project: "INFRA", ProjectScope: brokertoken.ProjectScopeNamed}
 	rows := []struct {
 		name   string
 		answer brokertoken.Introspection

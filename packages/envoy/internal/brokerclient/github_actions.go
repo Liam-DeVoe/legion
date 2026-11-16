@@ -82,10 +82,12 @@ func (g *GitHubActionsIdentity) Token(ctx context.Context) (string, string, erro
 	var answer struct {
 		Value string `json:"value"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, maxActionsAnswer)).Decode(&answer); err != nil || strings.TrimSpace(answer.Value) == "" {
+	err = json.NewDecoder(io.LimitReader(response.Body, maxActionsAnswer)).Decode(&answer)
+	token := strings.TrimSpace(answer.Value)
+	if err != nil || token == "" {
 		return "", "", fmt.Errorf("%s answered no token", where)
 	}
-	return strings.TrimSpace(answer.Value), oauthwire.SubjectTokenTypeGitHub, nil
+	return token, oauthwire.SubjectTokenTypeGitHub, nil
 }
 
 // WorkflowRunTokenFile is a workflow run's OIDC token held in a file, for a job that reads its

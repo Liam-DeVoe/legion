@@ -2,7 +2,7 @@
 // broker minted from a read entry, the scope read alone beside the project scope none, a service
 // and no person — reaches the routes readScopeRoutes names and nothing else. Every other row of
 // the table and GET /ws/live answer it 403 READ_ONLY_TOKEN before the route's handler, before the
-// sign-in check and before its Idempotency-Key is read (refuseReadOnlyToken), register refuses a
+// sign-in check and before its Idempotency-Key is read (refuseLimitedToken), register refuses a
 // list that names anything but a GET row it mounts, and the route the list names writes nothing
 // for such a caller but its proof's replay row and the caches Dispatch rebuilds.
 //
