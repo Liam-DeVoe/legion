@@ -42,24 +42,37 @@ var ErrHeldNamesCap = errors.New("the claim would hold more session names than o
 const heldNamesCapLine = "supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the statement frees the names of its older sessions for a new one"
 
 // ReleaseOldNamesStatement is the statement an operator runs to let a claim at MaxHeldNamesPerClaim
-// start a new session again: it frees the claim's holds recorded more than 12 hours ago, except
-// every name of the session it records and of the one it last abandoned. A name of its current or
-// abandoned session is its id, or a part of its file's path (the base name, the id an Oh My Pi name
-// gives, the id a Claude Code transcript is named for: RecordedHolds), so a hold whose name is one
-// of those ids or appears in one of those paths stays, which keeps a few more names than it must
-// and frees none it must keep.
+// start a new session again: it frees the claim's holds recorded more than 12 hours ago, and only
+// once the claim's last session switch is more than 12 hours ago, except every name of the session
+// it records and of the one it last abandoned. A name of its current or abandoned session is its
+// id, a name that contains that id (each of its files' base names and ids does), or a part of its
+// file's path (RecordedHolds), so a hold of any of those stays, which keeps a few more names than
+// it must and frees none it must keep.
 //
-// 12 hours is the secrets broker's carry window by default (BROKER_SESSION_CARRY_SECONDS, 43200):
-// past it the broker has swept the grants of a session nobody enrolled again, so another claim that
-// later takes a freed name takes no grant of it, and a transcript within the project is readable to
-// its roles anyway. A deployment with a longer window puts its own in the interval. The project and
-// token are written as SQL literals, their quotes doubled.
+// The 12 hours count from the switch, not from the hold (review R4-1 of #4220): a hold is written
+// when its session is first registered, and the session may have run long after; the broker keeps a
+// dormant enrollment's grants for its carry window from when the enrollment ended. A claim changes
+// sessions only by forgetting the one it records (forgetSession), which writes the switch's time
+// into the abandoned session's `at`; every session before the one it abandoned had ended by then,
+// so a switch older than the window means every session the statement frees ended longer ago than
+// the window, and the broker has swept their grants: a claim that later takes a freed name takes no
+// grant of it, and a transcript within the project is readable to its roles anyway. A claim that
+// has never switched, whose abandoned session is empty, frees by its holds' age alone.
+//
+// 12 hours is the broker's carry window by default (BROKER_SESSION_CARRY_SECONDS, 43200). The
+// daemon is not told the broker's setting: it is the broker's own (envoy's broker/config), read by
+// its sweeper and answered on no route the daemon calls, so the statement writes the default, and a
+// deployment with a longer window puts its own in both intervals. The project and token are
+// written as SQL literals, their quotes doubled.
 func ReleaseOldNamesStatement(project string, token claim.Token) string {
 	return "delete from claim_sessions h using claims c" +
 		" where c.project = h.project and c.token = h.claim" +
 		" and h.project = " + SQLLiteral(project) + " and h.claim = " + SQLLiteral(string(token)) +
 		" and h.recorded_at < now() - interval '12 hours'" +
+		" and coalesce((c.abandoned_session ->> 'at')::timestamptz, '-infinity') < now() - interval '12 hours'" +
 		" and h.name <> c.session and h.name <> coalesce(c.abandoned_session ->> 'session', '')" +
+		" and (c.session = '' or strpos(h.name, c.session) = 0)" +
+		" and (coalesce(c.abandoned_session ->> 'session', '') = '' or strpos(h.name, c.abandoned_session ->> 'session') = 0)" +
 		" and strpos(c.session_file || ' ' || coalesce(c.abandoned_session ->> 'sessionFile', ''), h.name) = 0"
 }
 
