@@ -281,6 +281,11 @@ type fakeRequests struct {
 	admin       bool
 	policyErr   error
 	policyAsked []string
+	// private and projectErr are what JudgeProject answers, and projectAsked the names it was
+	// asked about.
+	private      bool
+	projectErr   error
+	projectAsked []string
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
 	// times a run asked it.
 	state      string
@@ -307,6 +312,20 @@ func (f *fakeRequests) JudgePolicy(_ context.Context, _, name string) (policy.De
 	defer f.mu.Unlock()
 	f.policyAsked = append(f.policyAsked, name)
 	return f.decision, f.withheld, f.admin, f.policyErr
+}
+
+func (f *fakeRequests) JudgeProject(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.projectAsked = append(f.projectAsked, name)
+	return f.private, f.projectErr
+}
+
+// projectsAsked is every name JudgeProject was asked about, in order.
+func (f *fakeRequests) projectsAsked() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.projectAsked...)
 }
 
 func (f *fakeRequests) JudgeRequestState(_ context.Context, _ string) (string, error) {

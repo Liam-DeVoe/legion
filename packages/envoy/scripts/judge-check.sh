@@ -848,7 +848,7 @@ check_k10() {
 	in_verdict="$(judged_field "$in_id" .verdict)"
 	in_reason="$(judged_field "$in_id" .reason)"
 	observe "the in-class row's checks in order: $in_checks; model '$in_model', verdict '$in_verdict', reason '$in_reason'; its actor is '$(judged_actor "$in_id")'"
-	assert "$([ "$one_row" = 0 ] && [ "$named_checks" = 0 ] && [ "$in_rows" = 1 ] && [ "$in_checks" = "rules-judge,lifetime,policy,admin,withheld,issue" ] && [ "$in_model" = "$AIRLOCK_JUDGE_MODEL" ] && [ "$in_verdict" = approve ] && [ -n "$in_reason" ] && echo 0 || echo 1)" \
+	assert "$([ "$one_row" = 0 ] && [ "$named_checks" = 0 ] && [ "$in_rows" = 1 ] && [ "$in_checks" = "rules-judge,lifetime,policy,admin,withheld,project,issue" ] && [ "$in_model" = "$AIRLOCK_JUDGE_MODEL" ] && [ "$in_verdict" = approve ] && [ -n "$in_reason" ] && echo 0 || echo 1)" \
 		"each decision has exactly one request.judged row, carrying its checks, the model, the verdict and the reason" \
 		"the in-class decision has $in_rows row with checks $in_checks, model '$in_model', verdict '$in_verdict' and a reason of $(shape "$in_reason") (compared by SHA-256 and length); each of the six refused requests has one row naming the check it stopped at"
 
@@ -1145,7 +1145,7 @@ check_k10d() {
 	# --- The negative control. ---
 	#
 	# BROKER_JUDGE_TEST_SKIP_CHECKS is not an honest control for this check, and this run shows
-	# why rather than asserting it: it turns off the judge's own six checks as a bar, and
+	# why rather than asserting it: it turns off the judge's own seven checks as a bar, and
 	# leaves record.MayJudge inside requests.Machine.ApplyJudgeDecision, which holds a judged
 	# approval to the same entry's seconds. The request is put to the model and the approval is
 	# then refused, so it stays pending and the control would prove nothing.

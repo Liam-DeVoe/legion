@@ -2,12 +2,13 @@
 // human-tier credential request the airlock rules allow it to decide, and leaves every other
 // request for the person who decides it today. It approves or refers, and it never denies.
 //
-// One run is one request. It makes six checks of its own before any model is asked — the rules
+// One run is one request. It makes seven checks of its own before any model is asked — the rules
 // entry's judge bound, the request's shape and lifetime, the tag policy re-read now, whether the
-// secret is an administrator's, what the session has had withheld from it, and the Dispatch
-// issue the signed reason names — and stops at the first that fails, leaving the request pending
-// with a request.judged row that says which check it was and asking the model nothing. A request
-// that passes all six, and that the machine still shows pending when the run reads its state
+// secret is an administrator's, what the session has had withheld from it, whether the secret
+// belongs to a private project, and the Dispatch issue the signed reason names — and stops at the
+// first that fails, leaving the request pending with a request.judged row that says which check
+// it was and asking the model nothing. A request
+// that passes all seven, and that the machine still shows pending when the run reads its state
 // once more (Runner.stillPending), is put to one model through packages/envoy/agentloop, as data
 // to judge rather than as instructions (D15): approve is written with the approval itself, in
 // one transaction, and refer writes the row alone.
@@ -66,22 +67,25 @@ const maxJudgedLifetime = 15 * time.Minute
 // with it.
 const doneStatus = "done"
 
-// The six checks a run makes before the model, in the order it makes them. These are the names
+// The seven checks a run makes before the model, in the order it makes them. These are the names
 // a request.judged row calls them by, so a reader of the row and a reader of this package see
 // one set of words.
 //
 // They read from the request outwards: what the rules say of the name, what the request itself
 // asks for, what the policy answers for it now, what the secret is, what this session has had
-// taken back, and last the issue outside the broker the reason names. checkAdmin sits directly
-// after checkPolicy because the two are one read of the machine (Requests.JudgePolicy): the
-// policy's outcome and the secret's admin tag come back together, and the admin refusal is
-// about the secret rather than about the session, which is what checkWithheld is about.
+// taken back, the project the secret belongs to, and last the issue outside the broker the reason
+// names. checkAdmin sits directly after checkPolicy because the two are one read of the machine
+// (Requests.JudgePolicy): the policy's outcome and the secret's admin tag come back together, and
+// the admin refusal is about the secret rather than about the session, which is what
+// checkWithheld is about. checkProject sits before checkIssue so that a private project's secret
+// costs no Dispatch read of the issue: the judge leaves every such secret to a person.
 const (
 	checkRulesJudge = "rules-judge"
 	checkLifetime   = "lifetime"
 	checkPolicy     = "policy"
 	checkAdmin      = "admin"
 	checkWithheld   = "withheld"
+	checkProject    = "project"
 	checkIssue      = "issue"
 )
 
@@ -93,10 +97,10 @@ type check struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// Requests is what a run asks of the broker's request machine: the two questions it must ask
+// Requests is what a run asks of the broker's request machine: the three questions it must ask
 // again before it decides, and the two writes a verdict makes. It is declared here, in the
 // consumer, so that this package depends on no concrete machine; *requests.Machine answers all
-// four, and requests imports nothing of this package.
+// five, and requests imports nothing of this package.
 type Requests interface {
 	// JudgePolicy answers, for the enrollment that made a pending request, what the live
 	// policy says about one of its names at this moment: the decision policy.Set.Evaluate
@@ -113,6 +117,14 @@ type Requests interface {
 	// another, and the promise an admin tag makes — that a person approves every release —
 	// is not one to leave to two reads that may disagree.
 	JudgePolicy(ctx context.Context, enrollmentID, name string) (now policy.Decision, withheld, admin bool, err error)
+
+	// JudgeProject answers whether name's dispatch-project tag (policy.TagProject) names a
+	// project the judge must leave to a person: a private project, or a key Dispatch holds no
+	// project for. A secret with no tag answers false with no call to Dispatch at all, so a
+	// deployment that tags nothing asks Dispatch nothing new. The judge never decides a private
+	// project's secret: its own token names no person, so it may see no private project, and
+	// whether a person may is the approval page's to check (requests.Machine.MaySee).
+	JudgeProject(ctx context.Context, name string) (private bool, err error)
 
 	// JudgeRequestState answers the state a decision would meet now for the record a run
 	// is judging: "pending" for a request still waiting on its person, "expired" for one
@@ -143,7 +155,7 @@ type Options struct {
 	Model    Model
 	// Requests is the machine a verdict is written through.
 	Requests Requests
-	// SkipChecks turns the six checks off as a bar: each is still made and still recorded,
+	// SkipChecks turns the seven checks off as a bar: each is still made and still recorded,
 	// and none of them holds a request back, so the model is asked about a request a check
 	// would have stopped. It is the negative control of the judge's own checks and is for
 	// the broker's local stack alone (BROKER_JUDGE_TEST_SKIP_CHECKS).
@@ -215,7 +227,7 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 // expiry are state changes — so LogJudged finds the request and the enrollment it hangs off,
 // and the trail says why a run that cost a Dispatch read decided nothing.
 //
-// It is a gate and not a seventh entry in the checks array. The six checks answer one question —
+// It is a gate and not an eighth entry in the checks array. The seven checks answer one question —
 // may the judge decide this request? — and a reader of a row reads them as that one list, which
 // the verification document's check k10 and scripts/judge-check.sh pin by name and in order.
 // This answers another question altogether: is there still a request to decide? Nothing is
@@ -234,7 +246,7 @@ func (r *Runner) stillPending(ctx context.Context, p requests.PendingRequest) st
 	return ""
 }
 
-// beforeTheModel makes the six checks, in order, and builds the data the model would be shown.
+// beforeTheModel makes the seven checks, in order, and builds the data the model would be shown.
 // It stops at the first failure, so a request the rules do not let the judge decide costs no
 // Dispatch read and no model call. Under Options.SkipChecks it makes every check all the same,
 // recording each, so the negative control shows the model a request a check would have stopped.
@@ -300,6 +312,20 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		return checks, data
 	}
 
+	private, err := r.opts.Requests.JudgeProject(ctx, name)
+	switch {
+	case err != nil:
+		if !add(checkProject, false, fmt.Sprintf("the project of %s could not be read: %v", name, err)) {
+			return checks, data
+		}
+	case private:
+		if !add(checkProject, false, fmt.Sprintf("%s belongs to a private project, or to one Dispatch does not hold, which a person decides", name)) {
+			return checks, data
+		}
+	default:
+		add(checkProject, true, "")
+	}
+
 	ok, detail := r.issue(ctx, p, &data)
 	add(checkIssue, ok, detail)
 	return checks, data
@@ -347,7 +373,7 @@ func decidedByAPerson(name string) string {
 	return fmt.Sprintf("%s is an administrator's secret, and a person approves every release of one", name)
 }
 
-// issue is the sixth check, and the only one that reads anything outside the broker: the signed
+// issue is the seventh check, and the only one that reads anything outside the broker: the signed
 // reason names a Dispatch issue key, and Dispatch shows that issue at a status that is not done.
 // What it read goes into data, so the model sees the issue the check passed on; a read that
 // failed still leaves the key there, which is what the negative control shows the model.

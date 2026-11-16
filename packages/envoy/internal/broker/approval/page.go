@@ -68,6 +68,18 @@ type recordView struct {
 	// Buttons is whether the page offers Approve and Deny for it: a pending agent_secret record
 	// the person may decide.
 	Buttons bool
+	// Projects is one row per requested secret tagged with a Dispatch project: the secret, its
+	// project, whether that project is private (or one Dispatch does not hold), and whether the
+	// requesting session names it. Empty for a record touching no project, which prints as before.
+	Projects []projectRow
+	// SessionProjects are the projects the requesting session named when it enrolled.
+	SessionProjects []string
+}
+
+// projectRow is one tagged secret of a record as the page prints it.
+type projectRow struct {
+	Secret, Project string
+	Private, Named  bool
 }
 
 // tokenFields are the hidden fields every decision form carries: the records the page printed with
@@ -122,6 +134,9 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		return
 	}
 	detail, err := p.cfg.Machine.ReadRecord(r.Context(), id)
+	if err == nil {
+		err = p.hideUnseen(r.Context(), sess.Login, detail)
+	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		m := say("No such request", "The secrets broker has no credential request "+id+".")
@@ -208,6 +223,20 @@ func approverHint(approver string) string {
 	return approver
 }
 
+// hideUnseen is pgx.ErrNoRows for a record of a private project login may not see
+// (requests.Machine.MaySee), so its page answers exactly as for an id no record has and says
+// nothing of whether it exists; nil for a record login may see.
+func (p *Page) hideUnseen(ctx context.Context, login string, d requests.RecordDetail) error {
+	may, err := p.cfg.Machine.MaySee(ctx, login, d)
+	switch {
+	case err != nil:
+		return err
+	case !may:
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 // recordView is detail as the page prints it to login at now.
 func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) recordView {
 	v := recordView{
@@ -234,6 +263,10 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 		v.State = "expired"
 	}
 	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide
+	v.SessionProjects = d.SessionProjects
+	for _, sp := range d.SecretProjects {
+		v.Projects = append(v.Projects, projectRow{Secret: sp.Name, Project: sp.Project, Private: sp.Private, Named: slices.Contains(d.SessionProjects, sp.Project)})
+	}
 	return v
 }
 
@@ -301,6 +334,11 @@ func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Tim
 		if id != read.RecordID {
 			var err error
 			d, err = p.cfg.Machine.ReadRecord(ctx, id)
+			if err == nil {
+				// A record of a private project login may not see gets no line, as an id
+				// no record has gets none: the line would print its secrets' names.
+				err = p.hideUnseen(ctx, login, d)
+			}
 			switch {
 			case errors.Is(err, pgx.ErrNoRows):
 				continue

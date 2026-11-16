@@ -318,6 +318,18 @@ marked with tags or annotations:
   secrets all carry it gets a grant that lasts until its session ends instead of that default. Any other
   value is refused `default-grant-malformed`. Set it with `agent-secrets secret create|retag
   --default-grant session`.
+- **`dispatch-project`** is optional. It names the one Dispatch project the secret belongs to, by
+  its key as Dispatch writes it (`PRIV`: an upper-case letter, then one to nine upper-case
+  letters or digits). A secret of a private project goes only to a session or pod whose
+  credential names that project ([A private project's secrets](#a-private-projects-secrets)); a
+  secret of a public project is decided by owner and tier as if it carried no tag. A key in
+  another case, white space, an empty tag and the word `none` are refused `project-malformed`,
+  and a broker that cannot ask Dispatch whether a project is private (no
+  `BROKER_PROJECT_ACCESS_URL`) refuses every tagged secret `project-unchecked`, since it could not
+  tell a private project's secret from a public one's. The tag is not called `project`, which AWS
+  accounts commonly use for cost allocation. Whoever may write the store's prefix may set it, and
+  can already read every value there; which secrets belong to a project is its owner's call. Set
+  it with `agent-secrets secret create|retag --project PRIV`, and remove it with `--project none`.
 - **`mint-service-account`** is written by `agent-secrets secret` beside every kind, with the value
   `kind-secret`, and this broker never reads it. It makes the brokers before kinds, from
   legion-envoy-v13.19.0 on, refuse a kind secret rather than serve its stored key.
@@ -338,6 +350,14 @@ person and is matched against the session's person alone; one holding none is a 
 matched against the service the broker verified alone. A pod has no person and a session has no
 service, so each is matched only by an entry of its own sort, and a person whose login reads like
 a service name matches no service entry. A secret with no list is every session's to ask for.
+
+A `dispatch-project` tag is read next, still before owner and tier. Where the tag names a private
+project, a session or pod whose credential does not name that project is denied
+`project-not-named`, whatever the table below would have given it; where it names a key Dispatch
+holds no project for, everyone is denied, as `project-missing` in the broker's log and as
+`project-not-named` to the session, so a refusal never says whether a project exists. A secret
+of a public project, or of no project, is decided by the table alone
+([A private project's secrets](#a-private-projects-secrets)).
 
 Who gets it then follows from those two tags alone:
 
@@ -441,7 +461,9 @@ cannot read (`requesters-malformed`), an `admin` tag set to anything but `true`
 `max-grant` or one longer than an hour (`max-grant-required`), a `google-service-account` secret
 whose `requesters` are not its one person owner, or that lists a service where it may not
 (`requesters-not-owner`), a `scopes` list the broker cannot read (`scopes-malformed`), a `scopes`
-tag on any other kind (`scopes-kind`), a malformed
+tag on any other kind (`scopes-kind`), a `dispatch-project` tag that is no project key
+(`project-malformed`), any `dispatch-project` tag on a broker that cannot ask Dispatch about
+projects (`project-unchecked`), a malformed
 `max-grant`, a name that is not in the form above, a secret encrypted with any key but the
 agent-secrets key, the AWS-managed key included, a secret with no current value (created without
 one, so none of its versions carries the `AWSCURRENT` label), or a kind secret whose stored value
@@ -452,9 +474,11 @@ refused `UNKNOWN_SECRET` before anyone is asked to approve it, and a live grant 
 nothing until the broker serves the secret again.
 
 The policy's **version** is the SHA-256 of every served secret's name, owner, tier, source, max
-grant, `requesters` list, `scopes` list and `admin` mark, recorded on every request. A kind
-secret's source names its kind, so a kind change moves the version too, and so does any change to
-a list. A secret with no list writes the same bytes into the digest that it always did.
+grant, `requesters` list, `scopes` list, `admin` mark, shape and project, recorded on every
+request. A kind secret's source names its kind, so a kind change moves the version too, and so
+does any change to a list or to the project tag. A secret with no list and no project writes the
+same bytes into the digest that it always did. Whether a project is private is Dispatch's, not
+the version's, so a grant of a tagged secret is checked again on every release.
 
 ## Requests and grants
 
@@ -849,7 +873,7 @@ person as before.
 
 The broker that wrote a request pending runs the judge in the background, for a request it wrote
 and never for one it joined to a request already pending, so one record is judged once. A run has
-30 seconds, and the model call inside it 20. The run makes six checks first, in order, and stops
+30 seconds, and the model call inside it 20. The run makes seven checks first, in order, and stops
 at the first that fails, asking the model nothing:
 
 1. the secret's rules entry has a `judge` value;
@@ -859,10 +883,14 @@ at the first that fails, asking the model nothing:
 4. the secret is not an administrator's (the `admin` tag), of which a person approves every
    release, whatever seconds a rules entry gives the judge;
 5. the name is not withheld for that session;
-6. the request's signed reason names a Dispatch issue key, and Dispatch shows that issue at a
+6. the secret belongs to no private project: a `dispatch-project` tag naming a private project,
+   or a key Dispatch holds no project for, leaves the request to a person, since the judge's own
+   token names no person and so sees no private project. An untagged secret makes no call to
+   Dispatch here;
+7. the request's signed reason names a Dispatch issue key, and Dispatch shows that issue at a
    status that is not `done`.
 
-A request that passes all six goes to one model, with the secret's name and rules, the reason and
+A request that passes all seven goes to one model, with the secret's name and rules, the reason and
 the issue put to it as data to judge rather than as instructions, and the model answers `approve`
 or `refer`. The run reads the request's state once more immediately before that call and asks
 nothing about a request that is no longer pending — one its session cancelled, one a person

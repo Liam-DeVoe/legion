@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing is each of the six checks in
+// TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing is each of the seven checks in
 // turn: the request is left pending, one request.judged row names the check that failed, and the
 // model is never asked. The checks before the issue read stop the run before Dispatch is called
 // at all, which is what keeps a request the rules do not allow from costing a round trip.
@@ -425,7 +425,7 @@ func TestTheDataInFrontOfTheModelIsTheRequestAndItsIssue(t *testing.T) {
 }
 
 // TestSkipChecksAsksTheModelAboutARequestACheckWouldHaveStopped is the negative control of the
-// six checks: with the switch on, a request that fails one still reaches the model, and the row
+// seven checks: with the switch on, a request that fails one still reaches the model, and the row
 // still records which check failed.
 func TestSkipChecksAsksTheModelAboutARequestACheckWouldHaveStopped(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()

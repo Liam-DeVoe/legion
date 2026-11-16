@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The broker's approval page shows, for each requested secret of a Dispatch project, the project,
+  whether it is private, and whether the asking session names it, and it shows the projects the
+  session names. A request of a private project (by its secrets, its session's projects or its
+  reason's issue key) answers a person outside the project "No such request", as a request that
+  does not exist; it is in none of their lists, and a decision's outcome line says nothing of it.
+  The model judge makes a seventh check, `project`, after `withheld` and before `issue`: a
+  request for a secret of a private project, or of a project Dispatch does not hold, is left to a
+  person, since the judge's own token names no person. A secret of no project asks Dispatch
+  nothing new.

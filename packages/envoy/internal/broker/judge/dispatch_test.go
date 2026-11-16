@@ -86,7 +86,7 @@ func TestIssueReadsTheTokenAgainForEveryCall(t *testing.T) {
 }
 
 // TestIssueTellsAMissingIssueFromAFailedRead: a 404 on the issue is ErrNoIssue, which is the
-// judge's issue check, the last of its six, failing, and every other refusal is a failure of the
+// judge's issue check, the last of its seven, failing, and every other refusal is a failure of the
 // read, which is a judge that cannot tell whether the issue is open.
 func TestIssueTellsAMissingIssueFromAFailedRead(t *testing.T) {
 	for _, c := range []struct {

@@ -53,6 +53,12 @@ The page prints the broker's own record of the request, not anything Dispatch or
 along:
 
 - **Secrets**: the secrets asked for. A grant covers all of them or none.
+- **Project of NAME**: shown for each secret that belongs to a Dispatch project (its
+  `dispatch-project` tag): the project's key, whether it is public or private, and, for a private
+  one, whether the session names it. A private project's secret goes only to a session that names
+  the project; the broker refuses the rest before anyone is asked.
+- **Projects the session names**: the projects the asking session named when it started
+  (`AGENT_SECRETS_PROJECTS`), shown when it named any.
 - **Requested by (verified by the broker)**: the enrollment asking, as kind, operator and runtime
   id. A `session` started on a machine has a runtime id that starts with the machine's host name; a
   `pod` enrollment also shows its worker slot when it has one.
@@ -72,6 +78,11 @@ along:
 The page header names who you are signed in as. Signed in as someone the request does not name,
 the page says who may decide it and offers no buttons, only **Sign in as someone else**, which
 sends you through the sign-in again with an account chooser and back to the same request.
+
+A request of a private project is the project's own: one for a secret of the project, from a
+session that names the project, or whose reason names one of the project's issues. Signed in as
+someone who may not see the project, its page says **No such request**, as for a request that does
+not exist, it is in no list of yours, and you cannot decide it, whoever the approver line names.
 
 Approve only what the reason and the session justify. The agent's command is waiting; a denial runs
 nothing.
