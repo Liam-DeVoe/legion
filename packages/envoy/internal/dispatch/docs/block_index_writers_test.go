@@ -486,6 +486,10 @@ var indexPasses = map[string]string{
 	// One node's state, written or settled through the store's writer from the request and the
 	// node's own row: the state is a base attribute of the node, which no projection row holds.
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row and the issue it stands under",
+	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
+	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
+	// is named (changed_by_run). It reads no row of either side to decide what the other says.
+	"api/issue_patch.go#patchIssue": "the PATCH's own body, the issue's row it locked and the issue's own event",
 	// A run of the command bar: its interaction node, its author's node and their tuples, written
 	// from the POST alone before the going_requests row that projects them, and each frame's value,
 	// written from the frame its writer hands it before the going_events row that projects it.

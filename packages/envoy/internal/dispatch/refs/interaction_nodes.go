@@ -17,7 +17,9 @@ import (
 // issue and on no node, so it answers no IssueKey and no Parent, and a route of
 // `/issues/{key}/nodes/{id}/…` finds none under any issue; its Project is the project it was asked
 // under, none for a run asked of every project. Its text is the words of the question, which its
-// row carries (graphstore.AttributeWords), so an edge at it shows the head of what was asked.
+// row carries (graphstore.AttributeWords), so an edge at it shows the head of what was asked, cut
+// at excerptRunes as every edge's excerpt is, and a read of the run's own address answers every
+// word of them as the node's Text (Node, resolvedNode's wholeText), through the same predicate.
 //
 // A run is reserved for its author, and its kind's predicate compares the whole credential
 // (credentialAuthoredKind), so a run is answered to the credential that asked it and to no other:
@@ -68,7 +70,7 @@ func loadInteractionNodes(ctx context.Context, q Queryer, who model.Actor, _ str
 		if err := setMadeAndChanged(&node, madeBy, madeAt, nil, nil, storedActors); err != nil {
 			return err
 		}
-		nodes[[2]string{graphstore.KindInteraction, node.ID}] = resolvedNode{GraphNode: node, text: words}
+		nodes[[2]string{graphstore.KindInteraction, node.ID}] = resolvedNode{GraphNode: node, text: words, wholeText: true}
 	}
 	return rows.Err()
 }

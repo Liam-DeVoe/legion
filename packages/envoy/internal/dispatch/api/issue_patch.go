@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -523,8 +524,33 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An issue's own field write made for a run (graphstore.WithRun, which withinGoingRun puts on
+	// a request naming its run) names the issue as changed by that run
+	// (dispatch://INFRA-1950/spec#b-r-interaction). Nothing else this route writes reaches the
+	// store, so under a run it writes the issue's node as the create and the backfill write it
+	// (graphstore.IssueNode), marked changed: the node restates the issue, so it keeps the state and
+	// the visibility the store holds and moves nothing else of it, and an issue created before its
+	// node existed gets one here. It is dated and signed by this write, which is who and when the
+	// changed_by_run tuple names; a node already there keeps its own made_at and made_by. It is the
+	// last node row this transaction takes, after every row and document above, and what it states
+	// waits for the issue's own event (graphstore.Caused), as the create's does. A write made for
+	// no run writes no node and sends no statement more than it did, and a write that changed
+	// nothing returned above, with no event and so no node.
+	var issueNode graphstore.Uncaused
+	if graphstore.MadeForRun(r.Context()) {
+		node := graphstore.IssueNode(key, before.Project, actor, time.Now().UTC())
+		node.Changed = true
+		if issueNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, nil); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	event, err := s.appendEvent(r.Context(), tx, issueOwner(key).event(eventType, actor, payload))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, issueNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

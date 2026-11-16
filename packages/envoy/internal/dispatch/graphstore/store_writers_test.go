@@ -104,6 +104,12 @@ var storeWriteCallSites = []string{
 	// TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner row writeReasoningNodes
 	// takes first too.
 	"api/reasoning_write.go#writeNodeState",
+	// An issue's own field write made for a run (api/issue_patch.go, D14 of dispatch://INFRA-1950):
+	// the issue's owner row (lockPatchRows), the issue's row, then, on a context that carries a
+	// run alone, the issue's node through WriteUncaused, the issue's own event, and what the node
+	// states with its changed_by_run under that event through Caused. api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps.
+	"api/issue_patch.go#patchIssue",
 	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row

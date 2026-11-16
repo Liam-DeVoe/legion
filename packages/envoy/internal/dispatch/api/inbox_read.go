@@ -529,6 +529,13 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // step of the order, and two writes of one node for one run are ordered by what each holds before
 // it reads - the node's row, or the owner row a pointer's write takes first - so the second reads
 // the tuple the first committed and appends none.
+//
+// An issue's own field write made for a run (patchIssue) is the one writer that writes a node only
+// because a run asked it to name what it changed. It takes the issue's row as its owner row first
+// (lockPatchRows), writes the issue's row, and then, after every row and document it writes, the
+// issue's node (graphstore.WriteUncaused), the last node row its transaction takes; it appends
+// the issue's own event, and then what that node states with its changed_by_run under that event
+// (graphstore.Caused).
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {

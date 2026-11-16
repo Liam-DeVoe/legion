@@ -86,13 +86,15 @@ type runReads struct {
 // TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas is c-interaction-page
 // (dispatch://INFRA-1950/spec#b-r-interaction). Two people read the issue's references both
 // ways, its backlink count and the backlink count of alice's person node. Alice's run is recorded
-// with two frames, a comment is written on the issue with her credential under the run's header,
-// and the run is ended. Alice then reads the comment's changed_by_run to the interaction of her
-// run, which answers its kind, her words as its excerpt and its own address, and at that address
+// with two frames; under the run's header and with her credential a comment is written on the
+// issue and the issue's labels are changed through its PATCH; and the run is ended. Alice then
+// reads, of the comment and of the issue each, one changed_by_run to the interaction of her run,
+// which answers its kind, her words cut at the 240 runes an edge's excerpt keeps and its own
+// address. At that address, read both ways, the interaction answers her words whole as its text,
 // its one authored_by to her person node and its frames in sequence, the two it appended and then
-// the terminal one. The issue's count moves alike for both, since the tuple points away from the
-// comment, her person node's count is one more for her, its authored_by, and bob reads nothing of
-// the run anywhere.
+// the terminal one. The issue's count moves alike for both, since each tuple points away from the
+// node the run changed, her person node's count is one more for her, its authored_by, and bob
+// reads nothing of the run anywhere.
 func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
@@ -100,7 +102,17 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 	issue := createTestIssue(t, handler, "RUN", "The issue a run writes on")
 	issueRef := "dispatch://" + issue
 	const alice, bob = "alice", "bob"
-	const words = "Which plan holds the rollback step of the cutover?"
+	// Longer than an edge's excerpt keeps, and with a rune of three bytes in its head, so the cut
+	// and the whole are told apart rune for rune.
+	const words = "Which plan holds the rollback step of the cutover — the step that moves every reader of the" +
+		" store back to the tables it read before, in the order the deploy section gives, with the census" +
+		" run after each move and the backfill run once the roll is done, so that nobody reads a node the" +
+		" older build cannot address?"
+	whole := []rune(words)
+	if len(whole) <= 240 {
+		t.Fatalf("the run's words are %d runes, want more than the 240 an excerpt keeps, so the cut proves something", len(whole))
+	}
+	excerpt := string(whole[:240])
 
 	read := func(login string) runReads {
 		t.Helper()
@@ -154,6 +166,16 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 		t.Fatalf("write the comment under the run's header: status=%d body=%s", written.Code, written.Body.String())
 	}
 	comment := decodeBody[writtenRecord](t, written).ID
+	// The issue's own field write, under the same run: its labels.
+	labels := []string{"run-changed"}
+	patched := requestForRun(t, handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"labels": labels}, alice, run.ID)
+	t.Logf("alice's PATCH of the issue's labels under the run: status=%d body=%s", patched.Code, patched.Body.String())
+	if patched.Code != http.StatusOK {
+		t.Fatalf("change the issue's labels under the run's header: status=%d body=%s", patched.Code, patched.Body.String())
+	}
+	if got := decodeBody[model.Issue](t, patched).Labels; !slices.Equal(got, labels) {
+		t.Fatalf("the PATCH under the run left the issue's labels %v, want %v", got, labels)
+	}
 	terminal := going.End(6, 0)
 	if _, err := endGoingRun(ctx, database.Pool, run.ID, terminal); err != nil {
 		t.Fatalf("end the run: %v", err)
@@ -162,88 +184,107 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 	commentRef := "dispatch://" + issue + "/comment/" + comment
 	interactionRef := "dispatch://interaction/" + run.ID
 
+	// Each node the run changed - the comment it wrote, the issue whose labels it changed - is
+	// read both ways by both people. Alice reads its one changed_by_run out of it to her run's
+	// interaction, with the head of her words as the excerpt, and nothing of the run into it; bob
+	// reads no changed_by_run and no interaction either way.
 	after := map[string]runReads{}
 	for _, login := range []string{alice, bob} {
 		after[login] = read(login)
-		for _, direction := range []string{"to", "from"} {
-			response := referencesAt(t, handler, direction, commentRef, login)
-			t.Logf("%s's ?%s=%s: status=%d body=%s", login, direction, commentRef, response.Code, response.Body.String())
-			if response.Code != http.StatusOK {
-				t.Fatalf("%s's ?%s= of the comment answers %d %s", login, direction, response.Code, response.Body.String())
+		for _, changed := range []struct{ what, id, ref string }{{"comment", comment, commentRef}, {"issue", issue, issueRef}} {
+			for _, direction := range []string{"to", "from"} {
+				response := referencesAt(t, handler, direction, changed.ref, login)
+				t.Logf("%s's ?%s=%s: status=%d body=%s", login, direction, changed.ref, response.Code, response.Body.String())
+				if response.Code != http.StatusOK {
+					t.Fatalf("%s's ?%s= of the %s answers %d %s", login, direction, changed.what, response.Code, response.Body.String())
+				}
+				reads := after[login]
+				reads.bodies = append(reads.bodies, response.Body.String())
+				after[login] = reads
+				edges := decodeBody[model.GraphReferences](t, response).Edges
+				byRun := slices.DeleteFunc(slices.Clone(edges), func(edge model.GraphEdge) bool {
+					return edge.Kind != graphstore.TupleChangedByRun && edge.Node.Kind != graphstore.KindInteraction
+				})
+				switch {
+				case login == bob && len(byRun) != 0:
+					t.Errorf("bob's ?%s= of the %s answers %+v, want no changed_by_run and no interaction", direction, changed.what, byRun)
+				case login == alice && direction == "to" && len(byRun) != 0:
+					t.Errorf("alice's ?to= of the %s answers %+v: the changed_by_run points away from it", changed.what, byRun)
+				case login == alice && direction == "from":
+					if len(byRun) != 1 || byRun[0].Kind != graphstore.TupleChangedByRun || byRun[0].Direction != "out" {
+						t.Fatalf("alice's references of %s %s hold %+v, want its one changed_by_run to the interaction of run %s",
+							changed.what, changed.id, byRun, run.ID)
+					}
+					node := byRun[0].Node
+					if node.Kind != graphstore.KindInteraction || node.ID != run.ID || node.Ref != interactionRef {
+						t.Errorf("the changed_by_run of the %s ends at %+v, want the interaction at %s", changed.what, node, interactionRef)
+					}
+					if byRun[0].Excerpt == nil || byRun[0].Excerpt.Text != excerpt {
+						t.Errorf("the interaction at the %s's changed_by_run answers the excerpt %+v, want the run's words cut at 240 runes, %q, character for character",
+							changed.what, byRun[0].Excerpt, excerpt)
+					}
+				}
 			}
-			reads := after[login]
-			reads.bodies = append(reads.bodies, response.Body.String())
-			after[login] = reads
-			edges := decodeBody[model.GraphReferences](t, response).Edges
-			byRun := slices.DeleteFunc(slices.Clone(edges), func(edge model.GraphEdge) bool {
-				return edge.Kind != graphstore.TupleChangedByRun && edge.Node.Kind != graphstore.KindInteraction
-			})
-			switch {
-			case login == bob && len(byRun) != 0:
-				t.Errorf("bob's ?%s= of the comment answers %+v, want no changed_by_run and no interaction", direction, byRun)
-			case login == alice && direction == "to" && len(byRun) != 0:
-				t.Errorf("alice's ?to= of the comment answers %+v: the changed_by_run points away from it", byRun)
-			case login == alice && direction == "from":
-				if len(byRun) != 1 || byRun[0].Kind != graphstore.TupleChangedByRun || byRun[0].Direction != "out" {
-					t.Fatalf("alice's references of comment %s hold %+v, want its one changed_by_run to the interaction of run %s",
-						comment, byRun, run.ID)
-				}
-				node := byRun[0].Node
-				if node.Kind != graphstore.KindInteraction || node.ID != run.ID || node.Ref != interactionRef {
-					t.Errorf("the changed_by_run of the comment ends at %+v, want the interaction at %s", node, interactionRef)
-				}
-				if byRun[0].Excerpt == nil || byRun[0].Excerpt.Text != words {
-					t.Errorf("the interaction answers the excerpt %+v, want the run's words %q character for character", byRun[0].Excerpt, words)
-				}
+		}
+	}
+
+	// Each node the run changed holds one changed_by_run tuple, to the interaction of the run.
+	for _, changed := range []struct{ kind, id string }{{graphstore.KindComment, comment}, {graphstore.KindIssue, issue}} {
+		held, err := graphstore.CurrentOut(ctx, database.Pool, changed.kind, changed.id, []string{graphstore.TupleChangedByRun})
+		if err != nil {
+			t.Fatalf("read the %s's changed_by_run: %v", changed.kind, err)
+		}
+		t.Logf("the %s's changed_by_run in the store: %+v", changed.kind, held)
+		if len(held) != 1 || held[0].ToKind != graphstore.KindInteraction || held[0].ToID != run.ID {
+			t.Fatalf("%s %s holds the changed_by_run %+v, want one to the interaction of run %s", changed.kind, changed.id, held, run.ID)
+		}
+	}
+
+	// Alice reads the interaction at its own address, both ways: her words whole as its text, and,
+	// out of it, its one authored_by, to her person node, and its frames, the two it appended and
+	// then the terminal one, in sequence.
+	for _, direction := range []string{"to", "from"} {
+		interaction := referencesAt(t, handler, direction, interactionRef, alice)
+		t.Logf("alice's ?%s=%s: status=%d body=%s", direction, interactionRef, interaction.Code, interaction.Body.String())
+		if interaction.Code != http.StatusOK {
+			t.Fatalf("alice's ?%s= of her run's interaction answers %d %s", direction, interaction.Code, interaction.Body.String())
+		}
+		answer := decodeBody[model.GraphReferences](t, interaction)
+		if answer.Node.Kind != graphstore.KindInteraction || answer.Node.Ref != interactionRef {
+			t.Errorf("alice's ?%s= of %s answers the node %+v", direction, interactionRef, answer.Node)
+		}
+		if answer.Node.Text != words {
+			t.Errorf("alice's ?%s= of %s answers the text %q, %d runes, want the run's whole words, %d runes, character for character",
+				direction, interactionRef, answer.Node.Text, len([]rune(answer.Node.Text)), len(whole))
+		}
+		if direction == "to" {
+			continue
+		}
+		authored := slices.DeleteFunc(slices.Clone(answer.Edges), func(edge model.GraphEdge) bool { return edge.Kind != graphstore.TupleAuthoredBy })
+		if len(authored) != 1 || authored[0].Node.Kind != graphstore.KindPerson || authored[0].Node.ID != alice {
+			t.Errorf("alice's run answers the authored_by %+v, want one to her person node", authored)
+		}
+		if len(answer.Node.Frames) < len(frames) {
+			t.Fatalf("alice's run answers the frames %+v, want at least the %d it stored", answer.Node.Frames, len(frames))
+		}
+		for index, want := range frames {
+			got := answer.Node.Frames[index]
+			data, err := json.Marshal(got.Data)
+			if err != nil {
+				t.Fatalf("encode frame %d's data: %v", index+1, err)
+			}
+			wantData, err := json.Marshal(want.Data)
+			if err != nil {
+				t.Fatalf("encode the stored frame %d's data: %v", index+1, err)
+			}
+			if got.Sequence != index+1 || got.Name != want.Name || !jsonEqual(t, data, string(wantData)) {
+				t.Errorf("frame value %d of the run is %d %s %s, want %d %s %s", index+1, got.Sequence, got.Name, data, index+1, want.Name, wantData)
 			}
 		}
 	}
 
-	// The comment's node holds one changed_by_run tuple, to the interaction of the run.
-	held, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindComment, comment, []string{graphstore.TupleChangedByRun})
-	if err != nil {
-		t.Fatalf("read the comment's changed_by_run: %v", err)
-	}
-	t.Logf("the comment's changed_by_run in the store: %+v", held)
-	if len(held) != 1 || held[0].ToKind != graphstore.KindInteraction || held[0].ToID != run.ID {
-		t.Fatalf("comment %s holds the changed_by_run %+v, want one to the interaction of run %s", comment, held, run.ID)
-	}
-
-	// Alice reads the interaction at its own address: its one authored_by, to her person node, and
-	// its frames, the two it appended and then the terminal one, in sequence.
-	interaction := referencesAt(t, handler, "from", interactionRef, alice)
-	t.Logf("alice's ?from=%s: status=%d body=%s", interactionRef, interaction.Code, interaction.Body.String())
-	if interaction.Code != http.StatusOK {
-		t.Fatalf("alice's read of her run's interaction answers %d %s", interaction.Code, interaction.Body.String())
-	}
-	answer := decodeBody[model.GraphReferences](t, interaction)
-	if answer.Node.Kind != graphstore.KindInteraction || answer.Node.Ref != interactionRef {
-		t.Errorf("alice's read of %s answers the node %+v", interactionRef, answer.Node)
-	}
-	authored := slices.DeleteFunc(slices.Clone(answer.Edges), func(edge model.GraphEdge) bool { return edge.Kind != graphstore.TupleAuthoredBy })
-	if len(authored) != 1 || authored[0].Node.Kind != graphstore.KindPerson || authored[0].Node.ID != alice {
-		t.Errorf("alice's run answers the authored_by %+v, want one to her person node", authored)
-	}
-	if len(answer.Node.Frames) < len(frames) {
-		t.Fatalf("alice's run answers the frames %+v, want at least the %d it stored", answer.Node.Frames, len(frames))
-	}
-	for index, want := range frames {
-		got := answer.Node.Frames[index]
-		data, err := json.Marshal(got.Data)
-		if err != nil {
-			t.Fatalf("encode frame %d's data: %v", index+1, err)
-		}
-		wantData, err := json.Marshal(want.Data)
-		if err != nil {
-			t.Fatalf("encode the stored frame %d's data: %v", index+1, err)
-		}
-		if got.Sequence != index+1 || got.Name != want.Name || !jsonEqual(t, data, string(wantData)) {
-			t.Errorf("frame value %d of the run is %d %s %s, want %d %s %s", index+1, got.Sequence, got.Name, data, index+1, want.Name, wantData)
-		}
-	}
-
-	// The tuple points away from the comment, so the issue's count moves alike for both; alice's
-	// person node's is one more for her, the run's authored_by, and unmoved for bob.
+	// Each tuple points away from the node the run changed, so the issue's count moves alike for
+	// both; alice's person node's is one more for her, the run's authored_by, and unmoved for bob.
 	moved := func(login string) int { return after[login].issueCount - before[login].issueCount }
 	if moved(alice) != moved(bob) {
 		t.Errorf("the issue's backlink count moved by %d for alice and by %d for bob, want the same", moved(alice), moved(bob))
@@ -262,7 +303,7 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 		}
 	}
 	for _, body := range after[bob].bodies {
-		if strings.Contains(body, words) || strings.Contains(body, run.ID) {
+		if strings.Contains(body, excerpt) || strings.Contains(body, run.ID) {
 			t.Errorf("bob read the run in %s", body)
 		}
 	}
