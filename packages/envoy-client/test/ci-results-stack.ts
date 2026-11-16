@@ -409,6 +409,8 @@ export async function startCIResultsStack(options: {
 
 /** The CLI of this checkout, as a shell outside the package runs it. */
 const CLI = `bun ${path.resolve(import.meta.dir, "..", "bin", "dispatch.ts")}`;
+/** The module the CLI resolves a CI job's credential with (`ownIdentityDispatch`). */
+const OWN_IDENTITY = path.resolve(import.meta.dir, "..", "src", "dispatch-config.ts");
 
 /** Resolves on the first Ctrl-C or SIGTERM. */
 function untilInterrupted(): Promise<void> {
@@ -473,12 +475,17 @@ async function wholeStack(): Promise<void> {
     console.log("# The try line: one stored result, then a session's read of it:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${tested}`);
     console.log(
-      `env -u AGENT_SECRETS_URL DISPATCH_TOKEN='${stack.dispatch.token}' ${CLI} results --project ${stack.project} --commit ${tested}`
+      `env -u AGENT_SECRETS_URL DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN='${stack.dispatch.token}' ${CLI} results --project ${stack.project} --commit ${tested}`
     );
     console.log("# Each control is refused:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${other}   # another commit`);
     console.log(`${result} --check ${OTHER_JOBS_CHECK} --commit ${tested}   # another job`);
-    console.log(`${CLI} issues --project ${stack.project}   # another route`);
+    // No command presents a results token on another route: the session path of the CLI takes
+    // no session a result entry fixes. So the job's own credential, as `dispatch result
+    // --project` resolves it, is presented by hand, and only the answer's status and code print.
+    console.log(
+      `bun -e 'import { ownIdentityDispatch } from "${OWN_IDENTITY}"; const d = ownIdentityDispatch(process.env); const url = d.url + "/api/v1/issues?project=${stack.project}"; const r = await fetch(url, { headers: await d.credential.headers("GET", url) }); console.log(r.status, (await r.json()).code)'   # another route`
+    );
     console.log(
       `ACTIONS_ID_TOKEN_REQUEST_TOKEN='${forged.ACTIONS_ID_TOKEN_REQUEST_TOKEN}' ${result} --check ${PROBE_CHECK} --commit ${tested}   # a forged token`
     );
