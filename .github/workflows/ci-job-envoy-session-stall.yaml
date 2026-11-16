@@ -118,10 +118,10 @@ jobs:
       # over real go test reports in a checkout of the job's commit, writes one result for each
       # check whose test ran through the real CLI, broker and Dispatch of the stack above, per test,
       # per leg and per attempt, and nothing for a check whose test did not run.
-      # acceptance-tci2-red.live.test.ts checks that the stored text of an output over 64 KiB
+      # ci-report-long-output.live.test.ts checks that the stored text of an output over 64 KiB
       # keeps the start of that output. Each file builds ./cmd/ci-report from this tree.
       - name: The fixture CI job's results through ci-report, the real broker and a real Dispatch
-        run: bun test src/__tests__/ci-report.live.test.ts src/__tests__/acceptance-tci2-red.live.test.ts
+        run: bun test src/__tests__/ci-report.live.test.ts src/__tests__/ci-report-long-output.live.test.ts
         working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

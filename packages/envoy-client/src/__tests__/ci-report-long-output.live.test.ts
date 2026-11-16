@@ -10,18 +10,18 @@ import {
 import { dispatchStackEnabled } from "../../test/dispatch-stack";
 import { buildGoBinaries } from "../../test/envoy-stack";
 
-// Red test of the t-ci-2 acceptance run at b121dfc35f (D2): the stored text of a test whose output
-// is longer than 64 KiB starts in the middle of that output, and nothing in it says that its start
-// was cut. The report is the events of a real `go test -json` run of the acceptance run's module:
-// TestSeventyK prints "START-MARKER of TestSeventyK", 70 lines of 1023 "s", "END-MARKER of
-// TestSeventyK" and fails; TestThreeK prints its start marker, 3000 "k" and its end marker and
-// fails (the control: its start is kept today).
+// The stored text of a test whose output is longer than 64 KiB starts at the output's own start,
+// or says before the test's body that its start was cut. The report is the events of a real
+// `go test -json` run of a module example.com/acc: TestSeventyK prints "START-MARKER of
+// TestSeventyK", 70 lines of 1023 "s", "END-MARKER of TestSeventyK" and fails; TestThreeK prints
+// its start marker, 3000 "k" and its end marker and fails, and its stored text is the control,
+// which starts at its start whatever the reader keeps of a long output.
 
 const { PATH: SHELL_PATH = "" } = process.env;
 const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
-const FIXTURES = join(import.meta.dir, "..", "..", "test", "fixtures", "acceptance-tci2");
+const FIXTURES = join(import.meta.dir, "..", "..", "test", "fixtures", "ci-report-long-output");
 const stackDirectory = useCIResultsStackDirectory();
-const work = temporaryDirectory("acceptance-tci2-red");
+const work = temporaryDirectory("ci-report-long-output");
 
 function git(cwd: string, ...args: string[]): string {
   const ran = Bun.spawnSync(
@@ -66,7 +66,7 @@ describe.skipIf(!dispatchStackEnabled)("a long output of a test, as Dispatch kee
     await buildGoBinaries({
       bin: join(work, "bin"),
       packages: ["./cmd/ci-report"],
-      stack: "acceptance red test",
+      stack: "long output of a test",
       binaries: "./cmd/ci-report",
     });
     stack = await startCIResultsStack({ work: stackDirectory });

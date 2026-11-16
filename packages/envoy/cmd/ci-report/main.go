@@ -26,7 +26,9 @@
 // sends a NUL as U+FFFD. <dispatch-cli> is split at white space, with no quoting, and is
 // "dispatch" when the flag is left out. A skip, a test the report does not hold and a test that
 // ran twice get no call. Each run writes its results again: a second run of the step at one
-// commit stores a second result of each check, Dispatch keeps each, and the newest counts.
+// commit stores a second result of each check, and Dispatch keeps each and decides the state from
+// all of them. At one commit, a pass and a failure of one check make its state unknown, and a
+// later pass does not end the report of the failure (R7).
 //
 // It prints one JSON line on standard output for each check of the job, in the tree's order:
 // {"check","test","outcome","exit","result_id","why"}. exit is the command's exit status, -1 when
@@ -35,11 +37,13 @@
 // Dispatch answers the row itself (`dispatch results --project`). A write that landed with its
 // answer lost, which the command prints as {"landed_without_answer":"<code>"} with exit 0, is a
 // stored result whose id is unknown: its result_id is empty and why says so. why says why a check
-// got no call, and holds what the command printed on both streams when a call failed, which stored
-// nothing: the command prints a refusal on standard output. The line holds no raw line break, as
-// encoding/json escapes each control character, and the "[" of each "##[" in it is written as
-// \u005b, which a JSON reader reads back as "[", so the line starts no workflow command of a
-// runner's log. Every other line goes to standard error through runnerlog.Say with the prefix
+// got no call, and holds what the command printed on both streams when a call failed: the command
+// prints a refusal on standard output. A refused call stored nothing. A call that failed in
+// transport may have stored its result, and a second run of the step is safe, since Dispatch keeps
+// each result. The line holds no raw line break, as encoding/json escapes each control character,
+// and the "[" of each "##[" in it is written as \u005b, which a JSON reader reads back as "[", so
+// the line starts no workflow command of a runner's log. Every other line goes to standard error
+// through runnerlog.Say with the prefix
 // "ci-report: ", ending with "<n> checks of <dir> at <sha> name job <job>; <n> results written,
 // <n> calls failed".
 //
@@ -77,8 +81,10 @@ const help = `
 ci-report writes one result to Dispatch, with <argv> result --project, for each check of the
 spec files in <dir> whose job is <job> and whose test ran in the go test -json report <file>.
 It reads the spec files at the commit of the checkout (git rev-parse HEAD), through git, and
-never the files of the working tree. A second run writes each result again: Dispatch keeps
-each result, and the newest counts.
+never the files of the working tree. A second run writes each result again, and Dispatch keeps
+each result and decides the state from all of them.
+At one commit, a pass and a failure of one check make its state unknown,
+and a later pass does not end the report of the failure (R7).
 
 Exit status:
   0  each call stored its result, or no check of the job had a test that ran
@@ -278,9 +284,11 @@ func loadReport(path string) ([]specgraph.TestOutcome, error) {
 
 // record runs the dispatch command cli once for the check of p, and answers its exit status, the
 // id of the stored result, what its line says of the call, and whether the call stored the
-// result. A call that failed stored nothing, and its words are what it wrote on both streams: the
+// result. A refused call stored nothing, and its words are what it wrote on both streams: the
 // command prints a refusal of Dispatch or of the broker on standard output (`print` in
-// packages/envoy-client/src/dispatch-cli.ts), and its warnings on standard error. Of a call that
+// packages/envoy-client/src/dispatch-cli.ts), and its warnings on standard error. A call that
+// failed in transport may have stored its result: it counts as failed, and a second run of the
+// step is safe, since Dispatch keeps each result. Of a call that
 // stored its result it reads only the stored row's id, and it never prints the rest. A write that
 // landed with its answer lost, {"landed_without_answer":"<code>"} with exit 0, stored the result,
 // and its id is unknown.

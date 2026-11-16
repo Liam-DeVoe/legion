@@ -122,7 +122,7 @@ func TestTheBuiltBinary(t *testing.T) {
 	const (
 		notRun    = "the test did not run at this commit"
 		notEnded  = "the report gives the test no one end: go test stopped it at its time limit, its process or the job ended inside it, or the report gives it two ends"
-		bunRunner = `the test did not run at this commit: specgraph: selector is not <import path> <TopLevelTestName> for runner go: runner "bun"`
+		bunRunner = `the reporter reads go test reports only; this check's runner is bun`
 	)
 	// lines is every line ci-report prints for testdata/spec at a run where each call stored its
 	// result, with each recorded check's exit and result id given.
@@ -318,8 +318,8 @@ Failing example: A read that waits for a lock that nobody holds.
 		outside := copyOf(t, filepath.Join("testdata", "spec"))
 		stub := newStub(t)
 		got := runReporter(t, binary, dir, stub.env("store"), "--dir", outside, "--job", job, "--report", report, "--project", "ACME", "--dispatch-cli", stub.path)
-		if got.code != 2 || got.stdout != "" || !strings.Contains(got.stderr, "ci-report: "+outside+": cannot be read") || !strings.Contains(got.stderr, "outside repository") {
-			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no line and a line that names %s outside the repository", got.code, got.stdout, got.stderr, outside)
+		if want := "ci-report: " + outside + ": is outside the checkout, so its files at the commit cannot be read\n"; got.code != 2 || got.stdout != "" || !strings.HasSuffix(got.stderr, want) {
+			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no line and stderr ending %q", got.code, got.stdout, got.stderr, want)
 		}
 		if calls := stub.calls(t); len(calls) != 0 {
 			t.Errorf("the stub got %d calls, want none", len(calls))
@@ -338,7 +338,25 @@ Failing example: A read that waits for a lock that nobody holds.
 		commit := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
 		stub := newStub(t)
 		got := runReporter(t, binary, dir, stub.env("store"), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
-		want := "ci-report: " + filepath.Join(dir, ".dispatch", "spec") + ": is a blob at " + commit + ", not a directory\n"
+		want := "ci-report: " + filepath.Join(dir, ".dispatch", "spec") + ": is a file at " + commit + ", not a directory\n"
+		if got.code != 2 || got.stdout != "" || !strings.HasSuffix(got.stderr, want) {
+			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no line and stderr ending %q", got.code, got.stdout, got.stderr, want)
+		}
+		if calls := stub.calls(t); len(calls) != 0 {
+			t.Errorf("the stub got %d calls, want none", len(calls))
+		}
+	})
+
+	t.Run("a spec directory that the commit holds as a submodule is refused in the reporter's words, and no result is written", func(t *testing.T) {
+		t.Parallel()
+		dir, _ := checkout(t, "")
+		// A submodule's commit is another repository's, so this one holds no object of it.
+		git(t, dir, "update-index", "--add", "--cacheinfo", "160000,"+otherSHA+",.dispatch/spec")
+		git(t, dir, "commit", "-q", "-m", "a submodule where the spec directory goes")
+		commit := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+		stub := newStub(t)
+		got := runReporter(t, binary, dir, stub.env("store"), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+		want := "ci-report: " + filepath.Join(dir, ".dispatch", "spec") + ": is a submodule at " + commit + ", not a directory\n"
 		if got.code != 2 || got.stdout != "" || !strings.HasSuffix(got.stderr, want) {
 			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no line and stderr ending %q", got.code, got.stdout, got.stderr, want)
 		}
@@ -402,6 +420,10 @@ Failing example: A read that waits for a lock that nobody holds.
 			if !strings.Contains("\n"+statuses, "\n"+want) {
 				t.Errorf("the help names no exit status %q under \"Exit status:\":\n%s", want, got.stderr)
 			}
+		}
+		// R7: a commit holds one answer, so the help never says that a later result decides it.
+		if want := "At one commit, a pass and a failure of one check make its state unknown,\nand a later pass does not end the report of the failure (R7)."; !strings.Contains(got.stderr, want) || strings.Contains(got.stderr, "newest") {
+			t.Errorf("the help gives a second run's results no R7 rule %q, or says that the newest counts:\n%s", want, got.stderr)
 		}
 	})
 

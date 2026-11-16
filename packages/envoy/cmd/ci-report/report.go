@@ -44,6 +44,11 @@ func planReports(tree specgraph.Tree, job string, ran []specgraph.TestOutcome) [
 			continue
 		}
 		p := Planned{Check: check.ID, Test: check.Test.Selector}
+		if check.Test.Runner != "go" {
+			p.Outcome, p.Why = outcomeAbsent, "the reporter reads go test reports only; this check's runner is "+check.Test.Runner
+			planned = append(planned, p)
+			continue
+		}
 		matched, err := specgraph.MatchTests(*check.Test, ran)
 		switch {
 		case err != nil:

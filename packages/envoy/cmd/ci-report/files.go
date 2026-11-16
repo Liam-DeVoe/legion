@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,8 +24,9 @@ import (
 // of every spec file is checked with notes.CheckSize before any file is read, and the length of
 // each file read is checked again. Its answers are notes.ReadSet's: notes.ErrNoDirectory for a
 // path that the commit does not hold, a *notes.SizeRefusal for a file over the bound, and an
-// error for any other case, a path that the commit holds as a file or one outside the checkout
-// included. dir is absolute, and git reads it from the working directory, the checkout.
+// error for any other case, in the reporter's words for a path outside the checkout and for one
+// that the commit holds as a file, a symbolic link or a submodule (treeAt). dir is absolute, and
+// it is read from the working directory, the checkout.
 func filesAt(dir, commit string) (notes.Set, error) {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -34,26 +36,23 @@ func filesAt(dir, commit string) (notes.Set, error) {
 	if err != nil {
 		return notes.Set{}, fmt.Errorf("cannot be read: %w", err)
 	}
-	// "./" makes git read the path from the working directory, and refuse one outside the
-	// checkout. The name starts with the commit, so it never reads as a flag.
-	tree, err := runGit(nil, "rev-parse", "--verify", "--quiet", commit+":./"+filepath.ToSlash(rel))
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) && exitError.ExitCode() == 1 {
-		return notes.Set{}, notes.ErrNoDirectory
-	} else if err != nil {
-		return notes.Set{}, fmt.Errorf("cannot be read: %w", err)
-	}
-	sha := strings.TrimSpace(string(tree))
-	kind, err := runGit(nil, "cat-file", "-t", sha)
+	// The path from the checkout's root: the working directory's own path (git's prefix), then
+	// dir from the working directory. A path that leaves the root is not a path of the commit.
+	prefix, err := runGit(nil, "rev-parse", "--show-prefix")
 	if err != nil {
 		return notes.Set{}, fmt.Errorf("cannot be read: %w", err)
 	}
-	if kind := strings.TrimSpace(string(kind)); kind != "tree" {
-		return notes.Set{}, fmt.Errorf("is a %s at %s, not a directory", kind, commit)
+	at := path.Clean(strings.TrimSuffix(string(prefix), "\n") + filepath.ToSlash(rel))
+	if at == ".." || strings.HasPrefix(at, "../") {
+		return notes.Set{}, errors.New("is outside the checkout, so its files at the commit cannot be read")
+	}
+	tree, err := treeAt(commit, at)
+	if err != nil {
+		return notes.Set{}, err
 	}
 	// --full-tree: ls-tree otherwise lists only the entries under the working directory's own
 	// path, which a tree of a directory below the checkout's root does not hold.
-	listing, err := runGit(nil, "ls-tree", "--full-tree", "-z", "-l", sha)
+	listing, err := runGit(nil, "ls-tree", "--full-tree", "-z", "-l", tree)
 	if err != nil {
 		return notes.Set{}, fmt.Errorf("cannot be read: %w", err)
 	}
@@ -106,6 +105,38 @@ func filesAt(dir, commit string) (notes.Set, error) {
 	}
 	set.Files = files
 	return set, nil
+}
+
+// treeAt is the tree object of the directory at, a path from the checkout's root, at commit. It
+// reads the path's own entry of the commit's tree (`git ls-tree`, its pathspec read literally), so
+// a path that the commit holds as a file, a symbolic link or a submodule is refused with the
+// entry's kind, as notes.GitKind names it, and never read; a path that the commit does not hold
+// is notes.ErrNoDirectory.
+func treeAt(commit, at string) (string, error) {
+	if at == "." {
+		tree, err := runGit(nil, "rev-parse", "--verify", commit+"^{tree}")
+		if err != nil {
+			return "", fmt.Errorf("cannot be read: %w", err)
+		}
+		return strings.TrimSpace(string(tree)), nil
+	}
+	entry, err := runGit(nil, "--literal-pathspecs", "ls-tree", "--full-tree", "-z", commit, "--", at)
+	if err != nil {
+		return "", fmt.Errorf("cannot be read: %w", err)
+	}
+	if len(entry) == 0 {
+		return "", notes.ErrNoDirectory
+	}
+	// <mode> SP <type> SP <object> TAB <name> NUL, one entry: the path's own.
+	meta, name, ok := strings.Cut(strings.TrimSuffix(string(entry), "\x00"), "\t")
+	fields := strings.Fields(meta)
+	if !ok || len(fields) != 3 || name != at {
+		return "", fmt.Errorf("cannot be read: git ls-tree printed the entry %q for %s", entry, at)
+	}
+	if kind := notes.GitKind(fields[1], fields[0]); kind != notes.KindDirectory {
+		return "", fmt.Errorf("is a %s at %s, not a directory", kind, commit)
+	}
+	return fields[2], nil
 }
 
 // readBlobs is the content of each blob of shas, in order, read with one `git cat-file --batch`,

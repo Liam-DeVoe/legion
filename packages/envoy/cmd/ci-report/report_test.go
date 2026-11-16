@@ -106,7 +106,7 @@ func TestEachCheckHasTheOutcomeOfItsTest(t *testing.T) {
 		}, ""},
 		{"a test of runner bun is absent, and the reason names the runner", "the-page-shows-the-claim", Planned{
 			Test: "packages/web/src/claims.test.ts", Outcome: "absent",
-			Why: `the test did not run at this commit: specgraph: selector is not <import path> <TopLevelTestName> for runner go: runner "bun"`,
+			Why: `the reporter reads go test reports only; this check's runner is bun`,
 		}, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {

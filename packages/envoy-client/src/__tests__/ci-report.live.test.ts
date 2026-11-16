@@ -515,6 +515,10 @@ describe.skipIf(!dispatchStackEnabled)(
       expect(rows.find((row) => row.attestation.predicate.leg === "a")).toEqual(before as Row);
     }, 180_000);
 
+    // This row cannot fail for a fault of the reporter: it reads no rows at a commit where no step
+    // ran, and the UNKNOWN text comes from this file's own readCheck. No product code decides
+    // "unknown" yet; the graph logic owns that. So nobody may count this row as evidence that "a
+    // step that left no result reads as unknown".
     test("a job cancelled before its last step leaves no row at its commit, which reads as unknown and never as a pass", async () => {
       // Another push, whose job did report, holds a pass of the same check at its own commit.
       const reported = checkoutOf("cancelled-sibling", SPEC);
@@ -530,6 +534,34 @@ describe.skipIf(!dispatchStackEnabled)(
       expect({ rows: rows.length, read }).toEqual({
         rows: 0,
         read: `UNKNOWN: Dispatch recorded nothing for run ${runId}`,
+      });
+    }, 120_000);
+
+    // v-recorder: a build that records a result for another commit than the one that the job
+    // tested fails. The job's token and GITHUB_SHA name the commit that the job tested; the
+    // checkout then moves to a commit of its own, and the step reads that commit with git, so
+    // Dispatch refuses each write, and no row is stored at either commit.
+    test("a checkout whose HEAD moved after the job's commit writes no result for either commit, and each write is refused", async () => {
+      const checkout = checkoutOf("moved-head", SPEC);
+      const run = jobOf(checkout, 901);
+      git(checkout.dir, "commit", "--allow-empty", "-q", "-m", "the checkout moves");
+      const moved = git(checkout.dir, "rev-parse", "HEAD").trim();
+      expect(moved).not.toBe(checkout.sha);
+
+      const reported = await lastStep(checkout, run, "go-test-all-pass.jsonl");
+
+      expect({
+        code: reported.code,
+        lines: outcomes(reported),
+        refused: reported.lines.map((line) => line.why.startsWith("COMMIT_NOT_THE_RUNS:")),
+      }).toEqual({
+        code: 1,
+        lines: [`${PROBE} pass exit 1`, `${SECOND} pass exit 1`],
+        refused: [true, true],
+      });
+      expect({ tested: await rowsAt(checkout.sha), moved: await rowsAt(moved) }).toEqual({
+        tested: [],
+        moved: [],
       });
     }, 120_000);
   }
