@@ -24,7 +24,10 @@ test("the owner makes a group in Settings, names it and a person on the Access t
     has: page.getByRole("cell", { exact: true, name: "crew" }),
   });
   await expect(crewRow.getByRole("cell", { exact: true, name: "alice (you)" })).toBeVisible();
-  await expect(crewRow.getByRole("cell", { exact: true, name: "carol@example.com" })).toBeVisible();
+  // Nobody has signed in as carol on this stack, so the group says so beside her email.
+  await expect(
+    crewRow.getByRole("cell", { exact: true, name: "carol@example.com (not signed in yet)" })
+  ).toBeVisible();
 
   // The Access tab: alice made CORE, so she owns it, and its list names nobody yet.
   await page.goto("/projects/CORE/access");
@@ -39,6 +42,7 @@ test("the owner makes a group in Settings, names it and a person on the Access t
   const people = access.getByRole("list", { exact: true, name: "People" });
   await expect(people.getByRole("listitem")).toHaveCount(1);
   await expect(people).toContainText("carol@example.com");
+  await expect(people).toContainText("not signed in yet");
   await access.getByLabel("Add a group").selectOption("crew");
   await access.getByRole("button", { name: "Add group" }).click();
   const groups = access.getByRole("list", { exact: true, name: "Groups" });
