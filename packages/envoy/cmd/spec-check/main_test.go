@@ -236,6 +236,31 @@ func TestTheBuiltBinary(t *testing.T) {
 		expect(t, runBinary(t, binary, "", "changes", "--base", fixture(t, "changes", "relations", "base"), "--dir", fixture(t, "changes", "relations", "head")),
 			result{stdout: "spec-check: a-claim-survives-a-restart: relations\nspec-check: a-lost-claim-is-reported: text, parent\n"})
 	})
+	// Git keeps no empty directory, so a version with no spec file has no .dispatch/spec, and the
+	// first change that adds a spec file, or the change that removes the last one, compares a tree
+	// with a directory that does not exist.
+	t.Run("changes reads a base that does not exist as the empty tree", func(t *testing.T) {
+		t.Parallel()
+		base := filepath.Join(t.TempDir(), "missing")
+		expect(t, runBinary(t, binary, "", "changes", "--base", base, "--dir", valid), result{
+			stdout: "spec-check: a-claim-survives-a-restart: added\nspec-check: legion-keeps-each-claim-in-dispatch: added\nspec-check: legion-reads-issues-only-through-dispatch: added\n",
+			stderr: "spec-check: " + base + ": does not exist, so it is read as the empty tree\n",
+		})
+	})
+	t.Run("changes reads a directory that does not exist as the empty tree", func(t *testing.T) {
+		t.Parallel()
+		head := filepath.Join(t.TempDir(), "missing")
+		expect(t, runBinary(t, binary, "", "changes", "--base", valid, "--dir", head), result{
+			stdout: "spec-check: a-claim-survives-a-restart: removed\nspec-check: legion-keeps-each-claim-in-dispatch: removed\nspec-check: legion-reads-issues-only-through-dispatch: removed\n",
+			stderr: "spec-check: " + head + ": does not exist, so it is read as the empty tree\n",
+		})
+	})
+	t.Run("changes reads an empty base directory as the empty tree", func(t *testing.T) {
+		t.Parallel()
+		expect(t, runBinary(t, binary, "", "changes", "--base", t.TempDir(), "--dir", valid), result{
+			stdout: "spec-check: a-claim-survives-a-restart: added\nspec-check: legion-keeps-each-claim-in-dispatch: added\nspec-check: legion-reads-issues-only-through-dispatch: added\n",
+		})
+	})
 	t.Run("changes exits 2 when a tree has a problem", func(t *testing.T) {
 		t.Parallel()
 		base := fixture(t, "trees", "leaf-without-check")

@@ -1,17 +1,21 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
 // runChanges is "spec-check changes --base <dir> --dir <dir>": it prints one line for each
 // statement that changed from the base to the directory, or one line that none did, and answers
 // 0; 2 when either tree has a problem, with the problems of both on stderr, or for a directory it
-// cannot read or arguments it does not take.
+// cannot read or arguments it does not take. A directory that does not exist is the empty tree,
+// with a line on stderr that says so: git keeps no empty directory, so a version with no spec file
+// has no directory, and the importer reads a missing directory as the empty set.
 func runChanges(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("changes", flag.ContinueOnError)
 	baseFlag := flags.String("base", "", "the directory of spec files of the earlier version")
@@ -27,7 +31,10 @@ func runChanges(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		j, err := judge(stderr, dir, specgraph.Options{})
-		if err != nil {
+		switch {
+		case errors.Is(err, notes.ErrNoDirectory):
+			say(stderr, "%s: does not exist, so it is read as the empty tree", dir)
+		case err != nil:
 			return cannotJudge(stderr, dir, err)
 		}
 		j.sayProblems(stderr)
