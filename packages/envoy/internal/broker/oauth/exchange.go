@@ -422,10 +422,14 @@ var errIssuerNotTaken = errors.New("oauth: the subject token's iss names no issu
 // kubernetesKeyFunc is the Kubernetes subject token type's ValidateFunc: it reads the unverified
 // token's `iss`, and answers keyFunc's key from the keys of the one of issuers that `iss` names,
 // so the library checks the token's signature against that issuer's keys alone. A token whose
-// `iss` names none of them is errIssuerNotTaken, and reads no issuer's keys.
+// `iss` names none of them, or whose `iss` is no string, is errIssuerNotTaken, with the claim's
+// own fault where it has one, and reads no issuer's keys.
 func kubernetesKeyFunc(issuers []IssuerConfig) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
-		iss, _ := token.Claims.GetIssuer()
+		iss, err := token.Claims.GetIssuer()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errIssuerNotTaken, err)
+		}
 		for _, issuer := range issuers {
 			if issuer.Issuer == iss {
 				return keyFunc(issuer.Keys)(token)

@@ -883,7 +883,8 @@ func deletedOutcome(read releaseRead) api.ReleaseOutcome {
 // operator, so no boot starts any of them (R6, R8), and every claim of the pod is taken out of its
 // update round (hold). The release waits for each hold to be stored before it finishes, and a
 // refusal of one is written on that claim's line. The line gives why as its first reason, before
-// any it gave already, such as an ask that could not be written.
+// any it gave already, such as an ask that could not be written, and after it each round the
+// release could not end.
 func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *releasePod, why string) {
 	held := stopTokens(pod.stop)
 	var others []claim.Token
@@ -892,12 +893,15 @@ func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *relea
 			others = append(others, v.Token)
 		}
 	}
-	r.hold(ctx, run, held, others, "the project release leaves its pod: "+why)
+	unended := r.hold(ctx, run, held, others, "the project release leaves its pod: "+why)
 	run.mu.Lock()
 	line := &run.result.Sandboxes[pod.line]
 	reason := why
 	if line.Reason != "" {
 		reason += "; " + line.Reason
+	}
+	for _, round := range unended {
+		reason += "; " + round
 	}
 	line.Outcome, line.Reason = api.ReleaseLeft, reason
 	run.mu.Unlock()
@@ -914,9 +918,12 @@ func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *relea
 // to keep, once an operator's resume lifts the last hold (podupdate.go's heldByOperator). The
 // round goes after the suspension, so the task the round held back is handed to no role the
 // release is stopping. Each claim's requests run on a goroutine of its own, under a store mark of
-// its own, and hold returns once each was answered.
-func (r *projectReleaser) hold(ctx context.Context, run *releaseRun, held, others []claim.Token, reason string) {
+// its own, and hold returns once each was answered, with a sentence for each round it could not
+// end, which the caller writes on the Sandbox's line.
+func (r *projectReleaser) hold(ctx context.Context, run *releaseRun, held, others []claim.Token, reason string) []string {
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var unended []string
 	for i, token := range slices.Concat(held, others) {
 		holds := i < len(held)
 		m, ok := r.machines.Machine(token)
@@ -940,14 +947,19 @@ func (r *projectReleaser) hold(ctx context.Context, run *releaseRun, held, other
 				if err := m.Handle(ctx, supervise.PodUpdateEnded{Claim: token, Round: round}); err != nil {
 					r.log.Warn("project release: take a claim of a Sandbox it leaves out of its update round",
 						"release", run.id, "claim", token, "round", round, "error", err)
+					mu.Lock()
+					unended = append(unended, fmt.Sprintf("%s is still in pod update round %s, which the release could not end: %v", token, round, err))
+					mu.Unlock()
 				}
 			}
 		}()
 	}
 	wg.Wait()
+	slices.Sort(unended)
 	run.mu.Lock()
 	run.held = append(run.held, held...)
 	run.mu.Unlock()
+	return unended
 }
 
 // stopClaims asks each of tokens the project release's suspension, bounded by the release's bound,
@@ -1153,7 +1165,9 @@ func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, other
 				err = r.pods.ReleaseProjectController(ctx, controller)
 			}
 			if err != nil {
-				r.hold(ctx, run, controllers, nil, "the project release leaves the controller's pod: "+err.Error())
+				if unended := r.hold(ctx, run, controllers, nil, "the project release leaves the controller's pod: "+err.Error()); len(unended) > 0 {
+					err = fmt.Errorf("%w; %s", err, strings.Join(unended, "; "))
+				}
 			}
 		case runtime.ProjectSandboxCache, runtime.ProjectSandboxProbe:
 			err = r.pods.DeleteProjectSandbox(ctx, line.Name)

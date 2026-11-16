@@ -472,6 +472,52 @@ func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
 	}
 }
 
+// A round the release could not take a left pod's claim out of is named on the pod's line, so
+// the operator who recovers the pod knows that a round still stands on it before resuming its
+// claims; the store here refuses the write that would end the planner's round.
+func TestProjectReleaseNamesARoundItCouldNotEnd(t *testing.T) {
+	rig := newIdleRigWith(t, idleRigOptions{orphanSweep: 2 * time.Second},
+		idleRigSeed{name: "held", roles: []claim.Role{claim.RoleImplementer, claim.RolePlanner}})
+	held := rig.issue("held")
+	rig.launchAll()
+	implementer, planner := rig.roleToken(held, claim.RoleImplementer), rig.roleToken(held, claim.RolePlanner)
+	if !rig.kube.madeByAnOlderDaemon(held.pod, moveOlderImage) {
+		t.Fatalf("the pod of %s is not in the cluster to stand for an older daemon's", held.key)
+	}
+	idleRigEventually(t, idleRigPodWait, "the update round open over both claims of the older daemon's pod", func() bool {
+		claims := rig.claimsByToken()
+		return claims[implementer].UpdateRound != "" && claims[planner].UpdateRound != ""
+	})
+	if status, body := rig.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(planner)+"/suspend", nil, true); status/100 != 2 {
+		t.Fatalf("suspend %s = %d; body %s", planner, status, body)
+	}
+	idleRigEventually(t, idleRigPodWait, "the operator's suspension of the planner stored, in its round", func() bool {
+		c := rig.claimsByToken()[planner]
+		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByOperator) && c.UpdateRound != ""
+	})
+	for _, statement := range []string{
+		`create function idle_rig_refuse_round_end() returns trigger language plpgsql as $$
+			begin raise exception 'the store refused the write' using errcode = 'serialization_failure'; end $$`,
+		`create trigger idle_rig_refuse_round_end before update on claims for each row
+			when (new.token = '` + string(planner) + `' and old.update_round <> '' and new.update_round = '')
+			execute function idle_rig_refuse_round_end()`,
+	} {
+		if _, err := rig.pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("make the store refuse the end of the planner's round: %v", err)
+		}
+	}
+
+	rig.startRelease("10s")
+	release, _ := rig.awaitReleaseFinished()
+	line := releaseLine(t, release, held.pod)
+	if line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, string(planner)+" is still in pod update round") {
+		t.Fatalf("the pod's line is %+v, want it left, naming the planner's round the release could not end", line)
+	}
+	if strings.Contains(line.Reason, string(implementer)+" is still in") {
+		t.Errorf("the pod's line %q names the implementer's round, which the release ended", line.Reason)
+	}
+}
+
 // putSandbox puts into the cluster a Sandbox the running daemon has not listed, labelled with
 // labels: one whose create the daemon sent just before a project release's mark, and that landed
 // after the release listed the project. It is Suspended, as the runtime creates every Sandbox
