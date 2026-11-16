@@ -358,8 +358,9 @@ func TestAHubListenersIdentityFollowsTheCallout(t *testing.T) {
 }
 
 // A hub whose deployment may make a Dispatch project private tells its own listener so: with
-// privateProjects the listener's environment carries ENVOY_PRIVATE_PROJECTS=1, which makes it
-// decide a project frame carrying no stamp as private (dispatch://INFRA-3862), and without it the
+// privateProjects the listener's environment carries ENVOY_PRIVATE_PROJECTS=1, which a listener
+// that holds each session to its token's projects reads to decide a project frame carrying no
+// stamp as private (dispatch://INFRA-3862), and without it the
 // environment holds no such line. privateProjects needs authCallout, so the listener is the one
 // that connects by its service identity. Both hubs, each read from the environment it renders.
 func TestAPrivateProjectsHubTellsItsListener(t *testing.T) {

@@ -143,8 +143,9 @@ func TestListenerEnvCheck(t *testing.T) {
 }
 
 // The AWS listener carries ENVOY_PRIVATE_PROJECTS=1 exactly when its deployment may make a
-// Dispatch project private (dispatch://INFRA-3862), so the listener decides a project frame that
-// carries no stamp as private. False leaves Variables what it was before the field existed, for
+// Dispatch project private (dispatch://INFRA-3862), which a listener that holds each session to its
+// token's projects reads to decide a project frame that carries no stamp as private. False leaves
+// Variables what it was before the field existed, for
 // the same inputs: the list below, which the merge base's Variables returned (R9), and so every
 // golden under infra/aws/testdata. Negative control, run by hand: copy true into config()
 // whatever the field says; the false row then fails, naming the line.
