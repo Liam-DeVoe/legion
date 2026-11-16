@@ -260,14 +260,17 @@ type Consumers struct {
 //
 // A NATS server that can skip a message on a consumer filtering on a wildcard and a literal at the
 // same token is refused before any consumer is opened, naming its version and the fixed releases
-// (envoy's natsversion.Refusal, the rule the listener refuses one by): the Dispatch consumer filters
-// on the issue family beside this project's mapping subject, and the stream is the listener's, whose
-// session consumers need such a server too. The daemon's boot ends on the error.
+// (envoy's natsversion.ConnectedRefusal, the rule the listener refuses one by): the Dispatch
+// consumer filters on the issue family beside this project's mapping subject, and the stream is the
+// listener's, whose session consumers need such a server too. The daemon's boot ends on the error.
+// The version is read only once the connection is connected: a connection reconnecting when the
+// boot reaches this is waited for, within ctx and natsversion.VersionWait, as the stream lookup
+// after it would wait, and is never read as a server of no version.
 func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
 	}
-	if err := natsversion.Refusal(js.Conn().ConnectedServerVersion()); err != nil {
+	if err := natsversion.ConnectedRefusal(ctx, js.Conn()); err != nil {
 		return nil, fmt.Errorf("open the intake consumers: %w", err)
 	}
 	spec, err := normalizedSpec(spec)
