@@ -334,7 +334,7 @@ jobs:
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
-      worker_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.worker_image }}
+      worker_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.worker_image }}
       # The browser image's build. No `full-ci` term, and none is wanted: the image is what the
       # jobs below pin, so gating its build behind a label would leave a pull request that edits
       # the Dockerfile writing a row whose digest the package does not hold, which the
@@ -3459,89 +3459,6 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!**/*_test.go'
               # END generated
-            # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
-            # job (.github/workflows/worker-image.yaml, which the build reads too): the root
-            # manifest, lockfile, patches and every workspace manifest the plugin stage's frozen
-            # install copies; the packages it copies whole (the daemon with the Dockerfile, the two
-            # plugins and the workspace packages they inline, the Claude Code plugin, whose source
-            # the plugin stage builds into the image's dist/ and legion/ with the .bun-version that
-            # build is pinned to, the skills and the prepack that stages them); the Go workspace; packages/envoy, copied whole for its agent-secrets
-            # binary but for packages/envoy/infra, which the .dockerignore drops, so each of its
-            # top-level directories but infra is named; the scripts that write the image's
-            # third-party notices; the Oh My Pi pin; and the context's .dockerignore. Then a `!`
-            # pattern for each .dockerignore line that drops part of those packages, of
-            # packages/envoy or of skills/, which the step's some-with-excludes reads as an
-            # exclusion, so a pull request touching only files the build does not read builds no
-            # image.
-            # .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a
-            # file the image build reads, including a new top-level directory of packages/envoy, or
-            # matches a file it does not read other than the two workflow files; it reads this
-            # filter only as a flat list, so the one anchor it names is ci_router, which stands
-            # for a single glob and leaves the list flat.
-            worker_image:
-              - *ci_router
-              - '.github/workflows/worker-image.yaml'
-              - 'package.json'
-              - 'bun.lock'
-              - 'patches/**'
-              - 'packages/claude-envoy/**'
-              - 'packages/proof-editor/package.json'
-              - 'packages/proof-editor/proof-sdk-*.tgz'
-              - 'packages/dispatch/package.json'
-              - 'packages/test-fixtures/package.json'
-              - 'docs/site/package.json'
-              - 'packages/daemon/**'
-              - 'packages/pi-envoy/**'
-              - 'packages/pi-legion/**'
-              - 'packages/pi-shared/**'
-              - 'packages/envoy-client/**'
-              - 'packages/broker-client/**'
-              - 'packages/contracts/**'
-              - 'skills/**'
-              - 'go.work'
-              - 'go.work.sum'
-              - 'packages/envoy/*'
-              - 'packages/envoy/agentloop/**'
-              - 'packages/envoy/brokerclient/**'
-              - 'packages/envoy/brokertest/**'
-              - 'packages/envoy/cmd/**'
-              - 'packages/envoy/daemonpermissions/**'
-              - 'packages/envoy/deploy/**'
-              - 'packages/envoy/dispatchbody/**'
-              - 'packages/envoy/docker/**'
-              - 'packages/envoy/docs/**'
-              - 'packages/envoy/going/**'
-              - 'packages/envoy/internal/**'
-              - 'packages/envoy/listenfd/**'
-              - 'packages/envoy/loadtest/**'
-              - 'packages/envoy/migrationid/**'
-              - 'packages/envoy/roleholder/**'
-              - 'packages/envoy/scripts/**'
-              - 'packages/envoy/sessiontiming/**'
-              - 'packages/envoy/testnatsimages/**'
-              - '.omp-pin'
-              - '.bun-version'
-              - '.dockerignore'
-              - 'scripts/pi-plugin-prepack.sh'
-              - 'scripts/third-party-notices.ts'
-              - 'scripts/go-third-party-notices.sh'
-              - 'scripts/assemble-third-party-notices.sh'
-              - '!**/node_modules/**'
-              - '!**/dist/**'
-              - '!**/build/**'
-              - '!**/coverage/**'
-              - '!**/docker-data/**'
-              - '!skills/AGENTS.md'
-              - '!packages/envoy/**/*_test.go'
-              - '!packages/envoy/internal/integration/**'
-              - '!packages/envoy/internal/smoke/**'
-              - '!packages/envoy/deploy/**'
-              - '!packages/envoy/infra/**'
-              # Changelog fragments, which the packages above match and no build reads: .dockerignore
-              # leaves them out of the context, so a pull request that only writes a changelog entry
-              # builds no worker image, and a fragment stays where it was written, so no pattern
-              # here matches nothing.
-              - '!packages/*/.changes/**'
             # Every file the browser image's build reads, for the browser-image job
             # (.github/workflows/browser-image.yaml, which the build reads too): that build's
             # context is .github/docker, so every file under it reaches the build, and the
@@ -3554,8 +3471,8 @@ jobs:
             # refuses a path matched by a filter that decides nothing but an image build and
             # that no build reads by that reading: "browser_image matches
             # .github/ci-images.yaml, which no image build reads, so a pull request touching
-            # only that builds an image for nothing; narrow the filter". worker_image above
-            # leaves .github/scripts/repo-paths.sh out for that same reason, though its build
+            # only that builds an image for nothing; narrow the filter". worker_image, in the third
+            # step, leaves .github/scripts/repo-paths.sh out for that same reason, though its build
             # job runs that script. That refusal does not reach this filter today: the steps of
             # browser-image.yaml's build job are in no BUILD_PLUMBING_STEPS entry of that check
             # and its `attest` job is in none either, so the check reads the browser-image job
@@ -3831,6 +3748,92 @@ jobs:
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
+            # The worker image's job (worker-image). It moved here from the second step when the
+            # graph store's packages grew that step's string past rule 18's margin: it names only
+            # ci_router, which this step writes out.
+            # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
+            # job (.github/workflows/worker-image.yaml, which the build reads too): the root
+            # manifest, lockfile, patches and every workspace manifest the plugin stage's frozen
+            # install copies; the packages it copies whole (the daemon with the Dockerfile, the two
+            # plugins and the workspace packages they inline, the Claude Code plugin, whose source
+            # the plugin stage builds into the image's dist/ and legion/ with the .bun-version that
+            # build is pinned to, the skills and the prepack that stages them); the Go workspace; packages/envoy, copied whole for its agent-secrets
+            # binary but for packages/envoy/infra, which the .dockerignore drops, so each of its
+            # top-level directories but infra is named; the scripts that write the image's
+            # third-party notices; the Oh My Pi pin; and the context's .dockerignore. Then a `!`
+            # pattern for each .dockerignore line that drops part of those packages, of
+            # packages/envoy or of skills/, which the step's some-with-excludes reads as an
+            # exclusion, so a pull request touching only files the build does not read builds no
+            # image.
+            # .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a
+            # file the image build reads, including a new top-level directory of packages/envoy, or
+            # matches a file it does not read other than the two workflow files; it reads this
+            # filter only as a flat list, so the one anchor it names is ci_router, which stands
+            # for a single glob and leaves the list flat.
+            worker_image:
+              - *ci_router
+              - '.github/workflows/worker-image.yaml'
+              - 'package.json'
+              - 'bun.lock'
+              - 'patches/**'
+              - 'packages/claude-envoy/**'
+              - 'packages/proof-editor/package.json'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
+              - 'packages/dispatch/package.json'
+              - 'packages/test-fixtures/package.json'
+              - 'docs/site/package.json'
+              - 'packages/daemon/**'
+              - 'packages/pi-envoy/**'
+              - 'packages/pi-legion/**'
+              - 'packages/pi-shared/**'
+              - 'packages/envoy-client/**'
+              - 'packages/broker-client/**'
+              - 'packages/contracts/**'
+              - 'skills/**'
+              - 'go.work'
+              - 'go.work.sum'
+              - 'packages/envoy/*'
+              - 'packages/envoy/agentloop/**'
+              - 'packages/envoy/brokerclient/**'
+              - 'packages/envoy/brokertest/**'
+              - 'packages/envoy/cmd/**'
+              - 'packages/envoy/daemonpermissions/**'
+              - 'packages/envoy/deploy/**'
+              - 'packages/envoy/dispatchbody/**'
+              - 'packages/envoy/docker/**'
+              - 'packages/envoy/docs/**'
+              - 'packages/envoy/going/**'
+              - 'packages/envoy/internal/**'
+              - 'packages/envoy/listenfd/**'
+              - 'packages/envoy/loadtest/**'
+              - 'packages/envoy/migrationid/**'
+              - 'packages/envoy/roleholder/**'
+              - 'packages/envoy/scripts/**'
+              - 'packages/envoy/sessiontiming/**'
+              - 'packages/envoy/testnatsimages/**'
+              - '.omp-pin'
+              - '.bun-version'
+              - '.dockerignore'
+              - 'scripts/pi-plugin-prepack.sh'
+              - 'scripts/third-party-notices.ts'
+              - 'scripts/go-third-party-notices.sh'
+              - 'scripts/assemble-third-party-notices.sh'
+              - '!**/node_modules/**'
+              - '!**/dist/**'
+              - '!**/build/**'
+              - '!**/coverage/**'
+              - '!**/docker-data/**'
+              - '!skills/AGENTS.md'
+              - '!packages/envoy/**/*_test.go'
+              - '!packages/envoy/internal/integration/**'
+              - '!packages/envoy/internal/smoke/**'
+              - '!packages/envoy/deploy/**'
+              - '!packages/envoy/infra/**'
+              # Changelog fragments, which the packages above match and no build reads: .dockerignore
+              # leaves them out of the context, so a pull request that only writes a changelog entry
+              # builds no worker image, and a fragment stays where it was written, so no pattern
+              # here matches nothing.
+              - '!packages/*/.changes/**'
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache and kvwatch (`go
             # list -deps -test -race` in packages/envoy), and every .md file under packages/envoy,
