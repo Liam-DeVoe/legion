@@ -130,6 +130,13 @@ func TestTheOtherRules(t *testing.T) {
 		}
 		return c
 	}
+	// program makes the check a program check of a go test, with procedure as its procedure.
+	program := func(procedure string) func(*Check) {
+		return func(c *Check) {
+			c.Procedure, c.ProcedureText = ProcedureProgram, procedure
+			c.Test = &Test{Runner: "go", Selector: "example.com/acme/daemon TestARestartKeepsTheClaim", Job: "go-checks"}
+		}
+	}
 	component := func(id string, edit func(*Component)) Component {
 		c := Component{ID: id, Name: "Part " + id, Purpose: "It does one thing.", Pos: pos(20)}
 		if edit != nil {
@@ -176,6 +183,16 @@ func TestTheOtherRules(t *testing.T) {
 			name: "a check and a statement that share an id",
 			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil), check(func(c *Check) { c.ID = "a-claim-survives-a-restart"; c.Pos = pos(9) })}},
 			want: Problem{pos(9), "a-claim-survives-a-restart", "doubled-id", "doubled-id: also at x.md:1"},
+		},
+		{
+			name: "a program procedure that names the go test of its own selector",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(program("The program runs TestARestartKeepsTheClaim, which claims one issue and starts the daemon again."))}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "code-in-text", "code-in-text: procedure names code: TestARestartKeepsTheClaim"},
+		},
+		{
+			name: "a program procedure that names another go test",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(program("The program TestAClaimAtTheTimeLimitStays claims one issue and starts the daemon again."))}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "code-in-text", "code-in-text: procedure names code: TestAClaimAtTheTimeLimitStays"},
 		},
 		{
 			name: "a check with no claim",

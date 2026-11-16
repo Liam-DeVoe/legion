@@ -5,10 +5,11 @@ import (
 	"testing"
 )
 
-// CodeNames finds each of the five signs of code in a text (level_check.py's code_signs and the
-// level format's "How the checker finds code"): a span in backticks, a word with a file ending, a
-// word with a slash between two letters, a word that ends with "()", and a word with an underscore
-// between letters or digits. A plain product name and ordinary prose name no code.
+// CodeNames finds each sign of code in a text (level_check.py's code_signs and the level format's
+// "How the checker finds code", and the name of a Go test): a span in backticks, a word with a
+// file ending, a word with a slash between two letters, a word that ends with "()", a word with an
+// underscore between letters or digits, and a word that has the form of a Go test's name. A plain
+// product name and ordinary prose name no code.
 func TestCodeNames(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -29,6 +30,11 @@ func TestCodeNames(t *testing.T) {
 		{text: "3/4 of a_ value", want: nil},
 		{text: "a `code` span and lib/x.ts", want: []string{"`code`", "lib/x.ts"}},
 		{text: "a\u202fspan\u202fin\u202f`go`", want: []string{"`go`"}},
+		// v-check-shape: "a program check whose procedure names a test". A Go test is named in Go's
+		// own form, with no underscore; the word Test alone, and Tests, name no test.
+		{text: "runs TestARestartLosesNoMessage, then TestB.", want: []string{"TestARestartLosesNoMessage", "TestB"}},
+		{text: "the TestARestart_LosesNoClaim test", want: []string{"TestARestart_LosesNoClaim"}},
+		{text: "Test results. Tests of the daemon, a Testament and Test's end", want: nil},
 		{text: "", want: nil},
 	} {
 		if got := CodeNames(row.text); !slices.Equal(got, row.want) {
