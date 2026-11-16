@@ -2154,7 +2154,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 | `webhooks` | required | The webhooks the listener serves: `["github", "slack"]`, or `[]` for none. With `[]` the container carries no webhook's setting or secret, and the listener mounts no webhook route. This version takes no other list. |
 | `githubWebhookSecretArn`, `reviewerAppId`, `mentionTrigger` | with `github` | Required while `webhooks` lists `github`, refused while it does not. |
 | `slackSigningSecretArn` | with `slack` | Required while `webhooks` lists `slack`, refused while it does not. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private ([dispatch://INFRA-3862](dispatch://INFRA-3862)): the container carries `ENVOY_PRIVATE_PROJECTS=1`, so the listener decides a project frame that carries no stamp as private. False or unset renders the container definitions the listener rendered before the input existed. A program that declares an `aws:WebhookListener` beside an `aws:NatsService` sets it from the same value as the service's `authorization.privateProjects`. `envoy-infra render webhook-listener-env` takes no flag for it yet. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private ([dispatch://INFRA-3862](dispatch://INFRA-3862)): the container carries `ENVOY_PRIVATE_PROJECTS=1`, so the listener decides a project frame that carries no stamp as private. False or unset renders the container definitions the listener rendered before the input existed. A program that declares an `aws:WebhookListener` beside an `aws:NatsService` sets it from the same value as the service's `authorization.privateProjects`; `envoy-infra render webhook-listener-env` takes it as `--private-projects`. |
 | `clusterArn`, `executionRoleArn`, `taskRoleArn` | required | The ECS cluster and the task's two roles. |
 | `executionRoleName` | required | The execution role's name, which the read policies attach to. |
 | `subnetIds` | required | The task's subnets, at least one. |
@@ -2504,12 +2504,14 @@ authorization {
 ### webhook-listener-env
 
 ```text
-envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n>
+envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--private-projects]
 ```
 
 Prints `aws:WebhookListener`'s container environment, one `KEY=value` line per variable in the
-container's order. The secrets ECS injects are not printed. It refuses what the component refuses of
-these inputs, and a value holding a line break, which no line could carry:
+container's order. The secrets ECS injects are not printed. `--private-projects` is the
+component's `privateProjects`, and adds `ENVOY_PRIVATE_PROJECTS=1` where the component writes it.
+It refuses what the component refuses of these inputs, and a value holding a line break, which no
+line could carry:
 
 ```text
 $ envoy-infra render webhook-listener-env --machine-id example-fargate --nats-url nats://example-bus.example-namespace.internal.example:4222 --webhook github --webhook slack --reviewer-app-id 1234567 --mention-trigger @legion --listen-host 0.0.0.0 --nats-replicas 1

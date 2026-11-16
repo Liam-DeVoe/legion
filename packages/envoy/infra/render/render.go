@@ -244,19 +244,21 @@ func natsStartScript(args []string, stdout, stderr io.Writer) int {
 func webhookListenerEnv(args []string, stdout, stderr io.Writer) int {
 	s := newSubcommand("webhook-listener-env",
 		"--machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] "+
-			"--listen-host <h> --nats-replicas <n>", stderr,
+			"--listen-host <h> --nats-replicas <n> [--private-projects]", stderr,
 		map[string]string{
-			"machineId":      "machine-id",
-			"natsUrls":       "nats-url",
-			"webhooks":       "webhook",
-			"reviewerAppId":  "reviewer-app-id",
-			"mentionTrigger": "mention-trigger",
-			"listenHost":     "listen-host",
-			"natsReplicas":   "nats-replicas",
+			"machineId":       "machine-id",
+			"natsUrls":        "nats-url",
+			"webhooks":        "webhook",
+			"reviewerAppId":   "reviewer-app-id",
+			"mentionTrigger":  "mention-trigger",
+			"listenHost":      "listen-host",
+			"natsReplicas":    "nats-replicas",
+			"privateProjects": "private-projects",
 		})
 	var machineID, reviewerAppID, mentionTrigger, listenHost string
 	var natsURLs, webhooks stringList
 	var natsReplicas int
+	var privateProjects bool
 	s.fs.StringVar(&machineID, "machine-id", "", "machineId: the listener's name, ENVOY_MACHINE_ID")
 	s.fs.Var(&natsURLs, "nats-url", "natsUrls: one NATS server's URL; give it once per URL, in order")
 	s.fs.Var(&webhooks, "webhook", "webhooks: one webhook the listener serves; this version takes none, or exactly github, then slack")
@@ -264,17 +266,20 @@ func webhookListenerEnv(args []string, stdout, stderr io.Writer) int {
 	s.fs.StringVar(&mentionTrigger, "mention-trigger", "", "mentionTrigger: ENVOY_GITHUB_MENTION_TRIGGER, required with --webhook github and refused without it")
 	s.fs.StringVar(&listenHost, "listen-host", "", "listenHost: ENVOY_LISTEN_HOST")
 	s.fs.IntVar(&natsReplicas, "nats-replicas", 0, fmt.Sprintf("natsReplicas: ENVOY_NATS_REPLICAS, the deployment's replica count, 1 to %d", bus.MaxReplicas))
+	s.fs.BoolVar(&privateProjects, "private-projects", false,
+		"privateProjects: the deployment may make a Dispatch project private, ENVOY_PRIVATE_PROJECTS=1; unset, the listener renders as before")
 	given, code, stop := s.parse(args, "machine-id", "listen-host", "nats-replicas")
 	if stop {
 		return code
 	}
 
 	env := rendering.ListenerEnv{
-		MachineID:    machineID,
-		NatsUrls:     natsURLs,
-		ListenHost:   listenHost,
-		NatsReplicas: natsReplicas,
-		Webhooks:     webhooks,
+		MachineID:       machineID,
+		NatsUrls:        natsURLs,
+		ListenHost:      listenHost,
+		NatsReplicas:    natsReplicas,
+		Webhooks:        webhooks,
+		PrivateProjects: privateProjects,
 	}
 	if given["reviewer-app-id"] {
 		env.ReviewerAppId = &reviewerAppID

@@ -285,7 +285,9 @@ func TestNatsStartScriptIsTheScriptNatsServiceLaunches(t *testing.T) {
 
 // The lines are the listener container's environment as WebhookListener registers it, in its
 // order. The secrets ECS injects are in the container's secrets, not its environment, so none is
-// printed.
+// printed. --private-projects is privateProjects: the one row that gives it prints
+// ENVOY_PRIVATE_PROJECTS=1 where the component writes it, after core's variables, and every other
+// row gives neither and prints none.
 func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T) {
 	for _, c := range []struct {
 		name           string
@@ -294,6 +296,7 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 		replicas       int
 		webhooks       []string
 		trigger, appID string // given with github
+		private        bool   // --private-projects, and privateProjects on the component
 		want           string // derived by hand from the listener's environment rules
 	}{
 		{
@@ -337,6 +340,19 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 				"ENVOY_ALLOW_REMOTE_NATS=1\n" +
 				"ENVOY_NATS_REPLICAS=1\n",
 		},
+		{
+			name:       "a deployment that may have private projects",
+			natsUrls:   []string{"nats://example-bus.example-namespace.internal.example:4222"},
+			listenHost: "0.0.0.0", replicas: 1,
+			webhooks: []string{}, private: true,
+			want: "PORT=9020\n" +
+				"ENVOY_LISTEN_HOST=0.0.0.0\n" +
+				"ENVOY_MACHINE_ID=example-machine\n" +
+				"NATS_URLS=nats://example-bus.example-namespace.internal.example:4222\n" +
+				"ENVOY_ALLOW_REMOTE_NATS=1\n" +
+				"ENVOY_PRIVATE_PROJECTS=1\n" +
+				"ENVOY_NATS_REPLICAS=1\n",
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			github := slices.Contains(c.webhooks, "github")
@@ -347,6 +363,9 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 			}
 			args = append(args, "--listen-host", c.listenHost,
 				"--nats-replicas", strconv.Itoa(c.replicas))
+			if c.private {
+				args = append(args, "--private-projects")
+			}
 			stdout, stderr, code := run(args...)
 			require.Equal(t, 0, code, stderr)
 			require.Empty(t, stderr)
@@ -356,6 +375,9 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 			in.NatsUrls = pulumi.ToStringArray(c.natsUrls)
 			in.ListenHost, in.NatsReplicas = c.listenHost, c.replicas
 			in.Webhooks = c.webhooks
+			if c.private {
+				in.PrivateProjects = pulumi.BoolRef(true)
+			}
 			in.MentionTrigger, in.ReviewerAppId = pulumi.StringRef(c.trigger), pulumi.StringRef(c.appID)
 			if !github {
 				in.GitHubWebhookSecretArn, in.MentionTrigger, in.ReviewerAppId = nil, nil, nil
