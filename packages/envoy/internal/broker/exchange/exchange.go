@@ -978,17 +978,13 @@ func (s *Set) resultRun(token map[string]any, key resultKey, workflowRef, ref, s
 	return Claims{Session: name, Person: entry.Person, Scope: ProjectScopeResults, Project: entry.Project, Principal: resultPrincipal(key), CI: &run}, nil
 }
 
-// commitPattern is a commit as a run's token names it in its `sha` claim: 40 lowercase hex
-// digits.
-var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
 // readCIRun reads the run a result entry's token carries out of the run's GitHub token: the
 // repository, workflow and ref Workflow has already read, and the `sha`, `event_name`, `run_id`,
 // `run_attempt`, `runner_environment` and `check_run_id` claims, every one of them required. The
-// commit is 40 lowercase hex digits, and the run, the attempt and the check run are positive
-// decimal numbers, written as GitHub writes them, with no sign and no leading zero. The check
-// run is the job's identity, which a resource server reads the job's name from, so a token
-// without it is refused rather than minted a token naming no job.
+// commit is in the form oauthwire.IsCommit holds, and the run, the attempt and the check run in
+// the form oauthwire.IsPositiveDecimal holds, the forms a resource server admits. The check run
+// is the job's identity, which a resource server reads the job's name from, so a token without
+// it is refused rather than minted a token naming no job.
 func readCIRun(token map[string]any, repository, workflowRef, ref string) (oauthwire.CIRun, error) {
 	run := oauthwire.CIRun{Repository: repository, WorkflowRef: workflowRef, Ref: ref}
 	for _, claim := range []struct {
@@ -997,12 +993,12 @@ func readCIRun(token map[string]any, repository, workflowRef, ref string) (oauth
 		check func(string) bool
 		form  string
 	}{
-		{name: "sha", into: &run.SHA, check: commitPattern.MatchString, form: "40 lowercase hex digits"},
+		{name: "sha", into: &run.SHA, check: oauthwire.IsCommit, form: "40 lowercase hex digits"},
 		{name: "event_name", into: &run.EventName},
-		{name: "run_id", into: &run.RunID, check: positiveDecimal, form: "a positive decimal number"},
-		{name: "run_attempt", into: &run.RunAttempt, check: positiveDecimal, form: "a positive decimal number"},
+		{name: "run_id", into: &run.RunID, check: oauthwire.IsPositiveDecimal, form: "a positive decimal number a signed 64-bit integer holds"},
+		{name: "run_attempt", into: &run.RunAttempt, check: oauthwire.IsPositiveDecimal, form: "a positive decimal number a signed 64-bit integer holds"},
 		{name: "runner_environment", into: &run.RunnerEnvironment},
-		{name: "check_run_id", into: &run.CheckRunID, check: positiveDecimal, form: "a positive decimal number"},
+		{name: "check_run_id", into: &run.CheckRunID, check: oauthwire.IsPositiveDecimal, form: "a positive decimal number a signed 64-bit integer holds"},
 	} {
 		value, err := claimString(token, claim.name)
 		if err != nil {
@@ -1014,21 +1010,6 @@ func readCIRun(token map[string]any, repository, workflowRef, ref string) (oauth
 		*claim.into = value
 	}
 	return run, nil
-}
-
-// positiveDecimal reports whether text is a positive decimal number of at most 19 digits, with no
-// sign and no leading zero, so it is one spelling of one number that fits in a signed 64-bit
-// integer.
-func positiveDecimal(text string) bool {
-	if len(text) == 0 || len(text) > 19 || text[0] == '0' {
-		return false
-	}
-	for _, digit := range text {
-		if digit < '0' || digit > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // CheckRefPattern refuses, naming it, a ref pattern a result entry cannot list: one path.Match

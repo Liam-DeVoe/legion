@@ -523,11 +523,12 @@ func TestAResultsScopeBesideANamedProjectScopeIsRefused(t *testing.T) {
 }
 
 // TestAResultsTokenWithoutCIIsRefused: a results token carries the run it was minted for, every
-// field of it, since what it may write is held to that run's commit and job; one that carries
-// none, or a run missing a field, is no session's credential even to a verifier that serves
-// results tokens. So is one naming no project, no person, or a service, none of which a result
-// entry mints, and a run beside a read-only token. The negative control is the whole results token
-// on the same verifier, which it accepts.
+// field of it, in the forms the broker mints, since what it may write is held to that run's
+// commit and job; one that carries none, a run missing a field, or a run whose commit is not 40
+// lowercase hex or whose run, attempt or check run is not a positive decimal, is no session's
+// credential even to a verifier that serves results tokens. So is one naming no project, no
+// person, or a service, none of which a result entry mints, and a run beside a read-only token.
+// The negative control is the whole results token on the same verifier, which it accepts.
 func TestAResultsTokenWithoutCIIsRefused(t *testing.T) {
 	rig := newRig(t, func(options *brokertoken.Options) { options.ServesResults, options.ServesReadOnly = true, true })
 	caller := newSigner(t)
@@ -537,10 +538,20 @@ func TestAResultsTokenWithoutCIIsRefused(t *testing.T) {
 		return answer
 	}
 	for name, answer := range map[string]brokertoken.Introspection{
-		"no run":                      spoiled(func(a *brokertoken.Introspection) { a.CI = nil }),
-		"a run naming no commit":      spoiled(func(a *brokertoken.Introspection) { a.CI.SHA = "" }),
-		"a run naming no check run":   spoiled(func(a *brokertoken.Introspection) { a.CI.CheckRunID = "" }),
-		"a run naming no repository":  spoiled(func(a *brokertoken.Introspection) { a.CI.Repository = "" }),
+		"no run":                     spoiled(func(a *brokertoken.Introspection) { a.CI = nil }),
+		"a run naming no commit":     spoiled(func(a *brokertoken.Introspection) { a.CI.SHA = "" }),
+		"a run naming no check run":  spoiled(func(a *brokertoken.Introspection) { a.CI.CheckRunID = "" }),
+		"a run naming no repository": spoiled(func(a *brokertoken.Introspection) { a.CI.Repository = "" }),
+		"a run with a short commit":  spoiled(func(a *brokertoken.Introspection) { a.CI.SHA = "0123456789abcdef" }),
+		"a run with an upper-case commit": spoiled(func(a *brokertoken.Introspection) {
+			a.CI.SHA = "0123456789ABCDEF0123456789ABCDEF01234567"
+		}),
+		"a run whose check run is no number": spoiled(func(a *brokertoken.Introspection) { a.CI.CheckRunID = "97a" }),
+		"a run whose run is zero":            spoiled(func(a *brokertoken.Introspection) { a.CI.RunID = "0" }),
+		"a run whose attempt is negative":    spoiled(func(a *brokertoken.Introspection) { a.CI.RunAttempt = "-1" }),
+		"a run whose check run is past int64": spoiled(func(a *brokertoken.Introspection) {
+			a.CI.CheckRunID = "99999999999999999999"
+		}),
 		"no project":                  spoiled(func(a *brokertoken.Introspection) { a.Project = "" }),
 		"no person":                   spoiled(func(a *brokertoken.Introspection) { a.Person, a.Service = "", "example-fleet" }),
 		"a service beside the person": spoiled(func(a *brokertoken.Introspection) { a.Service = "example-fleet" }),

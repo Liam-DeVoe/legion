@@ -402,6 +402,24 @@ Each item below names a task and where its code is, then notes on it.
   the same lines end `dispatch read --issue` and the answer to an approval request.
   Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
 
+- **Results of the spec checks a CI job ran**: `internal/dispatch/api/spec_results.go`, `internal/dispatch/githubapp/check_run.go`, `store/migrations/20261116094741_spec_check_results.up.sql`
+
+  `POST /api/v1/projects/{key}/results` takes one result of one check of the spec files, written by the CI job that ran its test, under a results token (`brokertoken.Caller.ResultsOnly`):
+  the one route the results list names (`resultsScopeRoutes`), and the one credential it takes (`403 RESULTS_SCOPE_REQUIRED` for every other).
+  The body is `{commit, check, verdict, observed}`, verdict `pass`, `fail` or `could_not_run`, and any other member is `400 RESULT_INPUT` naming it, since the identity on a result is the one the token proved and never a field the caller set.
+  Dispatch reads the rest from the token, from GitHub and from `.dispatch/spec` at the run's commit, in this order:
+  the commit is the run's (`403 COMMIT_NOT_THE_RUNS`, naming both);
+  the project, which must be the token's (`withinProjectScope`), maps the run's repository (`403 REPOSITORY_NOT_THE_PROJECTS`);
+  GitHub names the token's check run at that commit (`githubapp.Client.CheckRun`, `403 CHECK_RUN_NOT_THE_RUNS`);
+  the files hold the check once (`specgraph.Parse`, `409 CHECK_NOT_IN_FILES`);
+  and the check's job is the check run's name without its matrix values, cut at its last ` (` (`409 CHECK_NOT_THIS_JOBS`).
+  A check run or files GitHub does not answer is `503 CHECK_RUN_UNREADABLE` or `503 FILES_UNREADABLE`, and nothing is stored.
+  A check run's name and commit, and the checks of a commit's files, are kept for the life of the process in byte-bounded caches, since neither changes.
+  The result is stored as a new row of `spec_check_results` (`insertSpecCheckResult`, its one writer), with Dispatch's record number `seq` and an in-toto Statement v1 of the run: its subject the repository at the commit, and its predicate the check, its procedure digest (`specgraph.Check.Digest`), its test part, the verdict, `observed` cut to 2000 runes, the job and the leg, the run, the recorder the token proved, and `recorded_at`.
+  No row is updated or deleted: another run, attempt or leg of one job is another row.
+  `GET /api/v1/projects/{key}/results?commit=<sha>[&check=<id>]` answers every row of the project at that commit, newest first by `seq`, and a results token is refused it.
+  Shapes: `SpecCheckResult` in `packages/contracts/src/dispatch-api.generated.ts`
+
 - **Load test**: `loadtest/`
 
   the 2-core reproduction of the 2026-10-26 outage load:
@@ -3865,7 +3883,8 @@ A verifier built without the switch answers that token `brokertoken.ErrNotASessi
 A results token is the token a result entry mints (`BROKER_EXCHANGE_RESULT_WORKFLOWS`): it holds the OAuth scope `results` alone and the project scope `results`, names a person, one project, the session of its workflow and the run it was minted for (`ci`, every field set), and names no service.
 A verifier built with `brokertoken.Options.ServesResults` accepts it and marks its caller `brokertoken.Caller.ResultsOnly`, with the run as `brokertoken.Caller.CI`;
 a verifier built without that switch answers it `brokertoken.ErrNotASession`, as a build before the switch does.
-Dispatch's verifier does not set the switch, so Dispatch answers a results token `401 BROKER_TOKEN_NOT_A_SESSION` on every route and on `/ws/live`.
+Dispatch's verifier sets the switch, so Dispatch serves a results token on the routes its results list names (`resultsScopeRoutes`), today `POST /api/v1/projects/{key}/results` alone;
+`brokerTokenActor` carries the mark as `model.Credential.ResultsOnly`, with the run as `model.Credential.CI` and no OAuth scope, and `refuseResultsOnlyToken` answers the token `403 RESULTS_ONLY_TOKEN` on every other route and on `/ws/live`, before the route's handler, its sign-in check and its idempotency key.
 `GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
 A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and the live socket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
 The verifier is built from settings Dispatch already has and takes none of its own (`cmd/dispatch`'s `brokerTokenVerifier`:

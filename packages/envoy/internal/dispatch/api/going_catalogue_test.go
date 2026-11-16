@@ -78,6 +78,9 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions",
 	"POST /api/v1/projects/{key}/related",
+	// Only a CI job's results token writes this row, and the going loop acts as an agent session,
+	// so no tool of the catalogue performs it.
+	"POST /api/v1/projects/{key}/results",
 	"POST /api/v1/signins/{id}/revoke",
 	"PUT /api/v1/asks/{id}/asked-of",
 	"PUT /api/v1/issues/{key}/design-gates",

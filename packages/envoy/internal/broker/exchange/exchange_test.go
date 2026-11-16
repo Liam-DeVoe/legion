@@ -616,6 +616,8 @@ func TestAResultTokenWithoutACheckRunIsRefused(t *testing.T) {
 		{name: "a check run of zero", claim: "check_run_id", value: "0"},
 		{name: "a check run that is no number", claim: "check_run_id", value: "9a"},
 		{name: "a check run as a JSON number", claim: "check_run_id", value: float64(9)},
+		// Nineteen digits, and past the largest int64: Dispatch reads the number as a bigint.
+		{name: "a check run past a signed 64-bit integer", claim: "check_run_id", value: "9999999999999999999"},
 		{name: "no commit", claim: "sha"},
 		{name: "a short commit", claim: "sha", value: commitSHA[:7]},
 		{name: "a commit in capitals", claim: "sha", value: strings.ToUpper(commitSHA)},

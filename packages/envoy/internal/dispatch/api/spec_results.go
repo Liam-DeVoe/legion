@@ -1,0 +1,526 @@
+package api
+
+// spec_results.go is the route a CI job writes the result of a check of the spec files with,
+// POST /api/v1/projects/{key}/results, and the read beside it (R12 of the spec). The job holds a
+// results token the secrets broker minted for its run (brokertoken.Caller.ResultsOnly), and this
+// route is the one route that token reaches (resultsScopeRoutes). Dispatch takes who wrote the
+// result and what it is for from that token, from GitHub and from the spec files at the run's
+// commit; the body says only what the job observed. Each result is a new row of
+// spec_check_results, which nothing updates or deletes.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
+)
+
+// specDir is the directory of a repository that holds its spec files.
+const specDir = ".dispatch/spec"
+
+// The codes of this route's own refusals, and of the gate that holds a results token to it.
+const (
+	// codeResultsOnlyToken refuses a results token on every route the results list does not
+	// name (refuseResultsOnlyToken).
+	codeResultsOnlyToken = "RESULTS_ONLY_TOKEN"
+	// codeResultsScopeRequired refuses every other credential on the route: only a CI job's
+	// results token writes a result of a spec check.
+	codeResultsScopeRequired = "RESULTS_SCOPE_REQUIRED"
+	// codeResultInput refuses a body this route does not take.
+	codeResultInput = "RESULT_INPUT"
+	// codeCommitNotTheRuns refuses a result for another commit than the run's.
+	codeCommitNotTheRuns = "COMMIT_NOT_THE_RUNS"
+	// codeRepositoryNotTheProjects refuses a run of a repository the project does not map.
+	codeRepositoryNotTheProjects = "REPOSITORY_NOT_THE_PROJECTS"
+	// codeCheckRunNotTheRuns refuses a token whose check run GitHub names for another commit.
+	codeCheckRunNotTheRuns = "CHECK_RUN_NOT_THE_RUNS"
+	// codeCheckNotInFiles refuses a check the spec files at the run's commit do not hold once.
+	codeCheckNotInFiles = "CHECK_NOT_IN_FILES"
+	// codeCheckNotThisJobs refuses a check whose test part names another job than the run's.
+	codeCheckNotThisJobs = "CHECK_NOT_THIS_JOBS"
+	// codeCheckRunUnreadable and codeFilesUnreadable are GitHub not answering, a 503: the
+	// result was not judged, and the job writes it again.
+	codeCheckRunUnreadable = "CHECK_RUN_UNREADABLE"
+	codeFilesUnreadable    = "FILES_UNREADABLE"
+)
+
+// observedRunes is how much of what a job observed a result keeps.
+const observedRunes = 2000
+
+// The in-toto statement a result is stored as: its own type, and the type of its predicate.
+const (
+	inTotoStatementType          = "https://in-toto.io/Statement/v1"
+	specCheckResultPredicateType = "https://github.com/cybermonklabs/legion/attestations/spec-check-result/v1"
+)
+
+// specCheckResultInput is the body POST /api/v1/projects/{key}/results takes: what the job ran
+// and what it observed, and nothing about who the job is. Every other member is refused by name.
+type specCheckResultInput struct {
+	// Commit is the commit the job tested, 40 lowercase hex characters; it must be the run's.
+	Commit string `json:"commit" required:"true"`
+	// Check is the id of a check of the spec files at that commit.
+	Check string `json:"check" required:"true"`
+	// Verdict is pass, fail or could_not_run.
+	Verdict string `json:"verdict" required:"true"`
+	// Observed is what the job observed; the result keeps its first 2000 runes.
+	Observed string `json:"observed"`
+}
+
+// specCheckResultsQuery is GET /api/v1/projects/{key}/results's query.
+type specCheckResultsQuery struct {
+	// Commit is the commit whose results the read answers, 40 lowercase hex characters.
+	Commit string `query:"commit"`
+	// Check, when given, keeps the results of that check alone.
+	Check string `query:"check"`
+}
+
+// specCheckResults is the body GET /api/v1/projects/{key}/results answers.
+type specCheckResults struct {
+	Results []model.SpecCheckResult `json:"results"`
+}
+
+// specCheckFacts is what the route reads of one check id in the spec files at a commit: how many
+// checks carry it, the first one's procedure digest, and its test part, empty for a check with
+// none.
+type specCheckFacts struct {
+	Count    int    `json:"count"`
+	Digest   string `json:"digest"`
+	Runner   string `json:"runner"`
+	Selector string `json:"selector"`
+	Job      string `json:"job"`
+}
+
+// specResultReads keeps what the route reads of GitHub for the life of the process, since
+// neither changes: a check run's name and commit, by repository and id, and the checks of the
+// spec files, by repository and commit. Each is held as JSON in a byte-bounded cache, so many
+// runs and commits cannot grow it without bound (bytelru).
+type specResultReads struct {
+	once      sync.Once
+	checkRuns *bytelru.Cache[string, []byte]
+	checks    *bytelru.Cache[string, []byte]
+}
+
+// The bounds of the two caches: a check run is a hundred bytes, and a commit's checks a few
+// hundred bytes each.
+const (
+	specCheckRunCacheBytes = 1 << 20
+	specChecksCacheBytes   = 16 << 20
+)
+
+func (c *specResultReads) init() {
+	c.once.Do(func() {
+		c.checkRuns = bytelru.New[string, []byte](specCheckRunCacheBytes)
+		c.checks = bytelru.New[string, []byte](specChecksCacheBytes)
+	})
+}
+
+// recordSpecCheckResult is POST /api/v1/projects/{key}/results. The checks run in this order,
+// each before anything is read of GitHub that it does not need: the credential is a results
+// token; the body names the four fields alone, well formed; its commit is the run's; the project
+// maps the run's repository; GitHub names the run's check run at that commit; the files at that
+// commit hold the check once; and the check's job is the check run's. The project check of the
+// path is withinProjectScope's, which register puts in front of this handler.
+func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
+	if actor.Credential == nil || !actor.Credential.ResultsOnly || actor.Credential.CI == nil {
+		writeError(w, codeResultsScopeRequired, http.StatusForbidden,
+			"only a CI job's results token writes the result of a spec check, and this request's credential is not one")
+		return
+	}
+	run := *actor.Credential.CI
+	var input specCheckResultInput
+	body, err := readJSONBody(r, &input, maxJSONRequestBytes, errJSONTooLarge)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := validSpecCheckResultInput(input, body); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if input.Commit != run.SHA {
+		writeError(w, codeCommitNotTheRuns, http.StatusForbidden, fmt.Sprintf(
+			"the result is for commit %s, and this token's run tested commit %s: a job writes results only for the commit that it tested",
+			input.Commit, run.SHA))
+		return
+	}
+	numbers, err := runNumbersOf(run)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	project := r.PathValue("key")
+	ctx := r.Context()
+	mapped, err := s.projectMapsRepository(ctx, project, run.Repository)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if !mapped {
+		writeError(w, codeRepositoryNotTheProjects, http.StatusForbidden, fmt.Sprintf(
+			"project %s maps no repository %s, the repository of this token's run", project, run.Repository))
+		return
+	}
+
+	owner, name, _ := strings.Cut(run.Repository, "/")
+	reader := &repositoryReader{s: s, owner: owner, name: name}
+	checkRun, err := s.specCheckRun(ctx, reader, run.Repository, numbers.checkRun)
+	if err != nil {
+		writeError(w, codeCheckRunUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
+			"GitHub did not answer the read of check run %d of %s, so the result was not judged; write it again: %v", numbers.checkRun, run.Repository, err))
+		return
+	}
+	if checkRun.HeadSHA != run.SHA {
+		writeError(w, codeCheckRunNotTheRuns, http.StatusForbidden, fmt.Sprintf(
+			"GitHub names commit %s for check run %d, and this token's run tested commit %s: the check run is no job of this run",
+			checkRun.HeadSHA, numbers.checkRun, run.SHA))
+		return
+	}
+	job, leg := jobAndLeg(checkRun.Name)
+	checks, err := s.specChecksAt(ctx, reader, run.Repository, run.SHA)
+	if err != nil {
+		writeError(w, codeFilesUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
+			"GitHub did not answer the read of %s of %s at %s, so the result was not judged; write it again: %v", specDir, run.Repository, run.SHA, err))
+		return
+	}
+	check := checks[input.Check]
+	if check.Count != 1 {
+		writeError(w, codeCheckNotInFiles, http.StatusConflict, fmt.Sprintf(
+			"the spec files of %s at %s hold %d checks with the id %q, and a result is for one check that the files hold", run.Repository, run.SHA, check.Count, input.Check))
+		return
+	}
+	if check.Job != job {
+		named := "names no job"
+		if check.Job != "" {
+			named = fmt.Sprintf("names the job %q", check.Job)
+		}
+		writeError(w, codeCheckNotThisJobs, http.StatusConflict, fmt.Sprintf(
+			"check %s %s, and this token's job is %q (check run %d, %q): a job writes results only for the checks that name it",
+			input.Check, named, job, numbers.checkRun, checkRun.Name))
+		return
+	}
+
+	row := specCheckRow{
+		project: project, repository: run.Repository, check: input.Check, commit: run.SHA,
+		procedureDigest: check.Digest, job: job, leg: leg,
+		checkRunID: numbers.checkRun, runID: numbers.run, attempt: numbers.attempt,
+		verdict: input.Verdict, observed: cutToRunes(input.Observed, observedRunes),
+		session: actor.Credential.Session,
+		test:    model.SpecCheckTest{Runner: check.Runner, Selector: check.Selector, Job: check.Job},
+		run: model.SpecCheckRun{
+			Repository: run.Repository, WorkflowRef: run.WorkflowRef, Ref: run.Ref, EventName: run.EventName,
+			RunID: run.RunID, Attempt: numbers.attempt, CheckRunID: run.CheckRunID, RunnerEnvironment: run.RunnerEnvironment,
+		},
+		recorder: model.SpecCheckRecorder{Session: actor.Credential.Session, Principal: resultPrincipal(run.WorkflowRef)},
+	}
+	if actor.Owner != nil {
+		row.recorder.Person = *actor.Owner
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	result, err := insertSpecCheckResult(ctx, tx, row)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("commit a spec check result: %w", err))
+		return
+	}
+	WriteJSON(w, http.StatusCreated, result)
+}
+
+// validSpecCheckResultInput refuses a body that names a member other than the four, or whose
+// four are not well formed, each with RESULT_INPUT naming what is wrong. A member the body names
+// beyond the four is refused rather than ignored, as decodeJSON ignores one: the identity on a
+// result is never a field the caller set, and a body that names one is a caller that thinks it
+// sets it.
+func validSpecCheckResultInput(input specCheckResultInput, body []byte) error {
+	if undeclared := undeclaredMembers(&input, body); len(undeclared) > 0 {
+		return errorf(http.StatusBadRequest, codeResultInput,
+			"the body takes commit, check, verdict and observed alone, and names %s: Dispatch reads who wrote a result from its token, never from its body",
+			strings.Join(undeclared, ", "))
+	}
+	if !resultCommitSHA.MatchString(input.Commit) {
+		return errorf(http.StatusBadRequest, codeResultInput, "commit is the 40-character lowercase hex commit the job tested")
+	}
+	if strings.TrimSpace(input.Check) == "" {
+		return errorf(http.StatusBadRequest, codeResultInput, "check names a check of the spec files at the commit")
+	}
+	switch input.Verdict {
+	case "pass", "fail", "could_not_run":
+	default:
+		return errorf(http.StatusBadRequest, codeResultInput, "verdict is pass, fail or could_not_run")
+	}
+	return nil
+}
+
+// runNumbers is the three numbers of a run, read from its token: its check run, its workflow run
+// and its attempt.
+type runNumbers struct {
+	checkRun, run int64
+	attempt       int
+}
+
+// runNumbersOf reads the run's numbers. The broker mints a results token only for a run whose
+// numbers are positive decimals and the verifier admits no other (brokertoken.shapeOf), so a
+// number that does not read is Dispatch's own fault, a 500.
+func runNumbersOf(run oauthwire.CIRun) (runNumbers, error) {
+	checkRun, err := strconv.ParseInt(run.CheckRunID, 10, 64)
+	if err != nil {
+		return runNumbers{}, fmt.Errorf("read the check run of a results token: %w", err)
+	}
+	workflowRun, err := strconv.ParseInt(run.RunID, 10, 64)
+	if err != nil {
+		return runNumbers{}, fmt.Errorf("read the run of a results token: %w", err)
+	}
+	attempt, err := strconv.Atoi(run.RunAttempt)
+	if err != nil {
+		return runNumbers{}, fmt.Errorf("read the attempt of a results token: %w", err)
+	}
+	return runNumbers{checkRun: checkRun, run: workflowRun, attempt: attempt}, nil
+}
+
+// projectMapsRepository answers whether project maps repository, by the name it was mapped
+// under or the name it was renamed to (repo_projects.renamed_to), which is the name GitHub
+// names a run's repository by.
+func (s *server) projectMapsRepository(ctx context.Context, project, repository string) (bool, error) {
+	var mapped bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, `
+		select exists (select 1 from repo_projects where project = $1 and (repo = $2 or renamed_to = $2))`,
+		project, repository).Scan(&mapped); err != nil {
+		return false, fmt.Errorf("read whether %s maps %s: %w", project, repository, err)
+	}
+	return mapped, nil
+}
+
+// repositoryReader mints the installation token of one repository once a read needs it, so a
+// request whose two reads are both cached mints none.
+type repositoryReader struct {
+	s           *server
+	owner, name string
+	token       string
+}
+
+func (r *repositoryReader) installationToken(ctx context.Context) (string, error) {
+	if r.token != "" {
+		return r.token, nil
+	}
+	token, err := r.s.deps.GitHub.RepositoryToken(ctx, r.owner, r.name)
+	if err != nil {
+		return "", err
+	}
+	r.token = token
+	return token, nil
+}
+
+// specCheckRun is check run id of repository: the process's cached answer, or GitHub's.
+func (s *server) specCheckRun(ctx context.Context, reader *repositoryReader, repository string, id int64) (githubapp.CheckRun, error) {
+	s.specReads.init()
+	key := repository + "#" + strconv.FormatInt(id, 10)
+	if cached, ok := s.specReads.checkRuns.Get(key); ok {
+		var run githubapp.CheckRun
+		if err := json.Unmarshal(cached, &run); err == nil {
+			return run, nil
+		}
+	}
+	token, err := reader.installationToken(ctx)
+	if err != nil {
+		return githubapp.CheckRun{}, err
+	}
+	run, err := s.deps.GitHub.CheckRun(ctx, token, reader.owner, reader.name, id)
+	if err != nil {
+		return githubapp.CheckRun{}, err
+	}
+	if encoded, err := json.Marshal(run); err == nil {
+		s.specReads.checkRuns.Put(key, encoded)
+	}
+	return run, nil
+}
+
+// specChecksAt is the checks of the spec files of repository at commit, by id: the process's
+// cached answer, or the files GitHub serves read with the graph logic's parser. A commit whose
+// tree holds no spec directory holds no check.
+func (s *server) specChecksAt(ctx context.Context, reader *repositoryReader, repository, commit string) (map[string]specCheckFacts, error) {
+	s.specReads.init()
+	key := repository + "@" + commit
+	if cached, ok := s.specReads.checks.Get(key); ok {
+		var checks map[string]specCheckFacts
+		if err := json.Unmarshal(cached, &checks); err == nil {
+			return checks, nil
+		}
+	}
+	token, err := reader.installationToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	listing, err := s.deps.GitHub.Dir(ctx, token, reader.owner, reader.name, commit, specDir)
+	if err != nil {
+		return nil, err
+	}
+	files, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
+	if err != nil {
+		return nil, err
+	}
+	tree, _ := specgraph.Parse(files)
+	checks := make(map[string]specCheckFacts, len(tree.Checks))
+	for _, check := range tree.Checks {
+		facts := checks[check.ID]
+		facts.Count++
+		if facts.Count == 1 {
+			facts.Digest = check.Digest()
+			if check.Test != nil {
+				facts.Runner, facts.Selector, facts.Job = check.Test.Runner, check.Test.Selector, check.Test.Job
+			}
+		}
+		checks[check.ID] = facts
+	}
+	if encoded, err := json.Marshal(checks); err == nil {
+		s.specReads.checks.Put(key, encoded)
+	}
+	return checks, nil
+}
+
+// jobAndLeg reads a check run's name as GitHub names a job's check run: the job's name, then its
+// matrix values in parentheses. A name ending in ")" splits at its last " (" into the job and
+// its leg; any other name is the job with no leg.
+func jobAndLeg(name string) (job, leg string) {
+	if i := strings.LastIndex(name, " ("); i > 0 && strings.HasSuffix(name, ")") {
+		return name[:i], name[i+2 : len(name)-1]
+	}
+	return name, ""
+}
+
+// resultPrincipal is the broker's principal of a result entry's run: workflow-results: and the
+// run's workflow, which its workflow_ref names before its "@<ref>".
+func resultPrincipal(workflowRef string) string {
+	workflow, _, _ := strings.Cut(workflowRef, "@")
+	return "workflow-results:" + workflow
+}
+
+// cutToRunes is text cut to its first limit runes.
+func cutToRunes(text string, limit int) string {
+	runes := 0
+	for i := range text {
+		if runes == limit {
+			return text[:i]
+		}
+		runes++
+	}
+	return text
+}
+
+// specCheckRow is one row of spec_check_results before it is written, and the attestation the
+// row stores is built from it alone (insertSpecCheckResult).
+type specCheckRow struct {
+	project, repository, check, commit, procedureDigest, job, leg string
+	checkRunID, runID                                             int64
+	attempt                                                       int
+	verdict, observed, session                                    string
+	test                                                          model.SpecCheckTest
+	run                                                           model.SpecCheckRun
+	recorder                                                      model.SpecCheckRecorder
+}
+
+// insertSpecCheckResult is the one writer of spec_check_results: it appends row with the in-toto
+// statement of it, whose recorded_at is the row's own (the transaction's now(), written in UTC
+// with a Z so every reader decodes one instant the same way), and answers the row as the read
+// answers it. Nothing updates or deletes a row.
+func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (model.SpecCheckResult, error) {
+	statement := model.SpecCheckAttestation{
+		Type: inTotoStatementType,
+		Subject: []model.AttestationSubject{{
+			Name: "git+https://github.com/" + row.repository, Digest: map[string]string{"gitCommit": row.commit},
+		}},
+		PredicateType: specCheckResultPredicateType,
+		Predicate: model.SpecCheckPredicate{
+			Project: row.project, Check: row.check, ProcedureDigest: row.procedureDigest, Test: row.test,
+			Verdict: row.verdict, Observed: row.observed, Job: row.job, Leg: row.leg, Run: row.run, Recorder: row.recorder,
+		},
+	}
+	encoded, err := json.Marshal(statement)
+	if err != nil {
+		return model.SpecCheckResult{}, fmt.Errorf("encode a spec check result: %w", err)
+	}
+	var (
+		result model.SpecCheckResult
+		stored []byte
+	)
+	if err := q.QueryRow(ctx, `
+		insert into spec_check_results (project_key, repository, check_id, commit_sha, procedure_digest, job, leg,
+			check_run_id, run_id, attempt, verdict, attestation, session)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+			jsonb_set($12::jsonb, '{predicate,recorded_at}',
+				to_jsonb(to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))), $13)
+		returning id::text, seq, attestation`,
+		row.project, row.repository, row.check, row.commit, row.procedureDigest, row.job, row.leg,
+		row.checkRunID, row.runID, row.attempt, row.verdict, encoded, row.session,
+	).Scan(&result.ID, &result.Seq, &stored); err != nil {
+		return model.SpecCheckResult{}, fmt.Errorf("insert a spec check result: %w", err)
+	}
+	if err := json.Unmarshal(stored, &result.Attestation); err != nil {
+		return model.SpecCheckResult{}, fmt.Errorf("decode a stored spec check result: %w", err)
+	}
+	result.Kind = model.SpecCheckResultKindRun
+	return result, nil
+}
+
+// listSpecCheckResults is GET /api/v1/projects/{key}/results: every stored result of the project
+// at ?commit=, of ?check= alone when it is given, newest first by record number. A results token
+// never reaches it (refuseResultsOnlyToken): it writes results and reads nothing.
+func (s *server) listSpecCheckResults(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	query := r.URL.Query()
+	commit, check := query.Get("commit"), query.Get("check")
+	if !resultCommitSHA.MatchString(commit) {
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "commit is the 40-character lowercase hex commit whose results to read")
+		return
+	}
+	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+		select id::text, seq, attestation from spec_check_results
+		where project_key = $1 and commit_sha = $2 and ($3 = '' or check_id = $3)
+		order by seq desc`, r.PathValue("key"), commit, check)
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("read spec check results: %w", err))
+		return
+	}
+	defer rows.Close()
+	answer := specCheckResults{Results: []model.SpecCheckResult{}}
+	for rows.Next() {
+		result := model.SpecCheckResult{Kind: model.SpecCheckResultKindRun}
+		var stored []byte
+		if err := rows.Scan(&result.ID, &result.Seq, &stored); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("read a spec check result: %w", err))
+			return
+		}
+		if err := json.Unmarshal(stored, &result.Attestation); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("decode a stored spec check result: %w", err))
+			return
+		}
+		answer.Results = append(answer.Results, result)
+	}
+	if err := rows.Err(); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("read spec check results: %w", err))
+		return
+	}
+	WriteJSON(w, http.StatusOK, answer)
+}

@@ -127,6 +127,9 @@ var writeClasses = map[string]writeScope{
 	// and that discloses nothing a read this credential already makes does not: no GET route of
 	// this table is project-scoped, so every scoped credential reads every project already.
 	"POST /api/v1/projects/{key}/related": scopeProject,
+	// A CI job's result of a check of the spec files writes the results of the project its path
+	// names, which must be the one project its results token names.
+	"POST /api/v1/projects/{key}/results": scopeProject,
 
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep":            scopeProject,
 	"POST /api/v1/artifacts/{id}/asks":                              scopeProject,
@@ -545,6 +548,16 @@ var routeScopes = map[string]routeScopeSet{
 // names anything but a GET row it mounts (readRoutesNotMountedAsGET).
 var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture"}
 
+// resultsScopeRoutes is every route a results token may call, by "<method> <pattern>": a token
+// the secrets broker minted from a result entry for one CI run, which holds the scope results
+// alone and names a person, one project and the run (model.Credential.ResultsOnly). Every other
+// row of the table, and GET /ws/live beside it, answers such a token 403 RESULTS_ONLY_TOKEN
+// before anything else the route does (refuseResultsOnlyToken), so a route added later stays
+// closed to it until it is listed here. It is a list beside the table for the reason the read
+// list is, and routes() stamps it onto the row (apiRoute.ResultsScope); register refuses to
+// mount a table whose list names a route it does not mount.
+var resultsScopeRoutes = []string{"POST /api/v1/projects/{key}/results"}
+
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
 // deployment leaves it out.
@@ -600,19 +613,21 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: the table's row, the class routes() stamps onto it from
-// writeClasses, the OAuth scopes it stamps from routeScopes, and whether a read-only token may
-// call it, which it stamps from readScopeRoutes. Register mounts the table and GET /api/v1 lists
-// it, so the two can never disagree about what the server serves. Every mutating row carries a
-// Scope, and a GET row carries none (project_scope.go); OAuthScopes is empty on every row any
-// authenticated caller may reach; ReadScope is true on the rows the read list names and on no
-// other, and only the read-only gate reads it (refuseReadOnlyToken), never the route index or the
-// OpenAPI document; the row's own five columns are read through it by promotion. What the route
-// takes and answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
+// writeClasses, the OAuth scopes it stamps from routeScopes, and whether a read-only token or a
+// results token may call it, which it stamps from readScopeRoutes and resultsScopeRoutes. Register
+// mounts the table and GET /api/v1 lists it, so the two can never disagree about what the server
+// serves. Every mutating row carries a Scope, and a GET row carries none (project_scope.go);
+// OAuthScopes is empty on every row any authenticated caller may reach; ReadScope and
+// ResultsScope are true on the rows their list names and on no other, and only their gates read
+// them (refuseReadOnlyToken, refuseResultsOnlyToken), never the route index or the OpenAPI
+// document; the row's own five columns are read through it by promotion. What the route takes
+// and answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
-	Scope       writeScope
-	OAuthScopes routeScopeSet
-	ReadScope   bool
+	Scope        writeScope
+	OAuthScopes  routeScopeSet
+	ReadScope    bool
+	ResultsScope bool
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -675,6 +690,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodPost, "/api/v1/projects/{key}/architecture-sources/sync", authAny, "Import every architecture source of a project now, each whatever another's import did; 200 carries every updated row in the order the sources were added, each with its own last_error (an access failure included).", s.syncArchitectureSources},
 		{http.MethodPost, "/api/v1/projects/{key}/architecture-source/sync", authAny, "Kept for dispatch clients older than this release, logged at warn: import every architecture source of a project now and answer one row, the first in id order whose last_error is set or else the first; 404 SOURCE_NOT_FOUND without a source. POST /api/v1/projects/{key}/architecture-sources/sync replaces it.", s.syncSingularArchitectureSource},
 		{http.MethodGet, "/api/v1/projects/{key}/architecture", authAny, "A project's component tree with the work attached: its sources' sync bookkeeping, each component with its source repository, per-component counts and issue rows, plus unassigned, not-architectural, and retired-link issues; 404 SOURCE_NOT_FOUND without a source.", s.getArchitectureTree},
+		{http.MethodPost, "/api/v1/projects/{key}/results", authAny, "Record one result of one check of the spec files, written by the CI job that ran it {commit, check, verdict, observed}: only a results token, which the secrets broker mints for one GitHub Actions run, writes it (403 RESULTS_SCOPE_REQUIRED for every other credential), and any other body member is 400 RESULT_INPUT naming it. Dispatch reads the rest from the token, from GitHub and from .dispatch/spec at the run's commit: commit must be the run's (403 COMMIT_NOT_THE_RUNS), the project must map the run's repository (403 REPOSITORY_NOT_THE_PROJECTS), GitHub must name the run's check run at that commit (403 CHECK_RUN_NOT_THE_RUNS), and the files must hold the check once (409 CHECK_NOT_IN_FILES) with its job the check run's name without its matrix values (409 CHECK_NOT_THIS_JOBS); 503 CHECK_RUN_UNREADABLE or FILES_UNREADABLE when GitHub does not answer. Answers 201 with the stored row {id, seq, kind, attestation}, an in-toto statement of the run. Each result is a new row, and none is changed.", s.recordSpecCheckResult},
+		{http.MethodGet, "/api/v1/projects/{key}/results", authAny, "Every result CI jobs wrote for checks of the spec files at ?commit= (40 lowercase hex, else 400 INVALID_QUERY), of ?check= alone when given: {results}, each {id, seq, kind, attestation}, newest first by seq, Dispatch's record order. A results token is refused it.", s.listSpecCheckResults},
 		{http.MethodGet, "/api/v1/settings/project-default-assignees", authAny, "List every project with the person it defaults to, by project key: every project names one, and that person is the last step of the chain that decides who a question reaches. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none.", s.listProjectDefaultAssignees},
 		{http.MethodGet, "/api/v1/settings/new-issue", authAny, "What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes.", s.getNewIssueSettings},
 		{http.MethodPut, "/api/v1/projects/{key}/default-assignee", authAny, "Move a project's default assignee to another person {assignee} (the email of a person who has signed in): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. A project always names a person, so an assignee that is absent, null or blank is 400 INVALID_PROJECT and the default cannot be cleared. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none.", s.putProjectDefaultAssignee},
@@ -869,7 +886,7 @@ func (s *server) routes() []apiRoute {
 	routes := make([]apiRoute, len(rows))
 	for index, row := range rows {
 		name := row.Method + " " + row.Pattern
-		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], slices.Contains(readScopeRoutes, name)}
+		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], slices.Contains(readScopeRoutes, name), slices.Contains(resultsScopeRoutes, name)}
 	}
 	return routes
 }

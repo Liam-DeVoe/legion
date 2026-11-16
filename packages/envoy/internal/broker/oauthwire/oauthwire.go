@@ -119,10 +119,10 @@ const (
 // CIRun is the GitHub Actions run a result entry's token was minted for, as the run's own GitHub
 // token named it: the claims of that token, copied onto the token the exchange mints and answered
 // back by introspection (Introspection.CI). The exchange mints such a token only when every field
-// is set: a commit of 40 lowercase hex digits, and a run, an attempt and a check run that are
-// positive decimal numbers (exchange.Set.Workflow). The check run is the job's identity: GitHub
-// names the check run of each job, and a resource server reads its name and its commit from
-// GitHub by this id.
+// is set, the commit in the form IsCommit holds and the run, the attempt and the check run in the
+// form IsPositiveDecimal holds (exchange.Set.Workflow), and a resource server admits it only so
+// (brokertoken). The check run is the job's identity: GitHub names the check run of each job, and
+// a resource server reads its name and its commit from GitHub by this id.
 type CIRun struct {
 	// Repository is <owner>/<name>, the repository the run belongs to.
 	Repository string `json:"repository"`
@@ -142,6 +142,35 @@ type CIRun struct {
 	RunnerEnvironment string `json:"runner_environment"`
 	// CheckRunID is the check run of the job the token was minted in.
 	CheckRunID string `json:"check_run_id"`
+}
+
+// IsCommit reports whether text is a commit as a run names it: 40 lowercase hex digits.
+func IsCommit(text string) bool {
+	if len(text) != 40 {
+		return false
+	}
+	for i := range len(text) {
+		if c := text[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// IsPositiveDecimal reports whether text is a positive decimal number that a signed 64-bit integer
+// holds, written as GitHub writes a run's id, its attempt and a check run's id: no sign and no
+// leading zero, so one number has one spelling, and no larger than a resource server's bigint.
+func IsPositiveDecimal(text string) bool {
+	const largest = "9223372036854775807"
+	if text == "" || text[0] == '0' || len(text) > len(largest) {
+		return false
+	}
+	for i := range len(text) {
+		if text[i] < '0' || text[i] > '9' {
+			return false
+		}
+	}
+	return len(text) < len(largest) || text <= largest
 }
 
 // Introspection is what the broker knows about one of its access tokens: the RFC 7662 answer the

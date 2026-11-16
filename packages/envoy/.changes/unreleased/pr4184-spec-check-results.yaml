@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  A CI job writes the result of a check of the spec files with its own results token: `POST /api/v1/projects/{key}/results` takes `{commit, check, verdict, observed}` from that token alone, and refuses every other member of the body by name. Dispatch reads the rest itself: the commit must be the token's, the project must map the run's repository, GitHub must name the token's check run at that commit, and `.dispatch/spec` at that commit must hold the check once, with its job the check run's name without its matrix values. Each result is a new row with Dispatch's record number and an in-toto statement of the run, and no row is changed. `GET /api/v1/projects/{key}/results?commit=` answers them newest first.
+
+  Dispatch serves a results token on that one route, and answers it `403 RESULTS_ONLY_TOKEN` on every other route and on `GET /ws/live`. The shared verifier now also refuses a results token whose run holds a commit that is not 40 lowercase hex digits, or a run, an attempt or a check run that is not a positive number.

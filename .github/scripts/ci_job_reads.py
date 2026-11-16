@@ -2458,9 +2458,10 @@ GATES = [
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:3-6 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
         (ENVOY_CLIENT_SRC, "packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, so the two suites "
-                           "above put envoy-client's sources in this job's program too (check-ts-filters.sh measures it); "
-                           "@legion/broker-client does not come with them, since no source of this program reaches "
-                           "packages/envoy-client/src/broker-credential.ts"),
+                           "above put envoy-client's sources in this job's program too (check-ts-filters.sh measures it)"),
+        (BROKER_CLIENT_SRC, "packages/dispatch/e2e/read-token-live.ts:37 imports @legion/envoy-client/broker-credential, "
+                            "whose src/broker-credential.ts:21-34 imports @legion/broker-client/*, so the dashboard's tsc "
+                            "program compiles broker-client's sources too (check-ts-filters.sh measures it)"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
     ) + bun_job("dispatch-ui")),
 

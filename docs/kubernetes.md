@@ -6302,7 +6302,8 @@ An operator-launched controller presents the token its own file names, or, under
 Dispatch accepts such a token where `DISPATCH_AGENT_SECRETS_URL` names the broker, and reads the session, the person or the service, and the project from it (`packages/envoy/cmd/dispatch/README.md`).
 It serves a read entry's token on the routes its read list names (`readScopeRoutes` in `packages/envoy/internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 The Envoy listener answers that token `401`, because a verifier accepts it only where its service asks for it (`brokertoken.Options.ServesReadOnly`), and the listener does not ask.
-Dispatch and the Envoy listener both answer a result entry's token `401`, because no verifier they build asks for it (`brokertoken.Options.ServesResults`).
+It serves a result entry's token on the routes its results list names (`resultsScopeRoutes` in the same file), today `POST /api/v1/projects/{key}/results` alone, and answers it `403 RESULTS_ONLY_TOKEN` on every other route and on `GET /ws/live`.
+The Envoy listener answers a result entry's token `401`, because its verifier does not ask for it (`brokertoken.Options.ServesResults`).
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 
 #### Network shares

@@ -588,7 +588,15 @@ write identity errors with `identity.WriteError`.
   (`readScopeRoutes`) does not name and on `/ws/live`, with no
   `WWW-Authenticate` challenge. That refusal comes before the scope gate, the
   sign-in check, the `Idempotency-Key` and the handler, so such a token never
-  reaches the sign-in refusal above. Since the credential
+  reaches the sign-in refusal above. A results token is held the same way: the
+  broker mints it from a result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) for
+  one CI run, with the OAuth scope `results` alone, the project scope
+  `results`, a person, one project and the run. `brokerTokenVerifier` sets
+  `brokertoken.Options.ServesResults` too, `model.Credential.ResultsOnly` and
+  `model.Credential.CI` carry the mark and the run, and
+  `api.refuseResultsOnlyToken` answers it `403 RESULTS_ONLY_TOKEN` on every
+  route the results list (`resultsScopeRoutes`) does not name and on
+  `/ws/live`. Since the credential
   proves the session, `bearerSessionActor` takes a body with no `actor` at all,
   takes one naming that same session for its `origin`, and refuses one naming
   any other writer `403 ACTOR_SESSION_MISMATCH` naming the session the token
@@ -599,8 +607,9 @@ write identity errors with `identity.WriteError`.
   service, or one issued to a client other than the exchange, which a machine
   login's own access token is, so a body cannot name a session for a credential
   that proves none, or one whose project scope and OAuth scope are a shape no
-  broker mints (the scope `read` beside `named` or `person`, or the project
-  scope `none` in any shape but a read-only token's) —
+  broker mints (the scope `read` or `results`, or a run, beside `named` or
+  `person`, or the project scope `none` or `results` in any shape but its own
+  token's) —
   `429 BROKER_TOKEN_RATE_LIMITED` and `503 BROKER_UNAVAILABLE`, which is a 503
   for the reason `OIDC_ISSUER_UNAVAILABLE` is: the broker answered nothing, so
   the token was never judged. A proof is single use by its `jti` and `htu`, so

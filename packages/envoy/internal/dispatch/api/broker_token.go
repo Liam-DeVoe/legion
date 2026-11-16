@@ -97,6 +97,14 @@ func errNoBrokerConfigured() *apiError {
 // the scope gate, the sign-in check and everything else the route does. On a listed route it is
 // the session it names, reading as that session does.
 //
+// A results token is held to its list the same way: the scope results alone, the project scope
+// results, a person, one project and the CI run it was minted for (brokertoken.Caller.ResultsOnly,
+// which a verifier built with Options.ServesResults answers, and Dispatch's is). Its credential
+// is marked results-only with the run (model.Credential.ResultsOnly, model.Credential.CI) and
+// holds no OAuth scope, its project rides on model.Actor.Project as a named token's does, and
+// refuseResultsOnlyToken answers it 403 RESULTS_ONLY_TOKEN on every route the results list does
+// not name (resultsScopeRoutes), ahead of everything else the route does.
+//
 // Each refusal is its own code, and none of them repeats the token the caller presented:
 //
 //   - 401 BROKER_TOKEN_NOT_ACTIVE — the broker answered that the token is not live (unknown,
@@ -109,11 +117,11 @@ func errNoBrokerConfigured() *apiError {
 //   - 401 BROKER_TOKEN_NOT_A_SESSION — the broker holds the token live, but it is not a
 //     session's credential: it names no session, it names neither a person nor a service, it
 //     was issued to a client other than the exchange a session's token comes from, or its
-//     project scope and its scope are a shape no broker mints (the scope read beside a project
-//     scope that writes, or the project scope none in any shape but a read-only token's). A
-//     machine login's own access token is one of these, and Dispatch records every write under
-//     the session its credential proved, so it acts on none of them rather than letting a
-//     request body name a session for a credential that names none.
+//     project scope and its scope are a shape no broker mints (the scope read or results, or a
+//     run, beside a project scope that writes, or the project scope none or results in any shape
+//     but its own token's). A machine login's own access token is one of these, and Dispatch
+//     records every write under the session its credential proved, so it acts on none of them
+//     rather than letting a request body name a session for a credential that names none.
 //   - 429 BROKER_TOKEN_RATE_LIMITED — this source address has no introspection left in its
 //     bucket; nothing was asked of the broker. It carries the wait in Retry-After as well as in
 //     its prose, as the broker's own 429s do.
@@ -162,7 +170,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// is no person for it to act as, and a scope that said otherwise would let it act as the
 	// session's own id on the routes that read what belongs to a person. A read-only token is
 	// one of those, and its one scope, read, is carried as the credential's ReadOnly mark and
-	// never as a scope a route could require.
+	// never as a scope a route could require. A results token's one scope, results, is carried
+	// the same way, as its ResultsOnly mark.
 	var scopes []string
 	if caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson {
 		scopes = model.Scopes
@@ -171,9 +180,10 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		Kind: "session",
 		ID:   caller.Session,
 		// The broker proved this session, so the credential already names the agent behind the
-		// request and no request body has to name it. A read-only token is marked as one, which
-		// is all refuseReadOnlyToken reads.
-		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly},
+		// request and no request body has to name it. A read-only token and a results token are
+		// marked as such, which is all refuseReadOnlyToken and refuseResultsOnlyToken read; a
+		// results token carries its run, which the results route holds the result to.
+		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, ResultsOnly: caller.ResultsOnly, CI: caller.CI},
 	}
 	// A caller names a person or a service, never both and never neither (brokertoken.Caller),
 	// and the two fields are set from the token alone, never from a body. whoami reports both.
@@ -184,10 +194,11 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		actor.Service = &caller.Service
 	}
 	// Only a token the broker scoped to one project names one, which brokertoken.callerOf has
-	// already read. The two it scopes to a person instead carry no project at all: a dev box
-	// session's token, whose person may write wherever they may, and the token of a machine
-	// naming a service and no person, which its fleet entry holds to no project either. Nor
-	// does a read-only token, whose project scope none writes no project at all.
+	// already read: a named token, and a results token, whose results are of that one project.
+	// The two it scopes to a person instead carry no project at all: a dev box session's token,
+	// whose person may write wherever they may, and the token of a machine naming a service and
+	// no person, which its fleet entry holds to no project either. Nor does a read-only token,
+	// whose project scope none writes no project at all.
 	if caller.Project != "" {
 		actor.Project = &caller.Project
 	}
