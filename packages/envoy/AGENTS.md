@@ -87,12 +87,17 @@ Each item below names a task and where its code is, then notes on it.
   `Dial` from the lookup its caller passes.
   envoy-dispatch hands both its settings table
 
-- **NATS grants**: `natsgrant/natsgrant.go`
+- **NATS grants**: `natsgrant/natsgrant.go`, `natsgrant/projects.go`
 
   the one table of what each kind of NATS client may publish and subscribe: a listener's, a host's, Dispatch's, a Legion daemon's, the measurement job's, and a session's, both as the `*` pattern a hub's shared session user holds (`SessionPattern`) and as one session's own subjects (`Session`, which refuses an id that is not one subject token).
   envoy-infra renders a hub's static users from it (`infra/core/permissions.go` wraps each set as the rules a user takes), and the Legion daemon's real-NATS proof reads `Daemon` from it, so the hub and that proof cannot diverge.
   `NamesSystemSubject` finds an entry that can reach a `$SYS` subject.
   `natsgrant_test.go` holds every set to the list `infra/core` rendered before the table moved here (`testdata/merge-base-grants.json`) and `Measure` to agent-infra's deployed list (`testdata/agent-infra-measure-grant.json`).
+  `WithinProjects` (`projects.go`) holds a grant to a `Scope` (the projects a token lists, the repositories Dispatch maps to them, and the account the token names), for the auth service to answer a Legion daemon whose entry is held to projects.
+  It writes `_INBOX.>` as the account's own reply prefix (`InboxPrefix`, which the client sets with `nats.CustomInboxPrefix`), each issue, role-exception, Legion and GitHub lane as the scope's, and each consumer call on the stream as the calls on the daemon's own `legion-go-<P>-<kind>` consumers, each create subject naming its one filter.
+  It drops the stream's info and stored-message get, and refuses, naming the entry, any other stored-message read, a create that names no filter, a KV bucket's call, `notifications.>` and every entry it does not know.
+  Only a daemon's grant passes it: the listener's, Dispatch's and the measurement job's hold `notifications.>` or a bucket, which it refuses, so an auth-service entry of those kinds takes the whole grant (`*`).
+  `projects_live_test.go` (`natslive`) rebuilds measurement M5 on the hub's image behind a stand-in auth callout: today's `Daemon` receives another project's pulls on `_INBOX.>`, and the narrowed grant receives none.
 
 - **Stream definition**: `internal/bus/stream.go`
 
