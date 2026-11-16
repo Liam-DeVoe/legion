@@ -362,8 +362,8 @@ jobs:
     # three runs of 2026-11-11, 745 s in run 43251567200 and 769 s in run 43347417247. Shard 2's
     # read 532 to 636 s on 2026-11-11 and 750 s in run 43251567200, about a quarter more. So the
     # budget takes the maximum over every run, as the rule says, and not a median. The maximum
-    # each step reached over those 18 legs and every leg of this branch's runs of 2026-11-15 -
-    # its eighteen full-lane runs (43656706589, 43664675139, 43667557013, 43669817025,
+    # each step reached over those 18 legs and every leg of pull request #3513's runs of
+    # 2026-11-15 - its eighteen full-lane runs (43656706589, 43664675139, 43667557013, 43669817025,
     # 43670689833, 43672161759, 43674112121, 43676043057, 43687205491, 43689921885,
     # 43692383387, 43716814270, 43720076901, 43723836932, 43731214579, 43744059348,
     # 43747732723 and 43751151528) and the shard legs of its 24 pull-request runs that
@@ -457,7 +457,7 @@ jobs:
       # after the install, until dispatch://INFRA-1109: the start costs 0 s and the poll cost
       # 16 to 23 s a leg in run 42809067358, all of it the volume server coming up while nothing
       # else was running. Started here it comes up behind the two downloads and the Bun install,
-      # and the poll read at most 10 s a leg in this branch's runs of 2026-11-15 (job
+      # and the poll read at most 10 s a leg in pull request #3513's runs of 2026-11-15 (job
       # 132690968751). The poll is not weakened by the move - it is the same
       # bucket PUT, the same object write, read and delete, and the same 60-attempt ceiling.
       #
@@ -602,7 +602,7 @@ jobs:
         #
         # The budget below is the 17 minutes the job's head gives this step by the rule in this
         # file's head: the step's maximum is 835 s, shard 2 of run 43667557013 (job
-        # 132671046743), above every other leg of this branch's runs of 2026-11-15 and above
+        # 132671046743), above every other leg of pull request #3513's runs of 2026-11-15 and above
         # every earlier reading, the 780 s floor of job 131642902948 among them, and
         # 835 x 1.15 = 960.25 s, which rounds up to 17 min. The job's head lists the runs and
         # how the legs' times moved.
@@ -658,7 +658,7 @@ jobs:
           # pull request is answered by: every stubbed row carries the tag, and so do the
           # real-stack rows of the journeys that must be seen on a pull request. Playwright
           # applies a command-line grep **on top of** a project's own, never in place of it -
-          # measured at this branch's base, 475d7609, where `iphone` listed 109 rows and 4 of
+          # measured at pull request #3513's base, 475d7609, where `iphone` listed 109 rows and 4 of
           # them under `--grep '@pr'`, and `webkit` 40 rows and 7 of them, and again at this
           # head, 23f2d137, where `iphone` listed 119 and the same 4, and `webkit` 40 and the
           # same 7 - so the two tagged projects keep their own axis and the command's grep
@@ -864,7 +864,7 @@ jobs:
     # 90ee14dd, each step's `completed_at` less its `started_at`. This job ran once in each
     # of them, and green each time. Its browser step read 156, 123 and 135 s on 2026-11-11, 143,
     # 170, 169, 140 and 170 s on 2026-11-12, and 135 s at 90ee14dd; the job read 192 to 233 s.
-    # The maximum each step reached over the nine jobs and the 18 of this branch's full-lane
+    # The maximum each step reached over the nine jobs and the 18 of pull request #3513's full-lane
     # runs of 2026-11-15 (43656706589 to 43751151528), read the same way, in seconds:
     #
     #   step                                                 max
@@ -1411,7 +1411,8 @@ jobs:
   # browser step absorbs the provider's 8.3 to 10.4 s (the one sample behind that figure is the
   # visual job of run 43045412941, which the multiprocess job's head says no later run splits
   # out) inside a budget set for rows whose step took 16 to 26 s in CI then, and 35 s at most
-  # (job 132024655331, run 43465266476) over every run of this job at this shape on this branch,
+  # (job 132024655331, run 43465266476) over every run of this job at this shape on pull request
+  # #3513's branch,
   # 112 of them from 2026-11-11T18:09Z to 2026-11-16T06:37Z - and the borrowed maximum for the
   # steps without one is the multiprocess job's 94 s, the 135 s with the downloads and the
   # chmod added and the `Initialize containers`, setup-go and Go cache restore taken off, as
@@ -1567,12 +1568,12 @@ jobs:
   # that passed, it read 111-179 s, and two runs that day timed out on it at 183 s and 182 s
   # (run 43687635217, a merge group, and run 43691184536, a pull request). So the maximum over
   # every run is 183 s, and 183 x 1.15 = 211 s -> 4 min, the step budget below. Those runs are of
-  # main's shape, where e2e/run-server.sh built the Dispatch server inside this step; at this
-  # shape it builds nothing (DISPATCH_E2E_SERVER_BIN and DISPATCH_E2E_BROKER_BIN_DIR below), and
-  # its own runs read 37 to 78 s, at most 78 s (job 132830691048, run 43720076901), over every
-  # run of this job on this branch, 57 of them from 2026-11-11T12:42Z to 2026-11-16T04:08Z and
-  # all at this shape. The rule takes the maximum over every run all the same, so 4 minutes
-  # stands, with room.
+  # the default branch before pull request #3513, where e2e/run-server.sh built the Dispatch
+  # server inside this step; since that pull request it builds nothing (DISPATCH_E2E_SERVER_BIN
+  # and DISPATCH_E2E_BROKER_BIN_DIR below), and its runs on that pull request's branch read 37 to
+  # 78 s, at most 78 s (job 132830691048, run 43720076901), over every run of this job there, 57
+  # of them from 2026-11-11T12:42Z to 2026-11-16T04:08Z. The rule takes the maximum over every run
+  # all the same, so 4 minutes stands, with room.
   #
   # The job's sum is taken over every step of the job as it is now, each at its maximum over
   # the five columns above and those 57 runs, in seconds: `Set up job` 2 (job 132730913819), the
@@ -1580,10 +1581,12 @@ jobs:
   # 3, setup-bun 218 (job 128713801668), bun install 19 (job 132113751326), the contracts build
   # 1, the image pull 55 (job 132915472142, run 43747732723), the upload 3 (job 132904452885),
   # `Post Run ./.github/actions/setup-bun` 1, `Post Run actions/checkout` 1 (job 132830691048)
-  # and `Complete job` 1 (job 133073564329). Those sum to 320 s - setup-go, the go cache restore
-  # and the dashboard build left this job (dispatch://INFRA-1109), which is why it is not the
-  # 316 s of the five columns - and 240 + 320 = 560 s, 9 min 20 s, rounded up to the 10 minutes
-  # below.
+  # and `Complete job` 1 (job 133073564329). Those sum to 320 s, against the 316 s of the five
+  # columns: setup-go, the go cache restore and the dashboard build left this job
+  # (dispatch://INFRA-1109), which takes off their 9, 2 and 37 s; the seven steps the five columns
+  # do not list add 15 s; and the 57 runs' higher maxima add 37 s (checkout, bun install, the
+  # contracts build, the image pull and the upload). 316 - 48 + 15 + 37 = 320, and
+  # 240 + 320 = 560 s, 9 min 20 s, rounded up to the 10 minutes below.
   #
   # The first run of the five columns was the only one this job had when these budgets were
   # first written, and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's
@@ -1736,7 +1739,7 @@ jobs:
     # 43 completed ci.yaml runs, read from the jobs API on 2026-11-08, the job's maximum is
     # 34 s: job 128737694112 of run 42481906495, 12:57:25Z to 12:57:59Z. The 37 s this comment
     # carried before was measured on another branch and is replaced by that sample. The merge
-    # jobs of this branch's runs of 2026-11-15 read at most 44 s whole (job 132733634671, run
+    # jobs of pull request #3513's runs of 2026-11-15 read at most 44 s whole (job 132733634671, run
     # 43687205491), which is the figure `merge_maximum` takes off the lane's bound, and their
     # steps without a budget sum to 48 s at their maxima (checkout 10 s, `bun install` 12 s and
     # the merge of the blob reports 5 s among them), 49 s with the 1 s the refused-download step

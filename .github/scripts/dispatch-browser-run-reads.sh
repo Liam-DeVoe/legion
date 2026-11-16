@@ -380,12 +380,12 @@ case "$mode" in
     # The pull-request lane keeps 900 s, since the default branch runs no such lane and there
     # is no same-day figure to take a ratio against.
     # The 44 s is measured, not allowed for: it is the most the `dispatch-browser / merge` job
-    # took over this branch's fifteen full-lane runs and twenty-one pull-request runs of
+    # took over pull request #3513's fifteen full-lane runs and twenty-one pull-request runs of
     # 2026-11-15, read from the jobs API - job 132733634671 of run 43687205491, above the 39 s
     # of job 132868945016 (run 43731214579) and the 38 s of runs 43672161759 and 43656706589.
     # Every one of those jobs ran the step this mode is the body of, so the figure holds that
     # step's second. It replaces 37 s, which was 36 s measured over five runs of 2026-11-11,
-    # before that step existed, plus 1 s allotted to the step; this branch's own merge jobs
+    # before that step existed, plus 1 s allotted to the step; pull request #3513's own merge jobs
     # went past it. That job's timeout-minutes is 4, so a merge job above the whole figure and
     # not cancelled is one whose seconds this figure then understates, and this budget is the
     # looser for it by exactly the difference.

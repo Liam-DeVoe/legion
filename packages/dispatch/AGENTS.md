@@ -2129,8 +2129,8 @@ of the jobs file its first reading already wrote, and fails above 2,656 s on the
 (`.github/scripts/dispatch-browser-run-reads.sh`, mode `machine-time`).
 Those two numbers are lower than the committed ceiling of 2,700 s and 900 s on purpose: a job
 reading inside its own run cannot see its own cost, because its `completed_at` is still null, so
-each budget is the ceiling less this job's own worst case of 44 s, measured over this branch's
-runs of 2026-11-15 with the reading step in them, and a lane that passes
+each budget is the ceiling less this job's own worst case of 44 s, measured over pull request
+#3513's runs of 2026-11-15 with the reading step in them, and a lane that passes
 here and then spends that worst case lands on the ceiling exactly.
 That ceiling is a coarse guard above the fleet's own spread and no reading of what
 dispatch://INFRA-1109 delivers: no job can read another run, so what the suite costs against the
@@ -2206,7 +2206,7 @@ navigation step, a `page.goto` in nearly every row. Unless the call passes a `wa
 Playwright ends that step at the page's `load` event. So the figure holds the entry chunk's
 download and parse, and it does not tell how much of the boot reads, which the entry starts,
 ends before that event.
-A local run of 107 Chromium rows on 2026-11-12, at a head of this branch's shape, read its
+A local run of 107 Chromium rows on 2026-11-12, at a head of pull request #3513, read its
 median at 676 ms, against the 1.20 s the two old figures sum to
 (`E2E_MEASURE_FILE=<file>` on a chromium run, then `bun e2e/tools/measure-summary.ts <file>`).
 The same run read `reset-sql` at 95 ms, `reset-fakes` at 20 ms and `sign-in` at 7 ms, and a
