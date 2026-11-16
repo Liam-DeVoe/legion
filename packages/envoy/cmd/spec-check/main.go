@@ -19,9 +19,10 @@
 // names a file of the ids the approved spec removed, one id a line, "#" lines and blank lines
 // passed over; without it, a line on standard error says that no id was checked against them.
 //
-// changes prints one line for each statement whose text, parent, relations or checks differ
-// between the two directories, "spec-check: <id>: text, checks", or "spec-check: no statement
-// changed", and exits 0. checks prints the program checks that name the job as one line of JSON,
+// changes prints one line for each statement that only one of the two directories holds, or whose
+// text, parent, relations or checks differ between them, "spec-check: <id>: text, checks", or
+// "spec-check: no statement changed", and exits 0; a statement that only moved to another file is
+// no change. checks prints the program checks that name the job as one line of JSON,
 // [{"id","runner","selector","job","procedure_sha256"}], [] when none, and exits 0. Both exit 2,
 // with the problems on standard error, when a tree they read has any problem.
 //

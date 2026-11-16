@@ -284,13 +284,14 @@ func TestTheBuiltBinary(t *testing.T) {
 	})
 }
 
-// TestUsage runs the command with no subcommand and with one it does not know: each exits 2 with
-// the usage.
+// TestUsage runs the command with no subcommand and with one it does not know, each of which exits
+// 2 with the usage, and with -h after a subcommand, which exits 0 with the usage.
 func TestUsage(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	expect(t, runBinary(t, binary, ""), result{code: 2, stderr: usage + "\n"})
 	expect(t, runBinary(t, binary, "", "nope"), result{code: 2, stderr: "spec-check: unknown subcommand \"nope\"\n" + usage + "\n"})
+	expect(t, runBinary(t, binary, "", "tree", "-h"), result{stderr: usage + "\n"})
 }
 
 // result is what one run of the binary did.
