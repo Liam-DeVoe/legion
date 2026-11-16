@@ -122,11 +122,11 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs at most forty round trips,
+// One approval request on a document with no request open costs at most forty-one round trips,
 // counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
 // for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
 // is where it goes today: the first eight read the coverage the answer reports, before the
-// request's transaction opens (approvalCoverage); the thirty after them are the transaction
+// request's transaction opens (approvalCoverage); the thirty-one after them are the transaction
 // itself, and the last two store the display trees of the texts it wrote, after the commit. In the
 // order it sends them:
 //
@@ -152,46 +152,48 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     (docs.OpenApprovalAskForDocuments);
 //  16. the new ask's id (select gen_random_uuid()::text);
 //  17. the latest approved review the request carries (docs.LatestApprovedReview);
-//  18. the ask's node, in its document's project, written before the ask row that holds it
+//  18. the supertags the ask's node is typed by, read for any the store holds no row of before the
+//     node is written (graphstore.checkSupertags, one statement before every node write);
+//  19. the ask's node, in its document's project, written before the ask row that holds it
 //     (graphstore.WriteUncaused, dispatch://INFRA-3862); the project is the document's, read with
 //     it, so it costs no round trip of its own;
-//  19. the ask row (openApprovalAsk);
-//  20. the question's references, none of which it names (replaceReferences);
-//  21. the row the ask owes the grammar's re-index queue, deleted where it has one
+//  20. the ask row (openApprovalAsk);
+//  21. the question's references, none of which it names (replaceReferences);
+//  22. the row the ask owes the grammar's re-index queue, deleted where it has one
 //     (refs.settleOwed): the write holds the source's row and has just read its text with the
 //     whole grammar, so nothing is owed for it any more (INFRA-869);
-//  22. the ask's block-state row, inserted where it has none (refs.IndexAskPartsCounted, through
+//  23. the ask's block-state row, inserted where it has none (refs.IndexAskPartsCounted, through
 //     lockItemState);
-//  23. that state row, read and locked;
-//  24. the part rows of the new ask - its question and each option (writeItemBlocks);
-//  25. the text of each part at the new revision;
-//  26. the state the parts were indexed at (storeItemState);
-//  27. the thread's followers, for the event payload (events.AskEventPayload);
-//  28. the issue's sequence, locked (appendEvent);
-//  29. the ask.opened event row, inserted with its id and time returned in one statement
+//  24. that state row, read and locked;
+//  25. the part rows of the new ask - its question and each option (writeItemBlocks);
+//  26. the text of each part at the new revision;
+//  27. the state the parts were indexed at (storeItemState);
+//  28. the thread's followers, for the event payload (events.AskEventPayload);
+//  29. the issue's sequence, locked (appendEvent);
+//  30. the ask.opened event row, inserted with its id and time returned in one statement
 //     (events.Broker.AppendAll);
-//  30. a batch of 2: that event's payload, rewritten with its own id, and the issue's last_seq
+//  31. a batch of 2: that event's payload, rewritten with its own id, and the issue's last_seq
 //     (events.Broker.AppendAll);
-//  31. the references' source sequence (refs.Stamp);
-//  32. the source sequence of the links the ask's parts hold, none here (refs.Stamp's block arm);
-//  33. the ask's node moved onto the ask.opened (graphstore.Caused);
-//  34. the base attributes its node write stated - its visibility, its state and its project -
+//  32. the references' source sequence (refs.Stamp);
+//  33. the source sequence of the links the ask's parts hold, none here (refs.Stamp's block arm);
+//  34. the ask's node moved onto the ask.opened (graphstore.Caused);
+//  35. the base attributes its node write stated - its visibility, its state and its project -
 //     appended under that event (graphstore.Caused);
-//  35. the author's follow and the session node it records, caused by the ask.opened, in one
+//  36. the author's follow and the session node it records, caused by the ask.opened, in one
 //     statement (asks.FollowAuthor);
-//  36. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
+//  37. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
 //     every read of that person shares);
-//  37. a batch of 2: the approval as the request leaves it (attachApproval again);
-//  38. commit;
-//  39. the display trees of the texts the ask.opened event carries - its question and both option
+//  38. a batch of 2: the approval as the request leaves it (attachApproval again);
+//  39. commit;
+//  40. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);
-//  40. the display tree of the question the request wrote, stored by the route itself, which the
+//  41. the display tree of the question the request wrote, stored by the route itself, which the
 //     table already holds from the statement before it (`on conflict do nothing`): the route
 //     stores what it wrote whether or not the event it published carried the same text.
 //
 // The five batches hold twelve statements between them, so a request that sent each statement on
-// its own would send forty-seven round trips.
-func TestApprovalRequestsCostAtMostFortyRoundTrips(t *testing.T) {
+// its own would send forty-eight round trips.
+func TestApprovalRequestsCostAtMostFortyOneRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -215,8 +217,9 @@ func TestApprovalRequestsCostAtMostFortyRoundTrips(t *testing.T) {
 	// A ceiling, not an equality: the round trips are counted through helpers several other
 	// requests share, so an exact count reds this row for a change that sends one round trip
 	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above
-	// says where the forty go.
-	const ceiling = 40
+	// says where the forty-one go: one more than forty since every node write reads the
+	// supertags it is typed by first (graphstore.checkSupertags, round trip 18).
+	const ceiling = 41
 	if len(counted) > ceiling {
 		t.Fatalf("the approval request made %d round trips, want at most %d:\n%s",
 			len(counted), ceiling, strings.Join(roundTripLines(counted), "\n"))

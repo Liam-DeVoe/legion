@@ -15178,9 +15178,7 @@
         },
         "required": [
           "version",
-          "types",
-          "store_types",
-          "lens_kinds"
+          "types"
         ],
         "type": "object"
       },
@@ -20380,9 +20378,7 @@
           "changed_by",
           "changed_at",
           "parent",
-          "parent_version",
-          "state",
-          "visibility"
+          "parent_version"
         ],
         "type": "object"
       },
@@ -20546,9 +20542,7 @@
           "changed_by",
           "changed_at",
           "parent",
-          "parent_version",
-          "state",
-          "visibility"
+          "parent_version"
         ],
         "type": "object"
       },
@@ -24412,9 +24406,7 @@
           "relations",
           "title",
           "created_at",
-          "href",
-          "state",
-          "visibility"
+          "href"
         ],
         "type": "object"
       },

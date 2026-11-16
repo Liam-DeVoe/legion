@@ -38,12 +38,15 @@ type personNode struct {
 	Href string `json:"href"`
 	// State is the node state the store holds for the node (graphstore.NodeStates), live for a
 	// node it holds no row of, as every read of a node answers it. A node that is gone is on no
-	// page.
-	State string `json:"state" enum:"live,gone,proposed,settled,overtaken"`
+	// page. Every row of this build carries it, and a server of the release before answers the
+	// page without it during a roll, so the document marks it optional (`required:"false"`) and a
+	// reader takes a row that carries none as live.
+	State string `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
 	// Visibility is the visibility the store holds for the node, project for a node it holds no
 	// row of: a node reserved for its author is on its author's page alone, which reads it as
-	// author.
-	Visibility string `json:"visibility" enum:"project,author"`
+	// author. It is optional in the document as State is, and a row that carries none is
+	// project.
+	Visibility string `json:"visibility" enum:"project,author" required:"false"`
 }
 
 // personNodes is one page of a person's nodes, newest first.

@@ -3737,7 +3737,7 @@ export interface components {
       comments: number;
     };
     BlockSchemaRead: {
-      lens_kinds: components["schemas"]["LensKindRead"][] | null;
+      lens_kinds?: components["schemas"]["LensKindRead"][] | null;
       /** @description elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block */
       marks?: {
         [key: string]: unknown;
@@ -3746,7 +3746,7 @@ export interface components {
       nodes?: {
         [key: string]: unknown;
       }[];
-      store_types: components["schemas"]["StoreTypeRead"][] | null;
+      store_types?: components["schemas"]["StoreTypeRead"][] | null;
       /** @description elements of the installed block schema, each as packages/contracts/schemas/block-schema.schema.json declares it: a node or a mark of the Proof schema, or a typed block */
       types:
         | {
@@ -4911,10 +4911,10 @@ export interface components {
       project?: string;
       ref?: string;
       /** @enum {string} */
-      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
       text?: string;
       /** @enum {string} */
-      visibility: "project" | "author";
+      visibility?: "project" | "author";
     };
     GraphNodeParent: {
       id: string;
@@ -4962,7 +4962,7 @@ export interface components {
       project?: string;
       ref?: string;
       /** @enum {string} */
-      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
       text?: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       text_tree?: {
@@ -4971,7 +4971,7 @@ export interface components {
         [key: string]: unknown;
       };
       /** @enum {string} */
-      visibility: "project" | "author";
+      visibility?: "project" | "author";
     };
     GraphReferences: {
       edges: components["schemas"]["GraphEdge"][] | null;
@@ -5813,10 +5813,10 @@ export interface components {
       kind: string;
       relations: string[] | null;
       /** @enum {string} */
-      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
       title: string;
       /** @enum {string} */
-      visibility: "project" | "author";
+      visibility?: "project" | "author";
     };
     PersonNodes: {
       limit: number;

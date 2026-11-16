@@ -28,10 +28,15 @@ type blockSchemaRead struct {
 	Types installedSchemaElements `json:"types"`
 	// StoreTypes is every type of the store that declares no block type, by name, each with the
 	// attributes its attribute nodes hold.
-	StoreTypes []storeTypeRead `json:"store_types"`
+	StoreTypes []storeTypeRead `json:"store_types" required:"false"`
 	// LensKinds is the lens catalogue, by id: each kind with its words and the constraint that
 	// holds its primary source.
-	LensKinds []lensKindRead `json:"lens_kinds"`
+	//
+	// This build answers both on every request, as lists that are never null. A server of the
+	// release before answers this route without either during a roll, so the document marks both
+	// optional (`required:"false"`) and a reader takes an answer that carries neither as holding
+	// no store type and no lens kind.
+	LensKinds []lensKindRead `json:"lens_kinds" required:"false"`
 }
 
 // installedSchemaElements is one member of the installed block schema - its nodes, its marks or

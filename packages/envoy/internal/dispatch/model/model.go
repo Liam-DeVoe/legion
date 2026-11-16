@@ -3089,6 +3089,9 @@ type ArtifactReferences struct {
 // and tuple store holds for it (graphstore.NodeStates; graphstore.VisibilityProject or
 // VisibilityAuthor), which are live and project for a node the store holds no row of. A node
 // reserved for its author reaches that author alone, so only its author reads Visibility author.
+// Every answer of this build carries both, but a server of the release before answers the same
+// reads without them during a roll, so the OpenAPI document marks them optional
+// (`required:"false"`) and a reader takes a node that carries neither as live and project.
 // A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then `[]`, never null, and
 // the others null.
 //
@@ -3113,8 +3116,8 @@ type GraphNode struct {
 	ChangedAt      *time.Time  `json:"changed_at"`
 	Parent         *NodeParent `json:"parent"`
 	ParentVersion  *int        `json:"parent_version"`
-	State          string      `json:"state" enum:"live,gone,proposed,settled,overtaken"`
-	Visibility     string      `json:"visibility" enum:"project,author"`
+	State          string      `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
+	Visibility     string      `json:"visibility" enum:"project,author" required:"false"`
 	Text           string      `json:"text,omitempty"`
 	Pin            *BlockPin   `json:"pin,omitempty"`
 }

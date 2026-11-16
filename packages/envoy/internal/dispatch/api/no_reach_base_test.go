@@ -26,13 +26,18 @@ import (
 // no longer required, and any of them whose shape moved. A route, a schema or a field this child
 // added is no regression and is not read.
 //
-// One move is no regression: a field that now names the values it takes, as an `enum` over the
-// type it had, where the fork point named none, in a schema this build answers and never takes -
-// reachable from no request body and no parameter of its document (requestSchemas). Every value
-// such a field is sent is a value of the type a reader of the fork point's document reads, so
-// nothing it read is gone; it is logged, naming the schema, the field and the values
+// Two moves are no regression. One is a field that now names the values it takes, as an `enum`
+// over the type it had, where the fork point named none, in a schema this build answers and never
+// takes - reachable from no request body and no parameter of its document (requestSchemas). Every
+// value such a field is sent is a value of the type a reader of the fork point's document reads,
+// so nothing it read is gone; it is logged, naming the schema, the field and the values
 // (compareSchemas). The same enum on a schema a request takes refuses values the fork point
-// took, and fails as any other move does.
+// took, and fails as any other move does. The other is an answer the fork point declared as JSON
+// of no shape (an Opaque row, opaqueJSON) that this build's table now names a shape for: a reader
+// of the fork point's document read it as whatever JSON it was sent, so it reads every answer of
+// the shape now named, and it is logged, naming the operation and the shape (compareAnswer). A
+// request body the fork point took as JSON of no shape is held as before, since a shape named on
+// it refuses bodies the fork point took.
 //
 // It runs under the build tag `basebuild` because it reads the repository's history: a checkout
 // with no `origin/main` (a shallow clone, an archive) has no fork point to read, which is the
@@ -80,11 +85,16 @@ func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
 				t.Errorf("%s took the body %s at the fork point and takes %s now", name, served.body, answered.body)
 			}
 			for status, shape := range served.responses {
-				switch current, declared := answered.responses[status]; {
-				case !declared:
+				current, declared := answered.responses[status]
+				if !declared {
 					t.Errorf("%s answered %s at the fork point and declares no such answer now", name, status)
-				case current != shape:
-					t.Errorf("%s's %s answer was %s at the fork point and is %s now", name, status, shape, current)
+					continue
+				}
+				switch failure, narrowing := compareAnswer(name, status, shape, current); {
+				case failure != "":
+					t.Error(failure)
+				case narrowing != "":
+					t.Log(narrowing)
 				}
 			}
 		}
@@ -95,6 +105,87 @@ func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
 	}
 	for _, failure := range failures {
 		t.Error(failure)
+	}
+}
+
+// opaqueJSON is the shape of an answer the document declares as JSON and names no schema for: an
+// Opaque row's (routeShape.Opaque), whose bytes the handler writes as they stand. It is not
+// "none", the shape of an answer that carries no JSON at all, since an answer that moves from
+// another content type to JSON is a move a reader of the fork point's document did not read.
+const opaqueJSON = "JSON of no declared shape"
+
+// compareAnswer holds one answer of the operation name, by its status, at the fork point
+// (served) to this build's (current): a failure for a shape that moved, and a narrowing, logged,
+// for the one move that takes nothing from a reader - an answer the fork point declared as
+// opaqueJSON, which this build's table now names a shape for. A reader of the fork point's
+// document read that answer as whatever JSON it was sent, and every answer of the shape named now
+// is JSON.
+func compareAnswer(name, status, served, current string) (failure, narrowing string) {
+	switch {
+	case current == served:
+		return "", ""
+	case served == opaqueJSON && current != "none":
+		return "", fmt.Sprintf("%s's %s answer was JSON of no declared shape at the fork point and is %s now; a reader of the fork point read it as any JSON, so it reads every answer of that shape",
+			name, status, current)
+	}
+	return fmt.Sprintf("%s's %s answer was %s at the fork point and is %s now", name, status, served, current), ""
+}
+
+// TestAnAnswerTheForkPointLeftOpaqueNarrowsAndNoOtherAnswerMoves holds compareAnswer to its one
+// allowance, over this build's own render moved by hand: a fork point whose GET
+// /api/v1/schema/blocks answer was JSON of no declared shape, as its Opaque row rendered it, reads
+// the shape that answer names now as a narrowing, and a fork point whose GET /api/v1/limits
+// answer named a shape fails against a build that declares it opaque, against one that declares
+// no JSON for it, and against one whose shape moved. It reads no history, so it runs wherever the
+// tag is given.
+func TestAnAnswerTheForkPointLeftOpaqueNarrowsAndNoOtherAnswerMoves(t *testing.T) {
+	rendered := renderOpenAPI(t)
+	answerOf := func(document map[string]any, path string) map[string]any {
+		operation := document["paths"].(map[string]any)[path].(map[string]any)["get"].(map[string]any)
+		return operation["responses"].(map[string]any)["200"].(map[string]any)
+	}
+	moved := func(what string, move func(document map[string]any)) servedDocument {
+		var document map[string]any
+		if err := json.Unmarshal(rendered, &document); err != nil {
+			t.Fatalf("decode the render: %v", err)
+		}
+		move(document)
+		raw, err := json.Marshal(document)
+		if err != nil {
+			t.Fatalf("encode %s: %v", what, err)
+		}
+		return decodeServedDocument(t, what, raw)
+	}
+	opaque := func(path string) func(map[string]any) {
+		return func(document map[string]any) {
+			answerOf(document, path)["content"] = map[string]any{"application/json": map[string]any{}}
+		}
+	}
+	now := decodeServedDocument(t, "this build's render", rendered)
+	compare := func(base, current servedDocument, path string) (string, string) {
+		return compareAnswer("GET "+path, "200", base.paths[path]["get"].responses["200"], current.paths[path]["get"].responses["200"])
+	}
+
+	const typed = "/api/v1/schema/blocks"
+	if shape := now.paths[typed]["get"].responses["200"]; shape == opaqueJSON || shape == "none" {
+		t.Fatalf("GET %s answers %s in this build's render, so there is no shape to narrow to", typed, shape)
+	}
+	failure, narrowing := compare(moved("the fork point", opaque(typed)), now, typed)
+	if failure != "" || !strings.HasPrefix(narrowing, "GET "+typed+"'s 200 answer was JSON of no declared shape") {
+		t.Errorf("an answer opaque at the fork point and named now fails %q and narrows %q; want a narrowing alone", failure, narrowing)
+	}
+
+	const limits = "/api/v1/limits"
+	for what, current := range map[string]servedDocument{
+		"declares it opaque": moved("this build, opaque", opaque(limits)),
+		"declares no JSON":   moved("this build, no JSON", func(document map[string]any) { delete(answerOf(document, limits), "content") }),
+		"moves its shape": moved("this build, moved", func(document map[string]any) {
+			answerOf(document, limits)["content"] = map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "string"}}}
+		}),
+	} {
+		if failure, narrowing := compare(now, current, limits); failure == "" || narrowing != "" {
+			t.Errorf("an answer named at the fork point, against a build that %s, fails %q and narrows %q; want a failure alone", what, failure, narrowing)
+		}
 	}
 }
 
@@ -393,7 +484,12 @@ func decodeServedDocument(t *testing.T, what string, document []byte) servedDocu
 				read.body = schemaShape(t, operation.RequestBody.Content["application/json"].Schema)
 			}
 			for status, response := range operation.Responses {
-				read.responses[status] = schemaShape(t, response.Content["application/json"].Schema)
+				content, carried := response.Content["application/json"]
+				if carried && len(content.Schema) == 0 {
+					read.responses[status] = opaqueJSON
+					continue
+				}
+				read.responses[status] = schemaShape(t, content.Schema)
 			}
 			served.paths[path][method] = read
 		}
