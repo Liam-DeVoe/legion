@@ -129,9 +129,9 @@
 // at a subject that names a deploy, and there a check of the graph counts only the results at the
 // subject's graph_tx, so it reads unknown when the subject names no graph_tx or one that no result
 // read; a result of a graph check at another transaction reads as a subject that moved. A subject
-// names graph_tx only with a deploy and with a letter or a digit, and a result names one subject,
-// so the reader refuses graph_tx on a branch, a graph_tx of no letter and no digit, and a result
-// that names two of commit, deploy and graph_tx.
+// names graph_tx only with a deploy, each name of a subject has a letter or a digit, and a result
+// names one subject, so the reader refuses graph_tx on a branch, a commit, branch, deploy or
+// graph_tx of no letter and no digit, and a result that names two of commit, deploy and graph_tx.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on
