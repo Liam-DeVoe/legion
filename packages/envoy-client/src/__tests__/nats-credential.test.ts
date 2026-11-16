@@ -701,10 +701,17 @@ describe("keepNatsCredential", () => {
 const stackDirectory = useEnvoyStackDirectory();
 
 /** A natsd behind the real auth service, which asks `brokerUrl`'s introspection route about each
- *  session token; `refusals` counts the connections the service has refused so far. */
+ *  session token. `refusals` counts the clients natsd itself has refused so far, one
+ *  `authentication error` line of its log each (nats-server `authViolation`): every refusal,
+ *  whether the service refused the connection or natsd gave up waiting for the service's answer,
+ *  where the service logs nothing; and one count whatever the service's own log does with
+ *  repeated refusals. `serviceRefusals` is the service's own lines, for a dump. `logs` is the last
+ *  lines of both processes' logs. */
 interface CalloutHub {
   readonly natsUrl: string;
   refusals(): number;
+  serviceRefusals(): number;
+  logs(): string;
   stop(): Promise<void>;
 }
 
@@ -755,11 +762,16 @@ async function startCalloutHub(name: string, brokerUrl: string): Promise<Callout
     await awaitReady("calloutd", calloutd, calloutLog, budget, async () =>
       readFileSync(calloutLog, "utf8").includes("calloutd: ready")
     );
-    const refusals = () =>
-      readFileSync(calloutLog, "utf8")
+    const count = (file: string, text: string) =>
+      readFileSync(file, "utf8")
         .split("\n")
-        .filter((line) => line.includes("refused a NATS connection")).length;
-    return { natsUrl, refusals, stop };
+        .filter((line) => line.includes(text)).length;
+    const refusals = () => count(natsLog, "authentication error");
+    const serviceRefusals = () => count(calloutLog, "refused a NATS connection");
+    const tail = (file: string) => readFileSync(file, "utf8").split("\n").slice(-40).join("\n");
+    const logs = () =>
+      `calloutd.log, its last 40 lines:\n${tail(calloutLog)}\nnatsd.log, its last 40 lines:\n${tail(natsLog)}`;
+    return { natsUrl, refusals, serviceRefusals, logs, stop };
   } catch (error) {
     await stop();
     throw error;
@@ -786,20 +798,39 @@ describe.skipIf(!envoyStackEnabled)(
       const hub = await startCalloutHub("reconnect", broker.url);
       let connection: NatsConnection | undefined;
       let stopKeeping = () => {};
+      // What the client did, for a failure's dump: every status nats.js reports (a redial's start
+      // is its `reconnecting`, its end a `reconnect`, an `error` or the next `reconnecting`), and
+      // each CONNECT the authenticator answered, with what it presented. A dial that hangs shows
+      // as a `reconnecting` with nothing after it; a connection admitted and kept, as a
+      // `reconnect` with no `disconnect` after it.
+      const started = Date.now();
+      const trace: string[] = [];
+      const note = (what: string) => trace.push(`${Date.now() - started} ms: ${what}`);
       try {
         const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_e2e");
         await credential.ready();
-        const opened = await connect(
-          natsConnectionOptions({
-            servers: [hub.natsUrl],
-            name: "nats-credential-e2e",
-            credential: { kind: "broker", broker: credential },
-          })
-        );
+        note(`token in hand, lapsing at ${credential.expiresAt().getTime() - started} ms`);
+        const options = natsConnectionOptions({
+          servers: [hub.natsUrl],
+          name: "nats-credential-e2e",
+          credential: { kind: "broker", broker: credential },
+        });
+        const authenticate = options.authenticator as (nonce?: string) => unknown;
+        const opened = await connect({
+          ...options,
+          authenticator: ((nonce?: string) => {
+            const auth = authenticate(nonce) as { auth_token?: string } | undefined;
+            note(
+              `CONNECT ${auth?.auth_token === undefined ? "presents nothing" : "presents the token"}`
+            );
+            return auth;
+          }) as typeof options.authenticator,
+        });
         connection = opened;
         const reconnected: number[] = [];
         void (async () => {
           for await (const status of opened.status()) {
+            note(`status ${status.type} ${JSON.stringify(status.data)}`);
             if (status.type === Events.Reconnect) reconnected.push(Date.now());
           }
         })();
@@ -807,14 +838,26 @@ describe.skipIf(!envoyStackEnabled)(
         opened.subscribe("notifications.envoy.deliver.ses_e2e");
         await opened.flush();
         const warnings: string[] = [];
-        stopKeeping = keepNatsCredential(opened, credential, (text) => warnings.push(text));
+        stopKeeping = keepNatsCredential(opened, credential, (text) => {
+          note(`keeper: ${text}`);
+          warnings.push(text);
+        });
 
         // The broker goes away: the token lapses with no other to take its place, the server
         // drops the user it admitted, and each reconnect is refused.
+        note("the broker goes away");
         broker.state.down = true;
         const deadline = Date.now() + 20_000;
         while (hub.refusals() < 2 && Date.now() < deadline) await Bun.sleep(100);
-        expect(hub.refusals()).toBeGreaterThanOrEqual(2);
+        if (hub.refusals() < 2)
+          throw new Error(
+            [
+              `natsd refused ${hub.refusals()} connection(s) in 20 s, not 2 or more (the auth service logged ${hub.serviceRefusals()} refusal(s)); the connection is ${opened.isClosed() ? "closed" : "open"}`,
+              "the client, by milliseconds since the row began:",
+              ...trace,
+              hub.logs(),
+            ].join("\n")
+          );
         expect(opened.isClosed()).toBe(false);
         expect(warnings.length).toBeGreaterThan(0);
         expect(warnings.join("\n")).not.toContain("session-access-");
