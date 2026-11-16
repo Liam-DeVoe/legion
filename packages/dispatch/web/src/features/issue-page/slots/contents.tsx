@@ -38,7 +38,8 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),
     [address.filter, memo, root]
   );
-  // How a reference the sentences cite is named, read once over the whole tree (`namedLine`).
+  // How a reference the sentences and the entries cite is named, read once over the whole tree
+  // (`namedLine`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const nameOf = useReferenceNames(root, nodeIdOf);
   const ask = useAskOutline();
@@ -50,6 +51,7 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
       <IssueThreeThings look="contents" nameOf={nameOf} reading={!blocksRead} summary={memo} />
       <ContentsList
         focusBranch={focusBranch}
+        nameOf={nameOf}
         onFocusBranch={(current) => {
           setFocusBranch(!focusBranch);
           ask(current, !focusBranch);

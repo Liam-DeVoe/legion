@@ -23,9 +23,9 @@ import {
 } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
 import { useFocusedNode } from "./focused-node";
-import { drawnLine, nodeWords, type TreeNode } from "./issue-tree";
+import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
-import { oneLineCut, useOneLineBox } from "./one-line";
+import { namedLine, oneLineCut, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTENTS_MARK_WORDS,
@@ -143,21 +143,25 @@ const MARK_TEXT_REM = 0.75;
 /**
  * The Contents list (dispatch://INFRA-1196 R14, the prototype's `#left`): its heading with the
  * Focus branch toggle, and one row per entry, each its node's first line by R1's rule, cut at a
- * word to the row's width. `slots/contents.tsx` draws it under the issue's three sentences, in
- * part D's pane from 1024 px up and in its Outline sheet below that (`contents-frame.tsx`). It
- * is one tab stop, as the outline is: the arrow keys move inside it, the right and left arrows
- * unfold and fold an entry, and Enter or a press goes to that node in the outline. The entry the
- * reader is in - the one holding the node the focus is on, or last was on - is marked by a rule
- * and a ground of its own.
+ * word to the row's width, with each reference in it named in plain words (`namedLine`); a node
+ * with no words is named by its kind's word. `slots/contents.tsx` draws it under the issue's
+ * three sentences, in part D's pane from 1024 px up and in its Outline sheet below that
+ * (`contents-frame.tsx`). It is one tab stop, as the outline is: the arrow keys move inside it,
+ * the right and left arrows unfold and fold an entry, and Enter or a press goes to that node in
+ * the outline. The entry the reader is in - the one holding the node the focus is on, or last
+ * was on - is marked by a rule and a ground of its own.
  */
 export function ContentsList({
   focusBranch,
+  nameOf,
   onFocusBranch,
   onGo,
   root,
 }: {
   /** Whether the outline draws one branch at a time, the current one. */
   focusBranch: boolean;
+  /** How a reference an entry's words cite is named (`useReferenceNames`). */
+  nameOf: (reference: string) => string | undefined;
   /** Turns Focus branch on or off, around the entry the reader is in. */
   onFocusBranch: (current: string | undefined) => void;
   /** Goes to the node in the outline. */
@@ -298,7 +302,9 @@ export function ContentsList({
           const { node } = entry;
           const holds = entry.children.length > 0;
           const isCurrent = node.id === current;
-          const words = nodeWords(node);
+          const named = namedLine(nodeWords(node), nameOf);
+          const unnamed = named.trim() === "";
+          const words = unnamed ? NODE_TYPE_NAMES[node.type] : named;
           const indent = ROW.inset + depth * ROW.indent;
           const marks = MARKS.filter(({ mark }) => entry.marks[mark] > 0);
           // What stands after the words: the waiting dot, then each mark, its shape, its count
@@ -326,7 +332,9 @@ export function ContentsList({
                   text: words,
                   widthOf: (text) => box.widthOf(text, ROW_TEXT_REM, isCurrent ? 600 : undefined),
                 });
-          const line = cut ?? { cut: false, line: words, under: false, wraps: false };
+          // Until the list's box is read, the entry draws its first line by R1's rule uncut by
+          // width, never its whole words (`useOneLineBox`).
+          const line = cut ?? { ...firstLineOf(words), under: false, wraps: false };
           return (
             <div
               aria-expanded={holds ? !folded.has(node.id) : undefined}
@@ -389,7 +397,7 @@ export function ContentsList({
               <span
                 className={`min-w-0 flex-1 ${line.under || line.wraps ? "whitespace-normal break-words" : ""}`}
                 data-contents-line=""
-                {...authorText}
+                {...(unnamed ? pageChrome : authorText)}
               >
                 {drawnLine(line)}
               </span>
