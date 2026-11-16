@@ -1,5 +1,6 @@
-// The Oh My Pi session transcript shapes score.ts and seed.ts both read, so a run's own JSONL has
-// one parser and one notion of what a tool result says, never two that can drift.
+// The Oh My Pi session transcript shapes score.ts, seed.ts, health.ts and boot-refusal.ts read, so
+// a run's own JSONL has one parser and one notion of what a tool result says, never two that can
+// drift.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -63,6 +64,24 @@ function parsedSession(full: string): SessionEntry[] {
       if (!result.success)
         throw new Error(`${full}:${index + 1} is not a record: ${result.error.message}`);
       return result.data;
+    });
+}
+/** Every entry of the transcript `file` that parses, in order, and none for a file that is not
+ * there. A line that is no JSON or no entry is passed over, as a transcript an agent was stopped
+ * in the middle of writing ends. */
+export function transcriptEntries(file: string): SessionEntry[] {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .flatMap((line) => {
+      let entry: unknown;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        return [];
+      }
+      const parsed = SessionEntry.safeParse(entry);
+      return parsed.success ? [parsed.data] : [];
     });
 }
 

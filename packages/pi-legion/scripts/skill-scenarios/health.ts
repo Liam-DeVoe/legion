@@ -42,7 +42,11 @@
  *      batch, wherever it sits;
  *   9. another run's write: no tool call of the run reads a path another run of those given wrote
  *      last before the read (`otherRunWrite`). A run's own writes outside its directory, HOME and
- *      TMPDIR are recorded (`writesOf`) and are no verdict on it;
+ *      TMPDIR are recorded (`writesOf`) and are no verdict on it. Rules 8 and 9 and that record
+ *      read a path under /tmp as the run's namespace mounts it (`mounted`): it is the run's own
+ *      <run>/tmp, but under a path its world shows there, where it is that path. A run from
+ *      before the rig gave each run a namespace (one with no <run>/namespace.txt) wrote and read
+ *      the machine's /tmp, and is read so;
  *  10. outside its world: no tool call names a path its world hides — the scratch root, the issue
  *      workspaces, the work directory, every label's checkout — outside its own directory, its
  *      /tmp and every path its world shows again (`outsideWorld`). The world is rig.sh's one
@@ -102,27 +106,28 @@
  * runs`, the runs that rule alone flags; then, for each label of the runs given, how often rig.sh
  * relaunched an agent at its boot (`relaunches`: `health: boot relaunches, <label>: <n> in <r> of
  * <m> runs`, each relaunch an agent's first attempt kept under <run>/boot-1/<role>/); then how
- * many runs wrote outside their own directory, which is no verdict; then `health: <n> of <m> runs
- * unhealthy`. Exits 0 when every run is healthy,
- * 1 otherwise, and 2, printing no run, for no argument or for a path that is not a run directory
- * of a scenario `ANSWERS` names and of a label `LABEL_DAEMONS` names.
+ * many runs wrote outside their own directory, each by name with the paths it wrote
+ * (`wroteOutside`), which is no verdict; then `health: <n> of <m> runs unhealthy`. Exits 0 when
+ * every run is healthy, 1 otherwise, and 2, printing no run, for no argument or for a path that
+ * is not a run directory of a scenario `ANSWERS` names and of a label `LABEL_DAEMONS` names.
  *
  * `health.ts --boot-refusal <run dir> <role> <since> <sessions dir>` is rig.sh's question after an
  * agent's launch (boot_agent): it prints the claim boot refusal that agent met before its first
  * turn, read from <run>/out.txt, the stand-in's lines of that role at or after <since> and the
  * transcripts under <sessions dir>, and exits 0 for a relaunch; exits 1 for none, a refusal
- * after a turn included; and 2 for a usage error.
+ * after a turn included; and 2 for a usage error. boot-refusal.ts answers it (`askBootRefusal`),
+ * which `bun boot-refusal.ts <run dir> <role> <since> <sessions dir>` answers the same.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { dispatchToolSpecs } from "@legion/contracts/dispatch-tools";
 import { z } from "zod";
+import { askBootRefusal, bootRefusal, entriesUnder, madeTurn } from "./boot-refusal";
 import {
   ANSWERS,
   answerOf,
   BOOTED,
   DAEMON_LOG,
-  type DaemonLine,
   daemonLines,
   exited,
   labelOf,
@@ -136,14 +141,16 @@ import { isPost, methodOf, readWorld, reviewsRoute, submitsReview } from "./gh-c
 import { CALLS, Opened } from "./run-records";
 import {
   ABSOLUTE_PATH,
-  claimBootFailure,
   outputs,
   SHELL_COMMAND,
-  transcriptEntries,
+  SHELL_WORD,
+  shellTokens,
+  shellWord,
+  shellWords,
   transcriptFiles,
   withoutBodies,
 } from "./score";
-import type { SessionEntry } from "./transcript";
+import { transcriptEntries } from "./transcript";
 
 const USAGE = "usage: rig.sh health [--tmp-snapshot <file>] <run dir>...";
 const BOOT_USAGE = "usage: health.ts --boot-refusal <run dir> <role> <since> <sessions dir>";
@@ -153,7 +160,8 @@ const ToolArgs = z.record(z.string(), z.unknown());
 type ToolArgs = z.infer<typeof ToolArgs>;
 
 /** A path a tool call of the run reached, when, and where the call is: a read, or a write
- * outside the run's own directory, HOME and TMPDIR. */
+ * outside the run's own directory, HOME and TMPDIR. The path is the machine's: the one the call
+ * names, as the run's namespace mounts it (`reachedIn`). */
 interface Access {
   readonly path: string;
   /** Epoch milliseconds: the transcript entry's time for a tool call, the file's modification
@@ -171,6 +179,9 @@ interface Run {
   readonly label: string;
   /** The run's own directory: the one its pane file names and the one health was given. */
   readonly own: readonly string[];
+  /** Whether the run's agents ran in a namespace of the run's own (NAMESPACE), where a path under
+   * /tmp is the run's own or one its world shows (`mounted`), and never the machine's /tmp. */
+  readonly namespaced: boolean;
   /** Every tool call of every transcript of the run, with the transcript it is in and when. */
   readonly calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[];
   /** Every tool result's text of every transcript of the run, with the transcript it is in. */
@@ -210,6 +221,11 @@ function paneOf(dir: string): Map<string, string> {
   return vars;
 }
 
+/** The world rig.sh's launch writes for the namespace it starts each agent of a run in
+ * (<run>/namespace.txt, world_paths' lines). A run that holds it ran there; a run from before the
+ * rig made a namespace holds none, and its agents wrote and read the machine's own paths. */
+const NAMESPACE = "namespace.txt";
+
 function loadRun(dir: string, scenario: string, label: string): Run {
   const pane = paneOf(dir);
   const own = [path.resolve(dir), pane.get("SKILL_SCENARIO_RUN")]
@@ -221,6 +237,7 @@ function loadRun(dir: string, scenario: string, label: string): Run {
       (one): one is string => one?.startsWith("/") === true
     ),
   ];
+  const ran = { dir, label, namespaced: existsSync(path.join(dir, NAMESPACE)) };
   const calls: { file: string; tool: string; args: ToolArgs; at: number }[] = [];
   const results: { file: string; text: string }[] = [];
   for (const full of transcriptFiles(dir)) {
@@ -248,11 +265,12 @@ function loadRun(dir: string, scenario: string, label: string): Run {
     scenario,
     label,
     own,
+    namespaced: ran.namespaced,
     calls,
     results,
-    writes: writesOf(dir, calls, writable),
+    writes: writesOf(ran, calls, writable),
     reads: calls.flatMap((call) =>
-      readsOf(call.tool, call.args).map((read) => ({ ...call, path: read }))
+      readsOf(call.tool, call.args).map((read) => ({ ...call, path: reachedIn(ran, read) }))
     ),
     before: existsSync(path.join(dir, "scratch-before.txt"))
       ? readFileSync(path.join(dir, "scratch-before.txt"), "utf8")
@@ -731,14 +749,16 @@ function otherRun(target: string, run: Run): string | undefined {
   return at < 0 ? undefined : parts.slice(0, at + 1).join("/");
 }
 
-/** Rule 6: the first tool call of the run that names a path under another run's directory. What
- * it cannot see is a reach that names no such path: a `find` or a glob from a directory above
- * the runs, a path built in a variable, or a command that reads the runs directory itself and
- * acts on what it listed. */
+/** Rule 8: the first tool call of the run that names a path under another run's directory, the
+ * name read as the run's namespace mounts it (`reachedIn`): a directory named as a run under a
+ * namespace's /tmp is the run's own scratch, <run>/tmp, where no other run is. What it cannot see
+ * is a reach that names no such path: a `find` or a glob from a directory above the runs, a path
+ * built in a variable, or a command that reads the runs directory itself and acts on what it
+ * listed. */
 function otherRunReach(run: Run): string | undefined {
   for (const call of run.calls)
     for (const target of namedPaths(call.tool, call.args)) {
-      const other = otherRun(target, run);
+      const other = otherRun(reachedIn(run, target), run);
       if (other !== undefined)
         return `another run: a ${call.tool} call in ${call.file} names ${target}, under ${other}`;
     }
@@ -748,8 +768,11 @@ function otherRunReach(run: Run): string | undefined {
 /** A run's namespace as rig.sh declares it (world_paths, read through `rig.sh world`, the one
  * declaration its namespace mounts too): what the namespace hides behind an empty tmpfs
  * (`cover`), the credentials it hides the same way (`credentials`), and what it shows again
- * (`rw`, `ro`). It is not gh-call.ts's `World`, the run's world.json. */
+ * (`rw`, `ro`), the run's own directory first (`own`: world_paths prints it before every other
+ * path it shows, and private_world binds it first). It is not gh-call.ts's `World`, the run's
+ * world.json. */
 interface RunNamespace {
+  readonly own: string;
   readonly covers: readonly string[];
   readonly credentials: readonly string[];
   readonly shown: readonly string[];
@@ -758,7 +781,7 @@ interface RunNamespace {
 const namespaces = new Map<string, RunNamespace>();
 
 /** The run's namespace, from `rig.sh world <label> <run dir>`, read once per run. */
-function namespaceOf(run: Run): RunNamespace {
+function namespaceOf(run: Pick<Run, "dir" | "label">): RunNamespace {
   const known = namespaces.get(run.dir);
   if (known !== undefined) return known;
   const made = Bun.spawnSync(
@@ -769,17 +792,42 @@ function namespaceOf(run: Run): RunNamespace {
     throw new Error(
       `rig.sh world ${run.label} ${run.dir} exited ${made.exitCode}: ${made.stderr.toString().trim()}`
     );
-  const world = { covers: [] as string[], credentials: [] as string[], shown: [] as string[] };
+  const world = {
+    own: "",
+    covers: [] as string[],
+    credentials: [] as string[],
+    shown: [] as string[],
+  };
   for (const line of made.stdout.toString().split("\n")) {
     const at = line.indexOf(" ");
     const where = path.posix.normalize(line.slice(at + 1));
     const kind = line.slice(0, at);
     if (kind === "cover") world.covers.push(where);
     else if (kind === "credentials") world.credentials.push(where);
-    else if (kind === "rw" || kind === "ro") world.shown.push(where);
+    else if (kind === "rw" || kind === "ro") {
+      if (world.shown.length === 0) world.own = where;
+      world.shown.push(where);
+    }
   }
   namespaces.set(run.dir, world);
   return world;
+}
+
+/** The machine's path that `named`, a path a tool call names, is in a run's namespace, as
+ * rig.sh's private_world mounts it from the same declaration: /tmp is the run's own <run>/tmp,
+ * bound over the machine's, and each path the world shows at or under /tmp is bound back onto
+ * its own path after that, so a name under /tmp that a shown path holds is that path, the run's
+ * own or one the runs of its label share, by what the path is. Every name outside /tmp is
+ * itself. */
+export function mounted(world: Pick<RunNamespace, "own" | "shown">, named: string): string {
+  if (!inside(named, "/tmp") || world.shown.some((shown) => inside(named, shown))) return named;
+  return path.posix.join(world.own, named);
+}
+
+/** The machine's path a tool call of the run reaches by the name `named`: the name as the run's
+ * namespace mounts it (`mounted`), and the name itself for a run that ran in none. */
+function reachedIn(run: Pick<Run, "dir" | "label" | "namespaced">, named: string): string {
+  return run.namespaced ? mounted(namespaceOf(run), named) : named;
 }
 
 /** Rule 10: the first path a tool call of the run names under what its world hides
@@ -1375,7 +1423,7 @@ const REMOTE_READERS: Readonly<Record<string, (words: readonly string[]) => Reac
   rsync: (words) => {
     const args = argumentsOf(words, RSYNC_VALUED);
     const shells = valuesOf(args, "-e", "--rsh")
-      .map((value) => wordsOf(value ?? ""))
+      .map((value) => shellWords(value ?? ""))
       .filter(([program = ""]) => path.posix.basename(program) === "ssh")
       .map((shell) => sshOptionHosts(posixArguments(shell.slice(1), SSH_VALUED)));
     const target = shells.find((shell) => shell.target !== undefined)?.target;
@@ -1510,7 +1558,9 @@ const WRAPPERS: Readonly<Record<string, (words: readonly string[]) => Wrapped | 
   // string into the words it stands for. With no command it prints the environment.
   env: (words) => {
     const args = posixArguments(words, ENV_VALUED);
-    const split = valuesOf(args, "-S", "--split-string").flatMap((value) => wordsOf(value ?? ""));
+    const split = valuesOf(args, "-S", "--split-string").flatMap((value) =>
+      shellWords(value ?? "")
+    );
     const operands = [...split, ...args.operands];
     return assigned(operands[0] === "-" ? operands.slice(1) : operands);
   },
@@ -1563,12 +1613,18 @@ function inlineProgram(words: readonly string[]): string | undefined {
 }
 
 /** A flag whose value is text the command writes (a comment's body, a commit's message, a
- * title), with that value: a URL in it is a link the agent wrote, not a host it reached. */
-const TEXT_FLAG =
-  /(^|\s)(--body|-b|--title|-t|-m|--message|--subject)(=|[ \t]+)(?:'[^']*'|"[^"]*"|[^\s'"])+/g;
-/** A `gh api` field flag with its `key=value` word; its value is written text when the key is
- * `body`, `title` or `message`. */
-const FIELD_FLAG = /(^|\s)(-f|-F|--field|--raw-field)(=|[ \t]+)((?:'[^']*'|"[^"]*"|[^\s'"])+)/g;
+ * title), with that value, one shell word (SHELL_WORD): a URL in it is a link the agent wrote, not
+ * a host it reached. */
+const TEXT_FLAG = new RegExp(
+  String.raw`(^|\s)(--body|-b|--title|-t|-m|--message|--subject)(=|[ \t]+)${SHELL_WORD}`,
+  "g"
+);
+/** A `gh api` field flag with its `key=value` word (SHELL_WORD); its value is written text when
+ * the key is `body`, `title` or `message`. */
+const FIELD_FLAG = new RegExp(
+  String.raw`(^|\s)(-f|-F|--field|--raw-field)(=|[ \t]+)(${SHELL_WORD})`,
+  "g"
+);
 
 /** A host a call reaches, with the text that names it and, for a URL a program holds, where that
  * program is (` in a here-document python3 runs`). `served` names the hosts that serve it in place
@@ -1590,52 +1646,52 @@ const INTERPRETER = /^(?:python[\d.]*|node|bun|deno|sh|bash|zsh|dash|ksh|perl|ru
 const SHELL = /^(?:sh|bash|zsh|dash|ksh)$/;
 /** A script's first line naming a shell as its interpreter. */
 const SHELL_SHEBANG = /^#![^\n]*\b(?:ba|z|da|k)?sh\b/;
-/** A redirection with its target, which a command's words leave out. */
-const REDIRECTION = /(?:\d+|&)?[<>]{1,2}\|?[ \t]*\S*/g;
-/** A redirection of a command's output, `>` or `>>`, with its target, relative or not. */
-const OUTPUT = /(?:^|[^<>&\d])1?(>>?)\|?[ \t]*['"]?([^\s'";&|()<>`]+)/g;
 
-/** A command of shell text, as SHELL_COMMAND reads it: its first word, that word's base name, the
- * rest of its text, its lead, the text before its first word that SHELL_COMMAND reads as its
- * place (the separator before it, its prefix assignments and a `command`, `exec` or `env` it
- * starts with), and where the command lies in the text. */
+/** A command of shell text, as SHELL_COMMAND reads it: its first word as the shell reads it
+ * (`shellWord`), that word's base name, the rest of its text, its lead, the text before its first
+ * word that SHELL_COMMAND reads as its place (the separator before it, its prefix assignments and
+ * a `command`, `exec` or `env` it starts with, env's own assignments among them), its whole text,
+ * and where the command lies in the text. */
 interface ShellCommand {
   readonly word: string;
   readonly name: string;
   readonly rest: string;
   readonly lead: string;
+  readonly text: string;
   readonly at: number;
   readonly end: number;
 }
 
 /** Each command of shell text by SHELL_COMMAND. */
 function commandsOf(code: string): ShellCommand[] {
-  return [...code.matchAll(SHELL_COMMAND)].map((hit) => ({
-    word: hit[1] ?? "",
-    name: path.posix.basename(hit[1] ?? ""),
-    rest: hit[2] ?? "",
-    lead: hit[0].slice(0, hit[0].length - (hit[1] ?? "").length - (hit[2] ?? "").length),
-    at: hit.index ?? 0,
-    end: (hit.index ?? 0) + hit[0].length,
-  }));
+  return [...code.matchAll(SHELL_COMMAND)].map((hit) => {
+    const word = shellWord(hit[1] ?? "");
+    return {
+      word,
+      name: path.posix.basename(word),
+      rest: hit[2] ?? "",
+      lead: hit[0].slice(0, hit[0].length - (hit[1] ?? "").length - (hit[2] ?? "").length),
+      text: hit[0],
+      at: hit.index ?? 0,
+      end: (hit.index ?? 0) + hit[0].length,
+    };
+  });
 }
 
-/** A shell word with the quotes around it taken off. */
-function unquoted(word: string): string {
-  return word.replace(/^(['"])(.*)\1$/, "$2");
+/** The variables the assignments among shell text's words set (`shellWords`): a command's lead
+ * (`commandsOf`), which SHELL_COMMAND reads before its word, holds its prefix assignments and
+ * env's; one before a `;`, `&` or `|` there stands alone, and every pane exports GH_HOST, the one
+ * variable health reads, so it is the command's too. */
+function assignedIn(text: string): Map<string, string> {
+  const set = new Map<string, string>();
+  for (const found of shellWords(text).map((word) => ASSIGNMENT.exec(word)))
+    if (found !== null) set.set(found[1] ?? "", found[2] ?? "");
+  return set;
 }
-
-/** A command's words after its first, unquoted, with its redirections left out. */
-function wordsOf(rest: string): string[] {
-  return [...rest.replace(REDIRECTION, " ").matchAll(WORD)].map((word) => unquoted(word[0]));
-}
-
-/** An assignment in a command's lead (`commandsOf`), which SHELL_COMMAND reads before its word;
- * one before a `;`, `&` or `|` stands alone, and every pane exports GH_HOST, the one variable
- * health reads, so it is the command's too. */
-const LEAD_ASSIGNMENT = /([A-Za-z_]\w*)=((?:'[^']*'|"[^"]*"|[^\s'";&|])*)/g;
-/** The wrapper a command's lead ends with, which SHELL_COMMAND reads as part of its place. */
-const LEAD_WRAPPER = /(?:^|[\s;&|(`])(command|exec|env)[ \t]+$/;
+/** The wrapper a command's lead ends with, which SHELL_COMMAND reads as part of its place: env's
+ * `-i` with it, as SHELL_COMMAND reads it, and the options after that env's own (WRAPPERS). */
+const LEAD_WRAPPER =
+  /(?:^|[\s;&|(`])(command|exec|env)(?:[ \t]+(?:-i|-|--ignore-environment))*[ \t]+$/;
 
 /** A command as it runs once its wrappers are read off (WRAPPERS): the word that names it, that
  * word's base name, its words, and the variables its prefix assignments and the wrappers before
@@ -1650,13 +1706,11 @@ interface Invocation {
 /** The command `one` runs (Invocation), or undefined for a wrapper that runs none (`command -v
  * gh`) and for a command that is assignments alone (`assignmentsOf`). */
 function invocationOf(one: ShellCommand): Invocation | undefined {
-  const env = new Map<string, string>();
-  for (const hit of one.lead.matchAll(LEAD_ASSIGNMENT))
-    env.set(hit[1] ?? "", unquoted(hit[2] ?? ""));
+  const env = assignedIn(one.lead);
   const wrapper = LEAD_WRAPPER.exec(one.lead)?.[1];
   let word = wrapper ?? one.word;
-  let words = [...(wrapper === undefined ? [] : [unquoted(one.word)]), ...wordsOf(one.rest)];
-  if (wrapper === undefined && ASSIGNMENT.test(unquoted(word))) return undefined;
+  let words = [...(wrapper === undefined ? [] : [one.word]), ...shellWords(one.rest)];
+  if (wrapper === undefined && ASSIGNMENT.test(word)) return undefined;
   for (;;) {
     const name = path.posix.basename(word);
     const read = WRAPPERS[name];
@@ -1671,11 +1725,8 @@ function invocationOf(one: ShellCommand): Invocation | undefined {
 /** The variables a command that is assignments alone sets (`GH_HOST=ghe.example.com;`), or
  * undefined for any other command. SHELL_COMMAND reads its last assignment as its word. */
 function assignmentsOf(one: ShellCommand): Map<string, string> | undefined {
-  if (LEAD_WRAPPER.test(one.lead) || !ASSIGNMENT.test(unquoted(one.word))) return undefined;
-  const set = new Map<string, string>();
-  for (const text of [one.lead, one.word, one.rest])
-    for (const hit of text.matchAll(LEAD_ASSIGNMENT)) set.set(hit[1] ?? "", unquoted(hit[2] ?? ""));
-  return set;
+  if (LEAD_WRAPPER.test(one.lead) || !ASSIGNMENT.test(one.word)) return undefined;
+  return assignedIn(one.text);
 }
 
 /** The program an interpreter command runs: its first operand, a script's path (`python3 f.py`,
@@ -1699,7 +1750,7 @@ function bodyRunner(code: string, at: number): string | undefined {
   const index = commands.findIndex((one) => one.at <= at && at < one.end);
   const owner = commands[index];
   if (owner === undefined) return undefined;
-  const words = wordsOf(owner.rest);
+  const words = shellWords(owner.rest);
   if (programOf(owner.name, words) === "-") return owner.name;
   const next = commands[index + 1];
   return owner.name === "cat" &&
@@ -1707,7 +1758,7 @@ function bodyRunner(code: string, at: number): string | undefined {
     next !== undefined &&
     code[next.at] === "|" &&
     code.slice(owner.end, next.at).trim() === "" &&
-    programOf(next.name, wordsOf(next.rest)) === "-"
+    programOf(next.name, shellWords(next.rest)) === "-"
     ? next.name
     : undefined;
 }
@@ -1767,10 +1818,10 @@ function commandHosts(
  * the repository URL a gh's `-R` names, which the gh rule reads (`ghHosts`); and every host each
  * of its commands reaches (`commandHosts`), the program a shell is given inline (`sh -c '…'`,
  * `inlineProgram`) read as a command of its own. No command is read inside a quoted string a
- * command is given as text (`spoken`). A command's words leave its redirections out (`wordsOf`),
- * so `curl … > report.json` names no host `report.json`. The variables a command runs with are
- * those its prefix and its wrappers set, over those `env` holds and those a command of
- * assignments alone or an `export` set before it: every pane exports GH_HOST (empty,
+ * command is given as text (`spoken`). A command's words leave its redirections out
+ * (`shellWords`), so `curl … > report.json` names no host `report.json`. The variables a command
+ * runs with are those its prefix and its wrappers set, over those `env` holds and those a command
+ * of assignments alone or an `export` set before it: every pane exports GH_HOST (empty,
  * daemon-pane.ts), so a `GH_HOST=…` alone reaches every gh after it. */
 function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()): Reach[] {
   const { code, bodies } = withoutBodies(command);
@@ -1834,25 +1885,25 @@ function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()
 }
 
 /** The files a `bash` command writes a here-document's body into, with the body: `cat > f`,
- * `cat >> f` (`append`), `tee f`, `tee -a f`. */
+ * `cat >> f` (`append`), `tee f`, `tee -a f`, each file one shell word (`shellTokens`). */
 function bashScripts(command: string): { path: string; text: string; append: boolean }[] {
   const { code, bodies } = withoutBodies(command);
   const commands = commandsOf(code);
   return bodies.flatMap((body) => {
     const owner = commands.find((one) => one.at <= body.at && body.at < one.end);
     if (owner?.name === "tee") {
-      const words = wordsOf(owner.rest);
+      const words = shellWords(owner.rest);
       const append = words.includes("-a") || words.includes("--append");
       return words
         .filter((word) => !word.startsWith("-"))
         .map((file) => ({ path: file, text: body.text, append }));
     }
     if (owner?.name !== "cat") return [];
-    return [...owner.rest.matchAll(OUTPUT)].map((hit) => ({
-      path: hit[2] ?? "",
-      text: body.text,
-      append: hit[1] === ">>",
-    }));
+    return shellTokens(owner.rest).flatMap(({ word, redirect }) =>
+      redirect !== undefined && word !== "" && /^1?>>?\|?$/.test(redirect)
+        ? [{ path: word, text: body.text, append: redirect.includes(">>") }]
+        : []
+    );
   });
 }
 
@@ -1878,7 +1929,7 @@ function bashRuns(command: string): { path: string; runner: string }[] {
     .replace(/\$\(|`/g, "$& ");
   return commandsOf(spoken)
     .flatMap((one) => {
-      const words = wordsOf(one.rest);
+      const words = shellWords(one.rest);
       const program = programOf(one.name, words);
       if (program !== undefined && program !== "-") return [{ path: program, runner: one.name }];
       if ((one.name === "source" || one.name === ".") && words[0] !== undefined)
@@ -2028,12 +2079,18 @@ const EVAL_LOAD =
   /\b(?:run_path|execfile|require|import)\s*\(\s*(['"`])([^'"`\n]+)\1|\bexec\s*\(\s*open\s*\(\s*(['"])([^'"\n]+)\3|\bfrom\s+(['"])([^'"\n]+)\5|^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import|import[ \t]+([\w.]+))/gm;
 
 /** The files an `eval` cell runs: each it loads as code (EVAL_LOAD), and each the command of a
- * subprocess call of it runs (SUBPROCESS, read by `bashRuns`). A file a string of the cell names
- * otherwise (`open("f")`, a message quoting `` `bun f.ts` ``) it does not run. */
+ * subprocess call of it runs (SUBPROCESS, read by `bashRuns`): a string's text is that command,
+ * and each literal of a list is one word of it, each character a shell word ends at escaped, so
+ * `["python3", "my fetch.py"]` runs `my fetch.py`. A file a string of the cell names otherwise
+ * (`open("f")`, a message quoting `` `bun f.ts` ``) it does not run. */
 function evalRuns(code: string): { path: string; runner: string }[] {
-  const commands = [...code.matchAll(SUBPROCESS)].map((hit) =>
-    [...(hit[1] ?? hit[3] ?? "").matchAll(STRING_LITERAL)].map((word) => word[2] ?? "").join(" ")
-  );
+  const commands = [...code.matchAll(SUBPROCESS)].map((hit) => {
+    const given = hit[1] ?? hit[3] ?? "";
+    const literals = [...given.matchAll(STRING_LITERAL)].map((word) => word[2] ?? "");
+    return given.startsWith("[")
+      ? literals.map((word) => word.replace(/[^\w@%+=:,./-]/g, "\\$&") || "''").join(" ")
+      : literals.join(" ");
+  });
   return [
     ...commands.flatMap(bashRuns),
     ...[...code.matchAll(EVAL_LOAD)].map((hit) => ({
@@ -2313,30 +2370,21 @@ const WRITERS: Readonly<Record<string, "all" | "last">> = {
   ln: "last",
   install: "last",
 };
-/** A redirection of a command's output to an absolute path: `>`, `>>`, `>|`, `2>`, `&>`. */
-const REDIRECT = /(?:^|[^<>&\d])(?:\d+|&)?>>?\|?[ \t]*(['"]?)(\/[^\s'";&|()<>`]*)\1/gm;
-/** A quoted string, with the redirection it is the target of where it is one. A `>` inside a
- * quoted argument (`sed 's/=x/=<set>/'`) redirects nothing, so REDIRECT reads the text with
- * every quoted string that is no redirection's target emptied. */
-const QUOTED = /(>>?\|?[ \t]*)?('[^']*'|"[^"]*")/g;
-/** A shell word: quoted parts and bare characters up to the next blank. */
-const WORD = /(?:'[^']*'|"[^"]*"|[^\s'"])+/g;
+/** A redirection of a command's output (`shellTokens`): `>`, `>>`, `>|`, `2>`, `&>`. */
+const OUTPUT_REDIRECT = /^(?:\d+|&)?>>?\|?$/;
 
-/** The absolute paths a `bash` command writes, read from its text: each redirection's target,
- * and the file operands of the WRITERS, `sed -i` and `dd of=`. A word that holds an expansion
- * (`$`, a backquote, a glob) is passed over, since its path is not in the text. */
+/** The absolute paths a `bash` command writes, read from its text: each output redirection's
+ * target and the file operands of the WRITERS, `sed -i` and `dd of=`, each one shell word
+ * (`shellTokens`), so a `>` inside a quoted argument (`sed 's/=x/=<set>/'`) redirects nothing and
+ * a quoted or escaped blank is in the path. A word that holds an expansion (`$`, a backquote, a
+ * glob) is passed over, since its path is not in the text. */
 function bashWrites(command: string): string[] {
   const code = withoutBodies(command).code;
-  const written = [
-    ...code
-      .replace(QUOTED, (all, target) => (target === undefined ? "''" : all))
-      .matchAll(REDIRECT),
-  ].map((hit) => hit[2] ?? "");
-  for (const hit of code.matchAll(SHELL_COMMAND)) {
-    const name = path.posix.basename(hit[1] ?? "");
-    const words = [...(hit[2] ?? "").replace(REDIRECTION, " ").matchAll(WORD)].map((word) =>
-      word[0].replace(/^(['"])(.*)\1$/, "$2")
-    );
+  const written = shellTokens(code).flatMap(({ word, redirect }) =>
+    redirect !== undefined && OUTPUT_REDIRECT.test(redirect) ? [word] : []
+  );
+  for (const { name, rest } of commandsOf(code)) {
+    const words = shellWords(rest);
     const operands = words.filter((word) => !word.startsWith("-"));
     if (name === "dd")
       written.push(...words.filter((word) => word.startsWith("of=")).map((word) => word.slice(3)));
@@ -2364,24 +2412,27 @@ const SINKS = /^\/(?:dev\/(?:null|stdout|stderr|tty|fd\/\d+)|proc\/self\/fd\/\d+
  * configuration home); and an `eval` cell, whose writes this does not read. rig.sh's
  * scratch_clean records what a serial run left at the top of /tmp whatever wrote it, which is the
  * record of what these hide there. */
-function writtenBy(tool: string, args: ToolArgs): string[] {
+export function writtenBy(tool: string, args: ToolArgs): string[] {
   if (tool === "bash") return bashWrites(stringArg(args, "command") ?? "");
   return tool === "write" || tool === "edit" ? namedPaths(tool, args) : [];
 }
 
 /** What the run wrote outside its own directory, its HOME and its TMPDIR (`writable`): every path
- * a tool call writes there (`writtenBy`), and every entry rig.sh's scratch_clean found the run
- * had left in the machine's shared scratch (<run>/scratch-created.txt, `<epoch seconds> <path>`).
- * A run's own writes are no verdict on it; another run that reads one is (`otherRunWrite`). */
+ * a tool call writes there (`writtenBy`), read as the run's namespace mounts it (`reachedIn`), so
+ * a write into a namespace's /tmp is one into the run's own <run>/tmp and none of these; and
+ * every entry rig.sh's scratch_clean found the run had left in the machine's shared scratch
+ * (<run>/scratch-created.txt, `<epoch seconds> <path>`), which rig.sh reads outside the
+ * namespace and is the machine's path as it stands. A run's own writes are no verdict on it;
+ * another run that reads one is (`otherRunWrite`). */
 function writesOf(
-  dir: string,
+  run: Pick<Run, "dir" | "label" | "namespaced">,
   calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[],
   writable: readonly string[]
 ): Access[] {
-  const created = path.join(dir, "scratch-created.txt");
+  const created = path.join(run.dir, "scratch-created.txt");
   return [
     ...calls.flatMap((call) =>
-      writtenBy(call.tool, call.args).map((written) => ({ ...call, path: written }))
+      writtenBy(call.tool, call.args).map((written) => ({ ...call, path: reachedIn(run, written) }))
     ),
     ...(existsSync(created) ? readFileSync(created, "utf8").split("\n") : []).flatMap((line) => {
       const at = line.indexOf(" ");
@@ -2412,17 +2463,22 @@ function readsOf(tool: string, args: ToolArgs): string[] {
  * a run finds there it did not make itself is another process's, a run's of this batch or older. */
 const SHARED_SCRATCH = ["/tmp"];
 
-/** Rule 7: the first read of the run that met a world another run, or something before the run,
+/** Rule 9: the first read of the run that met a world another run, or something before the run,
  * had changed:
  *   - another run's write: the latest write of the path read, or of a directory above it, across
  *     every run health was given (`runs`), before the read's time, is another run's;
- *   - a shared scratch entry from before the run: the path is under SHARED_SCRATCH, no run given
- *     wrote it before the read, and it was there when the run started: its entry at the top of
- *     the directory is in <run>/scratch-before.txt (rig.sh's scratch_before) and is none the run
- *     made itself (scratch-created.txt). A run with no such record (one from before the rig kept
- *     it) is held to its transcripts alone: a shared scratch path it reads, that no run given
- *     wrote before the read, counts as there before it, which also counts a read of a path that
- *     was never there.
+ *   - a shared scratch entry from before the run, for a run that ran in no namespace, whose /tmp
+ *     was the machine's: the path is under SHARED_SCRATCH, no run given wrote it before the
+ *     read, and it was there when the run started: its entry at the top of the directory is in
+ *     <run>/scratch-before.txt (rig.sh's scratch_before) and is none the run made itself
+ *     (scratch-created.txt). A run with no such record (one from before the rig kept it) is held
+ *     to its transcripts alone: a shared scratch path it reads, that no run given wrote before
+ *     the read, counts as there before it, which also counts a read of a path that was never
+ *     there.
+ * A run in a namespace reads none of the machine's /tmp, whatever that held when the run
+ * started: a path it reads under /tmp is its own <run>/tmp or one its world shows (`mounted`),
+ * its own directory among them where the work directory is itself under /tmp, so the second
+ * holds for no read of it, and the first for one only where another run wrote that same path.
  * A run that reads only what it wrote itself is clean, and so is the run whose write another
  * read: it is the reader that met a world another run had changed. The rule sees only the runs it
  * is given, so `rig.sh health` reads a batch's runs together; given one run, it sees no other
@@ -2443,7 +2499,7 @@ function otherRunWrite(run: Run, runs: readonly Run[]): string | undefined {
     const when = new Date(read.at).toISOString();
     if (last !== undefined && last.by !== run)
       return `another run's write: a ${read.tool} call in ${read.file} at ${when} reads ${read.path}, which ${path.basename(last.by.dir)} wrote at ${new Date(last.write.at).toISOString()} (${last.write.tool} in ${last.write.file})`;
-    if (last !== undefined) continue;
+    if (last !== undefined || run.namespaced) continue;
     const shared = SHARED_SCRATCH.find((dir) => read.path.startsWith(`${dir}/`));
     if (shared === undefined) continue;
     const entry = path.posix.join(shared, read.path.slice(shared.length + 1).split("/")[0] ?? "");
@@ -2488,64 +2544,15 @@ function failedClaim(run: Run): string | undefined {
  * <run>/boot-1/<role>/, holding that attempt's out.txt, its sessions/ and the daemon stand-in's
  * lines of it (daemon.log), while the second attempt's record stands where any agent's does. */
 const FIRST_BOOT = "boot-1";
-/** The route a phase worker's claim boot registers on. */
-const REGISTER_PATH = "/legion/v1/claims/register";
-
-/** One launch of an agent as the run records it: its pane output, the daemon stand-in's lines of
- * it, and every entry of its session's transcripts, its subagents' included; `run` is the run's
- * directory, whose built-from names the checkout its plugin came from. */
-interface BootAttempt {
-  readonly run: string;
-  readonly out: string;
-  readonly daemon: readonly DaemonLine[];
-  readonly entries: readonly SessionEntry[];
-}
-
-/** The refusal an attempt's claim boot met, or undefined: the daemon stand-in's refusal of its
- * `claims/register`, or the line the run's own label's plugin prints for a boot that registered
- * and could not finish (score.ts's `claimBootFailure`, which reads that label's wording out of
- * its checkout), which round 23's refusal by the Envoy listener of a session that held no
- * consumer ends in. The plugin exits on either, so the daemon launches the agent again. */
-function bootRefusal(attempt: BootAttempt): string | undefined {
-  const refused = attempt.daemon.find((line) => line.path === REGISTER_PATH && line.status >= 400);
-  if (refused !== undefined)
-    return `the daemon stand-in answered the ${refused.role ?? "agent"}'s ${refused.method ?? "POST"} ${REGISTER_PATH} ${answerOf(refused)}`;
-  return claimBootFailure(attempt.out, attempt.run);
-}
-
-/** Whether an attempt made a turn: a model call or a tool call its transcripts recorded, an
- * assistant message or a tool result. */
-function madeTurn(attempt: BootAttempt): boolean {
-  return attempt.entries.some(
-    (entry) => entry.message?.role === "assistant" || entry.message?.role === "toolResult"
-  );
-}
-
-/** Every entry of every transcript under `dir`, at any depth: an attempt's session directory,
- * which holds its subagents' too. */
-function entriesUnder(dir: string): SessionEntry[] {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir, { recursive: true, encoding: "utf8" })
-    .filter((file) => file.endsWith(".jsonl"))
-    .sort()
-    .flatMap((file) => transcriptEntries(path.join(dir, file)));
-}
-
-/** The refusal rig.sh relaunches an agent for, or undefined: a claim boot refused (`bootRefusal`)
- * before the agent's first turn (`madeTurn`). One refused after a turn is never relaunched: the
- * daemon's relaunch would not take that turn back. */
-function relaunchFor(attempt: BootAttempt): string | undefined {
-  return madeTurn(attempt) ? undefined : bootRefusal(attempt);
-}
-
-/** Rule 14: the first claim boot refusal of the run that is no declared world answer. The one
- * declared is a first attempt's at boot, before any turn, which rig.sh relaunched
- * (<run>/boot-1/<role>/): production's daemon relaunches such an agent, and the run is judged as
- * any other on the second attempt's record. A relaunch whose first attempt records no refusal, or
- * a turn, is the rig's own error; a relaunch refused again names both attempts; and any other
- * refusal, in an agent's output (`outputs`) or in the stand-in's log past each first attempt's
- * own lines, is one met after a turn, which no relaunch would take back, or one never
- * relaunched. */
+/** Rule 14: the first claim boot refusal of the run that is no declared world answer, read by the
+ * one reader of a claim boot refusal, the one rig.sh's boot_agent asks (boot-refusal.ts's
+ * `bootRefusal` and `madeTurn`). The one declared is a first attempt's at boot, before any turn,
+ * which rig.sh relaunched (<run>/boot-1/<role>/): production's daemon relaunches such an agent,
+ * and the run is judged as any other on the second attempt's record. A relaunch whose first
+ * attempt records no refusal, or a turn, is the rig's own error; a relaunch refused again names
+ * both attempts; and any other refusal, in an agent's output (`outputs`) or in the stand-in's log
+ * past each first attempt's own lines, is one met after a turn, which no relaunch would take
+ * back, or one never relaunched. */
 function claimBoot(run: Run): string | undefined {
   const lines = daemonLines(run.dir);
   const firsts = path.join(run.dir, FIRST_BOOT);
@@ -2697,6 +2704,30 @@ function relaunches(runs: readonly Run[]): string[] {
     );
 }
 
+/** How many paths of a run's writes outside its own directory `wroteOutside` names before it
+ * counts the rest. */
+const WRITES_NAMED = 3;
+
+/** The line of the runs of `runs` that wrote outside their own directory, HOME and TMPDIR
+ * (`writesOf`), which is no verdict on any of them: `health: wrote outside its own directory,
+ * HOME and TMPDIR (no verdict): <n> of <m> runs`, then, where <n> is not 0, `: <run> (<path>,
+ * <path>, <path> and <k> more); <run> (…)`: each such run by its directory's name, in the order
+ * given, with the paths it wrote there in the order it first wrote each, the first WRITES_NAMED
+ * of them and a count of the rest. So the line itself says which runs they were and where each
+ * wrote, with no copy of the runs to read them out of. */
+function wroteOutside(runs: readonly Run[]): string {
+  const wrote = runs.flatMap((run) => {
+    const paths = [...new Set(run.writes.map((write) => write.path))];
+    const rest = paths.length - WRITES_NAMED;
+    return paths.length === 0
+      ? []
+      : [
+          `${path.basename(run.dir)} (${paths.slice(0, WRITES_NAMED).join(", ")}${rest > 0 ? ` and ${rest} more` : ""})`,
+        ];
+  });
+  return `health: wrote outside its own directory, HOME and TMPDIR (no verdict): ${wrote.length} of ${runs.length} runs${wrote.length === 0 ? "" : `: ${wrote.join("; ")}`}`;
+}
+
 /** Every rule, in the order a run's line names the first it fails. A rule is given the run and
  * every run health was given, which only the cross-run rule reads. */
 const RULES: readonly {
@@ -2747,38 +2778,11 @@ const RULES: readonly {
 if (import.meta.main) {
   const argv = Bun.argv.slice(2);
   // rig.sh's boot_agent asks, once an agent's launch has ended, whether to relaunch it: the one
-  // reader of a boot refusal, which the "claim boot" rule then holds the record to. It prints the
-  // refusal and exits 0 for a relaunch, exits 1 for none, and 2 for a usage error or a record it
-  // cannot read, which a status of 1 would have read as no refusal.
-  if (argv[0] === "--boot-refusal") {
-    const [, dir, role, since, sessions, ...extra] = argv;
-    if (
-      dir === undefined ||
-      role === undefined ||
-      since === undefined ||
-      sessions === undefined ||
-      extra.length > 0
-    ) {
-      console.error(BOOT_USAGE);
-      process.exit(2);
-    }
-    let refusal: string | undefined;
-    try {
-      const out = path.join(dir, "out.txt");
-      refusal = relaunchFor({
-        run: dir,
-        out: existsSync(out) ? readFileSync(out, "utf8") : "",
-        daemon: daemonLines(dir).filter((line) => line.role === role && line.at >= since),
-        entries: entriesUnder(sessions),
-      });
-    } catch (error) {
-      console.error(`health: ${error instanceof Error ? error.message : String(error)}`);
-      process.exit(2);
-    }
-    if (refusal === undefined) process.exit(1);
-    console.log(refusal);
-    process.exit(0);
-  }
+  // reader of a boot refusal (boot-refusal.ts), which the "claim boot" rule then holds the record
+  // to. It prints the refusal and exits 0 for a relaunch, exits 1 for none, and 2 for a usage
+  // error or a record it cannot read, which a status of 1 would have read as no refusal.
+  if (argv[0] === "--boot-refusal")
+    process.exit(askBootRefusal(argv.slice(1), BOOT_USAGE, "health"));
   // The shared scratch's entries before the batch's first run, one path a line: what a run with
   // no record of its own (scratch-before.txt) is held to, and added to the record of one that has.
   let snapshot: string[] | undefined;
@@ -2841,11 +2845,9 @@ if (import.meta.main) {
   // How often each label's agents met a boot refusal the rig relaunched them for, which no rule
   // flags (rule 14 declares a first attempt's): a batch reads its relaunches here, by label.
   for (const line of relaunches(runs)) console.log(line);
-  // A run's own writes outside its directory are no verdict on it: recorded here, and judged
-  // where another run read them (`otherRunWrite`).
-  console.log(
-    `health: wrote outside its own directory, HOME and TMPDIR (no verdict): ${runs.filter((run) => run.writes.length > 0).length} of ${runs.length} runs`
-  );
+  // A run's own writes outside its directory are no verdict on it: named here, run by run, and
+  // judged where another run read them (`otherRunWrite`).
+  console.log(wroteOutside(runs));
   console.log(`health: ${failed} of ${runs.length} runs unhealthy`);
   process.exit(failed === 0 ? 0 : 1);
 }

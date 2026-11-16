@@ -26,6 +26,10 @@ import { z } from "zod";
 // sources, so they may reach the sibling plugin by path, as the tests that load its entry do
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
+// The sentence a half's own claim boot leaves when it registered and could not finish, read in
+// the run's own label's wording by the one reader of a claim boot refusal (boot-refusal.ts),
+// which rig.sh's boot_agent and health.ts read too.
+import { claimBootFailure } from "./boot-refusal";
 // The daemon stand-in's log and the answers each run's world may give a completion, read through
 // the one module the stand-in, this score and health.ts share (completion-answers.ts).
 import {
@@ -39,8 +43,6 @@ import {
   refusedCompletion,
   SKIPS,
 } from "./completion-answers";
-// The checkout a run was built from, read from its built-from as the daemon stand-in reads it.
-import { labelCheckout } from "./daemon-pane";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 // How gh reads a call's verb, its body and the two review endpoints, in the module the gh
 // stand-in answers that same call by (gh-call.ts), and the world every program of the run reads.
@@ -75,12 +77,13 @@ import { byCreatedAt, parseInstant } from "./production-dispatch";
 import { CALLS, Opened } from "./run-records";
 import {
   CREATED,
-  SessionEntry,
+  type SessionEntry,
   session,
   sessionId,
   sessionIn,
   subagentSessions,
   toolResults,
+  transcriptEntries,
 } from "./transcript";
 
 /** `GET /api/v1/issues/{key}/asks`: every ask on the issue, whatever its state. */
@@ -1296,56 +1299,6 @@ function namesHead(sha: string, named: string): boolean {
  * is read from the transcript's whole text rather than from one tool's results. */
 const CONTRACT_REFUSED =
   /([A-Z]+ \/legion\/\S+) answered \d+ with a body the daemon API contract does not describe: ([^"\\\n]+)/;
-/** The words the sentence every label's plugin prints for a claim boot that registered and could
- * not finish starts with: main ff2a10ef's `claim boot failed after claims/register registered
- * <claim token>; …` (packages/pi-shared/src/legion-claim-core.ts:97 there) and this checkout's
- * `claim boot failed at <step> after claims/register registered <role> with the daemon at …; …`
- * (`stopAfterRegistration`). Only an output that holds them is read for the label's own
- * opening (`claimBootOpening`), so a run that met no such failure needs no checkout to read. */
-const CLAIM_BOOT_WORDS = "claim boot failed ";
-/** The module, under a checkout, that writes that sentence. */
-const CLAIM_CORE = path.join("packages", "pi-shared", "src", "legion-claim-core.ts");
-/** Each checkout's opening, read once. */
-const claimBootOpenings = new Map<string, string>();
-/** The opening of the sentence the plugin of `checkout` prints for a claim boot that registered
- * and could not finish, read out of that checkout's own CLAIM_CORE, as the daemon facts a run's
- * stand-in answers by are read out of its checkout: the value of the module's
- * CLAIM_BOOT_FAILED_OPENING where it names one (this checkout's, `claim boot failed at `), and
- * otherwise the text of the template that writes the sentence up to its first substitution
- * (main ff2a10ef's, `claim boot failed after claims/register registered `). The labels word it
- * apart, so one label's opening read for another's runs never finds the other's sentence. Throws
- * for a checkout whose module writes no such sentence: what its plugin prints is unknown. */
-export function claimBootOpening(checkout: string): string {
-  const known = claimBootOpenings.get(checkout);
-  if (known !== undefined) return known;
-  const file = path.join(checkout, CLAIM_CORE);
-  const source = existsSync(file) ? readFileSync(file, "utf8") : "";
-  const opening =
-    /\bCLAIM_BOOT_FAILED_OPENING\s*=\s*"([^"]+)"/.exec(source)?.[1] ??
-    /`(claim boot failed [^`$]*)/.exec(source)?.[1];
-  if (opening === undefined)
-    throw new Error(
-      `${file} writes no sentence for a claim boot that registered and could not finish (\`${CLAIM_BOOT_WORDS}…\`), so what that checkout's plugin prints for one is unknown`
-    );
-  claimBootOpenings.set(checkout, opening);
-  return opening;
-}
-/** The sentence the claim boot leaves in a half's own output when a session that registered
- * could not finish booting, or undefined when `text` holds none: the line opening with the
- * opening of the run's own label's plugin (`claimBootOpening` of the checkout the run's
- * built-from names, daemon-pane.ts's `labelCheckout`), which names why. The agent then exits so
- * the daemon would launch it again. The rig launches it once more only when that came before its
- * first turn, and keeps that first attempt under <run>/boot-1/<role>/, which this reads none of
- * (rig.sh's boot_agent); a half whose own output holds the line is one refused after its first
- * turn or on its relaunch too, so the half is gone from the middle of the run (`unscored`).
- * health.ts reads a boot refusal through this too. */
-export function claimBootFailure(text: string, runDir: string): string | undefined {
-  if (!text.includes(CLAIM_BOOT_WORDS)) return undefined;
-  const opened = text.indexOf(claimBootOpening(labelCheckout(runDir)));
-  if (opened < 0) return undefined;
-  const ended = text.indexOf("\n", opened);
-  return ended < 0 ? text.slice(opened) : text.slice(opened, ended);
-}
 /** Every word of a transcript: each text part of each message, the tool results among them. */
 function transcriptText(entries: SessionEntry[]): string {
   return entries
@@ -2232,23 +2185,132 @@ interface DispatchCall {
   text: string;
   flag: (name: string) => string | undefined;
 }
+/** What a shell word holds that a blank inside it does not end (bash(1), QUOTING and EXPANSION):
+ * single-quoted text; ANSI-C `$'…'` text and double-quoted text, each with the backslash escapes
+ * it keeps; a character a backslash escapes; and a `${…}` or `$((…))` expansion, whose braces or
+ * brackets may hold blanks. */
+const QUOTING = String.raw`'[^']*'|\$'(?:[^'\\]|\\[\s\S])*'|"(?:[^"\\]|\\[\s\S])*"|\\[\s\S]|\$\{[^}]*\}|\$\(\([^()]*\)\)`;
+/** One shell word as the shell reads it: QUOTING, and any other character but a blank and the
+ * operators that end a word unquoted (`;`, `&`, `|`, `<`, `>`, `(`, `)`, a backquote). Every reader
+ * of a command's words reads them with this, through `shellTokens`: a command's first word
+ * (SHELL_COMMAND), its words and redirections (health.ts), and a `dispatch` command's flags. */
+export const SHELL_WORD = String.raw`(?:${QUOTING}|[^\s'"\\;&|<>()\x60])+`;
+/** A variable's assignment before a command's first word, `NAME=value`, its value ending at the
+ * first blank outside QUOTING, so `GIT_SSH_COMMAND='ssh -i key' git clone …` runs `git`. An
+ * unquoted operator in the value is kept in it, as this reader always kept it: `out=$(dispatch …)`
+ * is read at its `$(`, where its output is the substitution's, and `x=$(pwd) cmd` runs `cmd`. */
+const ASSIGNED = String.raw`[A-Za-z_]\w*=(?:${QUOTING}|[^\s'"\\])*`;
 /** Where a command starts in shell text: at a line's start, or after `;`, `&`, `|`, `(`, `$(` or a
- * backquote, past any variable assignments, the words that open a command inside a compound one
- * (`then`, `do`, `else`, `elif`, `!`, `{`), and `command`, `exec` or `env`. */
-const AT_COMMAND = String.raw`(?:^|[;&|(\x60]|\$\()[ \t]*(?:[A-Za-z_]\w*=\S*[ \t]+)*(?:(?:then|do|else|elif|!|\{)[ \t]+)*(?:(?:command|exec|env)[ \t]+)?`;
+ * backquote, past any variable assignments (ASSIGNED), the words that open a command inside a
+ * compound one (`then`, `do`, `else`, `elif`, `!`, `{`), and `command`, `exec`, or `env` with its
+ * `-i` (`-`, `--ignore-environment`) and the assignments it makes (env(1): `env [-i]
+ * [NAME=value…] command`). */
+const AT_COMMAND = String.raw`(?:^|[;&|(\x60]|\$\()[ \t]*(?:${ASSIGNED}[ \t]+)*(?:(?:then|do|else|elif|!|\{)[ \t]+)*(?:(?:command|exec)[ \t]+|env(?:[ \t]+(?:-i|-|--ignore-environment))*(?:[ \t]+${ASSIGNED})*[ \t]+)?`;
 /** A command's text after its first word, up to the next command's place. */
 const COMMAND_REST = String.raw`[^\n;&|\x60)]*`;
-/** A `dispatch` command at a command's place: its text from `dispatch` on, and its command. */
+/** A `dispatch` command at a command's place, named bare or by a path to it (`./dispatch`,
+ * `/usr/local/bin/dispatch`), which runs the same CLI: its text from that name on, and its
+ * command. */
 const DISPATCH_COMMAND = new RegExp(
-  String.raw`${AT_COMMAND}(dispatch[ \t]+([a-z][a-z-]*)${COMMAND_REST})`,
+  String.raw`${AT_COMMAND}((?:[^\s'"\\;&|<>()\x60]*/)?dispatch[ \t]+([a-z][a-z-]*)${COMMAND_REST})`,
   "gm"
 );
-/** Any command at a command's place, by the same parser: its first word and the rest. health.ts
- * reads a `bash` call's writes with it. */
-export const SHELL_COMMAND = new RegExp(
-  String.raw`${AT_COMMAND}([^\s;&|\x60()<>]+)(${COMMAND_REST})`,
-  "gm"
+/** Any command at a command's place, by the same parser: its first word (SHELL_WORD, as written:
+ * `shellWord` reads what it names) and the rest. health.ts reads a `bash` call's commands with it. */
+export const SHELL_COMMAND = new RegExp(`${AT_COMMAND}(${SHELL_WORD})(${COMMAND_REST})`, "gm");
+/** Each piece of a shell word by its kind: single-quoted, ANSI-C quoted, double-quoted, a
+ * backslash escape, a `${…}` or `$((…))` expansion, or other text. */
+const WORD_PIECE =
+  /'([^']*)'|\$'((?:[^'\\]|\\[\s\S])*)'|"((?:[^"\\]|\\[\s\S])*)"|\\([\s\S])|(\$\{[^}]*\}|\$\(\([^()]*\)\))|([^'"\\$]+|[\s\S])/g;
+/** The characters ANSI-C quoting's one-letter escapes stand for (bash(1), QUOTING). */
+const ANSI_C: Readonly<Record<string, string>> = {
+  a: "\x07",
+  b: "\b",
+  e: "\x1b",
+  E: "\x1b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+  "\\": "\\",
+  "'": "'",
+  '"': '"',
+  "?": "?",
+};
+/** The text of `$'…'` quoting: its escapes read as bash reads them, an unknown one kept whole. */
+function ansiC(text: string): string {
+  return text.replace(
+    /\\(?:([0-7]{1,3})|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|c([\s\S])|([\s\S]))/g,
+    (
+      all,
+      octal?: string,
+      hex?: string,
+      short?: string,
+      long?: string,
+      control?: string,
+      other?: string
+    ) => {
+      const code = octal ?? hex ?? short ?? long;
+      if (code !== undefined) {
+        const point = Number.parseInt(code, octal === undefined ? 16 : 8);
+        return point <= 0x10ffff ? String.fromCodePoint(point) : all;
+      }
+      if (control !== undefined) return String.fromCharCode(control.charCodeAt(0) & 0x1f);
+      return ANSI_C[other ?? ""] ?? all;
+    }
+  );
+}
+/** What a shell word (SHELL_WORD, or an assignment's value) names once the shell has read its
+ * quoting: each quote's text, `$'…'`'s escapes read, a double quote's `\$`, `` \` ``, `\"` and
+ * `\\` read and its other backslashes kept, and an escaped character as itself. An expansion is
+ * kept as written, since what it stands for is not in the text. */
+export function shellWord(raw: string): string {
+  return raw.replace(
+    WORD_PIECE,
+    (
+      _all,
+      single?: string,
+      ansi?: string,
+      double?: string,
+      escaped?: string,
+      expansion?: string,
+      other?: string
+    ) =>
+      single ??
+      (ansi === undefined ? undefined : ansiC(ansi)) ??
+      double?.replace(/\\([$`"\\\n])/g, "$1") ??
+      (escaped === undefined ? undefined : escaped === "\n" ? "" : escaped) ??
+      expansion ??
+      other ??
+      ""
+  );
+}
+/** A token of shell text: a word (SHELL_WORD), or a redirection, an operator (`<`, `>`, `>>`,
+ * `>|`, `<<`, `<>`, with the descriptor or `&` before it) and the word it takes. */
+const SHELL_TOKEN = new RegExp(
+  String.raw`((?:\d+|&)?[<>]{1,2}\|?)[ \t]*(${SHELL_WORD})?|(${SHELL_WORD})`,
+  "g"
 );
+/** A word of shell text as `shellWord` reads it; for a redirection's target, the operator. */
+export interface ShellToken {
+  readonly word: string;
+  readonly redirect?: string;
+}
+/** Every word and redirection of shell text, in order (SHELL_TOKEN): a `>` inside a quoted word
+ * redirects nothing, and a quoted or escaped blank ends no word. A redirection that takes no word
+ * (`2>&1`, whose `&1` is no word) has the target "". */
+export function shellTokens(text: string): ShellToken[] {
+  return [...text.matchAll(SHELL_TOKEN)].map((hit) =>
+    hit[1] === undefined
+      ? { word: shellWord(hit[3] ?? "") }
+      : { word: shellWord(hit[2] ?? ""), redirect: hit[1] }
+  );
+}
+/** The words of shell text (`shellTokens`), its redirections and their targets left out. */
+export function shellWords(text: string): string[] {
+  return shellTokens(text).flatMap((token) => (token.redirect === undefined ? [token.word] : []));
+}
 /** A here-document: the rest of the line that opens it, then its body up to the line that ends it. */
 const HEREDOC = /(<<-?[ \t]*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?^[ \t]*\3[ \t]*$/gm;
 /** A skill file a command names: a skill:// target, or a `.md` file under `skills/<name>/`. */
@@ -2278,17 +2340,19 @@ const ANSWER: Readonly<Record<string, RegExp>> = {
 const EVAL_EXIT =
   /^-?\d+ (?=(?:Applied|Uploaded|Created) |dispatch(?::| [a-z][a-z-]* was not called:))/gm;
 
-/** A `dispatch` command's flags, read from its text. */
+/** A `dispatch` command's flags, read from its words (`shellWords`): `--<name>=<value>`, or
+ * `--<name>` and the word after it, "" when none follows. A flag inside a quoted word is that
+ * word's text and no flag, and a value is the word its quoting reads, whatever quotes it. */
 function shellCall(text: string, command: string): DispatchCall {
+  const words = shellWords(text);
   return {
     command,
     text,
     flag: (name: string) => {
-      const found = new RegExp(`(?:^|\\s)--${name}(?:=|\\s+)(?:'([^']*)'|"([^"]*)"|(\\S+))`).exec(
-        text
-      );
-      if (found !== null) return found[1] ?? found[2] ?? found[3];
-      return new RegExp(`(?:^|\\s)--${name}(?:\\s|$)`).test(text) ? "" : undefined;
+      const at = words.findIndex((word) => word === `--${name}` || word.startsWith(`--${name}=`));
+      if (at < 0) return undefined;
+      const word = words[at] ?? "";
+      return word === `--${name}` ? (words[at + 1] ?? "") : word.slice(name.length + 3);
     },
   };
 }
@@ -2383,15 +2447,16 @@ type ShellCommand =
   | { kind: "other"; at: number; sep: string };
 
 /** An eval cell's code with each Python list-literal `dispatch` invocation, such as
- * `subprocess.run(["dispatch", "doc-edit", "--issue", "K-1", ...])`, also written out as the
- * shell command it runs, on a line of its own after the list, so DISPATCH_COMMAND finds it as it
- * finds a command in a bash call. Each string literal of the list is one shell word; any other
- * element (a variable, `*args`) is the word `__EXPR__`, so a flag whose value is not a literal
- * reads as no value the run names. The characters that end a command in COMMAND_REST are dropped
- * from a word, so a summary holding `)` or `;` does not cut the command short. A call through a
- * helper of the agent's own (`d("doc-edit", ...)`) is still not seen. */
+ * `subprocess.run(["dispatch", "doc-edit", "--issue", "K-1", ...])`, its CLI named bare or by a
+ * path to it (`"/usr/local/bin/dispatch"`), also written out as the shell command it runs, on a
+ * line of its own after the list, so DISPATCH_COMMAND finds it as it finds a command in a bash
+ * call. Each string literal of the list is one shell word; any other element (a variable,
+ * `*args`) is the word `__EXPR__`, so a flag whose value is not a literal reads as no value the
+ * run names. The characters that end a command in COMMAND_REST are dropped from a word, so a
+ * summary holding `)` or `;` does not cut the command short. A call through a helper of the
+ * agent's own (`d("doc-edit", ...)`) is still not seen. */
 function withPythonDispatch(code: string): string {
-  const list = /\[\s*(["'])dispatch\1\s*,([^\]]*)\]/g;
+  const list = /\[\s*(["'])(?:[^"'\]\s]*\/)?dispatch\1\s*,([^\]]*)\]/g;
   let out = "";
   let last = 0;
   for (const hit of code.matchAll(list)) {
@@ -2490,16 +2555,18 @@ function operationsOf(step: Step, outcome: Outcome | undefined): Operation[] {
   for (const hit of code.matchAll(SHELL_COMMAND)) {
     const at = hit.index ?? 0;
     const end = at + hit[0].length;
-    const word = hit[1] ?? "";
+    const word = shellWord(hit[1] ?? "");
     // The `1` of a `2>&1`, a comment, or a command that overlaps a `dispatch` one.
     if (/^\d+$/.test(word) || word.startsWith("#")) continue;
     if (spans.some((span) => at < span.end && end > span.at)) continue;
     const sep = separator(code, at);
     const args = hit[2] ?? "";
-    const line = word === "echo" && !TO_FILE.test(args) ? echoed(args) : undefined;
+    // The command a path names is the one its bare name names: `/bin/echo` prints as `echo` does.
+    const name = path.posix.basename(word);
+    const line = name === "echo" && !TO_FILE.test(args) ? echoed(args) : undefined;
     if (line !== undefined) commands.push({ kind: "label", at, sep, line });
-    else if (CLOSERS.has(word)) commands.push({ kind: "closer", at, sep });
-    else if (SILENT.has(word) || TO_FILE.test(args)) commands.push({ kind: "silent", at, sep });
+    else if (CLOSERS.has(name)) commands.push({ kind: "closer", at, sep });
+    else if (SILENT.has(name) || TO_FILE.test(args)) commands.push({ kind: "silent", at, sep });
     else commands.push({ kind: "other", at, sep });
   }
   commands.sort((a, b) => a.at - b.at);
@@ -4436,7 +4503,7 @@ function unscored(
         "\n"
       );
       for (const hit of withoutBodies(source).code.matchAll(SHELL_COMMAND))
-        if (READERS[hit[1] ?? ""] === true)
+        if (READERS[path.posix.basename(shellWord(hit[1] ?? ""))] === true)
           named.push(...[...(hit[2] ?? "").matchAll(ABSOLUTE_PATH)].map(([found]) => found));
       if (call.tool === "eval")
         named.push(...[...source.matchAll(OPENED)].map((hit) => hit[2] ?? ""));
@@ -4455,7 +4522,8 @@ function unscored(
   }
   return undefined;
 }
-/** Commands that print or copy a file they name: the ones a `bash` call reads a file with. */
+/** Commands that print or copy a file they name: the ones a `bash` call reads a file with, named
+ * bare or by a path to them (`/bin/cat`). */
 const READERS: Record<string, true> = Object.fromEntries(
   "cat head tail sed awk less more bat nl view grep rg cp diff"
     .split(" ")
@@ -4533,20 +4601,6 @@ export function transcriptFiles(runDir: string): string[] {
         )
       : [];
   return under(path.join(runDir, "sessions"));
-}
-/** Every entry of the transcript `file` that parses, in order. A line that is no JSON or no
- * entry is passed over, as a transcript an agent was stopped in the middle of writing ends. */
-export function transcriptEntries(file: string): SessionEntry[] {
-  return lines(file).flatMap((line) => {
-    let entry: unknown;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      return [];
-    }
-    const parsed = SessionEntry.safeParse(entry);
-    return parsed.success ? [parsed.data] : [];
-  });
 }
 function runCalls(runDir: string): RunCall[] {
   const contentStrings = (value: unknown): string[] =>

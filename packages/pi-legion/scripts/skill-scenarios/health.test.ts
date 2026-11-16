@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { ANSWERS, labelOf, SKIPS, scenarioOf } from "./completion-answers";
-import { offWorldReach, serviceProvenance, unfinished } from "./health";
+import { mounted, offWorldReach, serviceProvenance, unfinished, writtenBy } from "./health";
 
 /** The world of a run whose pane names only the loopback. */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -482,6 +482,94 @@ describe("health: rule 13, off-world network, a command after an assignment whos
   ])
     test(`\`${command}\` reaches no host`, () => {
       expect(reach(bash(command))).toBeUndefined();
+    });
+});
+
+// Each reader of a command's words reads them through score.ts's one shell-word reader
+// (SHELL_WORD, `shellTokens`): its first word, its words, its prefix assignments, its
+// redirections' targets, a text flag's value and a list a subprocess runs. Catches, one row each:
+// a quoted first word read up to its first blank (`"/opt/my tools/ssh"` named `my`), or read with
+// its quotes (`'/usr/bin/ssh'` named `ssh'`); env's `-i` read with no options after it; a
+// backslash-escaped blank ending a word; a word quoted in part read with its quotes; a `$'…'`
+// assignment read with its quotes; a redirection's quoted target read up to its first blank, the
+// rest of it read as words; a quoted file a here-document is written to read up to its first
+// blank; a text flag's or a field's value read up to an escaped quote, the rest of it read as a
+// reach; and a subprocess list's word holding a blank read as two.
+describe("health: rule 13, off-world network, words read as the shell reads them", () => {
+  const remote = "git@github.com:cybermonklabs/legion.git";
+  for (const [command, host, named] of [
+    ['"/opt/my tools/ssh" -T git@github.com', "github.com", "git@github.com"],
+    ["'/usr/bin/ssh' -T git@github.com", "github.com", "git@github.com"],
+    [`env -i -u HOME git clone ${remote} src`, "github.com", remote],
+    [
+      "curl -sS 'api.github.com'/repos/cybermonklabs/legion",
+      "api.github.com",
+      "api.github.com/repos/cybermonklabs/legion",
+    ],
+  ])
+    test(`\`${command}\` is off-world`, () => {
+      expect(reach(bash(command))).toBe(offWorld(host, named));
+    });
+
+  test("a gh whose GH_HOST is given in ANSI-C quotes, an escape among them, reaches that host", () => {
+    expect(reach(bash("GH_HOST=$'ghe\\x2eexample.com' gh api user"))).toBe(
+      `off-world network: a bash call in ${SESSION} reaches ghe.example.com (GH_HOST=ghe.example.com), no host the run's gh serves (github.com, 127.0.0.1, localhost, ::1)`
+    );
+  });
+
+  for (const command of [
+    "curl -sS http://127.0.0.1:9/x -H X-Note:\\ see\\ example.com/",
+    "curl -sS http://127.0.0.1:9/x > 'notes for example.com'",
+    `gh pr comment 1 --body "a \\"b c\\" ${LINK}"`,
+    `gh api repos/o/r/issues/1/comments -f body="a \\"b c\\" ${LINK}"`,
+  ])
+    test(`\`${command}\` reaches no host`, () => {
+      expect(reach(bash(command))).toBeUndefined();
+    });
+
+  test("a file a here-document is written to under a quoted name, then run, is off-world", () => {
+    expect(
+      reach(
+        bash(`cat > '/run/ws/get it.sh' <<'EOF'\ncurl -sS ${API}\nEOF`),
+        bash("bash /run/ws/get\\ it.sh")
+      )
+    ).toContain("in /run/ws/get it.sh, which a bash call");
+  });
+
+  test("a written file a subprocess list runs by a name holding a blank is off-world", () => {
+    expect(
+      reach(write("/run/ws/my fetch.py", FETCH_PY), [
+        "eval",
+        {
+          language: "py",
+          code: 'import subprocess\nsubprocess.run(["python3", "/run/ws/my fetch.py"])',
+        },
+      ])
+    ).toContain("in /run/ws/my fetch.py, which a write call");
+  });
+
+  // An assignment's value keeps an unquoted `$(` in it, so a command substitution there is read
+  // where it starts and runs the written file.
+  test("a written file a command substitution in an assignment's value runs is off-world", () => {
+    expect(reach(write("fetch.py", FETCH_PY), bash("out=$(python3 fetch.py)"))).toContain(
+      "in fetch.py, which a write call"
+    );
+  });
+});
+
+// The paths a `bash` command writes, read through the same shell-word reader. Catches: a write
+// after an assignment whose value holds a space read as no command's (AT_COMMAND's `\S*`); a
+// writer's operand with an escaped blank read as two words; a quoted redirection target read as
+// none; and a `>` inside a double-quoted word that holds an escaped quote read as a redirection.
+describe("health: the paths a bash command writes, words read as the shell reads them", () => {
+  for (const [command, paths] of [
+    ["NOTE='two words' cp a.txt /var/tmp/b.md", ["/var/tmp/b.md"]],
+    ["cp a.txt /var/tmp/my\\ notes.md", ["/var/tmp/my notes.md"]],
+    ["echo x > '/var/tmp/my notes.md'", ["/var/tmp/my notes.md"]],
+    ['echo "a \\" > /var/tmp/x"', []],
+  ] as const)
+    test(`\`${command}\` writes ${paths.join(", ") || "nothing"}`, () => {
+      expect(writtenBy("bash", { command })).toEqual([...paths]);
     });
 });
 
@@ -1103,5 +1191,57 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
         )
       )
     ).toBeUndefined();
+  });
+});
+
+// A path a tool call names under /tmp, read as rig.sh's private_world mounts it from the run's
+// world (world_paths, which health reads through `rig.sh world`): the run's own <run>/tmp, bound
+// over the machine's, but under a path the world shows at or under /tmp, which the namespace
+// binds back onto its own path. Catches: a write into a run's own /tmp read as one into the
+// machine's, which the tester measured on 2026-11-16 in 2 of 8 runs and in 4 of 8 at c273084d
+// (/tmp/body.md, /tmp/reply-body.txt, /tmp/lweval1-approve.json, /tmp/lweval1-body.md, each a
+// run's own); and, on a host whose work directory is under /tmp (no TMPDIR), a path the world
+// shows there read as the run's own, or the run's own directory read as the machine's /tmp.
+describe("health: a path under /tmp, as the run's namespace mounts it", () => {
+  test("a path under /tmp is the run's own <run>/tmp, and every other path is itself", () => {
+    const pod = { own: RUN, shown: [RUN, "/work/profiles/head", "/work/profiles/head/key"] };
+    expect(mounted(pod, "/tmp/body.md")).toBe(`${RUN}/tmp/body.md`);
+    expect(mounted(pod, "/tmp/reply/x.json")).toBe(`${RUN}/tmp/reply/x.json`);
+    expect(mounted(pod, "/tmp")).toBe(`${RUN}/tmp`);
+    for (const named of [
+      "/legion/tmp/placeholder",
+      "/tmpfile",
+      `${RUN}/tmp/body.md`,
+      "/work/profiles/head/key/minted",
+    ])
+      expect(mounted(pod, named)).toBe(named);
+  });
+
+  test("a path the world shows under /tmp is that path, and the rest of /tmp the run's own", () => {
+    const work = "/tmp/skill-scenarios";
+    const own = `${work}/runs/threads-closed-text-fixes-head-1`;
+    const head = `${work}/profiles/head`;
+    const world = { own, shown: [own, head, `${head}/key`, `${work}/services`, "/usr/bin"] };
+    for (const named of [
+      own,
+      `${own}/ws/README.md`,
+      `${head}/key/minted`,
+      `${work}/services/dispatch-token`,
+    ])
+      expect(mounted(world, named)).toBe(named);
+    expect(mounted(world, "/tmp/body.md")).toBe(`${own}/tmp/body.md`);
+    // What the world hides under /tmp is not there: a sibling's directory, the other label's
+    // profile and a path whose name only starts as a shown one's does are names in the run's own
+    // /tmp.
+    for (const named of [
+      `${work}/runs/threads-closed-text-fixes-base-1/out.txt`,
+      `${work}/profiles/base/built-from`,
+      `${head}less/notes.md`,
+    ])
+      expect(mounted(world, named)).toBe(`${own}${named}`);
+  });
+
+  test("a world that shows /tmp itself keeps the machine's", () => {
+    expect(mounted({ own: RUN, shown: [RUN, "/tmp"] }, "/tmp/body.md")).toBe("/tmp/body.md");
   });
 });

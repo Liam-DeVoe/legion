@@ -15,7 +15,8 @@ import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { checkouts, claimBootOpening, specWork, statesDesign, TestHandoff } from "./score";
+import { claimBootOpening } from "./boot-refusal";
+import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 import { bundled, spawnChecked } from "./test-programs";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -297,6 +298,25 @@ run("tester-proof-cross-2", { "out.txt": "exit=0\n", "world.json": world }, [
   ...header,
   turn[0],
   bash("NOTE='two words' cat /checkouts/base/skills/legion-worker/SKILL.md"),
+]);
+// The same read, run by `env -i` with an assignment of its own (env(1): `env [-i] [NAME=value…]
+// command`).
+run("tester-proof-cross-3", { "out.txt": "exit=0\n", "world.json": world }, [
+  ...header,
+  turn[0],
+  bash("env -i NOTE='two words' cat /checkouts/base/skills/legion-worker/SKILL.md"),
+]);
+// The same read by a reader whose name is quoted.
+run("tester-proof-cross-4", { "out.txt": "exit=0\n", "world.json": world }, [
+  ...header,
+  turn[0],
+  bash(`"cat" /checkouts/base/skills/legion-worker/SKILL.md`),
+]);
+// The same read by a reader named by its path.
+run("tester-proof-cross-5", { "out.txt": "exit=0\n", "world.json": world }, [
+  ...header,
+  turn[0],
+  bash("/bin/cat /checkouts/base/skills/legion-worker/SKILL.md"),
 ]);
 // Read the rig's own harness under the head label's checkout: rig.sh puts the stand-ins and the
 // panes of the checkout it runs from on every label's PATH, so the `gh` a base run is given is a
@@ -1851,6 +1871,62 @@ specRun("spec-writing-head-31", {
     finish
   ),
 });
+// The same, the `echo` named in quotes, which runs the same echo.
+specRun("spec-writing-head-143", {
+  transcript: conversation(
+    routedRead,
+    checkOf("c1"),
+    specEdit("w1"),
+    sh(
+      "x10",
+      'cd /rig/cwd\n"echo" "=== ask ==="; dispatch ask --issue LWEVAL-7 2>&1 | head -5',
+      0,
+      "=== ask ===\ndispatch ask was not called: 1 problem\n- --question is required"
+    ),
+    readOf("r3", "skill://dispatch"),
+    askStep,
+    checkOf("c2"),
+    specEdit("w2"),
+    finish
+  ),
+});
+// The same, the `echo` named by its path, which runs the same echo.
+specRun("spec-writing-head-144", {
+  transcript: conversation(
+    routedRead,
+    checkOf("c1"),
+    specEdit("w1"),
+    sh(
+      "x10",
+      'cd /rig/cwd\n/bin/echo "=== ask ==="; dispatch ask --issue LWEVAL-7 2>&1 | head -5',
+      0,
+      "=== ask ===\ndispatch ask was not called: 1 problem\n- --question is required"
+    ),
+    readOf("r3", "skill://dispatch"),
+    askStep,
+    checkOf("c2"),
+    specEdit("w2"),
+    finish
+  ),
+});
+// A spec write by the CLI named by its path: the same `dispatch` command, and it counts.
+specRun("spec-writing-head-145", {
+  transcript: conversation(
+    routedRead,
+    checkOf("c1"),
+    specEdit("w1"),
+    askStep,
+    checkOf("c2"),
+    sh(
+      "w2",
+      "/usr/local/bin/dispatch doc-edit --issue LWEVAL-7 --artifact spec --ops-json-file ops.json",
+      0,
+      "Applied 1 ops (version 3)\nDocument token: sha256:abc",
+      [{ tool: "dispatch_doc_edit" }]
+    ),
+    finish
+  ),
+});
 // checked: a check counts for a spec write only when its task call and its completed report both
 // came after the write before it and before this write, in transcript order. Each run below
 // changes the first check of `followed` (c1, before write w1).
@@ -2618,6 +2694,22 @@ specRun("spec-writing-head-91", {
     finish
   ),
 });
+// Run 90's write, the list naming the CLI by its path.
+specRun("spec-writing-head-146", {
+  transcript: conversation(
+    routedRead,
+    checkOf("c1"),
+    evalCell(
+      "x20",
+      pythonWrite.replace('["dispatch"', '["/usr/local/bin/dispatch"'),
+      pythonApplied
+    ),
+    askStep,
+    checkOf("c2"),
+    specEdit("w2"),
+    finish
+  ),
+});
 // A run that read a file of the operator's home: nothing stops an agent reading it, so the run may
 // have drawn on it. Run 93 names only a URL, an API route, /tmp and relative paths.
 specRun("spec-writing-head-92", {
@@ -3109,6 +3201,44 @@ specRun("spec-writing-head-22", {
       0,
       "Applied 1 ops (version 8)"
     ),
+    finish
+  ),
+});
+// A spec write after an assignment whose value holds a space: the `dispatch` command is the one
+// the shell runs, and it counts.
+specRun("spec-writing-head-141", {
+  transcript: conversation(
+    routedRead,
+    checkOf("c1"),
+    specEdit("w1"),
+    askStep,
+    checkOf("c2"),
+    sh(
+      "w2",
+      "NOTE='two words' dispatch doc-edit --issue LWEVAL-7 --artifact spec --ops-json-file ops.json",
+      0,
+      "Applied 1 ops (version 3)\nDocument token: sha256:abc",
+      [{ tool: "dispatch_doc_edit" }]
+    ),
+    finish
+  ),
+});
+// An edit of another issue's spec whose ops quote `--issue LWEVAL-7` inside a quoted word: that
+// text is the word's, no flag, and the edit is no write of the run's spec.
+specRun("spec-writing-head-142", {
+  transcript: conversation(
+    routedRead,
+    checkOf("c1"),
+    specEdit("w1"),
+    sh(
+      "n1",
+      `dispatch doc-edit --ops-json '[{"op":"insert","after":"end","markdown":"see --issue LWEVAL-7 here"}]' --issue WS-1 --artifact spec`,
+      0,
+      applied
+    ),
+    askStep,
+    checkOf("c2"),
+    specEdit("w2"),
     finish
   ),
 });
@@ -8824,6 +8954,31 @@ test("a tool call reading the other label's checkout after an assignment whose v
   );
 });
 
+// Catches: a command env runs read as env's own words (AT_COMMAND read `env` and took its next
+// word, `-i`, as the command), so a `cat` of the other label's skill after `env -i NAME=value` is
+// no reader's command and the run is scored.
+test("a tool call reading the other label's checkout through `env -i` and an assignment of its own is a rig error", () => {
+  expect(out).toContain(
+    "tester-proof-cross-3\trig error: a bash call reads base's checkout: /checkouts/base/skills/legion-worker/SKILL.md"
+  );
+});
+
+// Catches: a command's first word compared with its quotes on (`"cat"` is no reader the
+// isolation check knows), so a `cat` of the other label's skill by a quoted name is scored.
+test("a tool call reading the other label's checkout by a quoted reader's name is a rig error", () => {
+  expect(out).toContain(
+    "tester-proof-cross-4\trig error: a bash call reads base's checkout: /checkouts/base/skills/legion-worker/SKILL.md"
+  );
+});
+
+// Catches: a reader compared by its bare name, so a `cat` of the other label's skill run as
+// `/bin/cat` is no reader's command and the run is scored.
+test("a tool call reading the other label's checkout by a reader named by its path is a rig error", () => {
+  expect(out).toContain(
+    "tester-proof-cross-5\trig error: a bash call reads base's checkout: /checkouts/base/skills/legion-worker/SKILL.md"
+  );
+});
+
 // Catches: a scorer that reads the rig's own harness as another label's text. The rig runs every
 // label out of one checkout's harness, so a base run that inspects the `gh` on its PATH reads a
 // file under the head label's checkout, and a scorer that refuses it leaves the ablate arm of a
@@ -9310,6 +9465,38 @@ test("checked: only an accepted write of the run's own primary spec is a spec wr
   expect(rowOf("spec-writing-head-22")).toContain(" writes=8 ");
 });
 
+// Catches: a `dispatch` command after an assignment whose value holds a space read as no
+// `dispatch` command (AT_COMMAND took the value as `\S*`, so `words'` was the command), so the
+// write it made is no write the transcript shows, and the version Dispatch recorded for it is
+// flagged as one no shown write made (`writes_seen=`).
+test("checked: a spec write after an assignment whose value holds a space is a spec write", () => {
+  expect(scoresOf("spec-writing-head-141")).toEqual(allPass);
+  const row = rowOf("spec-writing-head-141");
+  expect(row).toContain(" writes=2 ");
+  expect(row).not.toContain("writes_seen=");
+});
+
+// Catches: a `dispatch` command's flag found anywhere in its text, inside another flag's quoted
+// value too, so an edit of another issue whose ops quote `--issue LWEVAL-7` counts as a write of
+// the run's spec, one more than the versions Dispatch recorded.
+test("checked: a flag inside another flag's quoted value is no flag", () => {
+  expect(scoresOf("spec-writing-head-142")).toEqual(allPass);
+  const row = rowOf("spec-writing-head-142");
+  expect(row).toContain(" writes=2 ");
+  expect(row).not.toContain("writes_seen=");
+});
+
+// Catches: a `dispatch` command read by its bare name alone, so a write by the CLI named by its
+// path, in a shell or in a Python list, is no write the transcript shows.
+test("checked: a spec write by the CLI named by its path is a spec write", () => {
+  for (const run of ["spec-writing-head-145", "spec-writing-head-146"]) {
+    expect(scoresOf(run)).toEqual(allPass);
+    const row = rowOf(run);
+    expect(row).toContain(" writes=2 ");
+    expect(row).not.toContain("writes_seen=");
+  }
+});
+
 test("checked: two spec writes in one call are two writes, the second unchecked", () => {
   expect(scoresOf("spec-writing-head-27")).toEqual({ ...allPass, checked: "false" });
   const row = rowOf("spec-writing-head-27");
@@ -9462,6 +9649,20 @@ test("refusals: each dispatch command of a call is scored in order, with the rea
   // The refusal after an echo's label is the dispatch command's own output.
   expect(scoresOf("spec-writing-head-31")).toEqual({ ...allPass, refusals: "false" });
   expect(rowOf("spec-writing-head-31")).toContain("refused call: dispatch ask --issue LWEVAL-7");
+});
+
+// Catches: a command's first word compared with its quotes on, so a quoted `"echo"` prints no
+// label the output is read past, and the refusal after it is no command's.
+test("refusals: the label a quoted reader's name prints is read as an echo's", () => {
+  expect(scoresOf("spec-writing-head-143")).toEqual({ ...allPass, refusals: "false" });
+  expect(rowOf("spec-writing-head-143")).toContain("refused call: dispatch ask --issue LWEVAL-7");
+});
+
+// Catches: a command's first word compared by its bare name, so `/bin/echo` prints no label the
+// output is read past, and the refusal after it is no command's.
+test("refusals: the label an echo named by its path prints is read as an echo's", () => {
+  expect(scoresOf("spec-writing-head-144")).toEqual({ ...allPass, refusals: "false" });
+  expect(rowOf("spec-writing-head-144")).toContain("refused call: dispatch ask --issue LWEVAL-7");
 });
 
 test("refusals: a refusal line a successful command's output quotes, or a cat prints, is no refusal", () => {

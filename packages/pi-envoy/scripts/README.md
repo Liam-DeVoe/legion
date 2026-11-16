@@ -428,13 +428,15 @@ opening is read out of `packages/pi-shared/src/legion-claim-core.ts` in the chec
 `built-from` names (this checkout's `claim boot failed at <step> …`, main `ff2a10ef`'s `claim
 boot failed after claims/register registered …`). Round 23 lost
 `reviewer-text-findings-text-only-base-1` so, to the Envoy listener's refusal of a session that
-held no consumer. `health.ts --boot-refusal` decides it from what the run recorded:
-the stand-in's lines of that role since the launch began, the pane's `out.txt`, and the agent's
-transcripts, which must hold no turn, no model call and no tool call. The first attempt is kept
-whole under `<run>/boot-1/<role>/` (its `out.txt`, its `sessions/` and the stand-in's lines of
-it), and the second attempt's record stands where any agent's does, so `rig.sh score` and
-`rig.sh health` read the run on it. The stand-in, its boot token and the agent's HOME carry over,
-as a pod's do. The rig relaunches once, where the daemon's launch budget relaunches an agent up to
+held no consumer. `health.ts --boot-refusal` decides it from what the run recorded, answered by
+`boot-refusal.ts`, the one reader of a claim boot refusal, which loads neither `health.ts` nor
+`score.ts`: the stand-in's lines of that role since the launch began, the pane's `out.txt`, and
+the agent's transcripts, which must hold no turn, no model call and no tool call. The first
+attempt is kept whole under `<run>/boot-1/<role>/` (its `out.txt`, its `sessions/` and the
+stand-in's lines of it), and the second attempt's record stands where any agent's does, so
+`rig.sh score` and `rig.sh health` read the run on it. The stand-in, its boot token and the
+agent's HOME carry over, as a pod's do. The rig relaunches once, where the daemon's launch budget
+relaunches an agent up to
 its launch failure limit: a second refusal stands, and one after the agent's first turn is never
 relaunched, since a relaunch would not take that turn back. Each attempt is on the run's boot
 record, `<run>/booted`, before it starts: worker_boot writes `boot <role>` before the role's daemon
@@ -480,9 +482,10 @@ unless `health.ts`'s `DISPATCH_DECLARED` declares that answer for the scenario a
 before its agent starts; `HANDOFF_NOT_FOUND` for the `plan` handoff, which no world records, is
 declared for every role, and for the `review` handoff for reviewer-text-findings' reviewer; a run
 with no such log is unhealthy); no tool call names a path under another run's directory;
-no tool call reads a path another of the runs given wrote last before the read, or a `/tmp` entry
-that was there before the run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp`
-entries taken before the
+no tool call reads a path another of the runs given wrote last before the read, or, for a run from
+before the rig gave each run a namespace (one with no `<run>/namespace.txt`), a `/tmp` entry that
+was there before the run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp` entries
+taken before the
 batch); no tool call names a path its world hides (by `rig.sh world`: under the scratch root, the
 issue workspaces, the work directory or any label's checkout, the other runs' given included)
 outside its own directory, `/tmp` and what its world shows again; no tool call reads another
@@ -506,13 +509,23 @@ answers as it answers the bare call, and the loopback; and a `gh` named by a pat
 whatever it names. A wrapper (`sudo`, `env`, `timeout`, `nice`, `nohup`, `xargs`, `command`,
 `exec`, `time`, `sh -c`) reaches nothing of its own: the command it runs is read as if it stood
 alone. A run's own writes outside its directory are recorded and are no verdict on
-it. Give a batch's runs in one call: given one run, `health` sees no other run's writes. It reads
+it: `health: wrote outside its own directory, HOME and TMPDIR (no verdict): <n> of <m> runs` goes
+on, where <n> is not 0, with each such run's name and the paths it wrote
+(`: <run> (<path>, <path>, <path> and <k> more); <run> (…)`, the first three paths of a run and a
+count of the rest), so the line says which runs they were and where each wrote. A path under
+`/tmp` is read as the run's namespace mounts it, by the same `rig.sh world`: it is the run's own
+`<run>/tmp`, and a write to it is none outside the run, unless the run's world shows a path there
+(its own directory, its label's profile and the batch's services, on a host whose work directory
+is under `/tmp`), where it is that path. The two rules that read another run read `/tmp` the same
+way, so a run in a namespace is held to nothing another run's `/tmp`, or the machine's, held; a
+run with no `<run>/namespace.txt` wrote and read the machine's `/tmp`, and is read so.
+Give a batch's runs in one call: given one run, `health` sees no other run's writes. It reads
 every transcript under each run's `sessions/`, every role's and every subagent's. It scores nothing
 and writes nothing: it prints `<run>  healthy` or `<run>  unhealthy: <reason>` for each run, naming
 the evidence, then how many runs each rule flags, then how often the rig relaunched an agent at
 its boot, by label (`health: boot relaunches, <label>: <n> in <r> of <m> runs`: <n> relaunches,
-each a first attempt kept under `<run>/boot-1/<role>/`, in <r> of the label's <m> runs), then a
-count. It exits 0 when every run is
+each a first attempt kept under `<run>/boot-1/<role>/`, in <r> of the label's <m> runs), then the
+runs that wrote outside their own directory, then a count. It exits 0 when every run is
 healthy, 1 when one is not, and 2, printing no run, for no argument or for a path that is not a
 run of a scenario and label the table names. Start a batch only once a run of each label in each
 scenario case is healthy.

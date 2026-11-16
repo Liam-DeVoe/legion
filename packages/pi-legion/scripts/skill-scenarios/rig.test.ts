@@ -2651,11 +2651,15 @@ describe("health", () => {
   type Step = { tool: string; args: object; result?: string; at?: string };
   /** A run named `name` as a worker batch leaves it: its pane file recording it under `ran`, the
    * directory its transcripts' paths are written under (a run read from the archive or from a
-   * copy is read under another), with `pane`'s lines after its own; the transcript `steps` under
-   * `sessions/<agent>` (the run's own for ""), its gh calls, the world's routes and repository, a
-   * reviewer completion taken, its built-from and services-from naming `checkout` (RUN_CHECKOUT
-   * unless one is given), and, given `before`, the shared scratch's entries when it started
-   * (rig.sh's scratch_before). */
+   * copy is read under another), <work>/runs/<name> for the work directory `work` (/recorded/work
+   * unless one is given), with `pane`'s lines after its own; the world launch wrote for the
+   * namespace its agents ran in (namespace.txt), which a run from before the rig made one holds
+   * none of (`namespace` false); the transcript `steps` under `sessions/<agent>` (the run's own
+   * for ""), its gh calls, the world's routes and repository, a reviewer completion taken, its
+   * built-from and services-from naming `checkout` (RUN_CHECKOUT unless one is given), and, given
+   * `before`, the shared scratch's entries when it started (rig.sh's scratch_before) and, given
+   * `created`, the entries a serial run's exit found had appeared there, each with its time
+   * (rig.sh's scratch_clean). */
   function worldRun(
     name: string,
     {
@@ -2663,19 +2667,25 @@ describe("health", () => {
       agent = "",
       calls = [],
       before,
+      created,
       checkout = RUN_CHECKOUT,
       pane = [],
+      work = "/recorded/work",
+      namespace = true,
     }: {
       steps?: Step[];
       agent?: string;
       calls?: object[];
       before?: string[];
+      created?: [at: string, entry: string][];
       checkout?: string;
       pane?: string[];
+      work?: string;
+      namespace?: boolean;
     }
   ) {
     const dir = run(name, [[complete(200, undefined, "reviewer")]], { checkout });
-    const ran = `/recorded/work/runs/${name}`;
+    const ran = `${work}/runs/${name}`;
     writeFileSync(
       path.join(dir, "pane.env"),
       [
@@ -2687,8 +2697,14 @@ describe("health", () => {
         "",
       ].join("\n")
     );
+    if (namespace) writeFileSync(path.join(dir, "namespace.txt"), `rw ${ran}\n`);
     if (before !== undefined)
       writeFileSync(path.join(dir, "scratch-before.txt"), before.map((one) => `${one}\n`).join(""));
+    if (created !== undefined)
+      writeFileSync(
+        path.join(dir, "scratch-created.txt"),
+        created.map(([at, entry]) => `${Date.parse(at) / 1000}.0000000000 ${entry}\n`).join("")
+      );
     const sessions = path.join(dir, "sessions", agent);
     mkdirSync(sessions, { recursive: true });
     const entries = [
@@ -3146,15 +3162,19 @@ describe("health", () => {
     expect(stdout).toContain("health: another run: 2 of 2 runs\n");
   });
 
+  // Four runs from before the rig gave each run a namespace (no namespace.txt, as the 2026-11-14
+  // batch left them), whose /tmp was the machine's.
   // Catches: a run's own write outside its directory read as a verdict on it, which voids the run
   // that wrote a file rather than the one a file reached; a later run's read of an earlier run's
   // write let through, here placed only in a subagent's transcript, one level under a later
   // half's; reads judged in the order the runs were listed rather than by their times, which reads
   // the run that read the path before anyone wrote it as contaminated; a read of an entry the
-  // shared scratch held when the run started let through; and a write that climbs out of the run
-  // read as the run's own.
+  // shared scratch held when the run started let through; a write that climbs out of the run
+  // read as the run's own; and a line of the runs that wrote outside their directory that does
+  // not say which run it was, or where it wrote.
   test("a read of another run's write, or of scratch from before the run, is unhealthy; a run's own writes are not", () => {
     const writer = worldRun("threads-closed-text-fixes-head-5", {
+      namespace: false,
       before: [],
       steps: [
         {
@@ -3180,6 +3200,7 @@ describe("health", () => {
       ],
     }).dir;
     const reader = worldRun("threads-closed-code-defect-head-5", {
+      namespace: false,
       before: ["/tmp/LWEVAL-1-review.json"],
       agent: "reviewer/2026-11-14T02-00-00-000Z_s2",
       steps: [
@@ -3191,6 +3212,7 @@ describe("health", () => {
       ],
     }).dir;
     const earlier = worldRun("threads-closed-code-defect-head-4", {
+      namespace: false,
       before: [],
       steps: [
         {
@@ -3201,6 +3223,7 @@ describe("health", () => {
       ],
     }).dir;
     const stale = worldRun("threads-closed-code-defect-head-3", {
+      namespace: false,
       before: ["/tmp/pre-batch.json"],
       steps: [
         {
@@ -3222,8 +3245,150 @@ describe("health", () => {
     );
     expect(stdout).toContain("health: another run's write: 2 of 4 runs\n");
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-text-fixes-head-5 (/tmp/LWEVAL-1-review.json, /tmp/placeholder)\n"
     );
+  });
+
+  // Catches: a write into a run's own /tmp counted as one outside its directory. In its namespace
+  // /tmp is <run>/tmp (rig.sh's private_world), and on 2026-11-16 the tester measured this line at
+  // 2 of 8 runs and at 4 of 8 where every write behind both counts was such a one (/tmp/body.md,
+  // /tmp/reply-body.txt, /tmp/lweval1-approve.json, /tmp/lweval1-body.md). And the other way: a
+  // write that did leave the run, to a path its world shows read-write and the runs of its label
+  // share or to one outside its world, left out; a line that gives the count alone, so which runs
+  // wrote, and where, is read out of a copy of them; and one that names a path once for each
+  // write of it, or every path of a run that wrote many.
+  test("a write into a run's own /tmp is none outside its directory, and the line names each run that wrote outside with its paths", () => {
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const write = (target: string): Step => ({
+      tool: "write",
+      args: { path: target, content: "{}" },
+    });
+    const own = worldRun("threads-closed-text-fixes-head-11", {
+      steps: [
+        bash("cat > /tmp/body.md <<'EOF'\nFixed in 0123456.\nEOF"),
+        write("/tmp/x.json"),
+        bash("gh api -X POST repos/example/widgets/pulls/1001/reviews --input /tmp/x.json"),
+        write(
+          "/recorded/work/runs/threads-closed-text-fixes-head-11/ws/../../../../../tmp/placeholder"
+        ),
+      ],
+    }).dir;
+    const shared = worldRun("threads-closed-text-fixes-head-12", {
+      steps: [bash("echo call >> /recorded/work/profiles/head/key/calls")],
+    }).dir;
+    const climbed = worldRun("threads-closed-code-defect-head-11", {
+      steps: [
+        write("/legion/tmp/LWEVAL-1-review.json"),
+        bash(
+          "cp /legion/tmp/LWEVAL-1-review.json /legion/tmp/copy.json && touch /legion/tmp/a /legion/tmp/b"
+        ),
+        write("/legion/tmp/LWEVAL-1-review.json"),
+      ],
+    }).dir;
+    const runs = [own, shared, climbed];
+    const { code, stdout } = health(...runs);
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-text-fixes-head-11  healthy",
+      "threads-closed-text-fixes-head-12  healthy",
+      "threads-closed-code-defect-head-11  healthy",
+    ]);
+    expect(stdout).toContain(
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 2 of 3 runs: threads-closed-text-fixes-head-12 (/recorded/work/profiles/head/key/calls); threads-closed-code-defect-head-11 (/legion/tmp/LWEVAL-1-review.json, /legion/tmp/copy.json, /legion/tmp/a and 1 more)\n"
+    );
+    expect(code).toBe(0);
+  });
+
+  // A host with no TMPDIR, whose work directory is under /tmp: the namespace binds the run's own
+  // directory and every other path its world shows there back over the run's /tmp.
+  // Catches: a path the world shows under /tmp read as one of the run's own /tmp, which hides a
+  // write to the model route's record, a path the runs of its label share; and the run's own
+  // directory, or its own /tmp, read as the machine's /tmp, whose entry of the work directory
+  // was there when the run started, which voids every run of such a host.
+  test("under a work directory in /tmp, a run's own directory and what its world shows there are those paths, and the rest its own /tmp", () => {
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const work = "/tmp/recorded-work";
+    const name = "threads-closed-text-fixes-head-13";
+    const ran = `${work}/runs/${name}`;
+    const { dir } = worldRun(name, {
+      work,
+      before: [work, "/tmp/body.md"],
+      steps: [
+        bash(`cat ${ran}/ws/README.md ${work}/profiles/head/built-from > /tmp/body.md`),
+        bash(`cat /tmp/body.md > ${ran}/ws/notes.md`),
+        bash(`echo call >> ${work}/profiles/head/key/calls`),
+      ],
+    });
+    const { code, stdout } = health(dir);
+    expect(verdict(stdout, dir)).toBe(`${name}  healthy`);
+    expect(stdout).toContain(
+      `health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 1 runs: ${name} (${work}/profiles/head/key/calls)\n`
+    );
+    expect(code).toBe(0);
+  });
+
+  // Catches: a run in a namespace held to another run's /tmp or to the machine's. Each run's /tmp
+  // is its own <run>/tmp, so a file of one name in two runs' /tmp is two files: the later run's
+  // read of it read as a read of the earlier run's write; the same read held to an entry of that
+  // name a serial run's exit found in the machine's /tmp (scratch-created.txt), or to one the
+  // machine's /tmp held when the run started (scratch-before.txt). And the other way: a path both
+  // runs do reach, here one outside every run, no longer read as another run's write.
+  test("a run in a namespace reads its own /tmp, whatever another run's or the machine's held, and a path two runs reach is still another run's write", () => {
+    const at = (time: string, step: Step): Step => ({ ...step, at: `2026-11-14T${time}.000Z` });
+    const write = (target: string): Step => ({
+      tool: "write",
+      args: { path: target, content: "{}" },
+    });
+    const read = (target: string): Step => ({ tool: "bash", args: { command: `cat ${target}` } });
+    const writer = worldRun("threads-closed-text-fixes-head-14", {
+      created: [["2026-11-14T01:30:00.000Z", "/tmp/lweval1-body.md"]],
+      steps: [
+        at("01:00:00", write("/tmp/LWEVAL-1-review.json")),
+        at("01:00:00", write("/legion/tmp/LWEVAL-1-review.json")),
+      ],
+    }).dir;
+    const reader = worldRun("threads-closed-code-defect-head-14", {
+      before: ["/tmp/LWEVAL-1-review.json", "/tmp/lweval1-body.md"],
+      steps: [at("02:00:00", read("/tmp/LWEVAL-1-review.json /tmp/lweval1-body.md"))],
+    }).dir;
+    const climber = worldRun("threads-closed-code-defect-head-15", {
+      steps: [at("02:00:00", read("/legion/tmp/LWEVAL-1-review.json"))],
+    }).dir;
+    const { code, stdout } = health(reader, climber, writer);
+    const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
+    expect([reader, climber, writer].map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-code-defect-head-14  healthy",
+      `threads-closed-code-defect-head-15  unhealthy: another run's write: a bash call in ${session} at 2026-11-14T02:00:00.000Z reads /legion/tmp/LWEVAL-1-review.json, which threads-closed-text-fixes-head-14 wrote at 2026-11-14T01:00:00.000Z (write in ${session})`,
+      "threads-closed-text-fixes-head-14  healthy",
+    ]);
+    expect(stdout).toContain("health: another run's write: 1 of 3 runs\n");
+    expect(stdout).toContain(
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 3 runs: threads-closed-text-fixes-head-14 (/legion/tmp/LWEVAL-1-review.json, /tmp/lweval1-body.md)\n"
+    );
+    expect(code).toBe(1);
+  });
+
+  // Catches: a directory an agent names as a run in its own /tmp read as another run's. In a
+  // namespace no run is under /tmp but the run's own, so the name is a path of <run>/tmp; a run
+  // from before the rig made a namespace named the machine's /tmp, where another run may be.
+  test("a path named as a run under /tmp is the run's own scratch in a namespace, and another run's where the run had none", () => {
+    const steps: Step[] = [
+      { tool: "bash", args: { command: "mkdir -p /tmp/threads-closed-text-fixes-base-1/ws" } },
+    ];
+    const scratch = worldRun("threads-closed-text-fixes-head-16", { steps }).dir;
+    const machine = worldRun("threads-closed-text-fixes-head-17", {
+      namespace: false,
+      steps,
+    }).dir;
+    const { code, stdout } = health(scratch, machine);
+    expect(verdict(stdout, scratch)).toBe("threads-closed-text-fixes-head-16  healthy");
+    expect(verdict(stdout, machine)).toBe(
+      "threads-closed-text-fixes-head-17  unhealthy: another run: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names /tmp/threads-closed-text-fixes-base-1/ws, under /tmp/threads-closed-text-fixes-base-1"
+    );
+    expect(stdout).toContain("health: another run: 1 of 2 runs\n");
+    expect(stdout).toContain(
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 2 runs: threads-closed-text-fixes-head-17 (/tmp/threads-closed-text-fixes-base-1/ws)\n"
+    );
+    expect(code).toBe(1);
   });
 
   // Catches, one run each: a run that reads a path of the scratch root outside its world (another
