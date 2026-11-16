@@ -159,7 +159,13 @@ func (f *pullRequestFake) serve(t *testing.T, build string) string {
 		f.mu.Lock()
 		f.done[number] = append(f.done[number], handling{build: build, at: time.Now()})
 		f.mu.Unlock()
-		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A pull request","user":{"login":"octocat"},"labels":[],"merged_at":"2026-10-27T00:00:00Z","additions":1,"deletions":1}`, number)
+		// The pull request as GitHub holds it: merged, at the head publishMergedPullRequest names,
+		// with its update time. This tree writes its head row from this answer alone, and a row
+		// written from an answer that names its head and its update time is complete, stamped read
+		// and marked a read of GitHub, so no reconcile pass of either build reads it again.
+		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A pull request","user":{"login":"octocat"},"labels":[],"state":"closed","merged":true,`+
+			`"merged_at":"2026-10-27T00:00:00Z","updated_at":"2026-10-27T00:00:00Z","additions":1,"deletions":1,`+
+			`"head":{"ref":"a-branch","sha":"%040d","repo":{"full_name":"acme/deploy"}}}`, number, number)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
 		number, err := strconv.Atoi(r.PathValue("number"))
@@ -220,13 +226,13 @@ func seedPullRequestSettings(t *testing.T, builds *twoBuilds) {
 // the ack floor it found, so the messages it delivers again are exactly those above that floor.
 //
 // The payload names the head -- its repository, its branch and its commit -- as
-// publishMergedPullRequests does in multiprocess_test.go, so that handling it once settles the
-// pull request's head row for good. An envelope naming no head repository attributes nobody, and
-// the reconcile's merged arm re-reads every merged row credited to nobody once per rule version
-// (reconcilePullRequestHeads): that re-read fetches the pull request's commits, which is what
-// this row counts as a handling, so a message above the ack floor could be read a second time by
-// the taking build and pass as a replay. With the head named, the one repeat the row can see is a
-// NATS redelivery.
+// publishMergedPullRequests does in multiprocess_test.go, and the fake answers the same head, so
+// that handling it once settles the pull request's head row for good in either build: a build
+// before dispatch://INFRA-3992 writes the row from this envelope, and this tree from the fake's
+// answer. A reconcile pass would still read some of these pull requests again, through the call
+// this row counts as a handling: this tree's merged arm offers every merged row an older rule
+// judged once (delivery.AttributionRuleVersion), which is every row the previous build writes. So
+// the row runs neither build's delivery reconcile inside it (reconcileOutsideTheRow).
 func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number int, delivery string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(map[string]string{
@@ -257,6 +263,14 @@ func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number i
 	}
 	return ack.Sequence
 }
+
+// reconcileOutsideTheRow is the delivery reconcile period both builds of
+// TestTwoBuildsPassMessagesBothWays run with: a year. The loop's first tick is drawn uniformly
+// within one period (duty.RunJittered), so a pass lands inside the few minutes the row runs
+// about once in a hundred thousand runs, where the five minutes a deployment runs it at would
+// put one there in most of them. Both builds read the setting under the test hooks
+// (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL), which the harness turns on.
+const reconcileOutsideTheRow = 365 * 24 * time.Hour
 
 // boundLines is how many times p has logged that it bound durable.
 func boundLines(p *dispatchProcess, durable string) int {
@@ -493,6 +507,9 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	previousEnv, currentEnv := maps.Clone(app), maps.Clone(app)
 	previousEnv["DISPATCH_GITHUB_API_BASE"] = fake.serve(t, builds.previousName())
 	currentEnv["DISPATCH_GITHUB_API_BASE"] = fake.serve(t, builds.currentName())
+	for _, env := range []map[string]string{previousEnv, currentEnv} {
+		env["DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL"] = reconcileOutsideTheRow.String()
+	}
 
 	// This tree creates the durables, stamped with its generation, and holds them; the previous
 	// build starts beside it as a standby, which is a rolling release's first moment.

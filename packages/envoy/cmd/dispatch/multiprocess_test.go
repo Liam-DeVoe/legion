@@ -3053,9 +3053,12 @@ func (f *mergedPullRequestFake) serve(t *testing.T, process string) string {
 		f.done[number] = append(f.done[number], pullRequestHandling{process: process, at: time.Now()})
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		// The pull request as GitHub holds it, its head and its update time included: a head row
+		// this tree writes from an answer naming both is complete, stamped read and marked a read
+		// of GitHub, so the reconcile pass the row runs every ten seconds reads none of it again.
 		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A merged pull request","html_url":"https://github.com/acme/deploy/pull/%d",`+
 			`"user":{"login":%q},"labels":[{"name":"non-task"}],"state":"closed","merged":true,`+
-			`"created_at":"2026-10-26T00:00:00Z","merged_at":"2026-10-27T00:00:00Z","merge_commit_sha":"%040d",`+
+			`"created_at":"2026-10-26T00:00:00Z","merged_at":"2026-10-27T00:00:00Z","updated_at":"2026-10-27T00:00:00Z","merge_commit_sha":"%040d",`+
 			`"additions":1,"deletions":1,"head":{"ref":"a-branch","sha":"%040d","repo":{"full_name":"acme/deploy"}},`+
 			`"base":{"ref":"main"}}`, number, number, mergedPullRequestAuthor, number, number)
 	})
