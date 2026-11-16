@@ -6091,18 +6091,18 @@ jobs:
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
     # package takes at most half of it: internal/dispatch/docs, this job's one package,
-    # 1746.1 s (run 43737129665, job 132882140098, its envoy-go-race-docs-test-json artifact),
-    # 1746.1 / 30 = 58.21, so 59m, which it fills to 49.3 per cent (57m, the whole minute below
-    # it, it would fill to 51.1; the reading itself ran under 59m, which the 1740.3 s below had
-    # already moved this number to). The readings before it: 1740.3 s (run 43720554541, job
-    # 132831440633), 1736.6 s in this pair's other run (run 43733795306, job 132871904345),
-    # 1695.219 s (run 43640601453, job 132587189297), and 1523.812 s and 1675.755 s in the pair
+    # 1795.4 s (run 43810293311, job 133110320511, its envoy-go-race-docs-test-json artifact),
+    # 1795.4 / 30 = 59.85, so 60m, which it fills to 49.9 per cent (59m, the whole minute below
+    # it, it would fill to 50.7, which is what moved this number). The readings before it:
+    # 1746.1 s (run 43737129665, job 132882140098), 1740.3 s (run 43720554541, job 132831440633),
+    # 1736.6 s (run 43733795306, job 132871904345), 1695.219 s (run 43640601453, job
+    # 132587189297), and 1523.812 s and 1675.755 s in the pair
     # at fae4eab5 (runs 43654965125 and 43657875798). The job's own bound follows its largest
-    # measured time, 1849 s in run 43737129665 (job 132882140098), which is 30.82 minutes, plus
-    # that largest -timeout plus 6: 30.82 + 59 + 6 = 95.82, so 96; the readings before it ask the
-    # same or less: 1842 s in run 43720554541 and 1836 s in run 43733795306. The limit must fire
+    # measured time, 1907 s in run 43810293311 (job 133110320511), which is 31.78 minutes, plus
+    # that largest -timeout plus 6: 31.78 + 60 + 6 = 97.78, so 98; the readings before it ask
+    # less: 1849 s in run 43737129665 and 1842 s in run 43720554541. The limit must fire
     # before the runner cancels the job, so a hung test prints the dump that names it.
-    timeout-minutes: 96
+    timeout-minutes: 98
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -6178,7 +6178,7 @@ jobs:
       # this sampler at -parallel 2 peaked at 1,534,288 kB, and the rest of the package at
       # -parallel 2 reached 6,240,116 kB, so even added as though nothing were reused they stay
       # under 8388608 kB. What it costs is this step's own time, about twice the 965 s the run
-      # above spent at four slots, which the -timeout 59m below and the job's 96 minutes hold.
+      # above spent at four slots, which the -timeout 60m below and the job's 98 minutes hold.
       # No -p beside it: one package is one build lane, so go test's package parallelism has
       # nothing to divide. No GOMEMLIMIT either: two slots leave the heap it would bound below
       # the 2 GiB this step once set, so it would only make the detector's work slower.
@@ -6192,7 +6192,7 @@ jobs:
       - name: Race-test the document service
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
-          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 59m ./internal/dispatch/docs/
+          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 60m ./internal/dispatch/docs/
         working-directory: packages/envoy
       # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
       - name: Upload the go test -json stream

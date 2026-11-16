@@ -217,7 +217,7 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
 `envoy-go-race-api`, the job that runs it by itself, which gives it 32 minutes (`-timeout 32m`,
 `.github/workflows/ci.yaml`); `docs` runs under `-race` in `envoy-go-race-docs`, which gives it
-59 (`-timeout 59m`). Of those two packages `envoy-go` keeps only the few tests the race build
+60 (`-timeout 60m`). Of those two packages `envoy-go` keeps only the few tests the race build
 leaves out or runs smaller, by name, in the race-impossible call of its unit step.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database

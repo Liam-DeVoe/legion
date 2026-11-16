@@ -611,7 +611,7 @@ RACE_DOCS_STEP = "Race-test the document service"
 RACE_DOCS_SCRIPT = ('mkdir -p "$RUNNER_TEMP/go-test-json"\n'
                     'RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" '
                     "../../.github/scripts/race_memory.py "
-                    "go test -json -race -count=1 -parallel 2 -timeout 59m ./internal/dispatch/docs/")
+                    "go test -json -race -count=1 -parallel 2 -timeout 60m ./internal/dispatch/docs/")
 # The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
 # ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
 FINALIZERS_STEP = "Test the document service under the cleanup detector"
@@ -691,9 +691,9 @@ class RaceJob(NamedTuple):
 # higher than every pair before it. Each -timeout is the smallest whole minute at which that
 # call's slowest package takes at most half of it: internal/bus 463.2 s -> 16m (run
 # 43733795306, job 132871904364), internal/dispatch/api 955.794 s -> 32m (run 43657875798, job
-# 132640445932), and internal/dispatch/docs 1746.1 s -> 59m (run 43737129665,
-# job 132882140098), where every earlier reading was less, 1740.3 s at most (run 43720554541,
-# job 132831440633). Each figure is read from that job's own `go test -json` artifact, the
+# 132640445932), and internal/dispatch/docs 1795.4 s -> 60m (run 43810293311,
+# job 133110320511), where every earlier reading was less, 1746.1 s at most (run 43737129665,
+# job 132882140098). Each figure is read from that job's own `go test -json` artifact, the
 # largest of every workflow_dispatch run of ci.yaml on this branch (dispatch://INFRA-1075, check
 # 6224bb0e).
 ENVOY_RACE_LANE = (
@@ -703,7 +703,7 @@ ENVOY_RACE_LANE = (
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "32m", (RacePackage("internal/dispatch/api"),)),
-    RaceJob("envoy-go-race-docs", "Race-test the document service", "59m", (RacePackage("internal/dispatch/docs"),)),
+    RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
 
@@ -1834,7 +1834,7 @@ GATES = [
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 59m ./internal/dispatch/docs/", {"race": True}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 60m ./internal/dispatch/docs/", {"race": True}),
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
