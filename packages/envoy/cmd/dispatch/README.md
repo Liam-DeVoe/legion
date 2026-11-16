@@ -4653,6 +4653,7 @@ Each item below names an operation and its required fields, then its behavior.
 - `replace` (`find`, `with`)
 
   Replace one plain-text target.
+  Text that stays in the matched block keeps every bold, italic, strikethrough, link or code span the target lies wholly inside (replacing `said` in `**Sami said bold**` gives `**Sami answered bold**`), and a `find` that spells a span's own markup (`**Sami bold**`) lets `with` decide that span's formatting.
 
 - `delete` (`find`)
 

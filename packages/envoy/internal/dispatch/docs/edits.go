@@ -2273,15 +2273,24 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	}
 	// The text written over the match stays inside every ask and comment anchor the match lay
 	// wholly inside, so each anchor's quote is still the whole text it covers. The inline path
-	// writes one textblock's text and carries the marks over all of it; the block path writes
+	// writes one textblock's text and carries the anchors over all of it; the block path writes
 	// blocks, and carries them on one block of what it writes (markBlockReplacement).
-	covering := pmdoc.AnchorMarksCovering(tree.node, r)
+	//
+	// The inline path's text stays inside every bold, italic, struck, link or code span the match
+	// lay wholly inside too (pmdoc.MarksCovering), so the span stays whole: `said` replaced in
+	// `**Sami said bold**` reads `**Sami answered bold**`, where text without the span's mark split
+	// it and the split's edges were written as character references, `**Sami&#32;**&#97;nswered`.
+	// Text that writes a mark of the span's type itself keeps its own (pmdoc.AddSpanMarks), and a
+	// find that spells a span's markup (`**Sami bold**`) leaves that mark to the with
+	// (pmdoc.WithoutQuotedMarkup), which keeps it by writing it or drops it by leaving it off.
+	anchors, spans := pmdoc.MarksCovering(tree.node, r)
 	if blocks {
-		if err := markBlockReplacement(with, covering, op.With); err != nil {
+		if err := markBlockReplacement(with, anchors, op.With); err != nil {
 			return nil, err
 		}
 	} else {
-		pmdoc.AddMarks(with, covering)
+		pmdoc.AddMarks(with, anchors)
+		pmdoc.AddSpanMarks(with, pmdoc.WithoutQuotedMarkup(spans, op.Find))
 	}
 	valid, err := tree.validated("Splice")
 	if err != nil {

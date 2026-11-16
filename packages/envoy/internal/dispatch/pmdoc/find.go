@@ -621,18 +621,25 @@ func buildFlattenedText(doc *Node) flattenedText {
 func nodeInlineMarkup(node *Node) inlineMarkup {
 	var markup inlineMarkup
 	for _, mark := range node.Marks {
-		switch mark.Type {
-		case "inlineCode":
-			markup |= inlineMarkupCode
-		case "strong":
-			markup |= inlineMarkupStrong
-		case "emphasis":
-			markup |= inlineMarkupEmphasis
-		case "link":
-			markup |= inlineMarkupLink
-		}
+		markup |= markTypeMarkup(mark.Type)
 	}
 	return markup
+}
+
+// markTypeMarkup is the inline markup a mark of markType is read as by the markdown matcher, or 0
+// for a mark it does not read: strikethrough, and every anchor.
+func markTypeMarkup(markType string) inlineMarkup {
+	switch markType {
+	case "inlineCode":
+		return inlineMarkupCode
+	case "strong":
+		return inlineMarkupStrong
+	case "emphasis":
+		return inlineMarkupEmphasis
+	case "link":
+		return inlineMarkupLink
+	}
+	return 0
 }
 
 type quoteMatch struct {
@@ -1160,12 +1167,22 @@ func (s *markSearch) close() {
 // set moves with those schemas.
 var anchorMarkTypes = map[string]bool{"proofComment": true, "proofSuggestion": true, "dispatchAsk": true}
 
-// AnchorMarksCovering returns each anchor mark that every text run inside r carries, which is
-// every anchor the range lies wholly inside. Text written over r belongs inside those anchors: a
-// replacement spliced in without them ends each one's run where it lands, and FindMark then reads
-// only the text before it. A range that runs past an anchor's edge has a run without it, so that
-// anchor keeps only the text the write leaves alone.
-func AnchorMarksCovering(doc *Node, r Range) []Mark {
+// MarksCovering returns the marks text written over r takes from the text r held, from one walk
+// of doc: each mark that every text run inside r carries.
+//
+// anchors is each anchor mark among them, every anchor r lies wholly inside. Text written over r
+// belongs inside those anchors: a replacement spliced in without them ends each one's run where it
+// lands, and FindMark then reads only the text before it.
+//
+// spans is each mark the rendering writes (renderedMarkTypes) among them - bold, italic,
+// strikethrough, a link, code - every marked span r lies wholly inside. Text written over r belongs
+// inside those spans too: a replacement spliced in without them splits each span where it lands,
+// and a split span whose edge is a space is written with character references to keep its
+// delimiters (`**Sami&#32;**&#97;nswered`).
+//
+// A range that runs past an anchor's or a span's edge has a run without its mark, so that anchor
+// or span keeps only the text the write leaves alone.
+func MarksCovering(doc *Node, r Range) (anchors, spans []Mark) {
 	var covering []Mark
 	first := true
 	walk(doc, func(node *Node, _ []int, pos, end int) bool {
@@ -1178,7 +1195,7 @@ func AnchorMarksCovering(doc *Node, r Range) []Mark {
 		if first {
 			first = false
 			for _, mark := range node.Marks {
-				if anchorMarkTypes[mark.Type] {
+				if anchorMarkTypes[mark.Type] || renderedMarkTypes[mark.Type] {
 					covering = append(covering, Mark{Type: mark.Type, Attrs: cloneAttrs(mark.Attrs)})
 				}
 			}
@@ -1193,7 +1210,36 @@ func AnchorMarksCovering(doc *Node, r Range) []Mark {
 		covering = kept
 		return len(covering) > 0
 	})
-	return covering
+	for _, mark := range covering {
+		if anchorMarkTypes[mark.Type] {
+			anchors = append(anchors, mark)
+		} else {
+			spans = append(spans, mark)
+		}
+	}
+	return anchors, spans
+}
+
+// WithoutQuotedMarkup is marks less each mark of a type quote writes as inline markup, read as the
+// finder reads a quote it matches as markdown (renderedMarkdownQuote): a quote that is text alone
+// writes none. A quote that spells a span's markup (`**Sami bold**`) leaves that mark to the text
+// written over the match, which keeps it by writing it too or drops it by leaving it off.
+// Strikethrough is never markup the finder reads, so it is never taken off.
+func WithoutQuotedMarkup(marks []Mark, quote string) []Mark {
+	if len(marks) == 0 {
+		return marks
+	}
+	rendered, marked := renderedMarkdownQuote(quote)
+	if !marked {
+		return marks
+	}
+	var written inlineMarkup
+	for _, markup := range rendered.marks {
+		written |= markup
+	}
+	return slices.DeleteFunc(marks, func(mark Mark) bool {
+		return markTypeMarkup(mark.Type)&written != 0
+	})
 }
 
 func carriesMark(node *Node, want Mark) bool {
@@ -1219,6 +1265,32 @@ func AddMarks(node *Node, marks []Mark) {
 	}
 	for _, child := range node.Children {
 		AddMarks(child, marks)
+	}
+}
+
+// AddSpanMarks adds each of spans (MarksCovering) to every text node under node that carries no
+// mark of its type, in place. A mark of that type the text carries is its own - `**answered**`
+// written inside a bold span, a link of its own inside a link - and a span's mark of the type
+// beside it would write it twice, or two links over one text.
+func AddSpanMarks(node *Node, spans []Mark) {
+	if len(spans) == 0 {
+		return
+	}
+	if node.Type == "text" {
+		added := false
+		for _, mark := range spans {
+			if !containsMark(node.Marks, mark.Type) {
+				node.Marks = append(node.Marks, Mark{Type: mark.Type, Attrs: cloneAttrs(mark.Attrs)})
+				added = true
+			}
+		}
+		if added {
+			sortMarks(node.Marks)
+		}
+		return
+	}
+	for _, child := range node.Children {
+		AddSpanMarks(child, spans)
 	}
 }
 

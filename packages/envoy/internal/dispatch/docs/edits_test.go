@@ -661,6 +661,8 @@ func TestApplyOperationRejectsFindTargetSpanningTextblocks(t *testing.T) {
 	}
 }
 
+// A plain-text find matches the text of a code span or a link without its syntax, and the text
+// written over it stays inside that span (TestReplaceInsideAMarkedSpanKeepsTheSpanWhole).
 func TestApplyOperationMatchesPlainTextInsideInlineCodeAndLinks(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -672,13 +674,13 @@ func TestApplyOperationMatchesPlainTextInsideInlineCodeAndLinks(t *testing.T) {
 			name:     "inline code",
 			markdown: "before `code anchor` after\n",
 			anchor:   "code anchor",
-			want:     "before updated after\n",
+			want:     "before `updated` after\n",
 		},
 		{
 			name:     "link",
 			markdown: "before [link anchor](https://example.com) after\n",
 			anchor:   "link anchor",
-			want:     "before updated after\n",
+			want:     "before [updated](https://example.com) after\n",
 		},
 	}
 	for _, test := range tests {
