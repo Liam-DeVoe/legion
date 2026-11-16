@@ -19,7 +19,14 @@ import type {
   CreateCommentInput,
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { setFormRefusal, takeFormRefusalFocus, useFormRefusal } from "../doc/form-refusals";
+import {
+  type FormRefusalPress,
+  pressOn,
+  setFormRefusal,
+  takeFormRefusalFocus,
+  useFormRefusal,
+  useRefusalSurface,
+} from "../doc/form-refusals";
 import { isViewer } from "../refs/actor";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
@@ -157,12 +164,14 @@ export function useAskAnswerForm({
   const replacing = useRef<AskAnswer | undefined>(undefined);
   // A refusal of Approve for the form of The Spec belongs to the ask, not to this card
   // (`doc/form-refusals.ts`): a host that draws the card again while the answer is out reads it
-  // back. It holds the version the press answered, which `sendAnswer` keeps here.
+  // back. It holds the press it answers, with this card and the version, which `sendAnswer` keeps
+  // here, so the focus goes back to this card and to no other card of the ask.
   const formRefusalKey = `ask:${ask.id}`;
-  const pressedVersion = useRef<number | undefined>(undefined);
+  const refusalSurface = useRefusalSurface();
+  const press = useRef<FormRefusalPress | undefined>(undefined);
   const takeRefusalFocus = useCallback(
-    () => takeFormRefusalFocus(formRefusalKey),
-    [formRefusalKey]
+    (root: Element | null) => takeFormRefusalFocus(formRefusalKey, refusalSurface, root),
+    [formRefusalKey, refusalSurface]
   );
   const initialChangeConsumed = useRef(false);
   const submitGuard = useSubmitGuard();
@@ -220,7 +229,8 @@ export function useAskAnswerForm({
         // Dispatch refused the approval and wrote the reason a request for changes sends to the
         // author: the card picks Request changes with that reason (below, from the kept
         // refusal), and one more press sends it.
-        setFormRefusal(formRefusalKey, { error, version: pressedVersion.current });
+        if (press.current !== undefined)
+          setFormRefusal(formRefusalKey, { error, press: press.current });
         setAnswerText(error.changesReason ?? "");
       }
     },
@@ -376,7 +386,7 @@ export function useAskAnswerForm({
   const sendAnswer = (text: string) => {
     submitGuard.guard(() => {
       // Each press is answered on its own: the refusal of the last one goes with it.
-      pressedVersion.current = displayedAsk.approval?.version;
+      press.current = pressOn(refusalSurface, displayedAsk.approval?.version);
       setFormRefusal(formRefusalKey, undefined);
       const answerSelection = isApproval || hasOptions ? selected : [];
       mutation.mutate(answerAskInput(displayedAsk, answerSelection, text, replacing.current));
@@ -474,7 +484,8 @@ export function useAskAnswerForm({
     submitGuard,
     submit,
     submitHint,
-    /** Whether the press that the kept refusal answers still owes the focus: true once. */
+    /** Whether the press that the kept refusal answers gives its focus to this card, whose form
+     *  is the root given: true once, and only for this card or a card drawn in its place. */
     takeFormRefusalFocus: takeRefusalFocus,
     toggleOther,
     threadQuery,

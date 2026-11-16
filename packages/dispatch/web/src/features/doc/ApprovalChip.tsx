@@ -35,10 +35,13 @@ import { textSourceOf } from "../refs/text-references";
 import { useDialog } from "../shell/useDialog";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
+  type FormRefusalPress,
   focusIsFreeFor,
+  pressOn,
   setFormRefusal,
   takeFormRefusalFocus,
   useFormRefusal,
+  useRefusalSurface,
 } from "./form-refusals";
 
 /** The version an approval speaks for: `version` when the review named one, else the document's
@@ -272,10 +275,12 @@ export function ApprovalChip({
   // Dispatch's refusal of the reader's last Approve for the form of The Spec: its words show under
   // the actions, and the reason it wrote for the author is what Request changes opens with. It is
   // kept for the document (`form-refusals.ts`), so a header that its host draws again shows it
-  // too, for the version that Approve approved.
+  // too, for the version that Approve approved. It holds the press, so the focus goes back to the
+  // header where the person pressed.
   const formRefusalKey = `artifact:${artifact.id}`;
   const formRefusal = useFormRefusal(formRefusalKey, approval?.latest_version);
-  const pressedVersion = useRef<number | undefined>(undefined);
+  const refusalSurface = useRefusalSurface();
+  const press = useRef<FormRefusalPress | undefined>(undefined);
   const chipRef = useRef<HTMLDivElement>(null);
   const approveRef = useRef<HTMLButtonElement>(null);
   const queryClient = useQueryClient();
@@ -291,8 +296,8 @@ export function ApprovalChip({
     onSettled: () => submitGuard.release(),
     write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
     onError: (error, input) => {
-      if (input.state === "approved" && isSpecFormRefusal(error)) {
-        setFormRefusal(formRefusalKey, { error, version: pressedVersion.current });
+      if (input.state === "approved" && isSpecFormRefusal(error) && press.current !== undefined) {
+        setFormRefusal(formRefusalKey, { error, press: press.current });
       }
     },
     onSuccess: () => {
@@ -319,11 +324,13 @@ export function ApprovalChip({
 
   // The press a refusal answers keeps the focus on Approve while it is out (`aria-disabled`
   // below), and a header that its host drew again while the press was out takes the focus it
-  // owes, unless the reader has put the focus elsewhere.
+  // owes, unless the reader has put the focus elsewhere. Another header of the same document
+  // shows the refusal and takes no focus.
   useEffect(() => {
-    if (formRefusal === undefined || !takeFormRefusalFocus(formRefusalKey)) return;
+    if (formRefusal === undefined) return;
+    if (!takeFormRefusalFocus(formRefusalKey, refusalSurface, chipRef.current)) return;
     if (focusIsFreeFor(chipRef.current)) approveRef.current?.focus();
-  }, [formRefusal, formRefusalKey]);
+  }, [formRefusal, formRefusalKey, refusalSurface]);
   if (approval === undefined || approval.state === "draft") {
     return null;
   }
@@ -363,7 +370,7 @@ export function ApprovalChip({
               onClick={() =>
                 submitGuard.guard(() => {
                   // Each press is answered on its own: the refusal of the last one goes with it.
-                  pressedVersion.current = approval.latest_version;
+                  press.current = pressOn(refusalSurface, approval.latest_version);
                   setFormRefusal(formRefusalKey, undefined);
                   review.mutate({ state: "approved" });
                 })
