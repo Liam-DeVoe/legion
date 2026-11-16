@@ -4943,8 +4943,11 @@ jobs:
       - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
         run: bash scripts/dev-airlock.test.sh
         working-directory: packages/envoy
-      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3; no real Postgres or network)
+      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
         run: bash scripts/dev-stack.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
+        run: bash scripts/project-secrets-check.test.sh
         working-directory: packages/envoy
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: bash scripts/dev-postgres.test.sh
