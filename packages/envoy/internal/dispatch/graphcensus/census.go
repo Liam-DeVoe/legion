@@ -279,8 +279,8 @@ var projectBackfills = []backfillPass{backfillObjectNodes, backfillScopes}
 
 // commentProjections are the census's kind of the comments, which the comments table projects.
 var commentProjections = []projection{{
-	name:     "comment",
-	nodeKind: "comment",
+	name:     graphstore.KindComment,
+	nodeKind: graphstore.KindComment,
 	table:    "comments",
 	note: "one node per row; the digest is the row's created_at and author, the artifacts its anchor and its" +
 		" artifact_id name and the author graphstore.AuthorOf reads off it, against the node's made_at and" +

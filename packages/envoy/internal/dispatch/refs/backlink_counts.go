@@ -549,13 +549,13 @@ var backlinkArms = map[string][]backlinkArm{
 		// comments_anchor_artifact, on the same cast the join makes; the store states the same
 		// fact as a comment's anchored_to, answered while the comment's row carries its node.
 		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`,
-			fromKind: "comment", fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: "anchored_to", projectedIn: "comments"},
+			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "comments"},
 		// asks_artifact_id, and the ask's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: "owned_by", projectedIn: "asks"},
 		// comments_artifact_id, and the comment's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join comments c on c.artifact_id = a.id`, toID: `a.ref_key`,
-			fromKind: "comment", fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: "owned_by", projectedIn: "comments"},
+			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "comments"},
 		// The document_blocks primary key (artifact_id, block_id). The store states a block's
 		// membership of its document as in_document, which the view renders as this part_of,
 		// answered while the block's own row carries its node.

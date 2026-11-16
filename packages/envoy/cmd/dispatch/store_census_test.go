@@ -737,9 +737,11 @@ func runBackfill(t *testing.T, databaseURL string) {
 
 // waitForTheBlockIndex waits for the reconciliation to drain the mark the backfill left: a
 // block's parent is the nesting of its rendered version, which no column holds, so the backfill
-// marks each document it touched owed a block index and the reconciliation states the part_of
-// tuple and writes parent_block_id. The census reads a difference on every backfilled block
-// until that mark is drained, so this run waits for it rather than reading it as a difference.
+// marks each document it touched (store_owed_at, a mark of this release's own) and the
+// reconciliation states the part_of tuple, writes parent_block_id and clears the mark. The census
+// reads a difference on every backfilled block until that mark is drained, so this run waits for
+// it, and for every document owed a block index by a null version, rather than reading either as
+// a difference.
 func waitForTheBlockIndex(t *testing.T, ctx context.Context, databaseURL string) {
 	t.Helper()
 	conn := censusConnect(t, ctx, databaseURL)
@@ -748,7 +750,7 @@ func waitForTheBlockIndex(t *testing.T, ctx context.Context, databaseURL string)
 	for {
 		var owed int
 		if err := conn.QueryRow(ctx,
-			`select count(*) from document_block_versions where version is null`).Scan(&owed); err != nil {
+			`select count(*) from document_block_versions where version is null or store_owed_at is not null`).Scan(&owed); err != nil {
 			t.Fatalf("read the documents owed a block index: %v", err)
 		}
 		if owed == 0 {
