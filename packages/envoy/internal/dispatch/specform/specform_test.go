@@ -3,6 +3,7 @@ package specform
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -96,6 +97,51 @@ func TestAPieceWithNoLetterIsNoSentence(t *testing.T) {
 		var want []Finding
 		if test.detail != "" {
 			want = []Finding{finding(text, "sentences", test.detail)}
+		}
+		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
+		}
+	}
+}
+
+// TestAStopThatAnUpperCaseLetterFollowsEndsASentence holds the rules of the form to a ".", "!" or
+// "?" that no space follows: an upper-case letter right after the stop starts a new sentence, and
+// a lower-case letter or a digit starts none, so a decimal number and a file name stay one word.
+// The 25-word rule reads each sentence that such a stop ends.
+func TestAStopThatAnUpperCaseLetterFollowsEndsASentence(t *testing.T) {
+	for _, test := range []struct {
+		body      string
+		sentences int
+	}{
+		{"Dispatch keeps each comment.Dispatch indexes each comment.Dispatch shows each comment.", 3},
+		{"Dispatch keeps each comment.Dispatch shows each comment.", 2},
+		{"Dispatch stops!Dispatch starts again?Legion waits.", 3},
+		{"Dispatch keeps each log for 1.5 days.", 1},
+		{"Dispatch reads terms.md at each start.", 1},
+	} {
+		if got := len(sentencesOf(oneLine(test.body))); got != test.sentences {
+			t.Errorf("sentencesOf(%q) has %d sentences, want %d", test.body, got, test.sentences)
+		}
+	}
+	long := "Dispatch refuses a write of the whole text of a document when that text breaks the document schema, and it answers with one named error code."
+	for _, test := range []struct {
+		body   string
+		rule   Rule
+		detail string
+	}{
+		{"Dispatch keeps each comment.Dispatch indexes each comment.Dispatch shows each comment.",
+			"sentences", "it has 3 sentences, and a statement has one or two"},
+		{"Dispatch keeps each comment.Dispatch shows each comment.", "", ""},
+		{"Dispatch keeps each log for 1.5 days. Dispatch reads terms.md at each start.", "", ""},
+		// 19 words, then 10: two sentences under the bound, where one sentence would hold 28 words.
+		{"Dispatch shows the person each question of each issue that the person follows, with the time of the question.Dispatch shows each approval request that waits on the person.", "", ""},
+		// The stop ends the sentence of 26 words, so the rule counts 26, not 28.
+		{long + "Dispatch logs it.", "sentence-words", `a sentence has 26 words, and a sentence has at most 25: "Dispatch refuses a write of the whole text"`},
+	} {
+		text := statement(test.body)
+		var want []Finding
+		if test.rule != "" {
+			want = []Finding{finding(text, test.rule, test.detail)}
 		}
 		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
@@ -300,5 +346,60 @@ func TestMessageIsTheRefusalOfThePlan(t *testing.T) {
 		"Fix each text, then request approval again."
 	if got := Message(ActRequest, findings, 2, more); got != want {
 		t.Fatalf("Message =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestTheRefusalHeadCountsTheTextsThatBreak holds the first line of each refusal to the count of
+// the texts that hold a finding: one statement with several faults is one text, with one line for
+// each fault. Control: a second text with its own faults makes the head say 2.
+func TestTheRefusalHeadCountsTheTextsThatBreak(t *testing.T) {
+	text := statement("Dispatch spins up a seamless lease; it starts. It ends.")
+	findings := Check(planted(), Input{Texts: []Text{text}})
+	if len(findings) < 3 {
+		t.Fatalf("setup: Check = %#v, want at least three findings of the one text", findings)
+	}
+	other := Text{Node: "second", Kind: KindStatement, Body: "Legion spins up each lease; it waits.", Where: where}
+	both := append(slices.Clone(findings), Check(planted(), Input{Texts: []Text{other}})...)
+	for _, test := range []struct {
+		name, text, head string
+		lines            int
+	}{
+		{"request", Message(ActRequest, findings, len(findings), more), "Dispatch refused this approval request, because 1 text breaks the form of The Spec.", len(findings)},
+		{"approval", Message(ActApproval, findings, len(findings), more), "Dispatch refused this approval, because 1 text breaks the form of The Spec.", len(findings)},
+		{"changes reason", ChangesReason(findings, len(findings), more), "Dispatch refused my approval, because 1 text breaks the form of The Spec.", len(findings)},
+		{"restore", Message(ActRestore, findings, len(findings), more), "Dispatch did not open this approval request again, because 1 text breaks the form of The Spec.", len(findings)},
+		{"two texts", Message(ActRequest, both, len(both), more), "Dispatch refused this approval request, because 2 texts break the form of The Spec.", len(both)},
+	} {
+		lines := strings.Split(test.text, "\n")
+		if lines[0] != test.head || len(lines) != test.lines+2 {
+			t.Errorf("%s: head %q and %d lines, want %q and %d finding lines between the head and the next step:\n%s",
+				test.name, lines[0], len(lines), test.head, test.lines, test.text)
+		}
+	}
+}
+
+// TestADefinitionLineInAnotherFormIsNotPassedInSilence holds Check to each line under Terms: a
+// line in another form than "- **<term>**: <definition>" gets a finding that names it, so a
+// definition that breaks the form cannot pass because its line has another form. Control: the
+// same definition in the term line's form gets findings of its own rules.
+func TestADefinitionLineInAnotherFormIsNotPassedInSilence(t *testing.T) {
+	control, err := ExtractDocument("terms.md", 1, "# Terms\n\n- **beacon**: A seamless signal that each session spins up; it repeats. It stops. It starts.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Check(planted(), Input{Texts: control.Texts, Proposed: control.Terms}); len(got) == 0 {
+		t.Fatalf("control: the same definition in the form of a term line gives no finding")
+	}
+	extracted, err := ExtractDocument("terms.md", 1, "# Terms\n\n- **lease**: The time for which a session holds an issue.\n"+
+		"- **beacon** — A seamless signal that each session spins up; it repeats. It stops. It starts.\n"+
+		"- **drift:** The slow change of the clock of one machine; it is robust.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+	for _, name := range []string{"beacon", "drift"} {
+		if !slices.ContainsFunc(got, func(finding Finding) bool { return strings.Contains(finding.Node, name) }) {
+			t.Errorf("%s: no finding names its line, and the extractor read terms %#v: a definition that breaks the form passes in silence", name, extracted.Terms)
+		}
 	}
 }
