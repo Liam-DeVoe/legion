@@ -415,12 +415,35 @@ func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
 // raced on the shared handle (the race detector's find in the daemon's retained-event test), and a
 // fresh handle shares nothing with the one Run consumes. Nothing here may wait for Run instead:
 // the boot's reconcile reads the position before Run starts, and pollHoldRelease beside it.
+//
+// An info that reads idle is checked against the stream's own store before it is believed. The
+// server counts a consumer's pending messages from a signal it queues after it has stored a
+// message and answered its publish (nats-server's processJetStreamMsg, signalConsumersLoop), so
+// for a moment after a message lands DispatchTarget already counts it while the consumer's info
+// still reads nothing pending, and an idle believed then would call a consumer caught up that has
+// that message still to give — the boot's reconcile would hold nothing behind it, and a replayed
+// event that predates it would be admitted first (dispatch://INFRA-3149). The store has the
+// message from before the publish was answered, so a message of the consumer's filters stored
+// after the last one it delivered (firstStoredFrom) is one it has yet to give, whatever its count
+// says. The last delivered, and not the ack floor, is where that starts: with none awaiting an
+// ack, nothing at or below it waits, and it is the one both servers this repository runs set for
+// a consumer created over messages it will never be given, where 2.10's ack floor stays at 0
+// (TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages).
 func (c *Consumers) DispatchPosition(ctx context.Context) (DispatchConsumerPosition, error) {
 	consumer, err := c.stream.Consumer(ctx, dispatchConsumerName(c.spec.Project))
 	if err != nil {
 		return DispatchConsumerPosition{}, fmt.Errorf("read Dispatch consumer info: %w", err)
 	}
-	return positionOf(consumer.CachedInfo()), nil
+	info := consumer.CachedInfo()
+	position := positionOf(info)
+	if position.Idle {
+		waiting, err := c.firstStoredFrom(ctx, info, max(info.AckFloor.Stream, info.Delivered.Stream)+1)
+		if err != nil {
+			return DispatchConsumerPosition{}, fmt.Errorf("read the Dispatch consumer's first undelivered message: %w", err)
+		}
+		position.Idle = waiting == nil
+	}
+	return position, nil
 }
 
 func positionOf(info *jetstream.ConsumerInfo) DispatchConsumerPosition {
@@ -563,33 +586,41 @@ func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) Consu
 
 // oldestWaiting is the stream time of the first message after info's ack floor on any of its
 // consumer's filter subjects, or zero when the stream holds none (the stream's MaxAge removed it
-// since the info was read). A message at the sequence right after the ack floor is the oldest any
-// filter can give, so the filters after it are not read.
+// since the info was read).
 func (c *Consumers) oldestWaiting(ctx context.Context, info *jetstream.ConsumerInfo) (time.Time, error) {
+	oldest, err := c.firstStoredFrom(ctx, info, info.AckFloor.Stream+1)
+	if err != nil || oldest == nil {
+		return time.Time{}, err
+	}
+	return oldest.Time, nil
+}
+
+// firstStoredFrom is the first message at or after seq on any of info's consumer's filter
+// subjects, read from the stream's store (STREAM.MSG.GET by next subject), or nil when the stream
+// holds none. A message at seq itself is the first any filter can give, so the filters after it
+// are not read. Its two readers are oldestWaiting and DispatchPosition's check of an idle reading.
+func (c *Consumers) firstStoredFrom(ctx context.Context, info *jetstream.ConsumerInfo, seq uint64) (*jetstream.RawStreamMsg, error) {
 	filters := slices.Clone(info.Config.FilterSubjects)
 	if info.Config.FilterSubject != "" {
 		filters = append(filters, info.Config.FilterSubject)
 	}
-	var oldest *jetstream.RawStreamMsg
+	var first *jetstream.RawStreamMsg
 	for _, filter := range filters {
-		message, err := c.stream.GetMsg(ctx, info.AckFloor.Stream+1, jetstream.WithGetMsgSubject(filter))
+		message, err := c.stream.GetMsg(ctx, seq, jetstream.WithGetMsgSubject(filter))
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
 			continue
 		}
 		if err != nil {
-			return time.Time{}, err
+			return nil, err
 		}
-		if oldest == nil || message.Sequence < oldest.Sequence {
-			oldest = message
+		if first == nil || message.Sequence < first.Sequence {
+			first = message
 		}
-		if oldest.Sequence == info.AckFloor.Stream+1 {
+		if first.Sequence == seq {
 			break
 		}
 	}
-	if oldest == nil {
-		return time.Time{}, nil
-	}
-	return oldest.Time, nil
+	return first, nil
 }
 
 // Run consumes the three durable consumers until ctx ends, and returns the error of the one that

@@ -82,6 +82,87 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	}
 }
 
+// A Dispatch consumer whose info reads nothing pending is idle only once the stream's own store
+// holds no message of its filters after the last one it delivered. nats-server answers a publish
+// before it counts the message pending on a consumer — processJetStreamMsgWithBatch (2.15.1)
+// queues that signal after the answer, and signalConsumersLoop counts it — so for a moment the
+// stream's last sequence, the boot's target, counts a message the consumer's info does not. An
+// idle believed then had the boot's reconcile hold nothing behind a key the listing showed behind:
+// the daemon's TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow, red in one of
+// five whole-package runs of internal/daemon under 32 busy loops with -race (dispatch://INFRA-3149).
+// The stream here answers what the server answers in that moment, which no test of a real server
+// can hold still.
+//
+// The second case is the consumer created over messages it will never be given, as nats-server
+// 2.10 reports one — its ack floor at 0, its last delivered at the stream's end — which is idle,
+// because the store is read from past the last delivered and not from past the ack floor.
+//
+// The negative control is the store check removed from DispatchPosition (the info's idle taken as
+// it reads): the first case then reads idle, and its position reaches a target the consumer still
+// has a message to give for.
+func TestDispatchPositionIsIdleOnlyWhenTheStoreHoldsNothingAfterTheLastDelivered(t *testing.T) {
+	filters := jetstream.ConsumerConfig{FilterSubjects: []string{"notifications.dispatch.issue.>", mappingSubject("CAPTURE")}}
+	for _, tc := range []struct {
+		name   string
+		info   jetstream.ConsumerInfo
+		stored []uint64
+		target int64
+		idle   bool
+	}{
+		{name: "a message stored a moment ago that the info does not count yet",
+			info:   jetstream.ConsumerInfo{Config: filters, AckFloor: jetstream.SequenceInfo{Stream: 4}, Delivered: jetstream.SequenceInfo{Stream: 4}},
+			stored: []uint64{3, 4, 5}, target: 5, idle: false},
+		{name: "a consumer created past messages it will never be given",
+			info:   jetstream.ConsumerInfo{Config: filters, AckFloor: jetstream.SequenceInfo{Stream: 0}, Delivered: jetstream.SequenceInfo{Stream: 2}},
+			stored: []uint64{1, 2}, target: 2, idle: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			consumers := &Consumers{spec: ConsumerSpec{Project: "CAPTURE"}, stream: laggingStream{info: tc.info, stored: tc.stored}}
+			position, err := consumers.DispatchPosition(context.Background())
+			if err != nil {
+				t.Fatalf("DispatchPosition: %v", err)
+			}
+			if position.Idle != tc.idle {
+				t.Fatalf("idle = %v with the store holding %v past an ack floor of %d and a last delivered of %d, want %v",
+					position.Idle, tc.stored, tc.info.AckFloor.Stream, tc.info.Delivered.Stream, tc.idle)
+			}
+			if got := position.Reached(tc.target); got != tc.idle {
+				t.Fatalf("Reached(%d) = %v at %+v, want %v", tc.target, got, position, tc.idle)
+			}
+		})
+	}
+}
+
+// laggingStream is a notification stream whose Dispatch consumer's info reads nothing pending and
+// nothing awaiting an ack, while its store holds the messages of the consumer's filters at the
+// stream sequences stored, in order. It answers the two calls DispatchPosition makes and no other.
+type laggingStream struct {
+	jetstream.Stream
+	info   jetstream.ConsumerInfo
+	stored []uint64
+}
+
+func (s laggingStream) Consumer(context.Context, string) (jetstream.Consumer, error) {
+	return laggingConsumer{info: &s.info}, nil
+}
+
+// GetMsg is STREAM.MSG.GET by next subject: the first stored message at or after seq.
+func (s laggingStream) GetMsg(_ context.Context, seq uint64, _ ...jetstream.GetMsgOpt) (*jetstream.RawStreamMsg, error) {
+	for _, stored := range s.stored {
+		if stored >= seq {
+			return &jetstream.RawStreamMsg{Sequence: stored}, nil
+		}
+	}
+	return nil, jetstream.ErrMsgNotFound
+}
+
+type laggingConsumer struct {
+	jetstream.Consumer
+	info *jetstream.ConsumerInfo
+}
+
+func (c laggingConsumer) CachedInfo() *jetstream.ConsumerInfo { return c.info }
+
 // A GitHub consumer that is found missing — deleted, or lost with the NATS server's state — while
 // events were published is created at the last message it applied, so every event published while
 // it was missing is applied, and none twice: the one at its position, already applied, is
