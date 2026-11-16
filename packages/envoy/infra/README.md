@@ -947,10 +947,14 @@ carries in `ENVOY_API_TOKEN`'s place: `ENVOY_OIDC_ISSUER`, this component's clus
 `serviceAccountIssuer` output), and `ENVOY_OIDC_AUDIENCE`, `listenerAudience`. The listener needs
 that issuer at boot: it reads the issuer's discovery document before it binds its port and exits
 when it cannot within 30 seconds, so a listener pod started while the issuer cannot be reached
-restarts until it can. Once started, a token it cannot judge because the issuer's key set cannot
-be read is answered 503 with `Retry-After`, which Dispatch tries again for up to 12 seconds, as
-it does a listener being replaced, and never 401, which it settles as failed at once. No bearer
-exists then: the Secret `<hostname>-listener` and the generated
+restarts until it can. Once started, it keeps the key set it read, reads it again every 15
+minutes behind the answers it serves from it, and reads it at once for a token naming a key it
+does not hold. A token it cannot judge because the key set cannot be read, or has not answered
+within 3 seconds, is answered 503 with `Retry-After` — for a key rotated in during the outage,
+every such call until a read succeeds — which Dispatch tries again for up to 12 seconds, as it
+does a listener being replaced, and never 401, which it settles as failed at once. A longer
+outage settles the delivery as failed. No bearer exists then: the Secret `<hostname>-listener`
+and the generated
 password `<hostname>-listener-token` are not registered, and neither pod template carries a
 `checksum/<hostname>-listener` annotation. The listener admits every token its issuer mints for
 that audience, so what keeps the cluster's other workloads out is the listener's NetworkPolicy,

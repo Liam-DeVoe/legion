@@ -127,12 +127,9 @@ func TestKeyKeepsServingTheCachedSetWhenAReadFails(t *testing.T) {
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(the published key): %v", err)
 	}
-	// A caller that has already hung up: the read fails before it reaches the issuer, which is
-	// the cheap, race-free stand-in for an issuer that cannot be reached.
-	hungUp, cancel := context.WithCancel(context.Background())
-	cancel()
+	issuer.FailKeys(http.StatusInternalServerError)
 
-	key, err := keys.Key(hungUp, "exchange-key", testAlgorithm)
+	key, err := keys.Key(context.Background(), "exchange-key", testAlgorithm)
 	if err != nil {
 		t.Fatalf("Key(a cached key) with the read failing = %v, want the cached key", err)
 	}
@@ -140,12 +137,101 @@ func TestKeyKeepsServingTheCachedSetWhenAReadFails(t *testing.T) {
 	if !signs(t, token, key) {
 		t.Error("Key answered a key the issuer's token does not verify against")
 	}
-	if fetches := issuer.JWKSFetches(); fetches != 1 {
-		t.Errorf("key set read %d times, want 1: the failed read never reached the issuer", fetches)
-	}
 
-	if _, err := keys.Key(hungUp, "never-published", testAlgorithm); !errors.Is(err, ErrKeySet) {
+	if _, err := keys.Key(context.Background(), "never-published", testAlgorithm); !errors.Is(err, ErrKeySet) {
 		t.Errorf("Key(a key the cached set does not hold) with the read failing = %v, want ErrKeySet", err)
+	}
+}
+
+// A set past its Lifetime that holds the key answers at once, from the cache, and the issuer is
+// read again behind the answer: an issuer that hangs costs a token the cache can judge nothing.
+func TestKeyAnswersAStaleSetAtOnceAndReadsItAgainBehind(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	keys.FetchTimeout = 500 * time.Millisecond
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key(the published key): %v", err)
+	}
+	keys.Lifetime = 0
+	issuer.DelayKeys(time.Minute)
+
+	start := time.Now()
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key(a key the stale set holds) while the issuer hangs: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > keys.FetchWait/2 {
+		t.Errorf("Key(a key the stale set holds) took %s while the issuer hangs, want an answer at once", elapsed)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for issuer.JWKSFetches() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Errorf("key set read %d times, want 2: the stale set is read again behind its answer", fetches)
+	}
+}
+
+// An issuer that accepts the connection and never answers holds no Key past FetchWait: the caller
+// gets ErrKeySet, the issuer unavailable, inside its own window, while the read goes on under
+// FetchTimeout. A key rotated in meanwhile gets the same answer for the rest of the MinRefresh
+// window, while the read is in flight and after it has failed, and never ErrNoKey, which would
+// call a token the issuer may well have signed a forgery.
+func TestKeyWaitsAtMostFetchWaitOnAnIssuerThatHangs(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	keys.FetchWait, keys.FetchTimeout = 200*time.Millisecond, time.Second
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key(the published key): %v", err)
+	}
+	issuer.DelayKeys(time.Minute)
+	for call := 1; call <= 3; call++ {
+		start := time.Now()
+		_, err := keys.Key(context.Background(), "rotated-in", testAlgorithm)
+		elapsed := time.Since(start)
+		if !errors.Is(err, ErrKeySet) || errors.Is(err, ErrNoKey) {
+			t.Errorf("call %d, a key id the set does not hold while the issuer hangs = %v, want ErrKeySet alone", call, err)
+		}
+		if elapsed > keys.FetchWait+100*time.Millisecond {
+			t.Errorf("call %d waited %s, want at most FetchWait, %s", call, elapsed, keys.FetchWait)
+		}
+		if call == 2 {
+			// Past FetchTimeout the read has failed, and its failure answers the third call.
+			time.Sleep(keys.FetchTimeout)
+		}
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Errorf("key set read %d times, want 2: one read per MinRefresh window", fetches)
+	}
+}
+
+// A key rotated in while the key set answers 500 reaches no verdict on any call of the MinRefresh
+// window, not the first alone: each gets the failed read's ErrKeySet until a read succeeds.
+func TestKeyAnswersARotationDuringAnOutageUnavailableUntilAReadSucceeds(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	keys.MinRefresh = 300 * time.Millisecond
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key(the published key): %v", err)
+	}
+	issuer.FailKeys(http.StatusInternalServerError)
+	rotated := oidctest.NewKey(t, "rotated-in")
+	issuer.Publish(rotated)
+	for call := 1; call <= 3; call++ {
+		if _, err := keys.Key(context.Background(), "rotated-in", testAlgorithm); !errors.Is(err, ErrKeySet) || errors.Is(err, ErrNoKey) {
+			t.Fatalf("call %d with the key set answering 500 = %v, want ErrKeySet alone", call, err)
+		}
+	}
+	issuer.FailKeys(0)
+	time.Sleep(keys.MinRefresh)
+	key, err := keys.Key(context.Background(), "rotated-in", testAlgorithm)
+	if err != nil {
+		t.Fatalf("Key(the rotated key) once the key set reads again: %v", err)
+	}
+	if !signs(t, issuer.Mint(t, rotated, issuer.Claims("system:serviceaccount:example-ns:example-worker", "broker")), key) {
+		t.Error("Key answered a key the rotated key's token does not verify against")
+	}
+	if _, err := keys.Key(context.Background(), "never-published", testAlgorithm); !errors.Is(err, ErrNoKey) {
+		t.Errorf("Key(a key id nobody publishes) after a good read = %v, want ErrNoKey", err)
 	}
 }
 
