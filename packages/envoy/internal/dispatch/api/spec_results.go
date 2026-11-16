@@ -106,8 +106,9 @@ type specCheckFacts struct {
 
 // specFiles is what the route reads of the spec files at a commit: how many problems the graph
 // logic finds in them and the first one, as specgraph.Judge orders them, and, when it finds none,
-// their checks by id. Each file over notes.MaxFileSize is one problem, as it is to every reader
-// of spec files, and then the graph logic reads none of them.
+// their checks by id. A set over notes.MaxFiles or notes.MaxSetSize is one problem, and each file
+// over notes.MaxFileSize is one, as they are to every reader of spec files, and then the graph
+// logic reads none of them.
 type specFiles struct {
 	Problems int                       `json:"problems,omitempty"`
 	First    string                    `json:"first,omitempty"`
@@ -397,9 +398,13 @@ func (s *server) specCheckRun(ctx context.Context, reader *repositoryReader, rep
 // specFilesAt is what the spec files of repository at commit hold: the process's cached answer, or
 // the files GitHub serves read with the graph logic's one reading of them (specgraph.Judge), with
 // no retired list, since the files hold no history. A commit whose tree holds no spec directory
-// holds no check. A file over notes.MaxFileSize is a problem of the files, not a GitHub that did
-// not answer: each listed file over it is one problem, found before any file is read, as
-// spec-check counts them (notes.ReadSet), and where none is, a file GitHub serves over it is one.
+// holds no check. A set over the bounds of the notes package is a problem of the files, not a
+// GitHub that did not answer, found from GitHub's listing before any file is read, as spec-check
+// finds it (notes.ReadSet): a listing over notes.MaxFiles files or notes.MaxSetSize bytes in sum
+// is one problem (notes.CheckSet), and else each listed file over notes.MaxFileSize is one; where
+// none is, a file GitHub serves over it is one. A listing GitHub truncates, or one over the
+// response limit Dispatch reads it within, is one problem too: a commit's tree never changes, so
+// every read of it answers the same, and a write again could never be judged.
 func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repository, commit string) (specFiles, error) {
 	s.specReads.init()
 	return readCached(s.specReads.checks, repository+"@"+commit, func() (specFiles, error) {
@@ -408,8 +413,21 @@ func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repo
 			return specFiles{}, err
 		}
 		listing, err := s.deps.GitHub.Dir(ctx, token, reader.owner, reader.name, commit, specDir)
-		if err != nil {
+		var tooLarge *githubapp.ResponseTooLargeError
+		switch {
+		case errors.Is(err, githubapp.ErrTreeTruncated):
+			return specFiles{Problems: 1, First: fmt.Sprintf("%v: GitHub truncated its listing of %s, as it does past 100,000 entries or 7 MB; a set holds at most %d files", notes.ErrSetTooLarge, specDir, notes.MaxFiles)}, nil
+		case errors.As(err, &tooLarge):
+			return specFiles{Problems: 1, First: fmt.Sprintf("%v: GitHub's listing of %s is over %d bytes, the most Dispatch reads of one listing; a set holds at most %d files, whose listing fits", notes.ErrSetTooLarge, specDir, tooLarge.Limit, notes.MaxFiles)}, nil
+		case err != nil:
 			return specFiles{}, err
+		}
+		var listed int64
+		for _, file := range listing.Files {
+			listed += file.Size
+		}
+		if err := notes.CheckSet(specDir, len(listing.Files), listed); err != nil {
+			return specFiles{Problems: 1, First: err.Error()}, nil
 		}
 		var files specFiles
 		for _, file := range listing.Files {
@@ -423,7 +441,7 @@ func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repo
 		if files.Problems == 0 {
 			read, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
 			switch {
-			case errors.Is(err, notes.ErrFileTooLarge):
+			case errors.Is(err, notes.ErrFileTooLarge), errors.Is(err, notes.ErrSetTooLarge):
 				files = specFiles{Problems: 1, First: err.Error()}
 			case err != nil:
 				return specFiles{}, err

@@ -412,6 +412,7 @@ Each item below names a task and where its code is, then notes on it.
   the project, which must be the token's (`withinProjectScope`), maps the run's repository, compared lowercased on both sides as every comparison of a repository is (`403 REPOSITORY_NOT_THE_PROJECTS`);
   GitHub names the token's check run at that commit (`githubapp.Client.CheckRun`, `403 CHECK_RUN_NOT_THE_RUNS`);
   the graph logic takes the files, as spec-check reads them (`specgraph.Judge`, `409 SPEC_FILES_REFUSED` naming the first problem), each file over `notes.MaxFileSize` one problem;
+  before it reads any file, GitHub's listing of the directory is held to at most `notes.MaxFiles` (1,000) files, since Dispatch reads a listing as one GitHub answer of at most 1 MiB, and to `notes.MaxSetSize` (16 MiB) in sum, since the cache of a commit's judged checks keeps no entry over that size, a set over either one problem (`notes.CheckSet`), as spec-check holds a checkout's, and a listing GitHub truncates or one over that 1 MiB is one problem too, since no read of that commit answers otherwise;
   the files hold the check (`409 CHECK_NOT_IN_FILES`);
   and the check's job is the check run's name without its matrix values, cut at its last ` (` (`409 CHECK_NOT_THIS_JOBS`).
   A check run or files GitHub does not answer is `503 CHECK_RUN_UNREADABLE` or `503 FILES_UNREADABLE`, and nothing is stored.
@@ -3118,9 +3119,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   pure, with no database and no network, it imports nothing outside the standard library but `gopkg.in/yaml.v3` and `internal/dispatch/text`.
   `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
   `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
+  `CheckSet` refuses a set of more than `MaxFiles` notes, 1,000, or of more than `MaxSetSize` bytes in sum, 16 MiB, with one `ErrSetTooLarge`, whose text is `set too large`: the server lists a directory in one GitHub response of at most 1 MiB, which holds 1,000 entries of the longest names, and it keeps the checks of a commit's spec files in a cache of 16 MiB;
   and `Parse` validates the set.
-  `ReadSet` reads one directory of a checkout by that rule and bound, for `cmd/architecture-check`.
-  `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bound through those two, and it calls `notes.Parse` itself.
+  `ReadSet` reads one directory of a checkout by that rule and those bounds, checking the set and each note from the listing before it reads any note, for `cmd/architecture-check` and `cmd/spec-check`.
+  `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks the listing with `CheckSet`, each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bounds through those two, and it calls `notes.Parse` itself.
   For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
   GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
   slug file names, text PostgreSQL can store (`text.Storable`:
@@ -3182,7 +3184,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a test that go test killed, or that started and has no end, could not run and never reads as a failure.
 
 - `cmd/spec-check` runs those rules over directories of spec files on disk (`cmd/spec-check/main.go`).
-  It reads each directory with `notes.ReadSet`, so the entries it reads and the 1 MiB bound are the architecture importer's.
+  It reads each directory with `notes.ReadSet`, so the entries it reads and its bounds are the architecture importer's and the results route's: at most 1 MiB a file, and at most 1,000 files and 16 MiB in sum (`notes.MaxFiles`, `notes.MaxSetSize`), a set over either one problem before any file is read.
   `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
   a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one and an interface being a component with `kind="interface"`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;

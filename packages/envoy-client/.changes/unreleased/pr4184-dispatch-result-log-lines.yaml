@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `dispatch result --project` writes into a GitHub Actions runner's log, which reads workflow commands from it, so each text it did not write (an argument, a variable, a file's name, an answer of the secrets broker or of Dispatch) prints by the rule of Go's `runnerlog.Printable`: each control character, format character, line or paragraph separator as its escape, such as `\n`, and the `[` of each `##[` as `\x5b`, or as `\u005b` inside JSON. No such text starts a line of its own or names a workflow command, and a refusal that starts with `::` has that first `:` written as `\x3a`. The rule is `runner-log.ts`.
+
+  A write that reached Dispatch with no answer that says whether it stored the result prints `{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET`, and exits 1: the result may be stored, and a second run is safe, because Dispatch keeps each result. `writeOutcomeUnknown(error)` in `dispatch-http.ts` tells such a failure, and a connection that was never opened (refused, a name that did not resolve, no route) no longer counts as an attempt that may have reached Dispatch.
+
+  A trade the secrets broker's rate limit refuses (429) is asked again after its `Retry-After`, for at most 60 s of waits in all; after that the command prints, on one line, that the rate limit refused the trade, and exits 1. A job's step of many checks meets that limit with no fault of its own, so its results are no longer lost to it. `BrokerRefusedError` carries the answer's `Retry-After` as `retryAfterMs`.

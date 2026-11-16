@@ -19,6 +19,7 @@ import {
   SPEC_CHECK_OBSERVED_START,
 } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import type { Socket } from "bun";
 import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -1938,7 +1939,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
   /** The command in this process, under exactly `env`. */
   async function runJob(
     argv: readonly string[],
-    env: Record<string, string | undefined>
+    env: Record<string, string | undefined>,
+    pause?: (ms: number) => Promise<void>
   ): Promise<{ code: number; stdout: string; stderr: string }> {
     let stdout = "";
     let stderr = "";
@@ -1951,6 +1953,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
       },
       readText: (path) => readFileSync(path, "utf-8"),
       cwd: stateDir,
+      ...(pause === undefined ? {} : { pause }),
     });
     return { code, stdout, stderr };
   }
@@ -2052,6 +2055,393 @@ describe("dispatch result --project, as a CI job writes it", () => {
       ["POST", "/api/v1/projects/ACME/results"],
     ]);
   });
+
+  /** A proxy in front of the stand-in Dispatch that sends each request on, and closes the job's
+   *  connection in place of passing on the answer of each results write that `drops` names (by
+   *  its number, from 1), and of every other request when `dropOthers`: the write lands, and the
+   *  job hears nothing back. */
+  function lossyProxy(drops: (write: number) => boolean, dropOthers: boolean) {
+    let writes = 0;
+    interface Link {
+      upstream: Promise<Socket<undefined>>;
+      drop: boolean;
+    }
+    const proxy = Bun.listen<Link>({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        open(client) {
+          client.data = {
+            drop: false,
+            upstream: Bun.connect({
+              hostname: "127.0.0.1",
+              port: Number(dispatch.port),
+              socket: {
+                data(_upstream, answer) {
+                  if (client.data.drop) client.end();
+                  else client.write(answer);
+                },
+                close() {
+                  client.end();
+                },
+              },
+            }),
+          };
+        },
+        // A request's first chunk opens with its request line; the rest of it is its body.
+        async data(client, request) {
+          const line = request.subarray(0, 64).toString("latin1");
+          if (/^[A-Z]+ \//.test(line)) {
+            const write = line.startsWith("POST /api/v1/projects/");
+            if (write) writes += 1;
+            client.data.drop = write ? drops(writes) : dropOthers;
+          }
+          (await client.data.upstream).write(request);
+        },
+        close(client) {
+          void client.data.upstream.then((upstream) => upstream.end());
+        },
+      },
+    });
+    return { url: `http://127.0.0.1:${proxy.port}`, stop: () => proxy.stop(true) };
+  }
+
+  // A write that went out and heard nothing back may have stored the result, here it did: the
+  // proxy drops the answer of the write and of /healthz, which would let it ask again. The job's
+  // step still fails, since the write is not confirmed, and its one line says so to a program.
+  test("a write that went out and heard no answer prints write_outcome_unknown and exits 1", async () => {
+    const proxy = lossyProxy(() => true, true);
+    try {
+      const ran = await runJob(record, { ...jobEnvironment(), DISPATCH_URL: proxy.url });
+      expect(ran).toEqual({
+        code: 1,
+        stdout: `${JSON.stringify({ write_outcome_unknown: "ECONNRESET" })}\n`,
+        stderr: "",
+      });
+      expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+        ["POST", "/api/v1/projects/ACME/results"],
+        ["GET", "/healthz"],
+      ]);
+    } finally {
+      proxy.stop();
+    }
+  });
+
+  // The control: a connection refused before any request went out reached nothing, so the write
+  // stored nothing, and the command prints the transport error and no write_outcome_unknown.
+  test("a write whose connection was refused prints no write_outcome_unknown", async () => {
+    const closed = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
+    const url = `http://127.0.0.1:${closed.port}`;
+    closed.stop(true);
+    const { code, stdout, stderr } = await runJob(record, {
+      ...jobEnvironment(),
+      DISPATCH_URL: url,
+    });
+    expect({ code, stderr, unknown: stdout.includes("write_outcome_unknown") }).toEqual({
+      code: 1,
+      stderr: "",
+      unknown: false,
+    });
+    expect(stdout).toStartWith("ECONNREFUSED: ");
+    expect(written).toEqual([]);
+  });
+
+  // A landed write whose first answer the proxy drops is asked again under its key, and Dispatch
+  // answers KEY_COMMITTED: the old line, byte for byte, and exit 0.
+  test("a landed write whose answer is lost and asked again still prints landed_without_answer", async () => {
+    const proxy = lossyProxy((write) => write === 1, false);
+    dispatchAnswer = () => {
+      if (written.at(-1)?.path === "/healthz") return Response.json({ idempotency_keys: true });
+      return written.filter((seen) => seen.method === "POST").length === 1
+        ? Response.json(stored, { status: 201 })
+        : Response.json(
+            { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
+            { status: 409 }
+          );
+    };
+    try {
+      const ran = await runJob(record, { ...jobEnvironment(), DISPATCH_URL: proxy.url });
+      expect(ran).toEqual({
+        code: 0,
+        stdout: `${JSON.stringify({ landed_without_answer: "KEY_COMMITTED" })}\n`,
+        stderr: "",
+      });
+      expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+        ["POST", "/api/v1/projects/ACME/results"],
+        ["GET", "/healthz"],
+        ["POST", "/api/v1/projects/ACME/results"],
+      ]);
+    } finally {
+      proxy.stop();
+    }
+  }, 30_000);
+
+  /** The broker's token endpoint's 429, as its per-address bucket answers it (`oauthToken`). */
+  const rateLimited = (retryAfter: string) =>
+    Response.json(
+      {
+        error: "invalid_request",
+        error_description: "RATE_LIMITED: too many token requests; try again later",
+        code: "RATE_LIMITED",
+      },
+      { status: 429, headers: { "Retry-After": retryAfter } }
+    );
+
+  // The broker's rate limit refuses a trade before any work, and a job of many checks meets it
+  // with no fault of its own: the trade is asked again after the answer's Retry-After, and the
+  // result is stored once.
+  test("a trade the broker's rate limit refuses is asked again after its Retry-After, and the result is stored", async () => {
+    const answer = brokerAnswer;
+    brokerAnswer = () => (trades.length <= 2 ? rateLimited("1") : answer());
+    const waits: number[] = [];
+    const { code, stdout, stderr } = await runJob(record, jobEnvironment(), async (ms) => {
+      waits.push(ms);
+    });
+    expect({ code, stderr, trades: trades.length, waits }).toEqual({
+      code: 0,
+      stderr: "",
+      trades: 3,
+      waits: [1000, 1000],
+    });
+    expect(JSON.parse(stdout)).toEqual(stored);
+    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+      ["POST", "/api/v1/projects/ACME/results"],
+    ]);
+  });
+
+  // A limit that never lets the trade through ends inside the bound of 60 s of waits, with one line
+  // that says so, and no write_outcome_unknown: nothing reached Dispatch. A Retry-After past the
+  // bound ends at once.
+  test("a trade the broker's rate limit refuses for ever ends inside 60 s of waits with one line", async () => {
+    for (const [retryAfter, wanted] of [
+      ["1", 60],
+      ["61", 0],
+    ] as const) {
+      trades.length = 0;
+      forgetBrokerClients();
+      brokerAnswer = () => rateLimited(retryAfter);
+      const waits: number[] = [];
+      const { code, stdout, stderr } = await runJob(record, jobEnvironment(), async (ms) => {
+        waits.push(ms);
+      });
+      expect({ code, stderr, waits: waits.length, trades: trades.length }).toEqual({
+        code: 1,
+        stderr: "",
+        waits: wanted,
+        trades: wanted + 1,
+      });
+      expect(waits.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(60_000);
+      expect(stdout.split("\n")).toEqual([
+        `the secrets broker's rate limit refused the trade after ${wanted} s of waits, and this command waits at most 60 s: the secrets broker refused this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint): HTTP 429 invalid_request: RATE_LIMITED: too many token requests; try again later`,
+        "",
+      ]);
+      expect(written).toEqual([]);
+    }
+  });
+
+  // A job's log is read by its runner, which ends a line at \n and at \r, and reads a workflow
+  // command from a line that starts with "::" once its leading white space is trimmed and from a
+  // "##[" anywhere in a line. The call prints text it did not write: its arguments, its
+  // environment, and the answers of the broker and of Dispatch. Each such value is printed on its
+  // line, escaped by the rule of Go's runnerlog.Printable (runner-log.ts), so no value starts a
+  // line of its own and no line is a workflow command. A row that shows the value also shows it
+  // in the form the rule prints it in: as text in a line of words, as JSON in a JSON answer.
+  test("no value the call prints starts a line of its own or is a workflow command", async () => {
+    const long = "y".repeat(100_000);
+    /** A value, and how it prints in a line of words and in a JSON answer. */
+    const values: readonly (readonly [name: string, value: string, text: string, json: string])[] =
+      [
+        ["a line break", "p\n::error::line", "p\\n::error::line", '"p\\n::error::line"'],
+        ["a carriage return", "p\r::warning::cr", "p\\r::warning::cr", '"p\\r::warning::cr"'],
+        [
+          "control characters",
+          "p\u001b[2K\u000b\u0085::error::c",
+          "p\\x1b[2K\\v\\u0085::error::c",
+          '"p\\u001b[2K\\u000b\\u0085::error::c"',
+        ],
+        ["an error command", "::error::x", "::error::x", '"::error::x"'],
+        ["a command of the second form", "##[group]x", "##\\x5bgroup]x", '"##\\u005bgroup]x"'],
+        ["a mask command", "::add-mask::x", "::add-mask::x", '"::add-mask::x"'],
+        [
+          "a stop of command processing",
+          "::stop-commands::t",
+          "::stop-commands::t",
+          '"::stop-commands::t"',
+        ],
+        [
+          "a very long line",
+          `${long}\n::error::long`,
+          `${long}\\n::error::long`,
+          `"${long}\\n::error::long"`,
+        ],
+      ];
+    /** The arguments of the job's call with `value` after `flag`. */
+    const withValue = (flag: string, value: string): string[] => {
+      const argv = [...record];
+      argv[argv.indexOf(flag) + 1] = value;
+      return argv;
+    };
+    /** The body of the last write Dispatch got, as the stand-in reads it to word its refusal. */
+    const sent = (): Record<string, string> =>
+      (written.at(-1)?.body ?? {}) as Record<string, string>;
+    const refused = (code: string, error: string) =>
+      Response.json({ code, error }, { status: code === "COMMIT_NOT_THE_RUNS" ? 403 : 409 });
+    /** Each place a value reaches a print: whether the output shows the value, and in which
+     *  form, and how one call puts `value` there. */
+    const places: readonly (readonly [
+      place: string,
+      shows: "text" | "json" | "none",
+      run: (value: string) => Promise<{ code: number; stdout: string; stderr: string }>,
+    ])[] = [
+      [
+        "the project key",
+        "none",
+        (value) => runJob(withValue("--project", value), jobEnvironment()),
+      ],
+      [
+        "the check id, in a dry run",
+        "json",
+        (value) => runJob([...withValue("--check", value), "--dry-run"], jobEnvironment()),
+      ],
+      [
+        "the check id, in Dispatch's refusal",
+        "text",
+        (value) => {
+          dispatchAnswer = () =>
+            refused(
+              "CHECK_NOT_THIS_JOBS",
+              `check ${sent().check} names the job "lint", and this token's job is "go-checks" (check run 7001, "go-checks"): a job writes results only for the checks that name it`
+            );
+          return runJob(withValue("--check", value), jobEnvironment());
+        },
+      ],
+      [
+        "the commit, in Dispatch's refusal",
+        "text",
+        (value) => {
+          dispatchAnswer = () =>
+            refused(
+              "COMMIT_NOT_THE_RUNS",
+              `the result is for commit ${sent().commit}, and this token's run tested commit ${SPEC_COMMIT}: a job writes results only for the commit that it tested`
+            );
+          return runJob(withValue("--commit", value), jobEnvironment());
+        },
+      ],
+      [
+        "the observed text, refused as a flag",
+        "text",
+        (value) => runJob([...record, "--observed", `--- ${value}`], jobEnvironment()),
+      ],
+      [
+        "the observed file's name, refused as unreadable",
+        "text",
+        (value) => runJob([...record, "--observed-file", `${stateDir}/${value}`], jobEnvironment()),
+      ],
+      [
+        "Dispatch's error text",
+        "text",
+        (value) => {
+          dispatchAnswer = () => refused("CHECK_NOT_IN_FILES", value);
+          return runJob(record, jobEnvironment());
+        },
+      ],
+      [
+        "Dispatch's error code",
+        "none",
+        (value) => {
+          dispatchAnswer = () => refused(value, "the result is refused");
+          return runJob(record, jobEnvironment());
+        },
+      ],
+      [
+        "a body that is not Dispatch's JSON",
+        "none",
+        (value) => {
+          dispatchAnswer = () =>
+            new Response(value, { status: 400, headers: { "Content-Type": "text/plain" } });
+          return runJob(record, jobEnvironment());
+        },
+      ],
+      [
+        "a spec file's name in Dispatch's refusal",
+        "text",
+        (value) => {
+          dispatchAnswer = () =>
+            refused(
+              "SPEC_FILES_REFUSED",
+              `the spec files of example-org/example-repo at ${SPEC_COMMIT} have 1 problem, so they hold no check to write a result for. The first: .dispatch/spec/${value}.md:1: a-lonely-statement: leaf-without-check: no statement is under it and no check serves it`
+            );
+          return runJob(record, jobEnvironment());
+        },
+      ],
+      [
+        "the stored result's observed text",
+        "json",
+        (value) => {
+          const kept = { ...stored.attestation.predicate, observed: value };
+          dispatchAnswer = () =>
+            Response.json(
+              { ...stored, attestation: { ...stored.attestation, predicate: kept } },
+              { status: 201 }
+            );
+          return runJob(record, jobEnvironment());
+        },
+      ],
+      [
+        "the broker's refusal",
+        "text",
+        (value) => {
+          brokerAnswer = () =>
+            Response.json({ error: "invalid_grant", error_description: value }, { status: 400 });
+          return runJob(record, jobEnvironment());
+        },
+      ],
+      [
+        "the machine identity of the environment",
+        "text",
+        (value) => runJob(record, { ...jobEnvironment(), AGENT_SECRETS_MACHINE_IDENTITY: value }),
+      ],
+      [
+        "Dispatch's code of a write it may have stored",
+        "json",
+        (value) => {
+          dispatchAnswer = () => Response.json({ code: value, error: "internal" }, { status: 500 });
+          return runJob(record, jobEnvironment());
+        },
+      ],
+    ];
+    const defaults = { brokerAnswer, dispatchAnswer };
+    /** One line per row that failed: its place, its value, and what was wrong with the output. */
+    const failed: string[] = [];
+    for (const [place, shows, run] of places) {
+      for (const [name, value, text, json] of values) {
+        ({ brokerAnswer, dispatchAnswer } = defaults);
+        forgetBrokerClients();
+        const { code, stdout, stderr } = await run(value);
+        const out = `${stdout}${stderr}`;
+        // Split wherever a runner or a log viewer can end a line, so no line can hide in another.
+        const lines = out.split(/\r\n|[\n\r\u0085\u2028\u2029]/);
+        const commands = lines.filter(
+          (line) => line.trimStart().startsWith("::") || line.includes("##[")
+        );
+        // The command's own line ends are its one \n each; any other line break, control
+        // character, format character or separator came from a value.
+        const unescaped = [...out.matchAll(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu)]
+          .map(([character]) => character)
+          .filter((character) => character !== "\n");
+        const shown = shows === "none" || out.includes(shows === "text" ? text : json);
+        if (commands.length > 0 || unescaped.length > 0 || !shown) {
+          const characters = unescaped.map((character) => character.codePointAt(0)?.toString(16));
+          failed.push(
+            `${place}, ${name}: exit ${code}, ${commands.length} workflow command lines, ` +
+              `unescaped [${characters.join(" ")}], value shown ${shown}, printed ` +
+              JSON.stringify(out.slice(0, 160))
+          );
+        }
+      }
+    }
+    expect(failed).toEqual([]);
+  }, 120_000);
 
   // The broker's result entry fixes the session a job writes under, so the trade names none, even
   // where the job's environment sets the session a command of this machine trades under.

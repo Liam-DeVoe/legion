@@ -250,6 +250,42 @@ export class DispatchWriteLandedError extends Error {
   }
 }
 
+/**
+ * The transport failures a write threw after an attempt of it may have reached Dispatch
+ * (`#sendPresenting`). Each is thrown as it is, since each caller words a transport failure
+ * itself, and is kept here so `writeOutcomeUnknown` tells it from one that reached nothing.
+ */
+const UNANSWERED_WRITES = new WeakSet<object>();
+
+/**
+ * The codes of a transport failure that opened no connection, so no request of the write left
+ * this process: a refused connection (Bun's ECONNREFUSED, ConnectionRefused in an older Bun), a
+ * name that did not resolve, and a network or a host with no route.
+ */
+const NO_CONNECTION: Readonly<Partial<Record<string, true>>> = {
+  ECONNREFUSED: true,
+  ConnectionRefused: true,
+  ENOTFOUND: true,
+  EAI_AGAIN: true,
+  ENETUNREACH: true,
+  EHOSTUNREACH: true,
+};
+
+/**
+ * Whether a write that failed with `error` may have stored what it sent while no answer says
+ * whether it did: a `DispatchWriteUnsettledError`; a transport failure after an attempt that may
+ * have reached Dispatch; a gateway's answer that may have come after the request reached Dispatch
+ * (`mayHaveReachedDispatch`); or Dispatch's own 5xx, which can come after it committed. A refusal
+ * Dispatch decided, a gateway's answer that never reached it, and a failure before any request of
+ * the write went out (its credential, a refused connection) stored nothing.
+ */
+export function writeOutcomeUnknown(error: unknown): boolean {
+  if (error instanceof DispatchWriteUnsettledError) return true;
+  if (error instanceof DispatchGatewayError) return error.mayHaveReachedDispatch;
+  if (error instanceof DispatchServiceError) return error.status >= 500;
+  return typeof error === "object" && error !== null && UNANSWERED_WRITES.has(error);
+}
+
 function asErrorShape(value: unknown): DispatchServiceErrorShape {
   return typeof value === "object" && value !== null ? (value as DispatchServiceErrorShape) : {};
 }
@@ -2100,7 +2136,9 @@ export class DispatchClient {
           throw this.#ended(error, request, attempt, true, sawKeyedLayer);
         }
         thrown = error;
-        reached = true;
+        // A connection that was never opened sent nothing, so that attempt reached nothing.
+        const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : "";
+        reached ||= typeof code !== "string" || NO_CONNECTION[code] !== true;
         running ||= error instanceof WriteAttemptSilent && !upload;
       }
       const scheduled = running
@@ -2142,6 +2180,9 @@ export class DispatchClient {
             sawKeyedLayer
           );
         }
+        // A transport failure after an attempt that may have reached Dispatch leaves the write's
+        // outcome unknown: it is thrown as it is, and kept for `writeOutcomeUnknown`.
+        if (reached && typeof thrown === "object" && thrown !== null) UNANSWERED_WRITES.add(thrown);
         throw thrown;
       }
     }

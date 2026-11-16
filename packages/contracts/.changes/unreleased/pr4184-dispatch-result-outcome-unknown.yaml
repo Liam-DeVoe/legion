@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  The `dispatch_result` tool's description says that a CI job's write that reached Dispatch with no answer that says whether it stored the result prints `{"write_outcome_unknown":"<code>"}` and exits 1: the result may be stored, and a second run is safe, because Dispatch keeps each result. It also says that a trade the broker's rate limit refuses (429) is asked again after its Retry-After, for at most 60 s of waits in all.

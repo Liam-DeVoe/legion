@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { BrokerRefusedError } from "@legion/broker-client/token-client";
 import {
   askgateState,
   bytesDigest,
@@ -21,7 +22,12 @@ import { specCheckResultCommand } from "./dispatch-commands/issues";
 import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
-import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
+import {
+  DispatchClient,
+  DispatchWriteLandedError,
+  DispatchWriteUnsettledError,
+  writeOutcomeUnknown,
+} from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -35,6 +41,7 @@ import {
 } from "./dispatch-session-state";
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
+import { printable, printableJson, printableLine } from "./runner-log";
 import {
   handedConfigFile,
   sessionConfigFile,
@@ -53,6 +60,8 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** How the command waits `ms` before it asks again, a timer by default. */
+  readonly pause?: (ms: number) => Promise<void>;
 }
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
@@ -62,6 +71,21 @@ export interface DispatchCliIo {
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
+
+/** The broker's answer of its rate limit, which `ownIdentityResult` asks again after. */
+const TOO_MANY_REQUESTS = 429;
+
+/** The most `ownIdentityResult` waits in all for the broker's rate limit to let its trade through:
+ *  a job's step of many checks still ends, and the wait of one call stays far below a job's
+ *  timeout. */
+const BROKER_RATE_LIMIT_WAIT_MS = 60_000;
+
+/** Waits `ms` on a timer: how `ownIdentityResult` waits where its io names no pause. */
+function timerPause(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
 
 const HOSTS = ["omp", "claude"] as const satisfies readonly DispatchHost[];
 
@@ -180,6 +204,20 @@ export function fitOutput(
 }
 
 /**
+ * Whether `argv` is a CI job's `dispatch result --project` (`ownIdentityResult`): the command
+ * `result` with a `--project` flag, as `--project <KEY>` or `--project=<KEY>`. The parser reads a
+ * word that starts with `--` as a flag and never as a value, so this is the call the parser
+ * reads, and it is known before the parse, for an argv the parser refuses too.
+ */
+function isJobResult(argv: readonly string[]): boolean {
+  const [command, ...words] = argv;
+  return (
+    command === "result" &&
+    words.some((word) => word === "--project" || word.startsWith("--project="))
+  );
+}
+
+/**
  * `dispatch result --project`, a CI job's record of its result of a check of the spec files. The
  * job writes with its own identity alone (`ownIdentityDispatch`): no host, no session, no
  * envoy.json, no AskGate and no listener, since a job has none of them, and no bearer or
@@ -188,9 +226,20 @@ export function fitOutput(
  * It prints the stored result as JSON and exits 0, or prints Dispatch's refusal as
  * `<CODE>: <message>` and exits 1. A write that landed with its answer lost prints
  * `{"landed_without_answer": <code>}`, the details the session path records for the same case,
- * and exits 0: the result is stored, and a results token reads nothing back. No token reaches
- * what it prints: the broker's and Dispatch's words name none, and the runner's endpoint is
- * named by its variable.
+ * and exits 0: the result is stored, and a results token reads nothing back. A write that may
+ * have reached Dispatch while no answer says whether it stored the result (`writeOutcomeUnknown`)
+ * prints `{"write_outcome_unknown": <code>}` and exits 1, as the write is not confirmed: the
+ * result may be stored, and a second run is safe, since Dispatch keeps each result. No token
+ * reaches what it prints: the broker's and Dispatch's words name none, and the runner's endpoint
+ * is named by its variable.
+ *
+ * What it prints goes into a GitHub Actions runner's log, which reads workflow commands from it,
+ * so each text it did not write (an argument, a variable, an answer of the broker or of Dispatch)
+ * is printed by runnerlog.Printable's rule (runner-log.ts): a problem of its arguments and the
+ * refusal of its identity as `printable` text, Dispatch's refusal as a `printableLine`, and the
+ * dry run, the stored result and the outcome line as `printableJson`. No value starts a line of
+ * its own, and no line is a workflow command. The landed line holds no such text: its code is one
+ * of the client's two constants.
  */
 async function ownIdentityResult(
   parsed: Extract<ParsedCommand, { readonly kind: "call" }>,
@@ -208,28 +257,76 @@ async function ownIdentityResult(
     serverUrls: resolution.enabled ? dispatchServerUrls(resolution) : [],
   });
   if (checked.problems.length > 0) {
-    return refuse(new ToolInputError(parsed.tool, checked.problems).message, USAGE, parsed.tool);
+    return refuse(
+      new ToolInputError(parsed.tool, checked.problems.map(printable)).message,
+      USAGE,
+      parsed.tool
+    );
   }
   if (parsed.dryRun) {
-    print(JSON.stringify(parsed.args, null, 2));
+    print(printableJson(JSON.stringify(parsed.args, null, 2)));
     return OK;
   }
   if (!resolution.enabled) {
-    return refuse(`dispatch: ${resolution.error ?? resolution.notice}`, USAGE, parsed.tool);
+    return refuse(
+      `dispatch: ${printable(resolution.error ?? resolution.notice)}`,
+      USAGE,
+      parsed.tool
+    );
   }
   const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch);
-  try {
-    print((await specCheckResultCommand(client, checked.args)).text);
-    return OK;
-  } catch (error) {
-    // A write that landed with its answer lost is done. A program reads the job's output, so it
-    // is the JSON of the session path's ledger entry, with no advice to read the result back.
-    if (error instanceof DispatchWriteLandedError) {
-      print(JSON.stringify({ landed_without_answer: error.code }));
+  const pause = io.pause ?? timerPause;
+  let waited = 0;
+  for (;;) {
+    try {
+      print(printableJson((await specCheckResultCommand(client, checked.args)).text));
       return OK;
+    } catch (error) {
+      // A write that landed with its answer lost is done. A program reads the job's output, so it
+      // is the JSON of the session path's ledger entry, with no advice to read the result back.
+      if (error instanceof DispatchWriteLandedError) {
+        print(JSON.stringify({ landed_without_answer: error.code }));
+        return OK;
+      }
+      if (writeOutcomeUnknown(error)) {
+        return refuse(
+          printableJson(JSON.stringify({ write_outcome_unknown: outcomeCode(error) })),
+          REFUSED,
+          parsed.tool
+        );
+      }
+      // The broker's rate limit refuses the trade before any work, and before the write leaves
+      // this process: one job writes a result for each of its checks, and meets it with no fault
+      // of its own. The trade is asked again after the answer's Retry-After, while the waits stay
+      // within BROKER_RATE_LIMIT_WAIT_MS.
+      if (error instanceof BrokerRefusedError && error.status === TOO_MANY_REQUESTS) {
+        const wait = error.retryAfterMs ?? 1_000;
+        if (waited + wait <= BROKER_RATE_LIMIT_WAIT_MS) {
+          waited += wait;
+          await pause(wait);
+          continue;
+        }
+        return refuse(
+          printableLine(
+            `the secrets broker's rate limit refused the trade after ${waited / 1_000} s of waits, and this command waits at most ${BROKER_RATE_LIMIT_WAIT_MS / 1_000} s: ${messageFor(error)}`
+          ),
+          REFUSED,
+          parsed.tool
+        );
+      }
+      return refuse(printableLine(messageFor(error)), REFUSED, parsed.tool);
     }
-    return refuse(messageFor(error), REFUSED, parsed.tool);
   }
+}
+
+/** The code `{"write_outcome_unknown": <code>}` names: that of the write's last failure, the last
+ *  answer of a DispatchWriteUnsettledError: a transport error's code such as ECONNRESET, or a
+ *  refusal's such as HTTP_502, else that error's name, such as TimeoutError. */
+function outcomeCode(error: unknown): string {
+  const last: unknown = error instanceof DispatchWriteUnsettledError ? error.last : error;
+  const code = typeof last === "object" && last !== null ? Reflect.get(last, "code") : undefined;
+  if (typeof code === "string" && code !== "") return code;
+  return last instanceof Error ? last.name : String(last);
 }
 
 /**
@@ -294,32 +391,32 @@ export async function runDispatchCli(
     return code;
   };
 
+  // A CI job's call prints into its runner's log, a refusal of its argv included: a problem can
+  // repeat a word of the argv, such as an unknown flag or a file it could not read, so each is
+  // printed as `printable` text (`ownIdentityResult`).
+  const job = isJobResult(argv);
   let parsed: ParsedCommand;
   try {
     parsed = parseCommand(argv, io);
   } catch (error) {
-    return refuse(`dispatch: ${messageFor(error)}`, USAGE);
+    return refuse(`dispatch: ${job ? printable(messageFor(error)) : messageFor(error)}`, USAGE);
   }
   if (parsed.kind === "help") {
     print(parsed.tool === undefined ? commandsHelp() : commandHelp(parsed.tool));
     return OK;
   }
   if (parsed.kind === "refused") {
+    const problems = job ? parsed.problems.map(printable) : parsed.problems;
     return parsed.tool === undefined
-      ? refuse(
-          [`dispatch: ${parsed.problems.join("\n")}`, "Run dispatch --help."].join("\n"),
-          USAGE
-        )
+      ? refuse([`dispatch: ${problems.join("\n")}`, "Run dispatch --help."].join("\n"), USAGE)
       : refuse(
-          new ToolInputError(parsed.tool, parsed.problems, defined("aboutAFlag", parsed.aboutAFlag))
+          new ToolInputError(parsed.tool, problems, defined("aboutAFlag", parsed.aboutAFlag))
             .message,
           USAGE,
           parsed.tool
         );
   }
-  if (parsed.tool === "dispatch_result" && parsed.args["project"] !== undefined) {
-    return await ownIdentityResult(parsed, env, io, print, refuse);
-  }
+  if (job) return await ownIdentityResult(parsed, env, io, print, refuse);
 
   const hostName =
     env.DISPATCH_HOST ?? (env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined);
