@@ -515,6 +515,11 @@ var backlinkArms = map[string][]backlinkArm{
 	"person": {},
 	"role":   {},
 	"page":   {},
+	// No arm of the view whose edge kind is a literal targets a delivery attempt: its tuples -
+	// owed_to, delivered_to and answered_by - run out of it and are no arm of graph_edges, and no
+	// address names one for a writer to mention. The entry is present and empty so an attempt is
+	// counted from the mention arms, which answer zero for it today, rather than refused.
+	graphstore.KindDeliveryAttempt: {},
 	// No arm of the view whose edge kind is a literal targets a document's block: such a block
 	// is pointed at by mentions alone, a reply naming the block of an ask, a comment or a
 	// message instead. The entry is present and empty so a block is counted from its mention

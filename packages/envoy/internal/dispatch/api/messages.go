@@ -437,11 +437,25 @@ func (s *server) createStoredMessage(
 	// which changes no model, inherits nothing of it. The target is read here and not at
 	// validation, since a person's reply that names none takes its thread root's above.
 	if message.Target != nil {
+		// The attempt's node goes in before the row that names it (graphstore.AttemptOpened), and
+		// it and what the row holds are caused by this message's event, appended above, as the
+		// message's own node is.
+		key := graphstore.MessageAttempt(message.ID, 1)
+		nodeKind, nodeAddress, opened, err := graphstore.AttemptOpened(ctx, tx, key, actor)
+		if err != nil {
+			return model.Message{}, nil, err
+		}
 		if _, err := tx.Exec(ctx, `
 			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by,
-			                                urgency, connected_only)
-			values ($1, 1, $2, '', 'pending', $3, $4, $5)
-		`, message.ID, delivery, author, input.Urgency, model.ConnectedOnlyColumn(connectedOnly)); err != nil {
+			                                urgency, connected_only, node_kind, node_address)
+			values ($1, 1, $2, '', 'pending', $3, $4, $5, $6, $7)
+		`, message.ID, delivery, author, input.Urgency, model.ConnectedOnlyColumn(connectedOnly), nodeKind, nodeAddress); err != nil {
+			return model.Message{}, nil, err
+		}
+		if opened, err = graphstore.AttemptStated(ctx, tx, opened, actor, key); err != nil {
+			return model.Message{}, nil, err
+		}
+		if err := graphstore.Caused(ctx, tx, opened, event.ID); err != nil {
 			return model.Message{}, nil, err
 		}
 	}

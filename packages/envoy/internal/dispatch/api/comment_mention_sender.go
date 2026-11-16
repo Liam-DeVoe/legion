@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -436,10 +437,16 @@ func mentionClaimArrays(claims []mentionClaim) (comments, targets []string, atte
 // longer carries the claim this sender wrote is left alone and not answered - its send has taken
 // it over, or another sender has, or it has settled - so refreshHeldClaims leaves that send's
 // recorded claim as it was, and every later statement of this sender's, the drain's release
-// included, passes over the row too, since each is scoped to the claim it holds.
+// included, passes over the row too, since each is scoped to the claim it holds. The claims it
+// wrote are stated in the store in the same transaction (graphstore.Attempted).
 func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
 	comments, targets, attempts, claimed := mentionClaimArrays(queued)
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
 		update comment_deliveries d set claimed_at = now()
 		from unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
 			as queued(comment_id, target, attempt, claimed_at)
@@ -450,27 +457,67 @@ func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (mentionClaim, error) {
+	refreshed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (mentionClaim, error) {
 		var claim mentionClaim
 		err := row.Scan(&claim.key.comment, &claim.key.target, &claim.key.attempt, &claim.claimedAt)
 		return claim, err
 	})
+	if err != nil {
+		return nil, err
+	}
+	if err := graphstore.Attempted(ctx, tx, mentionAttemptKeys(refreshed)...); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return refreshed, nil
 }
 
 // releaseMentionClaims is the mention sender's release: one statement gives back the claims the
 // attempts were committed with, so an attempt no lane took, or none started, is pending and
 // unclaimed. Each is scoped to the claim this sender wrote, so an attempt another sender has
-// since taken keeps that sender's claim.
+// since taken keeps that sender's claim. The attempts it released are stated in the store in the
+// same transaction.
 func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) error {
 	comments, targets, attempts, claimed := mentionClaimArrays(held)
-	_, err := s.deps.Store.Pool.Exec(ctx, `
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
 		update comment_deliveries d set claimed_at = null
 		from unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
 			as held(comment_id, target, attempt, claimed_at)
 		where d.comment_id = held.comment_id and d.target = held.target and d.attempt = held.attempt
 		  and d.state = 'pending' and d.claimed_at = held.claimed_at
+		returning d.comment_id::text, d.target, d.attempt
 	`, comments, targets, attempts, claimed)
-	return err
+	if err != nil {
+		return err
+	}
+	released, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (mentionClaim, error) {
+		var claim mentionClaim
+		err := row.Scan(&claim.key.comment, &claim.key.target, &claim.key.attempt)
+		return claim, err
+	})
+	if err != nil {
+		return err
+	}
+	if err := graphstore.Attempted(ctx, tx, mentionAttemptKeys(released)...); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// mentionAttemptKeys is the attempts claims name, as the store keys their nodes.
+func mentionAttemptKeys(claims []mentionClaim) []graphstore.AttemptKey {
+	keys := make([]graphstore.AttemptKey, len(claims))
+	for i, claim := range claims {
+		keys[i] = graphstore.CommentAttempt(claim.key.comment, claim.key.target, claim.key.attempt)
+	}
+	return keys
 }
 
 // claimQueuedMention takes the claim on an owed attempt a keyed repeat is about to put back on a
@@ -478,7 +525,12 @@ func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) 
 // attempt a comment of this process's own queued. ok is false when another sender holds it: that
 // sender owns the send, and nothing is queued for it here.
 func (s *server) claimQueuedMention(ctx context.Context, key mentionKey) (claimed time.Time, ok bool, err error) {
-	err = s.deps.Store.Pool.QueryRow(ctx, `
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	err = tx.QueryRow(ctx, `
 		update comment_deliveries set claimed_at = now()
 		where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending' and `+model.DeliveryClaimFreeSQL+`
 		returning claimed_at
@@ -487,6 +539,12 @@ func (s *server) claimQueuedMention(ctx context.Context, key mentionKey) (claime
 		return time.Time{}, false, nil
 	}
 	if err != nil {
+		return time.Time{}, false, err
+	}
+	if err := graphstore.Attempted(ctx, tx, graphstore.CommentAttempt(key.comment, key.target, key.attempt)); err != nil {
+		return time.Time{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return time.Time{}, false, err
 	}
 	return claimed, true, nil

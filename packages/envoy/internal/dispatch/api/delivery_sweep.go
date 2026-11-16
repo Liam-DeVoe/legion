@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -489,8 +490,15 @@ func (s *server) settleUndeliverableMention(ctx context.Context, undeliverable u
 	if err != nil {
 		return false, err
 	}
+	stated, err := graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, comment.Author, graphstore.CommentAttempt(comment.ID, failed.Target, failed.Attempt))
+	if err != nil {
+		return false, err
+	}
 	receipt, err := s.appendEvent(ctx, tx, commentDeliveryReceipt(comment, comment.Author, failed))
 	if err != nil {
+		return false, err
+	}
+	if err := graphstore.Caused(ctx, tx, stated, receipt.ID); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {

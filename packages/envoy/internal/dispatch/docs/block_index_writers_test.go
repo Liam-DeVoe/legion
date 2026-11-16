@@ -455,6 +455,28 @@ var indexPasses = map[string]string{
 	// that flip is what makes the attempt a delivery, the delivered_to tuple, under the answer's
 	// own event. It reads the attempt row the answer flipped and no row of either side.
 	"api/comment_delivery.go#recordAnsweredDelivery": "the attempt the answer flipped and the answer's own event",
+	// Every write of a delivery attempt's row states what that row now holds
+	// (graphstore.Attempted), and an insert writes the attempt's node before it
+	// (graphstore.AttemptOpened). Each reads the attempt row its own statement just wrote, under
+	// the lock that statement holds, and what the store holds of that one node to append only what
+	// moved, the way a node write reads the row it moves (moveNodes): it never reads one side of a
+	// projection to mend the other.
+	"api/comment_delivery.go#openCommentDeliveryAttempt":      "the attempt the retry opens",
+	"api/comment_delivery.go#take":                            "the attempt the claim takes",
+	"api/comment_delivery.go#standDown":                       "the attempt whose claim the sender gives back",
+	"api/comment_delivery.go#supersedeCommentDelivery":        "the attempt a later one superseded",
+	"api/comment_delivery.go#recordCommentDeliveryResolution": "the resolution the sender recorded on its attempt",
+	"api/comment_mention_sender.go#refreshMentionClaims":      "the claims the mention sender wrote again",
+	"api/comment_mention_sender.go#releaseMentionClaims":      "the claims the mention sender gave back",
+	"api/comment_mention_sender.go#claimQueuedMention":        "the claim a keyed repeat takes",
+	"api/delivery_sweep.go#settleUndeliverableMention":        "the attempt the sweep settles undeliverable",
+	"api/message_delivery.go#acceptDelivery":                  "the attempt the session accepts",
+	"api/message_delivery.go#recordPendingMessageDelivery":    "the stranded attempt a retry in another mode settles",
+	"api/message_delivery.go#finishPendingMessageDelivery":    "the attempt the claim transaction took or opened",
+	"api/message_delivery.go#insertMessageDeliveryAttempt":    "the attempt the send opens",
+	"api/message_delivery.go#renewMessageDeliveryClaim":       "the claim the sender renews",
+	"api/message_delivery.go#replyMessage":                    "the reply callback and the attempt it settles",
+	"outbox/mentions.go#settleAbandoned":                      "the abandoned attempts the outbox settles",
 	// A follow of an ask writes the follower row and the following session's node in one
 	// statement (graphstore.WriteArms), and each caller that appended an event after the follow
 	// moves the node that follow made onto it (graphstore.Caused). Neither reads a row of either
@@ -577,7 +599,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
 // the same use as one.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|AttemptOpened|Attempted|EraseNode|FillScopes)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

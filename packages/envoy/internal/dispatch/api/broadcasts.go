@@ -524,11 +524,24 @@ func (s *server) writeBroadcast(
 		// genuine second frame where the first landed. claimed_at stays null, so
 		// recordPendingMessageDelivery reads the row as free and resumes it instead of opening a
 		// second attempt beside it. The author asked for it, and the resume keeps that.
-		attempt, err := scanMessageDelivery(tx.QueryRow(ctx, `
-			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by)
-			values ($1, 1, $2, $3, 'pending', $4)
-			returning `+messageDeliveryColumns, message.ID, delivery, recipient.sessionID, author))
+		// The attempt's node goes in before its row, and it and what the row holds are caused by
+		// the copy's message.created event, appended above, as the copy's own node is.
+		key := graphstore.MessageAttempt(message.ID, 1)
+		nodeKind, nodeAddress, opened, err := graphstore.AttemptOpened(ctx, tx, key, actor)
 		if err != nil {
+			return broadcastRead{}, nil, err
+		}
+		attempt, err := scanMessageDelivery(tx.QueryRow(ctx, `
+			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by, node_kind, node_address)
+			values ($1, 1, $2, $3, 'pending', $4, $5, $6)
+			returning `+messageDeliveryColumns, message.ID, delivery, recipient.sessionID, author, nodeKind, nodeAddress))
+		if err != nil {
+			return broadcastRead{}, nil, err
+		}
+		if opened, err = graphstore.AttemptStated(ctx, tx, opened, actor, key); err != nil {
+			return broadcastRead{}, nil, err
+		}
+		if err := graphstore.Caused(ctx, tx, opened, event.ID); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		message.Deliveries = []model.MessageDelivery{attempt}

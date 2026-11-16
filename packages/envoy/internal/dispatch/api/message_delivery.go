@@ -263,8 +263,17 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	stated, err := graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, actor, graphstore.MessageAttempt(message.ID, number))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	appended, err := s.appendEvent(ctx, tx, event)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(ctx, tx, stated, appended.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -488,8 +497,15 @@ func (s *server) recordPendingMessageDelivery(
 			`, message.ID, stranded.Attempt, failure).Scan(&stranded.Attempt); err != nil {
 				return pendingMessageDelivery{}, err
 			}
+			strandedFacts, err := graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, actor, graphstore.MessageAttempt(message.ID, stranded.Attempt))
+			if err != nil {
+				return pendingMessageDelivery{}, err
+			}
 			receipt, err := s.appendEvent(ctx, tx, messageDeliveryReceipt(message, actor, stranded, resolved.title))
 			if err != nil {
+				return pendingMessageDelivery{}, err
+			}
+			if err := graphstore.Caused(ctx, tx, strandedFacts, receipt.ID); err != nil {
 				return pendingMessageDelivery{}, err
 			}
 			superseded = &receipt
@@ -580,9 +596,11 @@ func (s *server) openFirstMessageDeliveryAttempt(
 	return pending, nil
 }
 
-// finishPendingMessageDelivery builds the frame this claimed attempt will be sent with and
-// commits the claim transaction. Both claim paths end here, so a bound sender's frame says
-// exactly what an ordinary one's does.
+// finishPendingMessageDelivery states the claimed attempt in the store, builds the frame it will
+// be sent with and commits the claim transaction. Both claim paths end here, so a bound sender's
+// frame says exactly what an ordinary one's does, and whichever statement claimed the attempt -
+// a resume that pinned it, or the insert that opened it - is stated by this one call
+// (graphstore.Attempted).
 func finishPendingMessageDelivery(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -591,6 +609,9 @@ func finishPendingMessageDelivery(
 	replyThread *messageReplyThread,
 	pending *pendingMessageDelivery,
 ) error {
+	if err := graphstore.Attempted(ctx, tx, graphstore.MessageAttempt(message.ID, pending.attempt)); err != nil {
+		return err
+	}
 	thread := replyThread
 	if thread == nil {
 		// A retry sends the stored message, so the block it answers is read as its write named
@@ -631,7 +652,9 @@ const supersededByModeChangeText = "superseded by a retry in another mode; it ma
 // insertMessageDeliveryAttempt opens an attempt of this send's own, under the recipient the
 // resolution was taken for, recording requestedBy - the actor this send carries - as who asked
 // for it. The message row is locked by the caller, so the highest attempt cannot move between
-// reading it and inserting beside it.
+// reading it and inserting beside it: the number is read first, because the attempt's node is
+// addressed by it and goes in before the row that names it (graphstore.AttemptOpened). What the
+// row holds is stated where the claim transaction ends (finishPendingMessageDelivery).
 //
 // connected_only is attempt 1's, never this send's request's: the request that stored the message
 // is the only one that says whether it asks for a session running now (createStoredMessage), so a
@@ -650,18 +673,31 @@ func (s *server) insertMessageDeliveryAttempt(
 	if err != nil {
 		return err
 	}
-	return tx.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
+		select coalesce(max(attempt), 0) + 1 from message_deliveries where message_id = $1
+	`, message.ID).Scan(&pending.attempt); err != nil {
+		return err
+	}
+	// A send's claim opens the attempt and records no event of its own, so the node is the delivery
+	// machinery's, at the sentinel (graphstore.AttemptWriter).
+	nodeKind, nodeAddress, opened, err := graphstore.AttemptOpened(ctx, tx, graphstore.MessageAttempt(message.ID, pending.attempt), graphstore.AttemptWriter)
+	if err != nil {
+		return err
+	}
+	if err := tx.QueryRow(ctx, `
 		insert into message_deliveries (message_id, attempt, delivery, session_id, state, claimed_at,
-		                                requested_by, connected_only)
+		                                requested_by, connected_only, node_kind, node_address)
 		values (
-			$1,
-			(select coalesce(max(attempt), 0) + 1 from message_deliveries where message_id = $1),
-			$2, $3, 'pending', now(), $4,
-			(select connected_only from message_deliveries where message_id = $1 order by attempt limit 1)
+			$1, $2, $3, $4, 'pending', now(), $5,
+			(select connected_only from message_deliveries where message_id = $1 order by attempt limit 1),
+			$6, $7
 		)
-		returning attempt, claimed_at, `+model.ConnectedOnlySQL+`
-	`, message.ID, resolved.Delivery, resolved.attemptSessionID, requester,
-	).Scan(&pending.attempt, &pending.claimedAt, &pending.connectedOnly)
+		returning claimed_at, `+model.ConnectedOnlySQL+`
+	`, message.ID, pending.attempt, resolved.Delivery, resolved.attemptSessionID, requester, nodeKind, nodeAddress,
+	).Scan(&pending.claimedAt, &pending.connectedOnly); err != nil {
+		return err
+	}
+	return graphstore.Caused(ctx, tx, opened, graphstore.NoEvent)
 }
 
 // messageDeliveryReceipt is the message.delivery receipt an attempt row owes, read off that
@@ -699,6 +735,9 @@ func (s *server) completeMessageDelivery(
 	// The session the settle records, where this settle made its node: the node is made before
 	// the receipt exists and moves onto it once it is appended (caused below).
 	var reached graphstore.Uncaused
+	// What the settle makes of the attempt, held for the receipt it appends, as the receipt's
+	// actor writes it.
+	var stated graphstore.Uncaused
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
 			settled, err := scanMessageDelivery(tx.QueryRow(ctx, `
@@ -708,6 +747,9 @@ func (s *server) completeMessageDelivery(
 				message.ID, pending.attempt, pending.claimedAt, outcome.envelopeID, state, failure, outcome.duplicate,
 			))
 			if err != nil {
+				return settled, err
+			}
+			if stated, err = graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, actor, graphstore.MessageAttempt(message.ID, settled.Attempt)); err != nil {
 				return settled, err
 			}
 			// The session this attempt reached, in the transaction that records that it did
@@ -729,7 +771,10 @@ func (s *server) completeMessageDelivery(
 			return messageDeliveryReceipt(message, actor, answered, pending.resolved.title)
 		},
 		func(ctx context.Context, tx pgx.Tx, receipt int64) error {
-			return graphstore.Caused(ctx, tx, reached, receipt)
+			if err := graphstore.Caused(ctx, tx, reached, receipt); err != nil {
+				return err
+			}
+			return graphstore.Caused(ctx, tx, stated, receipt)
 		},
 	)
 }
@@ -868,6 +913,9 @@ func (s *server) renewMessageDeliveryClaim(
 		return pending, false, nil
 	}
 	if err != nil {
+		return pending, false, err
+	}
+	if err := graphstore.Attempted(ctx, tx, graphstore.MessageAttempt(message.ID, pending.attempt)); err != nil {
 		return pending, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1014,8 +1062,17 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		stated, err := graphstore.AttemptStated(r.Context(), tx, graphstore.Uncaused{}, actor, graphstore.MessageAttempt(message.ID, updated.Attempt))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		receipt, err := s.appendEvent(r.Context(), tx, messageDeliveryReceipt(message, actor, updated, ""))
 		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := graphstore.Caused(r.Context(), tx, stated, receipt.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1040,6 +1097,17 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			update message_deliveries set reply_id = $3, state = 'sent', error = null
 			where message_id = $1 and attempt = $2
 		`, message.ID, input.Attempt, reply.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The attempt is sent and answered by the reply, whose node insertSessionReply wrote.
+		// It is stated under the message.answered event insertSessionReply appended for the reply.
+		stated, err := graphstore.AttemptStated(r.Context(), tx, graphstore.Uncaused{}, actor, graphstore.MessageAttempt(message.ID, input.Attempt))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := graphstore.Caused(r.Context(), tx, stated, answered.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

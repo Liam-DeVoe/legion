@@ -115,13 +115,14 @@ func init() {
 		"ask_block":     resolvedKind(loadAskBlockNodes, nodeVisibility{}),
 		"comment_block": resolvedKind(loadCommentBlockNodes, nodeVisibility{}),
 		"message_block": resolvedKind(loadMessageBlockNodes, nodeVisibility{}),
-		// The kinds the node and tuple store holds itself (graphstore.KindPerson and its three
+		// The kinds the node and tuple store holds itself (graphstore.KindPerson and its four
 		// siblings, loadStoreNodes). None of them carries a `dispatch://` address, so the
 		// address rule does not reach them; the four other rules do.
-		graphstore.KindPerson:  resolvedKind(loadStoreNodes, nodeVisibility{}),
-		graphstore.KindSession: resolvedKind(loadStoreNodes, nodeVisibility{}),
-		graphstore.KindRole:    resolvedKind(loadStoreNodes, nodeVisibility{}),
-		graphstore.KindPage:    resolvedKind(loadStoreNodes, nodeVisibility{}),
+		graphstore.KindPerson:          resolvedKind(loadStoreNodes, nodeVisibility{}),
+		graphstore.KindSession:         resolvedKind(loadStoreNodes, nodeVisibility{}),
+		graphstore.KindRole:            resolvedKind(loadStoreNodes, nodeVisibility{}),
+		graphstore.KindPage:            resolvedKind(loadStoreNodes, nodeVisibility{}),
+		graphstore.KindDeliveryAttempt: resolvedKind(loadStoreNodes, nodeVisibility{}),
 		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
 		// writes one outside a migration, every one of them is project-visible and no read of
 		// the graph resolves one, but they are nodes of the store like any other, so the

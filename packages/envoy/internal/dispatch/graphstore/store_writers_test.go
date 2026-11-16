@@ -27,17 +27,19 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same eight docs' register of the tree's passes scans for
+// package goes through, the same eleven docs' register of the tree's passes scans for
 // (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
 // caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
 // Authored, Reached and SessionRecorded, which run those arms for the writers that record an
-// author, a reached session and a session an ask names, EraseNode, the erase's delete of a node
-// and its tuples, and FillScopes, the backfill's fill of the project of a node stored with none.
-// Each is a function of the package, never a method, so a call of one is named by the package
-// and found here wherever it is made. A write that holds a statement of its own instead is found
-// by rawStoreWrite, and none outside this package may hold one.
+// author, a reached session and a session an ask names, AttemptOpened and Attempted, which write a
+// delivery attempt's node before its row and state what its row holds after each write of it,
+// EraseNode, the erase's delete of a node and its tuples, and FillScopes, the backfill's fill of
+// the project of a node stored with none. Each is a function of the package, never a method, so a
+// call of one is named by the package and found here wherever it is made. A write that holds a
+// statement of its own instead is found by rawStoreWrite, and none outside this package may hold
+// one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes"}
+	"Authored", "Reached", "SessionRecorded", "AttemptOpened", "Attempted", "EraseNode", "FillScopes"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -85,6 +87,29 @@ var storeWriteCallSites = []string{
 	"api/comment_delivery.go#recordAnsweredDelivery",
 	"api/comment_delivery.go#replyComment",
 	"api/message_delivery.go#completeMessageDelivery",
+	// Every other write of a delivery attempt's row. Each states in the same transaction what the
+	// row now holds (Attempted), and the two that open an attempt write its node before the row
+	// (AttemptOpened), as the creates listed with their own nodes do (createCommentFor,
+	// createStoredMessage, writeBroadcast). Attempted appends tuples alone, which lock no row, so
+	// it adds no step to its caller's order; AttemptOpened writes one node no other write can name
+	// yet, before the row whose foreign key names it (invariant 2). api's
+	// TestEveryDeliveryAttemptIsANode reads what a comment's and a message's attempts state.
+	"api/comment_delivery.go#openCommentDeliveryAttempt",
+	"api/comment_delivery.go#recordCommentDeliveryResolution",
+	"api/comment_delivery.go#standDown",
+	"api/comment_delivery.go#supersedeCommentDelivery",
+	"api/comment_delivery.go#take",
+	"api/comment_mention_sender.go#claimQueuedMention",
+	"api/comment_mention_sender.go#refreshMentionClaims",
+	"api/comment_mention_sender.go#releaseMentionClaims",
+	"api/delivery_sweep.go#settleUndeliverableMention",
+	"api/message_delivery.go#acceptDelivery",
+	"api/message_delivery.go#finishPendingMessageDelivery",
+	"api/message_delivery.go#insertMessageDeliveryAttempt",
+	"api/message_delivery.go#recordPendingMessageDelivery",
+	"api/message_delivery.go#renewMessageDeliveryClaim",
+	"api/message_delivery.go#replyMessage",
+	"outbox/mentions.go#settleAbandoned",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and
@@ -130,7 +155,10 @@ var storeWriteCallSites = []string{
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).
 	"grapherase/erase.go#apply",
 	// This package's own writers that run another of them: Authored and SessionRecorded are
-	// arms of one statement, and Reached is SessionRecorded for an attempt that was sent.
+	// arms of one statement, Reached is SessionRecorded for an attempt that was sent, and
+	// AttemptOpened and Attempted write an attempt's node and its facts through Write.
+	"graphstore/delivery_attempt.go#AttemptOpened",
+	"graphstore/delivery_attempt.go#Attempted",
 	"graphstore/people.go#Authored",
 	"graphstore/people.go#Reached",
 	"graphstore/people.go#SessionRecorded",

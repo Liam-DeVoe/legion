@@ -31,6 +31,7 @@ var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
 	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
+	"../../internal/dispatch/store/migrations/20261116102759_delivery_attempt_attributes.up.sql",
 }
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
@@ -65,6 +66,41 @@ var authorisedSupertags = map[string]string{
 	"lens_kind":     "dispatch://INFRA-1950/spec R7",
 	"query":         "dispatch://INFRA-1253/spec",
 	"query version": "dispatch://INFRA-1253/spec",
+}
+
+// storeTypeAttributes is the attributes of each supertag of the closed list that declares no
+// block type and holds values all the same: a kind a later child moves into the store brings its
+// attributes with it, in a type migration of its own, since 20261109051232 seeds the supertags the
+// block schema does not declare with none. blocks.json says nothing of these, so this is the test's
+// own copy of each, in its type's order, as closedSupertags is of the list, with the document that
+// creates it: an attribute only in the store, or only here, fails, and so does one whose fields
+// differ. The block schema the store builds passes over them (requireTheStoreBuildsTheFilesSchema).
+var storeTypeAttributes = []storeType{{
+	name:     "delivery_attempt",
+	document: "dispatch://INFRA-1152/spec R5",
+	attributes: []pmdoc.BlockAttribute{
+		{Name: "attempt", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeString, Server: true}},
+		{Name: "state", BlockAttributeSchema: pmdoc.BlockAttributeSchema{
+			Kind: pmdoc.BlockAttributeEnum, Server: true,
+			Choices: []string{model.DeliveryStatePending, model.DeliveryStateSent, model.DeliveryStateQueued, model.DeliveryStateFailed},
+		}},
+		{Name: "envelope_id", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeString, Server: true}},
+		{Name: "error", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeString, Server: true}},
+		{Name: "resolve_error", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeString, Server: true}},
+		{Name: "duplicate", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeBool, Server: true}},
+		{Name: "claimed_at", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeTimestamp, Server: true}},
+		{Name: "accepted_at", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeTimestamp, Server: true}},
+		{Name: "accepted_as", BlockAttributeSchema: pmdoc.BlockAttributeSchema{
+			Kind: pmdoc.BlockAttributeEnum, Server: true, Choices: []string{"user_turn"},
+		}},
+	},
+}}
+
+// storeType is one supertag storeTypeAttributes lists: its name, the document that creates its
+// attributes, and those attributes in their order.
+type storeType struct {
+	name, document string
+	attributes     []pmdoc.BlockAttribute
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed
@@ -285,25 +321,56 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 				drift.add(id)
 				continue
 			}
-			requireAttributeNodeCarries(t, node, typ.Name, position, declared, drift)
+			requireAttributeNodeCarries(t, node, typ.Name, position, declared, "the file's", drift)
 		}
 		if len(tied) != len(typ.Attributes) {
 			t.Errorf("supertag %q is tied to %d attribute nodes, want the %d its type declares", typ.Name, len(tied), len(typ.Attributes))
 			drift.add(typ.Name)
 		}
 	}
+	// The attributes of the supertags the block schema declares no type for, held to the test's
+	// own copy of them. A difference there is no drift of the file, so it is not recorded in drift:
+	// the migration that writes those nodes is the type migration of the kind they belong to.
+	for _, typ := range storeTypeAttributes {
+		t.Logf("the store holds the attributes of %q, a supertag the block schema declares no type for, created by %s", typ.name, typ.document)
+		tied := map[string]struct{}{}
+		tuples, err := graphstore.CurrentIn(ctx, pool, schemanodes.KindSupertag, typ.name, []string{schemanodes.TupleAttributeOf})
+		if err != nil {
+			t.Fatalf("read the attributes tied to %q: %v", typ.name, err)
+		}
+		for _, tuple := range tuples {
+			tied[tuple.FromID] = struct{}{}
+		}
+		for position, declared := range typ.attributes {
+			id := typ.name + "/" + schemanodes.StoreName(typ.name, declared.Name)
+			wanted[id] = struct{}{}
+			if _, tiedToType := tied[id]; !tiedToType {
+				t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, typ.name)
+			}
+			node, inStore := held[id]
+			if !inStore {
+				t.Errorf("storeTypeAttributes lists attribute %q of %q, which the store holds no node for", declared.Name, typ.name)
+				continue
+			}
+			requireAttributeNodeCarries(t, node, typ.name, position, declared, "storeTypeAttributes'", nil)
+		}
+		if len(tied) != len(typ.attributes) {
+			t.Errorf("supertag %q is tied to %d attribute nodes, want the %d storeTypeAttributes lists", typ.name, len(tied), len(typ.attributes))
+		}
+	}
 	for id := range held {
 		if _, declared := wanted[id]; !declared {
-			t.Errorf("the store holds attribute node %q, which %s declares nowhere", id, blockSchemaFile)
+			t.Errorf("the store holds attribute node %q, which %s declares nowhere and storeTypeAttributes does not list", id, blockSchemaFile)
 			drift.add(id)
 		}
 	}
 }
 
-// requireAttributeNodeCarries holds one attribute node of type typeName to what the file says
+// requireAttributeNodeCarries holds one attribute node of type typeName to what source says
 // about that attribute: its name and place, the store name schemanodes.StoreName gives it, and
-// each field a BlockAttributeSchema carries. A node that differs is recorded in drift.
-func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName string, position int, declared pmdoc.BlockAttribute, drift *schemaDrift) {
+// each field a BlockAttributeSchema carries. A node that differs is recorded in drift, where the
+// caller keeps one.
+func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName string, position int, declared pmdoc.BlockAttribute, source string, drift *schemaDrift) {
 	t.Helper()
 	carried := node.Attributes
 	if name, _ := carried["name"].(string); name != declared.Name {
@@ -330,10 +397,10 @@ func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName st
 	}
 	wanted := map[string]any{}
 	if err := json.Unmarshal(mustMarshal(t, declared.BlockAttributeSchema), &wanted); err != nil {
-		t.Fatalf("read the file's attribute %q: %v", node.ID, err)
+		t.Fatalf("read %s attribute %q: %v", source, node.ID, err)
 	}
 	if string(mustMarshal(t, stored)) != string(mustMarshal(t, wanted)) {
-		t.Errorf("attribute node %q carries %s, want the file's %s", node.ID, mustMarshal(t, stored), mustMarshal(t, wanted))
+		t.Errorf("attribute node %q carries %s, want %s %s", node.ID, mustMarshal(t, stored), source, mustMarshal(t, wanted))
 		drift.add(node.ID)
 	}
 }
@@ -372,8 +439,12 @@ type schemaDrift struct {
 	fileVersion, storeVersion int
 }
 
-// add records one type or attribute, once.
+// add records one type or attribute, once. A nil drift records nothing: the check of an attribute
+// no file declares (storeTypeAttributes) keeps none.
 func (d *schemaDrift) add(name string) {
+	if d == nil {
+		return
+	}
 	if !slices.Contains(d.names, name) {
 		d.names = append(d.names, name)
 	}

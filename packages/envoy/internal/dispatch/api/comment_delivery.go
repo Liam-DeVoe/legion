@@ -233,20 +233,37 @@ type claimedCommentDelivery struct {
 // openCommentDeliveryAttempt records a fresh attempt as pending and claimed, before anything
 // is resolved or sent. The row is what makes the attempt durable: a process that dies before
 // the send leaves it pending rather than losing the attempt entirely. The comment's mention is
-// locked, so the highest attempt cannot move between reading it and inserting beside it.
+// locked, so the highest attempt cannot move between reading it and inserting beside it: the
+// number is read first, because the attempt's node is addressed by it and goes in before the row
+// that names it (graphstore.AttemptOpened).
 func openCommentDeliveryAttempt(
 	ctx context.Context, tx pgx.Tx, comment model.Comment, target ResolvedMention,
 ) (attemptClaim, error) {
 	var claim attemptClaim
 	if err := tx.QueryRow(ctx, `
-		insert into comment_deliveries (comment_id, target, attempt, delivery, state, claimed_at)
-		values (
-			$1, $2,
-			(select coalesce(max(attempt), 0) + 1 from comment_deliveries where comment_id = $1 and target = $2),
-			$3, 'pending', now()
-		)
-		returning attempt, claimed_at
-	`, comment.ID, target.Target, target.Delivery).Scan(&claim.attempt, &claim.claimedAt); err != nil {
+		select coalesce(max(attempt), 0) + 1 from comment_deliveries where comment_id = $1 and target = $2
+	`, comment.ID, target.Target).Scan(&claim.attempt); err != nil {
+		return attemptClaim{}, err
+	}
+	// A Retry's claim opens the attempt and records no event, so the node and what its row holds
+	// are the delivery machinery's, at the sentinel (graphstore.AttemptWriter).
+	key := graphstore.CommentAttempt(comment.ID, target.Target, claim.attempt)
+	nodeKind, nodeAddress, opened, err := graphstore.AttemptOpened(ctx, tx, key, graphstore.AttemptWriter)
+	if err != nil {
+		return attemptClaim{}, err
+	}
+	if err := tx.QueryRow(ctx, `
+		insert into comment_deliveries (comment_id, target, attempt, delivery, state, claimed_at, node_kind, node_address)
+		values ($1, $2, $3, $4, 'pending', now(), $5, $6)
+		returning claimed_at
+	`, comment.ID, target.Target, claim.attempt, target.Delivery, nodeKind, nodeAddress).Scan(&claim.claimedAt); err != nil {
+		return attemptClaim{}, err
+	}
+	opened, err = graphstore.AttemptStated(ctx, tx, opened, graphstore.AttemptWriter, key)
+	if err != nil {
+		return attemptClaim{}, err
+	}
+	if err := graphstore.Caused(ctx, tx, opened, graphstore.NoEvent); err != nil {
 		return attemptClaim{}, err
 	}
 	return claim, nil
@@ -398,6 +415,9 @@ func (claimed *claimedCommentDelivery) take(ctx context.Context, tx pgx.Tx, pend
 	`, pending.CommentID, pending.Target, pending.Attempt).Scan(&claimed.claimedAt); err != nil {
 		return err
 	}
+	if err := graphstore.Attempted(ctx, tx, graphstore.CommentAttempt(pending.CommentID, pending.Target, pending.Attempt)); err != nil {
+		return err
+	}
 	claimed.attempt = pending.Attempt
 	claimed.pending = pending
 	return nil
@@ -415,12 +435,14 @@ func (claimed *claimedCommentDelivery) take(ctx context.Context, tx pgx.Tx, pend
 func (claimed *claimedCommentDelivery) standDown(
 	ctx context.Context, tx pgx.Tx, pending *model.CommentDelivery, resume attemptClaim,
 ) error {
-	_, err := tx.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		update comment_deliveries set claimed_at = null
 		where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
 		  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`)
-	`, pending.CommentID, pending.Target, pending.Attempt, resume.claimedAt)
-	return err
+	`, pending.CommentID, pending.Target, pending.Attempt, resume.claimedAt); err != nil {
+		return err
+	}
+	return graphstore.Attempted(ctx, tx, graphstore.CommentAttempt(pending.CommentID, pending.Target, pending.Attempt))
 }
 
 // commentDeliveryReceipt is the comment.delivery receipt an attempt row owes, read off that
@@ -463,6 +485,9 @@ func (s *server) completeCommentDelivery(
 	// The session the settle records, where this settle made its node: the node is made before
 	// the receipt exists and moves onto it once it is appended (caused below).
 	var reached graphstore.Uncaused
+	// What the settle makes of the attempt, held for the receipt it appends, as the receipt's
+	// actor writes it.
+	var stated graphstore.Uncaused
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
 			settled, err := scanCommentDelivery(tx.QueryRow(ctx, `
@@ -474,6 +499,9 @@ func (s *server) completeCommentDelivery(
 				sent.EnvelopeID, sent.State, sent.Error, sent.Duplicate,
 			))
 			if err != nil {
+				return settled, err
+			}
+			if stated, err = graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, actor, graphstore.CommentAttempt(comment.ID, settled.Target, settled.Attempt)); err != nil {
 				return settled, err
 			}
 			// The session this attempt reached, in the transaction that records that it did
@@ -505,7 +533,10 @@ func (s *server) completeCommentDelivery(
 			return commentDeliveryReceipt(comment, actor, answered)
 		},
 		func(ctx context.Context, tx pgx.Tx, receipt int64) error {
-			return graphstore.Caused(ctx, tx, reached, receipt)
+			if err := graphstore.Caused(ctx, tx, reached, receipt); err != nil {
+				return err
+			}
+			return graphstore.Caused(ctx, tx, stated, receipt)
 		},
 	)
 }
@@ -534,9 +565,11 @@ func (s *server) supersedeCommentDelivery(
 ) (model.CommentDelivery, error) {
 	failed := bound
 	failed.State, failed.Error = deliveryOutcome(mentionSupersededError, false)
+	// What the supersede makes of the attempt, held for the receipt it appends.
+	var stated graphstore.Uncaused
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, failed),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			return scanCommentDelivery(tx.QueryRow(ctx, `
+			superseded, err := scanCommentDelivery(tx.QueryRow(ctx, `
 				update comment_deliveries set state = 'failed', error = $5, claimed_at = null
 				where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
 				  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`)
@@ -544,6 +577,11 @@ func (s *server) supersedeCommentDelivery(
 				returning `+commentDeliveryColumns,
 				comment.ID, bound.Target, claim.attempt, claim.claimedAt, mentionSupersededError,
 			))
+			if err != nil {
+				return superseded, err
+			}
+			stated, err = graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, actor, graphstore.CommentAttempt(comment.ID, superseded.Target, superseded.Attempt))
+			return superseded, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
@@ -557,7 +595,9 @@ func (s *server) supersedeCommentDelivery(
 		func(answered model.CommentDelivery) model.Event {
 			return commentDeliveryReceipt(comment, actor, answered)
 		},
-		nil,
+		func(ctx context.Context, tx pgx.Tx, receipt int64) error {
+			return graphstore.Caused(ctx, tx, stated, receipt)
+		},
 	)
 }
 
@@ -657,6 +697,9 @@ func (s *server) recordCommentDeliveryResolution(
 		}, claim, false, nil
 	}
 	if err != nil {
+		return model.CommentDelivery{}, claim, false, err
+	}
+	if err := graphstore.Attempted(ctx, tx, graphstore.CommentAttempt(comment.ID, target.Target, claim.attempt)); err != nil {
 		return model.CommentDelivery{}, claim, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1178,8 +1221,17 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		attempt = updated
+		stated, err := graphstore.AttemptStated(r.Context(), tx, graphstore.Uncaused{}, actor, graphstore.CommentAttempt(comment.ID, attempt.Target, attempt.Attempt))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		event, err := s.appendEvent(r.Context(), tx, commentDeliveryReceipt(comment, actor, attempt))
 		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := graphstore.Caused(r.Context(), tx, stated, event.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1271,6 +1323,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The attempt is sent and answered by the reply, whose node the write above stated.
+	answeredAttempt, err := graphstore.AttemptStated(r.Context(), tx, graphstore.Uncaused{}, actor, graphstore.CommentAttempt(comment.ID, attempt.Target, input.Attempt))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, reply)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1292,6 +1350,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		"comment.answered", actor, payload,
 	))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the answer made of the attempt, under the comment.answered event that records it.
+	if err := graphstore.Caused(r.Context(), tx, answeredAttempt, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -1175,12 +1175,24 @@ func (c mentionComment) settleAbandoned(kind mentionKind, key string) (state men
 		if err != nil {
 			return err
 		}
+		// What each settled attempt now holds, read before any receipt is appended and stated
+		// under that attempt's own receipt, as the receipt's actor writes it.
+		stated := make([]graphstore.Uncaused, len(settled))
+		for index, payload := range settled {
+			if stated[index], err = graphstore.AttemptStated(ctx, tx, graphstore.Uncaused{}, event.Actor,
+				graphstore.CommentAttempt(commentID, payload.Target, payload.Attempt)); err != nil {
+				return err
+			}
+		}
 		receipts = make([]model.Event, 0, len(settled))
-		for _, payload := range settled {
+		for index, payload := range settled {
 			receipt := owner
 			receipt.Type, receipt.Actor, receipt.Payload = "comment.delivery", event.Actor, payload
 			appended, err := deps.Broker.Append(ctx, tx, receipt)
 			if err != nil {
+				return err
+			}
+			if err := graphstore.Caused(ctx, tx, stated[index], appended.ID); err != nil {
 				return err
 			}
 			receipts = append(receipts, appended)

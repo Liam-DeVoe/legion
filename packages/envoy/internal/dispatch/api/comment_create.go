@@ -906,6 +906,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	attempts := make([]model.CommentDelivery, 0, len(resolvedMentions))
 	claims := make([]time.Time, 0, len(resolvedMentions))
+	attemptKeys := make([]graphstore.AttemptKey, 0, len(resolvedMentions))
+	// The attempts' nodes and what their rows hold, held for the comment.created event appended
+	// below, which caused them as it caused the comment's own node.
+	var attemptsOpened graphstore.Uncaused
 	for _, mention := range resolvedMentions {
 		if _, err := tx.Exec(r.Context(), `
 			insert into comment_mentions (comment_id, target, delivery, resolved_session_id)
@@ -918,6 +922,16 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		if mention.ResolveError != "" {
 			resolveError = &mention.ResolveError
 		}
+		// The attempt's node goes in before the row that names it (graphstore.AttemptOpened), and
+		// what the row holds is stated once every attempt of the comment is written, below.
+		key := graphstore.CommentAttempt(comment.ID, mention.Target, 1)
+		nodeKind, nodeAddress, opened, err := graphstore.AttemptOpened(r.Context(), tx, key, actor)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		attemptsOpened.Nodes = append(attemptsOpened.Nodes, opened.Nodes...)
+		attemptsOpened.Tuples = append(attemptsOpened.Tuples, opened.Tuples...)
 		// The attempt commits with its comment, pending and claimed by this process: the mention
 		// sender holds that claim while the send waits on its recipient's lane and writes it again
 		// while it waits (refreshHeldClaims), so the delivery sweep never takes a queued send's
@@ -928,10 +942,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		// lapses a lease later. Either way the delivery sweep has it then (resumeOwedDeliveries).
 		var claimed time.Time
 		attempt, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
-			insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, resolve_error, state, claimed_at)
-			values ($1, $2, 1, $3, $4, $5, 'pending', now())
+			insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, resolve_error, state, claimed_at,
+			                                node_kind, node_address)
+			values ($1, $2, 1, $3, $4, $5, 'pending', now(), $6, $7)
 			returning `+commentDeliveryColumns+`, claimed_at`,
-			comment.ID, mention.Target, mention.Delivery, mention.SessionID, resolveError,
+			comment.ID, mention.Target, mention.Delivery, mention.SessionID, resolveError, nodeKind, nodeAddress,
 		), &claimed)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -939,6 +954,12 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		}
 		attempts = append(attempts, attempt)
 		claims = append(claims, claimed)
+		attemptKeys = append(attemptKeys, key)
+	}
+	attemptsOpened, err = graphstore.AttemptStated(r.Context(), tx, attemptsOpened, actor, attemptKeys...)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	referenceChanges, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, s.deps.ServerURL, comment.CreatedAt)
 	if err != nil {
@@ -1003,6 +1024,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// What the comment states, under the event that stored it: its node's cause, its two base
 	// attributes, and the artifacts it is anchored to and owned by.
 	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, attemptsOpened, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
