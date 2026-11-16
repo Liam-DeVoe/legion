@@ -1,10 +1,16 @@
-import { type Mutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type Mutation,
+  type UseQueryResult,
+  useMutationState,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage, type WriteBounds } from "../../api/client";
 import { accessGroupsQuery, projectAccessQuery, whoAmIQuery } from "../../api/queries";
-import type { ProjectAccess } from "../../api/types";
+import type { AccessGroup, ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import {
@@ -105,6 +111,19 @@ function refusalFallback(project: string, change: AccessChange): string {
     case "slack-channels":
       return `Couldn't name ${project}'s Slack channels.`;
   }
+}
+
+/** Why no group can be named on the list yet, or null when one can: the groups are still
+ *  loading or could not be read, none exists, or the list names every one already. */
+function groupsRefusal(
+  groups: UseQueryResult<readonly AccessGroup[]>,
+  available: readonly string[]
+): string | null {
+  if (groups.isPending) return "Loading the groups…";
+  if (groups.isError) return "Couldn't load the groups.";
+  if (groups.data.length === 0) return "No group exists yet. Make one in Settings → Groups.";
+  if (available.length === 0) return "Every group is on this list already.";
+  return null;
 }
 
 /**
@@ -267,17 +286,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const available = (groups.data ?? [])
     .map((group) => group.name)
     .filter((name) => !listedGroups.includes(name));
-  const groupRefusal =
-    refusal ??
-    (groups.isPending
-      ? "Loading the groups…"
-      : groups.isError
-        ? "Couldn't load the groups."
-        : groups.data.length === 0
-          ? "No group exists yet. Make one in Settings → Groups."
-          : available.length === 0
-            ? "Every group is on this list already."
-            : null);
+  const groupRefusal = refusal ?? groupsRefusal(groups, available);
   const pendingOf = (match: (change: AccessChange) => boolean) => write.pending.some(match);
   const refusalIn = (part: AccessPart): ReactNode => {
     const refused = write.refused;

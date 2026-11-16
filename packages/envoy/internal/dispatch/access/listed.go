@@ -3,7 +3,8 @@ package access
 import (
 	"context"
 	"fmt"
-	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // PersonDirectlyListedSQL is true when some project names the person personParam binds directly:
@@ -19,7 +20,7 @@ func PersonDirectlyListedSQL(personParam string) string {
 // and lowercase.
 func Listed(ctx context.Context, q Querier, email string) (bool, error) {
 	var listed bool
-	login := strings.ToLower(strings.TrimSpace(email))
+	login := model.CanonicalLogin(email)
 	if err := q.QueryRow(ctx, `select `+PersonDirectlyListedSQL("$1"), login).Scan(&listed); err != nil {
 		return false, fmt.Errorf("read whether any project names %s: %w", login, err)
 	}

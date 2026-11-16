@@ -148,18 +148,28 @@ func ReadProject(ctx context.Context, q Querier, key string) (model.ProjectAcces
 // SetOwner gives project key to owner, a full member who has signed in, at any time, whoever owned
 // it before. It appends project.access_changed in tx.
 func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner string, by model.Actor) (model.ProjectAccess, model.Event, error) {
-	login := model.CanonicalLogin(owner)
-	kind, err := MemberKind(ctx, tx, login)
+	login, err := fullMemberOwner(ctx, tx, owner)
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
-	}
-	if kind != model.MemberFull {
-		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %s is not one", ErrOwnerNotAllowed, login)
 	}
 	if err := updateProject(ctx, tx, key, `update projects set owner = $2 where key = $1`, login); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	return appendProjectChange(ctx, tx, ev, key, model.AccessOwnerChanged, "", by)
+}
+
+// fullMemberOwner answers the stored form of owner when a full member who has signed in holds it,
+// the one kind of person who may own a project or a group, and ErrOwnerNotAllowed for anyone else.
+func fullMemberOwner(ctx context.Context, q Querier, owner string) (string, error) {
+	login := model.CanonicalLogin(owner)
+	kind, err := MemberKind(ctx, q, login)
+	if err != nil {
+		return "", err
+	}
+	if kind != model.MemberFull {
+		return "", fmt.Errorf("%w: %s is not one", ErrOwnerNotAllowed, login)
+	}
+	return login, nil
 }
 
 // SetVisibility makes project key public or private. It appends project.access_changed in tx.
@@ -396,13 +406,9 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 	if err := LockGroupName(ctx, tx, name); err != nil {
 		return model.AccessGroup{}, model.Event{}, err
 	}
-	ownerLogin := model.CanonicalLogin(owner)
-	kind, err := MemberKind(ctx, tx, ownerLogin)
+	ownerLogin, err := fullMemberOwner(ctx, tx, owner)
 	if err != nil {
 		return model.AccessGroup{}, model.Event{}, err
-	}
-	if kind != model.MemberFull {
-		return model.AccessGroup{}, model.Event{}, fmt.Errorf("%w: %s is not one", ErrOwnerNotAllowed, ownerLogin)
 	}
 	people := make([]string, 0, len(members))
 	for _, member := range members {
