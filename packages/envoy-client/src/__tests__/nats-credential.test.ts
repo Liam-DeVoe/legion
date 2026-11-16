@@ -168,6 +168,26 @@ describe("which credential a session connects to NATS with", () => {
     expect(resolved({ ...env, NATS_AUTH: "none" }, file)).toEqual({ kind: "none" });
   });
 
+  test("a hub with no auth service is refused naming the setting that chose the broker token", () => {
+    // The remedy is the one that undoes the choice: unsetting NATS_AUTH does nothing for a
+    // session whose envoy.json chose the broker token.
+    const env = podEnvironment("http://broker.test");
+    const fromFile = resolved(env, {
+      envoy: { natsUrls: ["nats://nats.internal.example:4222"], natsAuth: "broker" },
+    });
+    if (!("kind" in fromFile) || fromFile.kind !== "broker")
+      throw new Error("no broker credential");
+    expect(() => fromFile.broker.authenticator(undefined)).toThrow(
+      /^envoy\.natsAuth in \/\S+\/envoy\.json is broker, but the NATS server sent no nonce to sign: it runs no auth service, so take natsAuth out of that file for this hub$/
+    );
+    const fromVariable = resolved({ ...env, NATS_AUTH: "broker" });
+    if (!("kind" in fromVariable) || fromVariable.kind !== "broker")
+      throw new Error("no broker credential");
+    expect(() => fromVariable.broker.authenticator(undefined)).toThrow(
+      "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub"
+    );
+  });
+
   test("envoy.natsAuth broker goes only to the servers written beside it", () => {
     // As a file's seed does: a session's token and the proof it signs would otherwise go to any
     // server ENVOY_NATS_URL names, which could relay that proof to the hub it was meant for.

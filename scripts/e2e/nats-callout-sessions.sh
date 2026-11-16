@@ -285,7 +285,7 @@ if [ "$hosts" = real ]; then
   claude_reported=$("$claude_bin" --version) || refuse "the installed Claude Code does not run"
   [ "${claude_reported%% *}" = "$claude_version" ] ||
     refuse "the installed Claude Code prints --version '$claude_reported'; $claude_pin pins $claude_version"
-  note "Claude Code $claude_reported from $claude_pin; $omp_reported as .omp-pin names; pi-envoy packed, claude-envoy built, legion built"
+  note "Claude Code $claude_reported from $claude_pin; $omp_reported ($omp_real) as .omp-pin names; pi-envoy packed, claude-envoy built, legion built"
 fi
 
 # wait_for SECONDS COMMAND...: runs COMMAND every 0.2 s until it succeeds; 1 once SECONDS passed.

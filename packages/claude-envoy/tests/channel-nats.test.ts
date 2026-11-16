@@ -123,6 +123,9 @@ test("a failed dial names each server by scheme, host and port, never a credenti
   const servers = [
     `nats://${userinfo("E2_SENTINEL_TOKEN")}127.0.0.1:4222`,
     `tls://${userinfo("operator", "E2_SENTINEL_PASSWORD")}nats.example:4443`,
+    // nats.js dials a host and port with no scheme, so the message names it as written.
+    "127.0.0.1:4223",
+    `${userinfo("E2_SENTINEL_BARE")}localhost:4224`,
     "E2_SENTINEL_MALFORMED nats address",
   ]
   const failure = await dialChannelNats(
@@ -135,7 +138,7 @@ test("a failed dial names each server by scheme, host and port, never a credenti
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
   )
   expect(failure).toBe(
-    "could not connect to NATS at nats://127.0.0.1:4222, tls://nats.example:4443, a server address that does not parse presenting no credential: CONNECTION_REFUSED",
+    "could not connect to NATS at nats://127.0.0.1:4222, tls://nats.example:4443, 127.0.0.1:4223, localhost:4224, a server address that does not parse presenting no credential: CONNECTION_REFUSED",
   )
   expect(failure).not.toContain("E2_SENTINEL")
 })

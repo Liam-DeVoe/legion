@@ -49,7 +49,7 @@ export interface BrokerNatsCredential {
    * live token, and then starts a trade, so the next reconnect presents a live token where the
    * broker answers one; that case never throws, since nats.js closes a connection for good when
    * its authenticator throws. A server that sent no nonce is the one case that does throw
-   * ({@link NO_AUTH_SERVICE}): nats-server sends one to every client where an auth service runs,
+   * ({@link noAuthService}): nats-server sends one to every client where an auth service runs,
    * so such a hub has nothing that checks a broker token, and a CONNECT with no credential would
    * be admitted there while the session believed it presented its own.
    */
@@ -65,18 +65,25 @@ export interface BrokerNatsCredential {
 }
 
 /** Why a CONNECT presenting the broker token fails at a hub that sent no nonce: it runs no auth
- *  service (a hub that does sends every client one), and the remedy. */
-export const NO_AUTH_SERVICE =
-  "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub";
+ *  service (a hub that does sends every client one), and the remedy, which undoes the setting
+ *  `source` names: `NATS_AUTH`, or a file's `envoy.natsAuth in <file>`. */
+export function noAuthService(source: string): string {
+  const remedy =
+    source === NATS_AUTH_VAR ? `unset ${NATS_AUTH_VAR}` : "take natsAuth out of that file";
+  return `${source} is broker, but the NATS server sent no nonce to sign: it runs no auth service, so ${remedy} for this hub`;
+}
 
 /**
  * The broker token of `env`'s machine, or of a person signed in on it, for the session `session`
- * names, as a NATS connection presents it. Nothing is traded until {@link BrokerNatsCredential.ready}
- * or {@link BrokerNatsCredential.renew}.
+ * names, as a NATS connection presents it, chosen by the setting `source` names (`NATS_AUTH` by
+ * default, or a file's `envoy.natsAuth in <file>`), which a refusal at a hub with no auth service
+ * names. Nothing is traded until {@link BrokerNatsCredential.ready} or
+ * {@link BrokerNatsCredential.renew}.
  */
 export function brokerNatsCredential(
   env: BrokerEnvironment,
-  session: BrokerSessionName | undefined
+  session: BrokerSessionName | undefined,
+  source: string = NATS_AUTH_VAR
 ): BrokerNatsCredential {
   const take = brokerTokenFor(env, session);
   let held: TradedToken | undefined;
@@ -112,7 +119,7 @@ export function brokerNatsCredential(
     ready: () => (live() ? Promise.resolve() : renew()),
     renew,
     authenticator(nonce?: string): Auth {
-      if (nonce === undefined || nonce === "") throw new Error(NO_AUTH_SERVICE);
+      if (nonce === undefined || nonce === "") throw new Error(noAuthService(source));
       const snapshot = held;
       if (snapshot === undefined || !live()) {
         // Nothing live to present: the server refuses this CONNECT, and the trade started here

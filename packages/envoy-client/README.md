@@ -176,8 +176,8 @@ session alone. `brokerNatsCredential(env, session)` holds it: `ready()` takes a 
 dial, `authenticator(nonce)` signs one snapshot of it per CONNECT and presents nothing, starting a
 trade, where it holds no live token, and `renew()` takes the token again, the next session's after
 a switch. A server that sends no nonce runs no auth service, so nothing there checks a broker token:
-the CONNECT fails, naming that and that `NATS_AUTH` should be unset for that hub
-(`NO_AUTH_SERVICE`), rather than going out with no credential.
+the CONNECT fails, naming that and the setting to undo for that hub (`unset NATS_AUTH`, or take
+`natsAuth` out of the file that set it; `noAuthService`), rather than going out with no credential.
 `keepNatsCredential(connection, credential, warn)` renews ahead of each token's expiry and
 reconnects the connection with each new token, before the server drops the user the old one was
 admitted as; a renewal that fails is retried at 2 s doubling to a minute and warned about once,

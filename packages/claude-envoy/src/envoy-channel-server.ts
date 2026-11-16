@@ -364,6 +364,9 @@ export interface ChannelSessionOptions {
    * alone. A failed move leaves the relay closed and the next registration retries it.
    */
   readonly followSession?: () => Promise<void>
+  /** Ends a start still waiting for its connection to come back (`flushThroughRedials`): the
+   *  process is stopping. */
+  readonly startSignal?: AbortSignal
   /** How long a deregistration waits for a registration already on the wire (default
    *  `REGISTRATION_SETTLE_MS`), past which the DELETE goes out anyway. The shutdown path spends
    *  at most `SHUTDOWN_SETTLE_MS` of it, over both of its waits. */
@@ -645,13 +648,16 @@ const CREDENTIAL_NAMES: Record<NatsCredential["kind"], string> = {
   none: "no credential",
 }
 
-/** A NATS server as a failed dial names it: scheme, host and port alone. A URL may carry a token or
- * a user and password (`nats://token@host:port`), and a value that does not parse may be a
+/** A NATS server as a failed dial names it: scheme, host and port alone, and host and port alone
+ * for one written without a scheme, which nats.js dials as `nats://`. A URL may carry a token or a
+ * user and password (`nats://token@host:port`), and a value that does not parse may be a
  * credential pasted into the wrong setting, so neither reaches a log. */
 function serverForLog(server: string): string {
+  const schemed = server.includes("://")
   try {
-    const { protocol, host } = new URL(server)
-    return host === "" ? "a server address that does not parse" : `${protocol}//${host}`
+    const { protocol, host } = new URL(schemed ? server : `nats://${server}`)
+    if (host === "" || /\s/.test(server)) return "a server address that does not parse"
+    return schemed ? `${protocol}//${host}` : host
   } catch {
     return "a server address that does not parse"
   }
@@ -689,6 +695,36 @@ export async function dialChannelNats(
     connection,
     stop: keepNatsCredential(connection, broker, warn),
     followSession: () => followNatsCredential(connection, broker),
+  }
+}
+
+/** How long the startup flush waits before asking again after a redial rejected it. */
+const REDIAL_FLUSH_RETRY_MS = 250
+
+/**
+ * Flushes `connection`, asking again while the connection redials: nats.js rejects every pending
+ * flush with DISCONNECT each time it redials (`protocol.js`'s `prepare`), and a hub that is
+ * restarting, or whose auth service is away, as a channel server starts is a hub it reconnects to,
+ * not one that fails the session's start. A connection closed for good fails it, naming why, as
+ * does `signal`: the process is stopping.
+ */
+async function flushThroughRedials(
+  connection: ChannelConnection,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  for (;;) {
+    try {
+      await connection.flush()
+      return
+    } catch (error) {
+      if (connection.isClosed() || signal?.aborted === true) {
+        throw new Error(
+          `the NATS connection closed before its subscriptions reached the server: ${messageFor(error)}`,
+          { cause: error },
+        )
+      }
+      await Bun.sleep(REDIAL_FLUSH_RETRY_MS)
+    }
   }
 }
 
@@ -1696,7 +1732,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       `envoy-channel: could not read the registered interests (${messageFor(error)}); the next heartbeat retries\n`,
     )
   })
-  await options.connection.flush()
+  // The subscriptions reach the server before the first registration routes anything to them,
+  // through any redial the connection is making as the session starts.
+  await flushThroughRedials(options.connection, options.startSignal)
   await serialized(async () => {
     // Best-effort, as the interests read above is: a listener that refuses this registration
     // because it can give the session no consumer (`inboundOutage` tells the session
@@ -2416,6 +2454,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
         ...(dialled.followSession === undefined ? {} : { followSession: dialled.followSession }),
+        startSignal: booting.signal,
       })
       // INFRA-1026: the Agents page's live view, once this session's mod has a link to bind to.
       // It needs the bus as well as the link, so it starts here rather than beside the bind; a

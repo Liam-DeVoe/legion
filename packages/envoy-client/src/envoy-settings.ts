@@ -312,7 +312,7 @@ function natsCredential(
   const route = brokerRouteConfigured(env);
   if (!route.traded) throw new Error(`${auth.source} is broker, but ${route.gap}`);
   if (named === undefined) requireFileServers(section, namedNatsUrls, filePath, "NATS_AUTH=broker");
-  return { kind: "broker", broker: brokerNatsCredential(env, session) };
+  return { kind: "broker", broker: brokerNatsCredential(env, session, auth.source) };
 }
 
 /**
