@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr4134
+body: |-
+  A session's own agent subject is accepted in both forms of its name, `notifications.agent.<session>`
+  and `notifications.agent.<PROJECT or _>.<session>`, where the client checks a topic against the
+  private stream subjects; any other session's agent subject is still refused in either form.

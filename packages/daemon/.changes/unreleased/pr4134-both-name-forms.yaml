@@ -1,0 +1,11 @@
+kind: Changed
+custom:
+  Issue: pr4134
+body: |-
+  The daemon reads an issue event named in either form, its key alone
+  (`notifications.dispatch.issue.<KEY>.<type>`) or its project first
+  (`notifications.dispatch.issue.<PROJECT>.<KEY>.<type>`), and a failed role-lane forward reported
+  on either form of the lane's name. A name of the issue family that carries a key in neither form
+  is no longer acknowledged as another project's event: it is logged at ERROR with its subject, its
+  stream sequence and a running count, and terminated as poison. Old-form names are counted, and
+  logged at INFO at most once a minute with the count.

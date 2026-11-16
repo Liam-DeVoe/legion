@@ -1,0 +1,10 @@
+kind: Added
+custom:
+  Issue: pr4134
+body: |-
+  The builders and readers of the form of a message name that carries its project:
+  `dispatchIssueSubject(project, key, type)`, `agentSubject(project, session)`, `roleSubject`,
+  `legionWakeSubject` and `NO_PROJECT`, and in `subject-project.ts` `subjectProject`,
+  `canonicalTopic`, `legacyTwin`, `topicForms`, `canonicalRole`, `issueEventKey`, `roleClaimKey`
+  and `parseRoleClaimKey`, with their Go twins. The two builders whose signature changed keep
+  their old output as `legacyAgentSubject` and `legacyDispatchIssueSubject`.
