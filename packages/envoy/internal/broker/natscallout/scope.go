@@ -269,7 +269,7 @@ func (h *heldAccess) run(ctx context.Context) {
 // all at once, each bounded by accessFetchTimeout, and holds the pass once every one has come back
 // answered (hold).
 func (h *heldAccess) refresh(ctx context.Context) {
-	pass := &heldPass{began: h.now(), answers: make(map[heldKey]heldAnswer, len(h.asks))}
+	pass := &heldPass{began: h.now()}
 	answers := make([]heldAnswer, len(h.asks))
 	var failed atomic.Bool
 	var refused sync.Once
@@ -321,6 +321,7 @@ func (h *heldAccess) refresh(ctx context.Context) {
 	if failed.Load() {
 		return
 	}
+	pass.answers = make(map[heldKey]heldAnswer, len(h.asks))
 	for i, ask := range h.asks {
 		pass.answers[ask] = answers[i]
 	}
