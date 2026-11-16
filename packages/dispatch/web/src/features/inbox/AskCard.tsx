@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -24,6 +25,7 @@ import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -37,7 +39,6 @@ import {
   card,
   cardHoverBorder,
   inlineWarningText,
-  inputClasses,
   linkHoverText,
   linkText,
   primaryButtonBg,
@@ -50,6 +51,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
@@ -227,7 +229,7 @@ function useFormRef(): [
  * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
  * card drawn where no list can drop it registers with nobody.
  */
-function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
+export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
@@ -361,6 +363,7 @@ export function AskCard({
     mutation,
     otherSelected,
     questionChoice,
+    questionReads,
     reasonRequired,
     requiresReason,
     selectRealOption,
@@ -408,7 +411,7 @@ export function AskCard({
   const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
-  const source = textSourceOf("ask", displayedAsk.id);
+  const source = textSourceOf("ask", displayedAsk.id, displayedAsk.issue_key);
   // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
   // ask's issue, or the project of the document it was asked on.
   const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
@@ -423,14 +426,14 @@ export function AskCard({
     setQuestionChoice(false);
   });
   const uploading = upload.pending > 0;
-  const answerFieldRef = useRef<HTMLTextAreaElement>(null);
+  const answerFieldRef = useRef<MentionFieldHandle | null>(null);
   // Picking Request changes moves the person straight to the field the server insists
   // on. Keyed on the field actually being mounted, not just on the option: the compact variant
   // unmounts the field when its disclosure closes, and reopening it must refocus.
   const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
   useEffect(() => {
     if (reasonFieldShown) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
@@ -445,7 +448,7 @@ export function AskCard({
     if (!focusNoteOnOpen.current) return;
     focusNoteOnOpen.current = false;
     if (ownWordsOpen) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [ownWordsOpen]);
   // A control that disables itself under the reader's focus - Ask back while sending and once
@@ -460,15 +463,19 @@ export function AskCard({
       handOffFocus(form);
     }
   });
+  const tooltips = useTooltips();
   const submitHintId = `${answerFieldId}-hint`;
   const agentText = useAgentText();
-  // The asker as its button's tooltip: a block ask the server indexed with no pending author
-  // has an empty label and reads as "asked". A session's tooltip also carries its full id, since
-  // the innermost title is the one a browser shows, and an untitled session's name is the short
-  // form `session:<8>…` that sessions started in the same minute share.
+  // The asker as its button's tooltip, on a surface that offers one (`components/tooltips.tsx`;
+  // the new issue page offers none, so the name alone is drawn there): a block ask the server
+  // indexed with no pending author has an empty label and reads as "asked". A session's tooltip
+  // also carries its full id, since the innermost title is the one a browser shows, and an
+  // untitled session's name is the short form `session:<8>…` that sessions started in the same
+  // minute share; its own name opens the copy handles that hold it either way.
   const sessionAuthor = displayedAsk.author.kind === "session" ? displayedAsk.author : undefined;
-  const askerTitle =
-    displayedAsk.author.id === ""
+  const askerTitle = !tooltips
+    ? undefined
+    : displayedAsk.author.id === ""
       ? "asked"
       : sessionAuthor === undefined
         ? agentText.label(displayedAsk.author)
@@ -563,36 +570,29 @@ export function AskCard({
 
   const answerField = (
     <>
-      <label className="block" htmlFor={answerFieldId}>
-        <span
-          className={
-            reasonRequired ? `mb-1 block text-sm font-medium ${textSecondaryOnSurface}` : "sr-only"
-          }
-        >
-          {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
-        </span>
-        <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
-          data-ask-answer=""
-          disabled={isSubmitting}
-          id={answerFieldId}
-          onChange={(event) => {
-            setAnswerText(event.target.value);
-            setQuestionChoice(false);
-          }}
-          onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
-          onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
-          }
-          placeholder={answerPlaceholder}
-          ref={answerFieldRef}
-          rows={2}
-          value={answerText}
-        />
-      </label>
+      <MentionField
+        askAnswer={true}
+        body={answerText}
+        className="font-normal"
+        disabled={isSubmitting}
+        fieldRef={answerFieldRef}
+        issueKey={displayedAsk.issue_key ?? undefined}
+        label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
+        labelHidden={!reasonRequired}
+        onChange={(change) => {
+          setAnswerText(change.body);
+          setQuestionChoice(false);
+        }}
+        onDrop={uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)}
+        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
+        onPaste={
+          uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
+        }
+        placeholder={answerPlaceholder}
+        project={documentProject}
+        rows={2}
+        writing={dispatchWritingBox("ask-answer", "ask-answer")}
+      />
       <DraftUploadStatus upload={upload} />
     </>
   );
@@ -601,7 +601,7 @@ export function AskCard({
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
       className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
       disabled={!canAnswer || isSubmitting || uploading}
-      title={submitHint}
+      title={tooltips ? submitHint : undefined}
       type="submit"
     >
       {mutation.isPending
@@ -670,6 +670,7 @@ export function AskCard({
   if (completed !== null) {
     return (
       <>
+        {questionReads}
         <AskCompletionCard
           answers={answers}
           artifactSlug={artifactSlug}
@@ -717,6 +718,7 @@ export function AskCard({
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
+      {questionReads}
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"
@@ -751,6 +753,7 @@ export function AskCard({
             <MarkdownBody
               markdown={displayedAsk.question}
               source={source}
+              surface="ask-card-question"
               tree={displayedAsk.question_tree}
             />
           </div>
@@ -890,6 +893,7 @@ export function AskCard({
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
                 }}
                 option={option}
+                source={source}
               />
             ))}
             {isApproval ? null : (
@@ -903,6 +907,7 @@ export function AskCard({
                   if (isCompact && !otherSelected) setOwnWordsOpen(true);
                 }}
                 option={{ label: "Other" }}
+                source={source}
               />
             )}
           </fieldset>

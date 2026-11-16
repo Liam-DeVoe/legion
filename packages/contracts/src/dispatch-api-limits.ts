@@ -116,6 +116,27 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
 export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
+ * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the
+ * server answers `400 CAP_EXCEEDED`. It is set above the heaviest set a page was seen to name:
+ * 247 distinct references, measured on 2026-11-05 on dispatch://INFRA-1196 and its four largest
+ * documents. Today's issue page reads its chips with one `GET /api/v1/references` each, 14 on its
+ * heaviest tab. So the count does not split such a load into a second request, while the
+ * client's own budget for the request line can. Generated into Go as
+ * `contracts.ReferenceTargetsMax`, which the server enforces, so the server's refusal and the
+ * client's batches are one number.
+ */
+export const REFERENCE_TARGETS_MAX = 256;
+
+/**
+ * The most session ids one `GET /api/v1/agents/known` names (`id`, repeated). A page asks
+ * once for every agent reference it holds that the live registry does not list, so the bound is a
+ * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
+ * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so
+ * the dashboard's batches and the server's refusal are one number.
+ */
+export const KNOWN_SESSIONS_MAX = 100;
+
+/**
  * The request header that names one write's intent: the same on every retry of that write, and
  * different for every new press. Dispatch accepts it, optionally, on every `POST` and `PATCH`
  * route (`PUT` and `DELETE` are idempotent already): a repeat with the same key and the same

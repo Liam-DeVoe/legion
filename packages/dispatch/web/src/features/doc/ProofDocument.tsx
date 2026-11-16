@@ -21,6 +21,7 @@ import {
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
 import {
   badgeMed,
@@ -42,6 +43,7 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { PlainText } from "../refs/plain-text";
 import { watchPicturePath } from "../refs/reference-target";
 import {
   buildDispatchReference,
@@ -59,6 +61,7 @@ import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
+import { DocumentRefPicker } from "./DocumentRefPicker";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
@@ -306,12 +309,16 @@ export function ProofDocument({
   const queryClient = useQueryClient();
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
-  const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
+  const textSource = useMemo(
+    () => textSourceOf("artifact", artifact.id, artifact.issue_key),
+    [artifact.id, artifact.issue_key]
+  );
   const followReference = useReferenceClick();
   // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
   const documentRef = buildDispatchReference(documentRoute(artifact));
+  const tooltips = useTooltips();
   const artifactQuery = useQuery({
     queryKey: ["artifact", artifact.id],
     queryFn: () => api.getArtifact(artifact.id),
@@ -1138,22 +1145,38 @@ export function ProofDocument({
               ? "1 open decision"
               : `${openBlockAsks.length} open decisions`}
           </span>
-          <a
-            className={`block min-w-0 max-w-[90ch] truncate text-sm font-medium underline ${linkText} ${linkHoverText}`}
-            href={blockFragment(openDecision.block_id ?? "")}
-            onClick={(event) => {
-              event.preventDefault();
-              const blockID = openDecision.block_id;
-              if (blockID === undefined || blockID === null) {
-                return;
-              }
-              window.location.hash = blockFragment(blockID);
-              focusInEditor(() => editorRef.current?.focusBlock(blockID));
-            }}
-            title={openDecision.question}
+          {/* A link's words and its `title` hold no markup, so the question is read as its plain
+              words: the reading list's `document-open-decision` (`DISPATCH_READING_SURFACES`).
+              The question is an ask block of this document, so a `#id` in it names a question
+              of this document. */}
+          <PlainText
+            markdown={openDecision.question}
+            source={textSource}
+            surface="document-open-decision"
+            tree={openDecision.question_tree}
           >
-            <TruncatedText>{openDecision.question}</TruncatedText>
-          </a>
+            {(question) => (
+              <a
+                className={`block min-w-0 max-w-[90ch] truncate text-sm font-medium underline ${linkText} ${linkHoverText}`}
+                href={blockFragment(openDecision.block_id ?? "")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  const blockID = openDecision.block_id;
+                  if (blockID === undefined || blockID === null) {
+                    return;
+                  }
+                  window.location.hash = blockFragment(blockID);
+                  focusInEditor(() => editorRef.current?.focusBlock(blockID));
+                }}
+                // Until the engine has answered, the question as written, so the link is never
+                // left with no words: the reading list's `document-open-decision`.
+                title={tooltips ? (question ?? openDecision.question) : undefined}
+              >
+                {/* The same load state: the reading list's `document-open-decision`. */}
+                <TruncatedText>{question ?? openDecision.question}</TruncatedText>
+              </a>
+            )}
+          </PlainText>
           {openBlockAsks.length > 1 ? (
             <button
               aria-label="Next open decision"
@@ -1193,7 +1216,16 @@ export function ProofDocument({
         {anchoredThread === undefined || anchoredHost === undefined
           ? null
           : createPortal(anchoredThread.children, anchoredHost.slot, String(anchoredHost.key))}
+        {/* The editor paints the body itself and draws its references as decorations: why the
+            renderer has no mount here is the reading list's `document-body`
+            (`DISPATCH_READING_SURFACES`). */}
         <DocumentReferences editor={editorHandle} source={textSource} />
+        <DocumentRefPicker
+          editor={editorHandle}
+          enabled={editorAccess(page, isClosed, schemaReadOnly) === "edit"}
+          issueKey={owner.kind === "issue" ? owner.key : undefined}
+          project={owner.kind === "document" ? owner.project : undefined}
+        />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (
@@ -1267,6 +1299,7 @@ export function ProofDocument({
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
       ) : showDiff ? (
+        // The exact characters a change swaps: the reading list's `change-view-diff`.
         <ChangeView after={liveMarkdown} before={versionMarkdown} />
       ) : (
         <div data-testid="version-view">
@@ -1275,6 +1308,7 @@ export function ProofDocument({
             asks={blockAsks}
             createdAt={versions.find((item) => item.number === version)?.created_at}
             highlight={highlight}
+            issueKey={artifact.issue_key}
             owner={owner.kind === "document" ? owner : undefined}
             version={version}
           />

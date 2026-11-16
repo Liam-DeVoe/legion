@@ -893,13 +893,21 @@ type issueDetail struct {
 	// pays for it here, with the detail it already reads, instead of a graph request of
 	// its own; the edges themselves are read only when the reader opens the panel.
 	ReferencedByCount int `json:"referenced_by_count"`
+	// ComponentsReasonTree is the tree of the reason the issue's attachment gives for touching no
+	// component (Components.Reason, of mode `none`), which its writer typed in a box that carries
+	// the reference picker and the header's Components line draws through the renderer. It
+	// stands beside the issue rather than inside its components because model.Issue is the
+	// payload of the issue's events and no payload gains a field, and it stands last, so an
+	// answer to a caller that asked for no trees keeps its bytes.
+	ComponentsReasonTree model.DisplayTree `json:"components_reason_tree,omitempty"`
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
 // loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
 // the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
-// the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
+// the documents' approval reasons, of the open asks' texts and of the attachment's reason for
+// touching no component, which only the dashboard reads.
 func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
@@ -960,12 +968,15 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		return issueDetail{}, err
 	}
 	// The approvals are read by the second batch, so their reasons are registered after it,
-	// where the sequential loader read them after loadArtifacts. The reasons and the open asks'
-	// texts are one query of the stored trees, and what it did not hold is stored on a goroutine
-	// of its own, beside the rest of the request.
+	// where the sequential loader read them after loadArtifacts. The reasons, the open asks'
+	// texts and the attachment's reason are one query of the stored trees, and what it did not
+	// hold is stored on a goroutine of its own, beside the rest of the request.
 	reader := s.readDisplayTrees(ctx, trees)
 	read.Artifacts = artifactReads(artifacts, reader)
 	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
+	if read.Issue.Components.Mode == "none" {
+		reader.textOf(&read.ComponentsReasonTree, read.Issue.Components.Reason)
+	}
 	reader.resolve()
 	return read, nil
 }
@@ -1145,6 +1156,16 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 // statement's 8,097 buffers on the measurement database. The two columns are functionally
 // determined by the key the walk already carries, so `union` removes exactly the rows it
 // removed before.
+//
+// A child's `needs`, the keys of the issues it waits on, are one lateral over issue_links keyed
+// by the child's own key, which the table's primary key (issue_key, kind, target_key) leads
+// with, so the statement makes one keyed read per child and no read of the table by anything
+// else: this is the single-issue read, where issueProgressLateral counts one issue's children
+// the same way and the listing counts its whole page's in one grouped read instead
+// (issueSummaryJoins). Written as that grouped read, over the direct children the rollup
+// already names, the planner dropped the child keys from the condition and read issue_links by
+// kind alone. The claim is two columns of the child's own row, which this statement already
+// reads, so it costs no join at all.
 var issueChildrenStatement = `
 		with recursive subtree as (
 			select key as root, key, 1 as depth, status, updated_at from issues where parent_key = $1
@@ -1160,27 +1181,41 @@ var issueChildrenStatement = `
 			from subtree s
 			group by s.root
 		)
-		select c.key, c.title, c.status, r.done, r.total, r.active_at,
+		select i.key, i.title, i.status, r.done, r.total, r.active_at,
 		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
-		                 from issue_external_links l where l.issue_key = c.key), '[]')
-		from issues c join rollup r on r.root = c.key
-		where c.parent_key = $1 order by c.key
+		                 from issue_external_links l where l.issue_key = i.key), '[]'),
+		       blockers.keys,
+		       ` + issueClaimColumns + `
+		from issues i join rollup r on r.root = i.key
+		left join lateral (
+			select array_agg(l.target_key order by l.target_key) as keys
+			from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'
+		) blockers on true
+		where i.parent_key = $1 order by i.key
 	`
 
 // scanIssueChildren reads the rows issueChildrenStatement returns. An issue with no child keeps
-// a non-nil empty list, which the response carries as [].
+// a non-nil empty list, which the response carries as []. A child waiting on nothing scans a null
+// array, so its Needs stays nil and the answer leaves it out, as it does a claim nobody holds.
 func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 	children := []model.IssueChild{}
 	for rows.Next() {
 		var child model.IssueChild
 		var links []byte
-		if err := rows.Scan(&child.Key, &child.Title, &child.Status,
-			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links); err != nil {
+		var claim claimScan
+		targets := []any{&child.Key, &child.Title, &child.Status,
+			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links, &child.Needs}
+		if err := rows.Scan(append(targets, claim.targets()...)...); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(links, &child.ExternalLinks); err != nil {
 			return nil, err
 		}
+		claimed, err := claim.resolve(child.Key)
+		if err != nil {
+			return nil, err
+		}
+		child.Claim = claimed
 		children = append(children, child)
 	}
 	return children, rows.Err()

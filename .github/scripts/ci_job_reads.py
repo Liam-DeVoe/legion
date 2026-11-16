@@ -2175,7 +2175,10 @@ GATES = [
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
     ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
-        ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,122"),
+        ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
+                                                     "file's path, lists that directory and reads the package.json and "
+                                                     "LICENSE.txt in it"),
+        ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,139"),
         ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
@@ -2437,11 +2440,13 @@ GATES = [
         # is what its two tsc programs list, so check-ts-filters.sh writes them into the filter's
         # listed block and holds the block to them (ci_ts_programs.py, LISTED), and rule 9's second
         # direction passes over that block's patterns.
+        (BROWSER_SITE, f"packages/dispatch/e2e/__tests__/reading-walk.test.ts:283-322 reads the spec files of the references lane, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:12-16"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:455-456"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:30 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, by the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
         (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
+        (f"{ENVOY}/internal/dispatch/text/testdata/head-refs.json", f"packages/dispatch/web/src/features/refs/head-refs.test.ts:22-32, the new URL at :25, reads the head table the Go text package's HeadRefs is held to as well, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
         (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:162-163, the new URL at :163"),
         ("packages/contracts/schemas/dispatch-openapi.json",
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:37-40, the new URL at :38: the generated API "
@@ -3190,4 +3195,8 @@ EXCLUDED = {
                     "every file the build reads",
     "browser_image": "gates browser-image.yaml's image build; .github/scripts/check-image-trigger-paths.sh proves it covers "
                      "every file the build reads",
+    "dispatch_references": "gates ci.yaml's dispatch-references job, a pull-request preview of the reference rows that is "
+                           "outside ci-ok (CI_OK_EXEMPT) and so gates no merge; its filter names the eleven spec files "
+                           "and what they test, less than the job reads on purpose, and the dispatch_browser gate, "
+                           "whose full lane the merge queue runs, holds every read of those rows",
 }

@@ -186,6 +186,15 @@ test("ArtifactDetails links each inbound source to the record that cites it", as
       ref: "dispatch://CORE-1/artifact/diagram-png",
     }),
   });
+  // The citing comment's excerpt is the head of its body, which the renderer draws, so the
+  // reference in it reads its issue's summary for the document's name.
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Fix the thing",
+  });
 
   try {
     const view = renderDetails(artifact);
@@ -199,6 +208,7 @@ test("ArtifactDetails links each inbound source to the record that cites it", as
     );
     view.unmount();
   } finally {
+    getIssueSummary.mockRestore();
     getReferences.mockRestore();
   }
 });

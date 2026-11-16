@@ -219,10 +219,13 @@ env:
   # `merge_group`, holds `actions: write`, runs no dependency code, reports no result to ci-ok
   # and is no job any verdict waits for. `ci-ok` is the verdict: it reports nothing to itself,
   # and the jobs it judges are its `needs:`, which check-ci-filters.sh holds to every job of this
-  # file but these three. `pr-title` is the other check main's ruleset requires, carried by that
+  # file but these four. `pr-title` is the other check main's ruleset requires, carried by that
   # job's own check run: its result is nothing the verdict waits for, it carries no report step,
   # and the queue reads it as a check of its own, so a verdict that needed it would only make one
-  # required check wait for the other.
+  # required check wait for the other. `dispatch-references` runs a slice of the browser suite on
+  # a pull request for feedback alone: the merge queue's full lane gates every row of it already,
+  # and a required check is the repository owner's to change, so it carries no report step and
+  # the verdict waits for nothing of it (that job's head comment says the rest).
   # That check asks none of the ci-ok rules of a job named here, and refuses
   # one that carries the ci-ok-report step: ci-ok.sh fails a result for a job CI_OK_SELECTED_BY
   # cannot map. The list is written as CI_OK_SELECTED_BY above is, a JSON array over lines rather
@@ -231,6 +234,7 @@ env:
     [
       "cancel-started",
       "ci-ok",
+      "dispatch-references",
       "pr-title"
     ]
 
@@ -357,6 +361,11 @@ jobs:
       # only which lane it runs: that job's `lane:` input reads the label, and the comment there
       # says what each event gets.
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.dispatch_browser }}
+      # The reference rows' preview (dispatch-references): every Chromium row of the eleven spec
+      # files dispatch://INFRA-1702's Verification document names, on a pull request that
+      # changes what they test. No `full-ci` term: the job runs on a pull request alone and
+      # gates nothing, and the merge queue's full lane runs the same rows either way.
+      dispatch_references: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.dispatch_references }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
       # The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
       # them on the tree the change lands as, and that is where their result normally comes from;
@@ -400,7 +409,7 @@ jobs:
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_session_stall }}
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
-      ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.ci_filters }}
+      ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.ci_images }}
       # The second source of every tool install, proved by driving it: no `full-ci` term, so the
       # proof comes back on every change that selects it. It selects the arm64 half of that
@@ -1644,6 +1653,10 @@ jobs:
               # guide_layout below, and a guide-only change has to select this job for it.
               - *guide_layout_files
               - 'scripts/third-party-notices.test.ts'
+              # scripts/third-party-notices.test.ts:102-105 lists the Dispatch web app's typeface:
+              # it resolves the font file's path, lists that directory and reads the package.json
+              # and LICENSE.txt in it.
+              - 'packages/dispatch/web/src/fonts/inter/**'
               - 'scripts/third-party-notices.ts'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'
@@ -2277,6 +2290,10 @@ jobs:
             dispatch_ui:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-ui.yaml'
+              # packages/dispatch/e2e/__tests__/reading-walk.test.ts:283-322 reads the spec files
+              # of the `references` lane out of this workflow and fails on a reading spec the lane
+              # does not name, so a change to that list runs the job that runs the test.
+              - '.github/workflows/dispatch-browser.yaml'
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
@@ -2313,10 +2330,15 @@ jobs:
               - 'packages/contracts/src/dispatch-api.ts'
               - 'packages/contracts/src/dispatch-block-ref.ts'
               - 'packages/contracts/src/dispatch-href.ts'
+              - 'packages/contracts/src/dispatch-mentions.ts'
+              - 'packages/contracts/src/dispatch-reading-surfaces.ts'
               - 'packages/contracts/src/dispatch-snippet.ts'
+              - 'packages/contracts/src/dispatch-text-references-code.ts'
+              - 'packages/contracts/src/dispatch-text-references-in-code.ts'
               - 'packages/contracts/src/dispatch-text-references.ts'
               - 'packages/contracts/src/dispatch-text-rules.ts'
               - 'packages/contracts/src/dispatch-tools.ts'
+              - 'packages/contracts/src/dispatch-writing-boxes.ts'
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
@@ -2350,6 +2372,10 @@ jobs:
               # The digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the
               # same bytes, read by e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs.
               - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
+              # The head table the dashboard's headRefs and the Go text package's HeadRefs are
+              # both held to, read by web/src/features/refs/head-refs.test.ts:22-32 (the new URL
+              # at :25), which this job runs.
+              - 'packages/envoy/internal/dispatch/text/testdata/head-refs.json'
               # e2e/__tests__/local-instance-support.test.ts:158-160 reads this table (the new URL
               # at :159) and holds shellQuote to it.
               - 'packages/envoy/scripts/fixtures/shell-quote.json'
@@ -2424,10 +2450,15 @@ jobs:
               - 'packages/contracts/src/dispatch-api.ts'
               - 'packages/contracts/src/dispatch-block-ref.ts'
               - 'packages/contracts/src/dispatch-href.ts'
+              - 'packages/contracts/src/dispatch-mentions.ts'
+              - 'packages/contracts/src/dispatch-reading-surfaces.ts'
               - 'packages/contracts/src/dispatch-snippet.ts'
+              - 'packages/contracts/src/dispatch-text-references-code.ts'
+              - 'packages/contracts/src/dispatch-text-references-in-code.ts'
               - 'packages/contracts/src/dispatch-text-references.ts'
               - 'packages/contracts/src/dispatch-text-rules.ts'
               - 'packages/contracts/src/dispatch-tools.ts'
+              - 'packages/contracts/src/dispatch-writing-boxes.ts'
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
@@ -2899,10 +2930,15 @@ jobs:
               - 'packages/contracts/src/dispatch-api.ts'
               - 'packages/contracts/src/dispatch-block-ref.ts'
               - 'packages/contracts/src/dispatch-href.ts'
+              - 'packages/contracts/src/dispatch-mentions.ts'
+              - 'packages/contracts/src/dispatch-reading-surfaces.ts'
               - 'packages/contracts/src/dispatch-snippet.ts'
+              - 'packages/contracts/src/dispatch-text-references-code.ts'
+              - 'packages/contracts/src/dispatch-text-references-in-code.ts'
               - 'packages/contracts/src/dispatch-text-references.ts'
               - 'packages/contracts/src/dispatch-text-rules.ts'
               - 'packages/contracts/src/dispatch-tools.ts'
+              - 'packages/contracts/src/dispatch-writing-boxes.ts'
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
@@ -2988,10 +3024,15 @@ jobs:
               - 'packages/contracts/src/dispatch-api.ts'
               - 'packages/contracts/src/dispatch-block-ref.ts'
               - 'packages/contracts/src/dispatch-href.ts'
+              - 'packages/contracts/src/dispatch-mentions.ts'
+              - 'packages/contracts/src/dispatch-reading-surfaces.ts'
               - 'packages/contracts/src/dispatch-snippet.ts'
+              - 'packages/contracts/src/dispatch-text-references-code.ts'
+              - 'packages/contracts/src/dispatch-text-references-in-code.ts'
               - 'packages/contracts/src/dispatch-text-references.ts'
               - 'packages/contracts/src/dispatch-text-rules.ts'
               - 'packages/contracts/src/dispatch-tools.ts'
+              - 'packages/contracts/src/dispatch-writing-boxes.ts'
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
@@ -3564,36 +3605,6 @@ jobs:
               - '.github/workflows/browser-image.yaml'
               - '.github/docker/**'
               - '.github/scripts/ci_images.py'
-            # check-ci-filters.sh, which holds every filter above to what its job reads: every file
-            # whose change can move a Go closure (Go code anywhere, the modules' embedded files and
-            # testdata, every module and workspace file, the target lists the go commands expand
-            # over), every workflow file, and the check's own script, engine, data, rules and path
-            # model.
-            ci_filters:
-              # The directory rather than the four workflows the check names one by one (this
-              # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
-              # workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
-              # this one that runs on merge_group - and a rule that refuses a new workflow has to
-              # run on the change that adds one, which a list of the names already there cannot
-              # select.
-              - '.github/workflows/**'
-              - '.github/scripts/check-ci-filters.sh'
-              - '.github/scripts/ci_filter_coverage.py'
-              - '.github/scripts/ci_job_reads.py'
-              - '.github/scripts/ci_workflow_rules.py'
-              - '.github/scripts/workflow_paths.py'
-              - '.github/go-release-targets.json'
-              - '.github/agent-secrets-client-targets.json'
-              - '.github/envoy-infra-targets.json'
-              # ci_job_reads.py reads the workspace list from the root manifest.
-              - 'package.json'
-              - '**/*.go'
-              - '**/go.mod'
-              - '**/go.sum'
-              - '**/go.work'
-              - '**/go.work.sum'
-              - 'packages/daemon/**'
-              - 'packages/envoy/**'
             # ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
             # source every tool install reads when the first source does not serve the bytes:
             # the manifest that names both sources of each row, the fetch helper every install
@@ -3700,8 +3711,11 @@ jobs:
       # race lane filters are here, and so is envoy_client, which the first step had no room for
       # once main's new test files grew its generated blocks, and so is private_names_port, whose
       # generated block names every migration test of the daemon's store and grows with each one
-      # main adds. They share no group with a filter of the other steps but ci_router,
-      # go_workspace, bun_install and legion_command, which this string writes again.
+      # main adds. dispatch_references is here too, since neither of the other two strings has
+      # the room, and so is ci_filters, which moved from the second when the contracts modules
+      # dispatch://INFRA-1702 added grew that string's four listed blocks past rule 18's margin.
+      # Neither names a group. The others share no group with a filter of the other steps but
+      # ci_router, go_workspace, bun_install and legion_command, which this string writes again.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter3
         if: github.event_name != 'workflow_dispatch'
@@ -4368,6 +4382,128 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!**/*_test.go'
               # END generated
+            # The reference rows' preview (dispatch-references): the eleven spec files
+            # dispatch://INFRA-1702's Verification document names and the nine of the reading
+            # list's walk, which dispatch-browser.yaml's `references` lane runs on Chromium, and
+            # what they test. Narrow on purpose: unlike
+            # every gate's filter here it names less than its job reads (the Bun install, the
+            # Dispatch server's whole closure, the rest of the dashboard, the e2e harness every
+            # spec shares, this file). That job gates nothing, so a change this list misses loses
+            # a preview and no check, and the full lane the merge queue runs through the
+            # dispatch_browser filter of the second step, which does name every read, runs every
+            # one of these rows. It names the reference framework, the shared field, and the one
+            # file of each covered box of the writing list, whose change can take a box's picker
+            # away, and no more: over the 200 newest pull-request runs of 2026-11-13, a list that
+            # also named the six feature directories mounting the field and the shared harness
+            # selected about half of them (about 300 runs and 6,000 runner-minutes a day), so the
+            # four shard machines start for a pull request that changes the references or a box
+            # that holds the picker, and not for every dashboard change.
+            # For the same reason .github/scripts/ci_job_reads.py lists it in EXCLUDED rather
+            # than as a gate, and it carries no generated block: rule 17 of
+            # .github/scripts/check-ci-filters.sh writes one for a gate's filter alone.
+            dispatch_references:
+              # The workflow that holds the lane's steps.
+              - '.github/workflows/dispatch-browser.yaml'
+              # The eleven spec files, and the helpers only they share: the reference surfaces'
+              # own helpers, the search helpers and the writing list's walk. check-ci-filters.sh
+              # (rule 20) fails on a spec file the lane's `lane_files` in dispatch-browser.yaml
+              # runs that this list misses.
+              - 'packages/dispatch/e2e/bare-references.e2e.ts'
+              - 'packages/dispatch/e2e/btw.e2e.ts'
+              - 'packages/dispatch/e2e/mention-composer.e2e.ts'
+              - 'packages/dispatch/e2e/mention-reference.e2e.ts'
+              - 'packages/dispatch/e2e/reference-kinds.e2e.ts'
+              - 'packages/dispatch/e2e/reference-naming.e2e.ts'
+              - 'packages/dispatch/e2e/reference-picker.e2e.ts'
+              - 'packages/dispatch/e2e/reference-titles.e2e.ts'
+              - 'packages/dispatch/e2e/refetch-budget.e2e.ts'
+              - 'packages/dispatch/e2e/writing-surfaces.e2e.ts'
+              - 'packages/dispatch/e2e/search.e2e.ts'
+              # The reading list's walk, one spec per world of surfaces (R9), and the world and
+              # check they share.
+              - 'packages/dispatch/e2e/reading-*.e2e.ts'
+              - 'packages/dispatch/e2e/reading-rows.ts'
+              # Main's parse-count walk, which holds every page those rows draw to no parse of a
+              # stored text on the page's own thread.
+              - 'packages/dispatch/e2e/parse-count.e2e.ts'
+              - 'packages/dispatch/e2e/reference-surfaces.ts'
+              - 'packages/dispatch/e2e/search.ts'
+              - 'packages/dispatch/e2e/writing-boxes.ts'
+              # The reference framework: the picker, the reader and the renderers.
+              - 'packages/dispatch/web/src/features/refs/**'
+              # The shared field, and the file of every covered row of the writing list, which
+              # writing-surfaces.e2e.ts walks: a change to one can take a box's picker away.
+              - 'packages/dispatch/web/src/features/conversation/MentionField.tsx'
+              - 'packages/dispatch/web/src/features/conversation/MentionComposer.tsx'
+              - 'packages/dispatch/web/src/features/conversation/ConversationTab.tsx'
+              - 'packages/dispatch/web/src/features/inbox/ThreadBody.tsx'
+              - 'packages/dispatch/web/src/features/inbox/AskCard.tsx'
+              - 'packages/dispatch/web/src/features/inbox/DeclineControl.tsx'
+              - 'packages/dispatch/web/src/features/inbox/AskThread.tsx'
+              - 'packages/dispatch/web/src/features/margin/CommentsTab.tsx'
+              - 'packages/dispatch/web/src/features/margin/ThreadCard.tsx'
+              - 'packages/dispatch/web/src/features/doc/DocumentRefPicker.tsx'
+              - 'packages/dispatch/web/src/features/doc/editor.ts'
+              - 'packages/dispatch/web/src/features/doc/ApprovalChip.tsx'
+              - 'packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx'
+              - 'packages/dispatch/web/src/features/agents/AgentsPage.tsx'
+              - 'packages/dispatch/web/src/features/agent-view/AgentThread.tsx'
+              - 'packages/dispatch/web/src/features/agent-view/ReferenceTriggers.tsx'
+              - 'packages/dispatch/web/src/features/issue/DecisionsPanel.tsx'
+              - 'packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx'
+              - 'packages/dispatch/web/src/features/architecture/AttachmentLists.tsx'
+              - 'packages/dispatch/web/src/features/priorities/PriorityDescription.tsx'
+              - 'packages/dispatch/web/src/features/priorities/useInPlaceDraft.ts'
+              # The contracts the reference rows' shapes come from.
+              - 'packages/contracts/src/dispatch-text-references*.ts'
+              - 'packages/contracts/src/dispatch-writing-boxes.ts'
+              - 'packages/contracts/src/dispatch-reading-surfaces.ts'
+              # The server side of references: the text and reference resolution, the document
+              # model, and the API files that answer search, references, comments, replies and
+              # which sessions Dispatch holds a record of.
+              - 'packages/envoy/internal/dispatch/text/**'
+              - 'packages/envoy/internal/dispatch/refs/**'
+              - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/api/search*.go'
+              - 'packages/envoy/internal/dispatch/api/references*.go'
+              - 'packages/envoy/internal/dispatch/api/comment*.go'
+              - 'packages/envoy/internal/dispatch/api/replies*.go'
+              - 'packages/envoy/internal/dispatch/api/reply*.go'
+              - 'packages/envoy/internal/dispatch/api/agents_known*.go'
+              # No browser row compiles a Go test file, so a change to one of the packages above
+              # that touches only its tests starts no preview. The step's some-with-excludes
+              # quantifier reads a `!` pattern per changed file.
+              - '!packages/envoy/internal/dispatch/**/*_test.go'
+            # check-ci-filters.sh, which holds every filter above to what its job reads: every file
+            # whose change can move a Go closure (Go code anywhere, the modules' embedded files and
+            # testdata, every module and workspace file, the target lists the go commands expand
+            # over), every workflow file, and the check's own script, engine, data, rules and path
+            # model.
+            ci_filters:
+              # The directory rather than the four workflows the check names one by one (this
+              # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
+              # workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
+              # this one that runs on merge_group - and a rule that refuses a new workflow has to
+              # run on the change that adds one, which a list of the names already there cannot
+              # select.
+              - '.github/workflows/**'
+              - '.github/scripts/check-ci-filters.sh'
+              - '.github/scripts/ci_filter_coverage.py'
+              - '.github/scripts/ci_job_reads.py'
+              - '.github/scripts/ci_workflow_rules.py'
+              - '.github/scripts/workflow_paths.py'
+              - '.github/go-release-targets.json'
+              - '.github/agent-secrets-client-targets.json'
+              - '.github/envoy-infra-targets.json'
+              # ci_job_reads.py reads the workspace list from the root manifest.
+              - 'package.json'
+              - '**/*.go'
+              - '**/go.mod'
+              - '**/go.sum'
+              - '**/go.work'
+              - '**/go.work.sum'
+              - 'packages/daemon/**'
+              - 'packages/envoy/**'
 
       # filter_verdicts above is one object over the three steps, the shape .github/scripts/ci-ok.jq
       # reads. A GitHub expression can build no object from three, so jq merges them here. A
@@ -4916,6 +5052,57 @@ jobs:
       # `dispatch_browser` output above runs the suite either way.
       lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # The reference rows' preview: every Chromium row of the eleven spec files
+  # dispatch://INFRA-1702's Verification document names and the nine of the reading list's
+  # walk, through dispatch-browser.yaml's `references` lane - its binaries job, its four shard
+  # legs and its merge job, and none of its
+  # alone, two-process, embedder or visual jobs. The pull-request lane above runs only the few of
+  # those rows that carry `@pr`, so without this job a change to the reference framework got the
+  # rest from a run by hand.
+  #
+  # Outside ci-ok on purpose: CI_OK_EXEMPT names it, ci-ok does not need it, and it passes no
+  # `ci-ok-changes`, so its merge job posts no ci-ok report. What a required check runs is the
+  # repository owner's decision, and the `@pr` budget the pull-request lane is held to
+  # (packages/dispatch/e2e/__tests__/pull-request-lane.test.ts) stays as it is, so this job adds
+  # rows to no check that gates. A red here does not block a merge: it is a reading for the
+  # author and the reviewer of the pull request. What gates these rows is the merge queue: every
+  # merge group runs the dispatch-browser job above on the full lane, which holds every one of
+  # them, and ci-ok needs that job.
+  #
+  # So it joins the router in fewer places than the eight this file's head names for a new job:
+  # a filter and an output in `changes`, its `needs: changes` and an `if:` on that output with
+  # the re-run term, its name in CI_OK_EXEMPT, and an EXCLUDED entry in
+  # .github/scripts/ci_job_reads.py where a gate would be. It has no CI_OK_SELECTED_BY or
+  # CI_OK_PULL_REQUEST_ONLY entry, no report step and no place in the ci-ok job's `needs:`,
+  # each of which check-ci-filters.sh refuses for a job CI_OK_EXEMPT names. Its steps are
+  # dispatch-browser.yaml's, as the dispatch-browser job's are, rather than a
+  # ci-job-dispatch-references.yaml of its own: they are the jobs of the one suite under another
+  # lane, and a second copy of them would drift from the first.
+  #
+  # Pull requests alone: the merge queue's full lane already runs these rows, so a merge group
+  # would pay for them twice. The merge-group attempt term is the one every job of this file but
+  # ci-ok and pr-title carries; with the pull_request term it holds nothing back, and it is here
+  # because check-ci-filters.sh's rule 12 holds every job to it. The `dispatch_references`
+  # filter selects it; its comment says why that filter is narrower than what the job reads.
+  #
+  # No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
+  # Each job of dispatch-browser.yaml carries its own limit.
+  dispatch-references:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.dispatch_references == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    # A block of its own, for the reason the dispatch-browser job's comment gives: a caller that
+    # declares no `permissions:` hands the called workflow the default GITHUB_TOKEN permissions
+    # rather than this file's block. `contents: read` is every job's checkout and `actions: read`
+    # the merge job's read of this run's jobs. No `checks: write`, which only that job's ci-ok
+    # report needs: this call passes no `ci-ok-changes`, so the report step skips, as it does in
+    # dispatch-browser-nightly.yaml's call, which declares these same two.
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/dispatch-browser.yaml
+    with:
+      lane: references
 
   claude-envoy:
     needs: changes

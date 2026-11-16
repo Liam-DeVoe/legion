@@ -17,9 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// excerptRunes bounds the head of an item's text shown beside an edge.
-const excerptRunes = 240
-
 // Query selects one node's edges. Direction "in" reads edges pointing at the node (Kind, ID
 // are its to_kind, to_id: ref_key for artifacts); "out" reads edges it writes (from_kind,
 // from_id: the uuid for artifacts). Kinds narrows edge types; Since keeps mentions whose
@@ -37,6 +34,9 @@ const excerptRunes = 240
 // A reply whose answers names the comment its replies_to names is listed once, by replies_to,
 // wherever replies_to is listed.
 type Query struct {
+	// ServerURL is the deployment the caller reads, whose dashboard URLs an edge's excerpt is cut
+	// around as references (itemExcerpt).
+	ServerURL string
 	Direction string
 	Kind      string
 	ID        string
@@ -250,11 +250,11 @@ func resolveEdges(ctx context.Context, q Queryer, query Query) ([]resolvedEdge, 
 		}
 		switch {
 		case node.BlockID != "":
-			// A block's stored excerpt is already cut to BlockExcerptRunes, the excerpt a
-			// document's mention shows.
-			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.text}
+			// A block's stored excerpt is already cut by BlockExcerpt, the excerpt a document's
+			// mention shows.
+			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name()}
 		case node.text != "":
-			edge.Excerpt = &model.GraphExcerpt{Text: text.HeadRunes(node.text, excerptRunes)}
+			edge.Excerpt = &model.GraphExcerpt{Text: itemExcerpt(node.text, query.ServerURL)}
 		}
 		edges = append(edges, edge)
 	}
@@ -400,12 +400,48 @@ func Node(ctx context.Context, q Queryer, kind, id string, byRefKey bool) (model
 	return node.GraphNode, found, nil
 }
 
+// TargetNames is the words each of targets is named by where a reader is shown a reference to it
+// rather than its own text: an issue's title, a document's name, an ask's question, a comment's
+// or a message's body, a component's title and a block's text, each cut to the bound an edge's
+// excerpt is cut to (resolvedNode.name), which is what GET /api/v1/references already shows
+// beside an edge at that node. The targets are addressed as the to side of an edge addresses
+// them (TargetOf), so an artifact's id is its ref_key.
+//
+// One entry per target that resolves: a target with no entry is one nothing addresses now — its
+// node was deleted, or its kind is one this build cannot address (resolveNodes) — which is what
+// a caller draws as a reference whose target is gone. Each kind is read in one statement
+// whatever the number of targets, so a batch costs a statement per kind, not per target.
+func TargetNames(ctx context.Context, q Queryer, targets []Target) (map[Target]string, error) {
+	rows := make([]edgeRow, len(targets))
+	for index, target := range targets {
+		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
+	}
+	nodes, err := resolveNodes(ctx, q, true, rows)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[Target]string, len(nodes))
+	for key, node := range nodes {
+		names[Target{Kind: key[0], ID: key[1]}] = node.name()
+	}
+	return names, nil
+}
+
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
 // excerpt, already cut.
 type resolvedNode struct {
 	model.GraphNode
 	text   string
 	refKey string
+}
+
+// name is the words shown for the node in place of its text: its own text cut to excerptRunes. A
+// block's text is its stored excerpt, already cut to BlockExcerptRunes.
+func (n resolvedNode) name() string {
+	if n.BlockID != "" {
+		return n.text
+	}
+	return text.HeadRunes(n.text, excerptRunes)
 }
 
 // nodeLoader loads the nodes of one kind whose ids are ids into nodes. Artifact ids are uuids on

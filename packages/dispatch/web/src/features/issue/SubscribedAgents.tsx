@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 
 import type { Subscriber } from "../../api/types";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
@@ -25,6 +26,11 @@ export interface SubscribedAgentsProps {
  * That state is the registry's alone: the subscribers endpoint's `live` (`Subscriber.live`) is
  * a second snapshot taken at another time, and it knows only two states where the registry
  * knows three, so it is deliberately ignored and one agent never shows two states on one page.
+ *
+ * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the session's own id is no
+ * tooltip, and a subscription wider than this owner says so in the page's words in place of
+ * "via" and its topic, because a disabled Unsubscribe raises no tooltip that could say why
+ * (dispatch://INFRA-1196 R19).
  */
 export function SubscribedAgents({
   onUnsubscribe,
@@ -33,6 +39,8 @@ export function SubscribedAgents({
 }: SubscribedAgentsProps): ReactNode {
   const [confirming, setConfirming] = useState<Subscriber | undefined>(undefined);
   const text = useAgentText();
+  const tooltips = useTooltips();
+  const page = usePageWords();
   const confirmingLabel =
     confirming === undefined ? "" : text.sessionText(confirming.session_id, confirming.title);
 
@@ -46,19 +54,23 @@ export function SubscribedAgents({
       <ul className="mt-2 flex flex-wrap gap-2">
         {subscribers.map((subscriber) => (
           <li className={sessionChipClassName} key={subscriber.session_id}>
-            <span title={subscriber.session_id}>
+            <span title={tooltips ? subscriber.session_id : undefined}>
               <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
             </span>
             <Timestamp at={new Date(subscriber.last_seen).toISOString()} />
-            {subscriber.removable ? null : (
+            {subscriber.removable ? null : page === null ? (
               <span className="text-xs italic">via {subscriber.via}</span>
+            ) : (
+              <span className="text-xs italic" {...page.pageChrome}>
+                {page.STATE_LINES.subscription_wider}
+              </span>
             )}
             <button
               className={sessionRemoveButtonClassName}
               disabled={!subscriber.removable}
               onClick={() => setConfirming(subscriber)}
               title={
-                subscriber.removable
+                subscriber.removable || !tooltips
                   ? undefined
                   : `Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`
               }

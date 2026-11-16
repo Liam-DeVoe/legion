@@ -414,7 +414,7 @@ func reindexText(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 	located := resolve.Mentions(body)
 	switch itemKind := ItemKind(kind); itemKind {
 	case ItemComment, ItemMessage:
-		if _, err := IndexItem(ctx, tx, itemKind, id, body, writtenAt, located, nil); err != nil {
+		if _, err := IndexItem(ctx, tx, itemKind, id, body, serverURL, writtenAt, located, nil); err != nil {
 			return fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
 		}
 	case ItemAsk:

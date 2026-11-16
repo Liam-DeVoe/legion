@@ -35,6 +35,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/agents/known": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Which of the sessions the repeated id parameter names (1 to 100 session ids) Dispatch holds any record of, so a page links a dispatch://agent/<session id> reference only where that conversation exists, an ended session's included: {sessions: [{session_id, title}]} in the order asked, each once, and no row for an id with no record. A record is the registry copy GET /api/v1/agents lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows; title is the registry copy's, null where that copy lists the session with none or does not list it. One statement answers the whole batch. A parameter other than id and session, no id, more than 100, a value that is no session id, or one longer than 2048 bytes, the longest session id a reference in text names, is 400 INVALID_QUERY naming the parameter. It needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits; session is the session the request acts for, as on every route. */
+    get: operations["getApiV1AgentsKnown"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/agents/{session_id}/answers": {
     parameters: {
       query?: never;
@@ -59,7 +76,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    get?: never;
+    /** @description The newest 100 files and images of an agent's conversation, newest first (created_at, then id), each as GET /api/v1/agents/{session_id}/artifacts/{slug} reads it, with its versions; [] for a conversation that holds none. An older file is not listed and is still read by its slug. A reference picker lists them under the session, each addressed dispatch://agent/<session_id>/artifact/<slug>. A conversation's files are part of the conversation, so the route needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits, reading session as that route does. */
+    get: operations["getApiV1AgentsBySessionIdArtifacts"];
     put?: never;
     /** @description Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/<session_id>/<slug>, addressed dispatch://agent/<session_id>/artifact/<slug>. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (<>"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route. */
     post: operations["postApiV1AgentsBySessionIdArtifacts"];
@@ -374,7 +392,7 @@ export interface paths {
     /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. */
+    /** @description Comment on a document or one of its quotes. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -1542,7 +1560,7 @@ export interface paths {
     /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;
@@ -1557,7 +1575,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. */
+    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. A requirement's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the requirement's whole content as the tree a reader is shown, links and references kept. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. */
     get: operations["getApiV1IssuesByKeyCoverage"];
     put?: never;
     post?: never;
@@ -1728,7 +1746,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
+    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
     /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
@@ -2582,6 +2600,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/reference-targets": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What many dispatch:// references point at, in one read: ?ref=<dispatch ref> once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. A typed block whose stored text does not read back as that block alone (one in a quote) is given the tree of its whole stored text, its opening line included. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. Under an ETag over the whole answer, each tree included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges. */
+    get: operations["getApiV1ReferenceTargets"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/references": {
     parameters: {
       query?: never;
@@ -2674,7 +2709,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). ?kind= names one of issue, document, comment, ask and message and is repeated for each kind wanted: those kinds alone are ranked, counted and paged, and with no kind named every kind is. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all ten: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. ?kind= is younger than that path, so a build serving it but released before ?kind= answers either route 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for: sending ?kind= there buys no refusal, and a client that must know the rows are narrowed reads each result's own kind. This route still reads all ten, so a page served by an earlier release that sends one of the six here is still answered narrowed. A q under 2 characters and a kind outside those five are 400 INVALID_QUERY, a q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1Search"];
     put?: never;
     post?: never;
@@ -2708,7 +2743,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). ?kind= names one of issue, document, comment, ask and message and is repeated for each kind wanted: those kinds alone are ranked, counted and paged, and with no kind named every kind is. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all ten members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. ?kind= is younger than this path, so a build serving it but released before ?kind= answers both routes 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for; a client that must know the rows are narrowed reads each result's own kind. GET /api/v1/search still reads all ten, so a page served by an earlier release that sends one of the six there is still answered narrowed. A q under 2 characters and a kind outside those five are 400 INVALID_QUERY, a q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1SearchResults"];
     put?: never;
     post?: never;
@@ -3135,7 +3170,7 @@ export interface components {
     };
     ArchitectureTree: {
       components: components["schemas"]["ArchitectureComponentRead"][] | null;
-      not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
+      not_architectural: components["schemas"]["ArchitectureTreeNoneRead"][] | null;
       retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
       sources: components["schemas"]["ArchitectureTreeSource"][] | null;
       totals: components["schemas"]["ArchitectureTreeTotals"];
@@ -3177,6 +3212,19 @@ export interface components {
       inherited_from: null | string;
       key: string;
       reason: string;
+      status: string;
+      title: string;
+    };
+    ArchitectureTreeNoneRead: {
+      inherited_from: null | string;
+      key: string;
+      reason: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       status: string;
       title: string;
     };
@@ -3390,6 +3438,11 @@ export interface components {
       at: string;
       id?: string;
       selected: string[] | null;
+      selected_trees?: ({
+        type: string;
+      } & {
+        [key: string]: unknown;
+      })[];
       text: null | string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       text_tree?: {
@@ -3738,6 +3791,12 @@ export interface components {
       sha256: string;
       surface: string;
       text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       version: number;
       when: string;
     };
@@ -4706,19 +4765,25 @@ export interface components {
       method: string;
       pattern: string;
     };
-    GraphEdge: {
+    GraphEdgeWithTrees: {
       block?: components["schemas"]["GraphNode"];
       /** Format: date-time */
       created_at: string;
       direction: string;
-      excerpt?: components["schemas"]["GraphExcerpt"];
+      excerpt?: components["schemas"]["GraphExcerptWithTrees"];
       kind: string;
       node: components["schemas"]["GraphNode"];
       source_seq: null | number;
     };
-    GraphExcerpt: {
+    GraphExcerptWithTrees: {
       block_id?: string;
       text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     GraphNode: {
       block_id?: string;
@@ -4772,7 +4837,7 @@ export interface components {
       };
     };
     GraphReferences: {
-      edges: components["schemas"]["GraphEdge"][] | null;
+      edges: components["schemas"]["GraphEdgeWithTrees"][] | null;
       node: components["schemas"]["GraphNodeRead"];
       unknown_kinds?: string[];
     };
@@ -4781,6 +4846,13 @@ export interface components {
       body: string;
       /** Format: date-time */
       created_at: string;
+      field_trees?: {
+        [key: string]: {
+          type: string;
+        } & {
+          [key: string]: unknown;
+        };
+      };
       id: string;
       issue_key: string;
       phase: string;
@@ -4971,8 +5043,10 @@ export interface components {
     IssueChild: {
       /** Format: date-time */
       active_at: string;
+      claim?: components["schemas"]["IssueClaim"];
       external_links: components["schemas"]["ExternalLink"][] | null;
       key: string;
+      needs?: string[];
       status: string;
       subtree_done: number;
       subtree_total: number;
@@ -5067,6 +5141,12 @@ export interface components {
       /** Format: date-time */
       closed_at: null | string;
       components: components["schemas"]["IssueComponents"];
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      components_reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
@@ -5249,6 +5329,13 @@ export interface components {
     };
     KeepDecisionInput: {
       text_sha256: string;
+    };
+    KnownSession: {
+      session_id: string;
+      title: null | string;
+    };
+    KnownSessions: {
+      sessions: components["schemas"]["KnownSession"][] | null;
     };
     LauncherCredentialResp: {
       approved_by: string;
@@ -5437,6 +5524,12 @@ export interface components {
       reply: components["schemas"]["MyReplyReply"];
       session?: components["schemas"]["MyReplySession"];
       subject: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      subject_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       thread_id: string;
       unread: boolean;
       unread_count: number;
@@ -5599,6 +5692,12 @@ export interface components {
     };
     PriorityRow: {
       description: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      description_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -5725,6 +5824,21 @@ export interface components {
       document: string;
       questions: components["schemas"]["ReferenceQuestion"][] | null;
     };
+    ReferenceTarget: {
+      gone: boolean;
+      kind: string;
+      name: string;
+      ref: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+    };
+    ReferenceTargets: {
+      targets: components["schemas"]["ReferenceTarget"][] | null;
+    };
     ReferenceVia: {
       id: string;
       kind: string;
@@ -5816,6 +5930,12 @@ export interface components {
       plan_tasks: number;
       ref: string;
       text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     ResidentRooms: {
       rooms: string[] | null;
@@ -6269,6 +6389,39 @@ export interface operations {
       };
     };
   };
+  getApiV1AgentsKnown: {
+    parameters: {
+      query?: {
+        id?: string[];
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["KnownSessions"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1AgentsBySessionIdAnswers: {
     parameters: {
       query?: {
@@ -6292,6 +6445,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SessionAnswersResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AgentsBySessionIdArtifacts: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        session_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12867,6 +13054,46 @@ export interface operations {
       };
     };
   };
+  getApiV1ReferenceTargets: {
+    parameters: {
+      query?: {
+        ref?: string[];
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ReferenceTargets"];
+        };
+      };
+      /** @description Not Modified */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1References: {
     parameters: {
       query?: {
@@ -13123,6 +13350,7 @@ export interface operations {
         keywords_only?: boolean;
         limit?: number;
         offset?: number;
+        kind?: ("issue" | "document" | "comment" | "ask" | "message")[];
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -13654,6 +13882,7 @@ export type ArchitectureTreeComponent = components["schemas"]["ArchitectureTreeC
 export type ArchitectureTreeIssue = components["schemas"]["ArchitectureTreeIssue"];
 export type ArchitectureTreeIssueRef = components["schemas"]["ArchitectureTreeIssueRef"];
 export type ArchitectureTreeNone = components["schemas"]["ArchitectureTreeNone"];
+export type ArchitectureTreeNoneRead = components["schemas"]["ArchitectureTreeNoneRead"];
 export type ArchitectureTreeRetired = components["schemas"]["ArchitectureTreeRetired"];
 export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSource"];
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
@@ -13818,8 +14047,8 @@ export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
-export type GraphEdge = components["schemas"]["GraphEdge"];
-export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
+export type GraphEdgeWithTrees = components["schemas"]["GraphEdgeWithTrees"];
+export type GraphExcerptWithTrees = components["schemas"]["GraphExcerptWithTrees"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
 export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
@@ -13866,6 +14095,8 @@ export type ItemBlock = components["schemas"]["ItemBlock"];
 export type ItemBlocks = components["schemas"]["ItemBlocks"];
 export type JsonArtifactUpload = components["schemas"]["JsonArtifactUpload"];
 export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
+export type KnownSession = components["schemas"]["KnownSession"];
+export type KnownSessions = components["schemas"]["KnownSessions"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];
@@ -13927,6 +14158,8 @@ export type RecordResponse = components["schemas"]["RecordResponse"];
 export type ReferenceMember = components["schemas"]["ReferenceMember"];
 export type ReferenceQuestion = components["schemas"]["ReferenceQuestion"];
 export type ReferenceQuestions = components["schemas"]["ReferenceQuestions"];
+export type ReferenceTarget = components["schemas"]["ReferenceTarget"];
+export type ReferenceTargets = components["schemas"]["ReferenceTargets"];
 export type ReferenceVia = components["schemas"]["ReferenceVia"];
 export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];

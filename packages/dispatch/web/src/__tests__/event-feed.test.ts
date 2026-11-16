@@ -170,7 +170,6 @@ const READS = {
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
-  referencePicker: { key: ["issues", "CORE"] },
   referencesTab: { key: ["issue", "CORE-1", "references"] },
   replies: { key: myRepliesCountQuery().queryKey },
   rootComment: { key: commentQuery("root-1").queryKey },
@@ -400,7 +399,6 @@ const rules: Record<string, Rule> = {
         "projectList",
         "labelledProjectList",
         "summary",
-        "referencePicker",
         "agentsPicker",
         "pinned",
         "inbox",
@@ -455,7 +453,6 @@ const rules: Record<string, Rule> = {
         "pinned",
         "components",
         "architecture",
-        "referencePicker",
         "agentsPicker",
         "priorities",
         "prioritySummary",
@@ -495,7 +492,6 @@ const rules: Record<string, Rule> = {
       "projects",
       "components",
       "architecture",
-      "referencePicker",
       "agentsPicker",
     ],
     spares: ["unrelatedDetail", "replies", "parentPanel", "referencesTab", "parentSummary"],
@@ -562,7 +558,6 @@ const rules: Record<string, Rule> = {
       "detail",
       "unrelatedDetail",
       "summary",
-      "referencePicker",
       "agentsPicker",
       "pinned",
       "inbox",
@@ -586,7 +581,6 @@ const rules: Record<string, Rule> = {
         "projects",
         "grandparent",
         "unrelatedDetail",
-        "referencePicker",
         "agentsPicker",
         "components",
       ],
@@ -660,7 +654,7 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail"],
     spares: ["advancesWork", "parkedWork", "priorities", "prioritySummary"],
   },
-  "a new issue refreshes its ancestors' rollups and the pickers, not every detail or the project counts":
+  "a new issue refreshes its ancestors' rollups and the Agents page's issue picker, not every detail or the project counts":
     {
       event: event(
         "issue.created",
@@ -673,7 +667,6 @@ const rules: Record<string, Rule> = {
         "detail",
         "parent",
         "summary",
-        "referencePicker",
         "agentsPicker",
         "components",
         "architecture",
@@ -714,7 +707,7 @@ const rules: Record<string, Rule> = {
       status: "in_progress",
     }),
     refreshes: ["collaborators", "detail", "log", "projectList"],
-    spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+    spares: ["summary", "pinned", "inbox", "projects", "replies", "userState"],
   },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":
     {
@@ -724,7 +717,7 @@ const rules: Record<string, Rule> = {
         to_version: 7,
       }),
       refreshes: ["detail", "log", "projectList"],
-      spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+      spares: ["summary", "pinned", "inbox", "projects", "replies", "userState"],
     },
   "a recorded handoff refreshes the issue's handoff list and its log, and no rollup": {
     event: event("handoff.recorded", { handoff_id: "handoff-1", phase: "implement", version: 2 }),
@@ -1558,6 +1551,35 @@ test("an event that makes a collaborator refreshes the issue's collaborators", (
   expect(refreshesCollaborators(reprioritised)).toBe(false);
 });
 
+// The new issue page names every node from one batched read (`referenceTargetsQuery`), keyed by
+// the set of addresses it asked for and by no issue (dispatch://INFRA-1196 part G, R12). A write
+// that renames a node the page names marks it stale, so the page draws the new name without a
+// reload; a write that renames nothing leaves it alone, because the set can be a long request.
+test("an issue's new title marks the batched names stale, and a write that renames nothing does not", () => {
+  const namesStale = (incoming: DispatchEvent): boolean => {
+    const client = new QueryClient();
+    const names: QueryKey = ["reference-targets", ["dispatch://CORE-1", "dispatch://CORE-2"]];
+    client.setQueryData(names, { targets: [] });
+    refreshQueries(client, eventRefreshTargets(incoming, "alice"));
+    return client.getQueryState(names)?.isInvalidated === true;
+  };
+  expect(namesStale(event("issue.updated", issue({ changed: ["title"] })))).toBe(true);
+  expect(namesStale(event("issue.updated", issue({ changed: ["priority"] })))).toBe(false);
+  // The feed is the whole app's: a new comment on another issue, or a follower joining an ask,
+  // renames nothing this page names, and a new comment on the page's own issue adds an address,
+  // which is a new key and a read of its own.
+  const otherComment = event(
+    "comment.created",
+    { anchor: null, id: "comment-9" },
+    { issue_key: "CORE-7" }
+  );
+  expect(namesStale(otherComment)).toBe(false);
+  expect(namesStale(event("comment.created", { anchor: null, id: "comment-1" }))).toBe(false);
+  expect(namesStale(event("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }))).toBe(
+    false
+  );
+});
+
 /** One write of priority linkage-closure by bob, as the server appends it: ownerless and quiet. */
 function priorityWrite(change: "created" | "updated" | "deleted"): DispatchEvent {
   return event(
@@ -1567,10 +1589,10 @@ function priorityWrite(change: "created" | "updated" | "deleted"): DispatchEvent
   );
 }
 
-/** A page whose reads of CORE-1 - its issue read, a project's list, the pinned list, both pickers,
- *  the parked fault list and the work under linkage-closure - hold it advancing linkage-closure,
- *  beside an issue read, a project's list and the work under oss-verify that advance oss-verify
- *  alone. */
+/** A page whose reads of CORE-1 - its issue read, a project's list, the pinned list, the Agents
+ *  page's issue picker, the parked fault list and the work under linkage-closure - hold it
+ *  advancing linkage-closure, beside an issue read, a project's list and the work under
+ *  oss-verify that advance oss-verify alone. */
 const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
   advancesWork: ["linkage-closure"],
   agentsPicker: ["linkage-closure"],
@@ -1580,7 +1602,6 @@ const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
   parkedWork: ["linkage-closure"],
   pinned: ["linkage-closure"],
   projectList: ["linkage-closure"],
-  referencePicker: ["linkage-closure"],
   unrelatedDetail: ["oss-verify"],
 };
 
@@ -1627,7 +1648,6 @@ test("a priority.updated of a deleted priority refreshes its work, the work unde
     "priorityHistory",
     "prioritySummary",
     "projectList",
-    "referencePicker",
   ]);
 });
 
@@ -1640,7 +1660,6 @@ test("a priority.updated of a deleted priority refetches no issue read that does
     parkedWork: ["oss-verify"],
     pinned: ["oss-verify"],
     projectList: ["oss-verify"],
-    referencePicker: ["oss-verify"],
   };
   expect(refreshedReads(priorityWrite("deleted"), { advances: otherOnly }).sort()).toEqual([
     "advancesWork",

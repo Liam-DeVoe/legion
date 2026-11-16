@@ -23,6 +23,7 @@ import {
 } from "./ask-thread-freshness";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
+import { useQuestionLabel } from "./question-label";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
@@ -156,13 +157,18 @@ export function useAskAnswerForm({
   }, [ask.id, queryClient, refreshInitialThread, threadQuery.data]);
   const edits = threadQuery.data?.edits ?? [];
   const answers = threadQuery.data?.answers ?? [];
+  // The question as the labels of this form's two writes read it: its plain-text projection,
+  // the words the card draws (`useQuestionLabel`).
+  const question = useQuestionLabel(ask);
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
   // Inbox, its restore on a refusal and the hold that keeps the question where the reader
   // pressed it are the decline's too, and are written once beside the hold itself.
   const mutation = useOutstandingAnswerWrite({
     askId: ask.id,
-    label: () => `Answer to “${ask.question}”`,
+    // A write's label is one line the Writes indicator reads as text, so it holds the question's
+    // plain-text projection: the reading list's `write-label` (`DISPATCH_READING_SURFACES`).
+    label: () => `Answer to “${question.line()}”`,
     write: (input: AnswerAskInput, bounds) => answer(ask.id, input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
     // no open row there to take out.
@@ -223,7 +229,8 @@ export function useAskAnswerForm({
   });
   const clarification = useKeyedWrite({
     inline: true,
-    label: () => `Question back on “${ask.question}”`,
+    // The same line of the Writes indicator: `write-label` again (see above).
+    label: () => `Question back on “${question.line()}”`,
     write: (text: string, bounds) => {
       if (ask.issue_key === null) {
         return api.createArtifactComment(
@@ -411,6 +418,9 @@ export function useAskAnswerForm({
     mutation,
     otherSelected,
     questionChoice,
+    /** Reads the names of the references the question's projection holds, for the labels of
+     *  this form's writes; the card mounts it wherever it draws. */
+    questionReads: question.reads,
     reasonRequired,
     requiresReason,
     selectRealOption,

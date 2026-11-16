@@ -88,7 +88,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// No block pointers: a typed block's `block[]` attribute is what carries one, and every
 	// document this tool writes is plain markdown with no typed block in it, so the list the
 	// server builds from a document's block tree is empty here.
-	moved, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil)
+	moved, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, serverURL)
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}
@@ -104,7 +104,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// 28-version documents owed, which settle.go's owedWorkCounts refuses and a server started
 	// on the data set would rewrite.
 	if _, err := refs.ReplaceDocumentCounted(ctx, tx, document.ID, document.Versions, versionAt,
-		text.Refs(located), moved, refs.MentionExcerpts(latest, blocks, located)); err != nil {
+		text.Refs(located), moved, refs.MentionExcerpts(latest, blocks, located, serverURL)); err != nil {
 		return fmt.Errorf("index references: %w", err)
 	}
 	if document.Primary {

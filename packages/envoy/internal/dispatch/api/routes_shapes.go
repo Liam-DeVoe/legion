@@ -252,6 +252,14 @@ type issueReferencesQuery struct {
 	Versions string `query:"versions"`
 }
 
+// referenceTargetsQuery is GET /api/v1/reference-targets's query: the references to resolve.
+type referenceTargetsQuery struct {
+	// Ref is one reference to resolve, given once per reference, at most
+	// referenceTargetsMax of them; naming none is 400 INVALID_REFERENCE and naming more
+	// than the cap is 400 CAP_EXCEEDED.
+	Ref []string `query:"ref"`
+}
+
 // referencesQuery is GET /api/v1/references's query: the edges of one node.
 type referencesQuery struct {
 	// To reads the backlinks of this dispatch:// reference; exactly one of To and From is
@@ -349,9 +357,9 @@ type searchRouteQuery struct {
 	Offset int `query:"offset"`
 }
 
-// searchResultsRouteQuery is GET /api/v1/search/results's query, all nine members: the four
-// searchRouteQuery names and the five a build released before them does not serve, which is why
-// that path exists. The nine are written out rather than embedded because the emitter reads a
+// searchResultsRouteQuery is GET /api/v1/search/results's query, all ten members: the four
+// searchRouteQuery names and the six a build released before them does not serve, which is why
+// that path exists. The ten are written out rather than embedded because the emitter reads a
 // query struct's own fields and refuses one carrying no query tag (openapi.go, queryParameters).
 type searchResultsRouteQuery struct {
 	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
@@ -377,6 +385,10 @@ type searchResultsRouteQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
 	Offset int `query:"offset"`
+	// Kind ranks, counts and pages the kinds it names and no others, repeated once per kind;
+	// with none named every kind the index holds is searched. A kind outside the five is
+	// 400 INVALID_QUERY (searchIndexedKinds, parseSearchKinds).
+	Kind []string `query:"kind" enum:"issue,document,comment,ask,message"`
 }
 
 // relatedChecksQuery is GET /api/v1/related-checks's query.
@@ -398,6 +410,13 @@ type sessionAnswersQuery struct {
 	Since string `query:"since"`
 	// MaxChars bounds how much of each item's text the answer carries.
 	MaxChars int `query:"max_chars"`
+}
+
+// knownSessionsQuery is GET /api/v1/agents/known's query.
+type knownSessionsQuery struct {
+	// ID is one session id asked about, repeated: 1 to contracts.KnownSessionsMax of them, each a
+	// session id (text.IsSessionID) of at most knownSessionIDMax bytes, the longest text names.
+	ID []string `query:"id"`
 }
 
 // issueAsksQuery is GET /api/v1/issues/{key}/asks's query.
@@ -555,8 +574,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 {Status: http.StatusOK, Response: model.ArchitectureSource{}},
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
-	// tree, so the row names that read: the document describes the body the handler sends, and
-	// a client generated from it holds the field a reader draws.
+	// tree and whose Not architectural rows carry their reasons', so the row names that read: the
+	// document describes the body the handler sends, and a client generated from it holds the
+	// field a reader draws.
 	"GET /api/v1/projects/{key}/architecture":        {Status: http.StatusOK, Response: architectureTreeRead{}},
 	"GET /api/v1/settings/project-default-assignees": {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
 	"PUT /api/v1/projects/{key}/default-assignee": {
@@ -612,8 +632,9 @@ var routeShapes = map[string]routeShape{
 		Also: []routeAnswer{{Status: http.StatusOK, Body: whoamiAgent{}}},
 	},
 	"GET /api/v1/dashboard/builds": {Status: http.StatusOK, Response: dashboardBuilds{}},
+	// The listing answers prioritiesRead, whose rows carry each description's tree.
 	"GET /api/v1/priorities": {
-		Status: http.StatusOK, Response: model.Priorities{}, Params: prioritiesQuery{},
+		Status: http.StatusOK, Response: prioritiesRead{}, Params: prioritiesQuery{},
 	},
 	"POST /api/v1/priorities": {
 		Status: http.StatusCreated, Response: model.Priority{}, Request: createPriorityInput{},
@@ -663,8 +684,13 @@ var routeShapes = map[string]routeShape{
 	// The references read answers graphReferencesRead, whose node carries its text's tree and
 	// whose pin carries the pinned text's, so the row names that read for the same reason the
 	// architecture row above does.
-	"GET /api/v1/references":                               {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
-	"GET /api/v1/references/questions":                     {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/references":           {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
+	"GET /api/v1/references/questions": {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/reference-targets": {
+		Status: http.StatusOK, Response: model.ReferenceTargets{}, Params: referenceTargetsQuery{},
+		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
+		Also: []routeAnswer{{Status: http.StatusNotModified}},
+	},
 	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {Status: http.StatusNoContent},
@@ -692,12 +718,14 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/handoffs/{phase}": {
 		Status: http.StatusCreated, Response: model.HandoffSummary{}, Request: createHandoffInput{},
 	},
-	"GET /api/v1/issues/{key}/handoffs":                {Status: http.StatusOK, Response: []model.HandoffSummary{}},
-	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/issues/{key}/handoffs": {Status: http.StatusOK, Response: []model.HandoffSummary{}},
+	// The two reads of one handoff with its body answer handoffRead, whose field_trees carries
+	// the tree of each text the body's card draws.
+	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: handoffRead{}},
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
-	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: handoffRead{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
@@ -744,6 +772,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
 	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
+	"GET /api/v1/agents/known": {
+		Status: http.StatusOK, Response: knownSessions{}, Params: knownSessionsQuery{},
+	},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},
@@ -751,6 +782,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/agents/{session_id}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createAgentMessageInput{},
 	},
+	"GET /api/v1/agents/{session_id}/artifacts": {Status: http.StatusOK, Response: []artifactRead{}},
 	"POST /api/v1/agents/{session_id}/artifacts": {
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
 		// The upload reads JSON or multipart as the issue and project forms do, but a

@@ -11,7 +11,9 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { architectureTree, issueCollaborators } from "../../__tests__/search-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -42,6 +44,7 @@ import { messageDeliveryFields } from "./delivery-fixture";
 import "../agent-view/AgentConversationPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 import { orderAgents } from "./AgentsPage";
@@ -210,6 +213,14 @@ function renderAgents({
   const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(messages);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+  // A box with no issue offers everyone who has signed in instead of an issue's people.
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }]);
+  // The reference picker in each box reads the issue's collaborators and the project's
+  // components when a door opens, and a read no handler answers fails its test.
+  const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(
+    issueCollaborators()
+  );
+  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     async (_session, input) => message(input.body)
   );
@@ -314,6 +325,9 @@ function renderAgents({
       createBroadcast.mockRestore();
       createMessageDelivery.mockRestore();
       listProjects.mockRestore();
+      getIssueCollaborators.mockRestore();
+      getArchitecture.mockRestore();
+      listUsers.mockRestore();
       listIssues.mockRestore();
       listAgentMessages.mockRestore();
       listAgents.mockRestore();
@@ -793,13 +807,13 @@ test("matchesFilters keeps a session any picked group, machine or role holds, fr
   expect(narrow({ machines: ["build-host"] }, "active", "reviewer-host")).toBe(false);
 });
 
-test("filterOptions offers the machines the live sessions occupy, and the ones the filter names besides", () => {
+test("filterOptions offers what the live sessions occupy, and what the filters name besides", () => {
   const live = [
     session({ host: "build-host", roles: ["planner"], session_id: "one", title: "One" }),
     session({ host: "archive-host", roles: [], session_id: "two", title: "Two" }),
   ];
 
-  expect(filterOptions(live, [])).toEqual({
+  expect(filterOptions(live, [], [])).toEqual({
     machines: ["archive-host", "build-host"],
     roles: ["planner"],
   });
@@ -807,13 +821,17 @@ test("filterOptions offers the machines the live sessions occupy, and the ones t
   // A `?machine=` naming a host no live session reports - an old link, or a machine whose
   // sessions have ended - is an option of its own, in machine order with the rest, so the
   // control shows the filter that is hiding every row and its row can be unticked.
-  expect(filterOptions(live, ["ended-host"]).machines).toEqual([
+  expect(filterOptions(live, ["ended-host"], []).machines).toEqual([
     "archive-host",
     "build-host",
     "ended-host",
   ]);
   // A machine the live sessions do report is offered once, not twice.
-  expect(filterOptions(live, ["build-host"]).machines).toEqual(["archive-host", "build-host"]);
+  expect(filterOptions(live, ["build-host"], []).machines).toEqual(["archive-host", "build-host"]);
+  // A `?role=` whose holder has stopped is an option of its own by the same rule, and a role a
+  // live session carries is still offered once.
+  expect(filterOptions(live, [], ["merger"]).roles).toEqual(["merger", "planner"]);
+  expect(filterOptions(live, [], ["planner"]).roles).toEqual(["planner"]);
 });
 
 test("Agents lists each session in its group, orders the rows inside one, and keeps a re-poll stable", async () => {
@@ -1225,10 +1243,10 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     await waitFor(() =>
       expect(
         (within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value
-      ).toBe("@Planner")
+      ).toBe("[@Planner](dispatch://agent/planner-session)")
     );
-    // The pick put `@Planner` in the box as an accepted mention the composer follows, so the
-    // rest of the message is written after it: replacing the box would drop that mention.
+    // The pick wrote the party's mention into the box, so the rest of the message is written
+    // after it: replacing the box would drop that mention.
     const comment = within(planner).getByRole("textbox", { name: "Comment" });
     await user.click(comment);
     await user.paste(" Track this under Core");
@@ -1239,9 +1257,8 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
       expect(page.createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner Track this under Core",
+          body: "[@Planner](dispatch://agent/planner-session) Track this under Core",
           delivery: "aside",
-          mentions: [{ target: "session:planner-session" }],
         },
         keyedAttempt
       )
@@ -2087,6 +2104,45 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
       ).toBeNull()
     );
     expect(within(planner).getByRole("button", { name: "Choose issue" })).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A reply turn quotes the message it answers, which the exchange's read carries with its tree:
+// the quote draws that tree (`excerptTree`) rather than a parse of the parent's markdown. The tree
+// reads differently from the markdown beside it, so a quote drawn from a parse would read
+// `— Can this ship?`.
+test("a reply turn on the Agents page quotes its parent from the tree the exchange read carries", async () => {
+  const user = userEvent.setup();
+  await warmMarkdownRenderer();
+  const root = message("Can **this** ship?");
+  const page = renderAgents({
+    messages: [
+      {
+        message: { ...root, body_tree: displayTree("Can **this** ship today?") },
+        replies: [
+          message("Yes, it can.", {
+            author: { id: "planner-session", kind: "session" },
+            id: "message-2",
+            in_reply_to: root.id,
+          }),
+        ],
+      },
+    ],
+  });
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const conversation = await within(planner).findByRole("list", {
+      name: "Conversation with Planner",
+    });
+    const replies = await within(conversation).findByRole("list", { name: "Replies" });
+    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    if (answer === null) throw new Error("answer turn missing");
+    await waitFor(() => expect(answer).toHaveTextContent("— Can this ship today?"));
+    expect(within(answer).getByText("this").tagName).toBe("STRONG");
   } finally {
     page.view.unmount();
     page.restore();
@@ -3371,7 +3427,8 @@ test("a live-view send out when the page reloads is sent again under its key and
   after.createAgentMessage.mockReturnValueOnce(answer.promise);
   try {
     const held = await screen.findByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     expect(after.createAgentMessage.mock.calls).toEqual([
       [
@@ -3987,6 +4044,53 @@ test("the search box reads its query from the page's address and writes back to 
   }
 });
 
+// `dispatch://role/<token>` opens `/agents?role=<token>` (INFRA-1702), so the role filter lives
+// in the address as the machine filter does: that link reads as one role picked, and unticking
+// it brings the other rows back and empties the parameter.
+test("the role filter reads the page's address, so a role reference opens the sessions holding it", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ initialEntry: "/agents?role=planner" });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const role = filterTrigger(region, "role");
+    expect(role.textContent).toContain("1");
+    expect(screen.getByTestId("location-search").textContent).toBe("?role=planner");
+    await within(region).findByRole("heading", { level: 2, name: "Planner" });
+    expect(
+      within(region).queryByRole("heading", { level: 2, name: "Reviewer" })
+    ).not.toBeInTheDocument();
+
+    await user.click(role);
+    await user.click(filterOption("role", "planner"));
+
+    await screen.findByRole("heading", { level: 2, name: "Reviewer" });
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("a role no live session holds says so, and says what this list outside an issue holds", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ initialEntry: "/agents?role=merger" });
+
+  try {
+    const empty = await screen.findByRole("region", { name: "Agents filtered empty state" });
+    expect(empty.textContent).toBe(
+      "No live session holds merger. Outside an issue, this list holds only the roles a live session carries; Dispatch keeps no list of every role."
+    );
+    // The option stays in the control, so the reader can clear the filter that hides every row.
+    const region = screen.getByRole("region", { name: "Agents" });
+    await user.click(filterTrigger(region, "role"));
+    expect(filterOption("role", "merger")).toBeInTheDocument();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // The machines page of dispatch://INFRA-883 links here as `/agents?machine=<host>`. The address
 // is where the machine filter lives, so that link reads as one machine picked - a host with no
 // live session, which that link can name, included - the rows it does not name are hidden, and
@@ -4244,7 +4348,8 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     await backToAgents(user);
     await openLiveView(user, "Planner");
     const held = screen.getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     await jump(4_000);
     await jump(8_000);
@@ -4295,7 +4400,8 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
     const held = within(planner).getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     const field = within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
     expect(field.value).toBe("");
@@ -4391,7 +4497,8 @@ test("a refused live-view send shows on the Agents row, and Discard there drops 
     const planner = card(screen.getByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     const held = within(planner).getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByTestId("agent-send-error").textContent).toBe(
       "Could not send: Dispatch refused the message"
     );

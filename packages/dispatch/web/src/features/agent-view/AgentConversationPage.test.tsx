@@ -34,6 +34,7 @@ import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/cli
 import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -995,9 +996,8 @@ test("Send stays open with text while an earlier send is out or late, and each p
     await sendFromLiveView(user, "try the other branch");
     const [held] = screen.getAllByTestId("agent-send-held");
     // The pending turn names the message as the reader's own, at a glance and to a screen reader.
-    expect(
-      within(held as HTMLElement).getByText("Your message: “try the other branch”")
-    ).toBeTruthy();
+    expect(within(held as HTMLElement).getByText("Your message")).toBeTruthy();
+    expect(within(held as HTMLElement).getByText("try the other branch")).toBeTruthy();
     expect(within(held as HTMLElement).getByRole("status").textContent).toBe("Sending…");
 
     // The field cleared on the press, and the next message goes out as its own press.
@@ -2185,10 +2185,36 @@ test("a refused send keeps the message on screen and says why", async () => {
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
-  expect(
-    within(screen.getByTestId("agent-send-held")).getByText("Your message: “try the other branch”")
-  ).toBeTruthy();
+  const held = screen.getByTestId("agent-send-held");
+  expect(within(held).getByText("Your message")).toBeTruthy();
+  expect(within(held).getByText("try the other branch")).toBeTruthy();
   expect(composerInput().value).toBe("");
+});
+
+// The held turn draws the draft by the renderer, as the message it becomes will be drawn: its
+// formatting is drawn, and a mention the picker wrote reads as the party's name. Drawn as the
+// characters typed, the turn would keep the asterisks.
+test("a held message reads as the message it becomes, never as the source typed", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  spies.push(
+    spyOn(api, "createAgentMessage").mockRejectedValue(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" })
+    )
+  );
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+  const input = await modeSettled("steer");
+
+  await type(user, input, "try the **other** branch");
+  await user.click(sendButton());
+  await screen.findByTestId("agent-send-error");
+  const held = screen.getByTestId("agent-send-held");
+  await waitFor(() => expect(held.querySelector("strong")?.textContent).toBe("other"));
+  expect(held.textContent).not.toContain("**");
 });
 
 // A refusal belongs to the session that sent the message. One landing while the reader is on
@@ -2235,9 +2261,9 @@ test("a refusal that lands after switching sessions stays with the session that 
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
-  expect(
-    within(screen.getByTestId("agent-send-held")).getByText("Your message: “hold this”")
-  ).toBeTruthy();
+  const turn = screen.getByTestId("agent-send-held");
+  expect(within(turn).getByText("Your message")).toBeTruthy();
+  expect(within(turn).getByText("hold this")).toBeTruthy();
 });
 
 // Messages to one session go out one after another, in press order: Send stays open while one is
@@ -2565,7 +2591,7 @@ test("the live view's header holds the back link, the name, the live state and t
   expect(within(header).getByText("Live")).toBeTruthy();
   expect(within(header).getByRole("button", { name: "Pin Planner" })).toBeTruthy();
 
-  expect(within(header).queryAllByRole("combobox")).toEqual([]);
+  expect(within(header).queryAllByRole("combobox")).toHaveLength(0);
   expect(within(header).queryByText(agent.host)).toBeNull();
   expect(within(header).queryByText(agent.dir)).toBeNull();
   expect(screen.queryByText(/relayed while this page is open/)).toBeNull();

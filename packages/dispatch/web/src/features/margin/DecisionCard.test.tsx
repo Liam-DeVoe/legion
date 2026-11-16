@@ -1,11 +1,15 @@
-import { beforeAll, expect, test } from "bun:test";
-import { screen } from "@testing-library/react";
+import { beforeAll, expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { renderToString } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import type { Decision } from "../../api/types";
+import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
+import { api } from "../../api/client";
+import type { AskRead, Decision } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionCard } from "./DecisionCard";
 import type { DecisionMarginItem } from "./useMarginItems";
@@ -38,6 +42,7 @@ function item(decision: Partial<Decision>): DecisionMarginItem {
     // so a decision this test invents carries the reading the page's own engine makes of that
     // text (`__tests__/display-trees`).
     decision: { ...full, text_tree: displayTree(full.text) },
+    documentId: "artifact-decisions",
     id: `decision:${full.block_id}:p-plan`,
     kind: "decision",
   };
@@ -76,6 +81,85 @@ test("an unsure decision is drawn in the unsure colour and says so; a person's s
   } finally {
     view.unmount();
   }
+});
+
+// A heading is markdown its writer wrote, and it names the card and words a link, neither of
+// which holds markup: both read the heading's plain-text projection, so a link in it is its
+// words there and never the link's source. Drawn as the characters it is, the card would be
+// named `Decision: Keep **notices** in [a table](https://example.test/table)`.
+test("a heading that holds markdown names the card and its link in plain words", async () => {
+  const view = renderCard({
+    heading: "Keep **notices** in [a table](https://example.test/table)",
+  });
+  try {
+    expect(
+      await screen.findByRole("article", { name: "Decision: Keep notices in a table" })
+    ).toBeDefined();
+    expect(screen.getByRole("link", { name: "Keep notices in a table" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/artifacts/decisions-md#b-d-1"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The passage is a record of the issue's `decisions.md`, so the card hands the renderer that
+// document as the passage's source and a `#id` in it names a question block of that document,
+// as it does in the Decisions panel. With no source the `#q2` stays the characters it is and
+// the document's question map is never read.
+test("a `#id` in the passage names the question of the decisions document", async () => {
+  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
+    document: "artifact-decisions",
+    questions: [{ ask: "ask-2", block_id: "q2", reference: "dispatch://CORE-1/ask/ask-2" }],
+  });
+  // The link reads its ask for a name; the read stays out, which is no part of this row.
+  const getAsk = spyOn(api, "getAsk").mockReturnValue(Promise.withResolvers<AskRead>().promise);
+  const view = renderCard({ text: "Settled by #q2 before the rollout." });
+  try {
+    const linked = () =>
+      [...view.container.querySelectorAll("[data-markdown-preview] [data-dispatch-ref]")].map(
+        (reference) => reference.getAttribute("data-dispatch-ref")
+      );
+    await waitFor(() => expect(linked()).toEqual(["dispatch://CORE-1/ask/ask-2"]));
+    expect(getReferenceQuestions).toHaveBeenCalledWith("artifact", "artifact-decisions");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getReferenceQuestions.mockRestore();
+  }
+});
+
+// The heading is a record of `decisions.md` too, so the card's name reads a `#id` in it as the
+// question it names in that document. Handed no record, the name keeps `#q2`.
+test("a #id in the heading names the question of the decisions document in the card's name", async () => {
+  const answers = answerQuestionOf("artifact", "artifact-decisions");
+  const view = renderCard({ heading: "Settle #q2 first" });
+  try {
+    expect(
+      await screen.findByRole("article", { name: `Decision: Settle ${NAMED_QUESTION} first` })
+    ).toBeDefined();
+  } finally {
+    view.unmount();
+    answers.restore();
+  }
+});
+
+// Until the reader's engine has answered - the first paint, and for good where its chunk never
+// loads - the card is named after its heading as written, never `Decision: ` with no words and an
+// empty link (the reading list's `decision-heading-words`). A paint with no effects run is that
+// state.
+test("before the engine answers, the card is named after its heading as written", () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const html = renderToString(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <DecisionCard item={item({})} onSelect={() => {}} selected={false} />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  expect(html).toContain('aria-label="Decision: Store notices in a table"');
+  expect(html).toContain(">Store notices in a table</a>");
 });
 
 test("selecting a decision card selects its margin item", async () => {

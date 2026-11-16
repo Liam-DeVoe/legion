@@ -211,9 +211,10 @@ func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, parts []itembl
 		return nil, err
 	}
 	return indexItemBlocks(ctx, tx, ItemAsk, ask.ID, at, itemBlockSource{
-		blocks:  parts,
-		bodySum: sum,
-		madeBy:  makers,
+		blocks:    parts,
+		bodySum:   sum,
+		serverURL: r.serverURL,
+		madeBy:    makers,
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, _, counter int) ([]string, int, error) {
 			ids, counter := itemblocks.Align(stored, next, counter, []string{AskAnswerPart})
 			return ids, counter, nil

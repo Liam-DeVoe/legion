@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -12,14 +12,21 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { decisionHeadingTree } from "../issue/decision-heading";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { buildReferencePath, parseDispatchReference } from "../refs/routes";
+import { usePlainHeadline } from "../refs/plain-text";
+import { parseDispatchReference, referenceHref } from "../refs/routes";
+import { textSourceOf } from "../refs/text-references";
 import { regionOrigin } from "./ThreadList";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was
  *  unsure, its heading as a link to it in `decisions.md`, and the head of its text. Selecting the
- *  card lights up the block, as selecting an anchored comment lights up its text. */
+ *  card lights up the block, as selecting an anchored comment lights up its text. The heading
+ *  names the card and words a link, neither of which holds markup, so there it is read as its
+ *  plain words; with no page to link to it is drawn by the renderer, as the passage is. Both
+ *  are the record the issue's `decisions.md` is. */
 export function DecisionCard({
   hovered = false,
   item,
@@ -33,11 +40,28 @@ export function DecisionCard({
 }): ReactNode {
   const { decision } = item;
   const route = parseDispatchReference(decision.ref);
+  // A decision names the record it was made in; one naming no page of this dashboard - a
+  // person (R5) - leaves the heading as plain words.
+  const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
+  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
+  const source = textSourceOf(
+    "artifact",
+    item.documentId,
+    route !== undefined && "key" in route ? route.key : undefined
+  );
+  const { reads, text } = usePlainHeadline(headingTree, decision.heading, {
+    source,
+    surface: "decision-heading-words",
+  });
+  // Until the engine has answered, the heading as written, which the reading list's
+  // `decision-heading-words` says is a load state: a card is never left with no name.
+  const heading = text?.text ?? decision.heading;
   return (
     <article
       aria-current={selected ? "true" : undefined}
-      aria-label={`Decision: ${decision.heading}`}
+      // The card's name is its heading's plain words: the reading list's `decision-heading-words`.
+      aria-label={`Decision: ${heading}`}
       className={`rounded-xl border p-3 text-sm shadow-sm ${
         active ? `${selectedCardBorder} ${selectedCardBg}` : card
       } ${decision.unsure ? `border-l-4 ${decisionUnsureBorder}` : ""}`}
@@ -65,11 +89,19 @@ export function DecisionCard({
         ) : null}
       </p>
       <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>
-        {route === undefined ? (
-          decision.heading
+        {reads}
+        {href === undefined ? (
+          <MarkdownBody
+            markdown={decision.heading}
+            source={source}
+            surface="margin-decision-passage"
+            tree={headingTree}
+            variant="inline"
+          />
         ) : (
-          <Link className={`${linkText} ${linkHoverText}`} to={buildReferencePath(route)}>
-            {decision.heading}
+          <Link className={`${linkText} ${linkHoverText}`} to={href}>
+            {/* A link's words hold no markup: the reading list's `decision-heading-words`. */}
+            {heading}
           </Link>
         )}
       </h3>
@@ -77,6 +109,8 @@ export function DecisionCard({
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
         markdown={decision.text}
+        source={source}
+        surface="margin-decision-passage"
         tree={decision.text_tree}
       />
     </article>

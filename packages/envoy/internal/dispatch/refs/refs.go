@@ -78,15 +78,16 @@ func ReplaceCountedEdit(
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	return CountedChanges(ctx, tx, append(changed, editedHeadTargets(previous, body, found)...))
+	return CountedChanges(ctx, tx, append(changed, editedHeadTargets(previous, body, r.serverURL, found)...))
 }
 
 // editedHeadTargets is what an edit of an ask's question or a comment's body from previous to body,
 // which cites found, moves although its edges stay. Every edge such a source writes shows the head
-// of its text as its excerpt (Edges, excerptRunes), so when the edit moves that head, the panel of
-// every target the source still cites changes: each of found is returned then, and none otherwise.
-func editedHeadTargets(previous, body string, found []text.Ref) []Target {
-	if text.HeadRunes(previous, excerptRunes) == text.HeadRunes(body, excerptRunes) {
+// of its text as its excerpt (Edges, itemExcerpt), cut against the deployment at serverURL, so when
+// the edit moves that head, the panel of every target the source still cites changes: each of
+// found is returned then, and none otherwise.
+func editedHeadTargets(previous, body, serverURL string, found []text.Ref) []Target {
+	if itemExcerpt(previous, serverURL) == itemExcerpt(body, serverURL) {
 		return nil
 	}
 	kinds, ids := refTargets(found)
@@ -214,13 +215,16 @@ func scanTargets(rows pgx.Rows, err error) ([]Target, error) {
 }
 
 // TargetOf is the graph target a parsed reference names, the kind and id refs and graph_edges
-// store an edge to it under; an external URL names none. A block of a comment, of a message or
+// store an edge to it under; an external URL names none, and neither does a party - an agent's
+// session, a role or a person. A party is a reader, not a record: the graph holds no node for
+// one, so no write stores an edge to one (refTargets drops it) and no read addresses one
+// (api.parseReferencesQuery refuses it). A block of a comment, of a message or
 // of an ask — a part of its question, its options and its answer — is stored under its item's
 // block kind, comment_block, message_block or ask_block (ItemKind.BlockKind), not block: a build
 // that predates item blocks skips a kind it does not know (resolveNodes), where it would count a
 // block row and resolve it through document_blocks.
 func TargetOf(ref text.Ref) (Target, bool) {
-	if ref.Kind == "url" {
+	if ref.Kind == "url" || ref.IsParty() {
 		return Target{}, false
 	}
 	kind := ref.Kind
@@ -535,9 +539,13 @@ func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (m
 // of its current blocks, once per source, in the shape the document surfaces read (kind, id
 // order). A citing document, comment, message or ask is listed itself, not by the block holding
 // its link: an ask that cites the document from one of its parts alone — an option, or the
-// answer it was given — is listed as that ask, once.
-func ReferencedBy(ctx context.Context, q Queryer, refKey string) ([]model.ReferencedBy, error) {
-	edges, err := resolveEdges(ctx, q, Query{Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true})
+// answer it was given — is listed as that ask, once. serverURL is the deployment the caller
+// reads, whose dashboard URLs each source's excerpt is cut around as references, as the graph
+// read cuts them (Query.ServerURL).
+func ReferencedBy(ctx context.Context, q Queryer, refKey, serverURL string) ([]model.ReferencedBy, error) {
+	edges, err := resolveEdges(ctx, q, Query{
+		ServerURL: serverURL, Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true,
+	})
 	if err != nil {
 		return nil, err
 	}

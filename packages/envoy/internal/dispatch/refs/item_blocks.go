@@ -123,7 +123,7 @@ func ReplaceCountedItem(
 	at time.Time,
 ) (model.ReferenceChanges, error) {
 	located := NewReader(ctx, tx, string(kind), itemID, serverURL).Mentions(body)
-	changed, err := replaceItemRefs(ctx, tx, kind, itemID, body, at, located, nil)
+	changed, err := replaceItemRefs(ctx, tx, kind, itemID, body, serverURL, at, located, nil)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -146,11 +146,11 @@ func ReplaceCountedItemEdit(
 	carried *CarriedEdit,
 ) (model.ReferenceChanges, error) {
 	located := NewReader(ctx, tx, string(kind), itemID, serverURL).Mentions(body)
-	changed, err := replaceItemRefs(ctx, tx, kind, itemID, body, at, located, carried)
+	changed, err := replaceItemRefs(ctx, tx, kind, itemID, body, serverURL, at, located, carried)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	return CountedChanges(ctx, tx, append(changed, editedHeadTargets(previous, body, text.Refs(located))...))
+	return CountedChanges(ctx, tx, append(changed, editedHeadTargets(previous, body, serverURL, text.Refs(located))...))
 }
 
 // replaceItemRefs indexes the item's blocks and their mentions (IndexItem) and reconciles its own
@@ -160,12 +160,12 @@ func replaceItemRefs(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind ItemKind,
-	itemID, body string,
+	itemID, body, serverURL string,
 	at time.Time,
 	located []text.Located,
 	carried *CarriedEdit,
 ) ([]Target, error) {
-	moved, err := IndexItem(ctx, tx, kind, itemID, body, at, located, carried)
+	moved, err := IndexItem(ctx, tx, kind, itemID, body, serverURL, at, located, carried)
 	if err != nil {
 		return nil, err
 	}
@@ -191,19 +191,21 @@ func replaceItemRefs(
 // (itemblocks.Align).
 //
 // It returns the targets of the block mentions it inserted or deleted, which the caller's event
-// counts (ReplaceCountedItem, ReplaceCountedItemEdit).
+// counts (ReplaceCountedItem, ReplaceCountedItemEdit). serverURL is the deployment whose
+// dashboard URLs each block's excerpt is cut around (BlockExcerpt).
 func IndexItem(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind ItemKind,
-	itemID, body string,
+	itemID, body, serverURL string,
 	at time.Time,
 	located []text.Located,
 	carried *CarriedEdit,
 ) ([]Target, error) {
 	return indexItemBlocks(ctx, tx, kind, itemID, at, itemBlockSource{
-		blocks:  itemblocks.Split(body),
-		bodySum: itemblocks.BodySHA256(body),
+		blocks:    itemblocks.Split(body),
+		bodySum:   itemblocks.BodySHA256(body),
+		serverURL: serverURL,
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error) {
 			if carried != nil && kind == ItemComment && carried.BaseRevision == revision {
 				spans, err := itemblocks.ReadCarried(stored, body, carried.Blocks)
@@ -223,18 +225,20 @@ func IndexItem(
 }
 
 // itemBlockSource is one reading of an item's blocks, which indexItemBlocks writes: the blocks in
-// order, the sum of the text they were read from (the state row's body_sha256), how each takes
-// its id against the blocks the item holds, the maker each records (made_by, for a kind whose
-// blocks have one: nil, or an entry per block, null where the item's own author made it), and
-// the links the blocks hold once their ids are known. The context the blocks are embedded with
-// is not read here: this write records the block index alone, and the window arm reads that
-// context for itself when it writes the windows (itemWindowText).
+// order, the sum of the text they were read from (the state row's body_sha256), the deployment
+// whose dashboard URLs each block's excerpt is cut around, how each takes its id against the
+// blocks the item holds, the maker each records (made_by, for a kind whose blocks have one: nil,
+// or an entry per block, null where the item's own author made it), and the links the blocks hold
+// once their ids are known. The context the blocks are embedded with is not read here: this write
+// records the block index alone, and the window arm reads that context for itself when it writes
+// the windows (itemWindowText).
 type itemBlockSource struct {
-	blocks  []itemblocks.Block
-	bodySum string
-	ids     func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
-	madeBy  []*string
-	pairs   func(next []itemblocks.Block, ids []string) []blockPair
+	blocks    []itemblocks.Block
+	bodySum   string
+	serverURL string
+	ids       func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
+	madeBy    []*string
+	pairs     func(next []itemblocks.Block, ids []string) []blockPair
 }
 
 // indexItemBlocks records source as the current revision of the blocks of item itemID, written at
@@ -313,7 +317,7 @@ func indexItemBlocks(
 	for index, block := range next {
 		row := itemBlockRow{
 			id: ids[index], position: index, nodeType: block.Type, sum: block.Hash,
-			excerpt: text.HeadRunes(block.Text, BlockExcerptRunes), text: block.Text,
+			excerpt: BlockExcerpt(block.Text, source.serverURL), text: block.Text,
 		}
 		if index < len(source.madeBy) {
 			row.madeBy = source.madeBy[index]

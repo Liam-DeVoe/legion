@@ -12,6 +12,7 @@ import {
   type InboxThreadKind,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
   sleep,
@@ -152,6 +153,23 @@ export type ReferenceSourceKind = NonNullable<
  *  policy, as a dropped connection is. A body that keeps moving, either way, goes on however long
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
+
+/** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
+ *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`). Past
+ *  it the read is refused `400 CAP_EXCEEDED`, so a caller holding more reads them in batches. */
+export { REFERENCE_TARGETS_MAX };
+
+/** How many characters of query string one `getReferenceTargets` may write. The server bounds a
+ *  batch by the count alone and says so (`referenceTargetsMax` in
+ *  `packages/envoy/internal/dispatch/api/reference_targets.go`): it sets no limit on the
+ *  request line itself, but a proxy in front of it can set one, and 16 KB is one known such
+ *  limit (an AWS load balancer's). A full batch of comment or message references encodes to
+ *  more than that, so a caller splits by the length it writes as well as by the count, which is
+ *  the two-request read that comment describes. The budget is the query alone, which leaves the
+ *  route, the verb and the version of the request line room of their own inside 16 KB. It is
+ *  set under that one known limit, not measured against the deployed Dispatch. */
+export const REFERENCE_TARGETS_MAX_QUERY_CHARS = 12_000;
 
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
  *  refusal: the request may still have reached Dispatch, so only a read, or a write made again
@@ -470,6 +488,14 @@ function readUrl<P extends PathsOf<"get">>(pattern: P, params: PathParams<Op<P, 
 /** `PATCH /api/v1/issues/{key}`: one change of an issue's fields (`patchIssue`). */
 export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}", "patch">) {
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
+}
+
+/** `PATCH /api/v1/priorities/{id}`: one change of a priority's fields - its title, description
+ *  or owner, and its place in the one order (`rank: {before, after}`, the priorities it lands
+ *  between, as the issue board's own drag names them). Each field left out is left alone. Every
+ *  change is a write on the priority's line, made from this request (`usePriorityWrites`). */
+export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
+  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
 }
 
 /** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session
@@ -1094,7 +1120,9 @@ export class DispatchApiClient {
     return Array.isArray(answer) ? answer : (answer.issues ?? []);
   }
   /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
-   *  keeps there: the same search either way, from the same handler. `project`, `status`,
+   *  keeps there: the same search either way, from the same handler. `kind` names the kinds to
+   *  rank, count and page, one `kind=` per entry; with none named every kind the index holds is
+   *  searched. `project`, `status`,
    *  `author` (an actor id: a person's login or a session id) and `updated_since` (RFC 3339)
    *  each narrow every leg of the search rather than striking rows out of the page it answers.
    *  `number_project` narrows nothing: it is the project of the page the search was made from,
@@ -1103,13 +1131,15 @@ export class DispatchApiClient {
    *  makes no embedding call, whatever embedder the deployment configured, which is what the
    *  bar sends behind a keystroke; a request leaving it out searches by meaning too wherever an
    *  embedder is configured. The route refuses a value it cannot read under its own code
-   *  (`INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`,
-   *  `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches while a person types,
+   *  (`INVALID_QUERY`, `INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`,
+   *  `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches
+   *  while a person types,
    *  so it passes the `signal` of the search it is still interested in: an aborted request ends
    *  the route's own work with it, the embedding a search by meaning had asked for included.
    *  The path is `everyBuildReadsSearch`'s to pick, because a Dispatch released before the
    *  results route refuses that path outright rather than answering `GET /api/v1/search` with
-   *  the member dropped, which is unnarrowed rows under the filters a person chose. */
+   *  the member dropped, which is unnarrowed rows under the filters a person chose. A request
+   *  naming a `kind` is such a request, so it goes to the results route like the other five. */
   search(
     query: string,
     options: Omit<Query<"/api/v1/search/results", "get">, "q"> = {},
@@ -1200,13 +1230,6 @@ export class DispatchApiClient {
     return this.post("/api/v1/priorities", {}, input, bounds);
   }
 
-  /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
-   *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
-   *  board's own drag names them). Each field left out is left alone. */
-  patchPriority(id: string, input: Body<"/api/v1/priorities/{id}", "patch">, bounds: WriteBounds) {
-    return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
-  }
-
   /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each
    *  write of its title, description, owner, order, state and visibility, and each `advances`
    *  relation an issue asserted or retracted on it, with the actor who stated it and when. A
@@ -1242,6 +1265,16 @@ export class DispatchApiClient {
 
   listAgents() {
     return this.read("/api/v1/agents", {});
+  }
+
+  /** `GET /api/v1/agents/known`: which of `sessions` Dispatch holds any record of - listed in its
+   *  registry copy, or named by an event, a message, a delivery, an artifact or an ask it follows
+   *  - each with its registry title when listed, one `id=` per session. At most
+   *  `KNOWN_SESSIONS_MAX` ids per call, none longer than a `dispatch://agent/<session id>`
+   *  reference's target may be (`MAX_REFERENCE_TARGET_BYTES`); `known-sessions.ts` batches a
+   *  page's ids into one. */
+  getKnownSessions(sessions: readonly string[]) {
+    return this.read("/api/v1/agents/known", {}, { id: [...sessions] });
   }
 
   createAsk(key: string, input: Body<"/api/v1/issues/{key}/asks", "post">, bounds: WriteBounds) {
@@ -1499,6 +1532,13 @@ export class DispatchApiClient {
     });
   }
 
+  /** `GET /api/v1/agents/{session_id}/artifacts`: the newest 100 files and images of an agent's
+   *  conversation, newest first, each with its versions. It needs the `person` scope, as the
+   *  conversation it belongs to does. */
+  listAgentArtifacts(sessionId: string) {
+    return this.read("/api/v1/agents/{session_id}/artifacts", { session_id: sessionId });
+  }
+
   getArtifactText(id: string) {
     return this.read("/api/v1/artifacts/{id}/text", { id });
   }
@@ -1626,6 +1666,16 @@ export class DispatchApiClient {
    *  listener's Legion agent registry - `legion_registry: "unavailable"` when it did not answer. */
   getIssueCollaborators(key: string) {
     return this.read("/api/v1/issues/{key}/collaborators", { key });
+  }
+
+  /** What many `dispatch://` references point at, in one read: one member per `ref` in the
+   *  request's order, each `{ref, kind, name, gone}`. A page that names many references can read
+   *  all their names through this, in as few requests as both bounds allow
+   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference
+   *  (R21 of dispatch://INFRA-1196/spec#b-r-requests). At most `REFERENCE_TARGETS_MAX` references:
+   *  past that the server answers `400 CAP_EXCEEDED`. */
+  getReferenceTargets(refs: readonly string[]) {
+    return this.read("/api/v1/reference-targets", {}, { ref: [...refs] });
   }
 
   /** The edges at a node; `kind` keeps those of one kind - `part_of` lists a document's blocks,

@@ -4,6 +4,7 @@ import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type {
@@ -11,6 +12,7 @@ import type {
   Ask,
   AskAnswer,
   AskRead,
+  DisplayTree,
   MyAnswerRow,
   MyAnswersResponse,
 } from "../../api/types";
@@ -178,6 +180,40 @@ test("lists the person's answers and replies newest first with time, owner, ques
     // An answer the person later replaced (or someone else's later answer) is history.
     expect(within(third).getByText("Changed since")).toBeTruthy();
     expect(within(third).queryByRole("button", { name: "Change answer" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listMyAnswers.mockRestore();
+  }
+});
+
+// Each pill draws its label from the tree the row carries beside it, at the label's own index,
+// and parses nothing (`answers-chosen-options`): the trees here read `Sail` and `wait` where the
+// labels' markdown says `Ship` and `hold`, so a pill that parsed its label, or took another
+// label's tree, would show other words.
+test("a row's chosen options are drawn from the trees of their labels", async () => {
+  const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
+    page([
+      answerRow({
+        answer: {
+          ...shipAnswer,
+          selected: ["**Ship** it", "*hold* it"],
+          selected_trees: [
+            displayTree("**Sail** it") as DisplayTree,
+            displayTree("*wait* it") as DisplayTree,
+          ],
+          text: null,
+        },
+      }),
+    ])
+  );
+  const { view } = renderPage();
+  try {
+    const [row] = (await view.findAllByRole("listitem")).filter(
+      (item) => item.dataset.answerRow !== undefined
+    ) as [HTMLElement];
+    await waitFor(() => expect(row.querySelector("strong")?.textContent).toBe("Sail"));
+    expect(row.querySelector("em")?.textContent).toBe("wait");
+    expect(within(row).queryByText(/Ship|hold/)).toBeNull();
   } finally {
     view.unmount();
     listMyAnswers.mockRestore();

@@ -28,8 +28,9 @@
 # does not read, which the write mode writes, no paths-filter step's filters string may come
 # near the 131,072-byte cap the kernel puts on the environment variable Actions hands it in,
 # every output of the changes job must name the paths-filter step its own filter is declared in,
-# and a listed block's patterns are passed over by rule 9 only while its marker names a check a
-# job of CI runs.
+# a listed block's patterns are passed over by rule 9 only while its marker names a check a
+# job of CI runs, and every spec file dispatch-browser.yaml's references lane lists in
+# lane_files must be one the dispatch_references filter matches.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
@@ -2099,6 +2100,9 @@ READS = (
      "the tree the same test asserts over"),
     ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
      "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
+    ("test", "packages/dispatch/web/src/fonts/inter/package.json",
+     "scripts/third-party-notices.test.ts:102-105 (thirdPartyNotices over the font file's path)"),
+    ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
 )
 
 doc = yaml.safe_load(Path(sys.argv[1]).read_text())
@@ -2217,6 +2221,80 @@ mv "$root/.github/workflows/scan.yaml" "$root/.github/workflows/scan.yml"
 run_check "$root"
 check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
+
+# references_lane <root>: a dispatch-browser.yaml whose shard job's browser step runs, in its
+# `references)` arm, the two spec files under web/e2e it names from its own directory, and a
+# dispatch_references filter in ci.yaml naming both. The comment in the arm spells an assignment
+# that names a third file, which is no entry.
+references_lane() {
+  mkdir -p "$1/web/e2e"
+  echo 'one' > "$1/web/e2e/one.e2e.ts"
+  echo 'two' > "$1/web/e2e/two.e2e.ts"
+  replace "$1/.github/workflows/ci.yaml" "              - 'docs/**'"$'\n  app:' \
+    "              - 'docs/**'"$'\n            dispatch_references:\n              - \'web/e2e/one.e2e.ts\'\n              - \'web/e2e/two.e2e.ts\'\n  app:'
+  cat > "$1/.github/workflows/dispatch-browser.yaml" <<'YAML'
+name: Browser suite
+on:
+  workflow_call:
+    inputs:
+      lane:
+        type: string
+        required: true
+jobs:
+  shard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Browser-test the rows
+        run: |
+          case "${{ inputs.lane }}" in
+            full)
+              lane_files=""
+              ;;
+            references)
+              # lane_files="e2e/three.e2e.ts" in a comment is no entry.
+              lane_files="e2e/one.e2e.ts
+              e2e/two.e2e.ts"
+              ;;
+          esac
+          bunx playwright test $lane_files
+        working-directory: web
+YAML
+}
+
+echo "case: every spec file the references lane runs is one its filter matches"
+# ci.yaml's dispatch_references filter starts the job that calls dispatch-browser.yaml's
+# references lane, so a spec file the lane runs and the filter misses is a change to the lane's
+# own rows that starts no run of them.
+root=$(fixture references-lane)
+references_lane "$root"
+run_check "$root"
+check "passes while the filter names every entry" "$(is "$status" 0)"
+check "reports the lane" \
+  "$(contains "$out" '^report: .github/workflows/dispatch-browser.yaml references lane: 2 spec files, 0 unmatched by filter dispatch_references$')"
+replace "$root/.github/workflows/dispatch-browser.yaml" '              e2e/two.e2e.ts"' $'              e2e/two.e2e.ts\n              e2e/three.e2e.ts"'
+run_check "$root"
+check "fails once the lane runs a file the filter misses" "$(is "$status" 1)"
+check "naming the entry, the path from the step's directory and the filter" \
+  "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::job shard step \"Browser-test the rows\" runs e2e/three.e2e.ts in the references lane (lane_files), which .github/workflows/ci.yaml's filter dispatch_references does not match as web/e2e/three.e2e.ts")"
+check "and no other entry" "$(is "$(contains "$out" 'runs e2e/one.e2e.ts in the references lane')" false)"
+
+echo "case: a references arm the check cannot read fails rather than holding the filter to nothing"
+root=$(fixture references-lane-unread)
+references_lane "$root"
+replace "$root/.github/workflows/dispatch-browser.yaml" '            references)' '            refs)'
+run_check "$root"
+check "fails without the arm" "$(is "$status" 1)"
+check "naming what it looked for" \
+  "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::no step of .github/workflows/dispatch-browser.yaml sets lane_files=\"...\" in a \`references)\` arm of its script")"
+
+echo "case: a references lane whose filter is gone"
+root=$(fixture references-lane-no-filter)
+references_lane "$root"
+replace "$root/.github/workflows/ci.yaml" '            dispatch_references:' '            dispatch_refs:'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the filter" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job has no filter dispatch_references")"
 
 # ci_job_reads.py builds envoy-go's plain step - the tests a race build cannot run at all or at
 # full size - by reading packages/envoy's own source rather than from a list a table could hold,

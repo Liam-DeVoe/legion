@@ -193,7 +193,7 @@ func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 			citer, _ := createReferenceArtifact(t, tx, "", "ACME", "citer")
 			citingBlock := random(t, text.MaxBlockIDBytes)
 			blocks := []model.ArtifactBlock{{ID: citingBlock, Type: "paragraph", From: 0, To: len(markdown)}}
-			if _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil); err != nil {
+			if _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil, ""); err != nil {
 				t.Fatalf("write the reference at the bound from a block of %d bytes: %v", text.MaxBlockIDBytes, err)
 			}
 			var fromComment, fromBlock int
@@ -272,7 +272,7 @@ func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 	}
 	citingBlock := random(t, text.MaxBlockIDBytes)
 	blocks := []model.ArtifactBlock{{ID: citingBlock, Type: "paragraph", From: 0, To: len(markdown)}}
-	if _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil); err != nil {
+	if _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil, ""); err != nil {
 		t.Fatalf("write the references at the bound from a block of %d bytes: %v", text.MaxBlockIDBytes, err)
 	}
 	for _, table := range []string{"refs", "block_refs"} {
@@ -320,6 +320,10 @@ func TestEveryTargetIDIsTheNodeIDTheGraphStores(t *testing.T) {
 	const server, from = "https://dispatch.example", "00000000-0000-4000-8000-000000000000"
 	for _, test := range []struct{ reference, kind, node string }{
 		{"dispatch://CORE-1", "issue", "CORE-1"},
+		{"dispatch://CORE-1/", "issue", "CORE-1"},
+		{"dispatch://CORE-1/plan", "issue", "CORE-1"},
+		{"https://dispatch.example/issues/CORE-1/conversation", "issue", "CORE-1"},
+		{"https://dispatch.example/issues/CORE-1/artifact/notes-md?v=2", "artifact", notes},
 		{"dispatch://CORE-1/spec", "artifact", spec},
 		{"dispatch://CORE-1/artifact/notes-md@v2", "artifact", notes},
 		{"dispatch://CORE/artifact/handbook-md", "artifact", handbook},
@@ -546,7 +550,7 @@ func TestReferencedByIncludesArtifactSources(t *testing.T) {
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	got, err := ReferencedBy(ctx, database.Pool, d2RefKey)
+	got, err := ReferencedBy(ctx, database.Pool, d2RefKey, "")
 	if err != nil {
 		t.Fatalf("read artifact sources: %v", err)
 	}
@@ -575,7 +579,7 @@ func TestReferencedByListsAnAskCitingFromItsParts(t *testing.T) {
 	writeAskAnswer(t, tx, &ask, "bob", []string{"gRPC"}, "Ship it, as dispatch://"+refKey+" says.")
 	indexAskPartsAt(t, tx, ask, 1)
 
-	got, err := ReferencedBy(ctx, tx, refKey)
+	got, err := ReferencedBy(ctx, tx, refKey, "")
 	if err != nil {
 		t.Fatalf("read the citers of %s: %v", refKey, err)
 	}

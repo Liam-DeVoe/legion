@@ -1,17 +1,22 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   backdrop40,
   card,
   dangerText,
-  inputClasses,
+  focusVisibleRing,
+  pageHeaderControl,
+  pageInkBorder,
+  pageInkFill,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -22,6 +27,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
@@ -35,7 +41,10 @@ export function approvalVersion(approval: ArtifactApproval): number {
   return approval.version ?? approval.latest_version;
 }
 
-function approvalLabel(approval: ArtifactApproval): string {
+/** The chip's words. `latest` is the issue page's word for the latest version, given inside
+ *  `NoTooltips` alone: there a stale chip draws the latest version, which its `title` says
+ *  everywhere else (dispatch://INFRA-1196 R19, R22). */
+function approvalLabel(approval: ArtifactApproval, latest?: string): string {
   // A plan is approved by its plan review, never by a person, and its chip says so.
   const approved = approval.kind === "plan_review" ? "Approved by plan review" : "Approved";
   const version = approvalVersion(approval);
@@ -47,7 +56,9 @@ function approvalLabel(approval: ArtifactApproval): string {
     case "approved":
       return `${approved} v${version}`;
     case "stale":
-      return `${approved} v${version} · changed since`;
+      return latest === undefined
+        ? `${approved} v${version} · changed since`
+        : `${approved} v${version} · ${latest} v${approval.latest_version}`;
     case "changes_requested":
       return "Changes requested";
     default:
@@ -70,9 +81,12 @@ function approvalScope(approval: ArtifactApproval): string {
 
 function ReviewsDialog({
   artifactId,
+  issueKey,
   onClose,
 }: {
   artifactId: string;
+  /** The issue the document is on, which each review's reason is a text of. */
+  issueKey: string | null;
   onClose: () => void;
 }): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
@@ -121,7 +135,8 @@ function ReviewsDialog({
                     <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
                       <MarkdownBody
                         markdown={review.reason}
-                        source={textSourceOf("artifact", artifactId)}
+                        source={textSourceOf("artifact", artifactId, issueKey)}
+                        surface="approval-review-reason"
                         tree={review.reason_tree}
                       />
                     </div>
@@ -138,18 +153,26 @@ function ReviewsDialog({
 
 function RequestChangesDialog({
   error,
+  issueKey,
   onClose,
   onSubmit,
+  project,
   saving,
 }: {
   /** What the server answered the last request with, or null while none was refused. */
   error: Error | null;
+  /** The issue the document under review belongs to, where it has one: the picker offers that
+   *  issue's people. */
+  issueKey?: string;
   onClose: () => void;
   onSubmit: (reason: string) => void;
+  /** The document's project, whose components the picker offers. */
+  project: string;
   saving: boolean;
 }): ReactNode {
   const [reason, setReason] = useState("");
-  const reasonId = useId();
+  // The dialog moves the focus into the box it opens over, which the field hands back as its
+  // own element (`MentionFieldHandle`).
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
   const trimmed = reason.trim();
@@ -166,29 +189,28 @@ function RequestChangesDialog({
           role="dialog"
         >
           <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Request changes</h2>
-          <label
-            className={`block text-sm font-medium ${textSecondaryOnSurface}`}
-            htmlFor={reasonId}
-          >
-            Reason
-            <textarea
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
-              disabled={saving}
-              id={reasonId}
-              onChange={(event) => setReason(event.target.value)}
-              onKeyDown={(event) =>
-                submitOnModifiedEnter(event, {
-                  onFormlessSubmit: () => {
-                    if (trimmed !== "" && !saving) {
-                      onSubmit(trimmed);
-                    }
-                  },
-                })
-              }
-              ref={textareaRef}
-              value={reason}
-            />
-          </label>
+          <MentionField
+            className="text-sm"
+            body={reason}
+            disabled={saving}
+            fieldRef={(handle) => {
+              textareaRef.current = handle?.textarea() ?? null;
+            }}
+            issueKey={issueKey}
+            label="Reason"
+            onChange={(change) => setReason(change.body)}
+            onKeyDown={(event) =>
+              submitOnModifiedEnter(event, {
+                onFormlessSubmit: () => {
+                  if (trimmed !== "" && !saving) {
+                    onSubmit(trimmed);
+                  }
+                },
+              })
+            }
+            project={project}
+            writing={dispatchWritingBox("approval-reason", "approval-reason")}
+          />
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
@@ -229,6 +251,11 @@ export interface ApprovalChipProps {
   showActions?: boolean;
   /** `contents` lets a parent flex group place the state chip and actions independently. */
   layout?: "contents" | "inline";
+  /** `compact` draws the chip and its two actions at the size of the new issue page header's
+   *  other pills and controls (the prototype's `.pill` and `.hbtn`, dispatch://INFRA-1196 R13):
+   *  12 px type, 20 px tall for the chip and 24 px for each action. `default` is every other
+   *  host's. */
+  size?: "compact" | "default";
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */
   onReviewed?(): void;
@@ -243,6 +270,7 @@ export function ApprovalChip({
   artifact,
   layout = "inline",
   onReviewed,
+  size = "default",
   variant = "list",
   showActions = variant === "header",
 }: ApprovalChipProps): ReactNode {
@@ -251,6 +279,8 @@ export function ApprovalChip({
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
+  const tooltips = useTooltips();
+  const page = usePageWords();
 
   const review = useKeyedWrite({
     label: (input: CreateArtifactReviewInput) =>
@@ -291,24 +321,32 @@ export function ApprovalChip({
     >
       <button
         aria-haspopup="dialog"
-        className={approvalPillClassName(approval.state)}
+        className={approvalPillClassName(approval.state, size)}
+        // Inside `NoTooltips`, the document whose approval this is, which an approval request's
+        // own address puts the focus on (dispatch://INFRA-1196 R20).
+        data-approval-artifact={page === null ? undefined : artifact.id}
         onClick={() => setReviewsOpen(true)}
         title={
-          approval.state === "stale"
+          tooltips && approval.state === "stale"
             ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
             : undefined
         }
         type="button"
       >
-        {approvalLabel(approval)}
+        {approvalLabel(approval, page?.CONTROL_LABELS.approval_latest)}
       </button>
       {variant === "header" && showActions ? (
         <>
           {approval.state === "approved" ? null : (
             // One filled button per surface: approving is the action the header wants, and
-            // two outline buttons made a reader choose before reading either.
+            // two outline buttons made a reader choose before reading either. At the new issue
+            // page header's size it is filled with that page's ink, not the application's blue.
             <button
-              className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+              className={
+                size === "compact"
+                  ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
+                  : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
+              }
               disabled={review.isPending}
               onClick={() => submitGuard.guard(() => review.mutate({ state: "approved" }))}
               type="button"
@@ -317,7 +355,11 @@ export function ApprovalChip({
             </button>
           )}
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+            className={
+              size === "compact"
+                ? pageHeaderControl
+                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`
+            }
             disabled={review.isPending}
             onClick={() => setRequestChangesOpen(true)}
             type="button"
@@ -327,11 +369,16 @@ export function ApprovalChip({
         </>
       ) : null}
       {reviewsOpen ? (
-        <ReviewsDialog artifactId={artifact.id} onClose={() => setReviewsOpen(false)} />
+        <ReviewsDialog
+          artifactId={artifact.id}
+          issueKey={artifact.issue_key}
+          onClose={() => setReviewsOpen(false)}
+        />
       ) : null}
       {requestChangesOpen ? (
         <RequestChangesDialog
           error={review.isError ? review.error : null}
+          issueKey={artifact.issue_key ?? undefined}
           onClose={() => {
             review.reset();
             setRequestChangesOpen(false);
@@ -339,6 +386,7 @@ export function ApprovalChip({
           onSubmit={(reason) =>
             submitGuard.guard(() => review.mutate({ reason, state: "changes_requested" }))
           }
+          project={artifact.project}
           saving={review.isPending}
         />
       ) : null}
