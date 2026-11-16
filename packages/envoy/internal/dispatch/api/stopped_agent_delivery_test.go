@@ -29,12 +29,14 @@ const (
 
 // stoppedAgentListener is an Envoy listener with no live session and no live role holder, whose
 // Legion agent registry holds two stopped sessions of the role legion-test-planner, stopped-2
-// newest and stopped-1 before it, each of an issue that has left the workflow (`finished`). Its
-// registry reads fail while registryDown is set, and its entries carry no `finished` while
-// roleRuns is set, as the registry's entries of an issue the workflow still runs do, and carry
-// `released` while released is set, as the entries of a claim whose idle pod the daemon released
-// do. It takes every send, as its hand-off does, and records the session each one is for; while
-// refuseSends is set it records each and refuses it as a listener with no daemon answering for
+// newest and stopped-1 before it, each of an issue that has left the workflow (`finished`) and of
+// a project whose daemon answers (`answering`). Its registry reads fail while registryDown is set,
+// and its entries carry no `finished` while roleRuns is set, as the registry's entries of an issue
+// the workflow still runs do, carry `released` while released is set, as the entries of a claim
+// whose idle pod the daemon released do, and carry `answering: false` while notAnswering is set,
+// as the entries of a project whose daemon runs without `answers` do. It takes every send, as its
+// hand-off does, and records the session each one is for; while refuseSends is set it records
+// each and refuses it as a listener with no daemon answering for
 // the agent does. It records every role publish's body too, and answers it as the publish route
 // answers a role no live session holds: 202 kept, or, while publishAnswer names it, 200 for a
 // live holder that claimed the role meanwhile or 404 for a publish it kept nothing of. While
@@ -49,6 +51,7 @@ type stoppedAgentListener struct {
 	storeSends    atomic.Bool
 	roleRuns      atomic.Bool
 	released      atomic.Bool
+	notAnswering  atomic.Bool
 	rolesDown     atomic.Bool
 	publishAnswer atomic.Int32
 	roleHolder    atomic.Pointer[string]
@@ -66,6 +69,9 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 			"session_id": sessionID, "legion_project": "legiontest", "issue": "TEST-1", "role": "planner",
 			"role_token": registeredRole, "title": "planner " + sessionID, "harness": "omp",
 			"started_at": "2026-10-26T00:00:00Z", "recorded_at": "2026-10-26T00:00:00Z", "live": false,
+			// The listener derives `answering` at the read from the project's answering record,
+			// false while the project has stated none.
+			"answering": !listener.notAnswering.Load(),
 		}
 		// The listener omits `finished` for an issue the workflow still runs, and writes it for
 		// one that has left it (legionagents.Entry.Finished).
@@ -380,16 +386,18 @@ func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 
 // A target the registry does not name, every target while the registry does not answer, a
 // target the registry names whose daemon does not answer - the listener refuses the send, having
-// handed it to no daemon - and a target whose entry is released - its daemon released the idle
-// issue pod and resumes the session on the message's wake, so the listener hands it to no daemon
-// - are refused exactly as before the registry existed: the listener's own failure recorded, with
-// the session it recorded then.
+// handed it to no daemon - a target whose entry is released - its daemon released the idle issue
+// pod and resumes the session on the message's wake, so the listener hands it to no daemon - and
+// a target whose project does not answer - the listener hands it to no daemon and only stores a
+// send for a session that will not run again, so no send is made - are refused exactly as before
+// the registry existed: the listener's own failure recorded, with the session it recorded then.
 func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		registryDown bool
 		refuseSends  bool
 		released     bool
+		notAnswering bool
 		session      string
 		role         string
 		// wantSends is the least number of sends each named session takes, nil when the
@@ -407,12 +415,18 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
 		},
 		// Finished as well, so the role path's own check is the one that names no session.
 		{name: "released", released: true, session: stoppedAgent, role: registeredRole},
+		// Finished and not released, so the project's answering flag is the one check that names
+		// no session. Its listener takes a send as main's does for a project that does not
+		// answer, stored for the stopped session; the redirect makes none.
+		{name: "project not answering", notAnswering: true, session: stoppedAgent, role: registeredRole},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := newStoppedAgentListener(t)
 			listener.registryDown.Store(tc.registryDown)
 			listener.refuseSends.Store(tc.refuseSends)
 			listener.released.Store(tc.released)
+			listener.notAnswering.Store(tc.notAnswering)
+			listener.storeSends.Store(tc.notAnswering)
 			handler, database := newTargetedMessageHandler(t, listener.URL)
 			issue := createInteractionIssue(t, handler, "TEST", "Unanswered", "before")
 

@@ -13,17 +13,19 @@ import (
 // sjawhar/legion#2230. A role whose holder is gone because the Legion daemon released the role's
 // idle issue pod - the registry's newest entry for the role token is `released` and not
 // `finished` - is coming back: the daemon resumes the same session on the next wake of the role.
-// A person's message to it is kept for that next holder rather than failed: Dispatch publishes it
-// on the role's topic through the listener's publish route, which keeps it on the role's kept lane
-// and wakes the role, and records the attempt taken. Every other role keeps what it did before:
-// the finished role's newest session takes the message, and a role whose claim is not released,
-// or is released with its issue finished, keeps the listener's no-holder answer.
+// A person's message to it is kept for that next holder rather than failed, whether or not the
+// project's daemon answers for its stopped agents, since no daemon answers this one: Dispatch
+// publishes it on the role's topic through the listener's publish route, which keeps it on the
+// role's kept lane and wakes the role, and records the attempt taken. Every other role keeps what
+// it did before: the finished role's newest session takes the message while its project answers,
+// and a role whose claim is not released, or is released with its issue finished, or is finished
+// with its project not answering, keeps the listener's no-holder answer.
 func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 	noHolder := "no holder for role " + registeredRole
 	roleTarget := "role:" + registeredRole
 	for _, tc := range []struct {
-		name               string
-		finished, released bool
+		name                             string
+		finished, released, notAnswering bool
 		// publishAnswer is the status the listener answers a role publish with (202 when 0).
 		publishAnswer int32
 		// The outcome both the message's attempt and the mention's record: the state, the
@@ -35,6 +37,10 @@ func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 	}{
 		{
 			name: "released, so kept for its next holder", released: true,
+			wantState: model.DeliveryStateQueued, wantEnvelope: "kept-", published: true,
+		},
+		{
+			name: "released, its project not answering, so kept all the same", released: true, notAnswering: true,
 			wantState: model.DeliveryStateQueued, wantEnvelope: "kept-", published: true,
 		},
 		{
@@ -51,11 +57,16 @@ func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 			wantState: model.DeliveryStateSent, wantSession: stoppedNewest, wantEnvelope: "handed-off-",
 		},
 		{name: "released and finished", finished: true, released: true, wantState: model.DeliveryStateFailed, wantFailure: noHolder},
+		{
+			name: "finished, its project not answering", finished: true, notAnswering: true,
+			wantState: model.DeliveryStateFailed, wantFailure: noHolder,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := newStoppedAgentListener(t)
 			listener.roleRuns.Store(!tc.finished)
 			listener.released.Store(tc.released)
+			listener.notAnswering.Store(tc.notAnswering)
 			listener.publishAnswer.Store(tc.publishAnswer)
 			handler, database := newTargetedMessageHandler(t, listener.URL)
 			issue := createInteractionIssue(t, handler, "TEST", "Released role", "before")

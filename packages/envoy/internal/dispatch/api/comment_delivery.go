@@ -130,9 +130,10 @@ func resolvedMention(target, delivery string, found deliveryTarget) ResolvedMent
 // message, whether the listener stored it for a recipient that takes it later - a stopped session,
 // or a role's next holder - rather than handing it to a running one (queued), and the failure to
 // record otherwise. refused is set only beside a failure of a send to a target the Legion agent
-// registry named - a stopped agent's session the listener refused with no live session, or a role
-// kept for its next holder that the delivery may not be kept for - and is the listener's own
-// resolution of the route, which the attempt records in place of the registry's.
+// registry named - a stopped agent's session the listener refused with no live session or only
+// stored the message for, or a role kept for its next holder that the delivery may not be kept
+// for - and is the listener's own resolution of the route, which the attempt records in place of
+// the registry's.
 type sendOutcome struct {
 	envelopeID *string
 	duplicate  bool
@@ -164,7 +165,8 @@ type sendOutcome struct {
 // resolution of the route (target.listenerAnswer) as refused, and its resolve error as the
 // failure. The caller records that resolution's session on the attempt in place of the
 // registry's, so the attempt reads exactly as it did before the registry existed: a role's
-// listener answer with no session, a session's "no live session <id>".
+// listener answer with no session, a session's "no live session <id>". A send to such a session
+// that the listener only stores (dispatchenvoy.SendStateStopped) settles the same way.
 //
 // A role kept for its next holder (target.keepForRole) is published on the role's topic rather
 // than sent (publishForRole).
@@ -207,6 +209,19 @@ func (s *server) sendResolvedDelivery(
 	// stored for one it knows that is not running. A listener that predates the field answers
 	// none, which reads as connected.
 	queued := send.State == dispatchenvoy.SendStateStopped
+	// The registry named this session only so that its daemon would answer the message
+	// (registeredAgent), and a send the listener hands to that daemon answers no state, never
+	// stopped (sendResponse.State in cmd/listener/api.go). Stopped is the listener storing the
+	// message for a session it still knows (#2643) because it handed it to no daemon - the
+	// project said it stopped answering after the registry was read, say. A stopped agent's
+	// session does not run again to read it, so recording it queued would tell the person it
+	// reached the agent while it sits unread until it expires. It settles as the 404 above does,
+	// with the listener's own answer for the route, so the attempt reads exactly as it did before
+	// the registry existed. The check comes before the duplicate's, since a take-over's retry of
+	// this send is a duplicate of the copy the first try stored.
+	if target.listenerAnswer != nil && queued {
+		return sendOutcome{failure: target.listenerAnswer.ResolveError, refused: target.listenerAnswer}
+	}
 	// A duplicate names an envelope JetStream discarded, so the attempt records none.
 	if send.Duplicate {
 		return sendOutcome{duplicate: true, queued: queued}
@@ -993,10 +1008,10 @@ func (s *server) supersedeOvertakenAttempts(
 }
 
 // refusedMentionAnswer is the listener's own answer a mention's attempt records when the listener
-// refused the send to the session the Legion agent registry named for it (refused, from
-// sendResolvedDelivery), so the attempt reads as it did before the registry existed: the
-// listener's own session for the route, and that answer as both its resolve error and its
-// failure. nil keeps what the attempt recorded.
+// refused the send to the session the Legion agent registry named for it, or only stored it for
+// that session (refused, from sendResolvedDelivery), so the attempt reads as it did before the
+// registry existed: the listener's own session for the route, and that answer as both its resolve
+// error and its failure. nil keeps what the attempt recorded.
 //
 // An attempt resolved now takes the answer behind that resolution. The comment's first attempt
 // was pinned when the comment was written, to the session the registry named for mention then,

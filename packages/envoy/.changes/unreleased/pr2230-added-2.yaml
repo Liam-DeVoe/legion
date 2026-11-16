@@ -6,15 +6,21 @@ body: |-
   holder, is looked up
   in the listener's Legion agent registry (`GET /v1/legion/agents/sessions/{id}`, or for a role
   its token's newest entry from `GET /v1/legion/agents/roles/{token}`). A session the registry
-  names is the attempt's session, whatever the delivery mode (the capability check is skipped),
-  the send goes to it through the listener, which hands it to the agent's daemon, so the attempt
-  is `sent`, and the reply the daemon posts as that session on that attempt is accepted. A target
-  the registry does not name still fails `no live session <id>` (or the listener's no-holder
-  text), a registry read that does not answer is logged and changes nothing, and a send the
-  listener refuses because no daemon answers for that agent records the listener's own answer and
-  session, exactly as before the registry existed. The Dispatch Envoy client's `Role` reports the
-  listener's 404 as an error matching `ErrNoHolder`, and `Send`'s 404 as one matching
-  `ErrNotFound`, each carrying the listener's own text.
+  names is the attempt's session only while its project's daemon answers for its stopped agents:
+  each registry read now carries `answering`, the flag the project's answering record last
+  stated (false when the project has stated none), which is the condition the listener's
+  hand-off reads. Such a session is the attempt's session whatever the delivery mode (the
+  capability check is skipped), the send goes to it through the listener, which hands it to the
+  agent's daemon, so the attempt is `sent`, and the reply the daemon posts as that session on
+  that attempt is accepted. A target the registry does not name, or names for a project that
+  does not answer (its daemon runs without `answers`, or it never said it does), still fails
+  `no live session <id>` (or the listener's no-holder text, naming no session) and is sent
+  nothing, a registry read that does not answer is logged and changes nothing, and a send the
+  listener refuses because no daemon answers for that agent, or answers `state: stopped`
+  because it only stored the message for the stopped session, records the listener's own answer
+  and session, exactly as before the registry existed, never `queued`. The Dispatch Envoy
+  client's `Role` reports the listener's 404 as an error matching `ErrNoHolder`, and `Send`'s 404
+  as one matching `ErrNotFound`, each carrying the listener's own text.
 
   A role is looked up only when the registry's newest entry for its token says `finished`: its
   issue has left the workflow, so no next worker of that role is coming. A role whose issue

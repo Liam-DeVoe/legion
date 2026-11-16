@@ -204,8 +204,9 @@ func (r *legionAgentRegistry) store() *legionagents.Store { return r.state.Load(
 const legionAgentBodyLimit = 1 << 20
 
 // legionAgentAnswer is one Legion agent registry entry as a read answers it: the entry, the session
-// that replaced it within its role token (legionagents.Agent), and whether its session is answering
-// now. Both are derived at the read and neither is stored.
+// that replaced it within its role token (legionagents.Agent), whether its session is answering
+// now, and whether its project's daemon answers for it. All three are derived at the read and none
+// is stored.
 //
 // Live is the session's own registration state, as every reader of the session registry judges it
 // (session.StateOf through SessionRegistry.Lookup, sessionIsLive): true only while that
@@ -213,9 +214,16 @@ const legionAgentBodyLimit = 1 << 20
 // registry. So live false does not say the agent has ended: a session past the live window is
 // unresponsive and keeps everything of its own (dispatch://INFRA-392), and only a session the
 // registry calls gone has stopped.
+//
+// Answering is the flag the entry's project last stated in its answering record
+// (legionagents.Project), false while the project has stated none: the condition the hand-off
+// reads on the project (answeringAgent). A reader that sends a message to a stopped agent so that
+// its daemon answers it (Dispatch's registeredAgent) sends it only while this is true, since a
+// send the listener hands to no daemon is stored for a session that will not run again.
 type legionAgentAnswer struct {
 	legionagents.Agent
-	Live bool `json:"live"`
+	Live      bool `json:"live"`
+	Answering bool `json:"answering"`
 }
 
 // legionAgentList is a listing's answer, `[]` when the registry holds no entry.
@@ -231,17 +239,39 @@ type legionAgentBatchFailure struct {
 	Written int    `json:"written"`
 }
 
-func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent) legionAgentAnswer {
+// answerLegionAgent is agent as a read answers it, answering being its project's flag
+// (legionProjectAnswers).
+func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent, answering bool) legionAgentAnswer {
 	_, state := sessions.Lookup(agent.SessionID)
-	return legionAgentAnswer{Agent: agent, Live: sessionIsLive(state)}
+	return legionAgentAnswer{Agent: agent, Live: sessionIsLive(state), Answering: answering}
 }
 
-func answerLegionAgents(sessions *session.SessionRegistry, agents []legionagents.Agent) legionAgentList {
+// answerLegionAgents is a listing as a read answers it, reading each project's answering record
+// once however many of the listing's entries it holds.
+func answerLegionAgents(ctx context.Context, registry *legionagents.Store, sessions *session.SessionRegistry, agents []legionagents.Agent) (legionAgentList, error) {
 	entries := make([]legionAgentAnswer, len(agents))
+	projects := map[string]bool{}
 	for i, agent := range agents {
-		entries[i] = answerLegionAgent(sessions, agent)
+		answering, read := projects[agent.LegionProject]
+		if !read {
+			var err error
+			if answering, err = legionProjectAnswers(ctx, registry, agent.LegionProject); err != nil {
+				return legionAgentList{}, err
+			}
+			projects[agent.LegionProject] = answering
+		}
+		entries[i] = answerLegionAgent(sessions, agent, answering)
 	}
-	return legionAgentList{Entries: entries}
+	return legionAgentList{Entries: entries}, nil
+}
+
+// legionProjectAnswers reports whether project last stated that its daemon answers for its
+// stopped agents: its answering record's flag, false when it holds none. Its error is a record the
+// bucket did not answer, which the read answers as it answers any read the bucket did not answer
+// (writeLegionAgentError).
+func legionProjectAnswers(ctx context.Context, registry *legionagents.Store, project string) (bool, error) {
+	record, found, err := registry.Project(ctx, project)
+	return found && record.Answering, err
 }
 
 // legionAgentReadContext bounds a whole registry read, a session key and its role token's listing
@@ -310,9 +340,10 @@ func decodeLegionAgentBody(w http.ResponseWriter, r *http.Request, into any) boo
 }
 
 // legionAgentSessionHandler serves /v1/legion/agents/sessions/<session_id>. GET answers the
-// session's entry, its replacement within its role token and whether it is live, or
-// `404 {"error":"unknown legion agent <id>"}` when the bucket holds no entry for it. PUT records the
-// one entry its body holds, whose session_id must be the path's, and answers it as stored.
+// session's entry, its replacement within its role token, whether it is live and whether its
+// project answers, or `404 {"error":"unknown legion agent <id>"}` when the bucket holds no entry
+// for it. PUT records the one entry its body holds, whose session_id must be the path's, and
+// answers it as stored.
 func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := strings.TrimPrefix(r.URL.Path, "/v1/legion/agents/sessions/")
@@ -329,14 +360,19 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 			ctx, cancel := legionAgentReadContext(r)
 			defer cancel()
 			agent, err := registry.Get(ctx, sessionID)
-			switch {
-			case errors.Is(err, legionagents.ErrNotFound):
+			if errors.Is(err, legionagents.ErrNotFound) {
 				writeJSONError(w, http.StatusNotFound, "unknown legion agent "+sessionID)
-			case err != nil:
-				writeLegionAgentError(w, err)
-			default:
-				writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent))
+				return
 			}
+			var answering bool
+			if err == nil {
+				answering, err = legionProjectAnswers(ctx, registry, agent.LegionProject)
+			}
+			if err != nil {
+				writeLegionAgentError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent, answering))
 		case http.MethodPut:
 			if err := legionagents.ValidateSessionID(sessionID); err != nil {
 				writeLegionAgentError(w, err)
@@ -390,7 +426,12 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
+		list, err := answerLegionAgents(ctx, registry, d.sessions, agents)
+		if err != nil {
+			writeLegionAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, list)
 	}
 }
 
@@ -420,7 +461,12 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 				writeLegionAgentError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
+			list, err := answerLegionAgents(ctx, registry, d.sessions, agents)
+			if err != nil {
+				writeLegionAgentError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, list)
 		case http.MethodPut:
 			var body struct {
 				Entries []legionagents.Entry `json:"entries"`

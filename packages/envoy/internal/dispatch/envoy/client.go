@@ -608,8 +608,9 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 
 // LegionAgent is one entry of the listener's Legion agent registry (internal/legionagents), with
 // what the listener derives at the read: whether the session is answering now in its session
-// registry, and, within the entry's role token ordered by started_at, the session that replaced
-// it and that session's start, both nil for the role's newest session.
+// registry, whether its project's daemon answers for it, and, within the entry's role token
+// ordered by started_at, the session that replaced it and that session's start, both nil for the
+// role's newest session.
 //
 // Live is the registry's own reading of the session's state: true only while that session's last
 // registration is inside the listener's live window. A session past it is unresponsive and not
@@ -623,6 +624,12 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 // Released is whether the entry's claim is suspended by idle release: its daemon released the
 // idle issue pod and keeps the session to resume on the wake its next message raises
 // (legionagents.Entry.Released). The listener omits it otherwise, which decodes as false.
+//
+// Answering is the flag the entry's project last stated in its answering record
+// (legionagents.Project), false while the project has stated none: whether the listener hands a
+// message for this stopped agent to its daemon (cmd/listener/legion_handoff.go) rather than
+// storing it for a session that will not run again. A listener that predates the field omits it,
+// which decodes as false.
 type LegionAgent struct {
 	SessionID     string  `json:"session_id"`
 	LegionProject string  `json:"legion_project"`
@@ -636,6 +643,7 @@ type LegionAgent struct {
 	Live          bool    `json:"live"`
 	Finished      bool    `json:"finished"`
 	Released      bool    `json:"released"`
+	Answering     bool    `json:"answering"`
 	ReplacedBy    *string `json:"replaced_by"`
 	ReplacedAt    *string `json:"replaced_at"`
 }

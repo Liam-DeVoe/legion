@@ -815,8 +815,9 @@ func (s *server) deliverMessageResuming(
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
-	// The listener refused the session the registry named, or this connected-only send met a role
-	// the registry would have it kept for, which no such send is, so the attempt records the
+	// The listener refused the session the registry named, or only stored the send for it with no
+	// daemon taking it (state stopped), or this connected-only send met a role the registry would
+	// have it kept for, which no such send is, so the attempt records the
 	// session and title the listener's own answer gave, as it did before the registry existed: none
 	// for a role, the requested id for a session. An attempt pinned to a session earlier is one
 	// whose message targets that session, which that answer names too.

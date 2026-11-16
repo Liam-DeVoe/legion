@@ -166,3 +166,63 @@ func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
 		t.Fatalf("sendResolvedDelivery = %+v, want the listener's no-holder answer refused, with nothing kept", outcome)
 	}
 }
+
+// A session the Legion agent registry named is sent to so that its daemon answers the message,
+// and the listener answers a send it hands to that daemon with no state. A send it answers
+// stopped it only stored for the stopped session, having handed it to no daemon - the project
+// said it stopped answering after the registry was read - and that session does not run again to
+// read it. So it settles as the listener's refusal does: the listener's own answer for the route,
+// refused, with no envelope and nothing queued, and so does a take-over's repeat of it, which the
+// stream recognises as a duplicate. A session the listener resolved itself and stored the send for
+// is queued as ever ("the listener stored the send for a stopped session" above).
+func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAnswer(t *testing.T) {
+	stopped := "stopped-2"
+	registered := func(answer ResolvedMention) ResolvedMention {
+		return ResolvedMention{Target: answer.Target, Delivery: "steer", SessionID: &stopped, listenerAnswer: &answer}
+	}
+	role := registered(ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no holder for role planner"})
+	session := registered(ResolvedMention{
+		Target: "session:stopped-2", Delivery: "steer", ResolveError: contracts.NoLiveSession + " stopped-2",
+		attemptSessionID: stopped,
+	})
+	const stored = `{"event_id":"stored-1","recipient":"stopped-2","recipient_state":"gone","state":"stopped"}`
+	for _, tc := range []struct {
+		name    string
+		target  ResolvedMention
+		answer  string
+		refused bool
+	}{
+		{name: "a role's newest session", target: role, answer: stored, refused: true},
+		{name: "a session the listener holds no record of", target: session, answer: stored, refused: true},
+		{name: "a repeat of the stored send", target: session, refused: true,
+			answer: `{"event_id":"stored-1","recipient":"stopped-2","state":"stopped","duplicate":true}`},
+		// The control: the listener handed the send to the agent's daemon.
+		{name: "a send handed to the daemon", target: role, answer: `{"event_id":"handed-off-1","recipient":"stopped-2"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/send" {
+					t.Errorf("unexpected request %s %s, want the send", r.Method, r.URL.Path)
+				}
+				_, _ = w.Write([]byte(tc.answer))
+			}))
+			t.Cleanup(listener.Close)
+			s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+			outcome := s.sendResolvedDelivery(
+				context.Background(), tc.target, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			if !tc.refused {
+				if outcome.failure != "" || outcome.refused != nil || outcome.queued || outcome.envelopeID == nil ||
+					*outcome.envelopeID != "handed-off-1" {
+					t.Fatalf("sendResolvedDelivery = %+v, want it sent with the hand-off's envelope", outcome)
+				}
+				return
+			}
+			answer := tc.target.listenerAnswer
+			if outcome.failure != answer.ResolveError || outcome.refused != answer || outcome.envelopeID != nil ||
+				outcome.queued || outcome.duplicate {
+				t.Fatalf("sendResolvedDelivery = %+v, want the listener's own answer %q refused, with no envelope and nothing queued",
+					outcome, answer.ResolveError)
+			}
+		})
+	}
+}

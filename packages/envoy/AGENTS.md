@@ -1604,6 +1604,11 @@ For a role whose holder is gone because the Legion daemon released the role's id
 The listener answers `202` kept, keeps the message on the role's kept lane for one hour and wakes the role, so the role's next holder gets it, and the attempt is recorded `queued` naming no session.
 Its reply is taken from the session the listener names as the role's holder when the reply comes, read before the reply's transaction opens, and that reply pins the attempt to the replier, so every later reply is judged as any reply is (`keptRoleReplier`, on both reply routes);
 a session that does not hold the role is refused `REPLY_FORBIDDEN`, and a listener that does not answer is `503 ENVOY_UNAVAILABLE`, which the replier retries.
+A released role is kept so whatever its project's answering flag says, since no daemon answers for it.
+A session id the listener holds no record of or calls gone, and a role no live session holds whose newest Legion agent registry entry is `finished`, go to the stopped agent's session that entry names in place of the listener's failure (`registeredAgent`, `unheldRoleTarget`): its daemon answers the message from the agent's conversation (see "Legion hand-off"), and the attempt is recorded `sent` to that session.
+Dispatch redirects only while that entry is not `released` and the registry's read answers it `answering` (`answersForAgent`), its project having last said its daemon answers, the condition the listener's hand-off reads too.
+A project whose daemon runs without `answers`, or that never stated anything, gets no redirect: the listener would only store the send for a session that never runs again, so the attempt keeps the listener's own answer exactly as before the registry existed, `no holder for role <token>` naming no session or `no live session <id>`.
+A redirected send the listener refuses (`404`), or answers `state: stopped` because it stored the message rather than handing it off (a project that said it stopped answering after the read), settles with that same answer as its failure, never `queued` (`sendResolvedDelivery`).
 Only a `failed` attempt is retried, since a queued one is already stored and a repeat would store a second copy for its recipient to read.
 The send's own answer decides `queued`, not the registry read before it, so a session whose read showed it live and whose process had gone by the send is recorded `queued` too.
 A delivery reads its session through `SessionIncludingStopped` (`internal/dispatch/envoy/client.go`, `include=unresponsive,stopped` on `GET /v1/registry/<session_id>`), so a session the listener knows only by its record is a target like any other, judged by the record's capabilities (`advertisesDelivery`), and so is each recipient a broadcast names;
@@ -4868,13 +4873,13 @@ Each item below names an endpoint and its method, then its contract, and an item
 - `/v1/legion/agents/sessions/<session_id>` (GET, PUT)
 
   The Legion agent registry's entry for one session (see "Legion agent registry" below).
-  GET answers the entry with `live` (the session's own state in this listener's session registry, true only while that state reads `live`; an `unresponsive` session reads false and has not ended) and, within its role token ordered by `started_at`, `replaced_by` and `replaced_at` (the next session's id and start, `null` for the newest), or `404 {"error":"unknown legion agent <id>"}` when the bucket holds no entry for it.
+  GET answers the entry with `live` (the session's own state in this listener's session registry, true only while that state reads `live`; an `unresponsive` session reads false and has not ended), `answering` (the flag the entry's project last stated in its answering record, `project.<legion_project>`, false while the project has stated none: the condition "Legion hand-off" reads on the project) and, within its role token ordered by `started_at`, `replaced_by` and `replaced_at` (the next session's id and start, `null` for the newest), or `404 {"error":"unknown legion agent <id>"}` when the bucket holds no entry for it.
   PUT records the one entry its body holds, whose `session_id` must be the path's, and answers it as stored with the `recorded_at` of its first write.
 
 - `/v1/legion/agents/roles/<role_token>` (GET)
 
   `{"entries":[…]}`: every session of the role token, newest first, the first being its current holder; `[]` when none.
-  Each entry carries `live`, `replaced_by` and `replaced_at`.
+  Each entry carries `live`, `answering`, `replaced_by` and `replaced_at`.
 
 - `/v1/legion/agents` (GET, PUT)
 
@@ -4924,7 +4929,7 @@ Dispatch reads it through `internal/dispatch/envoy` (`Agent`, `RoleAgents`, `Iss
   `issue.<ISSUE>.<session_id>` and `role.<role_token>.<session_id>` hold the same entry JSON.
   A write claims the session key first, by compare-and-swap at the revision it read (a create for a session the bucket holds no key for, an update at that revision for a recorded one), then writes the role key and the issue key, so only the write that holds the session key writes index keys.
   A write that ends after its claim leaves the session unlisted until the same write is sent again, which writes the index keys again, as every write of a recorded session does.
-  `project.<legion_project>` is the project's answering record `{answering, updated_at}` (`legionagents.Project`), written through `PUT /v1/legion/projects/<legion_project>`; no agent read reaches it.
+  `project.<legion_project>` is the project's answering record `{answering, updated_at}` (`legionagents.Project`), written through `PUT /v1/legion/projects/<legion_project>`; no agent read answers it as an entry, and every agent read derives each entry's `answering` from it.
 
 - **Entry.**
   `session_id` (letters, digits, `-`, `_`, at most 128 bytes), `legion_project` (the Legion project token, `claim.ProjectToken`:
@@ -4946,9 +4951,10 @@ Dispatch reads it through `internal/dispatch/envoy` (`Agent`, `RoleAgents`, `Iss
   an absence is the bucket's, the lesson of `/v1/sessions`'s cache answers (INFRA-249).
   A route's whole read, a session key and its role token's listing, waits at most 2 s (`legionagents.ReadTimeout`):
   the scan takes the route's context, its consumer create included, and holds itself to the same 2 s as its idle bound, and so does every other call on the bucket, so a stalled bucket is answered well inside the listener's 10 s write timeout rather than dropping the connection.
-  `live` and `replaced_by` / `replaced_at` are derived at each read and never stored;
+  `live`, `answering` and `replaced_by` / `replaced_at` are derived at each read and never stored;
   `live` is the session's own registration state (`session.StateOf`), true only while that state reads `live`, so an `unresponsive` session reads false and has not ended.
   A session read derives them with the session key's entry in its role token's listing, in place of the role key's or added where there is none, so a write that ended between its claim and its index keys still answers the entry it claimed and the session that replaced it.
+  `answering` is the flag the entry's project's answering record holds, false when the bucket holds no record, read once for each project a read's entries name (`legionProjectAnswers`); a record the bucket did not answer is the read's 503, as any read it did not answer is.
 
 - **Grant.**
   The bucket is in the listener's NATS grant (`listenerBuckets`, `packages/envoy/infra/core/permissions.go`).
