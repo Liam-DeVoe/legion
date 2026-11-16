@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, type RefCallback, useCallback, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -8,6 +8,7 @@ import { stateForIssue } from "../../issue/pins";
 import { useMargin } from "../../margin/margin-context";
 import { useKeymap } from "../../shell/keymap";
 import { DETAILS_ROW_ATTRIBUTE, useOpenDetailsAt } from "../details-rows";
+import { LABELS_CONTROL_NAME } from "../IssueAddMenu";
 import type { IssueField } from "../IssueFieldForms";
 import { IssueMarginCards, IssueMarginPanel } from "../IssueMargin";
 import { useFillMarginSlot } from "../margin-slot";
@@ -16,7 +17,7 @@ import type { SlotProps } from "../slot-props";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
 /** The labels' control in Details' Labels row (`IssueLabels.tsx`), which the key `l` presses. */
-const LABELS_CONTROL = `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="Edit labels"]`;
+const LABELS_CONTROL = `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${LABELS_CONTROL_NAME}"]`;
 
 /**
  * Details' properties (dispatch://INFRA-1196 R13, R14): the one panel `IssueMarginPanel` draws,
@@ -58,6 +59,49 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
     },
     [stage]
   );
+  const openDetailsAt = useOpenDetailsAt();
+  useKeymap("issue", [
+    {
+      // The labels' control is in Details' Labels row (dispatch://INFRA-1196 R13): the key
+      // opens Details there and presses it, as a reader does.
+      id: "labels",
+      keys: "l",
+      label: LABELS_CONTROL_NAME,
+      run: () => openDetailsAt("labels", true),
+      when: () => {
+        const control = document.querySelector(LABELS_CONTROL);
+        return control instanceof HTMLButtonElement && !control.disabled;
+      },
+    },
+  ]);
+  return (
+    <>
+      {createPortal(
+        <NoTooltips>
+          <IssueMarginPanel
+            documentArtifact={primarySpec(issue)}
+            editingField={editingField}
+            isClosed={issue.closed_at !== null}
+            issue={issue}
+            onEditingField={setEditingField}
+            state={state}
+            writes={writes}
+          />
+        </NoTooltips>,
+        stage
+      )}
+      <DetailsFill holdPanel={holdPanel} />
+    </>
+  );
+}
+
+/**
+ * Details' fill of the shell's margin slot: the host that holds the panel's stage, with the
+ * margin's own cards above it while a document's editor is on the page. It reads the margin's
+ * context, which changes with every hover, selection and placement of the margin, so it is a
+ * component of its own and those changes draw it alone, not the panel.
+ */
+function DetailsFill({ holdPanel }: { holdPanel: RefCallback<HTMLElement> }): null {
   const documentUp = useMargin().documentBridge !== undefined;
   const fill = useCallback(
     (conversation: ReactNode) => (
@@ -69,33 +113,5 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
     [documentUp, holdPanel]
   );
   useFillMarginSlot(fill);
-  const openDetailsAt = useOpenDetailsAt();
-  useKeymap("issue", [
-    {
-      // The labels' control is in Details' Labels row (dispatch://INFRA-1196 R13): the key
-      // opens Details there and presses it, as a reader does.
-      id: "labels",
-      keys: "l",
-      label: "Edit labels",
-      run: () => openDetailsAt("labels", true),
-      when: () => {
-        const control = document.querySelector(LABELS_CONTROL);
-        return control instanceof HTMLButtonElement && !control.disabled;
-      },
-    },
-  ]);
-  return createPortal(
-    <NoTooltips>
-      <IssueMarginPanel
-        documentArtifact={primarySpec(issue)}
-        editingField={editingField}
-        isClosed={issue.closed_at !== null}
-        issue={issue}
-        onEditingField={setEditingField}
-        state={state}
-        writes={writes}
-      />
-    </NoTooltips>,
-    stage
-  );
+  return null;
 }

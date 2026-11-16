@@ -68,7 +68,7 @@ function ClaimRow({ issue }: { issue: IssueDetails }): ReactNode {
  * what decides whether each instant is drawn in words; the chip's other hosts, a List row and
  * a Board card, do raise one, and a row that reads the chip's `title` asks for that surface.
  */
-function header(
+function claimRow(
   issue: Issue,
   liveness: ClaimHolderLiveness = {},
   { tooltips = false }: { tooltips?: boolean } = {}
@@ -134,7 +134,7 @@ test("a claimed issue names its holder and releases the claim from Details", asy
     running("session-one", "Implementer"),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
-  const view = header({ ...base, claim });
+  const view = claimRow({ ...base, claim });
   try {
     // The chip says who holds the issue and since when in words, not in a tooltip: the issue
     // page draws none at all (dispatch://INFRA-1196 R21, `components/tooltips.tsx`).
@@ -174,7 +174,7 @@ test("a holder the registry no longer lists reads as not running", async () => {
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     running("session-two", "Someone else"),
   ]);
-  const view = header({ ...base, claim });
+  const view = claimRow({ ...base, claim });
   try {
     expect(await screen.findByText("not running")).toBeDefined();
     // "not running" is drawn, not hovered: the chip carries no tooltip.
@@ -199,7 +199,7 @@ test("a release that fails says so and offers a retry", async () => {
     running("session-one", "Implementer"),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(new Error("network error"));
-  const view = header({ ...base, claim });
+  const view = claimRow({ ...base, claim });
   try {
     await view.user.click(
       await screen.findByRole("button", { name: "Release the claim on CORE-1" })
@@ -224,7 +224,7 @@ test("a failed release is said in the page's colours, with Retry", async () => {
     running("session-one", "Implementer"),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(new Error("network error"));
-  const view = header({ ...base, claim });
+  const view = claimRow({ ...base, claim });
   try {
     await view.user.click(
       await screen.findByRole("button", { name: "Release the claim on CORE-1" })
@@ -266,7 +266,7 @@ test("the claim shows the holder's live title, not the one stamped on the claim"
       state: "live",
     },
   ]);
-  const view = header({ ...base, claim });
+  const view = claimRow({ ...base, claim });
   try {
     expect(await screen.findByText("Live registry title")).toBeDefined();
     expect(screen.queryByText("Implementer")).not.toBeInTheDocument();
@@ -280,7 +280,7 @@ test("the claim shows the holder's live title, not the one stamped on the claim"
 test("an unclaimed issue reads None and offers nothing to release", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
-  const view = header(base);
+  const view = claimRow(base);
   try {
     expect(await screen.findByText(CONTROL_LABELS.none)).toBeDefined();
     expect(screen.queryByTitle(/Claimed by/)).not.toBeInTheDocument();
@@ -305,7 +305,7 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
   ]);
   // The chip's `title` is read here, so it is drawn on a host that raises one (a List row, a
   // Board card); the words it draws are the same on either surface.
-  const view = header({ ...base, claim }, {}, { tooltips: true });
+  const view = claimRow({ ...base, claim }, {}, { tooltips: true });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
@@ -357,7 +357,7 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
   ]);
   // Drawn as Details draws it, inside `NoTooltips`: the chip says the page's words and carries
   // no `title`, since the issue page raises no tooltip.
-  const view = header({ ...base, claim });
+  const view = claimRow({ ...base, claim });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     expect(stalled).toHaveTextContent("unresponsive since");
@@ -390,7 +390,7 @@ test("the moment the issue comes free is drawn as a date and a time, so the chip
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     unresponsive("session-one", "Implementer", lastSeen),
   ]);
-  const view = header({ ...base, claim });
+  const view = claimRow({ ...base, claim });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     const free = within(stalled).getByTestId("issue-claim-takeable");
@@ -425,7 +425,7 @@ test("the issue read's own holder_state outranks an agent list that does not nam
     takeable_at: takeableAt,
   };
   // Read on a host that raises a tooltip, because this row reads the chip's `title` too.
-  const view = header({ ...base, claim }, liveness, { tooltips: true });
+  const view = claimRow({ ...base, claim }, liveness, { tooltips: true });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
@@ -458,7 +458,7 @@ test("the issue read's own holder_state outranks an agent list that does not nam
 test("a claim whose registry could not be read says the running state is unknown", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockRejectedValue(new Error("Envoy unavailable"));
-  const view = header({ ...base, claim });
+  const view = claimRow({ ...base, claim });
   try {
     const unjudged = await screen.findByTestId("issue-claim-unchecked");
     expect(unjudged.textContent).toBe("running state unknown");
@@ -479,7 +479,7 @@ test("a claim whose registry could not be read says the running state is unknown
 test("a host that raises a tooltip keeps the unread registry in the title and draws no word", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockRejectedValue(new Error("Envoy unavailable"));
-  const view = header({ ...base, claim }, {}, { tooltips: true });
+  const view = claimRow({ ...base, claim }, {}, { tooltips: true });
   try {
     await waitFor(() =>
       expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(

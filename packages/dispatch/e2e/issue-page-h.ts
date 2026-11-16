@@ -112,9 +112,14 @@ export const QUESTION = "Which width does Details open at?";
 export const PINNED_FIRST_LINE = "The pinned comment's first line.";
 /** The reason bob gave for the changes he asked of THREE's spec. */
 export const CHANGES_REASON = "Name the limits";
+/** How many entries Details draws of a list before it folds the rest behind Show all: the
+ *  panel's own `FOLD_AFTER` (`IssueMargin.tsx`), spelled here because Playwright cannot load
+ *  that module - its imports reach a JSON module of `packages/envoy` imported without the
+ *  `type: "json"` attribute Node requires. */
+export const FOLD_AFTER = 10;
 /** How many issues wait on ONE, and how many documents ONE holds: one more than Details draws
  *  before it folds a list behind Show all. */
-export const ELEVEN = 11;
+export const ONE_PAST_FOLD = FOLD_AFTER + 1;
 
 export interface DetailsSeed {
   /** Every key `seedDetailsIssue` names, by its part in the rows. */
@@ -207,14 +212,14 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
   });
   await claimIssue(one.key, asPlanner);
   // The spec and ten documents more: eleven.
-  for (let index = 1; index < ELEVEN; index += 1) {
+  for (let index = 1; index < ONE_PAST_FOLD; index += 1) {
     await createIssueArtifact(one.key, {
       content: `Notes ${index} of ONE.\n`,
       name: `notes-${String(index).padStart(2, "0")}.md`,
     });
   }
   const blocks: string[] = [];
-  for (let index = 1; index <= ELEVEN; index += 1) {
+  for (let index = 1; index <= ONE_PAST_FOLD; index += 1) {
     const waiter = await createIssue({
       force: true,
       project: PROJECT,

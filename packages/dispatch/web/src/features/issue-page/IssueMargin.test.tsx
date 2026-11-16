@@ -7,26 +7,38 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
+import { eventRefreshTargets } from "../../api/event-refresh";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
+import { refreshQueries } from "../../api/query-refresh";
 import type {
   CommentWithTrees,
+  DispatchEvent,
   DisplayTree,
+  GraphReferences,
   Issue,
   IssueDetails,
   UserState,
 } from "../../api/types";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
+import { issue as marginIssue } from "../margin/margin-fixture";
+import { buildDispatchReference } from "../refs/routes";
 import { blockedByControlName } from "./BlockedByControl";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
-import { FilledMarginSlot, MarginSlotProvider, useMarginSlotFill } from "./margin-slot";
+import {
+  FilledMarginSlot,
+  type MarginDrawer,
+  MarginSlotProvider,
+  useMarginSlotFill,
+} from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
 import { MARGIN_SECTION_NAMES, PROPERTY_LABELS } from "./page-structure";
 import {
@@ -39,75 +51,14 @@ import { DetailsSlot } from "./slots/details";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
-const issue: IssueDetails = {
-  route_status: null,
-  route_holder: null,
-  route_status_reason: null,
-  holder_state: null,
-  last_seen: null,
-  takeable_at: null,
-  advances: [],
-  advances_revision: 0,
-  artifacts: [
-    {
-      created_at: "2026-09-09T00:00:00Z",
-      created_by: { id: "alice", kind: "user" },
-      id: "artifact-1",
-      issue_key: "CORE-1",
-      project: "CORE",
-      kind: "doc",
-      name: "spec.md",
-      primary: true,
-      ref_key: "CORE-1/spec",
-      session_id: null,
-      slug: "spec",
-      versions: [],
-    },
-  ],
-  children: [],
-  closed_at: null,
-  created_at: "2026-09-09T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  design_gates: [],
-  external_links: [],
-  key: "CORE-1",
-  labels: [],
-  last_seq: 250,
-  number: 1,
-  open_asks: [],
-  progress: { tasks: null, children: null },
-  parent: null,
-  blocked_by: [],
-  assignee: null,
-  claim: null,
-  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  plan_artifact_id: "",
-  decisions_artifact_id: "",
-  primary_artifact_id: "artifact-1",
-  verification_artifact_id: "",
-  project: "CORE",
-  referenced_by_count: 0,
-  route: null,
-  repo: null,
-  resolved_repo: null,
-  status: "todo",
-  priority: null,
-  rank: "U",
-  title: "Review the spec",
-  updated_at: "2026-09-09T00:00:00Z",
-};
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((completion) => {
-    resolve = completion;
-  });
-  return { promise, resolve };
-}
+const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 /** Details as the details slot draws it (`slots/details.tsx`), alone and inside `NoTooltips`:
  *  the panel over its own set of the issue's writes, on the cached issue, so a write's landing
- *  is what the panel draws next. `beside` is drawn above it, over writes of its own. */
-function renderDetails(beside?: (issue: IssueDetails) => ReactNode) {
+ *  is what the panel draws next. `beside` is drawn above it, over writes of its own. `drawer` is
+ *  the Details drawer it is drawn in; with none, Details makes none of the reads it makes only
+ *  while open. */
+function renderDetails(beside?: (issue: IssueDetails) => ReactNode, drawer?: MarginDrawer) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
   });
@@ -115,16 +66,18 @@ function renderDetails(beside?: (issue: IssueDetails) => ReactNode) {
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={queryClient}>
         <MarginProvider>
-          <NoTooltips>
-            <CachedIssue>
-              {(details, state) => (
-                <>
-                  {beside?.(details)}
-                  <Details issue={details} state={state} />
-                </>
-              )}
-            </CachedIssue>
-          </NoTooltips>
+          <MarginSlotProvider drawer={drawer}>
+            <NoTooltips>
+              <CachedIssue>
+                {(details, state) => (
+                  <>
+                    {beside?.(details)}
+                    <Details issue={details} state={state} />
+                  </>
+                )}
+              </CachedIssue>
+            </NoTooltips>
+          </MarginSlotProvider>
         </MarginProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -322,7 +275,7 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
 test("the blocked-by editor refuses Cancel and Escape while the save is out", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
-  const saving = deferred<Issue>();
+  const saving = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => saving.promise);
   const { unmount } = renderDetails();
 
@@ -405,7 +358,7 @@ test("the blocked-by editor opened again draws no refusal from the attempt befor
 
 // R21: each refusal of a blocked-by list is a sentence in the page's words, with the key the
 // refusal is about inside it as the reader's own text: a key Dispatch knows no issue for, the
-// issue itself, an issue of another project, and a list longer than an issue waits on.
+// issue itself, and a list longer than an issue waits on.
 test("each refusal of a blocked-by list is the page's sentence about the key it names", () => {
   const refused = (code: string, error: string) => new ApiError(400, { code, error });
   expect(
@@ -419,13 +372,6 @@ test("each refusal of a blocked-by list is the page's sentence about the key it 
       "CORE-1",
     ])
   ).toEqual({ key: "CORE-1", words: "itself" });
-  expect(
-    blockedByRefusal(
-      refused("BLOCKED_BY_OUTSIDE_PROJECT", "blocked_by issue OPS-3 must be in the same project"),
-      "CORE-1",
-      ["OPS-3"]
-    )
-  ).toEqual({ key: "OPS-3", words: "outside_project" });
   const many = Array.from({ length: MAX_ISSUE_BLOCKERS + 1 }, (_, index) => `CORE-${index + 2}`);
   expect(
     blockedByRefusal(
@@ -501,6 +447,92 @@ test("the blockers never fold", async () => {
     ).not.toBeInTheDocument();
   } finally {
     unmount();
+    restore();
+  }
+});
+
+// What waits on the issue is read from the references that point at it, which another issue's
+// write moves: the Blocks row is read again on the event of an issue that starts waiting on this
+// one, as the backlink panels are (`api/event-refresh.ts`'s rule for `blocked_by`).
+test("Details' Blocks is read again when another issue starts waiting on this one", async () => {
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const node = graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference });
+  let edges: GraphReferences["edges"] = [];
+  const getReferences = spyOn(api, "getReferences").mockImplementation(async () => ({
+    edges,
+    node,
+  }));
+  const blocksReads = () =>
+    getReferences.mock.calls.filter(
+      ([to, options]) => to === reference && options?.kind === "blocked_by"
+    ).length;
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { queryClient, unmount } = renderDetails(undefined, drawer);
+
+  try {
+    await waitFor(() => expect(blocksReads()).toBe(1));
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent(CONTROL_LABELS.none)
+    );
+
+    // CORE-5 starts waiting on CORE-1, and its event is what the feed hands the refresh, as
+    // `__tests__/event-feed.test.ts` drives a blocker change.
+    edges = [
+      {
+        created_at: "2026-10-26T00:00:00Z",
+        direction: "in",
+        excerpt: { text: "Ship the release" },
+        kind: "blocked_by",
+        node: graphNode({
+          id: "CORE-5",
+          issue_key: "CORE-5",
+          kind: "issue",
+          ref: buildDispatchReference({ key: "CORE-5", kind: "issue" }),
+        }),
+        source_seq: 4,
+      },
+    ];
+    // The payload as the server writes it - the issue after the write, flat, with what the write
+    // moved - in the shape the feed's own test builds it (`event-feed.test.ts`'s `issue`).
+    const payload: Record<string, unknown> = {
+      ancestors: [],
+      assignee: null,
+      blocked_by: ["CORE-1"],
+      changed: ["blocked_by"],
+      closed_at: null,
+      key: "CORE-5",
+      parent: null,
+      project: "CORE",
+      references_changed: [{ id: "CORE-1", kind: "issue" }],
+      status: "todo",
+      title: "Ship the release",
+    };
+    const waits = {
+      actor: { id: "planner", kind: "session" },
+      created_at: "2026-10-26T00:00:00Z",
+      id: 12,
+      issue_key: "CORE-5",
+      notify: true,
+      payload,
+      project: "CORE",
+      seq: 4,
+      type: "issue.updated",
+    } as DispatchEvent;
+    refreshQueries(queryClient, eventRefreshTargets(waits, "alice"));
+
+    await waitFor(() =>
+      expect(blocksReads(), "Blocks was not read again on CORE-5's event").toBe(2)
+    );
+    const row = detailsRow(PROPERTY_LABELS.blocks);
+    expect(
+      await within(row).findByRole("link", { name: "CORE-5" }),
+      "Blocks does not draw the issue that started waiting on CORE-1"
+    ).toHaveAttribute("href", "/issues/CORE-5");
+    expect(row).toHaveTextContent("Ship the release");
+  } finally {
+    unmount();
+    getReferences.mockRestore();
     restore();
   }
 });
@@ -586,14 +618,6 @@ test("the add control is not drawn on a closed issue, nor when every property ha
   }
 });
 
-// R21: the indicator says what the page calls each field the write carries, and what it calls
-// the status the write sets, never the schema's token for either. It read the first key of the
-// write ("CORE-1: blocked_by saved"), so a write of two named one, and the status as the wire
-// spells it ("CORE-1 set to in_progress").
-//
-// The shell's indicator draws this line, but the issue page's own write hook composes it, so its
-// words are this page's (`useIssueHeaderWrites.ts`, `e2e/keyed-writes.e2e.ts`).
-
 /** A second caller of the issue's writes on the page, as the header slot is: slots share no
  *  state, so each makes its own set (`slots/details.tsx`). */
 function OtherWrites({ issue: details }: { issue: IssueDetails }): ReactNode {
@@ -614,7 +638,7 @@ function OtherWrites({ issue: details }: { issue: IssueDetails }): ReactNode {
 test("Details' Status reads the status another caller of the writes is saving", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
-  const saving = deferred<Issue>();
+  const saving = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => saving.promise);
   const { unmount } = renderDetails((details) => <OtherWrites issue={details} />);
 
@@ -662,14 +686,13 @@ function RetitleThenStart({ issue: details }: { issue: IssueDetails }): ReactNod
   );
 }
 
-// The reviewer's finding at the checkpoint (IssueMargin.tsx:216): a status picked while the
-// picking caller's other write was out was held in that caller's own state, so Details went on
-// drawing the old status until the pick was sent. The page holds such a pick for every caller,
-// and sends it once the write before it settles (`useIssueHeaderWrites.ts`'s `pickStatus`).
+// A status picked while another write of the issue is out is held for every caller by part E's
+// `pickStatus` (`useIssueHeaderWrites.ts`), so Details draws it at once, and it is sent once,
+// after that write.
 test("Details' Status reads a status picked behind another write", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
-  const retitling = deferred<Issue>();
+  const retitling = Promise.withResolvers<Issue>();
   patchIssue
     .mockImplementationOnce(() => retitling.promise)
     .mockImplementationOnce(async () =>
@@ -1014,7 +1037,7 @@ test("a pin whose words are not read yet is drawn by its kind's word, never its 
   const id = "5b0f9e64-2c1d-4a7e-8f3b-91d2c6a4e870";
   const { getMyState, pinReads, restore } = stubIssueApi();
   getMyState.mockResolvedValue(pinnedState(conversationItemId("comment", id)));
-  const comments = deferred<CommentWithTrees[]>();
+  const comments = Promise.withResolvers<CommentWithTrees[]>();
   pinReads.comments.mockImplementation(() => comments.promise);
   const { unmount } = renderDetails();
 

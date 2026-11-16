@@ -1,8 +1,12 @@
 import AxeBuilder from "@axe-core/playwright";
-import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
+import {
+  MARGIN_SECTION_ORDER,
+  PROPERTY_LABELS,
+} from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS, PROGRESS_NOUNS } from "../web/src/features/issue-page/page-words";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { getIssue, patchIssue } from "./api";
+import { nextFrames } from "./frames";
 import {
   closeDetails,
   filterRow,
@@ -18,11 +22,12 @@ import {
   CHANGES_REASON,
   COMPONENT_TITLE,
   detailsRow,
-  ELEVEN,
+  FOLD_AFTER,
   filesList,
   marginSection,
   marginSectionDisclosure,
   marginSlot,
+  ONE_PAST_FOLD,
   OTHER_LINK,
   PINNED_FIRST_LINE,
   PLANNER_TITLE,
@@ -74,15 +79,6 @@ const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 const INK = "rgb(28, 25, 23)";
 const UNDERLINE = "rgb(168, 162, 158)";
 const QUIET = "rgb(120, 113, 108)";
-
-/** Two frames of the page, in which a key's work has been drawn if it did any. */
-function twoFrames(page: Page): Promise<void> {
-  return page.evaluate(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    return promise;
-  });
-}
 
 /** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
 function viewportAt(width: number): { height: number; width: number } {
@@ -190,7 +186,8 @@ test("Details opens on the properties and holds no conversation @phone", async (
     const { one, three } = seeded.keys;
     const desktopProject = test.info().project.name !== "iphone";
     if (desktopProject) {
-      // (1) Closed, Details reads neither the blockers' titles nor what the issue blocks.
+      // (1) Closed, Details reads neither the blockers' titles, nor what the issue blocks, nor
+      // its links on GitHub.
       await page.setViewportSize(viewportAt(1440));
       const traffic = watchRequests(page);
       await gotoIssue(page, `/issues/${one}`);
@@ -204,14 +201,23 @@ test("Details opens on the properties and holds no conversation @phone", async (
         url.includes("/api/v1/references?") && url.includes("kind=blocked_by");
       const titlesRead = (url: string) =>
         url.includes("/api/v1/reference-targets?") && url.includes(threeRef);
+      // A link on GitHub is read through Dispatch's proxy (`web/src/api/client.ts`'s
+      // `githubRest`), which reaches the fake GitHub the seed fills.
+      const githubRead = (url: string) => new URL(url).pathname.startsWith("/api/github/rest/");
       expect(urls.filter(blocksRead), "closed Details read what ONE blocks").toEqual([]);
       expect(urls.filter(titlesRead), "closed Details read its blockers' titles").toEqual([]);
+      expect(urls.filter(githubRead), "closed Details read ONE's links on GitHub").toEqual([]);
       await openDetails(page);
       await expect
         .poll(() => urls.some(blocksRead), { message: "Details read no Blocks" })
         .toBe(true);
       await expect
         .poll(() => urls.some(titlesRead), { message: "Details read no blocker's title" })
+        .toBe(true);
+      await expect
+        .poll(() => urls.some(githubRead), {
+          message: "Details read none of ONE's links on GitHub",
+        })
         .toBe(true);
 
       // (2) Development first under the head, each section drawn once, through a close and an
@@ -220,7 +226,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
         "development"
       );
       for (let round = 0; round < 2; round += 1) {
-        for (const section of ["development", "people", "references"] as const) {
+        for (const section of MARGIN_SECTION_ORDER) {
           await expect(
             page.locator(`[data-margin-section="${section}"]`),
             `the page draws ${section} other than once`
@@ -282,7 +288,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${one}`);
     await openDetails(page);
-    for (const section of ["development", "people", "references"] as const) {
+    for (const section of MARGIN_SECTION_ORDER) {
       await expect(marginSection(page, section)).toBeVisible();
     }
     expect(
@@ -311,7 +317,7 @@ test("every property with a value is visible in Details at every width @phone", 
 }) => {
   test.setTimeout(240_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
-    const { blocks, one, parent, three } = seeded.keys;
+    const { one, parent, three } = seeded.keys;
     const desktopProject = test.info().project.name !== "iphone";
 
     // (5) Every width: R2's order, the twenty labels whole, and each value in its row.
@@ -440,30 +446,28 @@ test("every property with a value is visible in Details at every width @phone", 
     await gotoIssue(page, `/issues/${one}`);
     await openDetails(page);
     const blocking = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link");
-    await expect(blocking).toHaveCount(10);
+    await expect(blocking).toHaveCount(FOLD_AFTER);
     await detailsRow(page, PROPERTY_LABELS.blocks)
-      .getByRole("button", { name: `${CONTROL_LABELS.show_all} ${ELEVEN}` })
+      .getByRole("button", { name: `${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}` })
       .click();
-    await expect(blocking).toHaveCount(ELEVEN);
-    for (const key of blocks) {
-      const link = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link", {
-        exact: true,
-        name: key,
-      });
-      expect(
-        Number(await link.evaluate((element) => getComputedStyle(element).fontWeight)),
-        `${key} is not bold in Blocks`
-      ).toBeGreaterThanOrEqual(600);
-    }
+    await expect(blocking).toHaveCount(ONE_PAST_FOLD);
+    expect(
+      await blocking.evaluateAll((links) =>
+        links
+          .filter((link) => Number(getComputedStyle(link).fontWeight) < 600)
+          .map((link) => link.textContent)
+      ),
+      "a key of Blocks is not bold"
+    ).toEqual([]);
     await expect(detailsRow(page, PROPERTY_LABELS.blocks)).toContainText(
-      `Waits on ONE (${ELEVEN})`
+      `Waits on ONE (${ONE_PAST_FOLD})`
     );
     const documents = filesList(page).getByRole("link");
-    await expect(documents).toHaveCount(10);
+    await expect(documents).toHaveCount(FOLD_AFTER);
     await marginSection(page, "references")
-      .getByRole("button", { name: `${CONTROL_LABELS.show_all} ${ELEVEN}` })
+      .getByRole("button", { name: `${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}` })
       .click();
-    await expect(documents).toHaveCount(ELEVEN);
+    await expect(documents).toHaveCount(ONE_PAST_FOLD);
     const firstDocument = (await getIssue(one)).artifacts?.[0];
     expect(firstDocument, `${one} holds no document`).toBeDefined();
     await expect(documents.first()).toHaveAttribute(
@@ -578,7 +582,7 @@ test("every property with a value is visible in Details at every width @phone", 
         entries.map((entry) => getComputedStyle(entry).textDecorationLine)
       ),
       "a document's entry in Details is underlined"
-    ).toEqual(Array.from({ length: 10 }, () => "none"));
+    ).toEqual(Array.from({ length: FOLD_AFTER }, () => "none"));
     const approve = detailsRow(page, PROPERTY_LABELS.approval).getByRole("button", {
       exact: true,
       name: "Approve",
@@ -840,7 +844,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await reopen(two);
     await closeDetails(page);
     await page.keyboard.press("l");
-    await twoFrames(page);
+    await nextFrames(page);
     await expect(marginShell(page), "l opened Details on a closed issue").toBeHidden();
     await openDetails(page);
     await expect(

@@ -34,7 +34,7 @@ import { IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { IssuePins } from "./IssuePins";
-import { RouteControl } from "./IssueRouteControl";
+import { IssueRouteControl } from "./IssueRouteControl";
 import { statusGlyph, statusTone } from "./issue-status";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
@@ -92,9 +92,9 @@ export function IssueMarginCards({
         ref={drawsPanel ? panelHost : undefined}
       >
         {/* The margin's own cards first, and the panel's own sections under them, because the
-            page's panel is appended to this wrapper (`margin-slot.tsx`): the threads anchored
-            in an open document and its composer, in the margin's words and the authors' own,
-            and not the page's declared vocabulary (dispatch://INFRA-1196 R21,
+            page's panel is appended to this wrapper (`slots/details.tsx`'s `holdPanel`): the
+            threads anchored in an open document and its composer, in the margin's words and the
+            authors' own, and not the page's declared vocabulary (dispatch://INFRA-1196 R21,
             `page-structure.ts`). They are first because the margin places an anchored card at
             a `top` it measures down from the top of its own content (`margin/ThreadList.tsx`'s
             `regionOrigin`), so anything drawn over them moves that anchor and a card can no
@@ -123,8 +123,8 @@ export function IssueMarginCards({
  *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. What it reads that the header does not -
- * the titles of the issues around this one - it reads only while Details is open, so a load
- * that leaves Details shut costs no request for it.
+ * the titles of the issues around this one, and its links on GitHub - it reads only while
+ * Details is open, so a load that leaves Details shut costs no request for it.
  */
 export function IssueMarginPanel({
   documentArtifact,
@@ -152,29 +152,34 @@ export function IssueMarginPanel({
   const [filesOpen, setFilesOpen] = useState(false);
   const referencesPanelId = useId();
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
-  // What Details reads beyond the issue - the titles of the issues around this one - only while
-  // the drawer is open, so a load that leaves it shut costs no request for it.
+  // What Details reads beyond the issue - the titles of the issues around this one, and its
+  // links on GitHub - only while the drawer is open, so a load that leaves it shut costs no
+  // request for it.
   const reading = useMarginDrawer()?.open === true;
   const blockers = issue.blocked_by ?? [];
   const blockerTitles = useQuery({
     ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
     enabled: reading && blockers.length > 0,
   });
-  const titleOf = (key: string) =>
-    blockerTitles.data?.targets.find(
-      (target) => target.ref === buildDispatchReference({ key, kind: "issue" })
-    )?.name;
+  const titleOf = (key: string) => {
+    const reference = buildDispatchReference({ key, kind: "issue" });
+    return blockerTitles.data?.targets.find((target) => target.ref === reference)?.name;
+  };
   // What waits on this issue is the other direction of `blocked_by`: the references of that
   // kind that point at it, each issue's title the head of its text that the edge carries as its
-  // excerpt (the issue's node itself carries no text).
+  // excerpt (the issue's node itself carries no text). It is kept under the backlink panels'
+  // `["references", "to", <reference>]`, so the event that starts or stops an issue waiting on
+  // this one reads it again (`api/event-refresh.ts`'s rule for `blocked_by`).
   const blocking = useQuery({
     enabled: reading,
     queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
-    queryKey: ["references", issueReference, "blocked_by"],
+    queryKey: ["references", "to", issueReference, "blocked_by"],
   });
-  const blocks = (blocking.data?.edges ?? [])
-    .filter((edge) => edge.kind === "blocked_by" && edge.node.issue_key !== undefined)
-    .map((edge) => ({ key: edge.node.issue_key ?? "", title: edge.excerpt?.text ?? "" }));
+  const blocks = (blocking.data?.edges ?? []).flatMap((edge) =>
+    edge.kind !== "blocked_by" || edge.node.issue_key === undefined
+      ? []
+      : [{ key: edge.node.issue_key, title: edge.excerpt?.text ?? "" }]
+  );
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does (R31): the approvals are all this reads of the count, so it
   // hands it no decisions.
@@ -189,10 +194,9 @@ export function IssueMarginPanel({
     projects.data?.find((candidate) => candidate.key === issue.project),
     issue
   );
-  const approvalEntries =
-    gated.length > 0 && gated.some((entry) => entry.document?.id === issue.primary_artifact_id)
-      ? gated
-      : [{ document: documentArtifact, label: STEP_LABELS.spec, step: "spec" as const }, ...gated];
+  const approvalEntries = gated.some((entry) => entry.document?.id === issue.primary_artifact_id)
+    ? gated
+    : [{ document: documentArtifact, label: STEP_LABELS.spec, step: "spec" as const }, ...gated];
   const pullRequests = (issue.external_links ?? []).filter((link) => link.kind === "github_pr");
   const otherLinks = (issue.external_links ?? []).filter((link) => link.kind !== "github_pr");
   const labels = issue.labels ?? [];
@@ -341,23 +345,22 @@ export function IssueMarginPanel({
             resolvedRepo={issue.resolved_repo}
           />
         </Row>
+        {/* Each link reads GitHub as it is drawn (`GitHubLink`), so the links are drawn only
+            while Details is open, as the panel's other reads are made. */}
         <Row glyph="⇄" label={PROPERTY_LABELS.pull_request}>
-          {pullRequests.length === 0
-            ? none
-            : pullRequests.map((link) => <GitHubLink key={link.url} link={link} />)}
+          {pullRequests.length === 0 ? none : null}
+          {reading ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />) : null}
         </Row>
         {otherLinks.length === 0 ? null : (
           <Row glyph="↗" label={PROPERTY_LABELS.external_links}>
-            {otherLinks.map((link) => (
-              <GitHubLink key={link.url} link={link} />
-            ))}
+            {reading ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />) : null}
           </Row>
         )}
         <Row glyph="⚑" label={PROPERTY_LABELS.claim}>
           <IssueClaimControl issue={issue} writes={writes} />
         </Row>
         <Row glyph="→" label={PROPERTY_LABELS.route} row="route">
-          <RouteControl
+          <IssueRouteControl
             editing={editingField === "route"}
             isClosed={isClosed}
             issue={issue}
@@ -481,14 +484,11 @@ export function IssueMarginPanel({
             </ul>
           )}
           {artifacts.length > FOLD_AFTER && !filesOpen ? (
-            <button
-              className={`pt-1.5 text-xs font-semibold underline underline-offset-[3px] ${pageInkText}`}
-              onClick={() => setFilesOpen(true)}
-              type="button"
-              {...pageChrome}
-            >
-              {CONTROL_LABELS.show_all} <span {...authorText}>{artifacts.length}</span>
-            </button>
+            <ShowAll
+              className="pt-1.5"
+              count={artifacts.length}
+              onShow={() => setFilesOpen(true)}
+            />
           ) : null}
         </Row>
       </PropertySection>
@@ -514,16 +514,32 @@ function IssueList({
         <IssueLine issueKey={one.key} key={one.key} title={one.title} />
       ))}
       {issues.length > FOLD_AFTER && !open ? (
-        <button
-          className={`self-start text-xs font-semibold underline underline-offset-[3px] ${pageInkText}`}
-          onClick={() => setOpen(true)}
-          type="button"
-          {...pageChrome}
-        >
-          {CONTROL_LABELS.show_all} <span {...authorText}>{issues.length}</span>
-        </button>
+        <ShowAll className="self-start" count={issues.length} onShow={() => setOpen(true)} />
       ) : null}
     </div>
+  );
+}
+
+/** The count a folded list is drawn behind, which opens the rest of it (R13). `className`
+ *  places it in the list that draws it. */
+function ShowAll({
+  className,
+  count,
+  onShow,
+}: {
+  className: string;
+  count: number;
+  onShow: () => void;
+}): ReactNode {
+  return (
+    <button
+      className={`${className} text-xs font-semibold underline underline-offset-[3px] ${pageInkText}`}
+      onClick={onShow}
+      type="button"
+      {...pageChrome}
+    >
+      {CONTROL_LABELS.show_all} <span {...authorText}>{count}</span>
+    </button>
   );
 }
 

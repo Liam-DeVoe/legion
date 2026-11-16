@@ -9,6 +9,7 @@ import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { eventDescription } from "../issue/event-description";
 import { writePin } from "../issue/pin-write";
 import {
+  type ConversationPinKind,
   conversationItemId,
   eventItemId,
   pinnedConversations,
@@ -74,8 +75,8 @@ export function IssuePins({
     enabled: false,
     queryKey: ["events", issueKey],
   });
-  const events = log.data?.pages.flat() ?? [];
-  const pinWords = (kind: string, id: string): string | undefined => {
+  const events = eventPins.length === 0 ? [] : (log.data?.pages.flat() ?? []);
+  const pinWords = (kind: ConversationPinKind, id: string): string | undefined => {
     if (kind === "ask") {
       const ask = asks.data?.find((one) => one.id === id);
       return ask === undefined ? undefined : recordWords(ask.question, ask.question_tree);

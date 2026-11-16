@@ -26,7 +26,7 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
  * The route is a value of Details, so it is drawn whole in the ink with the row's underline
  * (`ROW_LINK`), and never cut.
  */
-export function RouteControl({
+export function IssueRouteControl({
   editing,
   isClosed,
   issue,
@@ -62,18 +62,29 @@ export function RouteControl({
       {name}
     </button>
   );
+  // The route's name in its control: the page's `None` where the issue has no route.
+  const routeName =
+    drafts.route === "" ? (
+      <span className={pageQuietText} {...pageChrome}>
+        {CONTROL_LABELS.none}
+      </span>
+    ) : (
+      drafts.route
+    );
+  // A route whose reach is unknown says so; a listener refilling its agent list has not failed,
+  // and says so rather than reading as a listener that did not answer.
+  const reachKnown = issue.route === null || issue.route_status !== "unknown";
+  const reachUnknown = reachKnown ? null : issue.route_status_reason === "refilling" ? (
+    <span className={`shrink-0 text-xs ${pageQuietText}`} data-testid="issue-route-refilling">
+      Route reach unknown: {AGENT_LIST_REFILLING}
+    </span>
+  ) : (
+    <RouteReachUnknownMarker className="shrink-0" testId="issue-route-unknown" />
+  );
   return (
     <>
       {editing ? null : routeSession === undefined ? (
-        routeControl(
-          drafts.route === "" ? (
-            <span className={pageQuietText} {...pageChrome}>
-              {CONTROL_LABELS.none}
-            </span>
-          ) : (
-            drafts.route
-          )
-        )
+        routeControl(routeName)
       ) : (
         <AgentName
           className="inline-flex min-w-0 items-center"
@@ -89,20 +100,7 @@ export function RouteControl({
         <>
           <UnreachableRouteMarker issue={issue} testId="issue-details-route-unreachable" />
           <UnresponsiveRouteMarker issue={issue} />
-          {issue.route !== null && issue.route_status === "unknown" ? (
-            issue.route_status_reason === "refilling" ? (
-              // A listener refilling its agent list has not failed, and says so rather than
-              // reading as a listener that did not answer.
-              <span
-                className={`shrink-0 text-xs ${pageQuietText}`}
-                data-testid="issue-route-refilling"
-              >
-                Route reach unknown: {AGENT_LIST_REFILLING}
-              </span>
-            ) : (
-              <RouteReachUnknownMarker className="shrink-0" testId="issue-route-unknown" />
-            )
-          ) : null}
+          {reachUnknown}
         </>
       ) : null}
     </>

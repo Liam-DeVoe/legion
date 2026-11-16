@@ -29,10 +29,10 @@ export interface BlockedByWrite {
 
 /**
  * Which of the page's sentences a refusal of the list `sent` is, by its `code`
- * (`packages/envoy/internal/dispatch/api/issue_parent.go`): `BLOCKED_BY_OUTSIDE_PROJECT` names
- * an issue of another project; `BLOCKED_BY_INPUT` an issue Dispatch has none of, the issue
- * itself, or - naming none - a list over `MAX_ISSUE_BLOCKERS`; and `DEPENDENCY_CYCLE` the issue
- * the list would make wait on itself, or - naming none - a chain longer than Dispatch follows.
+ * (`packages/envoy/internal/dispatch/api/issue_parent.go`): `BLOCKED_BY_INPUT` names an issue
+ * Dispatch has none of, the issue itself, or - naming none - a list over `MAX_ISSUE_BLOCKERS`;
+ * and `DEPENDENCY_CYCLE` the issue the list would make wait on itself, or - naming none - a
+ * chain longer than Dispatch follows.
  * The key is the one of this issue's and `sent` the server's message names, so the sentence
  * carries the server's detail as a value and never its words. Undefined for every other answer,
  * which the editor says as it always has.
@@ -48,9 +48,6 @@ export function blockedByRefusal(
   if (error.code === "DEPENDENCY_CYCLE") {
     return key === undefined ? { words: "too_deep" } : { key, words: "cycle" };
   }
-  if (error.code === "BLOCKED_BY_OUTSIDE_PROJECT" && key !== undefined) {
-    return { key, words: "outside_project" };
-  }
   if (error.code !== "BLOCKED_BY_INPUT") return undefined;
   if (key !== undefined) return { key, words: key === issueKey ? "itself" : "not_found" };
   return sent.length > MAX_ISSUE_BLOCKERS ? { words: "too_many" } : undefined;
@@ -60,9 +57,9 @@ export function blockedByRefusal(
  * The one way the panel writes the issues an issue waits on (`blocked_by`).
  *
  * A refused list is refused for a reason the reader can mend - "CORE-9 not found", "CORE-1
- * cannot be blocked by itself", a blocker outside the project - so the write says what Dispatch
- * refused and leaves the editor open with the typed list in it; there is no Retry, because
- * sending the same refused list again would be refused again
+ * cannot be blocked by itself" - so the write says what Dispatch refused and leaves the editor
+ * open with the typed list in it; there is no Retry, because sending the same refused list again
+ * would be refused again
  * (`packages/dispatch/AGENTS.md`: a field's refusal belongs at its control).
  */
 export function useIssueBlockedBy(issueKey: string, onSaved: () => void): BlockedByWrite {

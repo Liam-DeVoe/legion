@@ -18,10 +18,10 @@ import { useIssueBlockedBy } from "./useIssueBlockedBy";
 
 /** The issues `value` names, in the order they were typed, with every repeat and blank dropped:
  *  what a reader types into the blocked-by editor as the model's own list. */
-export function issueKeysIn(value: string): readonly string[] {
+function issueKeysIn(value: string): readonly string[] {
   const keys = value
     .split(/[\s,]+/u)
-    .map((key) => key.trim().toUpperCase())
+    .map((key) => key.toUpperCase())
     .filter((key) => key !== "");
   return [...new Set(keys)];
 }
@@ -48,8 +48,8 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
  *
  * The editor is here, where the value is, as the repository's and the components' are. It
  * stays open until Dispatch answers and says there what it refused - a key it has no issue
- * for, the issue itself, a blocker in another project - in the page's own sentence with the key
- * in it (`BLOCKED_BY_REFUSALS`), with the keys the reader typed still in the box, so a refused
+ * for, or the issue itself - in the page's own sentence with the key in it
+ * (`BLOCKED_BY_REFUSALS`), with the keys the reader typed still in the box, so a refused
  * list is mended rather than retyped (`useIssueBlockedBy.ts`).
  *
  * While that save is out nothing closes the editor: Cancel is held, and drawn so, and Escape is

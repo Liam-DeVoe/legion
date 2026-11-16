@@ -177,7 +177,7 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-d.e2e.ts":
     "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
   "issue-page-h.e2e.ts":
-    "each row writes Details' properties through Dispatch and reads them back after a reload, and the seed's approvals, claim, blockers and pins are the server's own",
+    "the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":

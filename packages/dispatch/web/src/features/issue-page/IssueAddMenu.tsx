@@ -12,6 +12,9 @@ import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
+/** The name `main`'s `IssueLabels` gives its control, which the add menu and the key `l` press. */
+export const LABELS_CONTROL_NAME = "Edit labels";
+
 /**
  * The one control that reaches a property this issue has no value for (dispatch://INFRA-1196
  * R13), in Details. Every property that has a value is drawn where it belongs - in the header or
@@ -56,8 +59,9 @@ export function IssueAddMenu({
     };
   }, [open]);
 
-  const empty = emptyFields(issue).filter((field) => field.reachable());
-  if (isClosed || empty.length === 0) return null;
+  if (isClosed) return null;
+  const fields = emptyFields(issue);
+  if (!fields.some((field) => field.reachable())) return null;
   return (
     <div className="relative flex shrink-0" ref={wrapper}>
       <button
@@ -73,21 +77,23 @@ export function IssueAddMenu({
       </button>
       {open ? (
         <div aria-label={CONTROL_LABELS.add} className={`${pageMenu} left-0`} role="menu">
-          {empty.map((field) => (
-            <button
-              className={pageMenuItem}
-              key={field.label}
-              onClick={() => {
-                setOpen(false);
-                field.open();
-              }}
-              role="menuitem"
-              type="button"
-              {...pageChrome}
-            >
-              {field.label}
-            </button>
-          ))}
+          {fields
+            .filter((field) => field.reachable())
+            .map((field) => (
+              <button
+                className={pageMenuItem}
+                key={field.label}
+                onClick={() => {
+                  setOpen(false);
+                  field.open();
+                }}
+                role="menuitem"
+                type="button"
+                {...pageChrome}
+              >
+                {field.label}
+              </button>
+            ))}
         </div>
       ) : null}
     </div>
@@ -133,9 +139,9 @@ export function IssueAddMenu({
       });
     }
     if ((details.labels ?? []).length === 0) {
-      // The labels popover spells its own name inline (`IssueLabels.tsx`), so this one is typed
-      // here until that control exports it too.
-      fields.push({ label: PROPERTY_LABELS.labels, ...atControl("Edit labels") });
+      // The labels popover spells its own name inline (`IssueLabels.tsx`), so it is typed once,
+      // as `LABELS_CONTROL_NAME`, until that control exports it too.
+      fields.push({ label: PROPERTY_LABELS.labels, ...atControl(LABELS_CONTROL_NAME) });
     }
     if (details.route === null || details.route === "") {
       fields.push({
