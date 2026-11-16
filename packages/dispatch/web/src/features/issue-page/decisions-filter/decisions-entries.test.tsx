@@ -11,6 +11,7 @@ import { useDecisionsEntries } from "./decisions-entries";
 import {
   answeredAsk,
   closing,
+  DECISIONS_DOCUMENT,
   decision,
   decisionNode,
   decisionsRead,
@@ -27,16 +28,16 @@ import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
 
 /**
  * The seam between today's reads and the Decisions view (dispatch://INFRA-3937 R8). Each case
- * puts the three reads in the cache under the keys the page's tree reads them by, as the cache
- * holds them once the tree is drawn, and no query reads again on mount, so any request the seam
- * made would be one of its own. The view is the one the slot passes: the tree as the Decisions
- * view leaves it (`presetView`).
+ * puts the three reads and the decisions document's blocks in the cache under the keys the
+ * page's tree reads them by, as the cache holds them once the tree is drawn, and no query reads
+ * again on mount, so any request the seam made would be one of its own. The view is the one the
+ * slot passes: the tree as the Decisions view leaves it (`presetView`).
  */
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
 /** The seam's parts for the issue whose tree holds `children`, with `decisions` and `asks` as
- *  the cache holds them and no comment. */
+ *  the cache holds them, no comment and no block of the decisions document. */
 async function entriesOf(
   children: readonly TreeNode[],
   decisions: IssueDecisions,
@@ -48,6 +49,9 @@ async function entriesOf(
   client.setQueryData(["decisions", KEY], decisions);
   client.setQueryData(["asks", KEY], asks);
   client.setQueryData(["comments", KEY], []);
+  // The issue names its decisions document by its role (`issueDetails`), so the seam reads that
+  // document's blocks, as the tree does.
+  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
   const issue = issueDetails();
   const root = issueTree(children);
   const view = presetView(root, "decisions", "").root;
@@ -110,7 +114,7 @@ test("the seam gives four parts from today's reads and makes no request", async 
   const getIssueDecisions = spyOn(api, "getIssueDecisions");
   const listIssueAsks = spyOn(api, "listIssueAsks");
   const listComments = spyOn(api, "listComments");
-  // Any request at all, past the three reads the page's tree makes.
+  // Any request at all, past the reads the page's tree makes.
   const request = spyOn(globalThis, "fetch");
   try {
     const ids = idsOf(await entriesOf(children, decisionsRead(made), asks));

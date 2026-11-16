@@ -219,6 +219,9 @@ function renderBody(
   client.setQueryData(["decisions", KEY], decisionsRead(made));
   client.setQueryData(["asks", KEY], asks);
   client.setQueryData(["comments", KEY], comments);
+  // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
+  // placed by its quote alone, and no case makes a request for them.
+  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
   const issue = issueDetails();
   const root = issueTree(children);
   // The view the slot hands the body where no address names a node and no words are typed

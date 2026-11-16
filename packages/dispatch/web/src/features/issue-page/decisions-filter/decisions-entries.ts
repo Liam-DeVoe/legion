@@ -2,24 +2,31 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../../api/client";
+import { roleDocument } from "../../../api/issue-cache";
+import { artifactBlocksQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { decisionChanges } from "../decision-review";
-import type { TreeNode } from "../issue-tree";
+import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./decisions-parts";
 
 /**
  * The one seam between today's reads and the Decisions view (dispatch://INFRA-3937 R8): it turns
- * the decisions read, the issue's asks and its comments into the view's parts, so no other file
- * of the view names a read. The part that draws the model's own entries
- * (dispatch://INFRA-1150's `entries`) replaces this module and leaves the view as it is.
+ * the decisions read, the issue's asks, its comments and the decisions document's blocks into the
+ * view's parts, so no other file of the view names a read. The part that draws the model's own
+ * entries (dispatch://INFRA-1150's `entries`) replaces this module and leaves the view as it is.
  *
- * The reads are the ones the page's tree is built from, under the keys `useIssueTree.ts` reads
- * them by, so the view costs no request of its own. A read that holds no decisions, or that has
- * not answered yet, gives no decision and no error: the view draws the questions alone.
+ * The reads are the ones the page's tree is built from: the three reads the tree reads, under
+ * the keys `useIssueTree.ts` reads them by, and the decisions document's blocks under the tree's
+ * own key for them (`artifactBlocksQuery`, for the document `roleDocument` names), so the view
+ * adds no request of its own. The blocks are why a Change stands under the decision whose
+ * section holds its anchor (`decision-review.ts`): the quote alone cannot say which, since two
+ * decisions can hold the same words. Until the blocks answer, a Change stands under the first
+ * decision whose words hold its quote. A read that holds no decisions, or that has not answered
+ * yet, gives no decision and no error: the view draws the questions alone.
  *
  * The view draws four parts (dispatch://INFRA-1196 R2). A decision another person made is no
  * part of its own: it stands under the reader's decisions, with that person's name on its row,
@@ -53,9 +60,24 @@ export function useDecisionsEntries({
     queryFn: () => api.listComments(issue.key),
     queryKey: ["comments", issue.key],
   }).data;
+  // The blocks of the decisions document, which name the section each Change's anchor stands
+  // in and so the decision it changes, under the key the tree reads them by. An issue with no
+  // decisions document reads none.
+  const documentId = roleDocument(issue, "decisions")?.id;
+  const blocks = useQuery({
+    ...artifactBlocksQuery(documentId ?? ""),
+    enabled: documentId !== undefined,
+  }).data;
+  const documents = useMemo<readonly DocumentBlocks[] | undefined>(
+    () =>
+      documentId === undefined || blocks === undefined
+        ? undefined
+        : [{ artifactId: documentId, blocks }],
+    [documentId, blocks]
+  );
   const changes = useMemo(
-    () => decisionChanges(decisions, comments, issue.artifacts),
-    [decisions, comments, issue.artifacts]
+    () => decisionChanges(decisions, comments, issue.artifacts, documents),
+    [decisions, comments, issue.artifacts, documents]
   );
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
