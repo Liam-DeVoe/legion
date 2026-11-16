@@ -260,10 +260,8 @@ SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
-TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
-GO_TEST_SHARDS = ".github/scripts/go-test-shards.py"
 # The scripts a step may assign a `-run` from, each run here as the step runs it.
-RUN_LISTERS = (TAGGED_TESTS, GO_TEST_SHARDS)
+RUN_LISTERS = (".github/scripts/go-tagged-tests.sh", ".github/scripts/go-test-shards.py")
 # An expression GitHub evaluates before the shell sees the script: ${{ matrix.shard }}.
 EXPRESSION = re.compile(r"\$\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
@@ -389,7 +387,7 @@ def legs(label: str, body: dict) -> list[tuple[str, dict[str, str]]]:
     suffix and no values. Only a matrix of one key holding a list is read, since its legs are that
     list in order and its job-index is the position in it; `include`, `exclude`, a second key or a
     computed list (`fromJSON`) is refused rather than guessed at."""
-    matrix = ((body or {}).get("strategy") or {}).get("matrix")
+    matrix = (body.get("strategy") or {}).get("matrix")
     if matrix is None:
         return [("", {})]
     if (not isinstance(matrix, dict) or len(matrix) != 1 or set(matrix) & {"include", "exclude"}

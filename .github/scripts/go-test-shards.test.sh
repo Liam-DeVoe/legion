@@ -67,6 +67,22 @@ names_of() {
   tr '|' '\n' <<<"$inner"
 }
 
+# union_of <pattern>...: every name the patterns hold, sorted, one per line.
+union_of() {
+  local p
+  for p in "$@"; do names_of "$p"; done | LC_ALL=C sort
+}
+
+# without <name> <pattern>...: the same patterns with that one name taken out of the shard
+# that holds it, one pattern per line - the control that leaves a test in no shard.
+without() {
+  local name=$1 p
+  shift
+  for p in "$@"; do
+    printf '^(%s)$\n' "$(names_of "$p" | grep -v -x "$name" | paste -sd '|')"
+  done
+}
+
 # The package every split case reads: seven plain tests, a fuzz target, an example with an output
 # comment, and the four things that are no test of the split - an example without an output
 # comment (go test compiles it and never runs it, and -test.list does not print it), a benchmark
@@ -134,7 +150,7 @@ for index in 0 1 2; do
     "$(contains "$err" "^go-test-shards.py: shard $((index + 1)) of 3 holds [0-9]* of the 9 tests of \.; every test is in exactly one of the 3 shards$")"
   patterns+=("$out")
 done
-union=$(for p in "${patterns[@]}"; do names_of "$p"; done | LC_ALL=C sort)
+union=$(union_of "${patterns[@]}")
 check "together the three hold every test, and each once" "$(is "$union" "$everything")"
 check "no shard holds what is no test of the split" \
   "$(is "$(grep -c -E 'Example_unshown|BenchmarkTheSpeed|TestMain$|TestMethodIsNoTest|TestOnlyUnderTheTag' <<<"$union" || true)" 0)"
@@ -152,11 +168,7 @@ check "says every test is in exactly one shard" \
   "$(contains "$err" '^go-test-shards.py: every one of the 9 tests of \. is in exactly one of the 3 shards$')"
 
 echo "case: control - a test left out of every shard fails the check, by name"
-without_gamma=()
-for p in "${patterns[@]}"; do
-  kept=$(names_of "$p" | grep -v -x TestGamma | paste -sd '|')
-  without_gamma+=("^($kept)\$")
-done
+mapfile -t without_gamma < <(without TestGamma "${patterns[@]}")
 run_shards "$root" check . -- "${without_gamma[@]}"
 check "exits 1" "$(is "$status" 1)"
 check "prints nothing on standard output" "$(is "$out" "")"
@@ -194,7 +206,7 @@ for index in 0 1; do
   unicode_patterns+=("$out")
 done
 check "the two shards hold all four tests, each once" \
-  "$(is "$(for p in "${unicode_patterns[@]}"; do names_of "$p"; done | LC_ALL=C sort | paste -sd ' ')" \
+  "$(is "$(union_of "${unicode_patterns[@]}" | paste -sd ' ')" \
     "TestAlpha TestBeta TestÉclair Test日本")"
 run_shards "$root_unicode" check . -- "${unicode_patterns[@]}"
 check "and the check passes them" "$(is "$status" 0)"
@@ -202,11 +214,7 @@ check "counting all four" \
   "$(contains "$err" '^go-test-shards.py: every one of the 4 tests of \. is in exactly one of the 2 shards$')"
 
 echo "case: control - a test whose name is not ASCII, left out of every shard, fails the check by name"
-without_eclair=()
-for p in "${unicode_patterns[@]}"; do
-  kept=$(names_of "$p" | grep -v -x 'TestÉclair' | paste -sd '|')
-  without_eclair+=("^($kept)\$")
-done
+mapfile -t without_eclair < <(without 'TestÉclair' "${unicode_patterns[@]}")
 run_shards "$root_unicode" check . -- "${without_eclair[@]}"
 check "exits 1" "$(is "$status" 1)"
 check "prints nothing on standard output" "$(is "$out" "")"
@@ -233,7 +241,7 @@ for index in 0 1 2; do
   grown+=("$out")
 done
 check "the new test is in exactly one shard" \
-  "$(is "$(for p in "${grown[@]}"; do names_of "$p"; done | grep -c -x TestAddedLater)" 1)"
+  "$(is "$(union_of "${grown[@]}" | grep -c -x TestAddedLater)" 1)"
 moved=0
 for index in 0 1 2; do
   before=$(names_of "${patterns[$index]}")

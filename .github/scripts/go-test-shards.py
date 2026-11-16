@@ -67,6 +67,7 @@ packages/envoy. Needs python3 and go on PATH; `-race` needs cgo and a C compiler
 
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
 import sys
@@ -78,12 +79,13 @@ USAGE = """\
 usage: go-test-shards.py pattern <index> <total> [<build flag>...] <package>
        go-test-shards.py check [<build flag>...] <package> -- <pattern>..."""
 
-# A name `-test.list` prints: a top-level test, benchmark, fuzz target or example. Anything else
-# on the binary's standard output (a TestMain that prints) names no test. The rest of the name is
+# A name `-test.list` prints that `-run` can start: a top-level test, fuzz target or example.
+# Benchmarks, which it also prints, are left out (`-run` never starts one), and anything else on
+# the binary's standard output (a TestMain that prints) names no test. The rest of the name is
 # any Go identifier's: Unicode letters, digits and `_` (`\w` on a str), because go test runs
 # `TestÉ` - cmd/go checks only that the rune after `Test` is not lower case - and a name this
 # missed would be in no shard while the proof, blind to it too, passed.
-LISTED = re.compile(r"^(Test|Benchmark|Fuzz|Example)\w*$")
+SPLIT = re.compile(r"^(Test|Fuzz|Example)\w*$")
 # Linux's MAX_ARG_STRLEN, 32 pages of 4 KiB: the longest single argument exec accepts, terminator
 # included. The pattern is one argument to go test and one to the test binary.
 MAX_ARGUMENT = 131072
@@ -120,7 +122,7 @@ def build(flags: list[str], package: str, directory: Path) -> Path:
 
 
 def listed(binary: Path, pattern: str) -> list[str]:
-    """The names the binary lists for one pattern, benchmarks left out (`-run` never starts one)."""
+    """The names of the split the binary lists for one pattern."""
     if len(pattern.encode()) >= MAX_ARGUMENT:
         raise Refused(f"a pattern of {len(pattern.encode())} bytes is longer than one argument may be "
                       f"({MAX_ARGUMENT - 1} bytes, MAX_ARG_STRLEN), so go test could not pass it to the "
@@ -130,8 +132,19 @@ def listed(binary: Path, pattern: str) -> list[str]:
                           check=False)
     if done.returncode != 0:
         raise Refused(f"`{binary.name} -test.list` exited {done.returncode}:\n{done.stderr}{done.stdout}")
-    return [line for line in done.stdout.splitlines()
-            if LISTED.match(line) and not line.startswith("Benchmark")]
+    return [line for line in done.stdout.splitlines() if SPLIT.match(line)]
+
+
+@contextlib.contextmanager
+def package_tests(flags: list[str], package: str, purpose: str):
+    """The package's test binary, built under the flags, and every name of the split it lists,
+    for as long as the block runs; refused when it lists none."""
+    with tempfile.TemporaryDirectory(prefix="go-test-shards.") as directory:
+        binary = build(flags, package, Path(directory))
+        everything = listed(binary, ".")
+        if not everything:
+            raise Refused(f"{package} lists no test, so there is nothing to {purpose}")
+        yield binary, everything
 
 
 def prove(binary: Path, everything: list[str], patterns: list[str]) -> None:
@@ -174,11 +187,7 @@ def pattern_command(arguments: list[str]) -> str:
     if total < 1 or not 0 <= index < total:
         raise Refused(f"index {index} is not a shard of {total}: an index runs from 0 to {total - 1}")
     flags, package = split_package(arguments[2:])
-    with tempfile.TemporaryDirectory(prefix="go-test-shards.") as directory:
-        binary = build(flags, package, Path(directory))
-        everything = listed(binary, ".")
-        if not everything:
-            raise Refused(f"{package} lists no test, so there is nothing to split")
+    with package_tests(flags, package, "split") as (binary, everything):
         shards: list[list[str]] = [[] for _ in range(total)]
         for name in everything:
             shards[shard_of(name, total)].append(name)
@@ -202,11 +211,7 @@ def check_command(arguments: list[str]) -> None:
     patterns = arguments[cut + 1:]
     if not patterns:
         raise Refused(f"no pattern after `--`\n{USAGE}")
-    with tempfile.TemporaryDirectory(prefix="go-test-shards.") as directory:
-        binary = build(flags, package, Path(directory))
-        everything = listed(binary, ".")
-        if not everything:
-            raise Refused(f"{package} lists no test, so there is nothing to check")
+    with package_tests(flags, package, "check") as (binary, everything):
         prove(binary, everything, patterns)
     print(f"go-test-shards.py: every one of the {len(everything)} tests of {package} is in exactly one "
           f"of the {len(patterns)} shards", file=sys.stderr)

@@ -840,6 +840,7 @@ SCHEMA_SCRIPT = (
 # moves no closure: the whole package compiles under the tag, whichever tests the run selects, so
 # each entry's Run is the plain tagged go test the step ran before.
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
+GO_TEST_SHARDS = ".github/scripts/go-test-shards.py"
 NATS_MATRIX_STEP = "Test the container-backed NATS matrix (natslive)"
 NATS_MATRIX_SCRIPT = f"""\
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
@@ -1335,11 +1336,15 @@ def race_pkgs(job):
     return [f"./{p.name}/..." if p.tree else f"./{p.name}/" for p in job.packages]
 
 
+def race_text(job, *flags):
+    """The go test of a race job's step: -count=1, -race, its -timeout, any flag given, then its
+    packages in the order it names them."""
+    return " ".join(["go test -count=1 -race -timeout", job.timeout, *flags, *race_pkgs(job)])
+
+
 def race_step(job):
     """The one go command of a race job's step, pinned to the text this declaration builds."""
-    pkgs = race_pkgs(job)
-    text = f"go test -count=1 -race -timeout {job.timeout} " + " ".join(pkgs)
-    return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
+    return step_run(job.job, job.step, race_text(job), ENVOY, race_pkgs(job), race=True)
 
 
 # envoy-go-race-api is a matrix whose legs each run one shard of the package (dispatch://INFRA-3904;
@@ -1350,12 +1355,11 @@ def race_step(job):
 # the step is pinned whole, its text built from the lane's own entry. A -run moves no closure:
 # the whole package compiles whichever tests it selects, and the script's `go test -c` is that
 # same race build of that same package, so the step's one Run is the plain race go test.
-GO_TEST_SHARDS = ".github/scripts/go-test-shards.py"
 RACE_API = RACE_JOBS["envoy-go-race-api"]
+RACE_API_PKGS = " ".join(race_pkgs(RACE_API))
 RACE_API_SCRIPT = (
     f"pattern=$(../../{GO_TEST_SHARDS} pattern ${{{{ strategy.job-index }}}} ${{{{ strategy.job-total }}}} "
-    f"-race {' '.join(race_pkgs(RACE_API))})\n"
-    f'go test -count=1 -race -timeout {RACE_API.timeout} -run "$pattern" {" ".join(race_pkgs(RACE_API))}')
+    f"-race {RACE_API_PKGS})\n" + race_text(RACE_API, '-run "$pattern"'))
 
 
 # The architecture-note rules and the command that runs them, which envoy-go-checks tests in a
@@ -2779,7 +2783,7 @@ GATES = [
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
         pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
             (ENVOY, race_pkgs(RACE_API),
-             f"go test -race -count=1 -timeout {RACE_API.timeout} {' '.join(race_pkgs(RACE_API))}, and "
+             f"go test -race -count=1 -timeout {RACE_API.timeout} {RACE_API_PKGS}, and "
              f"{GO_TEST_SHARDS}'s go test -c -race of the same package", {"race": True}),
         ]),
     ], reads=reads(
