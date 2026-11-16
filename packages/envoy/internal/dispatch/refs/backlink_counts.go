@@ -248,21 +248,36 @@ const backlinkSeen = "$3"
 // deleted, which neither answers.
 func rowNamesNoNode(column string) string { return column + ` is null` }
 
+// A comment's pointers - what it replies to, what it answers, the block it names - are told
+// apart the same way by a marker of the comment's own rather than by its node, because a comment
+// names its node whether its pointers are tuples or not (migration 20261116124447):
+// pointersNotStored is the arm's own test that the comments row at alias is one whose pointers the
+// store does not hold, which the table's arm answers, and pointersStored what the store's reading
+// adds to its probe of that row (projectionCarries), so a tuple counts only while the row holds
+// tuples_stored. graph_edges carries both tests the same way (migration 20261116124448).
+func pointersNotStored(alias string) string { return `not ` + alias + `.tuples_stored` }
+
+const pointersStored = `projected.tuples_stored`
+
 // projectionCarries is the join the store's reading of a moved kind makes to its projection row:
 // the tuple at alias counts only while a row of table names the node it comes from, fromKind as
-// a literal so the probe reads that table's (node_kind, node_address) index. A build of the
-// release before this one deletes a row and appends no retraction, so the tuple outlives the row,
-// and only the row can say the edge still stands; that build may also write the row again with
-// no node, which its table's arm then answers alone. graph_edges' tuple arm makes the same join
-// (migration 20261109215947).
+// a literal so the probe reads that table's (node_kind, node_address) index, and while that row
+// meets carried as well, where carried is not empty: a test over the row the probe finds, written
+// over the alias `projected` (pointersStored). A build of the release before this one deletes a
+// row and appends no retraction, so the tuple outlives the row, and only the row can say the edge
+// still stands; that build may also write the row again with no node, which its table's arm then
+// answers alone. graph_edges' tuple arm makes the same join (migration 20261109215947).
 //
 // The probe ends in `offset 0`, as each of graph_edges' does, which keeps it one probe of that
 // index per tuple the arm counts: without it PostgreSQL may pull it up into a semi-join it hashes
 // from a read of the whole projection table, and offset 0 is the fence that stops the pull-up
 // (simplify_EXISTS_query) while skipping no row.
-func projectionCarries(table, fromKind, alias string) string {
+func projectionCarries(table, fromKind, alias, carried string) string {
+	if carried != "" {
+		carried = ` and ` + carried
+	}
 	return `exists (select 1 from ` + table + ` projected
-		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id
+		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id` + carried + `
 		offset 0)`
 }
 
@@ -278,14 +293,16 @@ func blockRefCarries(alias string) string {
 
 // TupleKinds is every relation kind this build writes as tuples and graph_edges answers from
 // them, sorted: a block's in_document and mentions, the pointer kinds the installed block schema
-// declares (pmdoc.LinkKinds), a comment's anchored_to and owned_by, and a message's replies_to. It
-// is the list the view's tuple arm renders (migrations 20261109215947 and 20261116114517) and the
-// list the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which is
-// how the release that deletes an old arm of the view reads whether the release a rollback would
-// reach writes that arm's kinds as tuples too. A child that moves another relation into the store
-// adds its kinds here, so the arm and the announcement read one list.
+// declares (pmdoc.LinkKinds), a comment's anchored_to and owned_by, a message's and a comment's
+// replies_to, and a comment's answers. It is the list the view's tuple arm renders (migrations
+// 20261109215947, 20261116114517 and 20261116124448) and the list the announcer writes into
+// server_build_announcements.tuple_kinds (startup.Deps), which is how the release that deletes an
+// old arm of the view reads whether the release a rollback would reach writes that arm's kinds as
+// tuples too. A child that moves another relation into the store adds its kinds here, so the arm
+// and the announcement read one list.
 func TupleKinds() []string {
-	kinds := append([]string{TupleInDocument, "mentions", "anchored_to", "owned_by", graphstore.TupleRepliesTo}, pmdoc.LinkKinds()...)
+	kinds := append([]string{TupleInDocument, "mentions", "anchored_to", "owned_by", graphstore.TupleRepliesTo, graphstore.TupleAnswers},
+		pmdoc.LinkKinds()...)
 	slices.Sort(kinds)
 	return kinds
 }
@@ -360,26 +377,30 @@ type backlinkArm struct {
 	where     string
 	toID      string
 	// projected and tupleKind are how the arm reads an edge the node and tuple store now
-	// writes: projected is the node_kind column of the arm's own row, which the arm answers
-	// only while it is null, and tupleKind the kind the store states the edge under, which is
-	// the view's kind except for a block's membership of its document, stated as in_document
-	// and rendered as part_of. tupleToKind is the kind the store names the far end by where it
-	// is not the target's own: a message's reply to a block of a message points at that block's
-	// node, of kind block, which the view renders as the message_block address form (migration
-	// 20261116114517). projectedIn is the table that row is in, which the store's reading joins
-	// (projectionCarries). An arm that names none of them reads its own table alone, as every
-	// arm did before the store existed.
+	// writes: projected is the arm's own test that its row is one the store does not answer,
+	// which the arm answers alone - its node_kind column null (rowNamesNoNode), or for a
+	// comment's pointers its tuples_stored false (pointersNotStored) - and tupleKind the kind the
+	// store states the edge under, which is the view's kind except for a block's membership of
+	// its document, stated as in_document and rendered as part_of. tupleToKind is the kind the
+	// store names the far end by where it is not the target's own: a reply to a block of a
+	// message, a comment or an ask points at that block's node, of kind block, which the view
+	// renders as the item's block address form (migrations 20261116114517 and 20261116124448).
+	// projectedIn is the table that row is in, which the store's reading joins
+	// (projectionCarries), and carried what that join requires of the row beside its naming the
+	// tuple's node (pointersStored), empty where naming it is the whole test. An arm that names
+	// none of them reads its own table alone, as every arm did before the store existed.
 	projected   string
 	tupleKind   string
 	tupleToKind string
 	projectedIn string
+	carried     string
 }
 
 // sql is the arm as the count reads it for target, keyed on the addresses bound as $1 and
 // narrowed to the sources the acting credential may see. An arm over a kind the store writes
-// is two reads, the table's and the store's, the first over the rows that name no node and the
-// second over what the store holds, exactly as graph_edges holds the two arms it answers that
-// kind from.
+// is two reads, the table's and the store's, the first over the rows the store does not answer
+// and the second over what the store holds, exactly as graph_edges holds the two arms it answers
+// that kind from.
 func (a backlinkArm) sql(target backlinkTarget) string {
 	counted, join, keyed, address := target.read(a.toID)
 	where := a.where
@@ -393,7 +414,7 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 		if where != "" {
 			where += ` and `
 		}
-		where += rowNamesNoNode(a.projected)
+		where += a.projected
 	}
 	if where != "" {
 		where += ` and `
@@ -427,7 +448,7 @@ func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 	}
 	return `select ` + counted + ` from graph_tuples tuple` + join + ` where ` + where +
 		` and ` + keyed + ` and ` + currentTuple("tuple") +
-		` and ` + projectionCarries(a.projectedIn, a.fromKind, "tuple") +
+		` and ` + projectionCarries(a.projectedIn, a.fromKind, "tuple", a.carried) +
 		` and ` + liveVisibleNode(a.fromKind, `tuple.from_id`)
 }
 
@@ -465,35 +486,40 @@ var backlinkArms = map[string][]backlinkArm{
 		// comments_anchor_artifact, on the same cast the join makes; the store states the same
 		// fact as a comment's anchored_to, answered while the comment's row carries its node.
 		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`,
-			fromKind: "comment", fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: "anchored_to", projectedIn: "comments"},
+			fromKind: "comment", fromID: `c.id::text`, projected: rowNamesNoNode(`c.node_kind`), tupleKind: "anchored_to", projectedIn: "comments"},
 		// asks_artifact_id.
 		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: "ask", fromID: `k.id::text`},
 		// comments_artifact_id, and the comment's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join comments c on c.artifact_id = a.id`, toID: `a.ref_key`,
-			fromKind: "comment", fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: "owned_by", projectedIn: "comments"},
+			fromKind: "comment", fromID: `c.id::text`, projected: rowNamesNoNode(`c.node_kind`), tupleKind: "owned_by", projectedIn: "comments"},
 		// The document_blocks primary key (artifact_id, block_id). The store states a block's
 		// membership of its document as in_document, which the view renders as this part_of,
 		// answered while the block's own row carries its node.
 		{kind: "part_of", from: `artifacts a join document_blocks d on d.artifact_id = a.id`, toID: `a.ref_key`,
-			fromKind: "block", fromID: `d.node_id`, projected: `d.node_kind`, tupleKind: TupleInDocument, projectedIn: "document_blocks"},
+			fromKind: "block", fromID: `d.node_id`, projected: rowNamesNoNode(`d.node_kind`), tupleKind: TupleInDocument, projectedIn: "document_blocks"},
 	},
 	"ask": {
-		// comments_ask_id_text.
+		// comments_ask_id_text; the store states the same fact as the reply's replies_to the ask,
+		// answered while the reply's row holds tuples_stored (migration 20261116124448).
 		{kind: "replies_to", from: `comments c`, where: `c.ask_id is not null`, toID: `c.ask_id::text`,
-			fromKind: "comment", fromID: `c.id::text`},
+			fromKind: "comment", fromID: `c.id::text`,
+			projected: pointersNotStored("c"), tupleKind: graphstore.TupleRepliesTo, projectedIn: "comments", carried: pointersStored},
 		// ask_blocks_ask_id_text. The view's arm counts a current part only, so this one carries
 		// its position filter.
 		{kind: "part_of", from: `ask_blocks b`, where: `b.position is not null`, toID: `b.ask_id::text`,
 			fromKind: "ask_block", fromID: `b.node_id`},
 	},
 	"comment": {
-		// comments_reply_to_text.
+		// comments_reply_to_text, and the reply's replies_to its thread's root in the store.
 		{kind: "replies_to", from: `comments c`, where: `c.reply_to is not null`, toID: `c.reply_to::text`,
-			fromKind: "comment", fromID: `c.id::text`},
-		// comments_answers_text, partial on answers is not null.
+			fromKind: "comment", fromID: `c.id::text`,
+			projected: pointersNotStored("c"), tupleKind: graphstore.TupleRepliesTo, projectedIn: "comments", carried: pointersStored},
+		// comments_answers_text, partial on answers is not null, and the reply's answers in the
+		// store.
 		{kind: "answers", from: `comments c`, where: `c.answers is not null`, toID: `c.answers::text`,
-			fromKind: "comment", fromID: `c.id::text`},
+			fromKind: "comment", fromID: `c.id::text`,
+			projected: pointersNotStored("c"), tupleKind: graphstore.TupleAnswers, projectedIn: "comments", carried: pointersStored},
 		// comment_blocks_comment_id_text. The view's arm counts a current block only, so this
 		// one carries its position filter.
 		{kind: "part_of", from: `comment_blocks b`, where: `b.position is not null`, toID: `b.comment_id::text`,
@@ -504,7 +530,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// answered while the reply's row names its node (migration 20261116114517).
 		{kind: "replies_to", from: `messages m`, where: `m.in_reply_to is not null`, toID: `m.in_reply_to::text`,
 			fromKind: "message", fromID: `m.id::text`,
-			projected: `m.node_kind`, tupleKind: graphstore.TupleRepliesTo, projectedIn: "messages"},
+			projected: rowNamesNoNode(`m.node_kind`), tupleKind: graphstore.TupleRepliesTo, projectedIn: "messages"},
 		// message_blocks_message_id_text, with the view's position filter.
 		{kind: "part_of", from: `message_blocks b`, where: `b.position is not null`, toID: `b.message_id::text`,
 			fromKind: "message_block", fromID: `b.node_id`},
@@ -545,14 +571,19 @@ var backlinkArms = map[string][]backlinkArm{
 	// A reply names the block it answers by node id, and the prefix of that id is what tells an
 	// ask's part from a comment's block, so each of these two arms carries the test the view's
 	// own arm carries. Both read comments_replies_to_block, partial on replies_to_block is not
-	// null, and neither carries a position filter, as the view's arms do not.
+	// null, and neither carries a position filter, as the view's arms do not. The store states
+	// the reply's replies_to to the block's own node, of kind block, which the view renders as
+	// these two address forms by the same prefix while the reply's row holds tuples_stored
+	// (migration 20261116124448).
 	"comment_block": {
 		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` not like 'ask/%'`, toID: `c.replies_to_block`,
-			fromKind: "comment", fromID: `c.id::text`},
+			fromKind: "comment", fromID: `c.id::text`,
+			projected: pointersNotStored("c"), tupleKind: graphstore.TupleRepliesTo, tupleToKind: graphstore.KindBlock, projectedIn: "comments", carried: pointersStored},
 	},
 	"ask_block": {
 		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` like 'ask/%'`, toID: `c.replies_to_block`,
-			fromKind: "comment", fromID: `c.id::text`},
+			fromKind: "comment", fromID: `c.id::text`,
+			projected: pointersNotStored("c"), tupleKind: graphstore.TupleRepliesTo, tupleToKind: graphstore.KindBlock, projectedIn: "comments", carried: pointersStored},
 	},
 	"message_block": {
 		// messages_replies_to_block, partial on replies_to_block is not null. The store states
@@ -560,7 +591,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// as this address form while the reply's row names its node.
 		{kind: "replies_to", from: `messages m`, where: `m.replies_to_block is not null`, toID: `m.replies_to_block`,
 			fromKind: "message", fromID: `m.id::text`,
-			projected: `m.node_kind`, tupleKind: graphstore.TupleRepliesTo, tupleToKind: graphstore.KindBlock, projectedIn: "messages"},
+			projected: rowNamesNoNode(`m.node_kind`), tupleKind: graphstore.TupleRepliesTo, tupleToKind: graphstore.KindBlock, projectedIn: "messages"},
 	},
 }
 

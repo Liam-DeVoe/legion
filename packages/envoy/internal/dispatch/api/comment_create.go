@@ -797,8 +797,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		}
 	}
 	// What this comment is in the node and tuple store: its node, written before the row, in the
-	// project of the issue or the document it belongs to, and the facts the row is the projection
-	// of, which wait for the event that stores it.
+	// project of the issue or the document it belongs to, the facts the row is the projection of,
+	// and what it answers - each pointer the row holds and its place under what it answers - all
+	// of which wait for the event that stores it. The row says in its own insert whether its
+	// pointers are stated (tuples_stored), which is what the trigger on that insert and
+	// graph_edges read.
 	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -809,6 +812,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
+	stored.statePointers(graphstore.CommentPointers{
+		ReplyTo: deref(input.ReplyTo), AskID: deref(input.AskID),
+		Answers: deref(threadTarget.Answers), RepliesToBlock: deref(threadTarget.ReplyBlock.nodeID()),
+	})
 	if err := stored.writeNode(r.Context(), tx); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -816,11 +823,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	var comment model.Comment
 	nodeKind, nodeAddress := stored.rowNode()
 	if err := tx.QueryRow(r.Context(), `
-		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, tuples_stored, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		returning created_at
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Body, anchorJSON, input.ReplyTo, input.AskID, turn, suggestionJSON,
-		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, nodeKind, nodeAddress, createdAt).Scan(&comment.CreatedAt); err != nil {
+		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, nodeKind, nodeAddress, stored.pointersStored, createdAt).Scan(&comment.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1022,7 +1029,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	// What the comment states, under the event that stored it: its node's cause, its two base
-	// attributes, and the artifacts it is anchored to and owned by.
+	// attributes, the artifacts it is anchored to and owned by, and what it answers.
 	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1094,8 +1101,9 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	WriteJSON(w, http.StatusCreated, withAdvice(commentWriteResponse{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), AskWaitingOn: waitingOn}, advice))
 }
 
-// commentStoreWrite is what a comment is in the node and tuple store: its node, and the facts
-// its row is the projection of (graphstore.CommentFacts).
+// commentStoreWrite is what a comment is in the node and tuple store: its node, the facts its row
+// is the projection of (graphstore.CommentFacts), and what it answers
+// (graphstore.CommentPointerFacts).
 //
 // The node is written by the request itself (writeNode), before the row, because the composite
 // foreign key on (node_kind, node_address) is checked inside the statement that writes the row
@@ -1116,6 +1124,11 @@ type commentStoreWrite struct {
 	// graph_edges answers every one of its edges rather than the tuple arm answering it without
 	// the edge the bound would drop (R22).
 	unprojected bool
+	// pointersStored is whether the write states the comment's pointers (statePointers), which
+	// is what the row's tuples_stored holds from its insert: graph_edges answers the pointers of
+	// a row that holds true from the tuples, and of any other row from the old arms over comments
+	// (migration 20261116124448).
+	pointersStored bool
 }
 
 // commentStored is what the comment rowID states (graphstore.CommentFacts): its node,
@@ -1176,6 +1189,19 @@ func (w commentStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
 	}
 	kind := w.node.Kind
 	return &kind, &w.node.ID
+}
+
+// statePointers adds what the comment's row holds of what it answers, pointers, to the facts this
+// write holds for its event (graphstore.CommentPointerFacts), dated and made as the node is, and
+// records whether they are stated (pointersStored). It runs before writeNode, which holds those
+// facts for the event. A comment left out of the store states none, and nor does one whose
+// pointer the store's address bound cannot key, so its row's tuples_stored stays false and the old
+// arms of graph_edges answer its pointers.
+func (w *commentStoreWrite) statePointers(pointers graphstore.CommentPointers) {
+	if w.unprojected {
+		return
+	}
+	w.tuples, w.pointersStored = graphstore.CommentPointerFacts(w.tuples, w.node.ID, pointers, w.node.MadeBy, w.node.MadeAt, graphstore.NoEvent)
 }
 
 // writeNode writes the comment's node, which the row that projects it names, and holds every

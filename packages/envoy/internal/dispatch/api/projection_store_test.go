@@ -1121,16 +1121,19 @@ func (r *projectionRun) relations(t *testing.T, ctx context.Context, kind string
 // requireOnlyTheMovedKindsReachedTheStore fails on a node of any kind but the three this change
 // moves - the kinds the three projected tables of migration 20261109022248 name - less the
 // kinds the store holds of people and agents and the two its block schema writes, which no
-// projection backs, and the four kinds whose nodes name the project a read is limited by
+// projection backs, the four kinds whose nodes name the project a read is limited by
 // (dispatch://INFRA-3862): an issue, a document, an ask and a message, each written at its own
-// create site, beside the rows it writes, which carry no node columns.
+// create site, beside the rows it writes, which carry no node columns, and the delivery attempt
+// (dispatch://INFRA-1152), written at the site that opens it, before the comment_deliveries or
+// message_deliveries row that names it (migration 20261116102800).
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	moved := []string{"block", "block_ref", "comment"}
 	allowed := append(slices.Clone(moved),
 		graphstore.KindPerson, graphstore.KindSession, graphstore.KindRole, graphstore.KindPage,
 		"supertag", "attribute",
-		graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage)
+		graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage,
+		graphstore.KindDeliveryAttempt)
 	for _, column := range []string{"select distinct kind from graph_nodes", "select distinct from_kind from graph_tuples"} {
 		kinds, err := readStrings(ctx, run.database.Pool, column+" order by 1")
 		if err != nil {

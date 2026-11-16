@@ -1284,7 +1284,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// What the reply is in the node and tuple store. It carries no anchor - a callback reply
 	// names none - and belongs to whatever the comment it answers belongs to, in that one's
-	// project.
+	// project. What it answers is stated beside its node, as the comment route states a reply's
+	// (statePointers), and its row says so in its own insert (tuples_stored).
 	project, parties, err := graphstore.ScopeOf(r.Context(), tx, comment.IssueKey, comment.ArtifactID)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1295,17 +1296,21 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	stored.statePointers(graphstore.CommentPointers{
+		ReplyTo: deref(thread.ReplyTo), AskID: deref(thread.AskID),
+		Answers: deref(thread.Answers), RepliesToBlock: deref(block.nodeID()),
+	})
 	if err := stored.writeNode(r.Context(), tx); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	nodeKind, nodeAddress := stored.rowNode()
 	reply, err := scanComment(tx.QueryRow(r.Context(), `
-		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, tuples_stored, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		returning `+commentColumns+`
 	`, rowID, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn,
-		block.nodeID(), thread.Answers, nodeKind, nodeAddress, createdAt))
+		block.nodeID(), thread.Answers, nodeKind, nodeAddress, stored.pointersStored, createdAt))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1363,7 +1368,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// What the reply states, under the event that stored it: its node's cause, its two base
-	// attributes, and the artifact it is owned by.
+	// attributes, the artifact it is owned by, and what it answers.
 	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -255,16 +255,25 @@ func requireRepliesAnsweredOnce(t *testing.T, database *store.Store, what, id st
 	}
 }
 
-// viewBacklinks is how many rows graph_edges lists at the node kind/id, and, for a message, at
-// each of its current blocks, which a list of the message's backlinks shows as the message's own:
-// the reading refs.BacklinkCounts is held to (refs' backlinkCountOracle).
+// itemBlockReads are, for each item kind whose blocks a list of its backlinks shows as the
+// item's own, the blocks table, its column naming the item and the address form graph_edges
+// names such a block by.
+var itemBlockReads = map[string]struct{ table, item, form string }{
+	graphstore.KindMessage: {"message_blocks", "message_id", "message_block"},
+	graphstore.KindComment: {"comment_blocks", "comment_id", "comment_block"},
+	graphstore.KindAsk:     {"ask_blocks", "ask_id", "ask_block"},
+}
+
+// viewBacklinks is how many rows graph_edges lists at the node kind/id, and, for a message, a
+// comment or an ask, at each of its current blocks, which a list of the item's backlinks shows as
+// the item's own: the reading refs.BacklinkCounts is held to (refs' backlinkCountOracle).
 func viewBacklinks(t *testing.T, database *store.Store, kind, id string) int {
 	t.Helper()
 	statement := `select count(*) from graph_edges where to_kind = $1 and to_id = $2`
-	if kind == graphstore.KindMessage {
+	if blocks, ok := itemBlockReads[kind]; ok {
 		statement = `select (` + statement + `) + (
-			select count(*) from graph_edges g join message_blocks part on part.node_id = g.to_id and part.position is not null
-			where g.to_kind = 'message_block' and part.message_id::text = $2)`
+			select count(*) from graph_edges g join ` + blocks.table + ` part on part.node_id = g.to_id and part.position is not null
+			where g.to_kind = '` + blocks.form + `' and part.` + blocks.item + `::text = $2)`
 	}
 	var listed int
 	if err := database.Pool.QueryRow(context.Background(), statement, kind, id).Scan(&listed); err != nil {

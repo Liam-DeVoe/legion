@@ -253,7 +253,9 @@ func (r *seedRun) askAnswer(ask askPlan, options []model.AskOption) model.AskAns
 // A reply names the block it answers in replies_to_block, as the create route writes it
 // (api/reply_blocks.go): a block of the comment it replies to, or the part of the ask it answers,
 // whose node id starts `ask/`. The view reads the two as edges to a comment_block and to an
-// ask_block, telling them apart by that prefix.
+// ask_block, telling them apart by that prefix. What a comment answers is stated in the store as
+// the server's comment write states it (graphstore.CommentPointerFacts), and its row says so in
+// tuples_stored, so the view answers those edges from the tuples.
 //
 // Who wrote a comment is written as the server's comment write writes it (api/comment_create.go).
 // The row holds the author as the model encodes it, which is the value the comment's node holds
@@ -279,9 +281,10 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		parameters += fmt.Sprintf(", $%d", next)
 		next++
 	}
-	// The address of the comment's own node, which the batch writes before its first row.
-	columns += ", node_kind, node_address"
-	parameters += fmt.Sprintf(", $%d, $%d", next, next+1)
+	// The address of the comment's own node, which the batch writes before its first row, and
+	// whether the batch stated its pointers there.
+	columns += ", node_kind, node_address, tuples_stored"
+	parameters += fmt.Sprintf(", $%d, $%d, $%d", next, next+1, next+2)
 	insert := "insert into comments (" + columns + ") values (" + parameters + ")"
 	author, err := json.Marshal(seedAuthor)
 	if err != nil {
@@ -298,8 +301,9 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		// states, written before any row names one: the composite foreign key on
 		// (node_kind, node_address) is checked inside the statement that writes the row, so a
 		// node written after it would be too late. The seed appends no event of its own, so
-		// all of it takes the sentinel.
-		nodes, tuples := r.commentStoreWrite(from, to)
+		// all of it takes the sentinel. Each row then says in its own insert whether its
+		// pointers are stated (tuples_stored), as the server's comment write does.
+		nodes, tuples, pointersStored := r.commentStoreWrite(from, to, hasAnswers)
 		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 			return fmt.Errorf("write the comment nodes of %d to %d: %w", from, to, err)
 		}
@@ -311,7 +315,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				mention = r.plan.mentionText(comment.MentionTo, comment.MentionNth)
 			}
 			body := r.plan.itemBody(r.random, comment.Blocks, mention, itemBodyBytes)
-			var issueKey, artifactID, anchor, repliesTo, askID *string
+			var issueKey, artifactID, anchor *string
 			var editedAt any
 			if comment.Issue >= 0 {
 				issueKey = &r.plan.issues[comment.Issue].Key
@@ -328,34 +332,16 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				value := anchorJSON(document.ID, block, document.Versions, r.plan.vocabulary.phrase(r.random, 4))
 				anchor = &value
 			}
-			if comment.RepliesTo >= 0 {
-				node := "comment/" + r.plan.comments[comment.RepliesTo].ID + "#b1"
-				repliesTo = &node
-			}
-			if comment.Ask >= 0 {
-				askID = &r.plan.asks[comment.Ask].ID
-			}
-			if comment.AskPart {
-				node := "ask/" + r.plan.asks[comment.Ask].ID + "#" + askQuestionBlock
-				repliesTo = &node
-			}
-			var replyTo *string
-			if comment.ReplyTo >= 0 {
-				replyTo = &r.plan.comments[comment.ReplyTo].ID
-			}
-			answers := replyTo
-			if comment.RepliesTo >= 0 {
-				answers = &r.plan.comments[comment.RepliesTo].ID
-			}
+			pointers := r.commentPointers(comment, hasAnswers)
 			if comment.Edited {
 				editedAt = comment.CreatedAt.Add(time.Hour)
 			}
-			arguments := []any{comment.ID, issueKey, artifactID, author, body, anchor, replyTo, index%5 == 0,
-				comment.CreatedAt, askID, repliesTo, editedAt}
+			arguments := []any{comment.ID, issueKey, artifactID, author, body, anchor, textOrNull(pointers.ReplyTo), index%5 == 0,
+				comment.CreatedAt, textOrNull(pointers.AskID), textOrNull(pointers.RepliesToBlock), editedAt}
 			if hasAnswers {
-				arguments = append(arguments, answers)
+				arguments = append(arguments, textOrNull(pointers.Answers))
 			}
-			arguments = append(arguments, graphstore.KindComment, comment.ID)
+			arguments = append(arguments, graphstore.KindComment, comment.ID, pointersStored[index-from])
 			if _, err := tx.Exec(ctx, insert, arguments...); err != nil {
 				return fmt.Errorf("comment %s: %w", comment.ID, err)
 			}
@@ -392,9 +378,12 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // commentStoreWrite is what the comments from..to are in the node and tuple store: each
 // comment's node - project-visible, live, made by the seed's author at the row's own time - and
 // the artifact the comment is anchored to and the artifact that owns it, each stated only where
-// the comment has one (graphstore.CommentFacts), and who wrote the comment. The node write states
-// the two base attributes every node carries (graphstore.Write). All of it is drawn from the plan
-// alone, so the batch can state it before it writes a row.
+// the comment has one (graphstore.CommentFacts), what the comment answers
+// (graphstore.CommentPointerFacts, over the pointers its row holds, commentPointers), and who
+// wrote the comment. The node write states the two base attributes every node carries
+// (graphstore.Write). All of it is drawn from the plan alone, so the batch can state it before it
+// writes a row. pointersStored says, for each comment from from on, whether its pointers are
+// stated, which is what its row's tuples_stored holds.
 //
 // Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
 // graphstore.Authored writes for a comment of the server's: the comment's authored_by tuple and
@@ -405,9 +394,10 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // the first batch makes the author's node, at the time of the first comment the seed writes, as
 // Authored makes it at the first comment that names it. writeComments refused an author that
 // names nobody before its first batch, so every comment here names one.
-func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphstore.Tuple) {
-	nodes := make([]graphstore.Node, 0, to-from+1)
-	tuples := make([]graphstore.Tuple, 0, 3*(to-from))
+func (r *seedRun) commentStoreWrite(from, to int, hasAnswers bool) (nodes []graphstore.Node, tuples []graphstore.Tuple, pointersStored []bool) {
+	nodes = make([]graphstore.Node, 0, to-from+1)
+	tuples = make([]graphstore.Tuple, 0, 7*(to-from))
+	pointersStored = make([]bool, 0, to-from)
 	var authors []graphstore.Node
 	for index := from; index < to; index++ {
 		comment := r.plan.comments[index]
@@ -424,6 +414,10 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent, anchor, owner,
 			r.itemProject(comment.Issue, comment.Document), nil)
 		nodes = append(nodes, node)
+		var stored bool
+		tuples, stored = graphstore.CommentPointerFacts(tuples, comment.ID, r.commentPointers(comment, hasAnswers),
+			seedAuthor, comment.CreatedAt, graphstore.NoEvent)
+		pointersStored = append(pointersStored, stored)
 		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
 		if index == from {
 			authors = made
@@ -431,7 +425,45 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 		tuples = append(tuples, facts...)
 	}
 	nodes = append(nodes, authors...)
-	return nodes, tuples
+	return nodes, tuples, pointersStored
+}
+
+// commentPointers is what comment's row holds of what it answers, as writeComments writes it: the
+// comment it replies to, the ask its thread hangs under, the block it names - the first block of
+// the comment it replies to by block, or the question of its ask - and the comment it answers,
+// which is the one whose block it names where it names one and else the one it replies to, as the
+// create route keeps the comment a reply names (api's threadHeadOf). On a schema whose comments
+// carry no answers column (hasAnswers) the row holds none, so neither does this.
+func (r *seedRun) commentPointers(comment commentPlan, hasAnswers bool) graphstore.CommentPointers {
+	var pointers graphstore.CommentPointers
+	if comment.ReplyTo >= 0 {
+		pointers.ReplyTo = r.plan.comments[comment.ReplyTo].ID
+	}
+	if comment.Ask >= 0 {
+		pointers.AskID = r.plan.asks[comment.Ask].ID
+	}
+	if comment.RepliesTo >= 0 {
+		pointers.RepliesToBlock = "comment/" + r.plan.comments[comment.RepliesTo].ID + "#b1"
+	}
+	if comment.AskPart {
+		pointers.RepliesToBlock = "ask/" + r.plan.asks[comment.Ask].ID + "#" + askQuestionBlock
+	}
+	if hasAnswers {
+		pointers.Answers = pointers.ReplyTo
+		if comment.RepliesTo >= 0 {
+			pointers.Answers = r.plan.comments[comment.RepliesTo].ID
+		}
+	}
+	return pointers
+}
+
+// textOrNull is value as a nullable column takes it: null for "", which is how CommentPointers
+// spells a column the row holds null in.
+func textOrNull(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // writeMessages writes the issue threads and indexes each message's blocks. Every fiftieth
