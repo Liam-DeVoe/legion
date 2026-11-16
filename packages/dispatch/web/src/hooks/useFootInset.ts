@@ -90,10 +90,12 @@ export function useFootInset(
         control.reach = fixed ? Math.max(0, window.innerHeight - box.top) : 0;
         // A sticky element reaches up from the foot only while it is held there: one the page has
         // scrolled away from the bottom edge sits in the page, under nothing of the shell's.
+        // The box is read before the style, so a fixed element's style is read once.
         const stuck =
+          !fixed &&
           box.height > 0 &&
-          getComputedStyle(element).position === "sticky" &&
-          Math.abs(window.innerHeight - box.bottom) <= 1;
+          Math.abs(window.innerHeight - box.bottom) <= 1 &&
+          getComputedStyle(element).position === "sticky";
         if (stuck) control.reach = Math.max(0, window.innerHeight - box.top);
         publish(property);
       },

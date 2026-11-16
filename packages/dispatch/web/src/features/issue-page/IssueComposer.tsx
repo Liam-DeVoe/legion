@@ -2,7 +2,6 @@ import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Fragment,
-  type KeyboardEvent,
   type ReactNode,
   useEffect,
   useLayoutEffect,
@@ -23,7 +22,12 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { pageComposer, pageComposerControl, pageRowAct } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { useHeldSend } from "../conversation/held-sends";
-import { MentionComposer, type OutlineKind } from "../conversation/MentionComposer";
+import {
+  MentionComposer,
+  type OutlineKind,
+  OutlineTargetLine,
+  sendOnEnter,
+} from "../conversation/MentionComposer";
 import { MentionField } from "../conversation/MentionField";
 import { saveCommentEdit } from "../conversation/send-request";
 import { answerAskInput } from "../inbox/answer-ask";
@@ -322,7 +326,7 @@ function WriteLine({
   // A reply and a statement's comment are comments under the row they are aimed at, so the kinds
   // are drawn only while the line writes on the issue. A closed issue takes a comment and no
   // question, so the line writes a comment there whatever chip was pressed while it was open,
-  // rather than holding a question the issue refuses (IC:153).
+  // rather than holding a question the issue refuses.
   const writesKinds = aimedAt === undefined && !isClosed;
   return (
     <MentionComposer
@@ -385,19 +389,26 @@ function WriteLine({
 
 /** A reply's target line (R3): "Replying to:", the entry's author, and the entry's first line,
  *  read from the entry's own record in the reads the outline is drawn from, so its tree costs no
- *  request of its own. */
+ *  request of its own: only the read of the entry's kind is observed, and the outline keeps it
+ *  fresh, so the line asks for it again on no mount. */
 function ReplyTargetLine({ issueKey, reply }: { issueKey: string; reply: ReplyTarget }): ReactNode {
   const asks = useQuery({
+    enabled: reply.parentKind === "ask",
     queryFn: () => api.listIssueAsks(issueKey, "all"),
     queryKey: ["asks", issueKey],
+    refetchOnMount: false,
   });
   const comments = useQuery({
+    enabled: reply.parentKind === "comment",
     queryFn: () => api.listComments(issueKey),
     queryKey: ["comments", issueKey],
+    refetchOnMount: false,
   });
   const messages = useQuery({
+    enabled: reply.parentKind === "message",
     queryFn: () => api.listIssueMessages(issueKey),
     queryKey: ["issue-messages", issueKey],
+    refetchOnMount: false,
   });
   const tree =
     reply.parentKind === "ask"
@@ -521,7 +532,7 @@ function AnswerLine({
  * are the pointer's - Decline to answer, and Send answer. A pick or words alone answer it. On a
  * phone the field has the line's whole width and the options and controls stand under it.
  * Escape, from any control of the line, Decline among them, and the target line's control take
- * the reader back to the question's row (IC:160, IC:239).
+ * the reader back to the question's row.
  *
  * The write is the Inbox's (`useOutstandingAnswerWrite`), so the question's row leaves the Inbox
  * as the answer goes and comes back if Dispatch refuses it, and what the reader typed is the
@@ -529,13 +540,13 @@ function AnswerLine({
  * that says the question moved under the line reads the question again, so the line and the
  * outline draw it as it stands; one that says the answer changed takes the current answer's time
  * and words, so the next send is measured against it, and one that says the reader may not change
- * it ends the change, saying why (IC:219). A question answered or closed elsewhere while the line
- * held it is not answered here: the line goes back to writing on the issue (IC:232).
+ * it ends the change, saying why. A question answered or closed elsewhere while the line held it
+ * is not answered here: the line goes back to writing on the issue.
  *
  * Decline's dialog is drawn into `document.body` (`DeclineControl`'s look), so it is no part of
  * this form, but React still hands its keys to this form's handler, which leaves every key
- * inside it to the dialog (IC:355). Decline stays inside the form's fieldset, which holds every
- * control of the line while an answer is out.
+ * inside it to the dialog. Decline stays inside the form's fieldset, which holds every control of
+ * the line while an answer is out.
  */
 function AnswerForm({
   ask,
@@ -630,14 +641,6 @@ function AnswerForm({
     if (refusal !== null || pending) return;
     mutation.mutate(answerInput(ask, selected, text, replacing));
   };
-  // Enter sends and Shift+Enter breaks the line, as on the box's other lines. Enter while an input
-  // method composes is the method's, and one the open picker left is the field's own newline.
-  const enterSends = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
-    if (pickerOpen) return;
-    event.preventDefault();
-    send();
-  };
   const failure = mutation.error === null ? null : answerFailure(mutation.error);
   const source = textSourceOf("ask", ask.id, issueKey);
   return (
@@ -663,35 +666,26 @@ function AnswerForm({
     >
       {question.reads}
       <fieldset className="flex min-w-0 flex-col gap-[3px] border-0 p-0" disabled={pending}>
-        <div
-          className={`${pageComposer.target} ${pageComposer.targetAnswering}`}
-          data-composer-target=""
+        <OutlineTargetLine
+          clearLabel={CONTROL_LABELS.write_on_issue}
+          onClear={back}
+          tone={pageComposer.targetAnswering}
         >
-          <span className="min-w-0 truncate">
-            <span {...pageChrome}>{CONTROL_LABELS.answering}</span>{" "}
-            <b className="font-semibold text-page-ink">
-              <TargetWords markdown={ask.question} source={source} tree={ask.question_tree} />
-            </b>
-            {chosen.length === 0 ? null : (
-              <>
-                <span {...pageChrome}> · {CONTROL_LABELS.answer_chose}</span>{" "}
-                {chosen.map((option, index) => (
-                  <Fragment key={option.label}>
-                    {index === 0 ? null : ", "}“<OptionWords option={option} source={source} />”
-                  </Fragment>
-                ))}
-              </>
-            )}
-          </span>
-          <button
-            aria-label={CONTROL_LABELS.write_on_issue}
-            className={`${pageComposer.targetClear} ${pageComposerControl}`}
-            onClick={back}
-            type="button"
-          >
-            <span aria-hidden="true">×</span>
-          </button>
-        </div>
+          <span {...pageChrome}>{CONTROL_LABELS.answering}</span>{" "}
+          <b className="font-semibold text-page-ink">
+            <TargetWords markdown={ask.question} source={source} tree={ask.question_tree} />
+          </b>
+          {chosen.length === 0 ? null : (
+            <>
+              <span {...pageChrome}> · {CONTROL_LABELS.answer_chose}</span>{" "}
+              {chosen.map((option, index) => (
+                <Fragment key={option.label}>
+                  {index === 0 ? null : ", "}“<OptionWords option={option} source={source} />”
+                </Fragment>
+              ))}
+            </>
+          )}
+        </OutlineTargetLine>
         {/* The line wraps for what asks a row of its own: the open picker's list, and on a phone
             the options and the controls under the field, which has the line's whole width. */}
         <div className={`${pageComposer.line} flex-wrap`}>
@@ -703,7 +697,8 @@ function AnswerForm({
             labelHidden
             look={`${pageComposer.field} max-[761px]:basis-full`}
             onChange={(change) => setText(change.body)}
-            onKeyDown={enterSends}
+            // Enter sends and Shift+Enter breaks the line, as on the box's other lines.
+            onKeyDown={(event) => sendOnEnter(event, pickerOpen, send)}
             onPickerOpenChange={setPickerOpen}
             placeholder={
               place.phone

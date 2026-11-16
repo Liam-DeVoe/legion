@@ -45,9 +45,10 @@ import {
   seedStatements,
   seedUnreadIssue,
   sendFromComposer,
-  watchIssueStateWrites,
   wordsInField,
 } from "./issue-page-l";
+import { watchWrites } from "./keyed-writes";
+import { commentWithBody } from "./margin-helpers";
 import { expect, test } from "./test";
 
 /**
@@ -74,18 +75,6 @@ const LINE_AT_MOST = 150;
 
 /** The least width and height of each control of the box (R2, the tester's finding F13). */
 const CONTROL_LEAST = 24;
-
-/** The comment Dispatch holds whose body is `body`, once it holds one. */
-async function storedComment(key: string, body: string) {
-  await expect
-    .poll(async () => (await listComments(key)).some((one) => one.body === body), {
-      message: `Dispatch holds no comment "${body}"`,
-    })
-    .toBe(true);
-  const comment = (await listComments(key)).find((one) => one.body === body);
-  if (comment === undefined) throw new Error(`Dispatch holds no comment "${body}"`);
-  return comment;
-}
 
 /** The width and height of every control of the box that is drawn, named in a failure by its
  *  accessible name or its words. */
@@ -261,14 +250,14 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
     // A reply sent from a resolved ask's control is drawn under that ask (INFRA-3677).
     await replyFromRow(page, seeded.resolvedAsk, "A reply on the resolved question.");
     await drawnUnder(
-      (await storedComment(seeded.key, "A reply on the resolved question.")).id,
+      (await commentWithBody(seeded.key, undefined, "A reply on the resolved question.")).id,
       seeded.resolvedAsk,
       "the reply on the resolved ask is not drawn under it"
     );
     // A reply sent from a reply's control is drawn under that reply.
     await replyFromRow(page, seeded.first, "A reply to the first answer.");
     await drawnUnder(
-      (await storedComment(seeded.key, "A reply to the first answer.")).id,
+      (await commentWithBody(seeded.key, undefined, "A reply to the first answer.")).id,
       seeded.first,
       "the reply to a reply is not drawn under it"
     );
@@ -291,7 +280,8 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
     if (await instead.isVisible()) await instead.click();
     await sendFromComposer(page, "A comment on the issue from the composer.");
     await drawnUnder(
-      (await storedComment(seeded.key, "A comment on the issue from the composer.")).id,
+      (await commentWithBody(seeded.key, undefined, "A comment on the issue from the composer."))
+        .id,
       null,
       "the composer's comment is not drawn under the issue"
     );
@@ -336,14 +326,14 @@ test("a reply on a resolved ask is drawn under the ask", async ({ browser }) => 
       "resolved"
     );
     await replyFromRow(page, seeded.resolvedAsk, "Still worth a word after it was resolved.");
-    await expect
-      .poll(async () =>
-        (await listComments(seeded.key)).find(
-          (one) => one.body === "Still worth a word after it was resolved."
-        )
-      )
-      .toMatchObject({ ask_id: seeded.resolvedAsk });
-    const reply = await storedComment(seeded.key, "Still worth a word after it was resolved.");
+    const reply = await commentWithBody(
+      seeded.key,
+      undefined,
+      "Still worth a word after it was resolved."
+    );
+    expect(reply, "Dispatch did not store the reply with the question's ask_id").toMatchObject({
+      ask_id: seeded.resolvedAsk,
+    });
     // A resolved question is no path to anything open, so its branch arrives folded (R1).
     await unfoldEveryBranch(page);
     await openEveryDeeperBranch(page);
@@ -440,10 +430,9 @@ test("what the reader sends from the box is drawn, in view and focused, wherever
   });
 });
 
-// c-replies (4). The tester's F10 (and the reviewer's IssueComposer.tsx:160): a send made with
-// the keyboard alone - `a` on an open question, the words, Enter - leaves the focus on a row of
-// the outline, the question's own, and the next key goes on from there, not from the outline's
-// first row.
+// c-replies (4). The tester's F10: a send made with the keyboard alone - `a` on an open question,
+// the words, Enter - leaves the focus on a row of the outline, the question's own, and the next
+// key goes on from there, not from the outline's first row.
 // SLOW(>=2s): a seeded thread and three questions, and an answer written from the box and waited
 // on until the outline draws it in the question's row and gives the row the focus back.
 test("a send with the keyboard leaves the focus on the reader's row of the outline", async ({
@@ -549,9 +538,10 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
 // c-box (6). R1, R2 and R6, the tester's F9 and F13, and decision 72 of the parts: on an outline
 // that runs past the screen the box stays at the foot, as wide as the outline (10 px from each
 // side at 760 px and below), and the focused last row ends above it; at rest its line is 26 px
-// and each placeholder fits it whole; it grows to 150 px and then scrolls inside itself; Tab
-// reaches the line, each kind and Send; each control is at least 24 by 24 px; and Enter sends
-// a comment and a question, each one new row by the reader.
+// and each placeholder fits it whole; it grows to 150 px and then scrolls inside itself, and on a
+// phone a draft that wraps fits the field again once the focus leaves it; Tab reaches the line,
+// each kind and Send; each control is at least 24 by 24 px; and Enter sends a comment and a
+// question, each one new row by the reader.
 // SLOW(>=2s): an outline of forty-one rows loaded at four widths, each read from rest to two
 // sends, with the answer line and a reply opened at the two widths the check names.
 test("the box stays at the foot, grows as it is typed and writes both kinds @phone", async ({
@@ -690,6 +680,44 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
       ).toBeGreaterThan(grown.client);
       await field.fill("");
 
+      // On a phone the field has the line's whole width while the box holds the focus and shares
+      // the line with Send once the focus leaves, so a draft that wraps takes more lines after
+      // blur: under 150 px the field grows to them rather than scrolling inside itself (R6).
+      if (phone) {
+        await page.keyboard.type(
+          "A draft that wraps over three lines or more while the box holds the focus, and over " +
+            "more of them once the reader goes back to the outline and the field shares its " +
+            "line with Send."
+        );
+        const fitted = await field.evaluate((element) => ({
+          height: element.getBoundingClientRect().height,
+          width: element.clientWidth,
+        }));
+        await focusRow(page, last);
+        await expect
+          .poll(() => field.evaluate((element) => element.scrollHeight - element.clientHeight), {
+            message: `a draft fitted while the box held the focus scrolls inside the field after blur ${at}`,
+          })
+          .toBeLessThanOrEqual(1);
+        const blurred = await field.evaluate((element) => ({
+          height: element.getBoundingClientRect().height,
+          width: element.clientWidth,
+        }));
+        expect(
+          blurred.width,
+          `the field is no narrower once the box has lost the focus ${at}`
+        ).toBeLessThan(fitted.width);
+        expect(
+          blurred.height,
+          `the draft is ${fitted.height.toFixed(1)} px tall with the focus and ${blurred.height.toFixed(1)} px after blur ${at}, so it takes no more lines after blur`
+        ).toBeGreaterThan(fitted.height + 1);
+        expect(
+          blurred.height,
+          `the draft after blur is ${blurred.height.toFixed(1)} px tall ${at}, past what the field holds unscrolled`
+        ).toBeLessThan(LINE_AT_MOST);
+        await field.fill("");
+      }
+
       // Enter sends a comment, then a question: each one new row by the reader.
       const commentWords = `A comment from the box ${at}.`;
       await field.fill(commentWords);
@@ -776,7 +804,11 @@ async function seedReadMarks() {
 test("the end of the outline on screen for a second marks the issue read", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedReadMarks, async (page, seeded) => {
-    const writes = watchIssueStateWrites(page);
+    // The read mark's write of each issue the row reads (`IssueReadMark.tsx`).
+    const stateWrites = (key: string) => watchWrites(page, "PUT", `/api/v1/me/issues/${key}/state`);
+    const fortyWrites = stateWrites(seeded.forty.key);
+    const shortWrites = stateWrites(seeded.short);
+    const specWrites = stateWrites(seeded.spec);
     const newest = async (key: string) =>
       (await getIssueEvents(key, { limit: 1, order: "desc" }))[0]?.seq ?? 0;
     const mark = async (key: string) => (await getMyState())[key]?.last_read_seq ?? 0;
@@ -796,7 +828,7 @@ test("the end of the outline on screen for a second marks the issue read", async
       "the outline's end is on screen at load, so its absence proves nothing"
     ).toBe(false);
     await page.waitForTimeout(2_000);
-    expect(writes(key), "the end of the outline off screen wrote the read mark").toEqual([]);
+    expect(fortyWrites, "the end of the outline off screen wrote the read mark").toEqual([]);
     expect(await mark(key), "the end of the outline off screen marked the issue read").toBeLessThan(
       head
     );
@@ -808,7 +840,7 @@ test("the end of the outline on screen for a second marks the issue read", async
       `the outline's end is not under the box: ${JSON.stringify(under)}`
     ).toBe(true);
     await page.waitForTimeout(2_000);
-    expect(writes(key), "the end of the outline under the box wrote the read mark").toEqual([]);
+    expect(fortyWrites, "the end of the outline under the box wrote the read mark").toEqual([]);
     expect(
       await mark(key),
       "the end of the outline under the box marked the issue read"
@@ -823,9 +855,10 @@ test("the end of the outline on screen for a second marks the issue read", async
       .toBe(head);
     // Read once more after the write has settled, so a second write is counted too.
     await page.waitForTimeout(1_000);
-    expect(writes(key), "the end of the outline on screen did not write the mark once").toEqual([
-      expect.objectContaining({ last_read_seq: head }),
-    ]);
+    expect(
+      fortyWrites.map((write) => write.input),
+      "the end of the outline on screen did not write the mark once"
+    ).toEqual([expect.objectContaining({ last_read_seq: head })]);
 
     // An outline shorter than the screen: its end is on screen at load.
     const short = seeded.short;
@@ -845,7 +878,7 @@ test("the end of the outline on screen for a second marks the issue read", async
       await page.evaluate(() => window.scrollY),
       "the page scrolled to mark an outline shorter than the screen read"
     ).toBe(0);
-    expect(writes(short), "the short outline's end did not write the mark once").toHaveLength(1);
+    expect(shortWrites, "the short outline's end did not write the mark once").toHaveLength(1);
 
     // A view's end is not the conversation's: the Spec view, whole on screen, marks nothing.
     const spec = seeded.spec;
@@ -865,7 +898,7 @@ test("the end of the outline on screen for a second marks the issue read", async
       "the Spec view is not whole on screen"
     ).toBe(true);
     await page.waitForTimeout(2_000);
-    expect(writes(spec), "the Spec view wrote the read mark").toEqual([]);
+    expect(specWrites, "the Spec view wrote the read mark").toEqual([]);
     expect(await mark(spec), "the Spec view marked the issue read").toBe(before);
   });
 });
@@ -914,7 +947,7 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
       await page.keyboard.press("Enter");
 
       // Stored as a comment anchored to the statement's block, or a block inside its range.
-      const comment = await storedComment(seeded.key, one.words);
+      const comment = await commentWithBody(seeded.key, undefined, one.words);
       expect(
         comment.anchor?.artifact_id,
         `the comment on ${one.what} is not anchored in the spec`
@@ -944,7 +977,7 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
       await composerField(page).click();
       const next = `${one.words} Then one on the issue.`;
       await sendFromComposer(page, next);
-      const onIssue = await storedComment(seeded.key, next);
+      const onIssue = await commentWithBody(seeded.key, undefined, next);
       expect(
         onIssue.anchor,
         `the send after the comment on ${one.what} carries an anchor`

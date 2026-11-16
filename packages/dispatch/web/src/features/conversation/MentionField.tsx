@@ -37,6 +37,12 @@ import type { TextEditRange } from "./block-spans";
  *  line, as the prototype's `#ctext` does. */
 const LOOK_LINE_MAX = 150;
 
+/** Fits a box drawn in a host's look to what it holds, up to `LOOK_LINE_MAX`. */
+function fitLookLine(node: HTMLTextAreaElement): void {
+  node.style.height = "auto";
+  node.style.height = `${Math.min(LOOK_LINE_MAX, node.scrollHeight)}px`;
+}
+
 /** One edit of the field: the text now, and the edit the browser named, which a host following
  *  block spans maps its spans through (`followEdit`). */
 export interface MentionFieldChange {
@@ -287,9 +293,24 @@ export function MentionField({
   useLayoutEffect(() => {
     const node = element.current;
     if (look === undefined || node === null) return;
-    node.style.height = "auto";
-    node.style.height = `${Math.min(LOOK_LINE_MAX, node.scrollHeight)}px`;
+    fitLookLine(node);
   }, [body, look]);
+  // A fit holds for the width it was measured at: on a phone the issue page's line gives the box
+  // its whole width while it holds the focus and shares it with Send once the focus leaves, so a
+  // draft fitted while focused takes more lines after. The box is fitted again whenever its width
+  // changes; the fit's own change of height leaves the width as it is, so it does not loop.
+  useLayoutEffect(() => {
+    const node = element.current;
+    if (look === undefined || node === null || typeof ResizeObserver === "undefined") return;
+    let width = node.clientWidth;
+    const widths = new ResizeObserver(() => {
+      if (node.clientWidth === width) return;
+      width = node.clientWidth;
+      fitLookLine(node);
+    });
+    widths.observe(node);
+    return () => widths.disconnect();
+  }, [look]);
 
   return (
     <>

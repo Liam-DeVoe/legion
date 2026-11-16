@@ -48,7 +48,7 @@ export function IssueReadMark({ issueKey }: { issueKey: string }): ReactNode {
   useSendMarkOnce({
     mark: read === undefined ? undefined : { key: `${read.issueKey} ${read.seq}`, value: read },
     onSuccess: (next, mark) =>
-      queryClient.setQueryData<UserState>(["user-state"], (current) => ({
+      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
         ...current,
         [mark.issueKey]: next,
       })),

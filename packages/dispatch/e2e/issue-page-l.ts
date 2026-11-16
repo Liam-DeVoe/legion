@@ -142,20 +142,6 @@ export function placesHolding(page: Page, words: string): Promise<(string | null
   }, words);
 }
 
-/** Every `PUT /api/v1/me/issues/{key}/state` the page sends from now on, the read mark's write
- *  (`IssueReadMark.tsx`), as the bodies sent for the issue a row asks about. */
-export function watchIssueStateWrites(page: Page): (key: string) => readonly unknown[] {
-  const writes = new Map<string, unknown[]>();
-  page.on("request", (request) => {
-    if (request.method() !== "PUT") return;
-    const route = /^\/api\/v1\/me\/issues\/([^/]+)\/state$/.exec(new URL(request.url()).pathname);
-    if (route === null) return;
-    const key = decodeURIComponent(route[1] ?? "");
-    writes.set(key, [...(writes.get(key) ?? []), request.postDataJSON()]);
-  });
-  return (key) => writes.get(key) ?? [];
-}
-
 /** Where the outline's end stands against the box, in the viewport's pixels: the read mark's top
  *  as it is drawn, moved down by the box's height; the bottom of the row `lastRow` names; the top
  *  of the box's `section`; and the viewport's height. Null where the page draws one of them not. */
@@ -206,7 +192,7 @@ const PROJECT = "BOX";
 
 /** The second login every write of the read mark's seeds is made as, so each is unread for the
  *  reader the rows sign in as (alice). */
-export const WRITER = "bob";
+const WRITER = "bob";
 
 /** An agent asking the question `seedFortyComments` writes. */
 const ASKER = {

@@ -287,6 +287,56 @@ export interface OutlineLook {
   readonly target?: ReactNode;
 }
 
+/** Enter on a line of the issue page's box sends, as the prototype's does, and Shift+Enter
+ *  breaks the line: the composer's line in that look (`OutlineLook`) and the host's own answer
+ *  line alike. Enter while an input method composes is the method's. With the reference picker
+ *  open, an Enter that reaches here is one the picker left - it takes the keys it acts on on the
+ *  field's own listener (`MentionField`) - so it is the field's own newline, as in every box. */
+export function sendOnEnter(
+  event: KeyboardEvent<HTMLTextAreaElement>,
+  pickerOpen: boolean,
+  send: () => void
+): void {
+  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+  if (pickerOpen) return;
+  event.preventDefault();
+  send();
+}
+
+/** The line above a line of the issue page's box that names its target - the entry a reply
+ *  answers, the statement a comment is on, the comment an edit changes, the question an answer
+ *  answers - cut to the line's width, and the control that ends the target, which `clearLabel`
+ *  names: the composer's in that look (`OutlineLook.target`) and the host's own answer line's,
+ *  which draws it in its `tone`. */
+export function OutlineTargetLine({
+  children,
+  clearLabel,
+  onClear,
+  tone,
+}: {
+  readonly children: ReactNode;
+  readonly clearLabel: string;
+  readonly onClear: () => void;
+  readonly tone?: string;
+}): ReactNode {
+  return (
+    <div
+      className={tone === undefined ? pageComposer.target : `${pageComposer.target} ${tone}`}
+      data-composer-target=""
+    >
+      <span className="min-w-0 truncate">{children}</span>
+      <button
+        aria-label={clearLabel}
+        className={`${pageComposer.targetClear} ${pageComposerControl}`}
+        onClick={onClear}
+        type="button"
+      >
+        <span aria-hidden="true">×</span>
+      </button>
+    </div>
+  );
+}
+
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
   readonly anchor?: ComposerAnchor;
@@ -459,6 +509,8 @@ export function MentionComposer({
   // pick offers are the picker's own read (`useRefPicker`).
   const options = useMemo(() => mentionOptions(agents, text), [agents, text]);
   const compact = inline || edit !== undefined;
+  /** Drawn as the issue page's box at the foot of its outline (`OutlineLook`). */
+  const outlined = outline !== undefined;
   /** The whole draft, gone - the body, a suggestion's replacement and an ask's options - on a
    *  successful send and on Discard alike, in every host, leaving what a fresh
    *  mount shows: a host whose `onClose` only moves focus (`AgentsPage`'s rows) keeps the composer
@@ -473,10 +525,7 @@ export function MentionComposer({
   // The pills under the draft read it as a reader of the stored text will (`useDraftPills`),
   // with the record the write will have (`draftSource`). A compact box - an inline reply, an
   // edit - and the issue page's line show no pills and ask nothing for them.
-  const pills = useDraftPills(
-    compact || outline !== undefined ? "" : body,
-    draftSource(owner, replyTo, anchor)
-  );
+  const pills = useDraftPills(compact || outlined ? "" : body, draftSource(owner, replyTo, anchor));
   const editBody = edit?.body;
 
   // The seed belongs to the channel the host addresses. When it changes - an Agents row's issue
@@ -588,7 +637,7 @@ export function MentionComposer({
   const landed = ({ edit: sentEdit }: SentRequest) => {
     clearDraft();
     onSent();
-    if (!inline && sentEdit === undefined && outline === undefined) onClose();
+    if (!inline && sentEdit === undefined && !outlined) onClose();
   };
   const { refusal, sending } = outgoing;
   // The kind a closed issue refuses: a suggestion or an ask. Its composer only finishes a send of
@@ -597,7 +646,6 @@ export function MentionComposer({
   // Closed to this kind or finishing, with no send out and no refusal to show: nothing of this
   // composer is on screen.
   const dormant = (refusedKind || finishing) && !sending && refusal === undefined;
-  const outlined = outline !== undefined;
   /** The issue page's line aims at a reply or a statement, which its target line's control and
    *  Escape end (`onCancelReply`); with an edit or no target they leave the line (`onClose`). */
   const aimed = replyTo !== null || outline?.anchor !== undefined;
@@ -1010,107 +1058,96 @@ export function MentionComposer({
       )}
     </>
   );
-  /** Enter on the issue page's line sends, as the prototype's does, and Shift+Enter breaks the
-   *  line. Enter while an input method composes is the method's. With the reference picker open,
-   *  an Enter that reaches here is one the picker left - it takes the keys it acts on on the
-   *  field's own listener (`MentionField`) - so it is the field's own newline, as in every box. A
-   *  draft whose file is still uploading sends nothing. */
-  const outlineKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
-    if (pickerOpen) return;
-    event.preventDefault();
-    if (upload.pending === 0) event.currentTarget.form?.requestSubmit();
+  // What both looks hand their body field and their held fieldset alike: where a dropped or a
+  // pasted file goes, Send's words while it is busy, and the hold on every control of the draft
+  // while a send is out (`stopHeldComposerInput`).
+  const dropFile =
+    uploadOwner === undefined
+      ? undefined
+      : (event: DragEvent<HTMLTextAreaElement>) => upload.drop(event, uploadOwner);
+  const pasteFile =
+    uploadOwner === undefined
+      ? undefined
+      : (event: ClipboardEvent<HTMLTextAreaElement>) => upload.paste(event, uploadOwner);
+  const sendBusy = sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined;
+  const heldFieldset = {
+    disabled: sending,
+    onChangeCapture: stopHeldComposerInput,
+    onClickCapture: stopHeldComposerInput,
+    onInputCapture: stopHeldComposerInput,
+    onKeyDownCapture: stopHeldComposerInput,
   };
   // The issue page's line at the foot of its outline (`OutlineLook`): the entry its target names
   // and the control that ends the target above it, then the line itself - the field, the kinds it
   // writes and Send, in the order Tab reaches them - then whatever answers the reader's act. A
   // question it writes takes the ask's defaults - no options, the middle urgency - as the
   // prototype's Question chip does.
-  const outlineControls =
-    outline === undefined ? null : (
-      <fieldset
-        className="flex min-w-0 flex-col gap-[3px] border-0 p-0"
-        disabled={sending}
-        onChangeCapture={stopHeldComposerInput}
-        onClickCapture={stopHeldComposerInput}
-        onInputCapture={stopHeldComposerInput}
-        onKeyDownCapture={stopHeldComposerInput}
-      >
-        {outline.target === undefined ? null : (
-          <div className={pageComposer.target} data-composer-target="">
-            <span className="min-w-0 truncate">{outline.target}</span>
-            {/* The target is part of the message's address, fixed once the send is out, so the
-                held fieldset holds its control with every other draft control. */}
+  const outlineControls = outlined ? (
+    <fieldset className="flex min-w-0 flex-col gap-[3px] border-0 p-0" {...heldFieldset}>
+      {outline.target === undefined ? null : (
+        // The target is part of the message's address, fixed once the send is out, so the held
+        // fieldset holds its control with every other draft control.
+        <OutlineTargetLine clearLabel={outline.cancelReply} onClear={aimed ? cancelReply : onClose}>
+          {outline.target}
+        </OutlineTargetLine>
+      )}
+      {discardPrompt}
+      {/* The line wraps only for what asks a row of its own: the open picker's list, and on a
+          phone the kinds and Send under the field while it holds the caret. */}
+      <div className={`${pageComposer.line} flex-wrap`}>
+        <MentionField
+          body={body}
+          fieldRef={field}
+          issueKey={pickerIssue}
+          label={bodyLabel}
+          labelHidden
+          look={pageComposer.field}
+          onChange={onBodyChange}
+          onDrop={dropFile}
+          onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) =>
+            // A draft whose file is still uploading sends nothing.
+            sendOnEnter(event, pickerOpen, () => {
+              if (upload.pending === 0) event.currentTarget.form?.requestSubmit();
+            })
+          }
+          onPaste={pasteFile}
+          onPickerOpenChange={setPickerOpen}
+          placeholder={outline.placeholder}
+          project={pickerProject}
+          writing={dispatchWritingBox(box, writes)}
+        />
+        <div className={pageComposer.controls}>
+          {outline.kinds.map((choice) => (
             <button
-              aria-label={outline.cancelReply}
-              className={`${pageComposer.targetClear} ${pageComposerControl}`}
-              onClick={aimed ? cancelReply : onClose}
+              aria-pressed={kind === choice.kind}
+              className={`${pageComposer.chip} ${pageComposerControl} ${
+                kind === choice.kind
+                  ? pageComposer.chipOn[choice.kind]
+                  : pageComposer.chipOff[choice.kind]
+              }`}
+              data-composer-kind={choice.kind}
+              key={choice.kind}
+              onClick={() => onKindChange?.(choice.kind)}
               type="button"
             >
-              <span aria-hidden="true">×</span>
+              {choice.label}
             </button>
-          </div>
-        )}
-        {discardPrompt}
-        {/* The line wraps only for what asks a row of its own: the open picker's list, and on a
-            phone the kinds and Send under the field while it holds the caret. */}
-        <div className={`${pageComposer.line} flex-wrap`}>
-          <MentionField
-            body={body}
-            fieldRef={field}
-            issueKey={pickerIssue}
-            label={bodyLabel}
-            labelHidden
-            look={pageComposer.field}
-            onChange={onBodyChange}
-            onDrop={
-              uploadOwner === undefined
-                ? undefined
-                : (event: DragEvent<HTMLTextAreaElement>) => upload.drop(event, uploadOwner)
-            }
-            onKeyDown={outlineKeyDown}
-            onPaste={
-              uploadOwner === undefined
-                ? undefined
-                : (event: ClipboardEvent<HTMLTextAreaElement>) => upload.paste(event, uploadOwner)
-            }
-            onPickerOpenChange={setPickerOpen}
-            placeholder={outline.placeholder}
-            project={pickerProject}
-            writing={dispatchWritingBox(box, writes)}
-          />
-          <div className={pageComposer.controls}>
-            {outline.kinds.map((choice) => (
-              <button
-                aria-pressed={kind === choice.kind}
-                className={`${pageComposer.chip} ${pageComposerControl} ${
-                  kind === choice.kind
-                    ? pageComposer.chipOn[choice.kind]
-                    : pageComposer.chipOff[choice.kind]
-                }`}
-                data-composer-kind={choice.kind}
-                key={choice.kind}
-                onClick={() => onKindChange?.(choice.kind)}
-                type="button"
-              >
-                {choice.label}
-              </button>
-            ))}
-            <RefusableButton
-              busy={sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined}
-              look="page-send"
-              refusal={submitReason ?? null}
-              type="submit"
-            >
-              {outline.send}
-            </RefusableButton>
-          </div>
+          ))}
+          <RefusableButton
+            busy={sendBusy}
+            look="page-send"
+            refusal={submitReason ?? null}
+            type="submit"
+          >
+            {outline.send}
+          </RefusableButton>
         </div>
-        {deliveryNotices}
-        {sendState}
-      </fieldset>
-    );
-  const composerControls = (
+      </div>
+      {deliveryNotices}
+      {sendState}
+    </fieldset>
+  ) : null;
+  const composerControls = outlined ? null : (
     <fieldset
       className={
         compact
@@ -1119,11 +1156,7 @@ export function MentionComposer({
             ? "min-w-0 border-0 p-0"
             : "min-w-0 space-y-3 border-0 p-0"
       }
-      disabled={sending}
-      onChangeCapture={stopHeldComposerInput}
-      onClickCapture={stopHeldComposerInput}
-      onInputCapture={stopHeldComposerInput}
-      onKeyDownCapture={stopHeldComposerInput}
+      {...heldFieldset}
     >
       {/* The title repeats the submit button two rows below it, so the row exists only where it
           also carries Close - an anchored composer floating over a quote, where naming what is
@@ -1225,19 +1258,11 @@ export function MentionComposer({
         label={bodyLabel}
         labelHidden={compact}
         onChange={onBodyChange}
-        onDrop={
-          uploadOwner === undefined
-            ? undefined
-            : (event: DragEvent<HTMLTextAreaElement>) => upload.drop(event, uploadOwner)
-        }
+        onDrop={dropFile}
         onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) =>
           submitOnModifiedEnter(event, { disabled: upload.pending > 0 })
         }
-        onPaste={
-          uploadOwner === undefined
-            ? undefined
-            : (event: ClipboardEvent<HTMLTextAreaElement>) => upload.paste(event, uploadOwner)
-        }
+        onPaste={pasteFile}
         onPickerOpenChange={setPickerOpen}
         project={pickerProject}
         writing={dispatchWritingBox(box, writes)}
@@ -1347,7 +1372,7 @@ export function MentionComposer({
       )}
       {sendState}
       <RefusableButton
-        busy={sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined}
+        busy={sendBusy}
         refusal={submitReason ?? null}
         refusalShownBy={footId}
         type="submit"
@@ -1378,19 +1403,18 @@ export function MentionComposer({
         <StopTrying onStop={outgoing.stop} stopping={heldLate.stopping} />
       </div>
     );
+  // The form's own look on every surface but the issue page's: a compact box, the docked one at
+  // the screen's foot below `sm`, or the callout every other host draws.
+  const composerFormClass = compact
+    ? "space-y-2"
+    : docked
+      ? `${pickerOpen ? "z-20" : "z-[8]"} fixed inset-x-0 bottom-16 space-y-2 border-t px-4 py-2 sm:sticky sm:top-0 sm:z-20 sm:-mx-2 sm:border-b sm:px-2 ${borderDefault} ${surfaceBg}`
+      : `space-y-3 rounded-xl border p-3 ${calloutInfoBorder} ${calloutInfoBg}`;
   const form = (
     <form
       aria-label="Comment composer"
-      className={
-        outline !== undefined
-          ? pageComposer.box
-          : compact
-            ? "space-y-2"
-            : docked
-              ? `${pickerOpen ? "z-20" : "z-[8]"} fixed inset-x-0 bottom-16 space-y-2 border-t px-4 py-2 sm:sticky sm:top-0 sm:z-20 sm:-mx-2 sm:border-b sm:px-2 ${borderDefault} ${surfaceBg}`
-              : `space-y-3 rounded-xl border p-3 ${calloutInfoBorder} ${calloutInfoBg}`
-      }
-      data-issue-composer={outline === undefined ? undefined : ""}
+      className={outlined ? pageComposer.box : composerFormClass}
+      data-issue-composer={outlined ? "" : undefined}
       onSubmit={submit}
       ref={formRef}
     >

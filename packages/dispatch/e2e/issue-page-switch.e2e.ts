@@ -115,7 +115,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   await expect(row).toHaveCount(1);
   const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
   const body = atIssue ? ` ${EMPTY_STATE_LINES.conversation}` : "";
-  const partL = '[data-testid="issue-composer"], [data-outline-end]';
+  const footSlot = '[data-testid="issue-composer"], [data-outline-end]';
   await expect
     .poll(
       () =>
@@ -125,14 +125,14 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
             text = text.replace(part.innerText, " ");
           }
           return text.replace(/\s+/g, " ").trim();
-        }, partL),
+        }, footSlot),
       { message: "the new page draws text outside its header and its view row" }
     )
     .toBe(`${issue.key} ${issue.title}${body}`);
   const controls = "button, a, input, select, textarea";
   expect(
     (await newPage.locator(controls).count()) -
-      (await newPage.locator(`:is(${partL}) :is(${controls})`).count()),
+      (await newPage.locator(`:is(${footSlot}) :is(${controls})`).count()),
     "the new page draws a control outside its view row"
   ).toBe(await row.locator(controls).count());
 }
