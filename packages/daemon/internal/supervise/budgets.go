@@ -153,10 +153,14 @@ var FailureCauses = []FailureCause{
 // out, and what a launch the runtime refuses on the way fails under too (launchNow,
 // Claim.PendingCause). The retry of a relaunch the lifecycle check refused carries the same
 // cause, which is why it is handed over in a closure rather than as the method value.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) error {
+//
+// ending is why the process the claim still records is let go, in the daemon's words, which the
+// launch records with what that process ended (launch, letGo); noEnd where the caller let it go
+// already (registrationDeadline).
+func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, cause)
+			return m.relaunchAfterFailure(ctx, cause, ending)
 		}, err)
 	}
 	m.claim.PendingCause = cause
@@ -164,7 +168,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) 
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false)
+	return m.launchAfter(ctx, true, false, ending)
 }
 
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and
@@ -174,6 +178,11 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) 
 // behind it, and a root architect killed six times inside its turns was relaunched for ever
 // because each death found nothing pending. A death with no turn open and nothing pending is a
 // parked agent the environment killed, which is not counted however often it happens.
+//
+// The daemon's own delivery of a relaunch's record is no task (HoldsTask): it is the sentence of
+// what the last let-go ended, which a parked agent is given at every ready that finds it holding
+// nothing, so a parked agent killed again before it read it holds that and nothing else, and its
+// death is not counted either.
 //
 // The death ends the turn it interrupted (Claim.LastTurnEnd), which no other path does: a turn
 // records its end only when the agent ends it, so a turn whose agent died would otherwise stay
@@ -192,8 +201,9 @@ func (m *Machine) chargeDeath() bool {
 	return m.claim.Budgets.Deaths >= m.deps.Limits.LaunchFailures
 }
 
-// workOutstanding is whether the claim's agent was ready with work outstanding — a task, or a turn
-// of its that was open at the end (turnOpen) — which is the one state a death is charged in
+// workOutstanding is whether the claim's agent was ready with work outstanding — a task (HoldsTask:
+// the daemon's own delivery of a relaunch's record is none), or a turn of its that was open at the
+// end (turnOpen) — which is the one state a death is charged in
 // (chargeDeath): a process that ends before its agent is ready is a launch failure instead
 // (relaunchAfterFailure), and the death of an agent that holds no task and has no turn open is
 // the environment's, with no work for it to be about. An end from outside the pod that finds this
@@ -204,7 +214,7 @@ func (m *Machine) workOutstanding() bool {
 	if slices.Contains(unready, m.claim.State) {
 		return false
 	}
-	return m.claim.Pending != nil || m.turnOpen()
+	return HoldsTask(m.claim.Pending) || m.turnOpen()
 }
 
 // turnOpen is whether the agent began a turn it has not ended: the claim is working, which is the
@@ -221,6 +231,10 @@ func (m *Machine) turnOpen() bool {
 // failure reaches the limit again and retries the retirement. So does a relaunch the tree lifecycle
 // refuses, checked before the suspension so the process is kept (checkLaunch). A retirement while a
 // suspension is held is that suspension's stop instead, charged nothing (suspendHeld).
+//
+// The retirement's stop is where the process is let go, so that is where what it ended is
+// recorded, under the retirement's own cause (endRetired, letGo): the last retirement as well,
+// whose failure then finds no process left to record. The launch that follows lets nothing go.
 func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	failures := m.claim.Budgets.PromptFailures + 1
 	if failures < m.deps.Limits.PromptFailures {
@@ -240,7 +254,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	} else if err := m.checkLaunch(ctx); err != nil {
 		return fmt.Errorf("retire %s after %d prompt failures: %w", m.claim.Token, failures, err)
 	}
-	if err := retirement(ctx); err != nil {
+	if err := retirement(ctx, endRetired); err != nil {
 		return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
 	}
 	m.claim.Budgets.PromptRetires = retires
@@ -251,5 +265,5 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
 	}
 	m.claim.Budgets.PromptFailures = 0
-	return m.launch(ctx)
+	return m.launch(ctx, noEnd)
 }

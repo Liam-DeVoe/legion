@@ -21,6 +21,7 @@ import {
   renderSessionAnswerItem,
   renderSessionAnswers,
   renderSessionAnswersList,
+  SESSION_ANSWERS_DEADLINE_MS,
   SESSION_ANSWERS_MARKER,
   type SessionAnswersRead,
   sessionAnswersFailureLine,
@@ -712,6 +713,29 @@ describe("readSessionAnswers", () => {
     expect(read.text).toBeUndefined();
   });
 
+  // The notice is a line the host shows the session, so it names a Dispatch URL that carries a
+  // user and a password without them; the read itself goes to the URL as configured.
+  test("the no-route notice names the Dispatch URL without its user and password", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
+    const dispatch = {
+      ...dispatchAt(),
+      url: `http://${user}:${secret}@answers-userinfo-${dispatchCount}.test`,
+    };
+    const read = await readSessionAnswers({
+      session: newSession(),
+      dispatch,
+      env: envAt(stateDir()),
+      fetchImpl,
+      now: () => NOW,
+    });
+    expect(calls.map((call) => call.url.username)).toEqual([user]);
+    expect(read.notice).toBe(noRouteNotice(`http://answers-userinfo-${dispatchCount}.test`));
+    expect(read.notice).not.toContain(user);
+    expect(read.notice).not.toContain(secret);
+  });
+
   test("a cached list carried after Dispatch's no-route 404 never names `dispatch answers`, its left-out line included", async () => {
     // Twelve items of about 1,000 characters each: the cap leaves the oldest out.
     const items = Array.from({ length: 12 }, (_, index) =>
@@ -995,6 +1019,29 @@ describe("readSessionAnswers", () => {
     clock = NOW + 5 * 60_000 + 1;
     await readSessionAnswers({ ...options, session: newSession() });
     expect(calls).toHaveLength(2);
+  });
+
+  test("Dispatch's own no-route 404 is unavailable within the deadline, from one ask", async () => {
+    // On the request path the read's client asks once and lets that answer through: the read's
+    // own 5-minute back-off is its answer to a release rolling out, so no request waits out
+    // attempts of a route this Dispatch has not got. No fake clock and no fake sleep here.
+    const dispatch = dispatchAt();
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
+    const startedAt = Date.now();
+    const read = await readSessionAnswers({
+      session: newSession(),
+      dispatch,
+      env: envAt(stateDir()),
+      fetchImpl,
+    });
+    expect(read).toEqual({
+      text: undefined,
+      source: "unavailable",
+      reason: NO_ANSWERS_ROUTE_REASON,
+      notice: noRouteNotice(dispatch.url),
+    });
+    expect(Date.now() - startedAt).toBeLessThan(SESSION_ANSWERS_DEADLINE_MS);
+    expect(calls).toHaveLength(1);
   });
 
   test("the no-route notice comes once per session and Dispatch URL, and again after the route answered", async () => {

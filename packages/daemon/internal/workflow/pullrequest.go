@@ -261,7 +261,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		if !moved {
 			return intake.Result{}, nil
 		}
-		return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior)
+		return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
 	case phase.Implementing:
 		row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 		if err != nil || !row.Completed() {
@@ -284,16 +284,27 @@ type Pushes interface {
 	RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, before, after string) (bool, error)
 }
 
-// push applies a push of a branch. It records the push of an issue's branch first and on its
-// own (recordPush), and only then reads the pull request the push moves, from which everything
-// else here follows: with no pull request recorded on the branch the push is recorded and the
-// rest is nothing.
+// push applies a push of a branch. It records nothing for a push whose After is record.NoCommit:
+// that is GitHub's deletion of the branch, which names no code. intake's decodePush makes no fact
+// of a deletion, and this test holds for a Push from any other source too. Any other push of an
+// issue's branch is recorded first and on its own (recordPush), and only then is the pull request
+// the push moves read: with no pull request recorded on the branch the push is recorded and the
+// rest is nothing. That pull request's push is recorded (classify.ApplyPushDropping) and its review
+// round re-asked (reaskRound). It records nothing for a push to a pull request recorded merged,
+// since the merge has landed: a push after it is not code that merged, and once the merge named
+// its head that head is final (merged). The limit is a merge that names no head, which no source
+// sends in this release (intake's decodePullRequest and daemon's mergeQueueRead both name it): a
+// push made before such a merge but delivered after it is not recorded, so it does not take back
+// an approval of the head the record holds, although it may be the code that merged.
 func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.Result, error) {
+	if fact.After == record.NoCommit {
+		return intake.Result{}, nil
+	}
 	if err := e.recordPush(ctx, tx, fact); err != nil {
 		return intake.Result{}, err
 	}
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
-	if err != nil || pr == nil {
+	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
 		return intake.Result{}, err
 	}
 	prior := *pr
@@ -329,10 +340,7 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if issue.Phase != phase.Reviewing {
-		return intake.Result{}, nil
-	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior)
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
 }
 
 // recordPush records a push of `legion/<KEY>` on the repository KEY is recorded on in the record
@@ -371,16 +379,21 @@ func (e *Engine) recordPush(ctx context.Context, tx pgx.Tx, fact intake.Push) er
 	return nil
 }
 
-// reaskRound re-asks issue's review round (settleRound) after a push, or after the head it left
-// arrived, pr being the pull request as the fact left it and prior as the fact found it: the round
-// as prior had it is the before a round stuck the same way is deduped against (stuckAs), so a push
-// classified late at the head the round was already told stuck at tells nothing again.
-func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, prior record.PullRequest) error {
+// reaskRound re-asks issue's review round (settleRound) after a fact that changed the pull
+// request - a push, the head it left arriving, GitHub's merge state, the merge - with by the
+// fact's summary. pr is the pull request as the fact left it, and prior is the pull request as
+// the fact found it. The round as prior had it is the before a round stuck the same way is
+// deduped against (stuckAs), so a fact at the head the round was already told stuck at tells
+// nothing again. An issue outside reviewing has no round to re-ask, and nothing is read for it.
+func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, prior record.PullRequest, by string) error {
+	if issue.Phase != phase.Reviewing {
+		return nil
+	}
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return err
 	}
-	_, err = e.settleRound(ctx, tx, issue, reviewer, pr, e.reviewRound(issue, reviewer, &prior), byPush)
+	_, err = e.settleRound(ctx, tx, issue, reviewer, pr, e.reviewRound(issue, reviewer, &prior), by)
 	return err
 }
 
@@ -389,10 +402,33 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // ends that phase. A merge before merging is the architect's to act on, as the shipped daemon
 // routes it: it is told, and the merge closes the issue once it reaches merging (transition). A
 // redelivered merge changes nothing.
+//
+// It records the head the merge names, as a close does (closed). A synchronize or a push of that
+// head can be lost or wait behind a backlog, and after the merge nothing else moves the record's
+// head: the synchronize handler drops a merged record, and the daemon's reads follow only an open
+// pull request's head (daemon's followHead). It then drops the pushes the record holds, since the
+// head the merge names is final and no push from it is code on its way (classify.CodeOnItsWay). A
+// merge that names no head leaves the recorded head and its pushes.
+//
+// In reviewing, after the architect's notice, the merge settles the review round (settleRound):
+// an approval that stands on the head the pull request merged at ends the round and moves the
+// issue to accepting, since a merged pull request leaves the round nothing to wait on
+// (reviewRound). Without this, an approval that came before the merge would hold the issue in
+// reviewing: no read of the merged pull request ever comes (askMergeStateFor), and once the
+// reviewer has completed no other fact settles the round. An approval of a head other than the
+// one the merge names ends no round: once its reviewer has completed, the round is stuck on other
+// code (stuckApprovedOtherCode), and the architect is told once.
 func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMerged) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
 		return intake.Result{}, err
+	}
+	prior := *pr
+	if fact.HeadSHA != "" {
+		if fact.HeadSHA != pr.HeadSHA {
+			*pr = classify.AdvancePullRequestHead(*pr, classify.Arrival{}, fact.HeadSHA)
+		}
+		pr.Pushes = nil
 	}
 	pr.State, pr.MergeSHA = record.PullRequestMerged, fact.MergeSHA
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
@@ -405,8 +441,11 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if issue.Phase == phase.Merging {
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("pull request #%d merged while %s was in %s, not merging", pr.Number, issue.Key, issue.Phase)})
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("pull request #%d merged while %s was in %s, not merging", pr.Number, issue.Key, issue.Phase)}); err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMerge)
 }
 
 // waitingForTree is what a root's architect is told when the merge of its pull request finds the
