@@ -776,6 +776,15 @@ func TestAProductionJobFlipsTheWaitingPullRequestsItShips(t *testing.T) {
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 7, "")))
 	snapshot := conn.snapshot(t, "p")
+	// The hub acts on everything the setup wrote before the job finishes. The relay's feed
+	// reaches the generation after the snapshot, on its own goroutine (seedEvents), and taking it
+	// marks the view dirty (applyFeed). A recompute's population reads run side by side, each on
+	// its own snapshot (readDeliveryRows), so a recompute for that mark whose reads straddled the
+	// job's commit answered the pull requests and the run after it and the measures' deploys
+	// before it, and the delta read below was that torn answer rather than the job's own (the
+	// recompute the job's change then made sent the rest). Settled, the job's change is the one
+	// mark left, and every read of its recompute comes after the commit.
+	rig.settle(t)
 
 	// The production job finishes: every pull request the run's head holds ships.
 	done := now.Add(-3 * time.Hour)

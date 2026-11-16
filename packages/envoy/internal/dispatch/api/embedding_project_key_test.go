@@ -243,10 +243,16 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	}()
 
 	// Twenty of its retries pass while the lease is held elsewhere, and it labels nothing in
-	// any of them.
+	// any of them. The last move starts a twenty-first try, which is in flight when the loop
+	// ends; it has to find the lease held too, and arm its wait before the next try, before the
+	// holder dies. Released while that try was still on its way to the lease, the holder would
+	// hand the lease to it rather than to the next one, the fill would finish and return there,
+	// and no wait would ever be armed again for the move after the death to find: a loaded run
+	// waited on that move until the test binary's deadline and failed every row after it.
 	for range 20 {
 		anotherFillTry(t, fake)
 	}
+	afterTheLastSkip := fake.AwaitArmed(t, "the fill's wait after the last try the held lease turned away", 1)
 	if labelled := countRows(t, database, "select count(*) from embeddings where project_key is not null"); labelled != 0 {
 		t.Errorf("the fill labelled %d rows under a lease held elsewhere; want none", labelled)
 	}
@@ -275,7 +281,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	dying.Pool.Close()
 
 	// Its next try takes the lease the dead holder left.
-	anotherFillTry(t, fake)
+	fake.Set(afterTheLastSkip[0])
 	testwait.Receive(t, "the process that skipped to finish the fill once the holder died", returned)
 	if left := countRows(t, database,
 		"select count(*) from embeddings where kind = any($1) and project_key is null", embeddingProjectKinds); left != 0 {
