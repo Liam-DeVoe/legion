@@ -39,16 +39,18 @@ const (
 	// deliveryReasonConsumerError: the consumer could not be read, created or updated, or this
 	// listener has no session-consumer connection.
 	deliveryReasonConsumerError = "consumer_error"
-	// deliveryReasonNotRequested: the registration asked for no consumer and registered no serving
-	// port, so nothing would deliver to the session it describes.
+	// deliveryReasonNotRequested: the registration asked for no consumer, registered no serving
+	// port, and came from no client this listener gives a consumer unasked (readsUnaskedRelay), so
+	// nothing would deliver to the session it describes.
 	deliveryReasonNotRequested = "not_requested"
 )
 
 // consumerPluginPackage and consumerPluginMinimumVersion name the release of Oh My Pi's plugin
 // that first asked for the session's durable consumer, @sjawhar/pi-envoy 14.1.0
 // (packages/pi-envoy/CHANGELOG.md, 14.1.0, "Consumer delivery"); every release before it receives
-// from a plain NATS subscription this listener no longer feeds. noConsumerRemedy says what the
-// refusal below tells a client at or above that release and what it tells every other.
+// from a plain NATS subscription this listener no longer feeds. A registration of that release or
+// a later one is given a consumer whether or not it asks for one (readsUnaskedRelay), and
+// noConsumerRemedy tells every other client that asks for none what it must do.
 const (
 	consumerPluginPackage        = "@sjawhar/pi-envoy"
 	consumerPluginMinimumVersion = "14.1.0"
@@ -623,21 +625,43 @@ func clientNamed(body subscribeBody) string {
 	}
 }
 
-// noConsumerRemedy says what the client that asked for no consumer must do, for the refusal below.
-// A pi-envoy at or above consumerPluginMinimumVersion asks for a consumer whenever its relay
-// subject is open, and sends no delivery field while it holds none
-// (packages/pi-envoy/extensions/envoy.ts, the `asking === undefined` spread of its registration
-// body), so such a session needs no upgrade: what it lacks is that subject, and its next heartbeat
-// registers again once it has one. Every other client - an older pi-envoy, another plugin, or one
-// naming no version or no package at all - is told the build to replace, since an operator reading
-// this refusal in the session's own transcript has nothing else to go on.
+// noConsumerRemedy says what the client of a registration refused not_requested must do, for the
+// refusal below. That client is never @sjawhar/pi-envoy at or above consumerPluginMinimumVersion,
+// which is given a consumer whether or not it asks (readsUnaskedRelay). An older pi-envoy, or one
+// whose version this listener cannot date, is told the release to update to. Every other client is
+// told to send the field, since only a build of its own can. Both answers name the plugin and
+// version the registration carried, since an operator reading this refusal in the session's own
+// transcript has nothing else to go on.
 func noConsumerRemedy(body subscribeBody) string {
 	named := clientNamed(body)
-	if body.Plugin == consumerPluginPackage && versionAtLeast(body.PluginVersion, consumerPluginMinimumVersion) {
-		return named + " asks for a consumer only while its relay subject is open, so this session holds none; it registers again at its next heartbeat, with a consumer once that subject is open"
+	if body.Plugin == consumerPluginPackage {
+		return "update " + consumerPluginPackage + " to " + consumerPluginMinimumVersion +
+			" or later, which this listener gives a consumer even when its registration asks for none (this registration came from " + named + ")"
 	}
-	return "upgrade to " + consumerPluginPackage + " " + consumerPluginMinimumVersion +
-		" or later, or to a build of this client that sends the field (this registration came from " + named + ")"
+	return "update this client to a build that sends that field (this registration came from " + named +
+		"); an Oh My Pi session needs " + consumerPluginPackage + " " + consumerPluginMinimumVersion + " or later"
+}
+
+// readsUnaskedRelay reports whether this listener gives the registration's client a consumer when
+// the registration asks for none: @sjawhar/pi-envoy at or above consumerPluginMinimumVersion. Every
+// such build opens its relay subject whenever it opens its agent subject, and hands each frame that
+// arrives there to its consumer delivery, whether or not its registration asked for a consumer
+// (receive in packages/envoy-client/src/consumer-delivery.ts, from 14.1.0 on). The builds from
+// 16.3.1 to 17.7.0 ask only while that subject is open and no cursor of their replay engine is
+// marked from_start. A pass that cannot reach NATS sets that mark, and only an answer of
+// POST /v1/replay clears it, a route this listener no longer serves. Refused, such a session would
+// never register (dispatch://INFRA-3589, R21).
+//
+// Such a registration is given its consumer as if it had asked, with no epoch and no resume point.
+// A consumer created for it starts where one with no resume point starts
+// (bus.SessionConsumers.Ensure), which holds what is stored for the session and not yet acked. Its
+// entry records the empty epoch, so its later heartbeats change no epoch and restart no relay.
+// While its relay subject is closed the relay pauses, and the registration after that subject
+// opens resumes it at the ack floor (sessionRelays.relay). The plugin can take a message on its
+// agent subject twice, from the relay and from its core subscription, and its delivery dedupe
+// shows it once (deliver in packages/pi-envoy/extensions/envoy.ts).
+func readsUnaskedRelay(body subscribeBody) bool {
+	return body.Plugin == consumerPluginPackage && versionAtLeast(body.PluginVersion, consumerPluginMinimumVersion)
 }
 
 // versionAtLeast reports whether version is floor or newer, both as major.minor.patch. A version
@@ -678,7 +702,8 @@ func versionPart(version string, i int) (int, bool) {
 
 // consumerFor creates the session's consumer when the stream holds none and otherwise updates it
 // to the current filter, before the registration answers; it refuses a registration that asks for
-// none, or that this listener can give none. The consumer is created at the sequence after its
+// none, unless its client reads its relay subject unasked (readsUnaskedRelay), and one that this
+// listener can give none. The consumer is created at the sequence after its
 // resume point's seq when that point carries a seq, 0 included (which gives sequence 1), and names
 // the stream's current identity. The consumer call lowers that start to the floor the session's
 // resume record holds plus one when that is lower and the record names the same identity, and
@@ -701,11 +726,16 @@ func versionPart(version string, i int) (int, bool) {
 // refusal decided before the lock was taken returns noUnlock. A refusal decided after the call
 // was sent says the filter may be on the consumer (deliveryRefusal.filtered).
 func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
-	if body.Delivery == nil || !body.Delivery.Consumer {
-		// A registration with no delivery field asks for nothing this listener delivers, so it is
-		// told so rather than left registered and silent, with what to do about it
-		// (noConsumerRemedy, which says which client each answer is for), since the session's own
-		// transcript is where whoever runs it reads why its Envoy went quiet.
+	var delivery subscribeDelivery
+	if body.Delivery != nil {
+		delivery = *body.Delivery
+	}
+	if !delivery.Consumer && !readsUnaskedRelay(body) {
+		// A registration that asks for no consumer, from a client that reads no relay frame it did
+		// not ask for, asks for nothing this listener delivers. It is told so rather than left
+		// registered and silent, with what to do about it (noConsumerRemedy, which says which
+		// client each answer is for), since the session's own transcript is where whoever runs it
+		// reads why its Envoy went quiet.
 		return sessionDeliveryOutcome{}, &deliveryRefusal{
 			status: http.StatusConflict,
 			Error: fmt.Sprintf("%s asked for no session consumer: a session receives only what its own consumer holds, so register with delivery.consumer true; %s",
@@ -738,8 +768,8 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 		return sessionDeliveryOutcome{}, m.refused(body.SessionID, err), noUnlock
 	}
 	var startSeq uint64
-	epoch := body.Delivery.Epoch
-	if resume := body.Delivery.Resume; resume != nil && resume.Seq != nil && resume.StreamID == streamID {
+	epoch := delivery.Epoch
+	if resume := delivery.Resume; resume != nil && resume.Seq != nil && resume.StreamID == streamID {
 		startSeq = *resume.Seq + 1
 	}
 	unlock := m.locks.lock(body.SessionID)

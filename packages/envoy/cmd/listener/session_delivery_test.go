@@ -735,13 +735,16 @@ func TestVersionAtLeastComparesEachPartAsANumber(t *testing.T) {
 }
 
 // A session that receives nothing reads why in its own transcript, from this refusal, so the
-// refusal has to say what that session's own client must do. A build older than consumer delivery,
-// another client, or one that names its build vaguely is told the release to upgrade to and what
-// it registered as; a pi-envoy at or above that release is told the truth about itself instead,
-// since it asks for a consumer whenever its relay subject is open and that subject was not open -
-// telling it to upgrade to a release it already runs would name the wrong cause.
+// refusal has to say what that session's own client must do. A pi-envoy older than consumer
+// delivery, or one whose build this listener cannot date, is told the release to update to; any
+// other client is told to send the field. Each answer names what the client registered as. A
+// pi-envoy at or above that release is never refused for want of the field: it is given a consumer
+// as if it had asked (TestANewOldPluginSessionRegistersAfterAFailedFirstPass).
 func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
-	const upgrade = "upgrade to @sjawhar/pi-envoy 14.1.0 or later"
+	const (
+		update = "update @sjawhar/pi-envoy to 14.1.0 or later"
+		field  = "update this client to a build that sends that field"
+	)
 	for _, c := range []struct {
 		name      string
 		sessionID string
@@ -753,63 +756,46 @@ func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
 			name:      "a pi-envoy older than consumer delivery",
 			sessionID: "ses_old_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.0.0"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy 14.0.0"},
+			want:      []string{update, "@sjawhar/pi-envoy 14.0.0"},
+			unwanted:  field,
 		},
 		{
 			// 8 sorts above 14 as text, so a comparison made part by part as strings would call
-			// this release current and tell a session on a two-year-old plugin that its relay
-			// subject is closed. The tag pi-envoy-v8.14.1 exists.
+			// this release current and give a session on a two-year-old plugin a consumer it
+			// reads no frame of. The tag pi-envoy-v8.14.1 exists.
 			name:      "a released pi-envoy whose major sorts above the floor as text",
 			sessionID: "ses_text_sorted_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"8.14.1"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy 8.14.1"},
-		},
-		{
-			// A prerelease of the floor carries the floor's behaviour, so its suffix is left out
-			// of the comparison rather than making the build undatable.
-			name:      "a prerelease of the release that asks for one",
-			sessionID: "ses_prerelease_plugin",
-			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.1.0-rc.1"`,
-			want:      []string{"@sjawhar/pi-envoy 14.1.0-rc.1 asks for a consumer only while its relay subject is open"},
-			unwanted:  upgrade,
-		},
-		{
-			name:      "a pi-envoy at the release that asks for one",
-			sessionID: "ses_floor_plugin",
-			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.1.0"`,
-			want:      []string{"@sjawhar/pi-envoy 14.1.0 asks for a consumer only while its relay subject is open"},
-			unwanted:  upgrade,
-		},
-		{
-			name:      "a pi-envoy newer than it",
-			sessionID: "ses_current_plugin",
-			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"16.5.0"`,
-			want:      []string{"@sjawhar/pi-envoy 16.5.0 asks for a consumer only while its relay subject is open", "next heartbeat"},
-			unwanted:  upgrade,
+			want:      []string{update, "@sjawhar/pi-envoy 8.14.1"},
+			unwanted:  field,
 		},
 		{
 			name:      "a pi-envoy whose build is no version at all",
 			sessionID: "ses_unparsed_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"source"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy source"},
-		},
-		{
-			name:      "another plugin at a bundle commit",
-			sessionID: "ses_other_plugin",
-			client:    `"plugin":"@sjawhar/claude-envoy","plugin_version":"68de3e90c155"`,
-			want:      []string{upgrade, "@sjawhar/claude-envoy 68de3e90c155"},
+			want:      []string{update, "@sjawhar/pi-envoy source"},
+			unwanted:  field,
 		},
 		{
 			name:      "a client naming a package and no version",
 			sessionID: "ses_no_version",
 			client:    `"plugin":"@sjawhar/pi-envoy"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy, which names no version"},
+			want:      []string{update, "@sjawhar/pi-envoy, which names no version"},
+			unwanted:  field,
+		},
+		{
+			name:      "another plugin at a bundle commit",
+			sessionID: "ses_other_plugin",
+			client:    `"plugin":"@sjawhar/claude-envoy","plugin_version":"68de3e90c155"`,
+			want:      []string{field, "@sjawhar/claude-envoy 68de3e90c155", "an Oh My Pi session needs @sjawhar/pi-envoy 14.1.0 or later"},
+			unwanted:  update,
 		},
 		{
 			name:      "a client naming a version and no package",
 			sessionID: "ses_no_package",
 			client:    `"plugin_version":"16.5.0"`,
-			want:      []string{upgrade, "a client naming version 16.5.0 and no package"},
+			want:      []string{field, "a client naming version 16.5.0 and no package"},
+			unwanted:  update,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -823,8 +809,8 @@ func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
 					t.Fatalf("refusal %q names no %q", refusal.Error, want)
 				}
 			}
-			if c.unwanted != "" && strings.Contains(refusal.Error, c.unwanted) {
-				t.Fatalf("refusal %q names %q, which this client already runs", refusal.Error, c.unwanted)
+			if strings.Contains(refusal.Error, c.unwanted) {
+				t.Fatalf("refusal %q names %q, which is another client's remedy", refusal.Error, c.unwanted)
 			}
 			rig.requireNothingWritten(t, c.sessionID)
 		})

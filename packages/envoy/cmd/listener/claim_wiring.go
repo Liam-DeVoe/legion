@@ -52,8 +52,9 @@ type subscribeBody struct {
 	// field, which keeps the old rule; absent here it is written empty, clearing any id a
 	// previous registration stored, since the entry is built fresh from this body.
 	ClientInstanceID string `json:"client_instance_id"`
-	// Delivery asks for consumer delivery (subscribeDelivery). A registration that carries none,
-	// an older plugin's, is refused (sessionDelivery.register).
+	// Delivery asks for consumer delivery (subscribeDelivery). A registration that asks for none is
+	// refused, unless its client reads its relay subject unasked (readsUnaskedRelay), when it is
+	// given its consumer as if it had asked (sessionDelivery.consumerFor).
 	Delivery *subscribeDelivery `json:"delivery"`
 }
 

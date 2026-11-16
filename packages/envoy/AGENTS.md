@@ -4686,6 +4686,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   the answer then carries `delivery`: `{"mode": "consumer", "subject": "notifications.envoy.deliver.<session id>", "stream_id": "<envoy_stream_id>", "gap": <bool>, "consumer_start": <stream sequence>}`, the one mode there is.
   `consumer_start` is the stream sequence the consumer starts at (`deliveryAnswer.ConsumerStart`, from `bus.SessionConsumers.Ensure`; left out when it is 0, as a listener of an earlier release leaves it out), and the plugin keeps it as the floor of its resume point, so a session that has received nothing still comes back at its consumer's start rather than at the stream's end (`packages/envoy-client/src/consumer-delivery.ts`).
   For a consumer the call created, `consumer_start` is never past the stream's last sequence + 1 as that create read the stream: it is the start the consumer was created at, after the create lowered it to the session's resume record or clamped a start past the stream's end to the stream's first sequence, where it did either ("Session consumers", "Settings").
+  A registration of `@sjawhar/pi-envoy` 14.1.0 or later that asks for no consumer is answered as if it had asked, with no `epoch` and no `resume` (`readsUnaskedRelay`, "Session consumers").
   A registration this listener can give no consumer is refused by name before anything is written, so it leaves no interest row and no session entry:
   `503 {"error":…,"reason":"no_grant"}`, `"consumer_limit"` or `"consumer_error"`, and `409 {"error":…,"reason":"not_requested"}` or `"invalid_session_id"` ("Session consumers", "No consumer").
 
@@ -4909,7 +4910,15 @@ dispatch://INFRA-840 narrows that grant to the session's own.
 
 The listener has acknowledged a stored message without delivering it to a self-subscribed session since sjawhar/legion#729 (2026-08-15), which is why a message published while such a session was away was lost before its consumer carried it.
 
-A session that registers with `delivery.consumer` set (pi-envoy and claude-envoy ask at every registration) gets a durable JetStream pull consumer of its own on `ENVOY_NOTIFICATIONS`, `s-<session id>` (`bus.SessionConsumerName`).
+A session that registers with `delivery.consumer` set gets a durable JetStream pull consumer of its own on `ENVOY_NOTIFICATIONS`, `s-<session id>` (`bus.SessionConsumerName`).
+claude-envoy and pi-envoy 17.8.0 or later ask at every registration.
+pi-envoy from 14.1.0 to 17.7.0 asks only while its relay subject is open, and from 16.3.1 on only while no cursor of its replay engine is marked `from_start`.
+A registration of `@sjawhar/pi-envoy` 14.1.0 or later that asks for none gets the same consumer, as if it had asked with no `epoch` and no `resume` (`readsUnaskedRelay`):
+every such build opens its relay subject whenever it opens its agent subject, and hands each frame there to its consumer delivery whether it asked or not.
+A first pass of such a build that cannot reach NATS marks its own agent subject `from_start`, and only an answer of `POST /v1/replay` clears that mark, a route this listener no longer serves, so a refusal would keep that session unregistered at every heartbeat (dispatch://INFRA-3589, R21).
+Its entry records the empty epoch, so its heartbeats restart no relay.
+While its relay subject is closed the relay pauses, and the registration after that subject opens resumes the relay at the ack floor ("Relay over NATS" below).
+The plugin can take a message on its agent subject twice, from the relay and from its core subscription, and its delivery dedupe shows it once.
 A session id that is empty or holds `.`, `*`, `>`, whitespace, `/` or `\` names no consumer, and its registration is refused `409 invalid_session_id`.
 The consumer lives from that registration until the session's registration ends, the listener's sweep finds the session gone, or the session reaper deletes its record, each of which deletes it ("Deleted" below);
 the server removes one none of them reached after its inactive threshold.
@@ -5154,11 +5163,12 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   The refusal names its reason: `503 no_grant` for a listener whose consumer call the server refused for want of a grant (`bus.ErrConsumerNotGranted`), which logs one WARN for the episode and is then answered without a server call for 10 minutes (`noGrantBackoff`);
   `503 consumer_limit` for a registration whose consumer the server refuses to create because the `ENVOY_NOTIFICATIONS` stream already holds as many consumers as its `max_consumers` allows (`bus.ErrConsumerLimitReached`, `consumerLimitRefusal`), so this listener can give that session no consumer and the session receives nothing until the cap is raised, which the refusal tells the operator to do;
   `503 consumer_error` for any other failed call and for a listener holding no session-consumer connection;
-  `409 not_requested` for a registration that asks for no consumer;
+  `409 not_requested` for a registration that asks for no consumer, unless it comes from `@sjawhar/pi-envoy` 14.1.0 or later, which is given one instead (`readsUnaskedRelay`);
   and `409 invalid_session_id` for an id that names no consumer.
-  A `not_requested` refusal says what its own client must do (`noConsumerRemedy`): a `@sjawhar/pi-envoy` at or above `consumerPluginMinimumVersion` (14.1.0) is told that it asks for a consumer only while its relay subject is open, that this session holds none, and that it registers again at its next heartbeat, with a consumer once that subject is open.
-  Every other client is told to upgrade to `@sjawhar/pi-envoy` 14.1.0 or later, or to a build of its own that sends the field, and the answer names the plugin and version the registration itself carried (`clientNamed`, which says as much when it carried only one of them, or neither).
-  A build whose version does not parse as `major.minor.patch` cannot be dated, so it gets that second answer (`versionAtLeast`); `@sjawhar/claude-envoy` reports its build as the marketplace commit it runs from or `source`, so a Claude Code session is always told to upgrade -- deliberate, since that answer names a build of the client's own that sends the field as well as the pi-envoy release.
+  A `not_requested` refusal says what its own client must do (`noConsumerRemedy`), and names the plugin and version the registration carried (`clientNamed`, which says as much when it carried only one of them, or neither).
+  A `@sjawhar/pi-envoy` below `consumerPluginMinimumVersion` (14.1.0), or one whose version does not parse as `major.minor.patch` (`versionAtLeast`), is told to update to 14.1.0 or later.
+  Every other client is told to update to a build of its own that sends the field, and that an Oh My Pi session needs `@sjawhar/pi-envoy` 14.1.0 or later.
+  `@sjawhar/claude-envoy` reports its build as the marketplace commit it runs from or `source`, so a Claude Code session that asks for no consumer is always told to update its own build.
 
 - **A consumer holds it:** the durable path acknowledges, unread, a stored message for a live session whose entry records consumer delivery and whose consumer covers it (`session.SessionEntry.ConsumerHoldsStored`):
   the message waits in the session's consumer.
