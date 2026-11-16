@@ -39,20 +39,23 @@ function fold(value: string | undefined): string {
  * colour has: the trigger is the page's header control (its rule and muted words on the
  * paper); the popover is the page's menu (the prototype's `#menu`: the hairline rule on the
  * paper), whose rows are its items, in the ink with the mark grey under the pointer and on the
- * active row; a detail and an empty list are quiet words, a refusal the failed red, and Clear
- * the page's pane with muted words. The search box keeps `main`'s focus rule, the one focus
- * indicator of the application (decision 58 of the same artifact).
+ * active row; an empty list is quiet words, a refusal the failed red, and Clear the page's pane
+ * with muted words. A detail is muted words too, not quiet ones: it is drawn on its row's mark
+ * grey under the pointer and on the active row, where the quiet grey reads 4.11:1 in the light
+ * scheme, under the 4.5:1 its words need (decision 99(c) of the same artifact). The search box
+ * keeps `main`'s focus rule, the one focus indicator of the application (decision 58 of the same
+ * artifact).
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
  * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
  * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
- * registers for the page.
+ * registers for the page, which `shared-controls.tooltips.test.tsx` holds.
  */
 const ON_PAGE = {
   checkbox: pageHairBorder,
   clear: `${pagePaneBg} ${pageMutedText}`,
-  detail: pageQuietText,
+  detail: pageMutedText,
   empty: pageQuietText,
   failure: `${pageLineBorder} ${pageFailedText}`,
   panel: `${pageHairBorder} ${pagePaperBg}`,

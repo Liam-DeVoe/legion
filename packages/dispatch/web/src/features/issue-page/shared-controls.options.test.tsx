@@ -391,6 +391,9 @@ test("an approval entry links its document at the version the request asks about
 // dispatch://INFRA-3935 R1: outside `NoTooltips` the options of the new issue page's surface draw
 // exactly what `main` draws. Each pair draws a control without the option and with it; inside
 // `NoTooltips` the same pair differs, so a pass outside is no pair that draws nothing either way.
+// The exception is `author` on a session: inside, every form of `AgentName` names a session as
+// an author is named (decision 107 of dispatch://INFRA-1196/artifact/part-decisions-md), so
+// `author` changes nothing there either, and the case names those pairs as the same inside.
 test("outside NoTooltips inRow, author, versions and exact change nothing", async () => {
   const waiting = waitingLiveness();
   const throughAgent: Actor = { act: { session: LIVE_SESSION }, id: "alice", kind: "user" };
@@ -402,9 +405,14 @@ test("outside NoTooltips inRow, author, versions and exact change nothing", asyn
       () => <ClaimChip claim={sessionClaim(LIVE_SESSION)} inRow />,
     ],
     [
-      "ClaimChip author",
+      "ClaimChip author, a session nothing names",
       () => <ClaimChip claim={sessionClaim(NAMELESS_SESSION)} />,
       () => <ClaimChip author claim={sessionClaim(NAMELESS_SESSION)} />,
+    ],
+    [
+      "ClaimChip author, an act made through an agent",
+      () => <ClaimChip claim={{ actor: throughAgent, at: CLAIMED_AT }} />,
+      () => <ClaimChip author claim={{ actor: throughAgent, at: CLAIMED_AT }} />,
     ],
     [
       "ClaimChip inRow and author, waiting to come free",
@@ -521,7 +529,11 @@ test("outside NoTooltips inRow, author, versions and exact change nothing", asyn
     }
   }
   expect(changedOutside).toEqual([]);
-  expect(sameInside).toEqual([]);
+  expect(sameInside).toEqual([
+    "ClaimChip author, a session nothing names",
+    "AgentName author, a session's actor",
+    "AgentName author, a session's id",
+  ]);
 });
 
 // dispatch://INFRA-3935 R3: the header variant of the assignee and the priority is the
@@ -1237,8 +1249,9 @@ test("author names a session by its title and never by its short id", async () =
     expect(named("actor, nameless")).toBe(CONTROL_LABELS.unnamed_author);
     expect(named("id, nameless")).toBe(CONTROL_LABELS.unnamed_author);
     expect(named("through an agent")).toBe(`alice, acting through ${AUTHOR_KIND_WORDS.agent}`);
-    // Without `author` the same session keeps `main`'s name, its short id.
-    expect(named("nameless, not an author")).toBe("session:01234567…");
+    // Without `author` the same session reads the same: inside, every form of `AgentName` names
+    // a session nothing names by the page's word (decision 107).
+    expect(named("nameless, not an author")).toBe(CONTROL_LABELS.unnamed_author);
 
     expect(authored("listed")).toBe("Implementer");
     expect(authored("stamped")).toBe("Old planner");

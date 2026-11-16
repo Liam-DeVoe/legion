@@ -14,7 +14,13 @@ import {
   pageQuietText,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectRailWrapper } from "./badge-select";
+import {
+  badgeSelectBadge,
+  badgeSelectOverlay,
+  badgeSelectPageBadge,
+  badgeSelectPageRailWrapper,
+  badgeSelectRailWrapper,
+} from "./badge-select";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The name the repository picker answers to, in its words on every page: the property it sets
@@ -133,11 +139,15 @@ export function RepoControl({
         {repo === null ? `, ${page.CONTROL_LABELS.repository_inherited}` : null}
       </>
     );
-  // Nothing resolved and no list to pick from: the failure is all there is to show.
+  // Nothing resolved and no list to pick from: the failure is all there is to show. Inside
+  // `NoTooltips` the repository is a value, so it keeps `max-w-full` and breaks anywhere, and
+  // neither its chip nor anything around it keeps its width: a 44-character name with no space
+  // ran 101 px past Details' row at 1440 px (dispatch://INFRA-3935 R4 and R6, decision 104 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md).
   const picker =
     resolvedRepo === null && mappings.isError ? null : (
       <span
-        className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}
+        className={`${page === null ? badgeSelectRailWrapper : badgeSelectPageRailWrapper} ${disabled ? "opacity-50" : ""}`}
         title={
           tooltips && repo === null && resolvedRepo !== null
             ? "Inherited or the project's default"
@@ -146,7 +156,7 @@ export function RepoControl({
       >
         <span
           aria-hidden="true"
-          className={`${badgeSelectBadge} font-mono ${badgeTone}`}
+          className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} font-mono ${badgeTone}`}
           {...(resolvedRepo === null ? page?.pageChrome : page?.authorText)}
         >
           {resolvedRepo ?? page?.CONTROL_LABELS.no_repository ?? "No repository"}
@@ -184,7 +194,7 @@ export function RepoControl({
     );
   return (
     <div
-      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${lineText}`}
+      className={`flex ${page === null ? "shrink-0" : "min-w-0 max-w-full flex-wrap"} items-center gap-2 text-sm ${lineText}`}
     >
       {inDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>

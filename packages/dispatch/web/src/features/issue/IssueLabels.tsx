@@ -164,9 +164,12 @@ export function IssueLabels({
   return (
     <>
       <div
+        // Inside `NoTooltips` the rail's labels wrap with or without a chip shape of the host's:
+        // a label is a value, and a line that keeps its width pushes a long one past its row
+        // (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md).
         className={
           variant === "rail"
-            ? chipClassName === undefined
+            ? chipClassName === undefined && page === null
               ? "relative flex shrink-0 flex-nowrap items-center gap-1"
               : "relative flex min-w-0 flex-wrap items-center gap-1"
             : "relative mt-2 flex flex-wrap items-center gap-2"

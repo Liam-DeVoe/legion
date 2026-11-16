@@ -17,6 +17,8 @@ import {
   badgeSelectBadge,
   badgeSelectHeaderWrapper,
   badgeSelectOverlay,
+  badgeSelectPageBadge,
+  badgeSelectPageWrapper,
   badgeSelectWrapper,
 } from "./badge-select";
 import { useIssueAssignee } from "./useIssueAssignee";
@@ -80,15 +82,19 @@ export function AssigneeControl({
         : pageLabelChip;
   const shown = assignee ?? page?.CONTROL_LABELS.unassigned ?? "Unassigned";
   const mark = assignee === null ? page?.pageChrome : page?.authorText;
+  // Inside `NoTooltips` the person is a value, so it keeps `max-w-full` and breaks anywhere, and
+  // its wrapper narrows to the line rather than keep its width (dispatch://INFRA-3935 R6,
+  // decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). The header variant is the
+  // new page's shape alone, so it wraps on every surface.
   return (
     <>
       <span
-        className={`${variant === "header" ? badgeSelectHeaderWrapper : badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}
+        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
       >
         {variant === "header" ? (
           <span
             aria-hidden="true"
-            className={`inline-flex min-w-0 items-center gap-1.5 text-sm leading-5 ${
+            className={`inline-flex min-w-0 max-w-full items-center gap-1.5 text-sm leading-5 [overflow-wrap:anywhere] ${
               assignee === null ? pageQuietText : pageInkText
             }`}
             {...mark}
@@ -101,10 +107,14 @@ export function AssigneeControl({
                 data-initial={assignee.charAt(0).toUpperCase()}
               />
             )}
-            <span className="min-w-0 truncate">{shown}</span>
+            <span className="min-w-0 [overflow-wrap:anywhere]">{shown}</span>
           </span>
         ) : (
-          <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeTone}`} {...mark}>
+          <span
+            aria-hidden="true"
+            className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+            {...mark}
+          >
             {shown}
           </span>
         )}
