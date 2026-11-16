@@ -136,6 +136,10 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
+	// browserPeers admits a browser peer to the document service's rooms (connectBrowserPeer),
+	// which dials with the X-Dispatch-User header its Identity reads: a test that writes as a
+	// person's own editor does. Without it the service holds no identity and admits no peer.
+	browserPeers bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -227,7 +231,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	var peers identity.Identity
+	if options.browserPeers {
+		peers = headerIdentity(database)
+	}
+	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle, Identity: peers})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)

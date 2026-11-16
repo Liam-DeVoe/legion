@@ -62,6 +62,9 @@ var storeWriteCallSites = []string{
 	"api/asks.go#createAskFor",
 	"api/reviews.go#renewApprovalAsk",
 	"docs/ask_blocks.go#causeFollows",
+	// The shaped ties of each ask block a settlement opened, when it writes no version: appended
+	// under the ask.opened that records the ask, through Caused, after the follow's node above.
+	"docs/ask_blocks.go#causeOpenedAskTies",
 	// The block index's cause: each site that appends what a version's index pass stated under
 	// the event that recorded the version, through Caused (refs' TestCausedTakesTheStoreLockOrder
 	// proves the step): an upload, a version write's event, an issue's spec, the block-index tick,
@@ -160,6 +163,11 @@ var storeWriteCallSites = []string{
 	// The block index: its nodes inside the revision fence, whose tuples and cause wait for the
 	// event that recorded the version (the sites of Caused above).
 	"refs/blocks.go#IndexBlocks",
+	// The typed-node pass (dispatch://INFRA-1150): the decision and reading nodes of a version and
+	// their authors' nodes, in the transaction that accepts it, under the document's owner row its
+	// caller holds, after the block index's own nodes where that runs and on its own above the
+	// deferral bound, its tuples and cause waiting for the same event (the sites of Caused above).
+	"refs/decision_nodes.go#IndexDecisionNodes",
 }
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,

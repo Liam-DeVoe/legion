@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -47,12 +48,20 @@ type projection struct {
 	// addressed says rows reads the roles addressedRoles names as $1, which the census reads once
 	// for the run (readAddressedRoles) rather than once in every statement that reads the rows.
 	addressed bool
+	// linked says rows and nodes read as $1 the tuple kinds a block's link is held under: the
+	// pointer attributes the installed block schema declares and `mentions` (blockLinkKinds).
+	linked bool
 	// pastBound counts the addresses this kind's row side names that are past the store's bound
 	// (graphstore.MaxAddressBytes), which the writers left unprojected on purpose: it is a full
-	// `select count(*)`, reads $1 where addressed, and is empty for a kind no address of which can
-	// pass the bound. The census reports the count as a class of its own and excludes those
-	// addresses from both comparisons, so a row no store entry answers by design is no difference.
+	// `select count(*)`, reads $1 where addressed or linked, and is empty for a kind no address
+	// of which can pass the bound. The census reports the count as a class of its own and
+	// excludes those addresses from both comparisons, so a row no store entry answers by design
+	// is no difference.
 	pastBound string
+	// owed is a predicate over node.id, a live node of the kind, that holds where the node's row
+	// is owed by a writer that has not run yet rather than missing: such a node is no node-side
+	// difference. Empty for a kind whose every node has its row from the write that stated it.
+	owed string
 }
 
 // KindReport is one kind's census: how many rows and how many live nodes it read, and what the
@@ -218,14 +227,37 @@ var projections = []projection{{
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'`,
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	// A document that still owes its block index (document_block_versions.version null) holds no
+	// row yet for a block its latest version added, while that version's typed-node pass already
+	// wrote the block's node: a decision or a reading written above the deferral bound
+	// (refs.IndexDecisionNodes), the one writer of a block node that writes no row beside it. The
+	// block-index reconciliation writes the row, so such a node is owed its row and no difference
+	// until then; a node of any other supertag in such a document is a difference still, since no
+	// writer leaves one without its row. A ref_key holds no '#', so a block node's document is the
+	// part of its id before the first one.
+	owed: `exists (
+		select 1 from graph_nodes typed
+		join artifacts a on a.ref_key = split_part(typed.id, '#', 1)
+		join document_block_versions owed on owed.artifact_id = a.id
+		where typed.kind = '` + refs.BlockNodeKind + `' and typed.id = node.id
+		  and typed.supertag in ('` + refs.DecisionSupertag + `', '` + refs.ReadingSupertag + `')
+		  and owed.version is null)`,
 }, {
 	name:     "block_ref",
 	nodeKind: refs.BlockNodeKind,
 	table:    "block_refs",
 	note: "a row is one link out of a block and its node is that block's, so several rows share one node:" +
-		" the node side is every live block node that states a link now beside its in_document and part_of," +
-		" whether a row names it or not, and the digest is every link the rows of that block name against" +
-		" every such link its node states now",
+		" the node side is every live block node that states a pointer or a mention now, whether a row" +
+		" names it or not, and the digest is every pointer and mention the rows of that block name against" +
+		" every such link its node states now; a row an ask's node holds, and a decision's from_ask and" +
+		" decided_by, are no part of this kind",
+	// The kinds are the pointer attributes the installed block schema declares and `mentions`
+	// (blockLinkKinds), bound as $1 rather than spelled, since the schema a census reads under is
+	// the store's and not only the one this binary embeds. A row marked with an ask's node is the
+	// ask's shaped, which hangs on that node and not on the block (refs.TypedFacts.pairs), and a
+	// decision's from_ask and decided_by are ties of their own: none of them is a link of the
+	// block this kind holds rows to.
+	linked: true,
 	rows: `
 		select 'block_ref ' || r.from_node || ' ' || r.kind || ' -> ' || r.to_kind || ' ' || r.to_id,
 		       r.node_kind, r.node_address, md5(r.from_node || '|' || named.links)
@@ -236,24 +268,27 @@ var projections = []projection{{
 			                  order by b.kind || '>' || b.to_kind || ':' || b.to_id) as links
 			from block_refs b
 			where octet_length(b.from_node) <= ` + addressBound + ` and octet_length(b.to_id) <= ` + addressBound + `
+			  and b.kind = any($1::text[]) and b.node_kind is distinct from '` + graphstore.KindAsk + `'
 			group by b.from_node
 		) named on named.from_node = r.from_node
-		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound,
+		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound + `
+		  and r.kind = any($1::text[]) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
 	// Every block node is read, and not only those a row names: a mention or a pointer the store
 	// states out of a block no block_refs row names is a link graph_edges answers, and a node
-	// side that began at the rows could never find it. A block whose only links are its
-	// placement states no link here and is no node of this kind; the block kind holds it.
+	// side that began at the rows could never find it. A block whose only links are of other
+	// kinds - its placement, its from_ask, its decided_by - states no link here and is no node
+	// of this kind; the block kind holds its placement.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind,
-		`t.kind not in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + ` as links
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any($1::text[])`) + ` as links
 			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'
 		) held
 		where held.links <> ''`,
 	pastBound: `
 		select count(*) from block_refs r
-		where octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound,
+		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
+		  and r.kind = any($1::text[]) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
 }, {
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
@@ -633,6 +668,9 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 			}
 			args = []any{addressed}
 		}
+		if held.linked {
+			args = []any{blockLinkKinds()}
+		}
 		kind, err := censusOfKind(ctx, tx, held, args)
 		if err != nil {
 			return nil, err
@@ -645,6 +683,13 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 		}
 	}
 	return kinds, nil
+}
+
+// blockLinkKinds is the tuple kinds a block's link is held under, which the block_ref kind holds
+// its rows and its nodes to: each pointer attribute the installed block schema declares
+// (pmdoc.LinkKinds) and `mentions`.
+func blockLinkKinds() []string {
+	return append(pmdoc.LinkKinds(), "mentions")
 }
 
 // censusOfKind reads one kind: how many rows and live nodes there are, and the differences in
@@ -721,14 +766,19 @@ func rowDifferences(held projection) string {
 }
 
 // nodeDifferences reads the store against the row side: every live node of the kind no row
-// projects.
+// projects, but a node whose row is owed by a writer that has not run yet (projection.owed).
 func nodeDifferences(held projection) string {
+	owed := ""
+	if held.owed != "" {
+		owed = `
+		  and not ` + held.owed
+	}
 	return `
 		select 'a live node no row projects', '` + held.nodeKind + ` ' || node.id
 		from (` + liveNodes(held) + `) node (id, digest)
 		where not exists (
 			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
-			where row.node_kind = '` + held.nodeKind + `' and row.node_address = node.id)
+			where row.node_kind = '` + held.nodeKind + `' and row.node_address = node.id)` + owed + `
 		order by 2`
 }
 

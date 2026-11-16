@@ -147,6 +147,21 @@ func AppendStoredChangeForTest(ctx context.Context, database *store.Store, artif
 	return nil
 }
 
+// StoredTreeForTest is artifactID's document tree as its stored history holds it now: the state a
+// room loads, which every update a settlement wrote into the live document is part of once it
+// commits. Tests in package api read a settlement's repairs of the live tree through it.
+func StoredTreeForTest(ctx context.Context, database *store.Store, artifactID string) (*pmdoc.Node, error) {
+	loaded, err := NewPgVersioned(database).Load(ctx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("load the stored document: %w", err)
+	}
+	doc := crdt.New()
+	if err := decodeStoredState(doc, loaded.Update); err != nil {
+		return nil, fmt.Errorf("decode the stored document: %w", err)
+	}
+	return pmdoc.Read(doc.GetXmlFragment(fragmentName))
+}
+
 // appendTextMark persists attrs, one mark, over the whole of the document's first text, so that
 // text carries the mark on every run.
 func appendTextMark(attrs crdt.Attributes) func(context.Context, *store.Store, string) error {

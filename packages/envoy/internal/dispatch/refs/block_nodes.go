@@ -62,10 +62,12 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 // cause yet - graphstore.Caused gives it the version's event. A node already there keeps its
 // made_at and made_by, so a block is made by the version that first indexed it, and a block an
 // earlier build indexed with no project takes its document's here (graphstore.Write fills a
-// project the row does not hold).
-func blockNode(address string, document indexedDocument, at time.Time, state string) graphstore.Node {
+// project the row does not hold). supertag is BlockSupertag for every block but a decision and a
+// reading, which take their type's (TypedFacts.supertag), so the typed-node pass and this
+// index write one node and neither moves what the other wrote.
+func blockNode(address string, document indexedDocument, at time.Time, state, supertag string) graphstore.Node {
 	return graphstore.Node{
-		Kind: BlockNodeKind, ID: address, Supertag: BlockSupertag,
+		Kind: BlockNodeKind, ID: address, Supertag: supertag,
 		Visibility: graphstore.VisibilityProject, State: state,
 		Project: document.project, Parties: document.parties,
 		MadeAt: at, MadeBy: document.writer, SourceEvent: graphstore.NoEvent,
@@ -74,16 +76,19 @@ func blockNode(address string, document indexedDocument, at time.Time, state str
 
 // indexedDocument is what the version's own row and its document's row say of the pass: the
 // document's ref_key, which every block's address starts with; the actor the version's row
-// records as its writer, which every node and tuple this pass writes carries; and the project the
+// records as its writer, which every node and tuple this pass writes carries; the project the
 // document belongs to, or for an agent conversation's file the session it is between, which every
-// block node the pass writes carries (graphstore.Node's Project and Parties). A conversation holds
-// no markdown document (api's agentOwnsFilesOnly), so no block has parties today; the read keeps
-// the one rule every document's node follows.
+// block node the pass writes carries (graphstore.Node's Project and Parties); and the issue that
+// holds the document, "" for one a project holds, which a decision's or an ask's tie to another
+// issue is read against (DecisionFacts). A conversation holds no markdown document (api's
+// agentOwnsFilesOnly), so no block has parties today; the read keeps the one rule every
+// document's node follows.
 type indexedDocument struct {
 	refKey  string
 	writer  model.Actor
 	project string
 	parties []string
+	issue   string
 }
 
 // indexedVersionRecord reads indexedDocument in one statement, under the owner row the pass's
@@ -92,14 +97,14 @@ type indexedDocument struct {
 // a credential that names nobody carries.
 func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, version int) (indexedDocument, error) {
 	var document indexedDocument
-	var project, session *string
+	var project, session, issue *string
 	var authors []byte
 	if err := tx.QueryRow(ctx, `
-		select a.ref_key, a.project_key, a.session_id, v.authors
+		select a.ref_key, a.project_key, a.session_id, a.issue_key, v.authors
 		from artifacts a
 		left join artifact_versions v on v.artifact_id = a.id and v.number = $2
 		where a.id = $1::uuid
-	`, artifactID, version).Scan(&document.refKey, &project, &session, &authors); err != nil {
+	`, artifactID, version).Scan(&document.refKey, &project, &session, &issue, &authors); err != nil {
 		return indexedDocument{}, fmt.Errorf("read version %d of %s for its block index: %w", version, artifactID, err)
 	}
 	if project != nil {
@@ -107,6 +112,9 @@ func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, ver
 	}
 	if session != nil {
 		document.parties = []string{graphstore.PartySession(*session)}
+	}
+	if issue != nil {
+		document.issue = *issue
 	}
 	writers, err := storedActors(authors)
 	if err != nil {
@@ -165,12 +173,22 @@ type blockFarEnd struct{ kind, id string }
 // insert keeps firing only for a block whose text changed: a block that only moved keeps its
 // changed_version and changed_at. The statement carries the node columns beside the parent, so
 // a row the insert did not touch learns the address of its node here.
+//
+// askParents is each reading of the version that stands in an answered ask, by its id, with that
+// ask's id (DecisionFacts): its part_of is the ask's node, since the decision a reading there
+// reads is the person's answer the node holds, while document_blocks.parent_block_id keeps the
+// id of the ask block holding it, which is that tuple's projection. only, where it is not nil,
+// is the blocks the pass states a parent for, the typed-node pass's own above the deferral bound
+// (IndexDecisionNodes); every block is placed in the version all the same, so the parent each of
+// them takes is the one a pass over the whole version gives it.
 func reconcileBlockParents(
 	ctx context.Context,
 	tx pgx.Tx,
 	artifactID, refKey string,
 	nodes []model.ArtifactBlock,
 	fits []bool,
+	askParents map[string]string,
+	only map[string]struct{},
 	at time.Time,
 	writer model.Actor,
 ) ([]graphstore.UncausedTuple, error) {
@@ -178,18 +196,35 @@ func reconcileBlockParents(
 		return nil, nil
 	}
 	placed, parents := placeBlocks(nodes, fits)
+	if only != nil {
+		kept := 0
+		for index, block := range placed {
+			if _, own := only[nodes[block].ID]; own {
+				placed[kept], parents[kept] = block, parents[index]
+				kept++
+			}
+		}
+		placed, parents = placed[:kept], parents[:kept]
+	}
 	if len(placed) == 0 {
 		return nil, nil
 	}
 	blockIDs := make([]string, len(placed))
 	parentIDs := make([]*string, len(placed))
+	var askIDs []*string
+	if len(askParents) > 0 {
+		askIDs = make([]*string, len(placed))
+	}
 	for index, block := range placed {
 		blockIDs[index] = nodes[block].ID
 		if parents[index] >= 0 {
 			parentIDs[index] = &nodes[parents[index]].ID
 		}
+		if ask, held := askParents[blockIDs[index]]; held && askIDs != nil {
+			askIDs[index] = &ask
+		}
 	}
-	differences, err := heldBlockParentDifferences(ctx, tx, refKey, blockIDs, parentIDs)
+	differences, err := heldBlockParentDifferences(ctx, tx, refKey, blockIDs, parentIDs, askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read the parents the blocks of %s hold: %w", artifactID, err)
 	}
@@ -203,7 +238,10 @@ func reconcileBlockParents(
 			continue
 		}
 		toKind, toID := "artifact", refKey
-		if parent := parentIDs[difference.block]; parent != nil {
+		switch parent := parentIDs[difference.block]; {
+		case askIDs != nil && askIDs[difference.block] != nil:
+			toKind, toID = graphstore.KindAsk, *askIDs[difference.block]
+		case parent != nil:
 			toKind, toID = BlockNodeKind, blockNodeAddress(refKey, *parent)
 		}
 		tuples = append(tuples, parentTuple(address, toKind, toID, at, writer, true))
@@ -293,7 +331,9 @@ type blockParentDifference struct {
 // blockIDs are the blocks that are nodes of the store, in document order, and parentIDs the
 // block each of them sits in, nil for a block the document itself holds. The statement builds
 // both addresses from refKey, as the insert of document_blocks does, so the caller hands over
-// one ref_key and not one address per block.
+// one ref_key and not one address per block. askIDs, nil or as long as blockIDs, names the ask
+// whose node a reading in an answered ask takes for its parent in place of the block holding it
+// (reconcileBlockParents' askParents), nil for every other block.
 //
 // The comparison is the statement's: a block answers a row only where the store asserts a far
 // end the render does not give, or asserts none the render does, so an edit that moved nothing
@@ -305,17 +345,19 @@ func heldBlockParentDifferences(
 	refKey string,
 	blockIDs []string,
 	parentIDs []*string,
+	askIDs []*string,
 ) ([]blockParentDifference, error) {
 	rows, err := tx.Query(ctx, `
 		select block.ordinality,
 		       array_agg(current.to_kind) filter (where not current.wanted),
 		       array_agg(current.to_id) filter (where not current.wanted),
 		       coalesce(bool_or(current.wanted), false)
-		from unnest($1::text[], $2::text[]) with ordinality as block (id, parent)
+		from unnest($1::text[], $2::text[], $8::text[]) with ordinality as block (id, parent, ask)
 		left join lateral (
 			select held.to_kind, held.to_id,
-			       held.to_kind = case when block.parent is null then $6 else $3 end
-			       and held.to_id = case when block.parent is null then $7 else $7 || '#' || block.parent end
+			       held.to_kind = case when block.ask is not null then $9 when block.parent is null then $6 else $3 end
+			       and held.to_id = case when block.ask is not null then block.ask
+			                             when block.parent is null then $7 else $7 || '#' || block.parent end
 			         as wanted
 			from (
 				`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
@@ -328,7 +370,7 @@ func heldBlockParentDifferences(
 		having not coalesce(bool_or(current.wanted), false)
 		    or count(*) filter (where not current.wanted) > 0
 		order by block.ordinality
-	`, blockIDs, parentIDs, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, "artifact", refKey)
+	`, blockIDs, parentIDs, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, "artifact", refKey, askIDs, graphstore.KindAsk)
 	if err != nil {
 		return nil, err
 	}

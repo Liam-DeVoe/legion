@@ -544,8 +544,9 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 }
 
 // planRepairs reconciles the document's ask blocks on the tree the settlement read, which says
-// what each block's row and the document owe each other, and holds its check blocks to the four
-// rules (reconcileCICheckBlocks): the repairs to write into the room, the events to append, and
+// what each block's row and the document owe each other, holds its check blocks to the four
+// rules (reconcileCICheckBlocks) and its decisions' server-owned attributes to what the store
+// holds (reconcileDecisionBlocks): the repairs to write into the room, the events to append, and
 // the copies to arm.
 func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s := st.service
@@ -554,6 +555,9 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 		return settleDone, st.abandon(err)
 	}
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := reconciliation.reconcileDecisionBlocks(ctx, st.tx, st.room, st.reconciled); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	st.reconciliation = reconciliation
@@ -786,16 +790,29 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		}
 		copiesCause = versionEventID
 	}
+	// An ask this settlement opened has its row and node only now, so a version written before
+	// them stated none of its block's shaped ties; a settlement that writes a version states them
+	// in that version's index, and one that writes none writes them here, beside the row, before
+	// the ask.opened that names the targets they moved is appended.
+	if !versioning {
+		if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, settledVersion, st.versioned, offsets); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	}
 	if err := st.appendEvents(ctx, st.reconciliation.events); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The follows of the asks this settlement opened wait for those asks' ask.opened events, which
 	// are among st.published now; causeFollows finds each by the ask its payload names, and
-	// causeSettledAnswers each answer state the settlement wrote by its event's type and ask.
+	// causeSettledAnswers each answer state the settlement wrote by its event's type and ask, as
+	// causeOpenedAskTies finds the ties of each opened ask.
 	if err := st.reconciliation.causeFollows(ctx, tx, st.published); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	if err := st.reconciliation.causeSettledAnswers(ctx, tx, st.published); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := st.reconciliation.causeOpenedAskTies(ctx, tx, st.published); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The copies among the document's ask blocks, once the version's blocks are nodes.

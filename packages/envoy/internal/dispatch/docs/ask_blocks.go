@@ -67,6 +67,86 @@ type settlementReconciliation struct {
 	// of (copiedAskSources), or "" for a block that is no copy, which claimCopies states as the
 	// copied_from of the block's node once the version's blocks are indexed.
 	copiedFrom map[string]string
+	// opened is each ask block whose ask this settlement opened, with that ask's id: a block whose
+	// ask no row held when its version was indexed has its shaped ties written once the row is
+	// (writeOpenedAskTies). openedTies is what that write stated of each such ask, by ask id, held
+	// for its ask.opened (causeOpenedAskTies).
+	opened     map[string]string
+	openedTies map[string]graphstore.Uncaused
+}
+
+// writeOpenedAskTies writes, in the settlement's transaction that opened them, the shaped ties of
+// each ask block whose ask this settlement opened (refs.IndexAskTies): their block_refs rows now,
+// and their tuples held for the ask.opened that records each ask (causeOpenedAskTies). The targets
+// whose counts each ask's rows moved are named on that ask.opened, beside what its question and
+// parts moved, as a version event names what its block index moved (refs.CountedChanges), so a
+// page reading backlink counts off the event refreshes them. tree is the tree the settlement
+// settled, rendered as offsets, of version `version` of document artifactID. It runs before the
+// events are appended, since an appended event is never rewritten. A settlement that writes a
+// version needs none of this: that version's block index runs after the rows exist and states
+// the ties with every other link of the document.
+func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, version int, tree *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
+	if len(r.opened) == 0 {
+		return nil
+	}
+	blocks := offsetBlocks(offsets)
+	facts, err := refs.DecisionFacts(ctx, tx, artifactID, version, blocks, tree, blockPointers(blocks, tree))
+	if err != nil {
+		return err
+	}
+	at := time.Now().UTC()
+	r.openedTies = make(map[string]graphstore.Uncaused, len(r.opened))
+	for _, block := range slices.Sorted(maps.Keys(r.opened)) {
+		ask := r.opened[block]
+		moved, ties, err := refs.IndexAskTies(ctx, tx, artifactID, version, at, facts, block)
+		if err != nil {
+			return fmt.Errorf("write the ties of the ask block %s settlement opened: %w", block, err)
+		}
+		r.openedTies[ask] = ties
+		if len(moved) == 0 {
+			continue
+		}
+		counted, err := refs.CountedChanges(ctx, tx, moved)
+		if err != nil {
+			return fmt.Errorf("count the targets the ties of ask block %s moved: %w", block, err)
+		}
+		for index, event := range r.events {
+			payload, isAsk := event.Payload.(model.AskEventPayload)
+			if !isAsk || event.Type != "ask.opened" || payload.ID != ask {
+				continue
+			}
+			named := model.ReferenceChanges{Targets: payload.ReferencesChanged, TruncatedKinds: payload.ReferencesChangedTruncatedKinds}
+			payload.ReferenceChangesPayload = model.NewReferenceChangesPayload(refs.MergeChanges(named, counted))
+			r.events[index].Payload = payload
+		}
+	}
+	return nil
+}
+
+// causeOpenedAskTies appends what writeOpenedAskTies stated of each ask under the ask.opened that
+// records it, found among appended as causeFollows finds it. An opened ask whose ask.opened is not
+// among appended is a settlement that lost the event recording an ask it wrote, and fails here
+// naming the ask.
+func (r *settlementReconciliation) causeOpenedAskTies(ctx context.Context, tx pgx.Tx, appended []model.Event) error {
+	if len(r.openedTies) == 0 {
+		return nil
+	}
+	opened := make(map[string]int64, len(r.openedTies))
+	for _, event := range appended {
+		if payload, ok := event.Payload.(model.AskEventPayload); ok && event.Type == "ask.opened" {
+			opened[payload.ID] = event.ID
+		}
+	}
+	for _, ask := range slices.Sorted(maps.Keys(r.openedTies)) {
+		event, found := opened[ask]
+		if !found {
+			return fmt.Errorf("settlement opened ask %s and appended no ask.opened for it", ask)
+		}
+		if err := graphstore.Caused(ctx, tx, r.openedTies[ask], event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // settledAnswer is one answer state this settlement wrote: the ask, the type of the event the
@@ -518,6 +598,10 @@ func (s *Service) reconcileAskBlocks(
 				return settlementReconciliation{}, err
 			}
 			reconciled.follows = append(reconciled.follows, opening)
+			if reconciled.opened == nil {
+				reconciled.opened = map[string]string{}
+			}
+			reconciled.opened[block.id] = ask.ID
 			reconciled.events = append(reconciled.events, documentAskEvent(owner, artifactID, "ask.opened", blockActor, payload))
 			reconciled.repairAsk(block.node, block.id, ask, "", nil)
 			continue
