@@ -16,14 +16,13 @@ body: |-
   stopped every row is the running build's. A pass answers a pruned cursor on its first page,
   which is the page that reads every project whole. A later page that meets the loss holds its
   cursor where it stood and has the page after it answer the loss.
-  The board moves to `GET /api/v1/projects/{key}/legion/board`, so one answer has one address.
-  Its body gains `issues`, a map keyed by issue key of those stored rows, read with one indexed
-  read that computes nothing but each open fact's growth to the moment of the read; the live push
-  carries the same
-  map, entry by entry. Its header says how many issues of the project carry Legion
-  phase work, the oldest `updated_at` it served and the age of the consumer's cursor, so a
-  project with no Legion work (no Legion issues, no rows) reads differently from one whose
-  backfill has not run (Legion issues, no rows).
+  The board at `GET /api/v1/projects/{key}/legion/board` gains `issues`, a map keyed by issue key
+  of those stored rows, read with one indexed read that computes nothing but each open fact's
+  growth to the moment of the read; the live push carries the same map, entry by entry. Its
+  header says how many issues of the project carry Legion phase work, the oldest `updated_at` it
+  served and the age of the consumer's cursor, so a project with no Legion work (no Legion
+  issues, no rows) reads differently from one whose backfill has not run (Legion issues, no
+  rows).
   Each card now says what the slot it holds is used for (`working`, `between_turns`,
   `held_children`, `held_person` or `held_idle`), why it waits (`ready`, `slot`, `blocked` or
   `person`) with the time since and the issues a blocker link holds it on, its place in the
