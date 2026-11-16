@@ -11,12 +11,12 @@ import (
 
 // CheckMachineID refuses the ids a hub grant entry or the watchdog's files cannot carry, the ids
 // bus.CheckListenerMachineID refuses (one holding '%', which starts the escape of every character
-// NATS refuses in a durable name, and one whose durable is over NATS's 255-byte limit), and accepts
-// the rest: an interior ordinary space, because both generated names replace it with a hyphen, and
-// a dot, a wildcard or a path separator, which both names escape. A refused character is never
-// echoed unless it is a printable delimiter.
+// NATS refuses in a durable name, so its names could be another id's, and one whose durable is over
+// NATS's 255-byte limit), and accepts the rest: an interior ordinary space, because both generated
+// names replace it with a hyphen, and a dot, a wildcard or a path separator, which both names
+// escape. A refused character is never echoed unless it is a printable delimiter.
 func TestCheckMachineID(t *testing.T) {
-	const carry = ", which the listener's NATS names or the hub's grant entries cannot carry"
+	const carry = ", which a hub's grant entries or the watchdog's files cannot carry"
 	const escape = " holds '%', which starts an escape in the listener's NATS names, so another machine id can give the same names"
 	for _, row := range []struct {
 		name, id, want string

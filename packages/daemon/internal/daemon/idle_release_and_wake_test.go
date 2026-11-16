@@ -76,7 +76,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 
 	rig.launchAll()
 	rig.quiet()
-	idleRigSendDuringTheStop(t, rig, held)
+	heldSent := idleRigSendDuringTheStop(t, rig, held)
 	rig.awaitReleased(rig.issues...)
 	// What each role was given before its pod was released — the phase task the daemon's boot
 	// handed it — is what every count below is taken from.
@@ -84,9 +84,10 @@ func TestIdleReleaseAndWake(t *testing.T) {
 
 	// The held-stop pod's direct message was sent while its stop was held
 	// (idleRigSendDuringTheStop). The send route reported the wake at once, before the release
-	// recorded the claim as released. Before INFRA-3589 the daemon dropped a wake that found no
-	// released claim, and the pod stayed released. Now the wake waits for the release and is
-	// applied again, and the pod comes back for it once.
+	// recorded the claim as released. That report waits for the release and is applied again,
+	// and the pod comes back for it once. The listener's own report of the stored copy comes
+	// idleRigAgentWait after the send and could bring the pod back by itself, so this reads
+	// which report took the wake: the resume's time is the time of the report that took it.
 	t.Run("AWakeDuringAHeldStopBringsThePodBackOnce", func(t *testing.T) {
 		issue := rig.issue(idleRigHeldStop)
 		session := rig.session(issue)
@@ -114,11 +115,22 @@ func TestIdleReleaseAndWake(t *testing.T) {
 			t.Errorf("%s has the releases %+v and the resumes %+v, want one release and one %s resume recorded against it",
 				issue.key, releases, resumes, pods.WakeAgentMessage)
 		}
+		// The send route's report took the wake: the resume's time is the report's own
+		// (store.TakePodWake records the wake's time), within seconds of the send. A daemon that
+		// dropped that report would leave the wake to the listener's own report, whose time is
+		// idleRigAgentWait after the send.
+		for _, resume := range resumes {
+			at, err := time.Parse(time.RFC3339, resume.At)
+			if err != nil || at.Before(heldSent.Truncate(time.Second)) || at.After(heldSent.Add(idleRigSendReportLag)) {
+				t.Errorf("%s's resume was taken by a wake of %q, want one within %s after the send at %s: the send route's report, applied again once the release recorded the claim",
+					issue.key, resume.At, idleRigSendReportLag, heldSent.UTC().Format(time.RFC3339))
+			}
+		}
 		// The listener stored the message when it was sent, and the woken session's new
 		// consumer starts at the floor the released one left, so the message reaches it once.
 		idleRigDeliveredOnce(t, rig, issue, idleRigHeldStopMessage)
-		// Read after that delivery, so a second report of the same message has had its time:
-		// the listener reports the stored copy a window after the send, and that report takes
+		// The listener's own report of the stored copy comes idleRigAgentWait after the send,
+		// possibly after this read. The role is coming back by then, so that report takes
 		// nothing.
 		if prompts := rig.newPrompts(issue); len(prompts) != 1 || !strings.Contains(prompts[0].Text, idleRigWakePreamble) {
 			t.Errorf("%s's woken role was given %v, want exactly one task that says its pod was released and brought back",
@@ -684,11 +696,16 @@ func idleRigStoredForGone(t *testing.T, status int, body string) {
 // idleRigStopDelay is how long the held-stop pod's role process takes to exit after its SIGTERM
 // (idleRigPlan.StopDelaySeconds). It is longer than the daemon's 30 seconds between two tries of
 // a wake that came during a release, so that wake is tried again at least once while the stop is
-// still held. It is shorter than the listener's 60-second wait before it reports a stored copy
-// (ENVOY_UNPLACEABLE_RETRY_WINDOW, which the rig leaves at its default), so that report comes
-// after the release. It is inside the rig's stop grace (idleRigStopGrace), so the process exits on
-// its own and the launcher does not kill it.
+// still held. The try after the stop ends takes the wake, about 60 seconds after the send. The
+// rig's listener reports the stored copy only idleRigAgentWait after the send, so its report
+// comes after that take and takes nothing. It is inside the rig's stop grace (idleRigStopGrace),
+// so the process exits on its own and the launcher does not kill it.
 const idleRigStopDelay = 40 * time.Second
+
+// idleRigSendReportLag bounds the time of the send route's wake report after the send: the
+// listener reports it off the send's answer. The listener's own report of the stored copy comes
+// idleRigAgentWait after the send, far outside it.
+const idleRigSendReportLag = 10 * time.Second
 
 // idleRigHeldStopMessage is the direct message sent to the held-stop pod's session while its
 // stop is held.
@@ -699,12 +716,13 @@ const idleRigHeldStopMessage = "sent while the release was still stopping the se
 // that it is stopping, and before the release records the claim as released. The listener knows
 // the session only by its known-session record, so it stores the message, and its send route
 // reports the wake at once (cmd/listener's reportAgentWake). That wake finds the claim live in a
-// release that has not ended.
-func idleRigSendDuringTheStop(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
+// release that has not ended. It answers the time just before the send.
+func idleRigSendDuringTheStop(t *testing.T, rig *idleWakeRig, issue idleRigIssue) time.Time {
 	t.Helper()
 	rig.awaitStopping(issue)
 	// Only this stop is held: the pod that the wake brings back stops as every other pod does.
 	rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: true})
+	sent := time.Now()
 	status, body := rig.listener.send(map[string]any{
 		"target_session": rig.session(issue), "message": idleRigHeldStopMessage,
 		"source": "agent", "source_session": idleRigSender, "idempotency_key": "held-stop-1",
@@ -714,6 +732,7 @@ func idleRigSendDuringTheStop(t *testing.T, rig *idleWakeRig, issue idleRigIssue
 		t.Fatalf("%s's claim was %s by %q when the send was answered, want it still live: the message must reach the listener while the release still stops the role",
 			issue.key, state.State, state.SuspendedBy)
 	}
+	return sent
 }
 
 // idleRigDeliveredOnce holds the once-ness R3 items 3 and 4 ask of a sender whose message the

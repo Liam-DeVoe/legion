@@ -196,10 +196,11 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 // needs and the only one the batch keeps: a session takes an owner's events in id order on each
 // subject family it receives them on, while the sends to different owners or destination keys land
 // in whatever order their answers allow. A send that fails holds back only its own chain, and an
-// event that is not due holds back its owner's later events only from the destinations it has not
-// reached. An event whose recipient read failed holds them back too, from every session key its
-// list neither names nor it already reached, until its retry. What an owner came to is written in
-// one statement, and what the owners left at the batch's end came to in one more (recordBatch).
+// event that is not due holds back its owner's later events only from the destinations it has
+// neither reached nor had refused. An event whose recipient read failed holds them back too, from
+// every session key its list neither names nor it already reached or refused, until its retry.
+// What an owner came to is written in one statement, and what the owners left at the batch's end
+// came to in one more (recordBatch).
 //
 // A failure is classified once every answer is in. A send that met a lost or replaced connection
 // (bus.ErrUnavailable) is no fault of its event, and its event is released with no attempt

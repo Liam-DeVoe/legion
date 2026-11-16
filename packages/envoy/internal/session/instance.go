@@ -71,12 +71,14 @@ func (r *SessionRegistry) Supersedes(entry SessionEntry, instance string) bool {
 }
 
 // NewerInstance answers the client instance that holds entry's session over instance: entry's
-// own, where entry is live and supersedes instance (Supersedes). The registration route and POST
-// /v1/roles/set refuse instance then, so two processes under one session id do not take its relay
-// in turns, and the older one takes no role claim. A brand-new instance is never refused: entry
-// keeps no record of it, so its registration takes the session. Nor is any instance once entry is
-// past the live window: the newer process has stopped answering, so the one that still registers
-// takes the session back.
+// own, where entry is live and supersedes instance (Supersedes). The registration route (POST
+// /v1/interests/subscribe), POST /v1/roles/set and the hand-back route (POST
+// /v1/interests/unsubscribe) refuse instance then, so two processes under one session id do not
+// take its relay in turns, the older one takes no role claim, and its hand-back removes nothing
+// from the newer one's interest row. A brand-new instance is never refused: entry keeps no record
+// of it, so its registration takes the session. Nor is any instance once entry is past the live
+// window: the newer process has stopped answering, so the one that still registers takes the
+// session back.
 func (r *SessionRegistry) NewerInstance(entry SessionEntry, instance string) (string, bool) {
 	if !r.Supersedes(entry, instance) || r.EntryState(entry) != Live {
 		return "", false

@@ -209,8 +209,10 @@ type ConsumerSpec struct {
 }
 
 // RetryLater is an error that asks for the delivery to be nacked with a delay of After, or of
-// NakDelay when that is longer. Two users return one. ConsumerSpec.ReviewPermission returns one
-// when GitHub answers with its rate limit and names the wait. The workflow returns one, with
+// NakDelay when that is longer. The daemon's preparations return one when a fact must wait for
+// something outside the daemon, such as GitHub's rate limit, a review App token GitHub has not
+// yet accepted, or a repository mapping that is being read again (internal/daemon's
+// repositories.go, review_body.go and review_permission.go). The workflow returns one, with
 // Waiting set, when a listener's wake report finds its claim in a release that has not ended
 // (workflow's listenerWakeInRelease).
 //
@@ -806,6 +808,8 @@ func ackOutcome() messageOutcome { return messageOutcome{} }
 
 // nakOutcome asks for the nak nakResolve makes: what failed, which it logs at warn, nakWhat, which
 // it logs at error if the nak itself fails, and the failure, whose RetryLater can widen the delay.
+// A RetryLater that is Waiting is no failure: nakResolve logs it at info, with a line that says
+// the fact waits, in place of what.
 // The event both lines name is the caller's own, which holds the decoded message.
 func nakOutcome(what, nakWhat string, err error) messageOutcome {
 	return messageOutcome{nak: true, what: what, nakWhat: nakWhat, err: err}

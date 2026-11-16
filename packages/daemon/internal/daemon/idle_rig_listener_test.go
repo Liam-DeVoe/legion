@@ -26,8 +26,8 @@ import (
 //
 // It is started the way scripts/e2e/envoy-session-delivery.sh starts one — a build of this
 // checkout's cmd/listener, then PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of
-// its own, waited on until /healthz says healthy — because that is the only configuration it
-// takes.
+// its own, waited on until /healthz says healthy — because that is the configuration it needs.
+// The rig adds one setting of its own, its agent wait (idleRigAgentWait).
 type idleRigListener struct {
 	t      *testing.T
 	url    string
@@ -37,6 +37,15 @@ type idleRigListener struct {
 	port   int
 	stop   func()
 }
+
+// idleRigAgentWait is the rig listener's ENVOY_UNPLACEABLE_RETRY_WINDOW: how long the listener
+// waits before it reports the wake of a message stored for a session with no record. The
+// listener's default is 60 seconds. The daemon's retry takes the held-stop row's wake about 60
+// seconds after the send (idleRigStopDelay), so at the default the listener's own report of the
+// stored copy races that retry, and either can bring the pod back. At this wait the listener's
+// report comes after the retry took the wake, so the resume the held-stop row reads is the send
+// route's. By then the role is coming back, so the listener's report takes nothing.
+const idleRigAgentWait = 3 * time.Minute
 
 // startIdleRigListener runs a listener of machine id against natsURL until t ends, and returns it
 // once /healthz answers healthy.
@@ -64,7 +73,8 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	cmd.Dir = home
 	cmd.Env = append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1",
-		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL)
+		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL,
+		"ENVOY_UNPLACEABLE_RETRY_WINDOW="+idleRigAgentWait.String())
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {
 		cancel()

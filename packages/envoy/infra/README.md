@@ -214,7 +214,7 @@ pod starts on them.
 | `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to. |
-| `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. |
+| `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default, which also names the listener's NATS user, so it must be a valid NATS user name too: 1 to 48 lower-case letters, digits and hyphens, with no hyphen first or last, and so no dot or space; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -259,7 +259,10 @@ input:
   listener pod as rendered (see [Sizing](#sizing));
 - no `users` without `tailnet`, and a user refused as
   [The hub's users](docs/nats-hub.md#the-hubs-users) lists, a user whose machine id gives the
-  session listener's durable among them; the listener's user is named after its machine id.
+  session listener's durable among them; the listener's user is named after its machine id, so a
+  listener `machineId` that is no valid NATS user name, such as a dotted one, is refused naming
+  `tailnet.listener`, as `listener "envoy.hub": name must match
+  ^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$`, though the shared machine-id rule takes it.
 
 Once each Pulumi input resolves, before any child takes it, it refuses a blank or
 whitespace-only `kubeconfig` or `tailnetAuthKey`, or one holding an nkey seed, naming the input and
@@ -1820,9 +1823,11 @@ The listener refuses these before it registers anything, with an error naming wh
 - an empty `machineId`, one with leading or trailing whitespace, or one holding `%`, a control
   character, or whitespace other than an interior ordinary space, or one whose durable
   `listener-<machineId>` is over 255 bytes, each escape counted as three (a plain id of up to 246
-  bytes fits): the listener refuses the same ids at start, since an id holding `%` can give the
-  names of another id, and the other ids cannot be carried by the durable consumer
-  `listener-<machineId>`, the queue group `envoy-listener-<machineId>` or the watchdog's files;
+  bytes fits). The listener refuses the same `%` and the same over-long durable at start, since an
+  id holding `%` could give the names of another id. It escapes every other character NATS refuses
+  in its durable and queue group names, so the control characters and the other whitespace are
+  refused here because a hub's grant entries or the watchdog's heredoc and environment file cannot
+  carry them. The listener trims leading and trailing whitespace, which would change both names;
 - a `port` outside 1-65535;
 - `watchdog` with a `containerName` other than `envoy-listener`;
 - `watchdog` with `seed`;
@@ -3164,7 +3169,8 @@ Each of its refusals is a `core.InputError` naming the input it refuses: `author
 `core` also builds the grants Envoy's own clients need from Envoy's own names
 (`packages/envoy/internal/bus` and `packages/envoy/internal/contracts`), so no consumer spells
 Envoy's subjects. Each is a `core.Permissions`, a publish and a subscribe `Rules` that a user takes
-as its `Publish` and `Subscribe`. Below, `<m>` is the machine id with each space as `-`.
+as its `Publish` and `Subscribe`. Below, `<m>` is the machine id as `bus.ListenerDurable` spells it:
+each space as `-`, and each character NATS refuses in a consumer name as `%` and two hex digits.
 
 `ListenerPermissions(machineID)` is what `envoy-listener` needs as that machine. Every entry below
 but the session consumers' is the base `HostPermissions` and `DispatchPermissions` are built from.

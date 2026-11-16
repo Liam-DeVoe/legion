@@ -481,7 +481,8 @@ func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, sess
 // ClaimInReleaseBySession is the live claim that holds session while a release of its issue's pod
 // has not ended, when that release was marked, and whether this daemon's project holds one. A
 // release stops a role's process before it records the claim as released, so a wake report that
-// comes in that gap finds no released claim and finds this one (workflow's listenerWake).
+// comes in that gap finds this claim and no released one. Workflow's listenerWake reads this
+// first, and the released claim only when this finds none.
 func (p *PodRecords) ClaimInReleaseBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, time.Time, bool, error) {
 	return claimInRelease(ctx, tx, `c.session = $2`, p.project, session, "session")
 }
@@ -521,10 +522,15 @@ func claimInRelease(ctx context.Context, tx pgx.Tx, where, project, value, what 
 }
 
 // StartQueued is whether the outbox holds a `start` of issue's role at generation that names no
-// phase and waits for no admission slot. Two writers queue that row: a cancelled release, for each
-// claim it suspended (CancelIssueRelease, the daemon outbox's releaseResume), and a wake
-// (workflow's wakeRow). Neither is dropped by a phase fence, so a role with one queued is coming
-// back. A row the outbox has finished is deleted, so every row this reads is still to run.
+// phase and waits for no admission slot. Rows of that shape come from a cancelled release (its
+// resume of each claim it suspended: CancelIssueRelease, the daemon outbox's releaseResume), a
+// wake (workflow's wakeRow), an architect start (admission, and the resume of an awaited root)
+// and a production check's look. Such a row meets no phase fence and waits for no slot. When it
+// runs, the outbox's start executor resumes a suspended claim of that role
+// (supervise.RequestRuleResume), so a role with one queued is coming back. The one exception is a
+// production check's look: it is fenced on its check and look, and finishes without acting when
+// its look ended before it ran. A row the outbox has finished is deleted, so every row this reads
+// is still to run.
 func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
 	var queued bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = 'supervise'

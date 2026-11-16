@@ -58,8 +58,9 @@ type Pods interface {
 	ClaimInReleaseBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, time.Time, bool, error)
 	ClaimInReleaseByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, time.Time, bool, error)
 	// StartQueued is whether the outbox holds a start of issue's role at generation that names
-	// no phase and waits for no slot: the start a cancelled release queues for each claim it
-	// suspended, and the start a wake queues. Such a role is already coming back.
+	// no phase and waits for no slot, such as the start a cancelled release queues for each claim
+	// it suspended or the start a wake queues. The outbox resumes the role when that row runs, so
+	// the role is already coming back (store.PodRecords.StartQueued).
 	StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error)
 	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
 	// a wake another pass already took, which is already bringing the pod back.
@@ -141,9 +142,15 @@ func WakeTask(kind, detail string) string {
 // own claims under that name: every daemon consumes the subject, because the listener does not
 // know which daemon owns a session and must not learn.
 //
-// A released claim is woken (listenerWakeReleased). A live claim whose pod a release is still
-// taking makes the report wait for the release to end (listenerWakeInRelease). Any other report
+// A live claim whose pod a release is still taking makes the report wait for the release to end
+// (listenerWakeInRelease). A released claim is woken (listenerWakeReleased). Any other report
 // does nothing.
+//
+// The claim in a release is read first, and the released claim only when there is none. The two
+// reads are two statements of one READ COMMITTED transaction, so a release can record the claim
+// as released between them. A claim moves only from live to released, so in this order the first
+// read finds it live or the second finds it released. In the other order, both reads could miss
+// it.
 func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.ListenerWake) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -151,23 +158,24 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 	if fact.Kind == intake.ListenerWakeReady {
 		return intake.Result{}, e.cfg.Pods.RecordListenerReady(ctx, tx, fact.At)
 	}
-	var released supervise.Claim
-	var found bool
-	var err error
 	kind, detail := pods.WakeRoleMessage, fact.Role
+	readInRelease, readReleased := e.cfg.Pods.ClaimInReleaseByToken, e.cfg.Pods.ReleasedClaimByToken
 	if fact.Kind == intake.ListenerWakeAgent {
 		kind, detail = pods.WakeAgentMessage, fact.Session
-		released, found, err = e.cfg.Pods.ReleasedClaimBySession(ctx, tx, fact.Session)
-	} else {
-		released, found, err = e.cfg.Pods.ReleasedClaimByToken(ctx, tx, fact.Role)
+		readInRelease, readReleased = e.cfg.Pods.ClaimInReleaseBySession, e.cfg.Pods.ReleasedClaimBySession
 	}
+	held, marked, found, err := readInRelease(ctx, tx, detail)
 	if err != nil {
 		return intake.Result{}, err
 	}
 	if found {
-		return intake.Result{}, e.listenerWakeReleased(ctx, tx, released, kind, detail, fact)
+		return intake.Result{}, e.listenerWakeInRelease(held, marked, kind, detail, fact)
 	}
-	return intake.Result{}, e.listenerWakeInRelease(ctx, tx, kind, detail, fact)
+	released, found, err := readReleased(ctx, tx, detail)
+	if err != nil || !found {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.listenerWakeReleased(ctx, tx, released, kind, detail, fact)
 }
 
 // listenerWakeReleased wakes the released claim a listener's report names, unless the role is
@@ -193,27 +201,14 @@ func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released s
 	return err
 }
 
-// listenerWakeInRelease is a report that found no released claim. A release stops a role's
-// process before it records the claim as released, and that record waits for the stop to end. A
-// report that comes in that gap finds a live claim whose issue's release mark still stands
-// (Pods.ClaimInReleaseBySession, Pods.ClaimInReleaseByToken). The report is then applied again
-// after wakeRetryInRelease (intake.RetryLater, Waiting): once the release records the claim, the
-// report wakes it, and once a cancel ends the release, the report finds the claim live or its
-// start queued. A report still in that gap wakeHeldForRelease after its own time is dropped with
-// one warning. A report that finds no claim in a release does nothing.
-func (e *Engine) listenerWakeInRelease(ctx context.Context, tx pgx.Tx, kind, detail string, fact intake.ListenerWake) error {
-	var held supervise.Claim
-	var marked time.Time
-	var found bool
-	var err error
-	if fact.Kind == intake.ListenerWakeAgent {
-		held, marked, found, err = e.cfg.Pods.ClaimInReleaseBySession(ctx, tx, fact.Session)
-	} else {
-		held, marked, found, err = e.cfg.Pods.ClaimInReleaseByToken(ctx, tx, fact.Role)
-	}
-	if err != nil || !found {
-		return err
-	}
+// listenerWakeInRelease is a report that found held, a live claim whose issue's release mark,
+// marked then, still stands (Pods.ClaimInReleaseBySession, Pods.ClaimInReleaseByToken). A release
+// stops a role's process before it records the claim as released, and that record waits for the
+// stop to end. The report is then applied again after wakeRetryInRelease (intake.RetryLater,
+// Waiting): once the release records the claim, the report wakes it, and once a cancel ends the
+// release, the report finds the claim live or its start queued. A report still in that gap
+// wakeHeldForRelease after its own time is dropped with one warning.
+func (e *Engine) listenerWakeInRelease(held supervise.Claim, marked time.Time, kind, detail string, fact intake.ListenerWake) error {
 	deadline := fact.At.Add(wakeHeldForRelease)
 	if !e.now().Before(deadline) {
 		e.log.Warn("wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report",

@@ -5,7 +5,9 @@ body: |-
   consumer name as `%` and two hex digits, and keep every machine id NATS takes today unchanged,
   so no deployed durable is renamed. A machine id that holds `%` is refused at start, naming
   `ENVOY_MACHINE_ID`. envoy-infra's machine id check uses the same rule and now accepts a dotted
-  id.
+  id. One input still refuses a dot: `gcp:ClusteredNatsHub`'s `tailnet.listener.machineId` names
+  the listener's NATS user too, so it must also be a valid NATS user name, and a NATS user name
+  holds no dot.
 time: 2026-11-16T18:39:55Z
 custom:
     Issue: pr4194

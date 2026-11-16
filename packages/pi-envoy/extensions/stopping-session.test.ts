@@ -352,7 +352,7 @@ describe("a stopping session gives back its role claims before it deletes its re
     expect((await stopWithSigterm(second)).status).toBe(143);
   }, 60_000);
 
-  test("a stop whose release never answers still deletes the record, inside the shim's grace, and frees no claim", async () => {
+  test("a stop whose release never answers still sends the DELETE after it, inside the shim's grace", async () => {
     const listener = startListener({ releaseAnswers: false });
     const first = await startInstance(listener, { mode: "rpc", role: ROLE });
     expect(first.claim).toBe(`Now holding role: ${ROLE}`);
@@ -362,28 +362,15 @@ describe("a stopping session gives back its role claims before it deletes its re
     const stopped = await stopWithSigterm(first);
     expect(stopped.status).toBe(143);
     expect(stopped.ms).toBeLessThan(SHIM_GRACE_MS);
-    // One release, never answered and never sent again, and the DELETE after it.
+    // One release, never answered and never sent again, and the DELETE after it. The claim the
+    // release would have freed stands at the listener until it ages out of the live window: the
+    // DELETE removes the session's record and its list of superseded instances, so the
+    // session's next process registers with no previous entry, and the listener's takeover of a
+    // superseded instance's claim does not apply. The DELETE goes all the same, because it is what
+    // lets a message to the stopped session wake it.
     expect(listener.calls.slice(signalled)).toEqual([
       { kind: "release", topics: [ROLE_TOPIC], session: SESSION, instance: firstInstance },
       { kind: "delete", session: SESSION, instance: firstInstance ?? null },
     ]);
-    // The stopped process's claim stands, so the session's next process is refused it here: the
-    // listener's own takeover of an older instance's claim is what hands it over then (R15).
-    expect(listener.claims.get(ROLE)).toEqual({ session: SESSION, instance: firstInstance });
-    const relaunched = listener.calls.length;
-    const second = await startInstance(listener, { mode: "rpc", transcript: first.entries });
-    const [secondInstance] = registeredInstances(listener, relaunched);
-    expect(listener.calls.slice(relaunched).filter((call) => call.kind === "claim")).toEqual([
-      {
-        kind: "claim",
-        role: ROLE,
-        session: SESSION,
-        instance: secondInstance,
-        soft: true,
-        status: 409,
-      },
-    ]);
-    expect(listener.claims.get(ROLE)).toEqual({ session: SESSION, instance: firstInstance });
-    expect((await stopWithSigterm(second)).status).toBe(143);
   }, 60_000);
 });

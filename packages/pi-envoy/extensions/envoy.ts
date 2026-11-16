@@ -3025,7 +3025,11 @@ export default function envoyExtension(pi: PiApi): void {
    *  first: a quarter of a second, as the wait on a registration still on the wire. A listener
    *  that answers at all answers a release in tens of milliseconds. A release that has not
    *  answered by then is left as it is: the DELETE goes, and nothing sends the release again. The
-   *  claim then stands until the session's next process takes it over at the listener. */
+   *  claim then stands until its last renewal is older than the listener's live window. The
+   *  listener's takeover of a superseded instance's claim does not apply: the DELETE removes the
+   *  session's record and its list of superseded instances, so the next process registers with
+   *  no previous entry, and nothing names this process as superseded. The DELETE goes all the
+   *  same, because it is what lets a message to the stopped session wake it. */
   const SHUTDOWN_RELEASE_MS = 250;
 
   /** Deregisters a session this process has stopped heartbeating — its own at shutdown, the one
@@ -4050,7 +4054,9 @@ export default function envoyExtension(pi: PiApi): void {
   // longer renewed inside the live window. The release names this process
   // (`handBackAllHolds`), so it frees no claim another process made. It gets its share of the
   // stop (`SHUTDOWN_RELEASE_MS`); one that has not answered by then is left, and the stop goes
-  // on to the DELETE.
+  // on to the DELETE. The claim then waits out the live window: the DELETE also removes the
+  // record's list of superseded instances, so the listener's takeover of a superseded
+  // instance's claim does not hand it to the next process.
   const releaseRoleClaims = async (): Promise<void> => {
     if (active === undefined) return;
     try {

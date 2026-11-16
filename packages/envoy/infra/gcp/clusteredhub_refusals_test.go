@@ -165,6 +165,10 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 			[]string{"@sha256:"}},
 		{"an empty machine id", func(a *A) { listener(a).MachineID = str("") }, "tailnet.listener.machineId", []string{"tailnet.listener.machineId is empty"}},
 		{"a machine id holding the escape character", func(a *A) { listener(a).MachineID = str("envoy%2Ehub") }, "tailnet.listener.machineId", []string{"holds '%'"}},
+		// The shared machine-id rule takes a dotted id, but this hub names the listener's NATS user
+		// after it, and a NATS user name holds no dot.
+		{"a dotted machine id, which names the listener's NATS user", func(a *A) { listener(a).MachineID = str("envoy.hub") }, "tailnet.listener",
+			[]string{`listener "envoy.hub": name must match ^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$`}},
 		{"a machine id taking a user's durable", func(a *A) { listener(a).MachineID = str("example host a") }, "users[0].machineId",
 			[]string{"users[0]: machineId gives the same durable name as the hub's own listener"}},
 		{"no listener nkey", func(a *A) { listener(a).NKey = "" }, "tailnet.listener.nkey", []string{"tailnet.listener.nkey is required"}},
