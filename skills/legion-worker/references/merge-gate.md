@@ -343,9 +343,9 @@ that answer comes clean.
     write. A staging pass is not this: staging does not run every resource production does.
   - `pending`, when production does not carry the merge yet (a shared profile still holding the
     previous release, a daemon still running the previous commit, a deploy nobody has run), or a
-    requirement's observation has not happened: the summary names what is missing and what you
-    will look for next, `wake_at` names your next look (below), nothing is recorded, and the
-    check's line in the body stays at
+    requirement's observation has not happened and the check has not reached its last look: the
+    summary names what is missing and what you will look for next, `wake_at` names your next look
+    (below), nothing is recorded, and the check's line in the body stays at
     `- Check <block id> (after_merge): not yet run`.
   - `fail`, for a requirement observed as not met, one still unobserved at the last look where
     production carries the merge, or a
