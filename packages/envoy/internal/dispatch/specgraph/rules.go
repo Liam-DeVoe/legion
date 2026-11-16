@@ -34,8 +34,9 @@ type Options struct {
 //     components joined, or a joined node that is no component);
 //   - a term: bad-term (no name or definition);
 //   - any text: code-in-text, a name of code in a statement's text, a check's claim, procedure or
-//     failing example, a component's name or purpose, or a term's definition (R4 and R15). A
-//     check's test part and job name code by design and are not read.
+//     failing example, a component's name or purpose, or a term's name or definition (R4 and R15).
+//     A check's test part and job name code by design and are not read. Parse reads each heading
+//     for code too, and refuses a claim of more than one sentence (bad-field).
 func Validate(t Tree, o Options) []Problem {
 	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{}}
 	for _, id := range o.Retired {
@@ -55,6 +56,7 @@ func Validate(t Tree, o Options) []Problem {
 		if term.Name == "" || term.Definition == "" {
 			v.problem(term.Pos, term.ID, "bad-term: a term has a name and a definition")
 		}
+		v.code(term.Pos, term.ID, "name", term.Name)
 		v.code(term.Pos, term.ID, "definition", term.Definition)
 	}
 	for _, cycle := range findLoops(v.edges) {

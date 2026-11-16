@@ -260,6 +260,11 @@ func TestTheOtherRules(t *testing.T) {
 			want: Problem{pos(9), "work-unit", "bad-term", "bad-term: a term has a name and a definition"},
 		},
 		{
+			name: "a term whose name names code",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil)}, Terms: []Term{{ID: "work-unit", Name: "read_set", Definition: "A work unit is work.", Pos: pos(9)}}},
+			want: Problem{pos(9), "work-unit", "code-in-text", "code-in-text: name names code: read_set"},
+		},
+		{
 			name: "a component whose purpose is two sentences",
 			tree: Tree{Components: []Component{component("dispatch", func(c *Component) {
 				c.Purpose = "It keeps each message until its session reads it. It also deletes each message after a week."
@@ -337,6 +342,30 @@ func TestAPurposeOfOneSentenceIsValid(t *testing.T) {
 		tree := Tree{Components: []Component{{ID: "dispatch", Name: "Dispatch", Purpose: purpose, Pos: Position{File: "x.md", Line: 1}}}}
 		if problems := Validate(tree, Options{}); len(problems) != 0 {
 			t.Errorf("purpose %q: %+v, want none", purpose, problems)
+		}
+	}
+}
+
+// The white space after a stop is each of the 29 code points that Python's \s matches, where
+// ste-lint splits a line into its sentences: each one ends the first of two sentences of a purpose.
+// A format character that Python's \s does not match, such as U+200B, ends none.
+func TestEachWhiteSpaceThatSteLintSplitsAtEndsASentence(t *testing.T) {
+	t.Parallel()
+	purpose := func(between rune) []Component {
+		return []Component{{ID: "dispatch", Name: "Dispatch", Purpose: "It keeps each issue." + string(between) + "It keeps each result.", Pos: Position{File: "x.md", Line: 1}}}
+	}
+	for _, space := range []rune{
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680,
+		0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+		0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+	} {
+		if got := Validate(Tree{Components: purpose(space)}, Options{}); len(got) != 1 || got[0].Rule != "bad-component" {
+			t.Errorf("U+%04X between two sentences: %+v, want one bad-component", space, got)
+		}
+	}
+	for _, other := range []rune{0x200b, 0x180e, 0xfeff, 0x2060} {
+		if got := Validate(Tree{Components: purpose(other)}, Options{}); len(got) != 0 {
+			t.Errorf("U+%04X after the stop: %+v, want none", other, got)
 		}
 	}
 }

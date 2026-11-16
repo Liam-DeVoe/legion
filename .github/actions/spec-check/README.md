@@ -24,10 +24,10 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
 
 - **The blocks.**
   A statement is a `requirement` block, a check a `check` block, and the files also hold `component` and `term` blocks.
-  The command refuses a spec file that is not UTF-8 or holds a NUL byte, an attribute that a block does not take, a line that opens no block, a block with no closing line, a block inside a block, and text outside a block other than headings and blank lines.
+  The command refuses a spec file that is not UTF-8 or holds a NUL byte, an attribute that a block does not take, a line that opens no block, a block with no closing line, a block inside a block, text outside a block other than headings and blank lines, a heading that names code, and a claim of more than one line or more than one sentence.
 
 - **Every rule of `specgraph.Validate`.**
-  These rules include ids (one id on two nodes, an id that is not lower-case words joined by hyphens), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a check without its parts, a component purpose of more than one sentence, and a name of code in a text.
+  These rules include ids (one id on two nodes, an id that is not lower-case words joined by hyphens), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name included.
   `go doc ./internal/dispatch/specgraph Validate` in `packages/envoy` lists each rule.
 
 ## What it does not check
