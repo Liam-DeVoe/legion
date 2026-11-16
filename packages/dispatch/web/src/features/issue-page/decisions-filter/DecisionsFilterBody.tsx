@@ -38,7 +38,6 @@ import {
   nodeStateWord,
   PRESET_NAMES,
 } from "../page-words";
-import { treeContext } from "../tree-drafts";
 import type { DrawnRow } from "../tree-fold";
 import { useTreeKeymap } from "../useTreeKeymap";
 import { DecisionsRow, type RowPerson } from "./DecisionsRow";
@@ -145,28 +144,22 @@ export function DecisionsFilterBody({
   });
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
-  // The name each statement takes on a decision's "informs" line: the name a chip of the tree
-  // `useIssueTree.ts` built holds for it (`tree-drafts.ts`'s `chipOf`, the page's one naming
-  // rule, decision 49), which the row cuts with `chipWords` alone and reads through no markdown
-  // (decision 66). The outline's chip reads the same name as plain words first, so until F's
-  // `chipOf` names each target from the server's reading of it, a name here can carry its
-  // excerpt's markdown marks. A chip names its target alone, so the first chip that names a
-  // statement names it everywhere; a chip whose target is gone, or that the reads have given no
-  // words yet, names nothing.
-  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
-  const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
-    const names = new Map<string, string>();
+  // The words each statement takes on a decision's "informs" line: the statement node's own
+  // words (`nodeWords`), which the row cuts with G's `chipWords` (decision 83). Where the
+  // coverage read sent the server's reading of a statement they are that reading's words, so
+  // they draw none of the marks its author typed; and the tree already holds them, so a
+  // statement is named with no read of names to wait for. A statement drawn under two parents
+  // is one node, so its first placement names it. Once F's `lineWords(node)` is under this
+  // branch the row reads `chipWords(lineWords(node))`.
+  const statementWords = useMemo<ReadonlyMap<string, string>>(() => {
+    const words = new Map<string, string>();
     const walk = (node: TreeNode): void => {
-      for (const chip of node.chips) {
-        if (chip.gone || chip.name === "") continue;
-        const id = nodeIdOf(chip.ref);
-        if (id !== undefined && !names.has(id)) names.set(id, chip.name);
-      }
+      if (node.type === "requirement" && !words.has(node.id)) words.set(node.id, nodeWords(node));
       for (const child of node.children) walk(child);
     };
     walk(root);
-    return names;
-  }, [nodeIdOf, root]);
+    return words;
+  }, [root]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
@@ -245,6 +238,15 @@ export function DecisionsFilterBody({
     },
     [setFocusedNode]
   );
+  // The foot's control is inside the list, so the focus going to it from a row, by Tab or a
+  // press, never leaves the list and `releaseFocus` does not act. The focus is off every row
+  // all the same, so the row closes what its focus opened, the key's report goes, and the
+  // panel goes back to the issue's own facts, as when the focus leaves the list.
+  const footFocused = useCallback(() => {
+    setFocused(undefined);
+    setReport(undefined);
+    setFocusedNode(undefined);
+  }, [setFocusedNode]);
   const pin = useCallback((id: string) => {
     setPinned((held) => {
       const next = new Set(held);
@@ -454,7 +456,7 @@ export function DecisionsFilterBody({
         pinned={pinned.has(id)}
         {...(report?.row === id ? { report: report.line } : {})}
         review={part === "review"}
-        statementNames={statementNames}
+        statementWords={statementWords}
         tabStop={tabStop === id}
         {...(mark === undefined ? {} : { threadRead: mark })}
       />
@@ -475,12 +477,21 @@ export function DecisionsFilterBody({
     >
       {/* The foot's rows stand after its control, outside this element, and are this tree's
           all the same (`aria-owns`), so the page holds one tree. The element itself takes the
-          focus only to pass it on (`passFocus`). */}
+          focus only to pass it on (`passFocus`), and only from a script: a press on it outside
+          a row, on a part's heading, its count or the gap between two rows, would otherwise
+          focus it, as the nearest element that takes the focus, and the focus would go on to
+          the tab stop, scroll the page to it and open its body. The outline's tree takes no
+          focus from a press either (`IssueTree.tsx`). */}
       <div
         aria-label={CONTROL_LABELS.tree}
         aria-owns={footShown && parts.agents.length > 0 ? footRows : undefined}
         className="flex min-w-0 flex-col"
         onFocus={passFocus}
+        onMouseDown={(event) => {
+          const target = event.target;
+          if (!(target instanceof Element) || target.closest("[data-node-row]") === null)
+            event.preventDefault();
+        }}
         ref={tree}
         role="tree"
         tabIndex={-1}
@@ -533,7 +544,11 @@ export function DecisionsFilterBody({
           {/* The foot (the prototype's `.minor-t`): one control that says how many decisions
               it holds and whether they are drawn, and unfolds them. It is a plain button in
               the tab order, as the prototype's is, so Tab reaches it where the foot is all the
-              list holds; the key that cycles how much is drawn unfolds it too. */}
+              list holds; the key that cycles how much is drawn unfolds it too. A press of it
+              moves no focus until the click lands, as Keep and Change do (`DecisionsRow.tsx`):
+              the focus coming here closes the open body of the row that held it, the control
+              would move up from under the pointer before the release, and the click would be
+              lost. */}
           <div className="mt-[22px] mb-1 flex min-w-0 max-[761px]:mt-[18px]" data-decisions-foot="">
             <button
               aria-controls={footShown ? footRows : undefined}
@@ -542,8 +557,13 @@ export function DecisionsFilterBody({
               data-decisions-heading=""
               id={foot}
               onBlur={footTaken}
-              onClick={() => setFootShown(!footShown)}
+              onClick={(event) => {
+                setFootShown(!footShown);
+                event.currentTarget.focus({ preventScroll: true });
+              }}
+              onFocus={footFocused}
               onKeyDown={footTaken}
+              onMouseDown={(event) => event.preventDefault()}
               onPointerDown={footTaken}
               ref={footControl}
               type="button"

@@ -24,12 +24,14 @@ import { longWords, READER } from "./issue-page-g";
  * - **Keep and Change** `button[data-row-action="keep" | "change"]` on each row of the review
  *   part, drawn with no focus on the row.
  * - **A decision's "informs" line**, each statement it shaped a link in
- *   `[data-decision-statement]`, named by the name a chip of the page's tree holds for it, cut
- *   by `chipWords` with no markdown pass.
+ *   `[data-decision-statement]`, named by the statement's own words cut by G's `chipWords`
+ *   (decision 83); once F's `lineWords(node)` is under this branch the row reads
+ *   `chipWords(lineWords(node))`.
  * - **The Decisions control's flag** `[data-preset-flag="to_review"]` in D's view row, whose
  *   number is how many decisions wait for the reader's review.
  *
- * `seedDecisionsLayout` is c-layout's seed: the whole issue and two long questions.
+ * `seedDecisionsLayout` is c-layout's seed: the whole issue, two long questions and a short one
+ * whose words hold a link.
  */
 
 /** The selectors the readers pass into the browser. */
@@ -193,7 +195,8 @@ export interface DecisionsLayoutSeed {
 }
 
 /** `seedWholeIssue` and the checkpoint's two long questions of its c-row row, each asked by the
- *  planner: one answered by alice in a short line of her own, and one that waits on her. */
+ *  planner: one answered by alice in a short line of her own, and one that waits on her; and a
+ *  short question of the planner's whose words hold a markdown link. */
 export async function seedDecisionsLayout(): Promise<DecisionsLayoutSeed> {
   const seeded = await seedWholeIssue();
   const answered = await createAsk(
@@ -217,5 +220,16 @@ export async function seedDecisionsLayout(): Promise<DecisionsLayoutSeed> {
     (await getAsk(waiting.id)).ask.waiting_on_person,
     "the seeded open question does not wait on the reader"
   ).toBe(READER);
+  // A link in a row's words, which G's group reading reads the colours of: the whole issue's
+  // questions and decisions hold none, and every reference in their words but an issue's is
+  // drawn as a chip, which that reading leaves out.
+  await createAsk(
+    seeded.key,
+    {
+      question: "Read [the notes](https://example.com/notes) first. Do they hold?",
+      urgency: "med",
+    },
+    asPlanner
+  );
   return { answered: answered.id, key: seeded.key, waiting: waiting.id };
 }

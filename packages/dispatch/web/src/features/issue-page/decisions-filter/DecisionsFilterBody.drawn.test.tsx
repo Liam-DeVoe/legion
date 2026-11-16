@@ -7,12 +7,13 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import type { Actor, Comment, Decision, DecisionKeep } from "../../../api/types";
+import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
-import type { NodeChip, TreeNode } from "../issue-tree";
+import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
@@ -63,17 +64,9 @@ const KEPT: DecisionKeep = {
   kept_by: READER,
 };
 
-/** The chip a decision's node holds for the statement of block `block`, named as the page's
- *  chips name it (`tree-drafts.ts`'s `chipOf`): by the statement's first line unless the case
- *  names it otherwise. */
-function chip(block: string, name = `The page draws ${block}.`): NodeChip {
-  return { answered: true, gone: false, name, ref: specRef(block) };
-}
-
 /** One issue that holds an entry of every part: an open question, two decisions a statement
  *  rests on that wait, one the reader kept, an answered ask with the agent's write-up of it
- *  under it, a declined ask, and two decisions no statement rests on. Each decision's node
- *  holds a chip for each statement its decision's links name, as the page's tree does. */
+ *  under it, a declined ask, and two decisions no statement rests on. */
 function wholeIssue(): {
   asks: DecisionsAsk[];
   children: TreeNode[];
@@ -105,15 +98,11 @@ function wholeIssue(): {
         }
       ),
       ask("a-declined", { state: "declined", text: "On a phone, where does the box sit?" }),
-      decisionNode("first", { at: "2026-11-10T12:00:00Z", chips: [chip("s1")] }),
-      decisionNode("second", {
-        at: "2026-11-11T12:00:00Z",
-        chips: [chip("s1"), chip("s2"), chip("s3")],
-        unsure: true,
-      }),
-      decisionNode("kept", { chips: [chip("s2")] }),
+      decisionNode("first", { at: "2026-11-10T12:00:00Z" }),
+      decisionNode("second", { at: "2026-11-11T12:00:00Z", unsure: true }),
+      decisionNode("kept"),
       decisionNode("minor"),
-      decisionNode("replaced", { chips: [chip("s1")] }),
+      decisionNode("replaced"),
     ],
     made: [
       decision("reading", { asks: ["a-answered"], kind: "person", waiting_review: false }),
@@ -386,6 +375,20 @@ test("the four parts are drawn under their headings, in order, and no sentence e
     )
   ).toBe(true);
 
+  // A press on a part's heading or on its count is a press on no entry, so it moves no focus:
+  // with the focus on no row, no row takes it, and with it on a row, it stays there.
+  await user.click(view.getByText(DECISIONS_WORDS.parts.review));
+  expect(focusedRow(view)).toBeUndefined();
+  const count = view.container.querySelector(
+    '[data-decisions-part="yours"] [data-decisions-count]'
+  );
+  if (count === null) throw new Error("the reader's own decisions draw no count");
+  await user.click(count);
+  expect(focusedRow(view)).toBeUndefined();
+  await act(async () => rowOf(view, D("first")).focus());
+  await user.click(view.getByText(DECISIONS_WORDS.parts.open_questions));
+  expect(focusedRow(view)).toBe(D("first"));
+
   // The foot unfolds from its own control, which is a plain button in the tab order, and
   // folds again. Its rows stand after it and are the tree's own.
   const foot = view.getByRole("button", { name: /agent decisions that no statement rests on/ });
@@ -401,6 +404,17 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   expect(footRows?.getAttribute("aria-labelledby")).toBe(foot.id);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([]);
+
+  // Tab from the row the reader stands on goes to the foot's control, which is inside the
+  // list: the row is drawn as focused no more, its body closed and its card plain.
+  const first = rowOf(view, D("first"));
+  await act(async () => first.focus());
+  expect(first.querySelector("[data-node-body]")).not.toBeNull();
+  expect(first.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+  await user.tab();
+  expect(document.activeElement).toBe(foot);
+  expect(first.querySelector("[data-node-body]")).toBeNull();
+  expect(first.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
 });
 
 // R22: the foot's words agree with its count.
@@ -635,9 +649,11 @@ test("a decision reaches each statement it shaped, and every entry links to its 
       link.getAttribute("href"),
     ])
   ).toEqual([
-    ["The page draws s1.", `/issues/${KEY}#b-s1`],
-    ["The page draws s2.", `/issues/${KEY}#b-s2`],
-    ["The page draws s3.", `/issues/${KEY}#b-s3`],
+    // Each statement's own words, "The page draws sN. It draws nothing else.", cut by the
+    // chips' rule within 32 characters.
+    ["The page draws s1. It draws…", `/issues/${KEY}#b-s1`],
+    ["The page draws s2. It draws…", `/issues/${KEY}#b-s2`],
+    ["The page draws s3. It draws…", `/issues/${KEY}#b-s3`],
   ]);
   // A decision tied to nothing names nothing.
   expect(rowOf(view, D("minor")).querySelector("[data-decision-informs]")).toBeNull();
@@ -671,7 +687,7 @@ test("a focused row says Author unknown for a decision with no author, and gives
     children: [
       statement("s1"),
       openAsk("q-planner", true, { author: planner }),
-      decisionNode("first", { chips: [chip("s1")] }),
+      decisionNode("first"),
     ],
     made: [decision("first", { links: [shaped(specRef("s1"))] })],
   });
@@ -693,40 +709,35 @@ test("a focused row says Author unknown for a decision with no author, and gives
   expect(asked.querySelector("[data-node-margin] [data-node-author-title]")).toBeNull();
 });
 
-// R5 (e), R22: a statement on a decision's "informs" line is named as the page's chips name it,
-// cut at a word within 32 characters, and never by its own words where the chip names it
-// otherwise, nor by an address; a statement the chips give no words draws nothing there.
+// R5 (e), R22: a statement on a decision's "informs" line is named by its own words, cut at a
+// word within 32 characters as a chip's are (`chipWords`, decision 83), and never by an address.
 test("each statement on the informs line is named within 32 characters", () => {
   const view = renderBody({
     children: [
-      // Its own words, "The page draws s1. …", are not the chip's.
-      statement("s1"),
+      statement("s1", { text: "Requirement 1 of the redesign stands on a row of its own." }),
       statement("s2"),
-      decisionNode("first", {
-        chips: [
-          chip("s1", "Requirement 1 of the redesign stands on a row of its own."),
-          chip("s2", ""),
-        ],
-      }),
+      decisionNode("first"),
     ],
     made: [decision("first", { links: [shaped(specRef("s1")), shaped(specRef("s2"))] })],
   });
 
   const informs = rowOf(view, D("first")).querySelector("[data-decision-informs]");
   const names = [...(informs?.querySelectorAll("a") ?? [])].map((link) => link.textContent ?? "");
-  expect(names.length).toBe(1);
+  expect(names.length).toBe(2);
   const name = names[0] ?? "";
   expect(name.length).toBeLessThanOrEqual(32);
   expect(name.endsWith("…")).toBe(true);
   expect(name.startsWith("Requirement 1 of the redesign")).toBe(true);
   expect(name).not.toContain("dispatch://");
   expect(name).not.toContain("#b-");
-  // The statement the chips give no words draws nothing on the line.
+  // The other statement is named by its own words too, "The page draws s2. It draws nothing
+  // else.", cut the same way.
+  expect(names[1]).toBe("The page draws s2. It draws…");
   expect(
     [...(informs?.querySelectorAll("[data-decision-statement]") ?? [])].map((shape) =>
       shape.getAttribute("data-decision-statement")
     )
-  ).toEqual([statement("s1").id]);
+  ).toEqual([statement("s1").id, statement("s2").id]);
 });
 
 // R9: the list is one tab stop and the outline's own keys work it: `j` and `k` move through

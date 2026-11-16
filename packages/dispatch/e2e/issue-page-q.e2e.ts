@@ -226,19 +226,36 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     }
 
     // The same three words wherever a decision is drawn: with no filter on too, where the
-    // section that restates the person's answer hangs under the ask it answers.
+    // section that restates the person's answer hangs under the ask it answers. The tree is
+    // drawn with the issue alone and the decisions and the asks arrive after it, each maybe
+    // folded where it lands, so the facts are read again, every branch unfolded first, until
+    // the reads are in.
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    await unfoldEveryBranch(page);
-    const outline = await drawnRows(page);
-    expect(rowOf(outline, D(5))?.stateWord).toBe(NODE_STATE_WORDS.decision.waiting_review);
-    expect(rowOf(outline, D(4))?.stateWord).toBe(`${NODE_STATE_WORDS.decision.kept} alice`);
-    expect(rowOf(outline, D(6))?.stateWord).toBe(NODE_STATE_WORDS.decision.replaced);
-    expect(
-      await parentOfRow(page, D(1)),
-      "the decision that answers the ask is not drawn under it"
-    ).toBe(seeded.answeredAskId);
+    await expect
+      .poll(
+        async () => {
+          await unfoldEveryBranch(page);
+          const outline = await drawnRows(page);
+          return {
+            kept: rowOf(outline, D(4))?.stateWord,
+            parent: await parentOfRow(page, D(1)),
+            replaced: rowOf(outline, D(6))?.stateWord,
+            waiting: rowOf(outline, D(5))?.stateWord,
+          };
+        },
+        {
+          message:
+            "with no filter on, a decision does not read its state, or the decision that answers the ask is not drawn under it",
+        }
+      )
+      .toEqual({
+        kept: `${NODE_STATE_WORDS.decision.kept} alice`,
+        parent: seeded.answeredAskId,
+        replaced: NODE_STATE_WORDS.decision.replaced,
+        waiting: NODE_STATE_WORDS.decision.waiting_review,
+      });
   });
 });
 
@@ -424,18 +441,32 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
       })
       .toBe(commentId);
 
-    // With no filter on, the decision says the same and the change hangs under it.
+    // With no filter on, the decision says the same and the change hangs under it. The
+    // decisions and the comments arrive after the tree is drawn, each maybe folded where it
+    // lands, so the facts are read again, every branch unfolded first, until the reads are in.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    await unfoldEveryBranch(page);
-    expect(rowOf(await drawnRows(page), changed)).toMatchObject({
-      state: "change_requested",
-      stateWord: NODE_STATE_WORDS.decision.change_requested,
-    });
-    expect(
-      await parentOfRow(page, comment?.id ?? ""),
-      "the change is not drawn under the decision it changes"
-    ).toBe(changed);
+    await expect
+      .poll(
+        async () => {
+          await unfoldEveryBranch(page);
+          const decision = rowOf(await drawnRows(page), changed);
+          return {
+            parent: await parentOfRow(page, commentId),
+            state: decision?.state,
+            stateWord: decision?.stateWord,
+          };
+        },
+        {
+          message:
+            "with no filter on, the changed decision does not say a change was asked for, or the change is not drawn under it",
+        }
+      )
+      .toEqual({
+        parent: changed,
+        state: "change_requested",
+        stateWord: NODE_STATE_WORDS.decision.change_requested,
+      });
     const outlined = await focusRow(page, changed);
     await expect(outlined.locator("button[data-row-action]")).toHaveCount(0);
     await expect(reviewFlag(page)).toHaveText("1");
@@ -597,13 +628,14 @@ test("the Decisions view draws Keep and Change on each decision that waits, and 
 // c-layout (R1, R4, R5 and R8 of dispatch://INFRA-1196 under the view, rulings 1, 4 and 5): the
 // checkpoint's c-row walk of the Decisions view. Every row the view draws, the foot's included,
 // reads G's layout and groups: one left edge, the kind's tag after the first line, the group's
-// place, no "Author unknown" in a group, the links' colours. A statement on an "informs" line
-// is named within 32 characters and by no address, which G's group reading, of chips alone,
-// does not see. At 1440 px a long question a person answered is cut at six lines and a long one
-// that waits on the reader is drawn whole, in a list 960 px wide; at 390 px nothing is wider
-// than the screen.
-// SLOW(>=2s): the whole issue seeded with two long questions, then the view loaded and every
-// row read off the page's layout at two widths, with the foot's unfolding and the cut waited on.
+// place, no "Author unknown" in a group, the colours of a link in a node's words, which the
+// seed writes into one question. A statement on an "informs" line is named within 32 characters
+// and by no address, which G's group reading, of chips alone, does not see. At 1440 px a long
+// question a person answered is cut at six lines and a long one that waits on the reader is
+// drawn whole, in a list 960 px wide; at 390 px nothing is wider than the screen.
+// SLOW(>=2s): the whole issue seeded with three questions, two of them long, then the view
+// loaded and every row read off the page's layout at two widths, with the foot's unfolding and
+// the cut waited on.
 test("under Decisions a row draws the outline's layout, short names and the six-line cut @phone", async ({
   browser,
 }) => {
@@ -632,8 +664,12 @@ test("under Decisions a row draws the outline's layout, short names and the six-
         "aria-expanded",
         "true"
       );
-      // The two long questions are drawn, and the names of the statements the decisions shaped,
-      // which come from the page's batched read of names, are in.
+      await expect(
+        decisionsBody(page).locator("[data-node-body]"),
+        `${where} keeps a row's body open after the foot's press`
+      ).toHaveCount(0);
+      // The two long questions are drawn, and the statements the decisions shaped are named by
+      // their own words, which come with the coverage read.
       for (const question of [seeded.answered, seeded.waiting]) {
         await expect(nodeRow(page, question), `${where} draws no row for ${question}`).toHaveCount(
           1
@@ -644,6 +680,13 @@ test("under Decisions a row draws the outline's layout, short names and the six-
         .not.toEqual([]);
 
       expectRowLayouts(await rowLayouts(page), where, false, size.width);
+      // The seed's linked question draws its link in its words, so the links' colours below are
+      // read on at least one link.
+      await expect
+        .poll(async () => (await rowGroups(page)).flatMap((row) => row.links).length, {
+          message: `${where} draws no link in a row's words`,
+        })
+        .toBeGreaterThan(0);
       expectRowGroups(await rowGroups(page), where, size.width, addresses);
       const names = await decisionStatementNames(page);
       expect(

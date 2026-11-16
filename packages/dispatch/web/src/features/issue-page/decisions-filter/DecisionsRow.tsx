@@ -67,9 +67,10 @@ export interface RowPerson {
  *
  * A decision draws its words - whole where it waits for the reader's review, cut as an agent's
  * words are anywhere else (ruling 6) - how it stands in the states the page declares
- * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the name a
- * chip of the page's tree holds for it, cut by `chipWords` with no markdown pass (decision 66),
- * and each a link to that statement. A decision of the review list draws Keep and Change with
+ * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the
+ * statement's own words cut by G's `chipWords` (decision 83), and each a link to that
+ * statement; once F's `lineWords(node)` is under this branch the row reads
+ * `chipWords(lineWords(node))`. A decision of the review list draws Keep and Change with
  * no focus, as the picture does; no other row draws either (R35). The two controls are
  * `DecisionActions.tsx`'s own, so the writes are the ones every other Keep and Change of the
  * page makes. A decision a person asked to change draws what they asked under its words, with
@@ -105,7 +106,7 @@ export function DecisionsRow({
   pinned,
   report,
   review,
-  statementNames,
+  statementWords,
   tabStop,
   threadRead,
 }: {
@@ -139,10 +140,11 @@ export function DecisionsRow({
   report?: string;
   /** Whether this decision is an entry of the review list, which draws Keep and Change. */
   review: boolean;
-  /** Each statement's name by its node id: the name a chip of the page's tree holds for it
-   *  (`DecisionsFilterBody.tsx`), which the row cuts with `chipWords` alone; a statement it
-   *  holds no name for is not named. */
-  statementNames: ReadonlyMap<string, string>;
+  /** Each statement's own words by its node id (`nodeWords`, read in `DecisionsFilterBody.tsx`),
+   *  which the row cuts with G's `chipWords` (decision 83); a statement whose words are `""` is
+   *  not named. Once F's `lineWords(node)` is under this branch the row reads
+   *  `chipWords(lineWords(node))`. */
+  statementWords: ReadonlyMap<string, string>;
   /** Whether this row is the list's one tab stop. */
   tabStop: boolean;
   /** The thread whose newest write this row draws, which a dwell on the row marks read. */
@@ -170,10 +172,10 @@ export function DecisionsRow({
   const clamped = clamp !== undefined && !opened && !body;
   const standing = entry.kind === "decision" ? entry.standing : undefined;
   const tone = toneOf(entry);
-  // Each statement the entry shaped by the chip's words, and none the chips give no words: no
-  // address, slug or id is drawn in a statement's place (R22).
+  // Each statement the entry shaped by its own first words, and none whose node holds no words:
+  // no address, slug or id is drawn in a statement's place (R22).
   const statements = entry.shapes.flatMap((shape) => {
-    const name = chipWords(statementNames.get(shape.id) ?? "");
+    const name = chipWords(statementWords.get(shape.id) ?? "");
     return name === "" ? [] : [{ name, shape }];
   });
   return (
