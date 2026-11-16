@@ -326,7 +326,7 @@ func compareLegionWindows(t *testing.T, r rig, project string, windows []goldenR
 			slug := strings.TrimPrefix(row.EvalID, project+"/")
 			parts[slug] = append(parts[slug], row.Part)
 		}
-		closed, err := legionfacts.ReadClosedIn(ctx, r.database.Pool, project, window.Window.From, window.Window.To)
+		closed, err := legionfacts.ReadClosedIn(ctx, r.database.Pool, project, window.Window.From, window.Window.To, window.Window.To)
 		if err != nil {
 			t.Fatalf("read the issues closed in %s: %v", window.Window.Name, err)
 		}

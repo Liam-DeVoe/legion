@@ -1080,15 +1080,15 @@ func main() {
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
 	// dispatch://INFRA-2915: the per-issue Legion facts, computed once and stored as rows of
-	// issue_facts, so the board reads rows and computes nothing. The issue table and the evals
-	// read them under dispatch://INFRA-2916. The consumer recomputes an issue when one of its
-	// three feeds moves - the issue's events, the daemon's observations and a pull request's
-	// merge time - and recomputes every open issue every 30 s, because an open issue's hours
-	// grow with the clock while no input moves (legionfacts.SweepEvery). It takes the
-	// legion-facts lease: a pass reads its cursors, computes the rows and writes both in one
-	// transaction, so two processes woken by one commit must not run a pass at once. It reads
-	// the event log up to the safe horizon of the same events.Horizon the suggestion sweep above
-	// reads, for the same reason.
+	// issue_facts, so the board reads rows and computes nothing but the close of each open part
+	// at its own clock. The issue table and the evals read them under dispatch://INFRA-2916. The
+	// consumer recomputes an issue when one of its three feeds moves - the issue's events, the
+	// daemon's observations and a pull request's merge time - and at no other time: a row holds
+	// its facts closed at the newest input they read and how fast each grows after it, so no
+	// timer rewrites a row (legionfacts.Run). It takes the legion-facts lease: a pass reads its
+	// cursors, computes the rows and writes both in one transaction, so two processes woken by one
+	// commit must not run a pass at once. It reads the event log up to the safe horizon of the
+	// same events.Horizon the suggestion sweep above reads, for the same reason.
 	go legionfacts.Run(ctx, legionfacts.Deps{
 		Pool:         database.Pool,
 		Build:        processBuild(),

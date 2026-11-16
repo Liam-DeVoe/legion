@@ -5,35 +5,42 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-
-	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"time"
 )
 
 // scope.go holds the scope of one page: the projects this loop computes and which of them are
-// to be read whole, the stored rows the sweep adds to a page's work, and the rows one project's
-// changes reach. The set a page states for a project is worked out here and nowhere else, and
-// the page writes or deletes no row outside it.
+// to be read whole, the rows another build wrote that the build a project's record names
+// computes again, and the rows one project's changes reach. The set a page states for a project
+// is worked out here and nowhere else, and the page writes or deletes no row outside it.
 //
 // It stands apart from the loop (consumer.go) because the loop asks it one question - what does
 // this page owe this project - and the answer is read from the issues' links, from the stored
-// rows and from the phase-work rule rather than from the feeds.
+// rows and from the record of each project's whole read rather than from the feeds.
 
-// legionProjects is every project this loop computes, by key, each with whether its facts are to
-// be computed whole on this pass. A project is one of them once it names a Legion daemon (its
-// row of legion_settings), once that daemon has been read (its sampler's observations) or once
-// it holds a stored row. The setting is enough on its own: a daemon the sampler has never read is
-// still a daemon working the project, whose issues carry phase work the event log holds, and four
-// of the six Legion evals (work time, phase time, rework and splitting) read the facts of that
-// work and no observation. An event of a project none of the three answers for is no work of this
-// loop: its setting or its first observation brings the project in, and the backfill then
-// computes it.
+// projectStanding is what one pass owes one project beyond what its feeds name: whether to read
+// it whole (whole), and whether the project's record names the build this process is (ours),
+// which makes this process the one that computes again the rows another build wrote
+// (otherBuildsRows).
+type projectStanding struct {
+	whole bool
+	ours  bool
+}
+
+// legionProjects is every project this loop computes, by key, each with its standing on this
+// pass. A project is one of them once it names a Legion daemon (its row of legion_settings), once
+// that daemon has been read (its sampler's observations) or once it holds a stored row. The
+// setting is enough on its own: a daemon the sampler has never read is still a daemon working
+// the project, whose issues carry phase work the event log holds, and four of the six Legion
+// evals (work time, phase time, rework and splitting) read the facts of that work and no
+// observation. An event of a project none of the three answers for is no work of this loop: its
+// setting or its first observation brings the project in, and the whole read then computes it.
 //
-// A project is a backfill - a pass of this same loop that runs ComputeProject over the project
-// rather than Compute over a key set - where this build has not read it whole, where the rows
-// that mark counted have gone, or where lost says the change cursor fell below the log, which
-// loses the changes of every project at once. The first run on an empty table is the first of
-// those cases and needs no second code path.
+// A project is read whole - a pass of this same loop that runs ComputeProject over the project
+// rather than Compute over a key set - where no build has read it whole (it holds no record of
+// issue_facts_computed), where another build read it whole before this process started, where
+// the rows that record counted have gone, or where lost says the change cursor fell below the
+// log, which loses the changes of every project at once. The first run on an empty table is the
+// first of those cases and needs no second code path.
 //
 // The mark is a row of issue_facts_computed, which the pass that read the project whole writes
 // (markComputedWhole). "Never computed" is read from that record and not from "this project
@@ -42,20 +49,34 @@ import (
 // whole on every pass for as long as it held no worked issue, which is the whole-project read
 // this loop exists to make rare.
 //
-// The mark names the build that made that whole read, and a pass under another build reads the
-// project whole again. A left join gives a project with no mark a null build, which is distinct
-// from the build of any pass, so one comparison answers both the project this build has not
-// read whole and the project no build has. The rule that decides which issues carry Legion
-// phase work lives in the build: the six role names and the title shape of
+// The mark names the build that made that whole read (R27). The rule that decides which issues
+// carry Legion phase work lives in the build: the six role names and the title shape of
 // legion/session_title.go, which legion.ParseSessionTitle reads, and legion.PhaseWorkKeys's
-// reading of handoffs. A release that takes an issue's phase work away is caught by the mirror
-// read of the stored rows (staleStoredRows), because the issue that lost the work still holds
-// its row. A release that gives an issue phase work is caught by nothing else: that issue holds
-// no row for the mirror read to find, writes no event of its own, and is named by no feed, so
-// the whole-project read is the one pass that reaches it. The daemon's own copy of the title
-// shape (packages/pi-legion/src/session-title.ts) is no such release: a plugin that writes
-// another title writes a session and its events, which the feeds carry as they carry every
-// other write.
+// reading of handoffs. A release can therefore give an issue phase work or take it away while no
+// event, observation or delivery change names that issue: the issue that gains work holds no row
+// and writes no event of its own, and the issue that loses it holds a row nothing names. The
+// whole read under the new rule is the one pass that reaches both: it writes the row the one now
+// earns and deletes the row the other no longer does (deleteStaleProjectRows). Every other way
+// an issue gains or loses its work is an input a feed carries: a retitle is an event of the
+// retitled session, whose page states the issues that session wrote on (sessionIssues), and a
+// handoff is an event on its issue. The daemon's own copy of the title shape
+// (packages/pi-legion/src/session-title.ts) is no such release: a plugin that writes another
+// title writes a session and its events, which the feeds carry as they carry every other write.
+// What reaches the rule outside every write path - a hand edit of events or handoffs, a restore
+// of the database - is answered by the same whole read, which deleting a project's record asks
+// the next pass for.
+//
+// The record is judged against this process's own start, and that is what lets two builds of a
+// roll stand side by side. A record that names another build and was written before this process
+// started is a build this one replaces, and this process reads the project whole once and takes
+// the record. A record that names another build and was written after this process started is a
+// newer build rolling in while this one still serves: this process reads nothing whole for it,
+// takes nothing from it (markComputedWhole) and computes nothing of the newer build's rows; the
+// newer build computes again whatever this one writes (otherBuildsRows). A record someone rewrote
+// to another build string keeps its old time, so the next process reads that project whole once.
+// The lost change cursor is the one exception: it is the deployment's one cursor, so the process
+// that meets the loss reads every project whole, and the newer build then computes again the rows
+// that read wrote under the older rule.
 //
 // The build the pass compares is the one the process runs under. The server gives it to the
 // loop (Deps.Build), and the pass carries it both to this read and to the record it writes
@@ -69,27 +90,23 @@ import (
 // image a local compose file builds - and adds a suffix drawn when the process starts
 // (processBuild). A developer's `go run`, a `go build` with no ldflags and a test binary
 // therefore each answer a string no other process answers, and each start reads every project
-// whole once before it sweeps.
+// whole once.
 //
 // That costs a developer one whole read per project per restart, which is 286 ms over the 252
 // issues measured below. It buys the thing the comparison is for: the rule that decides which
 // issues carry Legion phase work lives in the binary, so a developer who edits
 // legion/session_title.go or legion.PhaseWorkKeys and restarts reads every project whole under
 // the edited rule. Were the string the same across restarts, that developer's next process
-// would find its own record, sweep every project, and read facts the rule before the edit
-// wrote, with nothing on screen to say so. 286 ms a restart is the cheaper of the two
-// mistakes, so the suffix errs on reading rather than on sweeping. A stamped build is the
-// other side of it: its string is the image's commit, which every process of that release
-// shares, so the second of them to start sweeps the projects the first read whole.
+// would find its own record, read nothing whole, and read facts the rule before the edit wrote,
+// with nothing on screen to say so. 286 ms a restart is the cheaper of the two mistakes, so the
+// suffix errs on reading. A stamped build is the other side of it: its string is the image's
+// commit, which every process of that release shares, so the second of them to start reads
+// nothing whole and writes no row.
 //
-// A settled deployment pays one whole project read per build per project: the build that read a
-// project whole sweeps that project on every pass after it. Over the pod's test Postgres a
-// whole read takes 286 ms over 252 issues, 554 ms over 1,008, 844 ms over 2,016, 1.17 s over
-// 4,032 and 2.59 s over 13,104 issues and 10,920 rows, which is 1.72 s to compute and 868 ms to
-// write, against the 30 s a pass has (SweepEvery). While a release rolls, the old build and the
-// new one take the lease in turn and this one record holds one build, so each pass reads the
-// projects whole again under its own build. The roll costs one whole read a pass until the
-// older process stops, and the deployment settles on one whole read per project once it has.
+// A settled deployment pays one whole project read per build per project. Over the pod's test
+// Postgres a whole read takes 286 ms over 252 issues, 554 ms over 1,008, 844 ms over 2,016,
+// 1.17 s over 4,032 and 2.59 s over 13,104 issues and 10,920 rows, which is 1.72 s to compute and
+// 868 ms to write.
 //
 // The count the mark carries is what still answers for a project whose stored rows went
 // missing under the consumer, an emptied table among them: a project whose last whole read
@@ -97,30 +114,36 @@ import (
 // no narrow pass can name rows that are not there. It costs one whole read, because that read
 // writes the count it answered: a project that truly holds no row any more is marked with none
 // and is left alone from then on.
-func legionProjects(ctx context.Context, q Querier, build string, lost bool) (map[string]bool, error) {
+func legionProjects(ctx context.Context, q Querier, build string, started time.Time, lost bool) (map[string]projectStanding, error) {
 	rows, err := q.Query(ctx, `
 		select project.key,
-		       mark.computed_build is distinct from $1
-		       or (mark.computed_rows > 0
-		           and not exists (select 1 from issue_facts where project_key = project.key))
+		       mark.project_key is null,
+		       mark.computed_build is not distinct from $1,
+		       mark.computed_at < $2,
+		       mark.computed_rows > 0
+		           and not exists (select 1 from issue_facts where project_key = project.key)
 		from projects project
 		left join issue_facts_computed mark on mark.project_key = project.key
 		where exists (select 1 from legion_settings where project = project.key)
 		   or exists (select 1 from legion_observations where project = project.key)
 		   or exists (select 1 from issue_facts where project_key = project.key)
-	`, build)
+	`, build, started)
 	if err != nil {
 		return nil, fmt.Errorf("read the projects Legion works: %w", err)
 	}
 	defer rows.Close()
-	projects := map[string]bool{}
+	projects := map[string]projectStanding{}
 	for rows.Next() {
 		var key string
-		var backfill bool
-		if err := rows.Scan(&key, &backfill); err != nil {
+		var unrecorded, ours bool
+		var before, emptied *bool
+		if err := rows.Scan(&key, &unrecorded, &ours, &before, &emptied); err != nil {
 			return nil, fmt.Errorf("read the projects Legion works: %w", err)
 		}
-		projects[key] = backfill || lost
+		replaced := !unrecorded && !ours && before != nil && *before
+		yielded := !unrecorded && !ours && !replaced
+		gone := emptied != nil && *emptied && !yielded
+		projects[key] = projectStanding{whole: lost || unrecorded || replaced || gone, ours: ours}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the projects Legion works: %w", err)
@@ -128,126 +151,71 @@ func legionProjects(ctx context.Context, q Querier, build string, lost bool) (ma
 	return projects, nil
 }
 
-// openStoredRows is the stored row of every open issue, by project: what the sweep recomputes,
-// because an open issue's hours grow with the clock while no input moves. A closed issue's facts
-// stand still, so the sweep passes over it and WriteProject leaves its row alone.
+// otherBuildsRows is every stored row whose writer was another build than build, of a project
+// whose record names build, by project: what the build a project's record names computes again
+// on the first page of each pass (passPage), as it computes any key a feed names.
 //
-// It reads the rows rather than the issues: an open issue with no stored row carries no Legion
-// phase work yet, or has never been computed, and its own event or the backfill answers for it.
-func openStoredRows(ctx context.Context, q Querier) (map[string][]string, error) {
-	rows, err := q.Query(ctx, `select project_key, issue_key from issue_facts where closed_at is null`)
+// It is how the running build learns that a roll has ended, with no timer. While two builds run,
+// the older one can still write rows by its own rule, and every row carries the build that wrote
+// it (written_build, migration 20261116151147). Each of the older build's writes logs an
+// issue_facts change, whose drain notifies the delivery change channel and so wakes the newer
+// process (Deps.Deliveries), and that pass computes the row again under the newer rule. Once the
+// older process has stopped, the last row it wrote has been computed again by the pass it woke,
+// and nothing is left that another build wrote. A pass of a build the record does not name reads
+// none of this, so two builds never write each other's rows back and forth. The cursors are the
+// two processes' shared cursors (one lease, one cursor table), which is why this reads the rows'
+// writer rather than the change feed: a change row the older process's pass read is one the
+// newer process never reads.
+//
+// It reads issue_facts_written_build, (project_key, written_build), as two ranges of each named
+// project's rows: those whose writer sorts before build and those that sort after it. A settled
+// deployment holds neither, so the read is two index probes a project; the rows of a roll are
+// the rows the ranges hold.
+func otherBuildsRows(ctx context.Context, q Querier, build string) (map[string][]string, error) {
+	rows, err := q.Query(ctx, otherBuildsRowsQuery, build)
 	if err != nil {
-		return nil, fmt.Errorf("read the open issues' stored facts: %w", err)
+		return nil, fmt.Errorf("read the stored rows another build wrote: %w", err)
 	}
 	defer rows.Close()
-	open := map[string][]string{}
+	other := map[string][]string{}
 	for rows.Next() {
 		var project, issue string
 		if err := rows.Scan(&project, &issue); err != nil {
-			return nil, fmt.Errorf("read the open issues' stored facts: %w", err)
+			return nil, fmt.Errorf("read the stored rows another build wrote: %w", err)
 		}
-		open[project] = append(open[project], issue)
+		other[project] = append(other[project], issue)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the open issues' stored facts: %w", err)
+		return nil, fmt.Errorf("read the stored rows another build wrote: %w", err)
 	}
-	return open, nil
+	return other, nil
 }
 
-// staleStoredRows is the stored row of every issue that a session wrote on and that carries no
-// Legion phase work any more, by project: the second set the sweep adds to its work, beside the
-// open rows.
-//
-// A stored row means Legion worked the issue, and an issue loses its phase work as well as
-// gains it: a role session that writes next on another issue under that issue's title takes the
-// work with it (legion.PhaseWork). A loss of that kind is written as an event, and the page
-// that reads that event states the issues the session left behind (sessionIssues), so this read
-// finds nothing to add for it.
-//
-// What only this read catches is a loss no event carries, and a release is one. Which sessions
-// are Legion roles is six role names and one title shape held in this build
-// (legion.WorkerTitle, legion/session_title.go), and the daemon writes its titles from its own
-// copy of them (packages/pi-legion/src/session-title.ts). A release that renames a role, drops
-// one or changes the shape takes the work off every issue whose row came from a session titled
-// the old way, and no session writes an event as it does so. A write made to events or to
-// handoffs outside Dispatch, by an operator or by a restore, takes work away the same silent
-// way. The issues are then named by nothing else a pass reads: no event of theirs is written,
-// the links do not reach them, and the sweep reads them among the open rows only while they are
-// open, so the row of a closed issue would stand for ever. The key is therefore read from what
-// the table already holds, as the tree a moved issue left is read from the stored root_key
-// (leftTrees), and it joins the set the pass states. It is one more source of keys of the same
-// kind: the computation decides whether the issue still carries work, and the deletion inside
-// the stated set takes the row only where the computation answered it none.
-//
-// A row whose issue no session ever wrote on is left where it stands. Such a row is no row this
-// loop can have written, because the computation answers a row for an issue a handoff names or
-// a role session worked, and a handoff is never taken back. The whole-project pass is what
-// answers for a row of that kind (deleteStaleProjectRows), as it does for a row whose key names
-// no issue at all.
-//
-// Both reads are of the whole deployment and run once a sweep, which is what their cost is
-// measured against. The call on its own takes 8.7 ms over the rig's 252 issues and 210 stored
-// rows, and 33.6 ms over the 1,008 issues and 840 rows of the freshness test's larger
-// population, best of five against the pod's test Postgres. What it adds to a sweep pass is
-// less than that, which is the figure SweepEvery carries: legion.PhaseWorkKeys is the one read
-// of the phase-work rule, and the computation of every project of the pass makes it anyway
-// (metrics.Population). `select project_key, issue_key from issue_facts` reads two narrow
-// columns of the whole table, which Postgres answers with one sequential scan: 26 shared
-// buffers and 0.3 ms over those 1,008 rows, and 519 buffers and 8 ms over 20,000 rows, under
-// explain (analyze, buffers). Neither read grows with the issues the pass computes.
-func staleStoredRows(ctx context.Context, pool *store.Pool) (map[string][]string, error) {
-	work, err := legion.PhaseWorkKeys(ctx, pool)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := pool.Query(ctx, `select project_key, issue_key from issue_facts`)
-	if err != nil {
-		return nil, fmt.Errorf("read the stored facts of the issues that lost their Legion phase work: %w", err)
-	}
-	defer rows.Close()
-	stale := map[string][]string{}
-	for rows.Next() {
-		var project, issue string
-		if err := rows.Scan(&project, &issue); err != nil {
-			return nil, fmt.Errorf("read the stored facts of the issues that lost their Legion phase work: %w", err)
-		}
-		if _, works := work.Keys[issue]; works {
-			continue
-		}
-		if _, wrote := work.SessionIssues[issue]; !wrote {
-			continue
-		}
-		stale[project] = append(stale[project], issue)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the stored facts of the issues that lost their Legion phase work: %w", err)
-	}
-	return stale, nil
-}
+// otherBuildsRowsQuery is otherBuildsRows' read: the projects whose record names $1, and of each
+// the rows written by a build that sorts before $1 or after it, each a range of
+// issue_facts_written_build.
+const otherBuildsRowsQuery = `
+	select fact.project_key, fact.issue_key
+	from issue_facts_computed mark
+	join issue_facts fact on fact.project_key = mark.project_key
+	where mark.computed_build = $1
+	  and (fact.written_build < $1 or fact.written_build > $1)
+	order by fact.project_key, fact.issue_key`
 
 // rowsToCompute is the whole set one pass computes for a project, sorted: the rows the changes
-// and the sweep touch through the issues' links now (rowsTouchedBy) and the rows of the tree a
-// moved issue left (leftTrees). It is the set the pass states before it writes, and it writes no
-// row outside it. keys is the issues the feeds named and the stale rows the sweep adds
-// (staleStoredRows), and open the open rows the sweep adds (openStoredRows), which it recomputes
-// because their hours move with the clock. It answers beside the whole set the part of it keys
-// state (fed), which the filings are stated over (filingsToCompute): a filing moves with no input
-// the clock moves, so a row only the open rows' sweep states names no filing the pass need
-// compute.
+// touch through the issues' links now (rowsTouchedBy) and the rows of the tree a moved issue
+// left (leftTrees). It is the set the pass states before it writes, and it writes no row outside
+// it. keys is the issues the feeds named and the rows another build wrote (otherBuildsRows).
 //
 // moved names the issues a row of a feed took out of one tree and into another (touch). Only
 // the tree such an issue left is read from it: the links as they stand now answer for every
 // other issue a change can move, the issues below a key among them (rowsTouchedBy).
-func rowsToCompute(ctx context.Context, q Querier, project string, keys, open []string, moved map[string]bool, above map[string]string) ([]string, []string, error) {
+func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, above map[string]string) ([]string, error) {
 	left, err := leftTrees(ctx, q, project, keys, moved)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	fed := withRows(rowsTouchedBy(keys, above), left)
-	if len(open) == 0 {
-		return fed, fed, nil
-	}
-	return withRows(rowsTouchedBy(slices.Concat(keys, open), above), left), fed, nil
+	return withRows(rowsTouchedBy(keys, above), left), nil
 }
 
 // withRows is touched, sorted, with the keys of left that it does not hold yet, in one sorted set.
@@ -268,9 +236,9 @@ func withRows(touched, left []string) []string {
 // filingsToCompute is the set of filed issues one pass computes the project's filings over,
 // sorted: the filings the page's sessions moved that the project owes, the ones it joined and the
 // ones it left (filed, from feed.filings, passPage), and the project's stored filings whose filed
-// issue or filer's issue is in keys, the part of the set the pass states for the rows that the
-// feeds' issues and the stale rows state (rowsToCompute's fed). It is the set the pass states for
-// the filings, and it writes or deletes no filing outside it (deleteStaleFilings).
+// issue or filer's issue is in keys, the set the pass states for the rows (rowsToCompute). It is
+// the set the pass states for the filings, and it writes or deletes no filing outside it
+// (deleteStaleFilings).
 //
 // A stored filing moves with the inputs of the rows that set already holds. The filed issue's
 // tree root moves with a move of that issue or of an issue above it, and rowsTouchedBy puts the
@@ -278,9 +246,7 @@ func withRows(touched, left []string) []string {
 // own events and observations and with its tree, which name the filer's issue. A filing session
 // that writes under a new title moves its filings itself, which the page reads of that session
 // (sessionFilings). The stored filing is read back from the table because the event that made it
-// is long past the cursor, as leftTrees reads a moved issue's old tree from the stored rows. None
-// of those inputs moves with the clock, so the open rows the sweep adds, which it recomputes for
-// the hours the clock moves, are no keys here.
+// is long past the cursor, as leftTrees reads a moved issue's old tree from the stored rows.
 func filingsToCompute(ctx context.Context, q Querier, project string, keys []string, filed map[string]bool) ([]string, error) {
 	set := make(map[string]bool, len(filed))
 	maps.Copy(set, filed)
@@ -316,9 +282,9 @@ const storedFilingsOfQuery = `
 
 // leftTrees is every stored row of the tree a moved issue left, sorted. An issue a move took
 // out of one tree and into another takes its own hours with it, so the old tree's root goes on
-// counting the time it waited while that issue worked until its row is computed again. A closed
-// root is never recomputed by the sweep, which recomputes the open issues alone, so a pass that
-// left the old tree out would leave that row wrong for good.
+// counting the time it waited while that issue worked until its row is computed again. No pass
+// computes a row its inputs did not name, so a pass that left the old tree out would leave that
+// row wrong for good.
 //
 // Two rows move an issue that way and both are marked the same (touch): an event whose
 // `changed` names `parent`, and an observation of legion.FieldTree. This reads the tree left
@@ -423,7 +389,8 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 // no row at all, so there is nothing to read this pass's standing against. A second record of the
 // standing is what that descent would need, and the wider set needs none: the set is stated
 // before anything is written, and a row inside it is written or deleted only because the
-// computation of that issue said so.
+// computation of that issue said so. A row below whose facts the change did not move is closed at
+// the same input as before (metrics.ProjectFactsClosed), so it is written by nothing.
 //
 // It climbs and descends the links metrics.TreeLinks gives, which are the one tree step
 // (legion.TreeAbove) under the scope rule the metrics hold, because the computation this set
@@ -437,7 +404,7 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 // Each walk keeps the keys it has already visited, so a chain that loops stops rather than
 // running for ever, which is the stop every tree walk holds (legion.TreeChain). What the
 // descent costs a pass is measured over the rig's histories and recorded with the pass's other
-// costs (SweepEvery).
+// costs (PassGap).
 func rowsTouchedBy(keys []string, above map[string]string) []string {
 	touched := make(map[string]bool, len(keys))
 	climbed := map[string]bool{}

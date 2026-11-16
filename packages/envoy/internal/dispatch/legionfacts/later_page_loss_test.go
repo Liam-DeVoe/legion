@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// A change cursor that a later page (not the sweep page) finds pruned must still be answered by
-// a whole-project read, because the page moves the cursor past the gap.
+// A change cursor that a later page (not a pass's first page) finds pruned must still be answered
+// by a whole-project read, because the page moves the cursor past the gap.
 func TestALossMetOnALaterPageIsAnswered(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)
@@ -54,7 +54,7 @@ func TestALossMetOnALaterPageIsAnswered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A later page of a pass: sweep is false.
+	// A later page of a pass: first is false.
 	if _, _, err := passPage(t.Context(), run.deps, run.sched, safe, run.at, false); err != nil {
 		t.Fatal(err)
 	}

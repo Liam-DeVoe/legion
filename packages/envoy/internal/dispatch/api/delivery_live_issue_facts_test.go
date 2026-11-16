@@ -45,9 +45,10 @@ func viewShowingIssues(spec deliveryLiveSpec, issues []string) *deliveryView {
 //
 // No delivery view is woken, whichever issue it names: the stored facts have one reader
 // (legionfacts.Read, which the board calls), so no timeline, measures or pipeline answer can
-// move when a facts row does. That matters on a pace: the facts sweep rewrites the row of every
-// open issue every legionfacts.SweepEvery, and each rewrite logs a change, so one worked open
-// issue would otherwise force a whole Delivery recompute on every subscribed page that often.
+// move when a facts row does. That matters on a burst: a build's whole read of a project rewrites
+// every row whose values or writer moved, and the build a project's record names computes again
+// every row the other build of a roll wrote, and each rewrite logs a change, so one such pass
+// would otherwise force a whole Delivery recompute on every subscribed page.
 func TestAnIssueFactsChangeTouchesTheLegionBoardsThatShowTheIssue(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	change := issueFactsChange("INFRA", "INFRA-7", now.Add(-26*time.Hour), now.Add(-2*time.Hour))
@@ -180,17 +181,18 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 		boardRecomputes, allRecomputes, entry)
 }
 
-// sweepRows is how many stored facts rows one sweep pass of a project of INFRA's size rewrites:
-// the 210 issues of the facts' own rig that carry Legion phase work. An open issue's work hours
-// grow with the clock, so every sweep finds every open issue changed, writes it, and the trigger
-// logs one delivery change for each (migration 20261111093100).
-const sweepRows = 210
+// batchRows is how many stored facts rows one whole read of a project of INFRA's size rewrites:
+// the 210 issues of the facts' own rig that carry Legion phase work. A build's first whole read
+// rewrites every row whose values or writer moved, as the newer build of a roll rewrites every
+// row the older wrote, and the trigger logs one delivery change for each (migration
+// 20261111093100).
+const batchRows = 210
 
-// writeFactsSweep writes count rows of the project in one write, as one sweep pass does, giving
+// writeFactsBatch writes count rows of the project in one write, as one whole read does, giving
 // every row the work hours named. It answers the keys WriteProject says it changed. The rows are
 // written by hand rather than computed, so the batch a measurement counts is the batch this
 // states.
-func writeFactsSweep(t *testing.T, database *store.Store, project string, count int, hours float64, at time.Time) []string {
+func writeFactsBatch(t *testing.T, database *store.Store, project string, count int, hours float64, at time.Time) []string {
 	t.Helper()
 	rows := make([]legionfacts.Row, 0, count)
 	for number := 1; number <= count; number++ {
@@ -211,9 +213,10 @@ func writeFactsSweep(t *testing.T, database *store.Store, project string, count 
 	return changed
 }
 
-// TestWhatOneSweepOfChangedFactsRowsCostsAnOpenBoard: what one sweep pass costs a subscribed
-// Legion board. The sweep writes every open issue's row in one pass, the trigger logs a change
-// row for each, and the hub marks the board once per change row it reads.
+// TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard: what one pass that rewrites every row
+// of a project costs a subscribed Legion board. A whole read writes every changed row in one pass,
+// the trigger logs a change row for each, and the hub marks the board once per change row it
+// reads.
 //
 // A mark is a flag on the view, not a recompute (markDirtyLocked), and a dirty view is due
 // viewQuiet after its last mark or viewMaxWait after its first (dueAt). The clock stands still,
@@ -223,14 +226,14 @@ func writeFactsSweep(t *testing.T, database *store.Store, project string, count 
 // The rows are written once before the subscription, so the board's first answer names every one
 // of them: a facts write of an issue the view's last answer does not name marks nothing
 // (showsIssue), and a batch of such writes would measure the empty case.
-func TestWhatOneSweepOfChangedFactsRowsCostsAnOpenBoard(t *testing.T) {
+func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
 	clock := newStillHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
 	seedLegionBoard(t, rig.database, "INFRA", clock.Now())
-	writeFactsSweep(t, rig.database, "INFRA", sweepRows, 4, clock.Now())
+	writeFactsBatch(t, rig.database, "INFRA", batchRows, 4, clock.Now())
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
@@ -241,20 +244,20 @@ func TestWhatOneSweepOfChangedFactsRowsCostsAnOpenBoard(t *testing.T) {
 	if err := json.Unmarshal(snapshot.Body, &answered); err != nil {
 		t.Fatalf("read the board's first answer: %v", err)
 	}
-	if len(answered.Issues) != sweepRows {
-		t.Fatalf("the board's first answer names %d issues entries, want the %d rows the sweep below rewrites",
-			len(answered.Issues), sweepRows)
+	if len(answered.Issues) != batchRows {
+		t.Fatalf("the board's first answer names %d issues entries, want the %d rows the batch below rewrites",
+			len(answered.Issues), batchRows)
 	}
 	rig.settle(t)
 
 	start := rig.mark()
 	before := latestChange(t, rig.database)
-	// One sweep pass: every row's hours have grown, so every row is rewritten.
-	changed := writeFactsSweep(t, rig.database, "INFRA", sweepRows, 5, clock.Now())
+	// One pass that rewrites the project: every row's hours have moved, so every row is rewritten.
+	changed := writeFactsBatch(t, rig.database, "INFRA", batchRows, 5, clock.Now())
 	logged := latestChange(t, rig.database) - before
-	if len(changed) != sweepRows || logged != int64(sweepRows) {
-		t.Fatalf("the sweep rewrote %d rows and logged %d changes, want %d of each: a batch of another size is another measurement",
-			len(changed), logged, sweepRows)
+	if len(changed) != batchRows || logged != int64(batchRows) {
+		t.Fatalf("the batch rewrote %d rows and logged %d changes, want %d of each: a batch of another size is another measurement",
+			len(changed), logged, batchRows)
 	}
 	rig.hub.catchUpNow()
 	conn.none(t, 2*viewQuiet, "a batch of facts rows the clock has not moved past")
@@ -269,9 +272,9 @@ func TestWhatOneSweepOfChangedFactsRowsCostsAnOpenBoard(t *testing.T) {
 	conn.none(t, viewMaxWait, "the batch's one delta")
 	recomputes := rig.count(start, recomputeBegin(deliveryCauseChange))
 	if recomputes != 1 {
-		t.Errorf("a sweep of %d changed rows cost the board %d recomputes, want the one its marks coalesce into",
-			sweepRows, recomputes)
+		t.Errorf("a batch of %d changed rows cost the board %d recomputes, want the one its marks coalesce into",
+			batchRows, recomputes)
 	}
-	t.Logf("one sweep pass: %d rows rewritten in one Write, %d delivery changes logged, %d recompute(s) of the subscribed board and 1 frame to it, carrying %d issues entries; the recompute answered %s after the quiet passed",
+	t.Logf("one batch: %d rows rewritten in one Write, %d delivery changes logged, %d recompute(s) of the subscribed board and 1 frame to it, carrying %d issues entries; the recompute answered %s after the quiet passed",
 		len(changed), logged, recomputes, len(delta.Maps["issues"]), took.Round(time.Millisecond))
 }

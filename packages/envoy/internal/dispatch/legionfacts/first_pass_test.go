@@ -12,8 +12,7 @@ import (
 // whole project is computed from the history itself. The pages below the feeds' heads hold
 // nothing it has not already answered, so the cursors start at those heads. A pass that read
 // them instead would recompute every project once per page - about 813 pages of a log the size
-// of INFRA's - and no sweep runs until a pass ends, so every open row would stand still while
-// it replayed.
+// of INFRA's - while the rows of the events behind them waited for it.
 //
 // The page is one event wide, so a pass that read the log at all would answer that its page was
 // full and go on to the next. passPage answers that flag, which is what pass loops on.
@@ -37,12 +36,12 @@ func TestTheFirstPassOverASeededLogReadsOnePage(t *testing.T) {
 		t.Fatalf("the log holds %d events, so a page of one event is not narrower than it", logged)
 	}
 
-	narrow := schedule{every: SweepEvery, page: 1, now: func() time.Time { return run.at }}
-	changed, full, err := passPage(t.Context(), run.deps, narrow, safe, run.at, true)
+	narrow := schedule{page: 1, now: func() time.Time { return run.at }, started: run.at}
+	changed, next, err := passPage(t.Context(), run.deps, narrow, safe, run.at, true)
 	if err != nil {
 		t.Fatalf("the first page of the first pass failed: %v", err)
 	}
-	if full {
+	if next.more {
 		t.Errorf("the first page of the first pass answers that a feed holds more, so the pass reads the %d events of the log a page at a time",
 			logged)
 	}

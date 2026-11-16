@@ -107,7 +107,7 @@ func main() {
 	flags.StringVar(&o.pgLog, "pg-log", "", "Postgres's jsonlog file, which holds each statement with its parameters")
 	flags.StringVar(&o.project, "project", "INFRA", "the project the first paint reads")
 	flags.DurationVar(&o.quiet, "quiet", 30*time.Second, "how long after the restart the first window starts, so the boot's own passes have ended")
-	flags.DurationVar(&o.catalog, "catalog", 65*time.Second, "how long the background catalogue is taken over: two Legion facts sweeps at least")
+	flags.DurationVar(&o.catalog, "catalog", 65*time.Second, "how long the background catalogue is taken over: more than a minute, so every loop a quiet server runs on a minute's pace or on the Legion sampler's minute wake runs in it")
 	flags.DurationVar(&o.timeout, "timeout", time.Hour, "how long wait polls before it fails")
 	flags.BoolVar(&o.info, "info", false, "measure the first paint alone and judge no budget")
 	if err := flags.Parse(os.Args[2:]); err != nil {

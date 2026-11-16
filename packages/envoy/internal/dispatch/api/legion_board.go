@@ -88,9 +88,11 @@ type legionBoardResponse struct {
 }
 
 // legionBoardFacts is one issue's stored Legion facts on the wire: the issue_facts row
-// legionfacts.Row holds, less the project the board names and the issue the map is keyed by.
-// Every value is the one the facts consumer computed and stored, and the board adds nothing to
-// any of them.
+// legionfacts.Row holds, less the project the board names and the issue the map is keyed by,
+// closed at the moment of the read (legionfacts.Row.At). Every value is the one the facts
+// consumer computed and stored, and the one thing the board adds to any of them is the growth
+// of an open issue's facts from the newest input they read to the moment of the read, which is
+// what the computation itself answers at that moment.
 //
 //   - OpenedAt is when the issue was opened.
 //   - ClosedAt is when it closed, null while it is open.
@@ -103,7 +105,7 @@ type legionBoardResponse struct {
 //   - SlotHours is how long it held an admission slot of its own.
 //   - WaitingReason is why it waits, "" where it waits for nothing.
 //   - WorkFirstAt and WorkLastAt are the first and the last moment of its measured work, null
-//     until it has some.
+//     until it has some; the last is the moment of the read while a bar of it is still open.
 //   - UpdatedAt is when its row was written, which the header's facts_updated_at is the oldest
 //     of.
 type legionBoardFacts struct {
@@ -238,7 +240,8 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readLegionBoard(r.Context(), project)
+	now := time.Now().UTC()
+	population, err := s.readLegionBoard(r.Context(), project, now)
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
 			writeError(w, legionNotConfiguredCode, http.StatusNotFound, legionNotConfiguredMessage)
@@ -247,7 +250,7 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, legionBoardCompute(population, time.Now().UTC()))
+	WriteJSON(w, http.StatusOK, legionBoardCompute(population, now))
 }
 
 // legionBoardPopulation is every read one board answer makes: the project's Legion setting, the
@@ -274,7 +277,7 @@ type legionBoardPopulation struct {
 	// what makes an issue Legion's for the walk (legion_phase_work.go); nil is an empty set.
 	phaseWork *legionPhaseWork
 	// facts is the stored Legion facts of the project's issues, by key, as legionfacts.Read
-	// answered them: rows, and no computation of this server's own.
+	// answered them at the moment of the read: rows, and no computation of this server's own.
 	facts map[string]legionfacts.Row
 	// cursorAge is how long ago the facts consumer's oldest cursor last moved, in seconds,
 	// measured when this population was read; nil where the consumer holds no cursor row.
@@ -316,14 +319,16 @@ type legionBoardIssue struct {
 	priority *int
 }
 
-// readLegionBoard reads one project's board. A project with no Legion setting is legion's
-// ErrNoSettings, which the route answers 404 and the live hub refuses the subscription with.
+// readLegionBoard reads one project's board as of now. A project with no Legion setting is
+// legion's ErrNoSettings, which the route answers 404 and the live hub refuses the subscription
+// with.
 //
 // The stored facts are one read of one project's rows, by the index on (project_key, issue_key),
-// and the board serves what that read answered. Nothing here computes a fact: no elapsed time is
-// added to a stored value, no metrics function is called, and no population is held between
-// calls.
-func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBoardPopulation, error) {
+// and the board serves what that read answered. Nothing here computes a fact: no metrics function
+// is called and no population is held between calls. The one computation of the read is
+// legionfacts.Row.At, which closes each part of an open issue still running at now, the moment
+// the body is answered as of (legionBoardCompute).
+func (s *server) readLegionBoard(ctx context.Context, project string, now time.Time) (*legionBoardPopulation, error) {
 	pool := s.deps.Store.Pool
 	if _, err := legion.GetSettings(ctx, pool, project); err != nil {
 		return nil, err
@@ -346,14 +351,14 @@ func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBo
 	if err := population.readIssues(ctx, pool); err != nil {
 		return nil, err
 	}
-	// The stored facts: one read of this project's rows, and the age of the consumer's oldest
-	// cursor, which says how fresh they are.
-	facts, err := legionfacts.Read(ctx, pool, project)
+	// The stored facts: one read of this project's rows, each closed at now, and the age of the
+	// consumer's oldest cursor, which says how recently it read its feeds.
+	facts, err := legionfacts.Read(ctx, pool, project, now)
 	if err != nil {
 		return nil, err
 	}
 	population.facts = facts
-	age, held, err := legionfacts.CursorAge(ctx, pool, time.Now().UTC())
+	age, held, err := legionfacts.CursorAge(ctx, pool, now)
 	if err != nil {
 		return nil, err
 	}

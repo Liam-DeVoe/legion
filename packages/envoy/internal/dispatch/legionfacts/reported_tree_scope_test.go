@@ -15,12 +15,10 @@ import (
 // parent link ties to it, and a root's hours drop the time it waited while a child worked
 // (legion/metrics/segments.go). A pass that climbed the parent links alone would state the
 // child and its parent chain, never this root, and the root's row would stand wrong until a
-// whole-project pass computed it again. A closed root is never recomputed by the sweep, which
-// recomputes the open issues alone.
+// whole-project pass computed it again, since no pass computes a row its feeds did not name.
 //
 // The history is the rig's, with one `tree` observation written over it. The first pass
-// computes the project whole, so every stored row is right before the change, and the clock
-// stands still over both passes, so nothing moves of itself.
+// computes the project whole, so every stored row is right before the change.
 func TestAChangeToAChildRecomputesTheRootItReportsAsItsTree(t *testing.T) {
 	run := newConsumer(t, 8)
 
@@ -38,12 +36,10 @@ func TestAChangeToAChildRecomputesTheRootItReportsAsItsTree(t *testing.T) {
 			child, parents[child], tree, run.fixture.Roots[0])
 	}
 
-	// The seventh tree's own open child, closed before the first pass. Each pass recomputes
-	// every open issue's stored row and climbs from it (openStoredRows), so a tree that holds
-	// an open issue has its root computed again on every pass whatever this change does, and
-	// the check below would read a fresh row either way. It closes at the moment of its last
-	// observation, which is where it stopped working, so the root waits on it for the hours it
-	// waited on it before.
+	// The seventh tree's own open child, closed before the first pass, so the root and every
+	// issue below it stand closed and the check below reads a row only the change's stated set
+	// can reach. It closes at the moment of its last observation, which is where it stopped
+	// working, so the root waits on it for the hours it waited on it before.
 	run.exec(t, "close the seventh tree's open child", `
 		update issues set status = 'done',
 			closed_at = (select max(observed_at) from legion_observations where issue_key = issues.key)

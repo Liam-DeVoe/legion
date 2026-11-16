@@ -23,10 +23,9 @@ import (
 // are that descent read from the stored rows: each one flips the parent one way and then holds
 // the stored row of every issue beneath the parent against a computation of that issue.
 //
-// The issue beneath is closed in all three checks. A closed issue is the case the descent
-// answers for: the sweep recomputes the open issues alone (openStoredRows), so an open issue's
-// row is rewritten on the next pass whatever the scope states, and a closed issue's row stands
-// as the pass left it.
+// The issue beneath is closed in all three checks. A closed issue has no input of its own to
+// move, so the descent from the parent is the one thing that brings its row into a pass, and its
+// row stands as the pass left it.
 //
 // The three drive three of the ways the standing flips: a worker session's event on the parent,
 // a retitle that takes the parent's phase work away, and the daemon's first report of the

@@ -17,14 +17,12 @@ import (
 // (leftTrees).
 //
 // The root an issue leaves goes on holding the hours it waited while that issue worked
-// (legion/metrics/segments.go), so its stored row is wrong from the move on. The sweep
-// recomputes the open issues alone, and both roots here are closed, so a pass that stated the
-// new tree alone would leave the old root's row wrong until a whole-project pass computed it
-// again.
+// (legion/metrics/segments.go), so its stored row is wrong from the move on. No pass computes a
+// row its feeds did not name, and both roots here are closed, so a pass that stated the new tree
+// alone would leave the old root's row wrong until a whole-project pass computed it again.
 //
 // The history is the rig's, with one `tree` observation written over it. The first pass computes
-// the project whole, so every stored row is right before the observation, and the clock stands
-// still over both passes, so nothing moves of itself.
+// the project whole, so every stored row is right before the observation.
 func TestATreeObservationMovesAChildAndRecomputesBothRoots(t *testing.T) {
 	run := newConsumer(t, 8)
 
@@ -43,14 +41,12 @@ func TestATreeObservationMovesAChildAndRecomputesBothRoots(t *testing.T) {
 			child, left, joined, run.fixture.Roots[0])
 	}
 
-	// The seventh tree's own open child, closed before the first pass. Each pass recomputes
-	// every open issue's stored row and climbs from it (openStoredRows), so a tree that holds
-	// an open issue has its root computed again on every pass whatever this observation does,
-	// and the checks below would read a fresh row either way. The first tree's one open issue
-	// is the child itself, which the observation takes out of that tree, so no open issue
-	// climbs to either root once the observation stands. The child closes at the moment of its
-	// last observation, which is where it stopped working, so its root waits on it for the
-	// hours it waited on it before.
+	// The seventh tree's own open child, closed before the first pass, so both roots and every
+	// issue below them stand closed: an issue whose input moved names its root to a pass, and the
+	// checks below must read a row only the observation's stated set can reach. The first tree's
+	// one open issue is the child itself, which the observation takes out of that tree. The child
+	// closes at the moment of its last observation, which is where it stopped working, so its
+	// root waits on it for the hours it waited on it before.
 	run.exec(t, "close the seventh tree's open child", `
 		update issues set status = 'done',
 			closed_at = (select max(observed_at) from legion_observations where issue_key = issues.key)
@@ -64,7 +60,7 @@ func TestATreeObservationMovesAChildAndRecomputesBothRoots(t *testing.T) {
 			t.Fatalf("%s has no stored row after the first pass, so this check has nothing to compare", root)
 		}
 		if before[root].ClosedAt == nil {
-			t.Fatalf("%s is open, so the sweep recomputes its row whatever the observation states and this check proves nothing", root)
+			t.Fatalf("%s is open, and this check needs both roots closed", root)
 		}
 	}
 	if before[child].RootKey != left {

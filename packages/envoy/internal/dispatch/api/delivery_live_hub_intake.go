@@ -449,9 +449,9 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	case delivery.ChangeKindIssueFacts:
 		// One issue's stored Legion facts, which the Legion board is the one reader of
 		// (legionfacts.Read). No other kind of view reads a facts row, so a board that shows the
-		// issue is woken and every delivery view is left: the sweep rewrites every open issue's
-		// row every legionfacts.SweepEvery, and a timeline, measures or pipeline answer cannot
-		// move when one does.
+		// issue is woken and every delivery view is left: a build's whole read rewrites every row
+		// of a project whose values or writer moved, and a timeline, measures or pipeline answer
+		// cannot move when one does.
 		return view.spec.kind == legionBoardView && view.showsIssue(change.Ref, false)
 	case delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalVersions, delivery.ChangeKindEvalDays:
 		// One eval's readings, a new version of its definition, or its day rows: what the evals

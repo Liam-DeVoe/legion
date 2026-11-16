@@ -4,18 +4,22 @@ body: |-
   board column, the work time they come out of, its review rounds, its root and depth in the
   tree, the hours it held an admission slot, why it waits, and the first and last moment of its
   work. One computation answers them all, so no two views of one issue can disagree.
-  A leased consumer keeps the rows fresh. It wakes on the issue's own events, on the daemon's
-  observations and on the delivery change feed, recomputes the issue whose inputs moved with its
-  ancestors, and recomputes the subtree of an issue that moved to another tree, by its parent
-  link or by the tree its daemon reports, with the tree it left. It also sweeps every open issue,
-  whose facts grow with the clock while nothing else moves, so a stored row stands within a
-  minute of the clock. A project never read whole, one whose rows have gone since it was, and a
-  cursor whose rows the feed has pruned, are read whole. A pass answers a pruned cursor on its
-  first page, which is the page that reads every project whole. A later page that meets the loss
-  holds its cursor where it stood and ends the pass, so the next pass's first page answers it.
+  A leased consumer keeps the rows true to their inputs. It wakes on the issue's own events, on
+  the daemon's observations and on the delivery change feed, recomputes the issue whose inputs
+  moved with its ancestors, and recomputes the subtree of an issue that moved to another tree, by
+  its parent link or by the tree its daemon reports, with the tree it left, and it rewrites no
+  row on a timer. An open issue's row holds its facts as of the newest input they read and how
+  fast each grows after it, so a row whose inputs did not move is never rewritten, and every
+  read gives each fact at the read's own clock. Each build reads a project whole once, as does a
+  project whose rows have gone and a cursor whose rows the feed has pruned; during a roll the
+  newer build computes again every row the older one writes, so once the older process has
+  stopped every row is the running build's. A pass answers a pruned cursor on its first page,
+  which is the page that reads every project whole. A later page that meets the loss holds its
+  cursor where it stood and has the page after it answer the loss.
   The board moves to `GET /api/v1/projects/{key}/legion/board`, so one answer has one address.
   Its body gains `issues`, a map keyed by issue key of those stored rows, read with one indexed
-  read that computes nothing and adds nothing to a stored value; the live push carries the same
+  read that computes nothing but each open fact's growth to the moment of the read; the live push
+  carries the same
   map, entry by entry. Its header says how many issues of the project carry Legion
   phase work, the oldest `updated_at` it served and the age of the consumer's cursor, so a
   project with no Legion work (no Legion issues, no rows) reads differently from one whose

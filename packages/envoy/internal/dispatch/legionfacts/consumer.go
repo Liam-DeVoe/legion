@@ -24,29 +24,31 @@ import (
 // wrote. The lease is what keeps the read and the write one step.
 const Lease = "legion-facts"
 
-// Freshness is how far behind the clock a stored row may stand: the requirement of
-// dispatch://INFRA-2915. An open issue's hours grow with the clock while no input moves, so the
-// loop recomputes the open rows on a pace of its own (SweepEvery) rather than wait for a change
-// that never comes.
+// Freshness is how far behind the event that changed it a stored row may stand: the requirement
+// of dispatch://INFRA-2916 (R21). An open issue's hours grow with the clock while no input moves,
+// and no pass recomputes them for that: the row holds its facts closed at the newest input they
+// read and how fast each grows after it, and a reader closes each at its own clock (Row.At). A
+// row is therefore never behind the clock, and only an input can leave it behind.
 const Freshness = time.Minute
 
-// SweepEvery is that pace: the loop's MinGap, the least time from one pass's start to the next
-// whatever woke it, and the due time each pass asks for, so a pass runs this often while nothing
-// changes.
+// PassGap is the least time from the start of one pass to the start of the next, whatever woke
+// it: the loop's MinGap, which duty.RunWoken needs of a leased loop. It rewrites nothing, and no
+// pass asks for a pass of its own (each answers the zero time as its due time): passes run on
+// the three wakes alone. The gap coalesces the wakes a burst of commits sends into one pass at
+// its end, and it is how long a process that found the lease held waits, plus up to a tenth
+// again, before it tries once more, since the other process's pass may have read before the
+// change that woke this one.
 //
-// A row is computed as of the start of the pass that writes it, so a row's age when the next
-// pass rewrites it is SweepEvery plus that pass's own length. Thirty seconds holds Freshness
-// while a pass runs under thirty seconds. Measured against a real Postgres over the 252 issues
-// of the facts' own rig, 210 of them with Legion phase work: one ComputeProject and one
-// WriteProject of the whole project take 115 ms to 205 ms, and one sweep pass that finds nothing
-// new 45 ms to 80 ms (TestTheSweepsPaceHoldsTheFreshnessRequirement prints both, over five
-// runs). A pass may therefore grow to about 380 times its measured length before a stored row
-// can stand a minute old.
-//
-// The sweep also reads the rows whose issue lost its Legion phase work (staleStoredRows). That
-// read costs a sweep pass about 10 ms over those 252 issues and about 20 ms over the 1,008 of
-// the same test's larger population, measured as the difference between three runs of the test
-// with the read and three without it.
+// A row therefore stands behind the event that moved it by one gap, one lease retry and one
+// pass at most: 10 s, 11 s and the pass, against the minute Freshness allows. Measured against the
+// pod's test Postgres by TestAPassHoldsTheFreshnessRequirement, over two runs: one pass that reads
+// one event on one issue takes 64 ms to 66 ms over the 252 issues of the facts' own rig, 210 of
+// them with Legion phase work, and 121 ms to 125 ms over four times that population; one whole
+// read of the project (ComputeProject and WriteProject), the pass a new build makes once, takes
+// 243 ms to 303 ms and 625 ms to 744 ms. The read of the rows another build wrote, which every
+// first page of the recorded build makes (otherBuildsRows), takes 0.7 ms to 0.8 ms finding none
+// over the rig and 1.3 ms to 1.6 ms over four times it, and 1.3 ms to 1.5 ms and 4.3 ms to 4.9 ms
+// finding every row of the project written by another build.
 //
 // Every pass that computes a project narrowly also reads the project's tree links
 // (metrics.TreeLinks). That read takes about 4.5 ms over the rig's 252 issues and 2,142
@@ -65,14 +67,12 @@ const Freshness = time.Minute
 // Every pass also states the issues below each key it computes, because an input that names one
 // issue can move where every issue under that issue stands (rowsTouchedBy). Over the rig's 252
 // issues one event of a worker session states 2.8 keys on average and 6 at most, against 1.8
-// and 2 before the pass descended. A sweep pass that finds nothing new states the same keys as
-// before the descent: 84 over those 252 issues and 336 over the 1,008 of the larger population,
-// because an open issue of the rig holds no issue below it. The descent costs no read a pass did
-// not make before it. metrics.ReadIssues reads the whole tree of every key it is given
-// (treeScopeKeys), so an issue below a key is read whether or not the set names it. upsert writes
-// a row only where a value of that row moved. A row the descent added and the computation left
-// where it stood is therefore written by nothing.
-const SweepEvery = 30 * time.Second
+// and 2 before the pass descended. The descent costs no read a pass did not make before it.
+// metrics.ReadIssues reads the whole tree of every key it is given (treeScopeKeys), so an issue
+// below a key is read whether or not the set names it. upsert writes a row only where a value of
+// that row moved. A row the descent added and the computation left where it stood is therefore
+// written by nothing.
+const PassGap = 10 * time.Second
 
 // feedPage is the most rows one transaction reads of each feed. A pass whose page was full reads
 // the next one at once, in a transaction of its own, so a backlog is worked through in bounded
@@ -98,13 +98,14 @@ type Deps struct {
 	// through: the events feed is paged by a global id, so it must stop at a safe horizon.
 	Horizon *events.Horizon
 	// Build names the build this process is, which the loop records against each project it
-	// reads whole and compares on every pass after that (legionProjects). The server gives it
-	// the commit the image build stamped into the binary, and a build no release stamped gives
-	// it a string of that one process (cmd/dispatch's processBuild). The empty string is no
-	// build: the loop refuses it where it starts (run), because a pass that carried it would
-	// record "no build" against every project it read whole, and the next process to carry it
-	// - another binary, holding another phase-work rule - would compare equal to that record
-	// and sweep the projects R9 says to read whole.
+	// reads whole, compares on every pass after that (legionProjects), and stamps on every row
+	// it writes (ProjectWrite.Build). The server gives it the commit the image build stamped
+	// into the binary, and a build no release stamped gives it a string of that one process
+	// (cmd/dispatch's processBuild). The empty string is no build: the loop refuses it where it
+	// starts (run), because a pass that carried it would record "no build" against every
+	// project it read whole, and the next process to carry it - another binary, holding another
+	// phase-work rule - would compare equal to that record and read none of the projects R27
+	// says to read whole.
 	Build string
 	// Leases is the pool a pass takes its lease connection from (duty.Exclusive).
 	Leases duty.Leases
@@ -115,33 +116,41 @@ type Deps struct {
 	// legion.StateChannel.
 	Observations <-chan struct{}
 	// Deliveries is signalled when a delivery fact changed: the hub's wake on
-	// delivery.ChangesChannel.
+	// delivery.ChangesChannel. A facts write of either process notifies it once its changes
+	// are drained, which is how the build a project's record names hears of a row the other
+	// build of a roll wrote (otherBuildsRows).
 	Deliveries <-chan struct{}
 }
 
-// schedule is the loop's pace and the clock a pass computes as of, which a test replaces: every
-// is SweepEvery, page is feedPage, and now answers the moment a pass's rows are the facts as of.
+// schedule is what a test replaces of the loop: page is the most rows a page reads of each feed
+// (feedPage), now answers the moment a pass runs at, which a row's updated_at, the cursors'
+// stamp and the record of a whole read carry, and started is when this process started, which
+// a record another build wrote is judged against (legionProjects). run sets started from now
+// where the schedule leaves it zero.
 type schedule struct {
-	every time.Duration
-	page  int
-	now   func() time.Time
+	page    int
+	now     func() time.Time
+	started time.Time
 }
 
-// serverSchedule is the pace the server runs the loop at.
+// serverSchedule is the schedule the server runs the loop under.
 var serverSchedule = schedule{
-	every: SweepEvery,
-	page:  feedPage,
-	now:   func() time.Time { return time.Now().UTC() },
+	page: feedPage,
+	now:  func() time.Time { return time.Now().UTC() },
 }
 
-// Run keeps every project's stored Legion facts within a minute of its inputs and of the clock.
-// It stops when ctx is done.
+// Run keeps every project's stored Legion facts within a minute of their inputs. It stops when
+// ctx is done.
 //
-// It is a woken loop (duty.RunWoken) under one lease (Lease): one pass at start, a pass on each
-// of the three wakes, and a pass every SweepEvery whether or not anything moved, because an open
-// issue's hours grow with the clock and no wake announces that.
+// It is a woken loop (duty.RunWoken) under one lease (Lease): one pass at start and a pass on
+// each of the three wakes, never two starts closer than PassGap, and no pass on a timer. A pass
+// recomputes an issue and upserts its row when that issue's inputs move, and at no other time.
+// An open issue's hours grow with the clock while no input moves, and that is no input: the row
+// holds the issue's facts closed at the newest input they read and how fast each grows after it
+// (metrics.ProjectFactsClosed), so a recomputation whose inputs did not move answers the row the
+// table holds and writes nothing, and a reader gives each fact at its own clock (Row.At).
 //
-// Four inputs move a stored row, and a pass reads the first three from a cursor of its own:
+// Three inputs move a stored row, and a pass reads each from a cursor of its own:
 //  1. The issue's events, woken by Deps.Events. Every event of an issue can move that issue's
 //     facts - a status mark, a role event, an ask turn, a handoff.recorded, and the session
 //     title an event's actor carries, which decides whether the issue carries Legion phase work
@@ -149,10 +158,15 @@ var serverSchedule = schedule{
 //  2. The daemon's observations, woken by Deps.Observations: the phase, the slot and the wait
 //     the sampler recorded (readObservationPage).
 //  3. A pull request's merge time, woken by Deps.Deliveries (readChangePage).
-//  4. The clock, for an open issue, which no event moves. That is the sweep: each pass
-//     recomputes the stored rows of the project's open issues (openStoredRows), and the stored
-//     rows whose issue carries no Legion phase work any more, which no feed names at all
-//     (staleStoredRows).
+//
+// Two reads answer what no feed carries, both on the first page of a pass, which a wake starts.
+// A project the running build has not read whole is read whole (legionProjects, R27): the rule
+// that decides which issues carry Legion phase work lives in the build, so a release can give an
+// issue work or take it away with no event, and the whole read is what writes the one row and
+// deletes the other (deleteStaleProjectRows). And the build a project's record names reads the
+// rows another build of a roll wrote and computes them again (otherBuildsRows), which is how the
+// running build learns the roll has ended with no timer: once the older process has stopped no
+// row is left that it wrote.
 //
 // The same passes keep each project's filings (issue_filings): an `issue.created` event a Legion
 // session wrote is a new filing of that session's project, a session that writes under a title
@@ -161,9 +175,10 @@ var serverSchedule = schedule{
 // computes its filed issue or its filer's issue (filingsToCompute), so its class, its filer's
 // phase and its root move with the inputs the rows move with.
 //
-// A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
-// rows again. Every pass is safe to run twice: a row whose values did not move is not rewritten
-// (Upsert), and a cursor moves only in the transaction that wrote the rows it covers (passPage).
+// A pass that fails logs and leaves its cursors where they were, so the pass the next wake starts
+// reads the same rows again. Every pass is safe to run twice: a row whose values did not move is
+// not rewritten (upsert), and a cursor moves only in the transaction that wrote the rows it
+// covers (passPage).
 func Run(ctx context.Context, deps Deps) {
 	run(ctx, deps, serverSchedule)
 }
@@ -171,91 +186,99 @@ func Run(ctx context.Context, deps Deps) {
 func run(ctx context.Context, deps Deps, sched schedule) {
 	// The build is what every pass compares and records. A loop with no build records "no
 	// build" against each project it reads whole, and the next process that also carries none
-	// finds its own record and sweeps those projects, although another binary holds another
-	// phase-work rule. It is a caller's mistake and never a deployment's: cmd/dispatch's
-	// processBuild answers a commit or a string of its own process, and neither is empty.
-	// Refusing it here keeps a rig from passing it as well.
+	// finds its own record and reads none of those projects whole, although another binary holds
+	// another phase-work rule. It is a caller's mistake and never a deployment's:
+	// cmd/dispatch's processBuild answers a commit or a string of its own process, and neither is
+	// empty. Refusing it here keeps a rig from passing it as well.
 	if deps.Build == "" {
 		panic("legionfacts: Deps.Build is empty, and the loop needs the build this process is")
+	}
+	if sched.started.IsZero() {
+		sched.started = sched.now()
 	}
 	ctx = store.WithTransactionTracking(ctx)
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  Lease,
 		Leases: deps.Leases,
 		Wake:   duty.MergeWakes(ctx, deps.Events, deps.Observations, deps.Deliveries),
-		MinGap: sched.every,
+		MinGap: PassGap,
 		Pass: func(ctx context.Context) time.Time {
-			changed, next, err := pass(ctx, deps, sched)
+			changed, err := pass(ctx, deps, sched)
 			if err != nil && ctx.Err() == nil {
 				slog.Warn("dispatch: the Legion facts pass failed", "error", err)
-				next = time.Now().Add(sched.every)
 			}
-			if ctx.Err() != nil {
-				return time.Time{}
-			}
-			if len(changed) > 0 {
+			if len(changed) > 0 && ctx.Err() == nil {
 				slog.Debug("dispatch: Legion facts written", "rows", len(changed))
 			}
-			return next
+			// No pass asks for another: the next runs when a wake says an input moved.
+			return time.Time{}
 		},
 	})
 }
 
 // pass is one pass of the loop: it reads page after page of the three feeds until one comes back
 // short, each page computed and written in a transaction of its own, and answers the keys whose
-// stored rows it changed and when the loop should run again.
+// stored rows it changed. Every page runs at the moment the pass started. The first page carries
+// the work no feed announces (passPage), and so does a later page where the page before it met a
+// lost change cursor it held (readPages), so the pass answers the loss itself rather than leave it
+// to a pass no wake may start.
 //
-// Every page of one pass computes as of one moment, the moment the pass started, so a row
-// written by the pass holds the facts as of then. The next pass is asked for one SweepEvery from
-// that moment, which is what holds a stored row within Freshness of the clock.
-func pass(ctx context.Context, deps Deps, sched schedule) ([]string, time.Time, error) {
+// The events feed is read up to the safe horizon the pass awaits (events.Horizon.Await), which
+// is at or above every event committed before the pass started, so the event whose commit woke
+// the pass is read by it. A horizon read without the wait proves only what an earlier
+// observation saw, and could leave that event above it with no later wake to read it by.
+func pass(ctx context.Context, deps Deps, sched schedule) ([]string, error) {
 	now := sched.now()
-	safe, err := deps.Horizon.SafeOrAwait(ctx)
+	safe, err := deps.Horizon.Await(ctx)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, fmt.Errorf("await the event log's safe horizon: %w", err)
 	}
 	changed := []string{}
-	for sweep := true; ; sweep = false {
-		keys, full, err := passPage(ctx, deps, sched, safe, now, sweep)
+	for page := (nextPage{more: true, first: true}); page.more; {
+		var keys []string
+		keys, page, err = passPage(ctx, deps, sched, safe, now, page.first)
 		changed = append(changed, keys...)
 		if err != nil {
-			return changed, time.Time{}, err
-		}
-		if !full {
-			return changed, now.Add(sched.every), nil
+			return changed, err
 		}
 	}
+	return changed, nil
+}
+
+// nextPage is what one page tells its pass of the page after it (passPage): whether to read one
+// at all, because a feed holds more rows, and whether it must carry a first page's work.
+type nextPage struct {
+	more, first bool
 }
 
 // passPage is one page of one pass: it reads where each feed stands, reads a page of each,
-// computes the rows those pages and the sweep name, and writes those rows, the deletion of the
-// stale rows inside the set it stated, and the three cursors in one transaction. It answers the
-// keys whose stored rows it changed and whether a feed holds more rows, which makes the pass
-// read another page at once.
+// computes the rows those pages name, and writes those rows, the deletion of the stale rows
+// inside the set it stated, and the three cursors in one transaction. It answers the keys whose
+// stored rows it changed and what the page after it owes (nextPage).
 //
-// sweep says whether this page carries the work no feed announces: the recomputation of the open
-// rows, the recomputation of the rows whose issue lost its Legion phase work, the backfill of a
-// project a feed cannot answer for, and the backfill a lost change cursor calls for. Only the
-// first page of a pass carries it, because all four read the whole of what they cover. The page
-// reads its feeds under the same flag, because only a sweep page may move a lost change cursor
+// first says whether this is the first page of its pass, which carries the work no feed
+// announces: the whole read of a project the running build has not read whole, the whole read a
+// lost change cursor calls for, and the rows another build wrote (otherBuildsRows). Only the
+// first page carries it, because each reads the whole of what it covers. The page reads its
+// feeds under the same flag, because only a first page may move a lost change cursor
 // (readPages).
 //
 // The rows are computed before the transaction opens and written inside it, so no connection is
 // held open while a whole project is read. The cursor moves in the transaction that wrote the
 // rows it covers, so a crash between the two cannot lose a change: the next pass reads the same
 // rows again and writes the same values.
-func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now time.Time, sweep bool) ([]string, bool, error) {
+func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now time.Time, first bool) ([]string, nextPage, error) {
 	cursors, err := readCursors(ctx, deps.Pool)
 	if err != nil {
-		return nil, false, err
+		return nil, nextPage{}, err
 	}
-	read, err := readPages(ctx, deps.Pool, cursors, safe, sched.page, sweep)
+	read, err := readPages(ctx, deps.Pool, cursors, safe, sched.page, first)
 	if err != nil {
-		return nil, false, err
+		return nil, nextPage{}, err
 	}
-	projects, err := legionProjects(ctx, deps.Pool, deps.Build, read.lost)
+	projects, err := legionProjects(ctx, deps.Pool, deps.Build, sched.started, read.lost)
 	if err != nil {
-		return nil, false, err
+		return nil, nextPage{}, err
 	}
 
 	work := map[string]*projectWork{}
@@ -264,7 +287,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 			return nil
 		}
 		if work[project] == nil {
-			work[project] = &projectWork{keys: map[string]bool{}, open: map[string]bool{}, moved: map[string]bool{}, filed: map[string]bool{}}
+			work[project] = &projectWork{keys: map[string]bool{}, moved: map[string]bool{}, filed: map[string]bool{}}
 		}
 		return work[project]
 	}
@@ -296,38 +319,29 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 			}
 		}
 	}
-	if sweep {
-		open, err := openStoredRows(ctx, deps.Pool)
-		if err != nil {
-			return nil, false, err
-		}
-		stale, err := staleStoredRows(ctx, deps.Pool)
-		if err != nil {
-			return nil, false, err
-		}
-		// The open rows are kept apart: the sweep adds them because their hours move with the
-		// clock, which moves no filing (rowsToCompute). A stale row is added for a loss no feed
-		// carried, which can move a filing as well, so it joins the feeds' keys.
-		for project, keys := range open {
-			if work := needed(project); work != nil {
-				for _, key := range keys {
-					work.open[key] = true
-				}
-			}
-		}
-		for project, keys := range stale {
-			if work := needed(project); work != nil {
-				for _, key := range keys {
-					work.keys[key] = true
-				}
-			}
-		}
-		for project, backfill := range projects {
-			if !backfill {
+	if first {
+		for project, standing := range projects {
+			if !standing.whole {
 				continue
 			}
 			if work := needed(project); work != nil {
 				work.backfill = true
+			}
+		}
+		// The rows another build wrote join the feeds' keys: the build that wrote them may hold
+		// another phase-work rule, which can move a filing as well as a row.
+		other, err := otherBuildsRows(ctx, deps.Pool, deps.Build)
+		if err != nil {
+			return nil, nextPage{}, err
+		}
+		for project, keys := range other {
+			if standing := projects[project]; !standing.ours || standing.whole {
+				continue
+			}
+			if work := needed(project); work != nil {
+				for _, key := range keys {
+					work.keys[key] = true
+				}
 			}
 		}
 	}
@@ -340,7 +354,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	for _, project := range slices.Sorted(maps.Keys(work)) {
 		one, err := computeProjectWork(ctx, deps.Pool, project, work[project], now)
 		if err != nil {
-			return nil, false, err
+			return nil, nextPage{}, err
 		}
 		computed = append(computed, one)
 	}
@@ -350,20 +364,19 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		observationsCursor: read.observations.position,
 		changesCursor:      read.changes.position,
 	}
-	changed, err := writePass(ctx, deps.Pool, computed, positions, now, deps.Build, read.changes.remapped)
+	changed, err := writePass(ctx, deps.Pool, computed, positions, now, deps.Build, sched.started, read.changes.remapped)
 	if err != nil {
-		return changed, false, err
+		return changed, nextPage{}, err
 	}
-	return changed, read.more, nil
+	return changed, nextPage{more: read.more, first: read.first}, nil
 }
 
-// projectWork is what one page owes one project: the issues its feeds named and the stale rows its
-// sweep adds, the open rows its sweep adds, those of the feeds' issues a row moved between trees
-// (touch), the filings its events moved that the project owes, the ones it joined and the ones it
-// left (feed.filings), and whether the project is to be computed whole (a backfill).
+// projectWork is what one page owes one project: the issues its feeds named and the rows another
+// build wrote (keys), those of the feeds' issues a row moved between trees (touch), the filings
+// its events moved that the project owes, the ones it joined and the ones it left (feed.filings),
+// and whether the project is to be computed whole (a backfill).
 type projectWork struct {
 	keys     map[string]bool
-	open     map[string]bool
 	moved    map[string]bool
 	filed    map[string]bool
 	backfill bool
@@ -382,9 +395,8 @@ type projectPass struct {
 // project (ComputeProject) and the keys its feeds named are left out of the call, because the
 // whole project already holds them: its stated set is the project itself, and its filings are
 // every filing a Legion session of the project made. Every other project is computed over the
-// rows its changes and its sweep touch (rowsToCompute) and the filings named by its moved filings
-// and by the rows its keys touch, the open rows the sweep adds left out (filingsToCompute), and no
-// row or filing outside those sets is written or deleted.
+// rows its keys touch (rowsToCompute) and the filings named by its moved filings and by those
+// rows (filingsToCompute), and no row or filing outside those sets is written or deleted.
 func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (projectPass, error) {
 	if work.backfill {
 		rows, filings, err := ComputeProject(ctx, pool, project, now)
@@ -400,11 +412,11 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 	if err != nil {
 		return projectPass{}, err
 	}
-	keys, fed, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), slices.Sorted(maps.Keys(work.open)), work.moved, above)
+	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, above)
 	if err != nil {
 		return projectPass{}, err
 	}
-	filed, err := filingsToCompute(ctx, pool, project, fed, work.filed)
+	filed, err := filingsToCompute(ctx, pool, project, keys, work.filed)
 	if err != nil {
 		return projectPass{}, err
 	}
@@ -418,21 +430,22 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 	}, nil
 }
 
-// writePass writes every project's rows and filings, deletes the stale rows and filings inside
-// the sets each project's pass stated, resolves every stored row's repository again where remapped
-// says the page read a change of a repository's mapping (reresolveRepos), records the projects it
-// computed whole and moves the three cursors, all in one transaction. It answers the keys whose
-// stored rows changed, the deleted keys among them, because a row that went is a change of the
-// stored facts as much as a row that moved. A failure leaves the cursors and the marks where they
-// were, so the next pass reads the same rows again.
+// writePass writes every project's rows under build, filings, deletes the stale rows and filings
+// inside the sets each project's pass stated, resolves every stored row's repository again where
+// remapped says the page read a change of a repository's mapping (reresolveRepos), records the
+// projects it computed whole and moves the three cursors, all in one transaction. It answers the
+// keys whose stored rows changed, the deleted keys among them, because a row that went is a
+// change of the stored facts as much as a row that moved. A failure leaves the cursors and the
+// marks where they were, so the next pass reads the same rows again.
 //
 // The rows' and the filings' triggers record their changes in the change log's outbox (migration
 // 20261115155340) and take no lock, so the transaction never takes the change log's lock
 // (delivery.LockChanges); once it has committed, the pass moves them into the log
 // (delivery.DrainPending). A drain that fails is logged and fails nothing: the rows committed, and
 // their notification wakes every live hub, which drains before it reads, as the refresher does at
-// each pass.
-func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, build string, remapped bool) ([]string, error) {
+// each pass. The drain's notification is also the wake of the other process of a roll, whose
+// build the project's record may name (Deps.Deliveries).
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, build string, started time.Time, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -440,7 +453,9 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, po
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	changed := []string{}
 	for _, project := range computed {
-		written, err := WriteProject(ctx, tx, project.facts)
+		facts := project.facts
+		facts.Build = build
+		written, err := WriteProject(ctx, tx, facts)
 		if err != nil {
 			return nil, err
 		}
@@ -456,7 +471,7 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, po
 		}
 		changed = append(changed, moved...)
 	}
-	if err := markComputedWhole(ctx, tx, computed, now, build); err != nil {
+	if err := markComputedWhole(ctx, tx, computed, now, build, started); err != nil {
 		return nil, err
 	}
 	if err := advanceCursors(ctx, tx, positions, now); err != nil {
@@ -473,20 +488,28 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, po
 
 // markComputedWhole records that each project this write read whole was computed whole as of now,
 // how many rows that computation answered and which build made it, which is what legionProjects
-// reads a project's backfill from. It runs in the transaction that wrote those rows (writePass),
+// reads a project's whole read from. It runs in the transaction that wrote those rows (writePass),
 // so a pass that failed leaves no mark and the next pass reads the project whole again.
 //
 // The mark is a record rather than the absence of a stored row, because a project whose issues
 // carry no Legion phase work is computed whole and answers no row at all: read from an absence,
-// such a project would be computed whole again every SweepEvery for ever. The count is what
-// still answers for the rows of a project going missing under the consumer, which is the other
-// thing an absence used to say (migration 20261111153000).
+// such a project would be computed whole again on every pass for ever. The count is what still
+// answers for the rows of a project going missing under the consumer, which is the other thing
+// an absence used to say (migration 20261111153000).
 //
 // The build is the one the pass ran under (Deps.Build), the same string the read that sent
 // this project to a whole read compared against (legionProjects). The pass carries that one
 // value through both steps rather than reading it a second time, so a project read whole is
-// marked as read whole by the build that read it and the next pass of that build sweeps it.
-func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []projectPass, now time.Time, build string) error {
+// marked as read whole by the build that read it and the next pass of that build reads it whole
+// no more.
+//
+// A record another build wrote after this process started is left where it stands: that build
+// is newer, rolling in while this one still serves, and the record is what makes it the build
+// that corrects the rows of the other (otherBuildsRows). This process reads such a project whole
+// only for a lost change cursor (legionProjects), and a mark of that read taken over the newer
+// build's would hand the project back to the older build for good. started is when this process
+// started, the moment the record's own time is judged against.
+func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []projectPass, now time.Time, build string, started time.Time) error {
 	projects := []string{}
 	answered := []int32{}
 	for _, one := range computed {
@@ -506,7 +529,9 @@ func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []projectPass, n
 		set computed_at = excluded.computed_at,
 		    computed_rows = excluded.computed_rows,
 		    computed_build = excluded.computed_build
-	`, projects, answered, now, build)
+		where issue_facts_computed.computed_build is not distinct from excluded.computed_build
+		   or issue_facts_computed.computed_at < $5
+	`, projects, answered, now, build, started)
 	if err != nil {
 		return fmt.Errorf("record the %d projects computed whole: %w", len(projects), err)
 	}

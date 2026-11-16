@@ -118,7 +118,7 @@ func TestOneFactsWriteLogsOneIssueFactsChange(t *testing.T) {
 		len(written), len(changes), logged.Kind, logged.Repo, logged.Ref, len(spanDays(logged)))
 }
 
-// TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange: a sweep that found nothing new logs
+// TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange: a pass whose inputs did not move logs
 // nothing. WriteProject leaves a row whose facts already match alone, and a rewrite of updated_at
 // by itself moves the one column the trigger ignores.
 func TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange(t *testing.T) {

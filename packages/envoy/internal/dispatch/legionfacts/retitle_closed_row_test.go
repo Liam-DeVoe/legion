@@ -15,8 +15,8 @@ import (
 // metrics read when the facts are computed (legion/metrics), so a session that writes anywhere
 // under another issue's title takes its own events off the issue it worked. The issue keeps its
 // row, because its handoff still carries phase work, and the row's hours are no longer the
-// hours the computation answers. No event is written on that issue, and the sweep reads the
-// open rows and the rows that lost their phase work, so neither names it.
+// hours the computation answers. No event is written on that issue, and no pass computes a row
+// its feeds did not name.
 //
 // The pass reaches it through the stored-row arm of the session read: a page that names a
 // session states every issue that session wrote an event on and that holds a stored row

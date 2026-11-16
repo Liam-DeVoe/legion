@@ -24,43 +24,47 @@ const otherBuild = "legion-envoy-v0.0.0-another-build"
 // (independent/independent_test.go).
 const readingHourTolerance = 0.1
 
-// passReading is what one pass of the loop did, as k11 records it: the build the pass ran under,
+// passReading is what one pass of the loop did, as k30 records it: the build the pass ran under,
 // the build the record held for the project when the pass started, whether the pass read the
-// project whole or swept it, how many issues it read, and how long it took.
+// project whole, how many issues a whole read read, how many rows the pass wrote, and how long it
+// took.
 type passReading struct {
 	ranUnder string
 	held     string
 	whole    bool
 	issues   int
+	wrote    int
 	took     time.Duration
 }
 
-// String is the one line k11 asks a reader to record for each pass.
+// String is the one line k30 asks a reader to record for each pass.
 func (p passReading) String() string {
-	read := fmt.Sprintf("swept it over %d issues", p.issues)
+	read := "read nothing whole"
 	if p.whole {
 		read = fmt.Sprintf("read it whole over %d issues", p.issues)
 	}
-	return fmt.Sprintf("ran under build %q, found %s recorded for the project, %s, and took %s",
-		p.ranUnder, p.held, read, p.took.Round(time.Millisecond))
+	return fmt.Sprintf("ran under build %q, found %s recorded for the project, %s, wrote %d rows and took %s",
+		p.ranUnder, p.held, read, p.wrote, p.took.Round(time.Millisecond))
 }
 
-// TestEachBuildReadsTheProjectWholeOnceAndSweepsItAfterThat is k11, the check of R9: a pass
-// whose build is not the one the project's record names reads that project whole, and a pass
-// under the recorded build sweeps it.
+// TestEachBuildReadsTheProjectWholeOnceAndNeverAgain is k30, the check of R27: a process whose
+// build is not the one the project's record names, where that record was written before the
+// process started, reads that project whole, and a process of the recorded build reads nothing
+// whole and, with no input moving, writes no row.
 //
 // Four passes run over one seeded project. The first finds no record and reads the project
-// whole, which writes the record and the build that made it. The second runs under that same
-// build and sweeps. The third runs after another build string is written into the record and
-// reads the project whole again. The fourth runs after the record is deleted and reads the
-// project whole once more.
+// whole, which writes the record and the build that made it. The second is the first pass of a
+// second process of that same build, which reads nothing whole and writes no row. The third
+// runs after another build string is written into the record, which keeps its old time, older
+// than the second process's start, and reads the project whole again. The fourth runs after the
+// record is deleted and reads the project whole once more.
 //
-// Between the second pass and the third the test writes the input R9 exists for: an issue a
+// Between the second pass and the third the test writes the input R27 exists for: an issue a
 // release gives Legion phase work, which no feed names (gainedPhaseWork). The third pass's rows
 // are then read against the independent reading of the same moment, which has that issue among
-// its own, so a pass that swept instead of reading the project whole is caught by the row it
-// never wrote rather than by the record alone.
-func TestEachBuildReadsTheProjectWholeOnceAndSweepsItAfterThat(t *testing.T) {
+// its own, so a pass that read nothing whole is caught by the row it never wrote rather than by
+// the record alone.
+func TestEachBuildReadsTheProjectWholeOnceAndNeverAgain(t *testing.T) {
 	run := newConsumer(t, 6)
 	project := run.fixture.Project
 	if len(run.fixture.PhaseWork) == 0 {
@@ -74,7 +78,7 @@ func TestEachBuildReadsTheProjectWholeOnceAndSweepsItAfterThat(t *testing.T) {
 	first := makePass(t, run)
 	t.Logf("the first pass %s", first)
 	if !first.whole {
-		t.Errorf("the first pass swept %s, which no build had read whole", project)
+		t.Errorf("the first pass read nothing of %s whole, which no build had read whole", project)
 	}
 	if build, recorded := markedBuild(t, run); !recorded || build != run.deps.Build {
 		t.Errorf("the record of %s names the build %q (recorded %t), want the build the pass ran under, %q",
@@ -82,17 +86,18 @@ func TestEachBuildReadsTheProjectWholeOnceAndSweepsItAfterThat(t *testing.T) {
 	}
 
 	run.at = run.at.Add(time.Minute)
+	run.restart()
 	second := makePass(t, run)
-	t.Logf("the second pass %s", second)
+	t.Logf("the second pass, the first of a second process of the same build, %s", second)
 	if second.whole {
-		t.Errorf("the second pass read %s whole under %q, the build its record already named", project, run.deps.Build)
+		t.Errorf("the second process read %s whole under %q, the build its record already named", project, run.deps.Build)
 	}
-	if second.issues == 0 {
-		t.Errorf("the second pass's sweep states no key of %s at all, so that pass read none of its stored rows", project)
+	if second.wrote != 0 {
+		t.Errorf("the second process wrote %d rows with no input moving, want none", second.wrote)
 	}
 
-	// The release. It falls between the pass that swept and the pass under the new build, as a
-	// release falls between two passes of the loop.
+	// The release. It falls between the second process's pass and the pass under the new build,
+	// as a release falls between two passes of the loop.
 	gained := gainedPhaseWork(t, run)
 	if _, has := run.rows(t)[gained]; has {
 		t.Fatalf("%s holds a stored row before any pass under the new build ran, so no pass has to find it: this test examined nothing",
@@ -106,7 +111,7 @@ func TestEachBuildReadsTheProjectWholeOnceAndSweepsItAfterThat(t *testing.T) {
 	third := makePass(t, run)
 	t.Logf("the third pass %s", third)
 	if !third.whole {
-		t.Errorf("the third pass swept %s, whose record named the build %q and not the build it ran under, %q",
+		t.Errorf("the third pass read nothing of %s whole, whose record named the build %q and not the build it ran under, %q",
 			project, otherBuild, run.deps.Build)
 	}
 	compared := storedRowsAgainstTheReading(t, run)
@@ -121,7 +126,7 @@ func TestEachBuildReadsTheProjectWholeOnceAndSweepsItAfterThat(t *testing.T) {
 	fourth := makePass(t, run)
 	t.Logf("the fourth pass %s", fourth)
 	if !fourth.whole {
-		t.Errorf("the fourth pass swept %s, which holds no record of a whole read at all", project)
+		t.Errorf("the fourth pass read nothing of %s whole, which holds no record of a whole read at all", project)
 	}
 	if build, recorded := markedBuild(t, run); !recorded || build != run.deps.Build {
 		t.Errorf("the record of %s names the build %q (recorded %t) after the fourth pass, want %q",
@@ -133,38 +138,32 @@ func TestEachBuildReadsTheProjectWholeOnceAndSweepsItAfterThat(t *testing.T) {
 //
 // Whether the pass read the project whole is read from the record the pass writes in the
 // transaction that wrote its rows (markComputedWhole): a whole read moves that record to the
-// moment the pass computed as of, and a pass that read no project whole writes no record. The
-// moment is the test's own clock, which each caller moves before its pass, so a record left by
-// an earlier pass cannot be read as this pass's own.
-//
-// How many issues the pass read is the project's issues for a whole read, which is what
-// ComputeProject reads (metrics.ReadProject reads every issue of the project), and the keys the
-// sweep states for a sweep. Both are read before the pass runs, because the pass itself moves
-// neither. The keys the sweep states are the whole of what a sweeping pass of this test reads:
-// the first pass leaves every cursor at its feed's head, and the rows a later pass writes
-// append `issue_facts` changes alone, which this loop passes over (readChangePage keeps the
-// pull request kind).
+// moment the pass ran at, and a pass that read no project whole writes no record. The moment is
+// the test's own clock, which each caller moves before its pass, so a record left by an earlier
+// pass cannot be read as this pass's own. How many issues a whole read read is the project's
+// issues, which is what ComputeProject reads (metrics.ReadProject reads every issue of the
+// project), counted before the pass runs.
 func makePass(t *testing.T, run *consumer) passReading {
 	t.Helper()
 	build, recorded := markedBuild(t, run)
 	before, marked := computedWholeAt(t, run)[run.fixture.Project]
 	if marked && before.Equal(run.at) {
-		t.Fatalf("the record of %s already names %s, the moment this pass computes as of, so what this pass does cannot be read from it: this test examined nothing",
+		t.Fatalf("the record of %s already names %s, the moment this pass runs at, so what this pass does cannot be read from it: this test examined nothing",
 			run.fixture.Project, run.at.UTC())
 	}
-	whole, swept := projectIssues(t, run), len(sweptKeys(t, run))
+	issues := projectIssues(t, run)
 
 	started := time.Now()
-	run.pass(t)
+	changed := run.pass(t)
 	took := time.Since(started)
 
 	after, marked := computedWholeAt(t, run)[run.fixture.Project]
-	reading := passReading{ranUnder: run.deps.Build, held: "no build", issues: swept, took: took}
+	reading := passReading{ranUnder: run.deps.Build, held: "no build", wrote: len(changed), took: took}
 	if recorded {
 		reading.held = fmt.Sprintf("the build %q", build)
 	}
 	if marked && after.Equal(run.at) {
-		reading.whole, reading.issues = true, whole
+		reading.whole, reading.issues = true, issues
 	}
 	return reading
 }
@@ -196,45 +195,18 @@ func projectIssues(t *testing.T, run *consumer) int {
 	return issues
 }
 
-// sweptKeys is the set a sweep pass states for the project as the table stands now: the stored
-// rows of its open issues and of the issues that carry no Legion phase work any more, and the
-// rows those keys touch through the links, which is what the pass itself states (passPage).
-func sweptKeys(t *testing.T, run *consumer) []string {
-	t.Helper()
-	open, err := openStoredRows(t.Context(), run.database.Pool)
-	if err != nil {
-		t.Fatalf("read the open issues' stored rows: %v", err)
-	}
-	stale, err := staleStoredRows(t.Context(), run.database.Pool)
-	if err != nil {
-		t.Fatalf("read the stale stored rows: %v", err)
-	}
-	keys := map[string]bool{}
-	for _, swept := range []map[string][]string{open, stale} {
-		for _, key := range swept[run.fixture.Project] {
-			keys[key] = true
-		}
-	}
-	if len(keys) == 0 {
-		return nil
-	}
-	return statedSet(t, run, slices.Sorted(maps.Keys(keys)), nil)
-}
-
 // gainedPhaseWork writes the issue a release gives Legion phase work to and answers its key.
 //
-// R9's seventh input is a release that makes an issue Legion's work, and no feed carries it: the
+// R27's seventh input is a release that makes an issue Legion's work, and no feed carries it: the
 // rule is the build's own (legion.PhaseWorkKeys over the role names and title shape of
 // legion/session_title.go and over the handoffs), so such a release writes no event, no
 // observation and no delivery change. A handoff row written with no event of its own is that
 // input as a test can write it, because legion.PhaseWorkKeys takes every issue a handoff names,
-// and a write to handoffs outside Dispatch reaches the rule the same silent way (staleStoredRows
-// records that for the losses).
+// and a write to handoffs outside Dispatch reaches the rule the same silent way (legionProjects).
 //
-// The issue is closed and holds no stored row, so no part of a sweep reaches it: the sweep
-// recomputes the stored rows of the open issues and the stored rows whose issue lost its phase
-// work, and this issue has neither. It stands at the top of a tree of its own, so the descent
-// from the keys a sweep states does not reach it either (rowsTouchedBy).
+// The issue is closed and holds no stored row, and no feed names it, so only a whole read
+// reaches it. It stands at the top of a tree of its own, so the descent from a key a feed names
+// does not reach it either (rowsTouchedBy).
 func gainedPhaseWork(t *testing.T, run *consumer) string {
 	t.Helper()
 	key := fmt.Sprintf("%s-9001", run.fixture.Project)
@@ -250,11 +222,12 @@ func gainedPhaseWork(t *testing.T, run *consumer) string {
 	return key
 }
 
-// storedRowsAgainstTheReading reads every stored row of the project against the independent
-// reading of the same project at the same moment (package independent, the second side of R1's
-// own check): every issue that reading holds Legion phase work for has a stored row, no stored
-// row stands for an issue it does not hold, and the facts of each agree. It answers how many
-// issues it compared, and a run that compared none fails.
+// storedRowsAgainstTheReading reads every stored row of the project, closed at the consumer's
+// clock (Row.At), against the independent reading of the same project at the same moment
+// (package independent, the second side of R1's own check): every issue that reading holds
+// Legion phase work for has a stored row, no stored row stands for an issue it does not hold, and
+// the facts of each agree. It answers how many issues it compared, and a run that compared none
+// fails.
 func storedRowsAgainstTheReading(t *testing.T, run *consumer) int {
 	t.Helper()
 	reading, err := independent.Read(t.Context(), run.database.Pool,
@@ -278,7 +251,7 @@ func storedRowsAgainstTheReading(t *testing.T, run *consumer) int {
 			continue
 		}
 		compared++
-		differed += factsAgree(t, key, mine, row)
+		differed += factsAgree(t, key, mine, row.At(run.at))
 	}
 	// A run that compared nothing fails here rather than ending the test, so the passes after
 	// this comparison are run and recorded too: what a pass did is the reading this check is

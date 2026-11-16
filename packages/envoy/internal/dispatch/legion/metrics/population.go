@@ -86,7 +86,10 @@ type Issue struct {
 
 	// AskTurns are the spans in which an ask a Legion session of this issue's tree opened on
 	// this issue stood on a person's turn, from its opening or hand-back to its answer or
-	// resolution, and to the issue's end where neither came (keepTreeAsks).
+	// resolution (keepTreeAsks). A turn neither came to holds the zero To, which the rule that
+	// reads it takes as the issue's end (waitingOnPersonSpans): the end is the moment of the
+	// computation for an open issue, so a turn that held it would tie the population to one
+	// moment, and the stored facts are computed at two (ProjectFactsClosed).
 	AskTurns []Span
 
 	// MergedAt is the merge time of the pull request Dispatch holds for the issue, where it holds
@@ -531,8 +534,9 @@ type askTurn struct {
 
 // readAskTurns reads the ask events of the issues and turns each ask into the spans it stood on a
 // person's turn: from an opening or a hand-back by a Legion session to the answer or resolution
-// that took it back, and to the issue's end where neither came. Which of them count for the
-// issue is keepTreeAsks's rule, which runs once every read has landed.
+// that took it back, and with the zero To where neither came, which the rule reads as the issue's
+// end (Issue.AskTurns). Which of them count for the issue is keepTreeAsks's rule, which runs once
+// every read has landed.
 func (p *Population) readAskTurns(ctx context.Context, pool *store.Pool, keys []string) error {
 	rows, err := pool.Query(ctx, `
 		select issue_key, created_at, type, coalesce(payload->>'id', ''), coalesce(actor->>'id', ''),
@@ -597,11 +601,9 @@ func (p *Population) readAskTurns(ctx context.Context, pool *store.Pool, keys []
 		}
 	}
 	for _, turn := range open {
-		issue := p.Issues[turn.issue]
-		if issue == nil {
+		if p.Issues[turn.issue] == nil {
 			continue
 		}
-		turn.span.To = p.issueEnd(issue)
 		p.askTurns = append(p.askTurns, turn)
 	}
 	return nil
@@ -874,6 +876,17 @@ func (p *Population) issueEnd(issue *Issue) time.Time {
 		return *issue.ClosedAt
 	}
 	return p.To
+}
+
+// at is this population computed at another moment: the same inputs, with every open issue's
+// timeline running to to rather than to To. A rule reads the moment through To alone (issueEnd,
+// and the slot hours' end), and nothing a read gathered holds it (an ask nobody answered holds
+// the zero To, readAskTurns), so the copy answers what a read made at to would answer of the
+// same inputs. The issues are shared with the population it copies, which no rule writes to.
+func (p *Population) at(to time.Time) *Population {
+	moved := *p
+	moved.To = to
+	return &moved
 }
 
 // resolveTitles is each session's most recent known title (delivery.ResolveSessionTitles, which

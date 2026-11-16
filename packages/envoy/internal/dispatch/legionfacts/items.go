@@ -19,7 +19,7 @@ const ItemRowKind = "issue"
 
 // ItemSource names where a row's columns came from: this package, which computes each row
 // (computeKeys and ComputeProject) and writes it to issue_facts. One name stands for every row,
-// because a row written for one issue and a row written by a sweep are the one computation.
+// because a row written for one issue and a row of a whole read are the one computation.
 const ItemSource = "legionfacts"
 
 // The columns of an issue's row that every row carries, whatever the issue. Each is the
@@ -74,9 +74,9 @@ type ItemRow struct {
 	RowKey  string `json:"row_key"`
 	RowKind string `json:"row_kind"`
 	// Columns is the facts, by column name. A later eval names the columns it wants, so the
-	// values are the stored ones and this adds nothing to any of them: a count is a count, an
-	// hour figure is the stored float, a moment is the stored moment and an open issue's
-	// `closed_at` is null.
+	// values are the row's as its reader closed it (Row.At) and this adds nothing to any of
+	// them: a count is a count, an hour figure is the row's float, a moment is the row's moment
+	// and an open issue's `closed_at` is null.
 	Columns    map[string]any `json:"columns"`
 	MeasuredAt time.Time      `json:"measured_at"`
 	Source     string         `json:"source"`
@@ -91,9 +91,9 @@ type ItemRow struct {
 //
 // The measured time is when the facts were measured: a closed issue's close, the moment its
 // values stopped moving and the moment its Legion evals count it on, whenever its row was last
-// recomputed; and an open issue's row's own UpdatedAt, the moment its still-moving facts were
-// computed as of. It is never the moment of this call: a row read an hour after it was written was
-// measured an hour ago, and an eval that charts it reads it at the moment it was true.
+// recomputed; and an open issue's row's AsOf, the moment its still-moving facts stand at, which
+// is the reader's own clock once the reader has closed the row there (Row.At, which ReadClosedIn
+// makes). An eval that charts it reads it at the moment it was true.
 //
 // The repo column is repos' entry for the issue, "" for none: the repository the issue resolves
 // to now (ReadRepos), which the items route filters by and the Legion day rows cut by
@@ -103,7 +103,7 @@ type ItemRow struct {
 func ItemRows(rows []Row, repos map[string]string) []ItemRow {
 	items := make([]ItemRow, 0, len(rows))
 	for _, row := range rows {
-		measured := row.UpdatedAt
+		measured := row.AsOf
 		if row.ClosedAt != nil {
 			measured = *row.ClosedAt
 		}

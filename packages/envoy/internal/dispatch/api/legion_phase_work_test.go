@@ -271,11 +271,12 @@ func seedPhaseWorkChain(t *testing.T, rig *hubRig, first int, at time.Time) (top
 // another one, filled by its own reads and marked stale by nothing.
 func legionBoardOnTheHub(t *testing.T, rig *hubRig, project string) legionBoardResponse {
 	t.Helper()
-	population, err := rig.hub.server.readLegionBoard(t.Context(), project)
+	now := time.Now().UTC()
+	population, err := rig.hub.server.readLegionBoard(t.Context(), project, now)
 	if err != nil {
 		t.Fatalf("read %s's board on the hub's server: %v", project, err)
 	}
-	return legionBoardCompute(population, time.Now().UTC())
+	return legionBoardCompute(population, now)
 }
 
 // holdAGeneration keeps one generation of the hub running for the rest of the test: nothing of

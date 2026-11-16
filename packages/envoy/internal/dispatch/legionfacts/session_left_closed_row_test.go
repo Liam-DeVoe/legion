@@ -9,28 +9,22 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// TestASweepTakesTheRowOfAClosedIssueWhoseSessionLeftAndKeepsTheWorkedOnes: the sweep is the one
-// reader that can find the stored row of a closed issue whose role session moved away, and it
-// takes that row alone.
+// TestASessionsEventOnTheProjectTakesTheRowOfAClosedIssueItLeftAndKeepsTheWorkedOnes: a role
+// session that writes on the project under another issue's title takes its Legion phase work off
+// the closed issue it worked, and the pass that reads that event takes that issue's stored row
+// and no worked row.
 //
-// Nothing else a pass reads names such an issue. The feeds name the issues their own rows name,
-// the links reach the issues above and below those issues and the trees a moved parent link
-// touched, and the sweep's open rows are the rows of the open issues. A closed issue whose
-// session was renamed is in none of the three: the rename is written somewhere else, and the
-// issue is closed. Its row therefore stood for ever and the table went on saying Legion worked
-// an issue it did not.
-// staleStoredRows is the fourth source, read from the table beside them, and this test fails
-// without it: the row stands and the counts below answer 0 deleted.
-//
-// The rename is a write on the project rather than on an issue, which is what makes the counts
-// exact. An event that names no issue is read by no feed of the pass (readEventPage joins the
-// issues), so the sweep is the only thing that can name a row of this project, and the clock
-// stands still over the measured pass, so an open issue's hours stand still with it.
+// The event names no issue, and the issue it takes the work from is closed, so neither the
+// event's own issue nor the clock can bring that row into a pass. The event's actor can: a page
+// keeps an event on no issue where its actor is a session, and states every issue that session
+// wrote on that holds a stored row and the issue its title names (readEventPage, sessionIssues).
+// That is the one way the row goes, since no pass computes a row its feeds did not name, and this
+// test fails without it: the row stands and the counts below answer 0 deleted.
 //
 // The second half is the closed issue that still carries Legion phase work. Its row stands,
-// unchanged: a read that took every closed row, rather than the rows the phase-work set no
-// longer holds, would take that one too.
-func TestASweepTakesTheRowOfAClosedIssueWhoseSessionLeftAndKeepsTheWorkedOnes(t *testing.T) {
+// unchanged: a pass that deleted every closed row it could not name, rather than the rows its
+// computation answered none for inside the set it stated, would take that one too.
+func TestASessionsEventOnTheProjectTakesTheRowOfAClosedIssueItLeftAndKeepsTheWorkedOnes(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)
 
@@ -55,24 +49,14 @@ func TestASweepTakesTheRowOfAClosedIssueWhoseSessionLeftAndKeepsTheWorkedOnes(t 
 
 	// The same session writes next on the project, under another issue's title. Its newest
 	// title is what the rule reads, so the work goes with it and the closed issue carries none.
-	writeProjectTitledEvent(t, run, session, run.fixture.PhaseWork[0], run.at)
+	titled := run.fixture.PhaseWork[0]
+	writeProjectTitledEvent(t, run, session, titled, run.at)
 	before := run.rows(t)
-	found, err := staleStoredRows(t.Context(), run.database.Pool)
-	if err != nil {
-		t.Fatalf("read the stored rows whose issue lost its Legion phase work: %v", err)
-	}
-	stale := found[run.fixture.Project]
-	slices.Sort(stale)
-	if !slices.Contains(stale, left) {
-		t.Fatalf("the sweep found the stale rows %v, which does not hold %s: this test examined nothing", stale, left)
-	}
-	stated := statedSet(t, run, stale, nil)
+	stated := statedSet(t, run, []string{left, titled}, nil)
 
 	// The row that must stand: a closed issue that still carries Legion phase work, outside the
-	// set the stale rows state. The pass's own set is wider: the stale keys, the project's open
-	// stored rows, the issues above those rows and the issues below them. So this row can be
-	// inside the pass's set, and nothing is wrong where it is. It must stand either way, because
-	// the issue carries Legion phase work and the computation answers a row for it.
+	// set the event states. It must stand either way, because the issue carries Legion phase
+	// work and the computation answers a row for it.
 	work, err := legion.PhaseWorkKeys(t.Context(), run.database.Pool)
 	if err != nil {
 		t.Fatalf("read the issues that carry Legion phase work: %v", err)
@@ -90,17 +74,18 @@ func TestASweepTakesTheRowOfAClosedIssueWhoseSessionLeftAndKeepsTheWorkedOnes(t 
 			run.fixture.Project, stated)
 	}
 
+	run.at = run.at.Add(time.Minute)
 	changed := run.pass(t)
 	after := run.rows(t)
 	deleted := deletedBetween(before, after)
 	moved := movedOutside(before, after, stated)
 
 	if _, stands := after[left]; stands {
-		t.Errorf("%s is closed, carries no Legion phase work and keeps its stored row after a sweep: the table holds %d rows",
+		t.Errorf("%s is closed, carries no Legion phase work and keeps its stored row after the pass that read its session's event: the table holds %d rows",
 			left, len(after))
 	}
 	if !slices.Equal(deleted, []string{left}) {
-		t.Errorf("the sweep deleted %v, want %s alone: the one stale row it found", deleted, left)
+		t.Errorf("the pass deleted %v, want %s alone: the one row whose issue lost its work", deleted, left)
 	}
 	if !slices.Contains(changed, left) {
 		t.Errorf("the pass deleted %s and answered the changed keys %v, which does not hold it: a row that went is a change",
@@ -109,25 +94,24 @@ func TestASweepTakesTheRowOfAClosedIssueWhoseSessionLeftAndKeepsTheWorkedOnes(t 
 	stood, stands := after[kept]
 	switch {
 	case !stands:
-		t.Errorf("%s is closed and still carries Legion phase work, and the sweep deleted its row: %s", kept, show(before[kept]))
+		t.Errorf("%s is closed and still carries Legion phase work, and the pass deleted its row: %s", kept, show(before[kept]))
 	case !sameRow(stood, before[kept]):
-		t.Errorf("%s is closed and still carries Legion phase work, and the sweep rewrote its row as\n\tgot  %s\n\twant %s",
+		t.Errorf("%s is closed and still carries Legion phase work, and the pass rewrote its row as\n\tgot  %s\n\twant %s",
 			kept, show(stood), show(before[kept]))
 	}
 	if len(moved) > 0 {
-		t.Errorf("%d rows outside the stale rows and the rows those keys state are no longer the rows they were: %v",
+		t.Errorf("%d rows outside the set the event states are no longer the rows they were: %v",
 			len(moved), moved)
 	}
-	t.Logf("the sweep found %d stale row(s) (%v) and deleted %d of them (%v); those keys state %d rows (%v), and %d row(s) outside them changed; the closed %s carries Legion phase work still and its row stands",
-		len(stale), stale, len(deleted), deleted, len(stated), stated, len(moved), kept)
+	t.Logf("the session's event on the project states %d rows (%v); the pass deleted %d of them (%v), and %d row(s) outside them changed; the closed %s carries Legion phase work still and its row stands",
+		len(stated), stated, len(deleted), deleted, len(moved), kept)
 }
 
 // writeProjectTitledEvent writes one event of a session on the project rather than on an issue,
 // under a title that names the issue titled. An event owns one of an issue, an artifact or a
 // project (the events table's own check), and a session's newest title is read from every event
 // it wrote, whichever of the three that event owns (delivery.ResolveSessionTitles). So this is
-// how a session takes its Legion phase work away from an issue while no feed of the facts' pass
-// names any issue at all.
+// how a session takes its Legion phase work away from an issue while no event names that issue.
 func writeProjectTitledEvent(t *testing.T, run *consumer, session, titled string, at time.Time) {
 	t.Helper()
 	run.exec(t, "write session "+session+"'s event on the project", `

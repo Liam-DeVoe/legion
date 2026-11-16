@@ -67,8 +67,8 @@ func TestEachStoredRowNamesTheRepositoryTheIssuePageResolves(t *testing.T) {
 // TestAMappingChangeReResolvesEveryStoredRepository: a stored row's repository falls back to its
 // project's default mapping, so the pass that reads a mapping's change (the `settings` change
 // repo_projects logs, naming the repository) resolves every stored row again: once the project
-// gains a default repository, the closed issues' rows, which no sweep recomputes and no feed
-// names, store it, as the open ones do.
+// gains a default repository, the closed issues' rows, which no feed names, store it, as the open
+// ones do.
 func TestAMappingChangeReResolvesEveryStoredRepository(t *testing.T) {
 	c := newConsumer(t, 3)
 	c.pass(t)
@@ -83,7 +83,7 @@ func TestAMappingChangeReResolvesEveryStoredRepository(t *testing.T) {
 		}
 	}
 	if closed == 0 {
-		t.Fatal("the history holds no closed issue's row, so this test checks only rows the sweep recomputes")
+		t.Fatal("the history holds no closed issue's row, so this test checks no row only the re-resolve reaches")
 	}
 	c.exec(t, "give the project a default repository", `
 		insert into repo_projects (repo, project, created_by, is_default) values ('acme/widgets', $1, '{"kind":"user","id":"alice"}', true)

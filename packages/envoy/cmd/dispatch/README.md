@@ -1372,9 +1372,15 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   It asks for its next pass at once while a walk has days left, and otherwise at the earlier of the next UTC midnight and five minutes after the oldest delivery change passes its 24 hours, which the pass prunes (`delivery.PruneChanges`), so the change log keeps its retention where no GitHub App runs the reconcile that prunes it too, and the passes that prune a busy log run every five minutes rather than every 10 s.
   A failed pass is retried 10 s later.
 
+- The Legion facts consumer (`legionfacts.Run`, lease `legion-facts`) keeps each project's `issue_facts` and `issue_filings` true to their inputs, and holds no timer: every pass answers no due time.
+  It is woken by `dispatch_events`, by the sampler's `dispatch_legion_state` and by `delivery_changes`, and reads the events after its cursor up to the safe horizon it awaits (`events.Horizon.Await`), the sampler's observations and the delivery changes (`issue_facts_cursor`).
+  Passes start at least 10 s apart (`legionfacts.PassGap`), so a row stands at most that gap, a lease retry and a pass behind the event that moved it.
+  A row holds its issue's facts closed at the newest input they read and how fast each grows after it (`as_of`, `growth`), so a pass that computes an issue whose inputs did not move writes nothing, and a read closes each open part at its own clock (`legionfacts.Row.At`).
+  A project the running build has not read whole is read whole once (`issue_facts_computed`); a record another build wrote after this process started is a newer build rolling in, which this process leaves alone, and the build the record names computes again every row another build wrote (`written_build`), woken by the change that write logged, so a roll ends with no row of the older build left.
+
 The leased woken loops take their lease with no period.
 A process that finds it held tries again
-— every 2 s for the excerpts, every 5 s for the edit notices, every 30 s for the Legion facts, every 10 s for the eval day rows, plus up to a tenth again
+— every 2 s for the excerpts, every 5 s for the edit notices, every 10 s for the Legion facts, every 10 s for the eval day rows, plus up to a tenth again
 — until a pass of its own runs, because the other process's pass may have read before the change that woke this one.
 
 **Boot passes** run once at start:
@@ -3808,7 +3814,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   The Legion board of the project its path names, from what the sampler recorded of that project's daemon and from the per-issue Legion facts the facts consumer stored; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
   Ten columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds with what that slot is used for and when it was taken, its tree's slot, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, why it waits with its place in the daemon's line, its tree root and the children of its tree that have not started.
-  Beside them `issues`, a map keyed by issue key of the stored facts of every issue the project's Legion work covers, open or closed: its hours by column, its work time, its review rounds, its root and depth in the tree, the hours it held a slot, why it waits, and when the row was written.
+  Beside them `issues`, a map keyed by issue key of the stored facts of every issue the project's Legion work covers, open or closed: its hours by column, its work time, its review rounds, its root and depth in the tree, the hours it held a slot, why it waits, and when the row was written; an open issue's hours, work time and last moment of work are given at the moment of the read, each grown from the newest input the row was closed at by the rate the row stores.
   The header carries the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, how many issues of the project carry Legion phase work, the oldest `updated_at` of the rows served and the age of the facts consumer's cursor.
   The three facts fields together tell a project with no Legion work, which carries no Legion issues and no rows, from a project whose backfill has not run, which carries Legion issues and no rows; the cursor age alone cannot, because it is the deployment's one consumer and every project of a running deployment reads the same age.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `404 NOT_FOUND` for a project that does not exist.

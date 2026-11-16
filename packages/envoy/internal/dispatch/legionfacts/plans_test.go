@@ -30,7 +30,7 @@ func TestReadClosedInReadsTheClosedFactsIndex(t *testing.T) {
 		t.Fatalf("analyze: %v", err)
 	}
 	from := now.AddDate(0, 0, -28)
-	closed, err := ReadClosedIn(ctx, pool, "FC", from, now)
+	closed, err := ReadClosedIn(ctx, pool, "FC", from, now, now)
 	if err != nil {
 		t.Fatalf("ReadClosedIn: %v", err)
 	}
@@ -47,6 +47,52 @@ func TestReadClosedInReadsTheClosedFactsIndex(t *testing.T) {
 		t.Fatalf("ReadClosedIn reads %v; want issue_facts_closed:\n%s", scans, plan)
 	}
 	t.Logf("ReadClosedIn answered %d issues of FC closed in 28 days, through %v", len(closed), scans)
+}
+
+// TestTheOtherBuildsRowsReadReadsTheWrittenBuildIndex: the read of the rows another build wrote
+// (otherBuildsRowsQuery), which every first page of the build a project's record names makes,
+// reaches issue_facts through issue_facts_written_build (migration 20261116151147) and never scans
+// the table, on an analyzed store of five projects of 4,000 stored rows each, every project
+// recorded under the running build and three rows of one written by another, as a roll's last
+// write leaves them.
+func TestTheOtherBuildsRowsReadReadsTheWrittenBuildIndex(t *testing.T) {
+	ctx := t.Context()
+	pool := factsDatabase(t)
+	const running = "legion-envoy-running"
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee)
+		select project, project, 'alice' from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project;
+		insert into issue_facts_computed (project_key, computed_at, computed_rows, computed_build)
+		select project, now(), 4000, 'legion-envoy-running' from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project;
+		insert into issue_facts (project_key, issue_key, opened_at, written_build)
+		select project, project || '-' || n, now() - make_interval(days => n % 365),
+		       case when project = 'FC' and n <= 3 then 'legion-envoy-older' else 'legion-envoy-running' end
+		from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project, generate_series(1, 4000) as n;
+		analyze issue_facts;
+		analyze issue_facts_computed;
+	`); err != nil {
+		t.Fatalf("seed the facts: %v", err)
+	}
+	other, err := otherBuildsRows(ctx, pool, running)
+	if err != nil {
+		t.Fatalf("otherBuildsRows: %v", err)
+	}
+	if want := []string{"FC-1", "FC-2", "FC-3"}; len(other) != 1 || !slices.Equal(other["FC"], want) {
+		t.Errorf("the rows another build wrote are %v, want %v of FC alone", other, want)
+	}
+	var raw []byte
+	if err := pool.QueryRow(ctx, "explain (format json) "+otherBuildsRowsQuery, running).Scan(&raw); err != nil {
+		t.Fatalf("explain otherBuildsRows: %v", err)
+	}
+	plan := explaintest.OnePlan(t, raw)
+	if explaintest.SeqScansRelation(t, plan, "issue_facts") {
+		t.Fatalf("the read of the rows another build wrote scans issue_facts sequentially; want ranges of issue_facts_written_build:\n%s", plan)
+	}
+	scans := explaintest.IndexScans(t, plan)
+	if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == "issue_facts_written_build" }) {
+		t.Fatalf("the read of the rows another build wrote reads %v; want issue_facts_written_build:\n%s", scans, plan)
+	}
+	t.Logf("of 20,000 rows of five projects recorded under the running build, the read answered %v through %v", other, scans)
 }
 
 // TestTheStoredFilingsReadKeepsItsIndexesUnderAGenericPlan: the read of a project's stored filings

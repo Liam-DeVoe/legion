@@ -169,13 +169,17 @@ func (v *issueView) claims(index int) []Span {
 // as waiting on a person" is two conditions, "opened **on that issue** by any Legion session of
 // the issue's tree", and `keepTreeAsks` has already applied the tree test and attached each turn
 // it kept to the issue the ask was opened on. Reading the tree again here would count one child's
-// ask for its root and for every sibling.
+// ask for its root and for every sibling. An ask nobody answered stands on the person's turn to
+// the issue's end, which its turn's zero To says (Issue.AskTurns).
 func waitingOnPersonSpans(view *issueView) []Span {
 	spans := markSpans(view.root.Observed[legion.FieldPhase], view.population.issueEnd(view.root), func(value string) bool {
 		return legion.JSONString([]byte(value)) == legion.PhaseAwaitingPerson
 	})
 	answered := answeredAts(view.root)
 	for _, turn := range view.issue.AskTurns {
+		if turn.To.IsZero() {
+			turn.To = view.end
+		}
 		if at, found := answeredWithin(answered, turn); found {
 			turn.To = at
 		}

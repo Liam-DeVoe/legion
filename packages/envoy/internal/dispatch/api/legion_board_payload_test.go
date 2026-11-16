@@ -75,7 +75,7 @@ func runLegionFactsConsumer(t *testing.T, database *store.Store, project string,
 	}()
 	started := time.Now()
 	for {
-		rows, err := legionfacts.Read(t.Context(), database.Pool, project)
+		rows, err := legionfacts.Read(t.Context(), database.Pool, project, time.Now().UTC())
 		if err != nil {
 			t.Fatalf("read the stored facts of %s: %v", project, err)
 		}

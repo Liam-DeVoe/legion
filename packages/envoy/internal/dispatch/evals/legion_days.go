@@ -150,12 +150,15 @@ type LegionDay struct {
 // ReadLegionDay reads project's Legion input of the UTC day day is on: its issues that closed
 // that day (legionfacts.ReadClosedIn), the filings its Legion sessions made that day
 // (legionfacts.ReadFilingsIn) and the repository each of those issues resolves to now
-// (legionfacts.ReadRepos, one read of them all).
+// (legionfacts.ReadRepos, one read of them all). Each row is as of the day's end, the moment the
+// day's rows are of: every one is an issue that closed that day, whose facts stopped growing at
+// its close, and a builder that came to count an open issue would read it closed at the day's end
+// the same way.
 func (s *Store) ReadLegionDay(ctx context.Context, project string, day time.Time) (LegionDay, error) {
 	start := measures.Midnight(day)
 	end := start.AddDate(0, 0, 1)
 	pool := s.database.Pool
-	closed, err := legionfacts.ReadClosedIn(ctx, pool, project, start, end)
+	closed, err := legionfacts.ReadClosedIn(ctx, pool, project, start, end, end)
 	if err != nil {
 		return LegionDay{}, err
 	}

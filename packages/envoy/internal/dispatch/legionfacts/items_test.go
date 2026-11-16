@@ -10,7 +10,8 @@ import (
 
 // TestTheItemsRowsCarryTheStoredFactsOfEachIssue: the rows an eval's issue list serves are one
 // per stored row, each keyed by its issue, of kind `issue`, carrying the stored facts as columns,
-// measured at the issue's close where it closed and at the row's own time where it is open, with
+// measured at the issue's close where it closed and at the moment its reader closed it where it is
+// open, with
 // the computation as the source and the issue's own address as the link (R5). The columns are
 // compared field by field against the row they came from, so a column that carried another
 // issue's number, or the moment of the call in place of the moment the facts were measured,
@@ -29,6 +30,12 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 	for _, row := range rows {
 		repos[row.Issue] = "example/resolved-" + row.Issue
 	}
+	// The rows as a reader closes them, an hour after the history's end (Row.At, which
+	// ReadClosedIn makes): an open row's facts stand at that moment.
+	readAt := seeded.now.Add(time.Hour)
+	for index := range rows {
+		rows[index] = rows[index].At(readAt)
+	}
 	items := ItemRows(rows, repos)
 
 	if len(items) != len(rows) {
@@ -41,7 +48,7 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 			t.Errorf("row %s answered key %q, kind %q, project %q, want %q, %q, %q",
 				row.Issue, item.RowKey, item.RowKind, item.Project, row.Issue, ItemRowKind, row.Project)
 		}
-		want := row.UpdatedAt
+		want := readAt
 		if row.ClosedAt != nil {
 			want, closed = *row.ClosedAt, closed+1
 		} else {

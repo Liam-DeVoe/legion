@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -307,45 +308,77 @@ func seedOtherProjectsFacts(t *testing.T, database *store.Store, except string) 
 	}
 }
 
-// TestTwoBoardReadsThirtySecondsApartAnswerTheSameWorkTime: with the facts consumer stopped, two
-// board reads SweepEvery apart answer the same work time for every open issue.
+// TestTwoLegionBoardReadsThirtySecondsApartGrowEachOpenIssueByTheClock: with the facts consumer
+// stopped, two board reads thirty seconds apart answer each open issue's work time grown by the
+// clock time between them at the rate its row stores, and each closed issue's unchanged, and no
+// row is written between them (k23).
 //
-// That is what shows the read adds nothing to a stored value. An open issue's work time grows
-// with the clock, so a read that computed it, or that added the time since the row was written to
-// it, would answer a larger number on the second read. The consumer is the one writer of the
-// rows, and the rig stopped it, so nothing moved the rows between the two reads.
-func TestTwoBoardReadsThirtySecondsApartAnswerTheSameWorkTime(t *testing.T) {
-	handler, _, fixture := boardAtInfraSize(t, testServerOptions{})
+// That is the one computation the read makes: an open issue's row holds its facts closed at the
+// newest input they read and how fast each grows after it, and the read closes each at its own
+// clock (legionfacts.Row.At). The consumer is the one writer of the rows, and the rig stopped it,
+// so nothing moved the rows between the two reads, and the clock is all that moved the answers.
+func TestTwoLegionBoardReadsThirtySecondsApartGrowEachOpenIssueByTheClock(t *testing.T) {
+	handler, database, fixture := boardAtInfraSize(t, testServerOptions{})
+	rates := map[string]float64{}
+	rows, err := database.Pool.Query(t.Context(),
+		`select issue_key, coalesce((growth->>'work_hours')::double precision, 0) from issue_facts where project_key = $1`, fixture.Project)
+	if err != nil {
+		t.Fatalf("read the stored growth: %v", err)
+	}
+	for rows.Next() {
+		var key string
+		var rate float64
+		if err := rows.Scan(&key, &rate); err != nil {
+			t.Fatalf("read the stored growth: %v", err)
+		}
+		rates[key] = rate
+	}
+	rows.Close()
+	written := func() (count int64, newest time.Time) {
+		t.Helper()
+		if err := database.Pool.QueryRow(t.Context(),
+			`select count(*), coalesce(max(updated_at), 'epoch') from issue_facts`).Scan(&count, &newest); err != nil {
+			t.Fatalf("read the stored rows' writes: %v", err)
+		}
+		return count, newest
+	}
+	countBefore, newestBefore := written()
 
-	firstAt := time.Now()
 	first := legionBoardOf(t, handler, fixture.Project)
 	time.Sleep(30 * time.Second)
 	second := legionBoardOf(t, handler, fixture.Project)
-	apart := time.Since(firstAt)
+	apart := second.ComputedAt.Sub(first.ComputedAt)
 
-	open, moved := 0, 0
+	open, closed, wrong := 0, 0, 0
 	for _, key := range slices.Sorted(maps.Keys(first.Issues)) {
 		was := first.Issues[key]
-		if was.ClosedAt != nil {
-			continue
-		}
 		now, has := second.Issues[key]
 		if !has {
-			t.Errorf("%s is open and the second read holds no entry of it", key)
+			t.Errorf("%s holds an entry in the first read and none in the second", key)
 			continue
 		}
-		open++
-		if was.WorkHours != now.WorkHours {
-			moved++
-			t.Errorf("%s: the first read says %g work hours and the second, %s later, says %g",
-				key, was.WorkHours, apart.Round(time.Second), now.WorkHours)
+		want := was.WorkHours
+		if was.ClosedAt == nil {
+			open++
+			want += rates[key] * apart.Hours()
+		} else {
+			closed++
+		}
+		if math.Abs(now.WorkHours-want) > 1e-3 {
+			wrong++
+			t.Errorf("%s (closed %t): the first read says %g work hours and the second, %s later, says %g, want %g",
+				key, was.ClosedAt != nil, was.WorkHours, apart, now.WorkHours, want)
 		}
 	}
-	if open == 0 {
-		t.Fatal("the board holds no open issue, so the two reads compare nothing")
+	if open == 0 || closed == 0 {
+		t.Fatalf("the board holds %d open and %d closed issues, so the two reads compare too little", open, closed)
 	}
-	t.Logf("two reads %s apart, the consumer stopped: %d open issues compared, %d moved; the project holds %d issues, %d of them open",
-		apart.Round(time.Second), open, moved, len(fixture.Keys), len(fixture.Open))
+	if countAfter, newestAfter := written(); countAfter != countBefore || !newestAfter.Equal(newestBefore) {
+		t.Errorf("a row was written between the two reads: %d rows newest %s before, %d newest %s after",
+			countBefore, newestBefore, countAfter, newestAfter)
+	}
+	t.Logf("two reads %s apart, the consumer stopped: %d open issues each grown by its rate times the time between, %d closed issues unchanged, %d wrong; no row written between them; the project holds %d issues",
+		apart, open, closed, wrong, len(fixture.Keys))
 }
 
 // TestAFreshProcessFirstBoardReadIsAsFastAsAWarmOne: the first board read of a process that has
@@ -436,12 +469,14 @@ func searchSource(t *testing.T, files []string, want, with *regexp.Regexp) ([]so
 //   - legion_phase_work.go is the one thing the handler keeps between requests, the issues that
 //     carry Legion phase work, which the tree walk reads;
 //   - legionfacts/store.go holds Read, the one read of the stored rows;
+//   - legionfacts/close.go and legion/metrics/grow.go are the close of each open part of a row at
+//     the read's own clock (boardCloseFiles), the one computation the read makes;
 //   - the legion package's own files hold every rule the board calls: the settings read, the
 //     column an issue stands in, why a card waits, and the tree walk.
 //
 // The legion package is taken whole rather than by the files the board reaches, so the search is
 // wider than the path rather than narrower.
-var boardReadPathFiles = []string{
+var boardReadPathFiles = append([]string{
 	"legion_board.go",
 	"legion_phase_work.go",
 	"../legionfacts/store.go",
@@ -451,7 +486,12 @@ var boardReadPathFiles = []string{
 	"../legion/state.go",
 	"../legion/store.go",
 	"../legion/tree.go",
-}
+}, boardCloseFiles...)
+
+// boardCloseFiles is the close of a stored row at the read's own clock (legionfacts.Row.At and
+// metrics.IssueFacts.Grown), the one place on the read path a length of time may meet a stored
+// fact (R21).
+var boardCloseFiles = []string{"../legionfacts/close.go", "../legion/metrics/grow.go"}
 
 var (
 	// computesAFact matches a call into the one computation of the Legion facts: an exported
@@ -471,11 +511,12 @@ var (
 // TestNoCodeOnTheBoardsReadPathComputesAFact: three searches over the board's read path, each
 // with the control that shows it finds what it looks for.
 //
-// The three are what check k2 names: no code on the request path computes a fact, none adds
-// elapsed time to a stored value, and none holds a cached population. Each search prints every
-// line it matched, so a reader judges the finding rather than taking a count. Each control runs
-// the same search over code that does hold what the search looks for, so finding nothing on the
-// read path is a reading and not an empty answer.
+// The three are what checks k2 and k23 name: no code on the request path computes a fact, none
+// adds elapsed time to a stored value but the close of each open part at the read's own clock
+// (boardCloseFiles), and none holds a cached population. Each search prints every line it
+// matched, so a reader judges the finding rather than taking a count. Each control runs the same
+// search over code that does hold what the search looks for, so finding nothing on the read path
+// is a reading and not an empty answer.
 func TestNoCodeOnTheBoardsReadPathComputesAFact(t *testing.T) {
 	// 1. A call that computes a fact.
 	hits, lines := searchSource(t, boardReadPathFiles, computesAFact, nil)
@@ -493,16 +534,30 @@ func TestNoCodeOnTheBoardsReadPathComputesAFact(t *testing.T) {
 	}
 	t.Logf("search 1's control read %d lines and matched %d", controlLines, len(control))
 
-	// 2. Elapsed time added to a stored value.
+	// 2. Elapsed time added to a stored value, anywhere but the close.
 	hits, lines = searchSource(t, boardReadPathFiles, elapsedTime, storedValue)
 	for _, hit := range hits {
-		t.Errorf("the board's read path adds elapsed time to a stored value: %s", hit)
+		if !slices.Contains(boardCloseFiles, hit.file) {
+			t.Errorf("the board's read path adds elapsed time to a stored value outside the close: %s", hit)
+		}
 	}
 	elapsed, _ := searchSource(t, boardReadPathFiles, elapsedTime, nil)
 	t.Logf("search 2, elapsed time on a line that names a stored fact (%s, with %s): %d lines read, %d lines make a length at all, %d of them name a stored fact",
 		elapsedTime, storedValue, lines, len(elapsed), len(hits))
+	closing := 0
 	for _, hit := range elapsed {
+		if slices.Contains(boardCloseFiles, hit.file) {
+			closing++
+			t.Logf("search 2 read this line of the close, the one computation of the read: %s", hit)
+			continue
+		}
 		t.Logf("search 2 read this line, which makes a length and names no stored fact: %s", hit)
+	}
+	if closing == 0 {
+		t.Errorf("no line of %v makes a length of time, so the close the read makes is not where search 2 reads it", boardCloseFiles)
+	}
+	if closes, _ := searchSource(t, []string{"../legionfacts/store.go"}, regexp.MustCompile(`\.At\(at\)`), nil); len(closes) == 0 {
+		t.Errorf("legionfacts/store.go closes no row it reads at the read's clock (Row.At), so the board would serve the rows as stored")
 	}
 	control, controlLines = searchSource(t, []string{"../legion/legiontest/legiontest.go"}, elapsedTime, storedValue)
 	if len(control) == 0 {

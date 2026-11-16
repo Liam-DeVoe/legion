@@ -36,8 +36,8 @@ func computedWholeAt(t *testing.T, run *consumer) map[string]time.Time {
 //
 // It is the case R8 names: a project whose cards the daemon reports while no issue of it holds
 // phase work. Its whole computation answers no row, so the pass writes none, and a loop that
-// read "never computed" from "holds no stored row" would read the whole project again every
-// SweepEvery for as long as the project held no worked issue. The mark is what clears the
+// read "never computed" from "holds no stored row" would read the whole project again on every
+// pass for as long as the project held no worked issue. The mark is what clears the
 // condition, and this check reads the mark's own moment: the second pass leaves it where the
 // first pass wrote it.
 func TestAProjectWhoseIssuesCarryNoWorkIsComputedWholeOnceAndNotAgain(t *testing.T) {
@@ -52,7 +52,7 @@ func TestAProjectWhoseIssuesCarryNoWorkIsComputedWholeOnceAndNotAgain(t *testing
 	first := run.at
 	run.pass(t)
 	marked := computedWholeAt(t, run)
-	stored, err := Read(t.Context(), run.database.Pool, quiet)
+	stored, err := Read(t.Context(), run.database.Pool, quiet, run.at)
 	if err != nil {
 		t.Fatalf("read the stored facts of %s: %v", quiet, err)
 	}
@@ -75,15 +75,15 @@ func TestAProjectWhoseIssuesCarryNoWorkIsComputedWholeOnceAndNotAgain(t *testing
 		t.Errorf("the second pass computed %s whole again, marking it as of %s, and it had been computed whole at %s",
 			quiet, again[quiet], at)
 	}
-	projects, err := legionProjects(t.Context(), run.database.Pool, run.deps.Build, false)
+	projects, err := legionProjects(t.Context(), run.database.Pool, run.deps.Build, run.sched.started, false)
 	if err != nil {
 		t.Fatalf("read the projects Legion works: %v", err)
 	}
-	if backfill, known := projects[quiet]; !known || backfill {
-		t.Errorf("%s stands as a backfill after two passes (known %t, backfill %t)", quiet, known, backfill)
+	if standing, known := projects[quiet]; !known || standing.whole {
+		t.Errorf("%s stands as a whole read after two passes (known %t, whole %t)", quiet, known, standing.whole)
 	}
-	t.Logf("%s holds a daemon observation, no issue with Legion phase work and %d stored rows: the first pass computed it whole as of %s, the second pass left that mark where it was and the rule now answers backfill=%t",
-		quiet, len(stored), at, projects[quiet])
+	t.Logf("%s holds a daemon observation, no issue with Legion phase work and %d stored rows: the first pass computed it whole as of %s, the second pass left that mark where it was and the rule now answers whole=%t",
+		quiet, len(stored), at, projects[quiet].whole)
 }
 
 // TestALostChangeCursorCostsOneWholeProjectPass: a change cursor whose own row has been pruned
@@ -93,7 +93,7 @@ func TestAProjectWhoseIssuesCarryNoWorkIsComputedWholeOnceAndNotAgain(t *testing
 // in a quiet deployment the cursor can stand below the oldest change the log holds while no
 // newer change exists. That loss is answered by computing every project whole, which covers
 // every change the log ever held, so the pass leaves the cursor at the log's head: a pass that
-// wrote the pruned position back would read lost again every SweepEvery until some change
+// wrote the pruned position back would read lost again on every pass until some change
 // committed.
 func TestALostChangeCursorCostsOneWholeProjectPass(t *testing.T) {
 	run := newConsumer(t, 2)

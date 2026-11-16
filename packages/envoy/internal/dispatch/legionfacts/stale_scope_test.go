@@ -35,17 +35,19 @@ func writeTitledEvent(t *testing.T, run *consumer, session, issue, titled string
 // than computed because no computation answers such a row, which is the whole of what makes it
 // stale.
 //
-// The row is closed, so the sweep's own set does not hold it: the sweep states the open issues'
-// stored rows (openStoredRows), and a check of what a pass deletes inside the set it stated needs
-// a row that enters that set only where the check means it to.
+// The row is closed and its issue is named by no feed, so only the set a pass states for a change
+// near it can hold it, and a check of what a pass deletes inside the set it stated needs a row
+// that enters that set only where the check means it to. It carries the build the consumer runs
+// under as its writer, as a row that build's own pass wrote does, so the pass does not compute it
+// again as another build's row (otherBuildsRows).
 func staleRow(t *testing.T, run *consumer, issue string) {
 	t.Helper()
 	run.exec(t, "write a stale row for "+issue, `
 		insert into issue_facts (project_key, issue_key, opened_at, closed_at, hours_by_phase,
 		                         work_hours, review_rounds, root_key, tree_depth, slot_hours,
-		                         updated_at)
-		values ($1, $2, $3, $4, '{"implementing": 1.5}'::jsonb, 1.5, 1, $2, 0, 1, $5)
-	`, run.fixture.Project, issue, run.at.Add(-48*time.Hour), run.at.Add(-24*time.Hour), run.at)
+		                         updated_at, written_build)
+		values ($1, $2, $3, $4, '{"implementing": 1.5}'::jsonb, 1.5, 1, $2, 0, 1, $5, $6)
+	`, run.fixture.Project, issue, run.at.Add(-48*time.Hour), run.at.Add(-24*time.Hour), run.at, run.deps.Build)
 }
 
 // deletedBetween is every key whose stored row before holds and after does not, sorted.
@@ -87,9 +89,9 @@ func movedOutside(before, after map[string]Row, stated []string) []string {
 // none. The event is on the issue that lost the work, so the pass's feeds name it and the set
 // the pass states holds it (rowsToCompute).
 //
-// The row that must stand is a stale row of another tree, closed, which no feed named and the
-// sweep does not reach: a pass that deleted every row its computation answered none for, rather
-// than every such row inside the set it stated, would take that row too.
+// The row that must stand is a stale row of another tree, closed, which no feed named: a pass
+// that deleted every row its computation answered none for, rather than every such row inside the
+// set it stated, would take that row too.
 func TestANarrowPassDeletesTheStaleRowOfItsStatedSetAndLeavesEveryRowOutsideItAlone(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)
@@ -159,8 +161,8 @@ func TestANarrowPassDeletesTheStaleRowOfItsStatedSetAndLeavesEveryRowOutsideItAl
 
 // TestAWholeProjectPassDeletesAStaleRowNoFeedNamed: a pass that computed the project whole
 // states every issue of the project, so it deletes a stale row anywhere in that project,
-// including the row of a closed issue no feed of the pass named and the sweep never reaches.
-// That is the pass that answers for a row no narrow pass will ever state.
+// including the row of a closed issue no feed of the pass named. That is the pass that answers
+// for a row no narrow pass will ever state.
 //
 // It deletes nothing outside the set it stated either: a stored row whose key names no issue of
 // the project was read by no computation, because the whole-project computation reads the

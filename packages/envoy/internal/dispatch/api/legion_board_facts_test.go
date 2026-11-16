@@ -62,8 +62,9 @@ func writeLegionFactsCursor(t *testing.T, database *store.Store, at time.Time) {
 // TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked: the issues map is the project's stored
 // rows, one entry for every issue with Legion phase work and none for an issue no Legion role
 // worked, open and closed alike and whatever an issue's hours are. Each entry carries the hours,
-// the work time, the review rounds, the root and the depth in the tree the row holds, because the
-// board serves the row and computes nothing.
+// the work time, the review rounds, the root and the depth in the tree the row holds as of the
+// moment of the read, because the board serves the row and computes nothing but the close of
+// each open part at its own clock (legionfacts.Row.At).
 func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
@@ -79,12 +80,13 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 		legionfacts.ProjectWrite{Project: fixture.Project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the project's facts: %v", err)
 	}
-	stored, err := legionfacts.Read(t.Context(), database.Pool, fixture.Project)
+	board := legionBoardOf(t, handler, fixture.Project)
+	// The rows as the board's read closed them, at the moment its body is computed as of: the
+	// one computation the read makes (legionfacts.Row.At).
+	stored, err := legionfacts.Read(t.Context(), database.Pool, fixture.Project, board.ComputedAt)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}
-
-	board := legionBoardOf(t, handler, fixture.Project)
 	for _, key := range fixture.PhaseWork {
 		if _, has := board.Issues[key]; !has {
 			t.Errorf("%s carries Legion phase work and the board holds no entry of it", key)

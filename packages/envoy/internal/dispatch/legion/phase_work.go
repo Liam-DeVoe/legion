@@ -20,18 +20,9 @@ import (
 // working an issue (WorkerTitle), keyed by session id. A reader that keeps the answer and must
 // know which events can move it reads RoleSessions (api/legion_phase_work.go); a reader that
 // only places an issue in a tree reads Keys alone (legion/metrics).
-//
-// SessionIssues is every issue a session wrote an event on, whatever title that session carries
-// now. Keys answers which issues carry phase work at this moment, and no part of it can name an
-// issue that lost it: the title that named the issue is gone as soon as the session is renamed,
-// and the issue it worked is then named by nothing. The title half of the rule can only ever
-// have given work to an issue a session wrote on, so a reader that must find the issues that
-// lost their phase work reads SessionIssues, which the sweep of the stored Legion facts does
-// (legionfacts). It costs no read of its own, because the same rows answer Keys.
 type PhaseWork struct {
-	Keys          map[string]struct{}
-	RoleSessions  map[string]string
-	SessionIssues map[string]struct{}
+	Keys         map[string]struct{}
+	RoleSessions map[string]string
 }
 
 // PhaseWorkKeys is every issue that carries Legion phase work, over the whole log: the issues a
@@ -46,9 +37,8 @@ type PhaseWork struct {
 // metrics together.
 func PhaseWorkKeys(ctx context.Context, pool *store.Pool) (PhaseWork, error) {
 	work := PhaseWork{
-		Keys:          map[string]struct{}{},
-		RoleSessions:  map[string]string{},
-		SessionIssues: map[string]struct{}{},
+		Keys:         map[string]struct{}{},
+		RoleSessions: map[string]string{},
 	}
 	if err := readHandoffIssues(ctx, pool, work.Keys); err != nil {
 		return PhaseWork{}, err
@@ -67,7 +57,6 @@ func PhaseWorkKeys(ctx context.Context, pool *store.Pool) (PhaseWork, error) {
 		}
 	}
 	for _, one := range written {
-		work.SessionIssues[one.issue] = struct{}{}
 		if RoleSessionWorks(titles[one.session], one.issue) {
 			work.Keys[one.issue] = struct{}{}
 		}

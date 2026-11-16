@@ -17,11 +17,18 @@ import (
 // Stated is the set of keys the pass computed over, inside which it may delete a stale row, and
 // Whole says the pass read the project whole (ComputeProject), whose stated set is every issue
 // the project has and whose Stated is therefore empty.
+//
+// Build is the build that computed the rows (Deps.Build), which each row it writes records as
+// the build that wrote it (written_build). The build a project's record names reads those
+// stamps to find the rows another build wrote during a roll (otherBuildsRows). A caller outside
+// the consumer's loop, a test or a fixture, may leave it empty: the consumer then reads such a
+// row as another build's and computes it again.
 type ProjectWrite struct {
 	Project string
 	Rows    []Row
 	Stated  []string
 	Whole   bool
+	Build   string
 }
 
 // WriteProject writes one project's computed facts: it upserts the rows the computation answered
@@ -41,7 +48,7 @@ type ProjectWrite struct {
 // holds one project's rows makes it alone. It writes no filing (WriteFilings), so a caller that
 // holds rows alone cannot take a filing away.
 func WriteProject(ctx context.Context, q Querier, write ProjectWrite) ([]string, error) {
-	written, err := upsert(ctx, q, write.Project, write.Rows)
+	written, err := upsert(ctx, q, write.Project, write.Build, write.Rows)
 	if err != nil {
 		return nil, err
 	}
@@ -95,28 +102,39 @@ func computedKeys(rows []Row) []string {
 
 // upsert writes the rows of the project and answers which issues it changed, by key, in the
 // order Postgres wrote them. It deletes nothing, so its caller takes the stale rows away
-// (WriteProject). A row whose stored values already match is left alone: a sweep that finds
-// nothing new rewrites nothing, and a check can count what moved.
+// (WriteProject). A row whose stored values already match is left alone: a pass whose inputs
+// did not move rewrites nothing, and a check can count what moved.
 //
 // The project is the caller's and not the first row's: a write of no row still belongs to a
 // project, and the loop below refuses a row of any other project, so the rows and the project
 // this writes into cannot disagree.
 //
-// One statement, so a sweep of hundreds of issues is one round trip. The rows go in as arrays
-// unnested into a row each, as the sampler's own write does (legion/store.go's
+// One statement, so a whole read of hundreds of issues is one round trip. The rows go in as
+// arrays unnested into a row each, as the sampler's own write does (legion/store.go's
 // RecordObservations), and the conflict's `do update` carries the whole row's comparison in its
 // where clause, so Postgres decides what changed and `returning` answers exactly the rows it
 // touched. updated_at moves only with a row that changed, because an unchanged row is never
-// updated at all. The comparison holds every column but updated_at, the ones migration
-// 20261113111231 added among them, so a row an earlier build wrote without them is rewritten by
-// the first pass that computes it. The hours, the bars and the idle hours are compared as jsonb,
-// so a Go encoding that ordered an object's keys differently from jsonb cannot read as a change.
+// updated at all. The comparison holds every column but updated_at, the ones migrations
+// 20261113111231 and 20261116151147 added among them, so a row an earlier build wrote without
+// them is rewritten by the first pass that computes it. The hours, the bars, the idle hours and
+// the growth are compared as jsonb, so a Go encoding that ordered an object's keys differently
+// from jsonb cannot read as a change.
 //
-// updated_at is the row's own UpdatedAt, the moment its facts were computed as of; a row that
-// carries none takes the moment this write started. A waiting reason of "" is stored as null, the
-// column's "waits on nothing": the rule never answers an empty reason, so the two cannot be
-// confused. A repository of "" is stored as null the same way, the column's "none resolves".
-func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]string, error) {
+// A row's values are closed at as_of, the newest input its facts read, and carry no clock of
+// their own (metrics.ProjectFactsClosed), so a pass that computes an issue whose inputs did not
+// move answers the values the table holds, whatever moment it ran at, and writes nothing. The
+// build is compared with the rest: a row another build wrote is rewritten by the build a
+// project's record names when it computes it, even where the two rules answer the same values,
+// so the stamp says which rule the stored values were last computed by (otherBuildsRows).
+//
+// updated_at is the row's own UpdatedAt, the moment it was written; a row that carries none takes
+// the moment this write started. A row that carries no AsOf stores none, which a reader closes at
+// the row's updated_at, so writing such a row again with another UpdatedAt moves nothing a
+// comparison reads. A waiting reason of "" is
+// stored as null, the column's "waits on nothing": the rule never answers an empty reason, so the
+// two cannot be confused. A repository of "" is stored as null the same way, the column's "none
+// resolves".
+func upsert(ctx context.Context, q Querier, project, build string, rows []Row) ([]string, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
@@ -146,6 +164,8 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 	testingAfter := make([]float64, len(rows))
 	children := make([]int32, len(rows))
 	repos := make([]string, len(rows))
+	asOf := make([]*time.Time, len(rows))
+	growth := make([]string, len(rows))
 	for index, row := range rows {
 		if row.Project != project {
 			return nil, fmt.Errorf("write the Legion facts: %s and %s are two projects in one write", project, row.Project)
@@ -159,6 +179,10 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 			return nil, fmt.Errorf("write the Legion facts of %s: %w", row.Issue, err)
 		}
 		idle, err := json.Marshal(storedMap(row.IdleByRole))
+		if err != nil {
+			return nil, fmt.Errorf("write the Legion facts of %s: %w", row.Issue, err)
+		}
+		rates, err := json.Marshal(storedMap(row.Growth))
 		if err != nil {
 			return nil, fmt.Errorf("write the Legion facts of %s: %w", row.Issue, err)
 		}
@@ -177,6 +201,9 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 		if row.UpdatedAt.IsZero() {
 			updatedAt[index] = started
 		}
+		if !row.AsOf.IsZero() {
+			asOf[index] = &row.AsOf
+		}
 		parkedHours[index] = row.ParkedHours
 		queuedHours[index] = row.QueuedHours
 		startedAt[index] = row.StartedAt
@@ -189,6 +216,7 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 		testingAfter[index] = row.TestingAfterFirstReview
 		children[index] = int32(row.Children)
 		repos[index] = row.Repo
+		growth[index] = string(rates)
 	}
 	result, err := q.Query(ctx, `
 		insert into issue_facts (
@@ -197,7 +225,7 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 			work_first_at, work_last_at, updated_at,
 			parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 			slot_wait_hours, sent_back, implementing_after_first_review,
-			testing_after_first_review, children, repo)
+			testing_after_first_review, children, repo, as_of, growth, written_build)
 		select $1, given.issue_key, given.opened_at, given.closed_at, given.hours_by_phase::jsonb,
 		       given.work_hours, given.review_rounds, given.root_key, given.tree_depth,
 		       given.slot_hours, nullif(given.waiting_reason, ''), given.work_first_at,
@@ -205,7 +233,8 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 		       given.parked_hours, given.queued_hours, given.started_at, given.merged_at,
 		       given.bars::jsonb, given.idle_by_role::jsonb, given.slot_wait_hours,
 		       given.sent_back, given.implementing_after_first_review,
-		       given.testing_after_first_review, given.children, nullif(given.repo, '')
+		       given.testing_after_first_review, given.children, nullif(given.repo, ''),
+		       given.as_of, given.growth::jsonb, $29::text
 		from unnest($2::text[], $3::timestamptz[], $4::timestamptz[], $5::text[],
 		            $6::double precision[], $7::integer[], $8::text[], $9::integer[],
 		            $10::double precision[], $11::text[], $12::timestamptz[], $13::timestamptz[],
@@ -213,13 +242,13 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 		            $15::double precision[], $16::double precision[], $17::timestamptz[],
 		            $18::timestamptz[], $19::text[], $20::text[], $21::double precision[],
 		            $22::boolean[], $23::double precision[], $24::double precision[],
-		            $25::integer[], $26::text[])
+		            $25::integer[], $26::text[], $27::timestamptz[], $28::text[])
 			as given(issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 			         root_key, tree_depth, slot_hours, waiting_reason, work_first_at, work_last_at,
 			         updated_at,
 			         parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 			         slot_wait_hours, sent_back, implementing_after_first_review,
-			         testing_after_first_review, children, repo)
+			         testing_after_first_review, children, repo, as_of, growth)
 		on conflict (project_key, issue_key) do update set
 			opened_at = excluded.opened_at,
 			closed_at = excluded.closed_at,
@@ -244,6 +273,9 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 			testing_after_first_review = excluded.testing_after_first_review,
 			children = excluded.children,
 			repo = excluded.repo,
+			as_of = excluded.as_of,
+			growth = excluded.growth,
+			written_build = excluded.written_build,
 			updated_at = excluded.updated_at
 		where (issue_facts.opened_at, issue_facts.closed_at, issue_facts.hours_by_phase,
 		       issue_facts.work_hours, issue_facts.review_rounds, issue_facts.root_key,
@@ -253,7 +285,8 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 		       issue_facts.merged_at, issue_facts.bars, issue_facts.idle_by_role,
 		       issue_facts.slot_wait_hours, issue_facts.sent_back,
 		       issue_facts.implementing_after_first_review, issue_facts.testing_after_first_review,
-		       issue_facts.children, issue_facts.repo)
+		       issue_facts.children, issue_facts.repo, issue_facts.as_of, issue_facts.growth,
+		       issue_facts.written_build)
 		  is distinct from
 		      (excluded.opened_at, excluded.closed_at, excluded.hours_by_phase,
 		       excluded.work_hours, excluded.review_rounds, excluded.root_key,
@@ -263,12 +296,13 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 		       excluded.merged_at, excluded.bars, excluded.idle_by_role,
 		       excluded.slot_wait_hours, excluded.sent_back,
 		       excluded.implementing_after_first_review, excluded.testing_after_first_review,
-		       excluded.children, excluded.repo)
+		       excluded.children, excluded.repo, excluded.as_of, excluded.growth,
+		       excluded.written_build)
 		returning issue_key
 	`, project, keys, openedAt, closedAt, hoursByPhase, workHours, reviewRounds, rootKeys,
 		treeDepth, slotHours, waitingReason, workFirstAt, workLastAt, updatedAt,
 		parkedHours, queuedHours, startedAt, mergedAt, bars, idleByRole, slotWaitHours, sentBack,
-		implementingAfter, testingAfter, children, repos)
+		implementingAfter, testingAfter, children, repos, asOf, growth, build)
 	if err != nil {
 		return nil, fmt.Errorf("write the Legion facts of %s: %w", project, err)
 	}
@@ -361,29 +395,38 @@ func storedMap[V any](values map[string]V) map[string]V {
 	return values
 }
 
-// Read answers the stored rows of a project, by issue key. It is the board's read of the facts:
-// rows, and no computation, and of each row the columns the board shows (boardColumns), every
-// other field of the Row it answers left at its zero value. The evals read every column of the
-// rows of a window's closed issues instead (ReadClosedIn).
-func Read(ctx context.Context, q Querier, project string) (map[string]Row, error) {
+// Read answers the stored rows of a project, by issue key, each as of at (Row.At). It is the
+// board's read of the facts: rows, and no computation but the close of each open part at the
+// read's own clock, and of each row the columns the board shows (boardColumns), every other field
+// of the Row it answers left at its zero value. The evals read every column of the rows of a
+// window's closed issues instead (ReadClosedIn).
+func Read(ctx context.Context, q Querier, project string, at time.Time) (map[string]Row, error) {
 	read, err := readRows(ctx, q, project, false, `where project_key = $1`, project)
 	if err != nil {
 		return nil, err
 	}
 	rows := make(map[string]Row, len(read))
 	for _, row := range read {
-		rows[row.Issue] = row
+		rows[row.Issue] = row.At(at)
 	}
 	return rows, nil
 }
 
 // ReadClosedIn answers the stored rows of the project's issues that closed from from up to to,
-// newest close first, through issue_facts_closed (migration 20261113082157): the issues an eval
-// of the Legion measures counts in that window, every one with Legion phase work since every
-// stored row is one, each with every column. The Legion evals' day rows are built from one day's
-// (evals.ReadLegionDay).
-func ReadClosedIn(ctx context.Context, q Querier, project string, from, to time.Time) ([]Row, error) {
-	return readRows(ctx, q, project, true, closedInWhere, project, from, to)
+// newest close first, through issue_facts_closed (migration 20261113082157), each as of at
+// (Row.At): the issues an eval of the Legion measures counts in that window, every one with
+// Legion phase work since every stored row is one, each with every column. The Legion evals' day
+// rows are built from one day's, as of that day's end (evals.ReadLegionDay), and the eval items
+// route reads a range's as of the request.
+func ReadClosedIn(ctx context.Context, q Querier, project string, from, to, at time.Time) ([]Row, error) {
+	rows, err := readRows(ctx, q, project, true, closedInWhere, project, from, to)
+	if err != nil {
+		return nil, err
+	}
+	for index := range rows {
+		rows[index] = rows[index].At(at)
+	}
+	return rows, nil
 }
 
 // closedInWhere is ReadClosedIn's clause: a range of issue_facts_closed, (project_key, closed_at
@@ -392,15 +435,17 @@ const closedInWhere = `
 	where project_key = $1 and closed_at >= $2 and closed_at < $3
 	order by closed_at desc, issue_key`
 
-// boardColumns is the columns of issue_facts the board shows (Read), which every read of the rows
-// reads first, in scanRow's order. wideColumns is every other column scanRow reads, which the
-// evals read and the board shows none of: two of them are JSON (bars and idle_by_role, beside
-// hours_by_phase) that a read decodes for every row. boardSelect and wideSelect are the reads of
-// the two, which a where clause completes.
+// boardColumns is the columns of issue_facts the board shows (Read), with the moment its values
+// are closed at and their growth, which every read of the rows reads first, in scanRow's order:
+// every reader closes a row at its own clock (Row.At). A row no build of this release wrote holds
+// no as_of, and is closed at the moment it was written. wideColumns is every other column scanRow
+// reads, which the evals read and the board shows none of: two of them are JSON (bars and
+// idle_by_role, beside hours_by_phase and growth) that a read decodes for every row. boardSelect
+// and wideSelect are the reads of the two, which a where clause completes.
 const (
 	boardColumns = `issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 	       root_key, tree_depth, slot_hours, coalesce(waiting_reason, ''),
-	       work_first_at, work_last_at, updated_at`
+	       work_first_at, work_last_at, updated_at, coalesce(as_of, updated_at), growth`
 	wideColumns = `parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 	       slot_wait_hours, sent_back, implementing_after_first_review,
 	       testing_after_first_review, children, coalesce(repo, '')`
@@ -439,10 +484,10 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	row := Row{Project: project}
 	// opened_at is a nullable column, which a row this package wrote always fills.
 	var opened *time.Time
-	var hours, bars, idle []byte
+	var hours, growth, bars, idle []byte
 	into := []any{&row.Issue, &opened, &row.ClosedAt, &hours, &row.WorkHours,
 		&row.ReviewRounds, &row.RootKey, &row.TreeDepth, &row.SlotHours, &row.WaitingReason,
-		&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt}
+		&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt, &row.AsOf, &growth}
 	if wide {
 		into = append(into, &row.ParkedHours, &row.QueuedHours, &row.StartedAt, &row.MergedAt, &bars, &idle,
 			&row.SlotWaitHours, &row.SentBack, &row.ImplementingAfterFirstReview,
@@ -457,9 +502,9 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	decoded := []struct {
 		stored []byte
 		into   any
-	}{{hours, &row.HoursByPhase}, {bars, &row.Bars}, {idle, &row.IdleByRole}}
+	}{{hours, &row.HoursByPhase}, {growth, &row.Growth}, {bars, &row.Bars}, {idle, &row.IdleByRole}}
 	if !wide {
-		decoded = decoded[:1]
+		decoded = decoded[:2]
 	}
 	for _, column := range decoded {
 		if err := json.Unmarshal(column.stored, column.into); err != nil {

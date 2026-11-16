@@ -435,7 +435,7 @@ func evalItemsPath(project, slug string) string {
 // names. The repository each issue resolves to now (legionfacts.ReadRepos, the repository the day
 // rows cut by) is what a closed issue's row shows and what repo keeps the issues by, so a row
 // never shows one repository while it is kept by another. Each row carries its issue's title and
-// priority (legionfacts.WithIssues).
+// priority (legionfacts.WithIssues), and its facts as of the request (legionfacts.Row.At).
 //
 // The source answers a page at a time: the stored rows of the range are read whole, since every
 // one of them is counted in the total, but the repositories are resolved (a walk of each issue's
@@ -460,7 +460,7 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		})
 	}
 	if !filedSeries {
-		stored, err := legionfacts.ReadClosedIn(ctx, pool, read.project, read.rng.days.From, read.rng.days.To)
+		stored, err := legionfacts.ReadClosedIn(ctx, pool, read.project, read.rng.days.From, read.rng.days.To, time.Now().UTC())
 		if err != nil {
 			return nil, err
 		}

@@ -12,7 +12,7 @@ import (
 // A session's newest title is read from every event it wrote, whichever of an issue, a project
 // or an artifact that event owns (delivery.ResolveSessionTitles), so a session writing on the
 // project under a closed issue's key gives that issue the work of every event it ever wrote.
-// The issue has no event of its own after the write, and no stored row for the sweep to find.
+// The issue has no event of its own after the write, and no stored row a read of the table finds.
 //
 // The pass reaches it through the titles arm of the session read: an event on no issue is kept
 // where its actor is a session, and the issue the title that event carries names joins the

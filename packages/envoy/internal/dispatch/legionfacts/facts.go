@@ -1,9 +1,9 @@
 // Package legionfacts computes one issue's stored Legion facts and writes them to issue_facts
 // (dispatch://INFRA-2915), with the issues Legion sessions filed, which it writes to
 // issue_filings (dispatch://INFRA-2916). The facts are computed once and stored as rows, so a
-// reader of them reads rows and computes nothing: the board reads a project's (Read), and the
-// evals' Legion day rows and items read the issues closed in a window (ReadClosedIn) and the
-// filings made in one (ReadFilingsIn).
+// reader of them reads rows and computes nothing but the close of each open part at its own
+// clock (Row.At): the board reads a project's (Read), and the evals' Legion day rows and items
+// read the issues closed in a window (ReadClosedIn) and the filings made in one (ReadFilingsIn).
 //
 // The computation holds no loop and no lease: facts.go answers the rows and the filings of a key
 // set (computeKeys) or of a whole project (ComputeProject), and store.go writes them (WriteProject,
@@ -11,11 +11,12 @@
 // the feeds a row is computed from (consumer.go).
 //
 // The numbers are the metrics package's: each computation reads a population and calls
-// metrics.ProjectFacts, which is the one computation of the per-issue facts, and the filings are
-// metrics.ProjectFilings over the same population. Nothing here states a rule of its own, so a
-// stored row can never disagree with the number a page computes. Both readers pass a nil GitHub
-// client: a pass that runs every half minute must make no GitHub call, and metrics documents
-// that a merge time Dispatch cannot reach leaves that issue with none.
+// metrics.ProjectFactsClosed, which is the one computation of the per-issue facts as a row holds
+// them, each issue's facts closed at the newest input they read with how fast each grows after
+// it, and the filings are metrics.ProjectFilings over the same population. Nothing here states a
+// rule of its own, so a stored row can never disagree with the number a page computes. Neither
+// read calls GitHub: a pass makes no GitHub call, and metrics documents that a merge time
+// Dispatch does not hold leaves that issue with none.
 package legionfacts
 
 import (
@@ -44,8 +45,8 @@ type Querier interface {
 }
 
 // Row is one issue's stored Legion facts, the row issue_facts holds. Every field is the column of
-// the same name, and the migrations state what each one means (20261111090000 and
-// 20261113111231).
+// the same name, and the migrations state what each one means (20261111090000, 20261113111231
+// and 20261116151147).
 //
 // HoursByPhase holds the board's column ids, a column with no hours left out, so an issue whose
 // work took no measured time holds an empty map and still has a row: a row means Legion worked
@@ -54,6 +55,12 @@ type Querier interface {
 // WorkFirstAt and WorkLastAt are nil until the issue has measured work. Bars holds every one of
 // the seven bars and IdleByRole every one of the six roles. UpdatedAt is when the row was
 // written, never when it was read.
+//
+// The facts are closed at AsOf, the newest input the issue's facts read: every part of the issue
+// still running at it - its current phase, its current segment, its current wait - began at or
+// before AsOf, and Growth is how fast each fact grows after it (metrics.Growth, empty for a
+// closed issue). A row as stored holds the facts as of AsOf, which no clock moves; a reader gives
+// them at its own clock with At, which is the one computation a read makes.
 type Row struct {
 	Project       string
 	Issue         string
@@ -82,6 +89,8 @@ type Row struct {
 	Children                     int
 	Repo                         string
 
+	AsOf      time.Time
+	Growth    metrics.Growth
 	UpdatedAt time.Time
 }
 
@@ -101,8 +110,9 @@ type Filing struct {
 	RootKey    string
 }
 
-// computeKeys answers the rows of the named issues as of now, and the filings of the filed issues
-// filed names that a Legion session of the project filed, computed over one population
+// computeKeys answers the rows of the named issues, each closed at the newest input its facts
+// read (metrics.ProjectFactsClosed), and the filings of the filed issues filed names that a
+// Legion session of the project filed, computed over one population read up to now
 // (metrics.ReadIssues). That population is wider than the keys asked for, because an issue's
 // hours read its whole tree and a filing reads its filer's issue, and the rows of the keys alone
 // are kept: a key that carries no Legion phase work gets no row, as it gets no facts entry. It is
@@ -127,8 +137,9 @@ func computeKeys(ctx context.Context, pool *store.Pool, project string, keys, fi
 }
 
 // ComputeProject answers the rows of every issue of the project with Legion phase work, open or
-// closed, as of now, and every filing a Legion session of the project ever made, from one
-// population (metrics.ReadProject): the sweep's own read, which the consumer writes whole.
+// closed, each closed at the newest input its facts read, and every filing a Legion session of
+// the project ever made, from one population read up to now (metrics.ReadProject): the whole
+// read of a project, which the consumer writes whole.
 func ComputeProject(ctx context.Context, pool *store.Pool, project string, now time.Time) ([]Row, []Filing, error) {
 	population, err := metrics.ReadProject(ctx, pool, project, now)
 	if err != nil {
@@ -141,9 +152,11 @@ func ComputeProject(ctx context.Context, pool *store.Pool, project string, now t
 	return rows, filingsOf(population, project), nil
 }
 
-// rowsOf turns the population's facts into rows, in key order. wanted names the issues to keep,
-// whose facts alone are computed (metrics.ProjectFacts), and a nil wanted keeps every issue with
-// facts.
+// rowsOf turns the population's facts into rows, in key order: each issue's facts closed at the
+// newest input they read and their growth after it (metrics.ProjectFactsClosed), which no clock
+// moves, so a row whose inputs did not move is the row the table already holds. wanted names the
+// issues to keep, whose facts alone are computed, and a nil wanted keeps every issue with facts.
+// now is the moment the row is written, its UpdatedAt.
 //
 // The waiting reason is the one card rule (legion.CardWaiting), read through the one waiting
 // line (legion.WaitingLine), which the board builds from its own cards. The daemon's admission
@@ -159,7 +172,7 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 		Issue:     func(key string) (legion.LineIssue, bool) { return lineIssue(population, key) },
 		Tree:      population.TreeNode,
 	})
-	facts := metrics.ProjectFacts(population, wanted)
+	facts := metrics.ProjectFactsClosed(population, wanted)
 	keys := slices.Sorted(maps.Keys(facts))
 	repos, err := ReadRepos(ctx, q, keys)
 	if err != nil {
@@ -194,14 +207,17 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 			TestingAfterFirstReview:      fact.TestingHoursAfterFirstReview,
 			Children:                     fact.Children,
 			Repo:                         repos[key],
+			AsOf:                         fact.AsOf,
+			Growth:                       fact.Growth,
 			UpdatedAt:                    now,
 		})
 	}
 	return rows, nil
 }
 
-// Facts is row as the Legion day builders read it: the facts metrics.ProjectFacts computed of the
-// issue, which the row holds column for column (rowsOf writes them the other way).
+// Facts is row as the Legion day builders read it: the facts metrics.ProjectFactsClosed computed
+// of the issue, which the row holds column for column (rowsOf writes them the other way), as of
+// the moment the row is of (AsOf, which a reader moves to its own clock with At).
 func (row Row) Facts() metrics.IssueFacts {
 	return metrics.IssueFacts{
 		OpenedAt: row.OpenedAt, ClosedAt: row.ClosedAt, PhaseHours: row.HoursByPhase, WorkHours: row.WorkHours,

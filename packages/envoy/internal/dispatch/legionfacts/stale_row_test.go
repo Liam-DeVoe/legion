@@ -18,7 +18,7 @@ import (
 // session wrote a comment on WIDGETS-1 titled for that issue, and the board answered one entry
 // with legion_issues 1; the same session then wrote on WIDGETS-2 titled for WIDGETS-2, and the
 // board answered two entries with legion_issues 1 — its own header counting one issue of Legion
-// work while its body carried two — and over four sweeps the stale row did not go. The
+// work while its body carried two — and over four passes of the loop the stale row did not go. The
 // independent reading of R1 answered one issue against the two stored rows.
 //
 // The issue here is one the rig says no Legion role worked, given its work by one session of
@@ -48,7 +48,7 @@ func TestAnIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 	if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
-	stored, err := Read(t.Context(), pool, project)
+	stored, err := Read(t.Context(), pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestAnIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 		t.Fatalf("write the facts again: %v", err)
 	}
 
-	after, err := Read(t.Context(), pool, project)
+	after, err := Read(t.Context(), pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}

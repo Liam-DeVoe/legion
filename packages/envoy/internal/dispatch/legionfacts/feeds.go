@@ -25,13 +25,16 @@ import (
 
 // pages is what one page of a pass read of the three feeds: a page of each, whether this page
 // acts on a change cursor that had fallen below the oldest change the log still holds (lost),
-// and whether a feed holds more rows, which makes the pass read another page at once (more).
+// whether a feed holds more rows, which makes the pass read another page at once (more), and
+// whether that page must carry a first page's work, because this one met a lost change cursor it
+// may not answer and held it (first, readPages).
 type pages struct {
 	events       feed
 	observations feed
 	changes      feed
 	lost         bool
 	more         bool
+	first        bool
 }
 
 // readPages is one page of each of the three feeds, read from where each cursor stands.
@@ -39,32 +42,30 @@ type pages struct {
 // A database holding no cursor row at all has committed no pass, because every pass writes the
 // three together (advanceCursors), so every feed would be read from its start. It is read from
 // its head instead (readFeedHeads): the first page of such a pass computes every project whole,
-// because no project has a stored row, and a whole project is computed from the history itself
-// rather than from the feeds, so the pages below that head hold nothing the backfill has not
-// already answered. Reading them would recompute every project once per page - about 813 pages
-// of a log the size of INFRA's - and no sweep runs until the pass ends, so the open rows would
-// stand still while it replayed.
+// because no project has a record of a whole read, and a whole project is computed from the
+// history itself rather than from the feeds, so the pages below that head hold nothing the
+// whole read has not already answered. Reading them would recompute every project once per page
+// - about 813 pages of a log the size of INFRA's - while the rows they named waited behind it.
 //
 // A change cursor whose own row the log no longer holds is answered by computing every project
-// whole, which covers every change the log ever held. The sweep page is the page that carries
-// that backfill (passPage), so the sweep page is the only page that may move this cursor.
+// whole, which covers every change the log ever held. The first page of a pass is the page that
+// carries that whole read (passPage), so a first page is the only page that may move this
+// cursor.
 //
-// On the sweep page the cursor moves to the head of the change log rather than to the end of
-// the page it read. The backfill leaves nothing below the head to read, and a cursor left where
-// it stood would read lost again on the next pass and compute every project whole every
-// SweepEvery for as long as no change commits.
+// On a first page the cursor moves to the head of the change log rather than to the end of the
+// page it read. The whole read leaves nothing below the head to read, and a cursor left where it
+// stood would read lost again on the next pass and compute every project whole on every pass for
+// as long as no change commits.
 //
-// Any other page leaves the cursor where it stood and answers that no feed holds more rows,
-// which ends the pass. readChangePage has already moved the position it answers past the pruned
-// gap, to the first change the log still holds, so a page that wrote that position back would
-// take the loss away from every later pass: the next pass would read a change that exists and
-// answer lost false. The pruned gap's rows would then stay stale for ever. A pull request
-// merged inside the gap is read by no page, and a closed issue's merge time stands wrong in its
-// stored row, because the sweep recomputes the open rows alone. Ending the pass is what makes
-// the next pass's first page a sweep page, which is the page that answers the loss. The issues
-// that page's own changes named are kept and computed, which is work the next pass makes again
-// from the held cursor.
-func readPages(ctx context.Context, q Querier, cursors map[string]int64, safe int64, limit int, sweep bool) (pages, error) {
+// Any other page leaves the cursor where it stood and answers that the page after it must carry
+// a first page's work (pages.first), which the pass reads at once. readChangePage has already
+// moved the position it answers past the pruned gap, to the first change the log still holds, so
+// a page that wrote that position back would take the loss away from every later page: the next
+// would read a change that exists and answer lost false. The pruned gap's rows would then stay
+// stale for ever, since a pull request merged inside the gap is read by no page and no pass
+// computes a row its feeds did not name. The issues that page's own changes named are kept and
+// computed, which is work the next page makes again from the held cursor.
+func readPages(ctx context.Context, q Querier, cursors map[string]int64, safe int64, limit int, first bool) (pages, error) {
 	if len(cursors) == 0 {
 		return readFeedHeads(ctx, q, safe)
 	}
@@ -84,8 +85,9 @@ func readPages(ctx context.Context, q Querier, cursors map[string]int64, safe in
 		read.more = read.more || read.changes.full
 		return read, nil
 	}
-	if !sweep {
-		read.changes.position, read.lost, read.more = cursors[changesCursor], false, false
+	if !first {
+		read.changes.position, read.lost = cursors[changesCursor], false
+		read.more, read.first = true, true
 		return read, nil
 	}
 	head, err := delivery.LatestChangeSeq(ctx, q)
@@ -162,8 +164,9 @@ type touch struct {
 // The page stops at safe because events.id is not commit order. An event draws its id when its
 // write inserts the row, and two writes that wait on nothing commit out of id order, so a cursor
 // moved by an uncapped `id > cursor` read could pass an event that was still committing and
-// never read it (events, the "Safe horizon" section). An event above safe is read by a later
-// pass: its own commit notifies the events channel, and a pass falls every SweepEvery anyway.
+// never read it (events, the "Safe horizon" section). safe is the horizon the pass awaited, which
+// is at or above every event committed before the pass started (pass), so an event above it
+// committed after that, and its own commit's notification wakes the pass that reads it.
 //
 // `changed` holds the fields an issue write moved (api's issueChangedFields), so an event naming
 // `parent` is the parent link moving. That is one of the two rows that move an issue between
@@ -547,9 +550,9 @@ func readCursors(ctx context.Context, q Querier) (map[string]int64, error) {
 }
 
 // advanceCursors moves the three cursors to the positions this page read, stamped with the
-// moment its rows were computed as of, which is the moment CursorAge measures the stored facts
-// from. A cursor whose feed held nothing new keeps its position and takes the new stamp: the
-// pass covered the feed up to there, and the stamp is what says how fresh the facts are.
+// moment its pass ran at, which is the moment CursorAge measures from. A cursor whose feed held
+// nothing new keeps its position and takes the new stamp: the pass covered the feed up to there,
+// and the stamp is what says how recently a pass read the feeds.
 //
 // It runs in the transaction that wrote the rows the positions cover (writePass).
 func advanceCursors(ctx context.Context, tx pgx.Tx, positions map[string]int64, now time.Time) error {
@@ -570,13 +573,16 @@ func advanceCursors(ctx context.Context, tx pgx.Tx, positions map[string]int64, 
 
 // CursorAge answers how long ago each cursor last moved, as the oldest of the three cursors'
 // updated_at measured against now, and false when no cursor row exists at all, which is a
-// database no pass has committed on. It is what the board's header reads to say how fresh the
-// served facts are.
+// database no pass has committed on. It is what the board's header reads to say how recently the
+// consumer read its feeds.
 //
-// Every pass stamps all three cursors with the moment it computed as of, whether or not that
-// feed held anything new, so the age is how long ago the last pass ran and not how long ago the
-// last change arrived. A caller whose clock stands behind the writing process's reads a negative
-// age, as it would of any moment another process stamped.
+// Every pass stamps all three cursors with the moment it ran at, whether or not that feed held
+// anything new, so the age is how long ago the last pass ran and not how long ago the last change
+// arrived. A pass runs on a wake alone (Run), so in a deployment where nothing is written the age
+// grows with the clock while the stored facts lose nothing: an open issue's facts are closed at
+// the reader's clock (Row.At), and nothing a pass reads has moved. A caller whose clock stands
+// behind the writing process's reads a negative age, as it would of any moment another process
+// stamped.
 func CursorAge(ctx context.Context, q Querier, now time.Time) (time.Duration, bool, error) {
 	var oldest *time.Time
 	if err := q.QueryRow(ctx, `select min(updated_at) from issue_facts_cursor`).Scan(&oldest); err != nil {

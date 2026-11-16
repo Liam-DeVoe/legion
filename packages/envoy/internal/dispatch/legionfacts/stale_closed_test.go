@@ -5,26 +5,25 @@ import (
 	"time"
 )
 
-// TestAClosedIssueThatLosesItsPhaseWorkLosesItsStoredRow: the deletion of a stale row reaches an
-// open issue and not a closed one, so half of the defect it was written for still stands.
+// TestAClosedIssueThatLosesItsPhaseWorkLosesItsStoredRow: the deletion of a stale row reaches a
+// closed issue as it reaches an open one.
 //
-// A pass's stated set is what its feeds named, the issues above and below those issues, the
-// trees a moved parent link touched, and the sweep's own addition, which is the project's open
-// *stored* rows (openStoredRows). An issue a role session left is named by none of those: no
-// event was written on it, and the sweep reads it only while it is open. So the row of a closed
-// issue whose session moved away stands for ever, and the table goes on saying Legion worked an
-// issue it did not.
+// A pass's stated set is what its feeds named, the issues above and below those issues and the
+// trees a moved parent link touched, and no pass computes a row its feeds did not name. An issue
+// a role session left has no event of its own, so the row of a closed issue whose session moved
+// away would stand for ever, and the table would go on saying Legion worked an issue it did not.
 //
-// Measured against a real Dispatch server of this head on 2026-11-11: one session wrote a comment
-// on the closed LEGION-102 under that issue's title and its row appeared after 21 s; the same
-// session then wrote on the open LEGION-10 under its title, and over 151 s and five sweeps
-// LEGION-102's row did not go. The independent reading of R1 held 210 issues against the table's
-// 211, the extra one being LEGION-102. The open half of the same drive passed: WIDGETS-1's row
-// went, and no row outside the set went with it.
+// Measured against a real Dispatch server of an earlier head on 2026-11-11: one session wrote a
+// comment on the closed LEGION-102 under that issue's title and its row appeared after 21 s; the
+// same session then wrote on the open LEGION-10 under its title, and over 151 s and five passes of
+// the loop LEGION-102's row did not go. The independent reading of R1 held 210 issues against the
+// table's 211, the extra one being LEGION-102. The open half of the same drive passed:
+// WIDGETS-1's row went, and no row outside the set went with it.
 //
 // TestAnIssueThatLosesItsPhaseWorkLosesItsStoredRow states the same rule where the issue is open.
-// The fix has the shape the re-parenting already uses (leftTrees): the issue a session left is
-// read from what the table holds rather than from the links, and joins the stated set.
+// The fix reads the issue a session left from what the table holds rather than from the links
+// (sessionIssues' stored-row arm), as the re-parenting reads the tree a moved issue left
+// (leftTrees), and it joins the stated set.
 func TestAClosedIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)
@@ -62,7 +61,8 @@ func TestAClosedIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 		}
 	}
 
-	// Three passes, each a sweep of its own, which is what the server runs every half minute.
+	// Three passes, the first of them reading the session's event: the row goes on the first, and
+	// stays gone on the two after it.
 	for range 3 {
 		run.at = run.at.Add(time.Minute)
 		run.pass(t)
