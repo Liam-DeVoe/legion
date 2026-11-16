@@ -411,11 +411,15 @@ Each item below names a task and where its code is, then notes on it.
   the commit is the run's (`403 COMMIT_NOT_THE_RUNS`, naming both);
   the project, which must be the token's (`withinProjectScope`), maps the run's repository (`403 REPOSITORY_NOT_THE_PROJECTS`);
   GitHub names the token's check run at that commit (`githubapp.Client.CheckRun`, `403 CHECK_RUN_NOT_THE_RUNS`);
-  the files hold the check once (`specgraph.Parse`, `409 CHECK_NOT_IN_FILES`);
+  the graph logic takes the files, as spec-check reads them (`specgraph.Judge`, `409 SPEC_FILES_REFUSED` naming the first problem), a file over `notes.MaxFileSize` among the problems;
+  the files hold the check (`409 CHECK_NOT_IN_FILES`);
   and the check's job is the check run's name without its matrix values, cut at its last ` (` (`409 CHECK_NOT_THIS_JOBS`).
   A check run or files GitHub does not answer is `503 CHECK_RUN_UNREADABLE` or `503 FILES_UNREADABLE`, and nothing is stored.
-  A check run's name and commit, and the checks of a commit's files, are kept for the life of the process in byte-bounded caches, since neither changes.
-  The result is stored as a new row of `spec_check_results` (`insertSpecCheckResult`, its one writer), with Dispatch's record number `seq` and an in-toto Statement v1 of the run: its subject the repository at the commit, and its predicate the check, its procedure digest (`specgraph.Check.Digest`), its test part, the verdict, `observed` cut to 2000 runes, the job and the leg, the run, the recorder the token proved, and `recorded_at`.
+  A check run's name and commit, and what a commit's files hold, are kept for the life of the process in byte-bounded caches, since neither changes.
+  The result is stored as a new row of `spec_check_results` (`insertSpecCheckResult`, its one writer), with Dispatch's record number `seq` and an in-toto Statement v1 of the run: its subject the repository at the commit, and its predicate the check, its procedure digest (`specgraph.Check.Digest`), its test part, the verdict, `observed`, the job and the leg, the run, the recorder, and `recorded_at`.
+  The recorder is the run's session and principal, and no person: the person of the result entry is the broker's configuration, who ran no test, so no result, no answer and no access-log line names that person (the line names the run's session as the caller).
+  A result keeps `contracts.SpecCheckObservedMax` (2000) runes of `observed`: a longer text is its first runes and `contracts.SpecCheckObservedCutNote`, which says that the text was cut (`cutObserved`).
+  `dispatch result --project` cuts the text by the same rule before it sends it, and sends a NUL as U+FFFD, so a test log of any size still writes its result.
   No row is updated or deleted: another run, attempt or leg of one job is another row.
   `GET /api/v1/projects/{key}/results?commit=<sha>[&check=<id>]` answers every row of the project at that commit, newest first by `seq`, and a results token is refused it.
   Shapes: `SpecCheckResult` in `packages/contracts/src/dispatch-api.generated.ts`
@@ -3911,6 +3915,7 @@ A verifier built with `brokertoken.Options.ServesResults` accepts it and marks i
 a verifier built without that switch answers it `brokertoken.ErrNotASession`, as a build before the switch does.
 Dispatch's verifier sets the switch, so Dispatch serves a results token on the routes its results list names (`resultsScopeRoutes`), today `POST /api/v1/projects/{key}/results` alone;
 `brokerTokenActor` carries the mark as `model.Credential.ResultsOnly`, with the run as `model.Credential.CI` and no OAuth scope, and `refuseResultsOnlyToken` answers the token `403 RESULTS_ONLY_TOKEN` on every other route and on `/ws/live`, before the route's handler, its sign-in check and its idempotency key.
+The person a results token names stays inside Dispatch: the result it writes names the run as its recorder, and its access-log line names the run's session as the caller.
 `GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
 A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and the live socket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
 The verifier is built from settings Dispatch already has and takes none of its own (`cmd/dispatch`'s `brokerTokenVerifier`:

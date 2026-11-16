@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -37,26 +40,35 @@ const (
 	specResultsCheckRun = 97
 )
 
-// specResultsFiles is .dispatch/spec at specResultsCommit: one statement and three program
-// checks, p-1 of job go-checks, p-2 of job envoy-go and m-1 of the matrix job m.
+// The checks of specResultsFiles: one of job go-checks, one of job envoy-go, and one of the
+// matrix job m.
+const (
+	probeCheck     = "probe-passes"
+	otherJobsCheck = "second-probe-passes"
+	matrixCheck    = "matrix-probe-passes"
+)
+
+// specResultsFiles is .dispatch/spec at specResultsCommit: one statement and its three program
+// checks, probeCheck, otherJobsCheck and matrixCheck. It is a tree the graph logic takes
+// (specgraph.Judge finds no problem in it), as the files of a commit a job reports on must be.
 var specResultsFiles = map[string]string{
 	"probe.md": `:::requirement{#the-probe-holds kind="behavior"}
 The probe test passes on each commit.
 :::
 
-:::check{#p-1 serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestP" job="go-checks"}
+:::check{#probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestP" job="go-checks"}
 Claim: The probe test passes.
 Procedure: The program runs the probe test one time.
 Failing example: A probe test that fails.
 :::
 
-:::check{#p-2 serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestQ" job="envoy-go"}
+:::check{#second-probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestQ" job="envoy-go"}
 Claim: The second probe test passes.
 Procedure: The program runs the second probe test one time.
 Failing example: A second probe test that fails.
 :::
 
-:::check{#m-1 serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestM" job="m"}
+:::check{#matrix-probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestM" job="m"}
 Claim: The matrix probe test passes on each leg.
 Procedure: The program runs the matrix probe test on each leg.
 Failing example: A matrix probe test that fails on one leg.
@@ -65,14 +77,17 @@ Failing example: A matrix probe test that fails on one leg.
 }
 
 // specCheckDigest is the procedure digest the files give check id, read with the graph logic's
-// own parser, as the route must.
+// one reading of spec files, as the route must, which finds no problem in them.
 func specCheckDigest(t *testing.T, id string) string {
 	t.Helper()
 	files := map[string][]byte{}
 	for name, content := range specResultsFiles {
 		files[name] = []byte(content)
 	}
-	tree, _ := specgraph.Parse(files)
+	tree, problems := specgraph.Judge(files, specgraph.Options{})
+	if len(problems) > 0 {
+		t.Fatalf("the graph logic refuses the fixture files: %+v", problems)
+	}
 	check, ok := tree.CheckByID(id)
 	if !ok {
 		t.Fatalf("the fixture files hold no check %s", id)
@@ -272,10 +287,11 @@ func stored201(t *testing.T, response *httptest.ResponseRecorder) model.SpecChec
 // TestAJobsResultIsStoredAsAnAttestationOfItsRun: the job's result is stored as an in-toto
 // statement whose subject is the token's commit, whose job comes from the check run GitHub names
 // for the token, whose procedure digest comes from the files at that commit, and whose recorder
-// is the session the token proved. The body names none of them. The read answers the same row.
+// is the run the token proved: its session and principal, and no person. The body names none of
+// them. The read answers the same row.
 func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	result := stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf("p-1")))
+	result := stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)))
 
 	statement := result.Attestation
 	if statement.Type != "https://in-toto.io/Statement/v1" ||
@@ -288,7 +304,7 @@ func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
 	}
 	predicate := statement.Predicate
 	want := model.SpecCheckPredicate{
-		Project: specResultsProject, Check: "p-1", ProcedureDigest: specCheckDigest(t, "p-1"),
+		Project: specResultsProject, Check: probeCheck, ProcedureDigest: specCheckDigest(t, probeCheck),
 		Test:    model.SpecCheckTest{Runner: "go", Selector: "example.com/m/p TestP", Job: "go-checks"},
 		Verdict: "pass", Observed: "ok  \texample.com/m/p\t0.01s", Job: "go-checks", Leg: "",
 		Run: model.SpecCheckRun{
@@ -298,7 +314,6 @@ func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
 		Recorder: model.SpecCheckRecorder{
 			Session:   "ci-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
 			Principal: "workflow-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
-			Person:    "ada@example.com",
 		},
 		RecordedAt: predicate.RecordedAt,
 	}
@@ -308,9 +323,45 @@ func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
 	if result.Kind != "run" || result.Seq <= 0 || result.ID == "" {
 		t.Fatalf("the row is kind %q, seq %d, id %q, want a run with Dispatch's record number and an id", result.Kind, result.Seq, result.ID)
 	}
-	read := rig.read(t, specResultsCommit, "p-1")
+	read := rig.read(t, specResultsCommit, probeCheck)
 	if len(read) != 1 || read[0].ID != result.ID || read[0].Seq != result.Seq || read[0].Attestation.Predicate != predicate {
 		t.Fatalf("the read answered %+v, want the one row the write answered", read)
+	}
+}
+
+// TestAResultNamesItsRunAndNoPerson: the airlock authenticated a run of a workflow. The person
+// of the result entry is the broker's configuration: nobody authenticated that person for this
+// write, and that person ran no test (R12, "Nobody writes a result for work that it did not
+// do"). So the stored row, the write's answer, which `dispatch result --project` prints into a
+// CI log, the read's answer and the write's access-log line each name the run and no person,
+// and the line names the run's session as the caller.
+func TestAResultNamesItsRunAndNoPerson(t *testing.T) {
+	rig := newSpecResultsRig(t)
+	person := resultsOnlyToken(rig.caller.jkt, specResultsProject).Person
+	logged := captureLog(t)
+	written := rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck))
+	result := stored201(t, written)
+	lines := accessLines(t, logged)
+	read := rig.asPerson(t, http.MethodGet, "/api/v1/projects/"+specResultsProject+"/results?commit="+specResultsCommit, nil)
+	if read.Code != http.StatusOK {
+		t.Fatalf("the read: status=%d body=%s", read.Code, read.Body.String())
+	}
+	if len(lines) != 1 {
+		t.Fatalf("the write logged %d access-log lines, want 1: %q", len(lines), lines)
+	}
+	for _, text := range []struct{ what, text string }{
+		{"the write's answer", written.Body.String()},
+		{"the stored row", storedRow(t, rig, result.ID)},
+		{"the read's answer", read.Body.String()},
+		{"the write's access-log line", lines[0]},
+	} {
+		if strings.Contains(text.text, person) {
+			t.Errorf("%s names the result entry's person %s: %s", text.what, person, text.text)
+		}
+	}
+	session := "caller=ci-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml"
+	if !strings.Contains(lines[0], session) {
+		t.Errorf("the write's access-log line %q does not carry %q", lines[0], session)
 	}
 }
 
@@ -318,7 +369,7 @@ func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
 // run, and the refusal names both commits.
 func TestAnotherCommitIsRefusedNamingBoth(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	body := passOf("p-1")
+	body := passOf(probeCheck)
 	body["commit"] = specResultsOtherCommit
 	refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), body), http.StatusForbidden, "COMMIT_NOT_THE_RUNS")
 	if !strings.Contains(refusal.Error, specResultsOtherCommit) || !strings.Contains(refusal.Error, specResultsCommit) {
@@ -332,7 +383,7 @@ func TestAnIdentityFieldInTheBodyIsRefused(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	for _, field := range []string{"actor", "job", "leg", "attempt", "role", "session", "repository", "run_id", "check_run_id", "procedure_digest", "subject"} {
 		t.Run(field, func(t *testing.T) {
-			body := passOf("p-1")
+			body := passOf(probeCheck)
 			body[field] = "chosen-by-the-caller"
 			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), body), http.StatusBadRequest, "RESULT_INPUT")
 			if !strings.Contains(refusal.Error, field) {
@@ -345,14 +396,56 @@ func TestAnIdentityFieldInTheBodyIsRefused(t *testing.T) {
 // TestACheckTheFilesDoNotHoldIsRefused: a result is for a check of the files at the run's commit.
 func TestACheckTheFilesDoNotHoldIsRefused(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf("p-9")), http.StatusConflict, "CHECK_NOT_IN_FILES")
+	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf("no-such-check")), http.StatusConflict, "CHECK_NOT_IN_FILES")
+}
+
+// TestSpecFilesTheGraphLogicRefusesAreRefused: Dispatch reads the spec files at the run's commit
+// through specgraph.Judge, the one reading that spec-check and the CI reporter use, so a tree that
+// reading refuses is refused here too, 409 SPEC_FILES_REFUSED naming its first problem, and nothing
+// is stored: one tree has one answer, and a check "has five parts" (R6). A file over the size
+// bound that every reader of spec files holds them to (notes.MaxFileSize) is the same refusal,
+// since GitHub serving it again changes nothing.
+func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
+	for _, row := range []struct {
+		name, file, content, first string
+	}{
+		{
+			name: "an unclosed block in another file", file: "broken.md",
+			content: ":::requirement{#broken kind=\"behavior\"}\nThis block never closes.\n",
+			first:   ".dispatch/spec/broken.md:1: broken: leaf-without-check: no statement is under it and no check serves it",
+		},
+		{
+			name: "a check without its failing example", file: "probe.md",
+			content: strings.Replace(specResultsFiles["probe.md"], "Failing example: A probe test that fails.\n", "", 1),
+			first:   ".dispatch/spec/probe.md:5: probe-passes: no-failing-example: the check has no failing example",
+		},
+		{
+			name: "a spec file that holds a NUL byte", file: "nul.md", content: "# A heading\n\x00\n",
+			first: ".dispatch/spec/nul.md:2: -: bad-encoding: a spec file is UTF-8 text with no NUL byte",
+		},
+		{
+			name: "a spec file over the size bound", file: "big.md", content: strings.Repeat("\n", notes.MaxFileSize+1),
+			first: "file too large: .dispatch/spec/big.md is 1048577 bytes (limit 1048576)",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			files := maps.Clone(specResultsFiles)
+			files[row.file] = row.content
+			rig.github.files[specResultsCommit] = files
+			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusConflict, "SPEC_FILES_REFUSED")
+			if !strings.Contains(refusal.Error, row.first) {
+				t.Fatalf("the refusal %q does not name the first problem %q", refusal.Error, row.first)
+			}
+		})
+	}
 }
 
 // TestACheckOfAnotherJobIsRefused: the check names the job envoy-go, and the run's check run is
 // the job go-checks, which did not run that check.
 func TestACheckOfAnotherJobIsRefused(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf("p-2")), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
+	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(otherJobsCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
 }
 
 // TestACheckRunOfAnotherCommitIsRefused: GitHub names another commit for the token's check run,
@@ -360,14 +453,14 @@ func TestACheckOfAnotherJobIsRefused(t *testing.T) {
 func TestACheckRunOfAnotherCommitIsRefused(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	rig.github.checkRuns[specResultsCheckRun] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsOtherCommit}
-	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf("p-1")), http.StatusForbidden, "CHECK_RUN_NOT_THE_RUNS")
+	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusForbidden, "CHECK_RUN_NOT_THE_RUNS")
 }
 
 // TestAForgedAccessTokenIsRefusedAtTheRoute: a token the broker answers inactive, presented with
 // a sound DPoP proof of the caller's own key, writes nothing.
 func TestAForgedAccessTokenIsRefusedAtTheRoute(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	rig.refusedWith(t, rig.post(t, specResultsProject, "a-token-the-broker-never-issued", passOf("p-1")), http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE")
+	rig.refusedWith(t, rig.post(t, specResultsProject, "a-token-the-broker-never-issued", passOf(probeCheck)), http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE")
 }
 
 // TestOnlyAResultsTokenWritesTheRoute: a session's own broker token of the project, and a
@@ -378,14 +471,14 @@ func TestOnlyAResultsTokenWritesTheRoute(t *testing.T) {
 	named.Project = specResultsProject
 	const session = "a-session-token-of-the-project"
 	rig.broker.Says(session, named)
-	rig.refusedWith(t, rig.post(t, specResultsProject, session, passOf("p-1")), http.StatusForbidden, "RESULTS_SCOPE_REQUIRED")
-	rig.refusedWith(t, rig.asPerson(t, http.MethodPost, "/api/v1/projects/"+specResultsProject+"/results", passOf("p-1")), http.StatusForbidden, "RESULTS_SCOPE_REQUIRED")
+	rig.refusedWith(t, rig.post(t, specResultsProject, session, passOf(probeCheck)), http.StatusForbidden, "RESULTS_SCOPE_REQUIRED")
+	rig.refusedWith(t, rig.asPerson(t, http.MethodPost, "/api/v1/projects/"+specResultsProject+"/results", passOf(probeCheck)), http.StatusForbidden, "RESULTS_SCOPE_REQUIRED")
 }
 
 // TestAProjectNotTheTokensIsRefused: a results token writes the results of its own project alone.
 func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf("p-1")), http.StatusForbidden, codeProjectScope)
+	rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, codeProjectScope)
 }
 
 // TestARepositoryTheProjectDoesNotMapIsRefused: the token's run is of a repository the project
@@ -393,7 +486,7 @@ func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	token := rig.token(func(answer *brokertoken.Introspection) { answer.CI.Repository = "example-org/another-repo" })
-	rig.refusedWith(t, rig.post(t, specResultsProject, token, passOf("p-1")), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
+	rig.refusedWith(t, rig.post(t, specResultsProject, token, passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
 }
 
 // TestGitHubUnreadableIsAServiceError: a check run or files GitHub does not answer leave the
@@ -402,12 +495,12 @@ func TestGitHubUnreadableIsAServiceError(t *testing.T) {
 	t.Run("the check run", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
 		rig.github.checkRunStatus = http.StatusBadGateway
-		rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf("p-1")), http.StatusServiceUnavailable, "CHECK_RUN_UNREADABLE")
+		rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusServiceUnavailable, "CHECK_RUN_UNREADABLE")
 	})
 	t.Run("the files", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
 		rig.github.filesStatus = http.StatusBadGateway
-		rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf("p-1")), http.StatusServiceUnavailable, "FILES_UNREADABLE")
+		rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusServiceUnavailable, "FILES_UNREADABLE")
 	})
 }
 
@@ -426,9 +519,9 @@ func storedRow(t *testing.T, rig *specResultsRig, id string) string {
 // once for the check run and once for the files: both reads are cached for the process.
 func TestAResultIsAppendedAndNeverEdited(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	first := stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf("p-1")))
+	first := stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)))
 	before := storedRow(t, rig, first.ID)
-	failed := passOf("p-1")
+	failed := passOf(probeCheck)
 	failed["verdict"] = "fail"
 	second := stored201(t, rig.post(t, specResultsProject, rig.token(nil), failed))
 	if second.ID == first.ID || second.Seq <= first.Seq {
@@ -454,7 +547,7 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	var wrote []int64
 	for range 3 {
-		wrote = append(wrote, stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf("p-1"))).Seq)
+		wrote = append(wrote, stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck))).Seq)
 	}
 	ctx := context.Background()
 	tx, err := rig.database.Pool.Begin(ctx)
@@ -464,8 +557,8 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 	defer tx.Rollback(ctx)
 	for range 2 {
 		row := specCheckRow{
-			project: specResultsProject, repository: specResultsRepository, check: "p-1", commit: specResultsCommit,
-			procedureDigest: specCheckDigest(t, "p-1"), job: "go-checks", checkRunID: specResultsCheckRun, runID: 7, attempt: 1,
+			project: specResultsProject, repository: specResultsRepository, check: probeCheck, commit: specResultsCommit,
+			procedureDigest: specCheckDigest(t, probeCheck), job: "go-checks", checkRunID: specResultsCheckRun, runID: 7, attempt: 1,
 			verdict: "pass", session: "ci-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
 		}
 		stored, err := insertSpecCheckResult(ctx, tx, row)
@@ -503,11 +596,11 @@ func TestEveryAttemptAndLegIsKept(t *testing.T) {
 		token := rig.token(func(answer *brokertoken.Introspection) {
 			answer.CI.CheckRunID, answer.CI.RunAttempt = fmt.Sprint(run.id), run.attempt
 		})
-		body := passOf("m-1")
+		body := passOf(matrixCheck)
 		body["verdict"] = run.verdict
 		stored201(t, rig.post(t, specResultsProject, token, body))
 	}
-	read := rig.read(t, specResultsCommit, "m-1")
+	read := rig.read(t, specResultsCommit, matrixCheck)
 	type kept struct {
 		job, leg, verdict string
 		attempt           int
@@ -529,9 +622,9 @@ func TestTwoLegsOfOneNameInOneAttemptAreTwoRows(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	for _, id := range []int64{11, 12} {
 		rig.github.checkRuns[id] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsCommit}
-		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *brokertoken.Introspection) { answer.CI.CheckRunID = fmt.Sprint(id) }), passOf("p-1")))
+		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *brokertoken.Introspection) { answer.CI.CheckRunID = fmt.Sprint(id) }), passOf(probeCheck)))
 	}
-	read := rig.read(t, specResultsCommit, "p-1")
+	read := rig.read(t, specResultsCommit, probeCheck)
 	if len(read) != 2 || read[0].Attestation.Predicate.Run.CheckRunID != "12" || read[1].Attestation.Predicate.Run.CheckRunID != "11" {
 		t.Fatalf("the read answered %+v, want the rows of check runs 12 and 11", read)
 	}
@@ -541,22 +634,36 @@ func TestTwoLegsOfOneNameInOneAttemptAreTwoRows(t *testing.T) {
 func TestTwoRunsAtOneCommitAreTwoRows(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	for _, run := range []string{"1", "2"} {
-		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *brokertoken.Introspection) { answer.CI.RunID = run }), passOf("p-1")))
+		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *brokertoken.Introspection) { answer.CI.RunID = run }), passOf(probeCheck)))
 	}
-	read := rig.read(t, specResultsCommit, "p-1")
+	read := rig.read(t, specResultsCommit, probeCheck)
 	if len(read) != 2 || read[0].Attestation.Predicate.Run.RunID != "2" || read[1].Attestation.Predicate.Run.RunID != "1" {
 		t.Fatalf("the read answered %+v, want the rows of runs 2 and 1", read)
 	}
 }
 
-// TestObservedIsCutTo2000Runes: what the job observed is kept to its first 2000 runes.
-func TestObservedIsCutTo2000Runes(t *testing.T) {
-	rig := newSpecResultsRig(t)
-	body := passOf("p-1")
-	body["observed"] = strings.Repeat("é", 2500)
-	observed := stored201(t, rig.post(t, specResultsProject, rig.token(nil), body)).Attestation.Predicate.Observed
-	if utf8.RuneCountInString(observed) != 2000 || observed != strings.Repeat("é", 2000) {
-		t.Fatalf("observed holds %d runes, want the first 2000", utf8.RuneCountInString(observed))
+// TestAnObservedTextPastTheBoundIsCutAndSaysSo: a result keeps at most
+// contracts.SpecCheckObservedMax runes of what the job observed. A longer text is kept as its
+// first runes and contracts.SpecCheckObservedCutNote, that many runes in all, so the stored text
+// says that it was cut; a text of exactly the bound is kept whole.
+func TestAnObservedTextPastTheBoundIsCutAndSaysSo(t *testing.T) {
+	note := contracts.SpecCheckObservedCutNote
+	for _, row := range []struct {
+		name, sent, kept string
+	}{
+		{"a text past the bound", strings.Repeat("é", 2500), strings.Repeat("é", contracts.SpecCheckObservedMax-utf8.RuneCountInString(note)) + note},
+		{"a text of the bound", strings.Repeat("é", contracts.SpecCheckObservedMax), strings.Repeat("é", contracts.SpecCheckObservedMax)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			body := passOf(probeCheck)
+			body["observed"] = row.sent
+			observed := stored201(t, rig.post(t, specResultsProject, rig.token(nil), body)).Attestation.Predicate.Observed
+			if observed != row.kept || utf8.RuneCountInString(observed) != contracts.SpecCheckObservedMax {
+				t.Fatalf("observed holds %d runes ending %q, want %d ending %q",
+					utf8.RuneCountInString(observed), observed[max(0, len(observed)-120):], contracts.SpecCheckObservedMax, row.kept[max(0, len(row.kept)-120):])
+			}
+		})
 	}
 }
 
@@ -564,7 +671,7 @@ func TestObservedIsCutTo2000Runes(t *testing.T) {
 // it was written.
 func TestACouldNotRunResultIsStored(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	body := passOf("p-1")
+	body := passOf(probeCheck)
 	body["verdict"] = "could_not_run"
 	if verdict := stored201(t, rig.post(t, specResultsProject, rig.token(nil), body)).Attestation.Predicate.Verdict; verdict != "could_not_run" {
 		t.Fatalf("the stored verdict is %q, want could_not_run", verdict)

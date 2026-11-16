@@ -207,6 +207,20 @@ export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
  */
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
+/**
+ * The most characters (Unicode code points, Go's runes) of what a CI job observed that a result
+ * of a spec check keeps (`POST /api/v1/projects/{key}/results`, `observed`). A longer text is kept
+ * as its first characters and then `SPEC_CHECK_OBSERVED_CUT_NOTE`, this many characters in all,
+ * so the stored text says that it was cut. Dispatch cuts a longer text so, and `dispatch result
+ * --project` cuts it so before it sends it, since a test's log can be larger than any request
+ * Dispatch takes. Generated into Go as `contracts.SpecCheckObservedMax`.
+ */
+export const SPEC_CHECK_OBSERVED_MAX = 2000;
+
+/** The end of an observed text cut to `SPEC_CHECK_OBSERVED_MAX`: a line that says the text was
+ *  cut. Generated into Go as `contracts.SpecCheckObservedCutNote`. */
+export const SPEC_CHECK_OBSERVED_CUT_NOTE = `\n[The text is cut here. A result keeps ${SPEC_CHECK_OBSERVED_MAX} characters of what the job observed.]`;
+
 /** The codes of a write Dispatch made and has no answer to give for: `409 KEY_COMMITTED`, or a
  *  replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats either as landed. */
 export type IdempotencyLandedCode =

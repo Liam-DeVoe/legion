@@ -853,13 +853,19 @@ no envoy.json and no session state, and it asks no AskGate and no listener. Disp
 (`ownIdentityDispatch` in `dispatch-config.ts`: `AGENT_SECRETS_URL` with
 `AGENT_SECRETS_MACHINE_IDENTITY`, `github-actions` in a GitHub Actions job). It reads no bearer and
 trades no person's sign-in, and the trade names no session, since the broker's result entry fixes
-it. The body is `{commit, check, verdict, observed}` and nothing else. It prints the stored result
-as JSON and exits 0, or prints Dispatch's refusal as `<CODE>: <message>` and exits 1. A refusal of
-its arguments, or an identity with a variable missing, sends nothing and exits 2. `--observed`
-text that opens with `-`, such as a test's `--- FAIL` line, goes as `--observed=<text>` or
-through `--observed-file`. `dispatch results --project <KEY> --commit <sha> [--check <id>]` is a
-session's read of those results, one line each, newest first, or the stored results as JSON with
-`--json`.
+it. The body is `{commit, check, verdict, observed}` and nothing else. A result keeps 2000
+characters of `observed` (`SPEC_CHECK_OBSERVED_MAX`), so the command sends at most that: a
+longer text goes as its first characters and a last line that says the text was cut
+(`SPEC_CHECK_OBSERVED_CUT_NOTE`), and a test log of any size still writes its result. A NUL,
+which Dispatch cannot store, goes as U+FFFD, and so does each byte of a file that is not UTF-8.
+It prints the stored result as JSON and exits 0. The stored result names the run as its
+recorder and no person, so the job's log holds no person's address. It prints Dispatch's
+refusal as `<CODE>: <message>` and exits 1, such as `SPEC_FILES_REFUSED` with the first problem
+of spec files the graph logic refuses. A refusal of its arguments, or an identity with a
+variable missing, sends nothing and exits 2. `--observed` text that opens with `-`, such as a
+test's `--- FAIL` line, goes as `--observed=<text>` or through `--observed-file`.
+`dispatch results --project <KEY> --commit <sha> [--check <id>]` is a session's read of those
+results, one line each, newest first, or the stored results as JSON with `--json`.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
