@@ -65,6 +65,11 @@ export const COLUMN_FACETS = [
 
 export type ColumnFacet = (typeof COLUMN_FACETS)[number];
 
+/** Whether a facet, a column or an open filter is one of the column facets. */
+export function isColumnFacet(key: string | undefined): key is ColumnFacet {
+  return COLUMN_FACETS.some((one) => one === key);
+}
+
 /** The values a column facet offers whatever the window holds, in its own order: every verdict
  *  a pull request can have. The other three list what the window counts, busiest first. */
 export const FIXED_FACET_VALUES: Partial<Record<ColumnFacet, readonly string[]>> = {
@@ -422,7 +427,7 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
       },
     };
     return COLUMNS.map(({ id, label, min, size, sortable }) => {
-      const facet = COLUMN_FACETS.find((key) => key === id);
+      const facet = isColumnFacet(id) ? id : undefined;
       const fixed = facet === undefined ? undefined : FIXED_FACET_VALUES[facet];
       return {
         ...renderings[id],
@@ -577,7 +582,7 @@ export function PRList({
     }
   };
 
-  const openFacet = COLUMN_FACETS.find((key) => key === openFilter);
+  const openFacet = isColumnFacet(openFilter) ? openFilter : undefined;
   const counts = useMemo(() => {
     if (openFacet === undefined) return new Map<string, number>();
     const facet = FACET_PARAMS[openFacet];

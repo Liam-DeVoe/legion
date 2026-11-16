@@ -69,6 +69,7 @@ import {
   columnFacetValue,
   columnHeader,
   FIXED_FACET_VALUES,
+  isColumnFacet,
   PRList,
   SORTABLE_COLUMNS,
 } from "./PRList";
@@ -485,8 +486,7 @@ function DeliveryControls({
   // Rework and Deployed offer every verdict in their own order, as their headers do; every other
   // facet offers what the window counts, busiest first.
   const valuesOf = (key: FacetKey): readonly string[] => {
-    const column = COLUMN_FACETS.find((one) => one === key);
-    const fixed = column === undefined ? undefined : FIXED_FACET_VALUES[column];
+    const fixed = isColumnFacet(key) ? FIXED_FACET_VALUES[key] : undefined;
     if (fixed !== undefined) return fixed;
     const counts = countsOf(key);
     return Object.keys(counts).sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
@@ -510,10 +510,9 @@ function DeliveryControls({
   // A column facet's value reads as its header's filter reads it. Before the first answer an
   // issue has no title to read beside its key, so it reads as its key alone.
   const valueLabel = (key: FacetKey, value: string): string => {
-    const column = COLUMN_FACETS.find((one) => one === key);
-    if (column !== undefined) {
-      if (data === undefined && column === "issue") return PLACEHOLDER_LABELS[value] ?? value;
-      return columnFacetValue(column, value, {
+    if (isColumnFacet(key)) {
+      if (data === undefined && key === "issue") return PLACEHOLDER_LABELS[value] ?? value;
+      return columnFacetValue(key, value, {
         issueTitles: data?.issue_titles ?? {},
         sessionGroups: data?.session_groups ?? [],
       });
