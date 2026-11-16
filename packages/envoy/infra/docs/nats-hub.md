@@ -367,8 +367,9 @@ environment as `NATS_NKEY_SEED` through `docker run --env-file`, which Docker re
 the listener's image runs as an unprivileged user. With `authCallout` it connects by its service
 identity instead (see [The auth service](#the-auth-service)), and its unit carries
 `NATS_SERVICE_GOOGLE_AUDIENCE=<listener.natsAudience>` after the broker check's variables, with no
-env file and no fetch before its start. The unit quotes and escapes the audience for systemd, so
-percent-encoded URLs, dollar signs, quotes and backslashes reach the listener literally. With
+env file and no fetch before its start. The unit quotes and escapes every environment value that
+holds `%`, `$`, a quote or a backslash for systemd, the audience and the broker check's URL and
+audience among them, so percent-encoded URLs reach the listener literally. With
 `privateProjects`, `ENVOY_PRIVATE_PROJECTS=1` comes last.
 
 ### The listener's broker check

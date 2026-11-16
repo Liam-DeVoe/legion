@@ -196,6 +196,33 @@ func TestACalloutHubPreservesItsListenerAudienceInTheUnit(t *testing.T) {
 	}
 }
 
+// Every value the listener's unit carries reaches it literally, not natsAudience alone: the broker
+// check's URL and audience and the public URL are inputs a consumer writes too, and an encoded
+// `%2F` or a `$` in one made systemd refuse the unit's load or change the value. A unit whose
+// values hold no such character is byte for byte what it was (the goldens).
+func TestTheHubListenerUnitCarriesEveryValueLiterally(t *testing.T) {
+	for _, callout := range []bool{false, true} {
+		args := exampleArgs()
+		if callout {
+			args = calloutNatsHub()
+			args.Listener = calloutListener()
+		}
+		args.Listener.AgentSecretsUrl = "https://broker.example/agent%2Fsecrets"
+		args.Listener.AgentSecretsAudience = "https://broker.example/aud%2F$USER"
+		args.Listener.PublicUrl = "https://envoy.example/v1%2Fx"
+		doc, _, err := gcp.CloudConfigOf(args)
+		require.NoError(t, err, "authCallout %t", callout)
+		unit := fileOf(t, doc, "/etc/systemd/system/envoy-listener.service")
+		for _, argument := range []string{
+			`"ENVOY_AGENT_SECRETS_URL=https://broker.example/agent%%2Fsecrets"`,
+			`"ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE=https://broker.example/aud%%2F$$USER"`,
+			`"ENVOY_PUBLIC_URL=https://envoy.example/v1%%2Fx"`,
+		} {
+			require.Contains(t, unit, " -e "+argument+" ", "authCallout %t", callout)
+		}
+	}
+}
+
 // A hub's own listener behind the auth service is no user of the hub, but it still binds the
 // durable and the queue group of its machine id, so a static user given that machine id is
 // refused on each hub as it is beside a seeded listener: two listeners would share one durable.

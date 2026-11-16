@@ -8,7 +8,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/envoy/infra/core"
-	"github.com/sjawhar/envoy/internal/bus"
 )
 
 // Where the VM keeps what its units read. Container-Optimized OS mounts / read-only; /etc and
@@ -405,10 +404,17 @@ func (v vm) natsUnit() string {
 	}, "ExecStop=/usr/bin/docker stop -t 30 nats")
 }
 
-// systemdEnvEscapes keeps the service audience literal through ExecStart's quoting,
-// backslash, environment-variable and unit-specifier expansion. Other environment arguments
-// retain their existing rendering, including when the new service identity inputs are unset.
+// systemdEnvEscapes keeps a value literal through ExecStart's quoting, backslash,
+// environment-variable and unit-specifier expansion: systemd reads `%` as a unit specifier, `$` as
+// a variable, and quotes and backslashes as its own syntax, so an accepted URL or audience holding
+// one (an encoded `%2F`, say) would fail the unit's load or reach the listener changed. An argument
+// holding none of them renders as it always did, so every unit whose values hold none is byte for
+// byte what it was.
 var systemdEnvEscapes = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$", "%", "%%")
+
+// systemdSpecial are the characters systemdEnvEscapes writes, and the single quote, which opens a
+// quoted word of systemd's own and so is literal only inside the double quotes the escape adds.
+const systemdSpecial = `\'"$%`
 
 // listenerUnit runs the hub's Envoy listener on the host's network, after NATS. A listener with a
 // seed has it fetched before every start: a fetch that fails fails the start, and the unit's
@@ -424,8 +430,11 @@ func (v vm) listenerUnit() string {
 		run = append(run, "--env-file", listenerEnvPath)
 		service = append(service, "ExecStartPre="+seedEnvPath+" "+listenerEnvPath+" "+v.listener.seedSecret)
 	}
+	// Every environment value is quoted and escaped when it holds a character systemd would read:
+	// the listener's URLs, hosts and audiences are inputs a consumer writes, and core refuses only
+	// whitespace and control characters in them.
 	for _, e := range v.listener.env {
-		if strings.HasPrefix(e, bus.ServiceGoogleAudienceEnvVar+"=") && strings.ContainsAny(e, `\'"$%`) {
+		if strings.ContainsAny(e, systemdSpecial) {
 			e = `"` + systemdEnvEscapes.Replace(e) + `"`
 		}
 		run = append(run, "-e", e)
