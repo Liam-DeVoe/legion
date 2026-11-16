@@ -5,6 +5,8 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os/exec"
 	"slices"
 	"strings"
@@ -23,6 +25,14 @@ import (
 // here, and so does a schema, a field or a query parameter it no longer declares, a field that is
 // no longer required, and any of them whose shape moved. A route, a schema or a field this child
 // added is no regression and is not read.
+//
+// One move is no regression: a field that now names the values it takes, as an `enum` over the
+// type it had, where the fork point named none, in a schema this build answers and never takes -
+// reachable from no request body and no parameter of its document (requestSchemas). Every value
+// such a field is sent is a value of the type a reader of the fork point's document reads, so
+// nothing it read is gone; it is logged, naming the schema, the field and the values
+// (compareSchemas). The same enum on a schema a request takes refuses values the fork point
+// took, and fails as any other move does.
 //
 // It runs under the build tag `basebuild` because it reads the repository's history: a checkout
 // with no `origin/main` (a shallow clone, an archive) has no fork point to read, which is the
@@ -79,29 +89,241 @@ func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
 			}
 		}
 	}
-	for name, declared := range base.schemas {
+	failures, narrowings := compareSchemas(t, base, now, requestSchemas(t, rendered.Bytes()))
+	for _, narrowing := range narrowings {
+		t.Log(narrowing)
+	}
+	for _, failure := range failures {
+		t.Error(failure)
+	}
+}
+
+// TestAnEnumNarrowsAnAnsweredFieldAndFailsARequestedOne holds compareSchemas to its one allowance
+// both ways, over this build's own render moved by hand: a fork point whose GraphNode.kind and
+// GraphNodeRead.kind named no values reads the enum they name now as narrowings, logged, and the
+// same enum added to a string field of a schema a request takes fails, naming that field. It
+// reads no history, so it runs wherever the tag is given.
+func TestAnEnumNarrowsAnAnsweredFieldAndFailsARequestedOne(t *testing.T) {
+	rendered := renderOpenAPI(t)
+	requested := requestSchemas(t, rendered)
+	if len(requested) == 0 {
+		t.Fatal("no schema is reachable from a request body or a parameter, so the walk read nothing")
+	}
+	answered := []string{"GraphNode", "GraphNodeRead"}
+	for _, name := range answered {
+		if requested[name] {
+			t.Fatalf("%s is reachable from a request, so it is no answered-only schema to narrow", name)
+		}
+	}
+	documentSchemas := func(document map[string]any) map[string]any {
+		return document["components"].(map[string]any)["schemas"].(map[string]any)
+	}
+	var before, after map[string]any
+	for _, document := range []*map[string]any{&before, &after} {
+		if err := json.Unmarshal(rendered, document); err != nil {
+			t.Fatalf("decode the render: %v", err)
+		}
+	}
+	// The fork point as a build before the enum rendered it.
+	for _, name := range answered {
+		kind := documentSchemas(before)[name].(map[string]any)["properties"].(map[string]any)["kind"].(map[string]any)
+		if _, named := kind["enum"]; !named {
+			t.Fatalf("%s.kind names no enum in this build's render", name)
+		}
+		delete(kind, "enum")
+	}
+	// A string field a request takes, gaining an enum: the first, by schema and field name.
+	var taken, field string
+	for _, name := range slices.Sorted(maps.Keys(requested)) {
+		properties, _ := documentSchemas(after)[name].(map[string]any)["properties"].(map[string]any)
+		for _, candidate := range slices.Sorted(maps.Keys(properties)) {
+			property, _ := properties[candidate].(map[string]any)
+			if _, named := property["enum"]; property["type"] == "string" && !named {
+				taken, field = name, candidate
+				property["enum"] = []any{"one", "two"}
+				break
+			}
+		}
+		if taken != "" {
+			break
+		}
+	}
+	if taken == "" {
+		t.Fatal("no schema a request takes has a string field to narrow")
+	}
+	encode := func(what string, document map[string]any) servedDocument {
+		raw, err := json.Marshal(document)
+		if err != nil {
+			t.Fatalf("encode %s: %v", what, err)
+		}
+		return decodeServedDocument(t, what, raw)
+	}
+	failures, narrowings := compareSchemas(t, encode("the fork point", before), encode("this build", after), requested)
+	for _, narrowing := range narrowings {
+		t.Log(narrowing)
+	}
+	for _, failure := range failures {
+		t.Log(failure)
+	}
+	if len(failures) != 1 || !strings.HasPrefix(failures[0], taken+"."+field+" was ") {
+		t.Errorf("an enum added to %s.%s, which a request takes, fails %v; want that one field named", taken, field, failures)
+	}
+	for _, name := range answered {
+		if !slices.ContainsFunc(narrowings, func(line string) bool { return strings.HasPrefix(line, name+".kind was ") }) {
+			t.Errorf("the enum %s.kind names is no narrowing: %v", name, narrowings)
+		}
+	}
+	if len(narrowings) != len(answered) {
+		t.Errorf("compareSchemas reads %d narrowings, want the %d of %v: %v", len(narrowings), len(answered), answered, narrowings)
+	}
+}
+
+// compareSchemas holds every schema the fork point declared to this build's (now), field by
+// field: a failure for each schema, field or requirement that is gone and each shape that moved,
+// and apart from them each narrowing, a field of a schema no request takes (requested names
+// those a request does) whose shape is the fork point's with an enum added (narrowedToEnum).
+func compareSchemas(t *testing.T, base, now servedDocument, requested map[string]bool) (failures, narrowings []string) {
+	t.Helper()
+	for _, name := range slices.Sorted(maps.Keys(base.schemas)) {
+		declared := base.schemas[name]
 		answered, held := now.schemas[name]
 		if !held {
-			t.Errorf("the schema %s was declared at the fork point and is declared no longer", name)
+			failures = append(failures, fmt.Sprintf("the schema %s was declared at the fork point and is declared no longer", name))
 			continue
 		}
 		if len(declared.properties) == 0 && declared.whole != answered.whole {
-			t.Errorf("the schema %s was %s at the fork point and is %s now", name, declared.whole, answered.whole)
+			failures = append(failures, fmt.Sprintf("the schema %s was %s at the fork point and is %s now", name, declared.whole, answered.whole))
 		}
-		for field, shape := range declared.properties {
-			switch current, kept := answered.properties[field]; {
+		for _, field := range slices.Sorted(maps.Keys(declared.properties)) {
+			shape := declared.properties[field]
+			current, kept := answered.properties[field]
+			switch {
 			case !kept:
-				t.Errorf("%s.%s was a field at the fork point and has disappeared", name, field)
-			case current != shape:
-				t.Errorf("%s.%s was %s at the fork point and is %s now", name, field, shape, current)
+				failures = append(failures, fmt.Sprintf("%s.%s was a field at the fork point and has disappeared", name, field))
+			case current == shape:
+			default:
+				if enum, narrowed := narrowedToEnum(t, shape, current); narrowed && !requested[name] {
+					narrowings = append(narrowings, fmt.Sprintf("%s.%s was %s at the fork point and names its values now, %s; no request takes %s, so a reader of the fork point reads every value it is sent",
+						name, field, shape, enum, name))
+					continue
+				}
+				failures = append(failures, fmt.Sprintf("%s.%s was %s at the fork point and is %s now", name, field, shape, current))
 			}
 		}
 		for _, field := range declared.required {
 			if !slices.Contains(answered.required, field) {
-				t.Errorf("%s.%s was required at the fork point and is required no longer", name, field)
+				failures = append(failures, fmt.Sprintf("%s.%s was required at the fork point and is required no longer", name, field))
 			}
 		}
 	}
+	return failures, narrowings
+}
+
+// narrowedToEnum reports whether current, a field's shape now (schemaShape), is base, its shape at
+// the fork point, with an `enum` added and nothing else: base names no enum, and current without
+// its enum is base. It answers the enum current names, as the document spells it.
+func narrowedToEnum(t *testing.T, base, current string) (string, bool) {
+	t.Helper()
+	var was, is map[string]any
+	if err := json.Unmarshal([]byte(base), &was); err != nil {
+		return "", false
+	}
+	if err := json.Unmarshal([]byte(current), &is); err != nil {
+		return "", false
+	}
+	enum, named := is["enum"]
+	if _, before := was["enum"]; before || !named {
+		return "", false
+	}
+	delete(is, "enum")
+	without, err := json.Marshal(is)
+	if err != nil {
+		t.Fatalf("encode a shape without its enum: %v", err)
+	}
+	if string(without) != base {
+		return "", false
+	}
+	values, err := json.Marshal(enum)
+	if err != nil {
+		t.Fatalf("encode an enum: %v", err)
+	}
+	return string(values), true
+}
+
+// requestSchemas is every component schema a request of document may carry: each one a `$ref`
+// of an operation's parameters or request body reaches, through the `$ref`s of every component
+// it reaches in turn. A schema outside it is one this build only answers.
+func requestSchemas(t *testing.T, document []byte) map[string]bool {
+	t.Helper()
+	var raw struct {
+		Paths      map[string]map[string]json.RawMessage `json:"paths"`
+		Components map[string]map[string]json.RawMessage `json:"components"`
+	}
+	if err := json.Unmarshal(document, &raw); err != nil {
+		t.Fatalf("decode the document for the schemas a request takes: %v", err)
+	}
+	var pending []json.RawMessage
+	for _, item := range raw.Paths {
+		for key, value := range item {
+			if key == "parameters" {
+				// Parameters a path item declares for every operation under it.
+				pending = append(pending, value)
+				continue
+			}
+			var operation struct {
+				Parameters  json.RawMessage `json:"parameters"`
+				RequestBody json.RawMessage `json:"requestBody"`
+			}
+			if err := json.Unmarshal(value, &operation); err != nil {
+				continue
+			}
+			pending = append(pending, operation.Parameters, operation.RequestBody)
+		}
+	}
+	reached := map[string]bool{}
+	seen := map[string]bool{}
+	for len(pending) > 0 {
+		next := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if len(next) == 0 {
+			continue
+		}
+		var value any
+		if err := json.Unmarshal(next, &value); err != nil {
+			t.Fatalf("decode a part of the document a request carries: %v", err)
+		}
+		for _, ref := range schemaRefs(value) {
+			section, name, found := strings.Cut(strings.TrimPrefix(ref, "#/components/"), "/")
+			if !found || seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			if section == "schemas" {
+				reached[name] = true
+			}
+			pending = append(pending, raw.Components[section][name])
+		}
+	}
+	return reached
+}
+
+// schemaRefs is every `$ref` value holds, at any depth.
+func schemaRefs(value any) []string {
+	var refs []string
+	switch typed := value.(type) {
+	case map[string]any:
+		if ref, isRef := typed["$ref"].(string); isRef {
+			refs = append(refs, ref)
+		}
+		for _, inner := range typed {
+			refs = append(refs, schemaRefs(inner)...)
+		}
+	case []any:
+		for _, inner := range typed {
+			refs = append(refs, schemaRefs(inner)...)
+		}
+	}
+	return refs
 }
 
 // servedDocument is an OpenAPI document as this test compares two of them: each operation's

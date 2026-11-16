@@ -28,9 +28,17 @@ import (
 // comment path and the block index, whose projection rows carry a foreign key into graph_nodes
 // and must therefore follow the node - takes WriteUncaused instead, so that the base attributes
 // are appended under that event rather than under the sentinel.
+//
+// Every relation the write appends whose kind the pointer type rules hold (pointerRules) is held
+// to its rule once the nodes are written and before the first tuple is appended
+// (checkPointers), so a write that breaks one appends nothing; its refusal ends the caller's
+// transaction, which rolls back the nodes with it.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	base, err := writeNodes(ctx, tx, nodes, tuples)
 	if err != nil {
+		return err
+	}
+	if err := checkPointers(ctx, tx, nodes, tuples); err != nil {
 		return err
 	}
 	if len(base) == 0 {
@@ -113,7 +121,8 @@ func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple)
 // A held tuple that states a node's state or visibility at a value that attribute does not take
 // is refused (checkBaseValues) before the nodes move, so a refused write sends no statement: a
 // writer appends facts of its own to what WriteUncaused answered (refs.IndexBlocks does), and
-// those reach the store through here alone.
+// those reach the store through here alone. For the same reason a held relation whose kind the
+// pointer type rules hold is held to its rule here (checkPointers), before the nodes move.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	tuples := make([]Tuple, len(write.Tuples))
 	for index, held := range write.Tuples {
@@ -125,6 +134,9 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 		tuples[index] = tuple
 	}
 	if err := checkBaseValues(nil, tuples, nil); err != nil {
+		return err
+	}
+	if err := checkPointers(ctx, tx, write.Nodes, tuples); err != nil {
 		return err
 	}
 	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
@@ -217,7 +229,9 @@ func CheckAttributeValue(attribute, value string) error {
 // checkBaseValues holds a write to CheckAttributeValue before the write's first statement, so a
 // refused write sends none and stores nothing: the state and the visibility of every node it
 // writes, and every value tuple and every claim it states itself, of which a state or a
-// visibility is all that can be refused. The first value refused is the answer.
+// visibility is all that can be refused. A node reserved for its author whose kind takes no such
+// node is refused here too, with a VisibilityNotAdmittedError naming the kind (checkAuthorOnly).
+// The first value refused is the answer.
 func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 	for index := range nodes {
 		node := &nodes[index]
@@ -225,6 +239,9 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 			return err
 		}
 		if err := CheckAttributeValue(AttributeVisibility, node.Visibility); err != nil {
+			return err
+		}
+		if err := checkAuthorOnly(node); err != nil {
 			return err
 		}
 	}
@@ -245,14 +262,74 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 	return nil
 }
 
-// writeNodes is two statements, each of whose rows arrive in ascending (kind, id): a write
-// touching several nodes takes its row locks in that order, so two such writes cannot each hold
-// the row the other waits for. The first inserts every node the store does not hold and locks
-// every node it does, at the level an update of that row takes, changing nothing in it; the
-// second moves supertag, visibility, state, attributes, parties and source_event on each row
-// whose columns differ, fills a project the row does not hold yet, and leaves made_at and made_by
-// as the row's own first write left them - the row is the projection of its tuples and may be
-// written again, and a later write that learns the event id has to be able to move source_event.
+// supertagKind is the node kind of a type, whose id is the type's name: the kind every node's
+// supertag names a node of (migration 20261109051232). pmdoc/schemanodes.KindSupertag spells it
+// for the packages that may import schemanodes, and this one may not.
+const supertagKind = "supertag"
+
+// ErrSupertagNotHeld refuses a write of a node whose supertag is no type the store holds: a type
+// is a node of the store, a `supertag` row that is not gone, so a node of any other supertag is a
+// node of a type nobody declared. It is a sentinel so a route can answer it as a refusal, 409
+// SUPERTAG_NOT_HELD; what a write is refused with is a SupertagNotHeldError, which wraps it and
+// names each type.
+var ErrSupertagNotHeld = errors.New("the store holds no type of that name")
+
+// SupertagNotHeldError is ErrSupertagNotHeld for the supertags of one write that the store holds
+// no type of, sorted, each once.
+type SupertagNotHeldError struct{ Supertags []string }
+
+func (e *SupertagNotHeldError) Error() string {
+	return fmt.Sprintf("the store holds no type %s, so it takes no node of it: a type is a supertag node of the store, "+
+		"and a node of a type the store does not hold is refused", strings.Join(e.Supertags, ", "))
+}
+
+func (e *SupertagNotHeldError) Unwrap() error { return ErrSupertagNotHeld }
+
+// checkSupertags refuses a write of any node whose supertag the store holds no type of
+// (SupertagNotHeldError), in one statement over the primary key of graph_nodes for the distinct
+// supertags of the nodes given, read in the write's own transaction before it writes anything.
+// Nothing holds the types in memory: a type a migration or an operator writes is taken by the next
+// write of every process, and one deleted is refused by it, with no restart. The arms a caller
+// splices into a statement of its own (WriteArms) run no such read: they write the person, session,
+// role and page nodes alone, of supertags the store seeds, and the publisher's record that splices
+// them into its one statement has no statement before it to refuse in.
+func checkSupertags(ctx context.Context, tx pgx.Tx, nodes []Node) error {
+	// A write's nodes carry one or two supertags, a block index's every block `block`, so the
+	// distinct ones are gathered by a scan of the few already held rather than a set.
+	supertags := make([]string, 0, 2)
+	for index := range nodes {
+		if supertag := nodes[index].Supertag; !slices.Contains(supertags, supertag) {
+			supertags = append(supertags, supertag)
+		}
+	}
+	rows, err := tx.Query(ctx, `
+		select named.id from unnest($1::text[]) as named(id)
+		where not exists (
+			select 1 from graph_nodes held
+			where held.kind = '`+supertagKind+`' and held.id = named.id and held.state <> '`+StateGone+`')
+		order by named.id`, supertags)
+	if err != nil {
+		return fmt.Errorf("read the types of the nodes written: %w", err)
+	}
+	missing, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the types of the nodes written: %w", err)
+	}
+	if len(missing) > 0 {
+		return &SupertagNotHeldError{Supertags: missing}
+	}
+	return nil
+}
+
+// writeNodes writes its nodes in two statements, each of whose rows arrive in ascending (kind,
+// id): a write touching several nodes takes its row locks in that order, so two such writes
+// cannot each hold the row the other waits for. The first inserts every node the store does not
+// hold and locks every node it does, at the level an update of that row takes, changing nothing
+// in it; the second moves supertag, visibility, state, attributes, parties and source_event on
+// each row whose columns differ, fills a project the row does not hold yet, and leaves made_at
+// and made_by as the row's own first write left them - the row is the projection of its tuples
+// and may be written again, and a later write that learns the event id has to be able to move
+// source_event.
 // A node written with no project or no parties keeps what its row holds of each: that writer
 // knows neither, and is no word that the node has none. A node the write restates
 // (Node.Restates) keeps its row's visibility, and its row's state unless that state or the
@@ -283,6 +360,20 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 // and stores no node and no tuple. That holds for a write with no node too: Write appends what
 // its caller stated whether or not a node came with it.
 //
+// A node reserved for its author is refused the same way, before the first statement, unless its
+// kind - a block's read off its id, so a finding of a lens is a lens_block and a block of a
+// document is a block (AddressKind) - is one the read registry admitted as a kind every read of
+// which binds the visibility predicate (AdmitAuthorOnly): the refusal is a
+// VisibilityNotAdmittedError that names the kind, and nothing of the write is stored. A restating
+// node is held to it too, since the visibility it carries is the one its insert would make.
+//
+// Before either statement, and after those two checks, one read refuses a node whose supertag is
+// no type the store holds (checkSupertags): the distinct supertags of the nodes, read over the
+// primary key of graph_nodes in the write's own transaction, each held only by a `supertag` row
+// that is not gone. Any one it does not hold refuses the whole write with a SupertagNotHeldError
+// naming each, and nothing of the write is stored. No process holds a copy of the types, so a type
+// written later is taken by the next write anywhere, with no restart.
+//
 // The stored values are read from the row this write updates. The second statement reads them,
 // and under READ COMMITTED it reads a snapshot of its own, taken once the first holds every row
 // the write touches: what it compares against is the newest committed version of each row, and
@@ -305,6 +396,9 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 	}
 	if len(nodes) == 0 {
 		return nil, nil
+	}
+	if err := checkSupertags(ctx, tx, nodes); err != nil {
+		return nil, err
 	}
 	args, err := nodeParams(nodes)
 	if err != nil {

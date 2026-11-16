@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -32,6 +33,14 @@ type personNode struct {
 	CreatedAt time.Time `json:"created_at"`
 	// Href is the dashboard path the row opens, as askItemRefExpression answers one for an ask.
 	Href string `json:"href"`
+	// State is the node state the store holds for the node (graphstore.NodeStates), live for a
+	// node it holds no row of, as every read of a node answers it. A node that is gone is on no
+	// page.
+	State string `json:"state" enum:"live,gone,proposed,settled,overtaken"`
+	// Visibility is the visibility the store holds for the node, project for a node it holds no
+	// row of: a node reserved for its author is on its author's page alone, which reads it as
+	// author.
+	Visibility string `json:"visibility" enum:"project,author"`
 }
 
 // personNodes is one page of a person's nodes, newest first.
@@ -43,9 +52,9 @@ type personNodes struct {
 	Offset int          `json:"offset"`
 }
 
-// personNodesQuery pages the nodes one person is tied to. $1 is the canonical login, $2 the
-// acting credential the visibility predicate is bound at (refs.VisibilityArg), $3 and $4 the
-// page.
+// personNodesHeld is what both statements of the page read first: the nodes one person holds
+// that the reader may see. $1 is the canonical login and $2 the acting credential the visibility
+// predicate is bound at (refs.VisibilityArg).
 //
 // Both arms read the tuples whose far end is the person's node or a session of theirs, which is
 // the inbound read graph_tuples_inbound serves, and each keeps the newest tuple per far end
@@ -60,13 +69,12 @@ type personNodes struct {
 //     session or a role and never at a person, so the alias is the one way a delivery reaches
 //     a person at all.
 //
-// The items arm resolves each tied node into the row a reader opens. A node of a kind this build
-// cannot open is skipped rather than refused, exactly as refs.resolveNodes skips an end a newer
-// build wrote: today the store ties a person to comments, and a kind a later child moves joins
-// here when this build learns to open it. The visibility predicate of that kind is bound from
-// the registry (refs.VisibleKind), so a comment its author keeps to themselves is on no other
-// person's page.
-var personNodesQuery = `
+// Each tied node is then held to the visibility predicate of its own kind, whatever kind that
+// is (refs.VisibleNode): a node reserved for its author counts for its author alone, a node of a
+// kind the registry does not hold for nobody, and a node that is gone for nobody either. Beside
+// each node rides the state and the visibility the store holds for it (refs.StoredNodeOf), which
+// its row answers.
+var personNodesHeld = `
 	with authored as (
 		select current.from_kind, current.from_id, '` + graphstore.TupleAuthoredBy + `'::text as relation
 		from (
@@ -95,20 +103,46 @@ var personNodesQuery = `
 		select from_kind, from_id, array_agg(distinct relation order by relation) as relations
 		from (select * from authored union all select * from received) ties
 		group by from_kind, from_id
-	), items as (
-		select r.from_kind as kind, c.id::text as id, r.relations, c.body as text, c.created_at,
+	), seen as (
+		select r.from_kind, r.from_id, r.relations, ` + refs.StoredNodeOf("r.from_kind", "r.from_id") + ` as stored
+		from related r
+		where ` + refs.VisibleNode("r.from_kind", "r.from_id", "$2") + `
+	), held as (
+		select from_kind, from_id, relations, stored
+		from seen
+		where stored is null or stored[1] <> '` + graphstore.StateGone + `'
+	)`
+
+// personPageShownQuery is whether the page of the person $1 names answers anyone but that
+// person: the store holds the person, not gone and visible to the reader, and the person holds
+// at least one node the reader may see (personNodesHeld).
+var personPageShownQuery = personNodesHeld + `
+	select exists (
+		select 1 from graph_nodes
+		where kind = '` + graphstore.KindPerson + `' and id = $1 and state <> '` + graphstore.StateGone + `'
+		  and ` + refs.VisibleRow("graph_nodes", "$2") + `
+	) and exists (select 1 from held)`
+
+// personNodesQuery pages the nodes one person holds that the reader may see (personNodesHeld),
+// $3 and $4 being the page.
+//
+// The items arm resolves each held node into the row a reader opens. A node of a kind this build
+// cannot open is skipped rather than refused, exactly as refs.resolveNodes skips an end a newer
+// build wrote: today the page opens comments, and a kind joins here when this build learns to
+// open it, its predicate already bound by the arm above.
+var personNodesQuery = personNodesHeld + `, items as (
+		select h.from_kind as kind, c.id::text as id, h.relations, c.body as text, c.created_at, h.stored,
 		       case
 		         when i.key is not null then '/issues/' || i.key || '/comments/' || c.id::text
 		         else '/projects/' || a.project_key || '/documents/' || a.slug || '?comment=' || c.id::text
 		       end as href
-		from related r
-		join comments c on r.from_kind = 'comment' and r.from_id = c.id::text
+		from held h
+		join comments c on h.from_kind = 'comment' and h.from_id = c.id::text
 		left join issues i on i.key = c.issue_key
 		left join artifacts a on a.id = c.artifact_id
 		where (i.key is not null or a.id is not null)
-		  and ` + refs.VisibleKind("comment", "c.id::text", "$2") + `
 	)
-	select count(*) over () as total, kind, id, relations, text, created_at, href
+	select count(*) over () as total, kind, id, relations, text, created_at, href, stored
 	from items
 	order by created_at desc, kind, id desc
 	limit $3 offset $4`
@@ -122,11 +156,15 @@ var personNodesQuery = `
 // refuses a credential the deployment configured with 403 OAUTH_SCOPE_REQUIRED before this
 // handler runs - and every row it answers passes the visibility predicate of its own kind.
 //
-// A login the store holds no person node for is 404, with the body an address nobody holds
-// answers: the read says nothing about whether that person exists, has signed in or wrote
-// anything. The caller's own login is the one exception, answered 200 with no rows: a person who
-// has written nothing and been reached by nothing opens their own page from the signed-in login,
-// and telling them they are who they signed in as tells them nothing new.
+// The page answers 200 only where the person holds at least one node the reader may see, through
+// each node's own kind's predicate, or where the reader is that person (personPageShownQuery).
+// Any other login answers 404, with the body an address nobody holds answers, byte for byte: the
+// read says nothing about whether that person exists, has signed in or wrote anything, and a
+// person whose only node is reserved for their author has no page anybody else can open. The
+// caller's own login is the one exception, answered 200 with what they may see, none at all
+// where they hold nothing: a person who has written nothing and been reached by nothing opens
+// their own page from the signed-in login, and telling them they are who they signed in as tells
+// them nothing new.
 func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -141,16 +179,12 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	// The acting credential is marshalled once and bound by both reads: it is one value for
 	// the request, and the two statements name the same reader.
 	seen := refs.VisibilityArg(caller)
-	var held bool
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
-		select exists (
-			select 1 from graph_nodes
-			where kind = $1 and id = $2 and state <> $3 and `+refs.VisibleRow("graph_nodes", "$4")+`
-		)`, graphstore.KindPerson, login, graphstore.StateGone, seen).Scan(&held); err != nil {
+	var shown bool
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), personPageShownQuery, login, seen).Scan(&shown); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !held {
+	if !shown {
 		if login != caller.ID {
 			writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 			return
@@ -168,8 +202,14 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var row personNode
 		var body string
-		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href); err != nil {
+		var stored []string
+		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href, &stored); err != nil {
 			s.writeHandlerError(w, err)
+			return
+		}
+		var read bool
+		if row.State, row.Visibility, read = refs.StoredStateAndVisibility(stored); !read {
+			s.writeHandlerError(w, fmt.Errorf("read the stored state and visibility of %s %s: %d values, want 2", row.Kind, row.ID, len(stored)))
 			return
 		}
 		first, _, _ := strings.Cut(body, "\n")

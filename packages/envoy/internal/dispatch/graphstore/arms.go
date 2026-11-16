@@ -51,6 +51,14 @@ type Claim struct {
 // The arms keep the store's lock order: the node rows are written first, in ascending (kind, id),
 // and every tuple after them, because each tuple arm of a write that has nodes reads the node
 // arm before its first row (nodesWrittenFirst).
+//
+// No arm holds its nodes to the types the store holds, as writeNodes does (checkSupertags): the
+// arms are spliced into their caller's one statement - the publisher's record of a batch above
+// all - and a refusal decided before that statement runs has no statement of its own to run in,
+// while one decided inside it would end the record of a batch already sent. Every node an arm
+// writes is a person, a session, a role or a page (Authored, SessionRecorded, Reached, asks'
+// Follow and the publisher's own), each of a supertag the store seeds (20261109051232) and no
+// migration removes, so no arm writes a node of a type the store does not hold.
 func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
 	return writeArms(first, nodes, tuples, claims, true)
 }
@@ -66,10 +74,16 @@ func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) 
 
 // writeArms is both: states says whether the node arm states the base attributes of each node
 // it makes. A node, a value tuple or a claim stating a state or a visibility at a value that
-// attribute does not take is refused before any arm is built (checkBaseValues), so the caller's
-// statement never runs it.
+// attribute does not take is refused before any arm is built (checkBaseValues), and so is a node
+// reserved for its author whose kind takes no such node (checkAuthorOnly), so the caller's
+// statement never runs it; so is a relation or a claim whose kind the pointer type rules hold
+// (pointerRules): an arm reads none of the nodes such a rule names, so that relation is appended
+// through Write or Caused alone (refusePointersInArms).
 func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states bool) (string, []any, error) {
 	if err := checkBaseValues(nodes, tuples, claims); err != nil {
+		return "", nil, err
+	}
+	if err := refusePointersInArms(tuples, claims); err != nil {
 		return "", nil, err
 	}
 	relations, values := splitTuples(tuples)

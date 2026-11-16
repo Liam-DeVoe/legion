@@ -498,6 +498,10 @@ var indexPasses = map[string]string{
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
+	// The nodes of dispatch://INFRA-1950's reasoning kinds - a lens, its findings, a risk and a
+	// constraint - written with their tuples and their author in one store write (graphstore.Write)
+	// from the request alone: they have no projection row, so there is no side of one to read.
+	"api/reasoning_write.go#writeReasoningNodes": "the request's nodes and tuples, its credential and the project of the issue it names",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
@@ -579,6 +583,14 @@ var indexPasses = map[string]string{
 	// tuples left of the node to refuse a run whose set moved, and deletes the node its one
 	// caller names.
 	"graphstore/erase.go#EraseNode": "the node its caller names",
+	// The two seeds other packages' tests share (graphstoretest), which no deployment builds. Each
+	// writes rows the store's writers refuse - a node reserved for its author of a kind no read
+	// registry flags, the type of a kind only a test writes - from the nodes or the names its test
+	// hands it. SeedAuthorOnly reads the store's own row of each node only to know whether to
+	// insert it or move its visibility, never a projection, so neither mends one side from the
+	// other.
+	"graphstore/graphstoretest/graphstoretest.go#SeedAuthorOnly": "the nodes its test hands it, and whether the store holds each",
+	"graphstore/graphstoretest/graphstoretest.go#SeedSupertags":  "the type names its test hands it",
 	// A node write's two statements (writeNodes): the insert of the nodes the store lacks, which
 	// locks the ones it holds, and the move of the ones it holds. The move reads each row it
 	// moves, in the snapshot taken once the insert holds them all, to say which base attributes
@@ -626,7 +638,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
 // the same use as one.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

@@ -782,11 +782,14 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 }
 
 // graphArmCount guards that the census reads every arm. It is the arm list of
-// 20261109215947_graph_edges_tuples, the last migration to restate graph_edges: the 27 arms
-// 20261105014808 restated it with, the comment answers arm among them, and the one arm over the
-// store's current tuples that migration adds. Each of the four arms over a kind the store now
-// writes answers only the rows of its table that name no node, and the seed names the node of
-// every row it writes, so those four answer nothing here (armGatedPerRow).
+// 20261109215947_graph_edges_tuples: the 27 arms 20261105014808 restated it with, the comment
+// answers arm among them, and the one arm over the store's current tuples that migration adds.
+// 20261116091932_graph_edges_store_tuples and 20261116094101_graph_edges_asks each keep that list
+// arm for arm and widen only what the tuple arm answers, and
+// 20261116184707_issue_tree_graph_edges_both_arms, the last migration to restate graph_edges,
+// states both widenings over the same list. Each of the arms over a kind the store now writes
+// answers only the rows of its table that name no node, and the seed names the node of every row
+// it writes, so those arms answer nothing here (armGatedPerRow).
 const graphArmCount = 28
 
 var (
@@ -814,7 +817,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migration 20261109215947 restates it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947 to 20261116184707 restate it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}

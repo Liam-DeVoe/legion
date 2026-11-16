@@ -220,6 +220,62 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "INVALID_ATTRIBUTE_VALUE", http.StatusBadRequest, message)
 		return
 	}
+	// A node reserved for its author asked for on a credential that proves none
+	// (graphstore.VisibilityFor). The going POST refuses such an asker before it reaches here,
+	// with its own GOING_ASKER_NAMES_NOBODY; both decide by graphstore.ProvesAuthor.
+	if errors.Is(err, graphstore.ErrAuthorNamesNobody) {
+		writeError(w, "AUTHOR_NAMES_NOBODY", http.StatusForbidden, graphstore.ErrAuthorNamesNobody.Error())
+		return
+	}
+	// A node reserved for its author whose kind takes no such node (graphstore's AdmitAuthorOnly):
+	// the refusal's own words name the kind, so a comment asked for `author` reads as one.
+	if errors.Is(err, graphstore.ErrVisibilityNotAdmitted) {
+		message := graphstore.ErrVisibilityNotAdmitted.Error()
+		var notAdmitted *graphstore.VisibilityNotAdmittedError
+		if errors.As(err, &notAdmitted) {
+			message = notAdmitted.Error()
+		}
+		writeError(w, "VISIBILITY_NOT_ADMITTED", http.StatusBadRequest, message)
+		return
+	}
+	// A node of a type the store holds no supertag row of (graphstore's checkSupertags): the
+	// refusal's own words name each type, and nothing of the write was stored.
+	if errors.Is(err, graphstore.ErrSupertagNotHeld) {
+		message := graphstore.ErrSupertagNotHeld.Error()
+		var notHeld *graphstore.SupertagNotHeldError
+		if errors.As(err, &notHeld) {
+			message = notHeld.Error()
+		}
+		writeError(w, "SUPERTAG_NOT_HELD", http.StatusConflict, message)
+		return
+	}
+	// A pointer tuple at a node its type rule does not allow (graphstore's pointerRules): the
+	// refusal's own words name the tuple kind, the far end's kind and the kinds the rule allows.
+	if errors.Is(err, graphstore.ErrInvalidPointer) {
+		message := graphstore.ErrInvalidPointer.Error()
+		var invalidPointer *graphstore.InvalidPointerError
+		if errors.As(err, &invalidPointer) {
+			message = invalidPointer.Error()
+		}
+		writeError(w, "INVALID_POINTER", http.StatusBadRequest, message)
+		return
+	}
+	// A second has_kind of a lens, or a pre-mortem's retargeted away from pre-mortem: one body
+	// for each, whatever hangs under the lens.
+	if errors.Is(err, graphstore.ErrPointerAlreadyAsserted) {
+		message := graphstore.ErrPointerAlreadyAsserted.Error()
+		var asserted *graphstore.PointerAlreadyAssertedError
+		if errors.As(err, &asserted) {
+			message = asserted.Error()
+		}
+		writeError(w, "POINTER_ALREADY_ASSERTED", http.StatusConflict, message)
+		return
+	}
+	// A retarget of a pointer the node does not hold answers as a pointer that does not exist.
+	if errors.Is(err, graphstore.ErrPointerNotHeld) {
+		writeError(w, "NOT_FOUND", http.StatusNotFound, graphstore.ErrPointerNotHeld.Error())
+		return
+	}
 	var unrepresentableAsk *docs.ErrAskBlockUnrepresentable
 	if errors.As(err, &unrepresentableAsk) {
 		writeError(w, "ASK_BLOCK_TEXT", http.StatusBadRequest, unrepresentableAsk.Error())

@@ -311,22 +311,25 @@ var commentProjections = []projection{{
 var actorProjections = []projection{{
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
-	table:    "comments.author, asks.author, asks.answer, block_refs.decided_by, events.payload",
+	table:    "comments.author, asks.author, asks.answer, block_refs.decided_by, events.payload, graph_nodes.made_by",
 	note: "no table projects a person, so the row side is the people the projected tables name as authors," +
 		" the owner of each session the server proved that wrote one, the person each ask's answer names and" +
-		" each answer the store took ever named, and who wrote each decision and reading and their proved owners",
+		" each answer the store took ever named, who wrote each decision and reading and their proved owners," +
+		" and the author of each lens, finding, risk and constraint that states its authored_by",
 	rows: `
 		select 'person ' || p.login, '` + graphstore.KindPerson + `', p.login, ''
-		from (` + commentPeople + `) p`,
+		from (` + recordedPeople + `) p`,
 	nodes: `
 		select n.id, '' from graph_nodes n where n.kind = '` + graphstore.KindPerson + `'`,
 }, {
 	name:     graphstore.KindSession,
 	nodeKind: graphstore.KindSession,
-	table:    "comments.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers, block_refs.decided_by, events.payload",
+	table: "comments.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers," +
+		" block_refs.decided_by, events.payload, graph_nodes.made_by",
 	note: "no table projects a session, so the row side is the sessions those tables name as authors, as reached," +
-		" as askers, as followers and as who wrote a decision or a reading, and every session an ask.opened" +
-		" event named as the asker or an ask.follower_added event named",
+		" as askers, as followers and as who wrote a decision or a reading, every session an ask.opened event" +
+		" named as the asker or an ask.follower_added event named, and the author of each lens, finding, risk" +
+		" and constraint that states its authored_by",
 	rows: `
 		select 'session ' || s.id, '` + graphstore.KindSession + `', s.id, ''
 		from (` + recordedSessions + `) s where octet_length(s.id) <= ` + addressBound,
@@ -418,7 +421,7 @@ func currentLinks(fromKind, kinds string) string {
 
 // commentAuthor is the far end of the authored_by tuple a comment row states, written kind:id:
 // the node graphstore.AuthorOf reads off the actor the row stored, a login canonicalised as
-// commentPeople canonicalises one, and null for an actor that names nobody, whose comment states
+// recordedPeople canonicalises one, and null for an actor that names nobody, whose comment states
 // no authored_by at all.
 const commentAuthor = `case
 			when c.author->>'kind' = 'user' and coalesce(c.author->>'id', '') <> ''
@@ -445,7 +448,7 @@ const commentStoreJoins = `
 var commentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key) <= ` + addressBound + `)
 		  and (owner.ref_key is null or octet_length(owner.ref_key) <= ` + addressBound + `)`
 
-// commentPeople are the people the projected tables name as the author of a row, as
+// recordedPeople are the people the projected tables name as the author of a row, as
 // graphstore.AuthorOf reads an actor: the login an actor of kind user carries, or the owner a
 // personal token's actor carries, each canonicalised the way user_threads_login canonicalises a
 // login (migration 0095, which is model.CanonicalLogin in SQL). Beside them are the owners of the
@@ -474,36 +477,28 @@ var commentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key)
 // Who wrote each decision, reading and ask the store holds an authored_by or decided_by of names
 // people too (storedAuthors), and so does the owner the server proved of each such writer that is a
 // session (storedOwners).
-var commentPeople = `
+//
+// The authors of the reasoning nodes (reasoningAuthored) are read off their made_by by the same
+// two rules, since their writer states each author through graphstore.AuthorFacts as the comment
+// path does.
+var recordedPeople = `
 	select distinct user_threads_login(author.login) as login
 	from (
-		select case
-			when c.author->>'kind' = 'user' and coalesce(c.author->>'id', '') <> '' then c.author->>'id'
-			when c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> '' then null
-			when coalesce(c.author->>'owner', '') <> '' then c.author->>'owner'
-		end as login
+		select ` + authorLogin("c.author") + ` as login
 		from comments c` + commentStoreJoins + `
 		where ` + commentInTheStore + `
 		union all
 		select c.author->>'owner'
 		from comments c` + commentStoreJoins + `
-		where c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
-		  and c.author->'act'->>'session' = c.author->>'id'
-		  and octet_length(c.author->>'id') <= ` + addressBound + `
+		where ` + provedSessionOwner("c.author") + `
 		  and ` + commentInTheStore + `
 		union all
-		select case
-			when k.author->>'kind' = 'user' and coalesce(k.author->>'id', '') <> '' then k.author->>'id'
-			when k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> '' then null
-			when coalesce(k.author->>'owner', '') <> '' then k.author->>'owner'
-		end
+		select ` + authorLogin("k.author") + `
 		from asks k where k.node_kind is not null
 		union all
 		select k.author->>'owner'
 		from asks k
-		where k.node_kind is not null and k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> ''
-		  and k.author->'act'->>'session' = k.author->>'id'
-		  and octet_length(k.author->>'id') <= ` + addressBound + `
+		where k.node_kind is not null and ` + provedSessionOwner("k.author") + `
 		union all
 		select k.answer->>'user' from asks k where k.node_kind is not null and k.answer is not null
 		union all
@@ -517,6 +512,13 @@ var commentPeople = `
 		select stored.id from (` + storedAuthors + `) stored where stored.kind = '` + graphstore.KindPerson + `'
 		union all
 		select owner.login from (` + storedOwners + `) owner
+		union all
+		select ` + authorLogin("r.author") + `
+		from (` + reasoningAuthored + `) r
+		union all
+		select r.author->>'owner'
+		from (` + reasoningAuthored + `) r
+		where ` + provedSessionOwner("r.author") + `
 	) author
 	where author.login is not null and user_threads_login(author.login) <> ''`
 
@@ -533,10 +535,10 @@ var commentPeople = `
 // A node is history and never goes: a decision or a reading deleted or retyped since takes its
 // row and its current tie away and leaves its author's node standing, so every person and session
 // a block's decided_by or authored_by ever named, asserted or retracted since, is read too, off
-// the store's log through graph_tuples_inbound, as an ask's answerer is (commentPeople). So is
+// the store's log through graph_tuples_inbound, as an ask's answerer is (recordedPeople). So is
 // every one an ask's authored_by ever named: an ask one of whose documents is past the store's
 // bound keeps a row that names no node (graphstore.AskPlaces.Fit), which the ask author arms of
-// commentPeople leave out, while its writer states the ask's node, its authored_by and its
+// recordedPeople leave out, while its writer states the ask's node, its authored_by and its
 // author's node all the same. An ask a build before the store wrote states no authored_by until
 // the backfill marks its row, and one an erase took away states none any more, so neither names
 // an author here.
@@ -580,6 +582,43 @@ var storedOwners = `
 	) owner
 	where owner.asserted`
 
+// authorLogin is the login of the person graphstore.AuthorOf names of the actor a jsonb column
+// holds, uncanonicalised, and null for an actor it names a session of or nobody.
+func authorLogin(actor string) string {
+	return `case
+			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> '' then ` + actor + `->>'id'
+			when ` + actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> '' then null
+			when coalesce(` + actor + `->>'owner', '') <> '' then ` + actor + `->>'owner'
+		end`
+}
+
+// provedSessionOwner is true of a session author the server proved its owner's (graphstore's
+// provedOwner): the act names that same session, within the store's bound. Its owner is a person
+// the write that states the session's authorship makes a node of.
+func provedSessionOwner(actor string) string {
+	return actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> ''
+		  and ` + actor + `->'act'->>'session' = ` + actor + `->>'id'
+		  and octet_length(` + actor + `->>'id') <= ` + addressBound
+}
+
+// reasoningAuthored are the nodes of dispatch://INFRA-1950's reasoning kinds - a lens, a finding
+// of one (a block whose id names its lens, lensBlock), a risk and a constraint - that hold an
+// asserted authored_by tuple, each with the actor its made_by records (author) and its made_at
+// (at). Their one writer (api's writeReasoningNodes) states that tuple, and the author's own node
+// beside it, only where the credential proved an author, so the author graphstore.AuthorOf names
+// of the made_by is a person or a session the store owes a node; a node written on the shared
+// bearer states none, and the session its body claimed is on neither side.
+var reasoningAuthored = `
+		select n.made_by as author, n.made_at as at
+		from graph_nodes n
+		where (n.kind in ('` + graphstore.KindLens + `', '` + graphstore.KindRisk + `', '` + graphstore.KindConstraint + `')
+		       or (n.kind = '` + refs.BlockNodeKind + `' and ` + lensBlock("n") + `))
+		  and exists (
+			select 1 from (
+				` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
+	`t.from_kind = n.kind and t.from_id = n.id and t.kind = '`+graphstore.TupleAuthoredBy+`'`) + `
+			) held where held.asserted)`
+
 // recordedSessions are the sessions a row of the store names, each once, with the first event
 // that named it (null for a session only a row names) and the earliest time a row or an event
 // names it. They are every write R14 records a session from: a comment a session wrote
@@ -605,7 +644,8 @@ var storedOwners = `
 // no node the settle did not already write.
 //
 // Only the comments the store holds name a session here (commentInTheStore), for the reason
-// commentPeople binds the same: a comment left out of the store records no author at all.
+// recordedPeople binds the same: a comment left out of the store records no author at all. The
+// author of a reasoning node is a session here where its made_by is one (reasoningAuthored).
 //
 // It is one definition read by two: the census's session row side and the backfill's session
 // pass (backfillSessions), so the sessions the backfill gives a node are exactly the sessions the
@@ -616,6 +656,9 @@ var recordedSessions = `
 		from comments c` + commentStoreJoins + `
 		where c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
 		  and ` + commentInTheStore + `
+		union all
+		select r.author->>'id', null, r.at from (` + reasoningAuthored + `) r
+		where r.author->>'kind' = 'session' and coalesce(r.author->>'id', '') <> ''
 		union all
 		select d.session_id, null, d.created_at from comment_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `
@@ -795,7 +838,8 @@ const movedToHops = 8
 // storeOnlyRead counts, in one read of graph_tuples, every relation of the two kinds no table
 // projects that the store states now - the newest tuple of each (near end, far end), kept while
 // it asserts - and those of them whose far end does not resolve: a copied_from (a copy's block to
-// the ask it was copied from, graphstore.TupleCopiedFrom) resolves to a live ask node, and a
+// the ask it was copied from, graphstore.TupleCopiedFrom) resolves to an ask node the store holds
+// present, at any state but gone (R12 of dispatch://INFRA-1950, as presentNodes reads one), and a
 // moved_to to a block that stands, which is one a document_blocks row holds, reached at once or
 // through at most movedToHops more moved_to tuples, a cycle reaching none. No index keys on a
 // tuple's kind, so the read walks the table once for both kinds; it reads nothing of any other
@@ -826,7 +870,7 @@ var storeOnlyRead = `
 		select s.kind, case s.kind
 			when '` + graphstore.TupleCopiedFrom + `' then s.to_kind = '` + graphstore.KindAsk + `' and exists (
 				select 1 from graph_nodes ask where ask.kind = '` + graphstore.KindAsk + `' and ask.id = s.to_id
-				  and ask.state = '` + graphstore.StateLive + `')
+				  and ask.state <> '` + graphstore.StateGone + `')
 			else s.to_kind = '` + refs.BlockNodeKind + `' and exists (select 1 from standing where standing.start = s.to_id)
 		end as resolves
 		from stated s

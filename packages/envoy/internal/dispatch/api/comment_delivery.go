@@ -1238,7 +1238,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, nil, comment.ArtifactID, project, parties)
+	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, graphstore.VisibilityProject, nil, comment.ArtifactID, project, parties)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

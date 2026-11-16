@@ -44,7 +44,12 @@ type commentInput struct {
 	Suggestion *struct {
 		ReplaceWith string `json:"replace_with"`
 	} `json:"suggestion"`
-	Actor *model.Actor `json:"actor"`
+	// Visibility is who the comment is for (graphstore.VisibilityFor): `project`, which no
+	// visibility means too, writes it for everyone who reads the project; `author` is refused by
+	// the store, 400 VISIBILITY_NOT_ADMITTED naming the kind, because not every read of a comment
+	// binds the visibility predicate, and nothing of the comment is stored.
+	Visibility string       `json:"visibility" enum:"project,author"`
+	Actor      *model.Actor `json:"actor"`
 }
 
 // askReplyTurn is who holds the turn once an ask reply by actor is posted: a human's
@@ -622,6 +627,21 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if !ok {
 		return
 	}
+	// The visibility the request asks for is decided by the credential that proved the caller, as
+	// the reasoning write decides it (writeReasoningNodes), and never by the session a bearer's
+	// body names: that session proves nobody. A request that asks for none is project-visible.
+	visibility := graphstore.VisibilityProject
+	if input.Visibility != "" {
+		proving, _, err := s.optionalActor(r)
+		if err != nil {
+			s.writeAuthenticationError(w, err)
+			return
+		}
+		if visibility, err = graphstore.VisibilityFor(input.Visibility, proving); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if input.Suggestion == nil && strings.TrimSpace(input.Body) == "" {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "comment body is required")
 		return
@@ -804,7 +824,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, anchor, owner.ArtifactID, project, parties)
+	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, visibility, anchor, owner.ArtifactID, project, parties)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1093,18 +1113,24 @@ type commentStoreWrite struct {
 	unprojected bool
 }
 
-// commentStored is what the comment rowID states (graphstore.CommentFacts): its node,
-// project-visible and live, in project or between parties (graphstore.ScopeOf of what it belongs
-// to), made by its author at the row's own created_at, and the artifact it is anchored to and the
+// commentStored is what the comment rowID states (graphstore.CommentFacts): its node, at
+// visibility and live, in project or between parties (graphstore.ScopeOf of what it belongs to),
+// made by its author at the row's own created_at, and the artifact it is anchored to and the
 // artifact that owns it, each stated only where the comment has one. Both relations name the
 // artifact by its address, which is its ref_key, so the two artifacts' addresses are read here, in
 // the caller's transaction, in one statement.
+//
+// visibility is what graphstore.VisibilityFor answered the request, and the store refuses a
+// comment reserved for its author (graphstore.ErrVisibilityNotAdmitted) when writeNode writes it.
+// A comment left out of the store (unprojected) reaches no node write, so it is held to that same
+// rule here, and a comment asked for `author` is refused whichever way it would be stored.
 func commentStored(
 	ctx context.Context,
 	tx pgx.Tx,
 	rowID string,
 	author model.Actor,
 	at time.Time,
+	visibility string,
 	anchor *model.Anchor,
 	ownerArtifactID *string,
 	project string,
@@ -1136,9 +1162,12 @@ func commentStored(
 	// arm answers both of its edges (graph_edges). The census counts it in the past-bound class.
 	if (anchorAddress != "" && !graphstore.AddressFits(anchorAddress)) ||
 		(ownerAddress != "" && !graphstore.AddressFits(ownerAddress)) {
+		if err := graphstore.CheckVisibilityAdmitted(graphstore.KindComment, rowID, visibility); err != nil {
+			return commentStoreWrite{}, err
+		}
 		return commentStoreWrite{unprojected: true}, nil
 	}
-	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress, project, parties)
+	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, visibility, anchorAddress, ownerAddress, project, parties)
 	return commentStoreWrite{node: node, tuples: tuples}, nil
 }
 

@@ -20,17 +20,20 @@ import (
 // writes it gone and keeps its visibility; a restating write of a node stored gone writes it
 // live; a node stored live stays live; and a plain write still moves both. After every write the
 // row and the log of its base attributes agree, and the log holds one tuple for each value a
-// write moved and none for a value a restating write kept.
+// write moved and none for a value a restating write kept. The node is of the kind this
+// package's tests admit as one that takes a node reserved for its author (authorOnlyTestKind),
+// since the store takes such a node of no kind the read registry does not flag.
 func TestARestatingWriteKeepsAStateItDoesNotOwn(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
+	seedSupertags(t, ctx, database, authorOnlyTestKind)
 	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
 
 	for _, marked := range []string{StateProposed, StateSettled, StateOvertaken} {
 		t.Run(marked, func(t *testing.T) {
 			restated := Node{
-				Kind: KindIssue, ID: "RESTATE-" + marked, Supertag: SupertagIssue,
+				Kind: authorOnlyTestKind, ID: "RESTATE-" + marked, Supertag: authorOnlyTestKind,
 				Visibility: VisibilityProject, State: StateLive, Project: "CORE",
 				MadeAt: at, MadeBy: who, SourceEvent: NoEvent, Restates: true,
 			}
@@ -121,7 +124,7 @@ func TestARestatingWriteKeepsAStateItDoesNotOwn(t *testing.T) {
 func TestEveryObjectWriterRestatesItsNode(t *testing.T) {
 	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
-	comment, _ := CommentFacts(nil, "11111111-1111-4111-8111-111111111111", who, at, NoEvent, "", "", "CORE", nil)
+	comment, _ := CommentFacts(nil, "11111111-1111-4111-8111-111111111111", who, at, NoEvent, VisibilityProject, "", "", "CORE", nil)
 	for name, node := range map[string]Node{
 		"IssueNode":    IssueNode("CORE-1", "CORE", who, at),
 		"ArtifactNode": ArtifactNode("CORE-1/spec", "CORE", "", who, at),

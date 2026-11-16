@@ -847,7 +847,8 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		// out of the store, so readCommentRows never reads it and this batch never writes one:
 		// a far end past the bound does not reach here (api's commentStored, outbox's rule).
 		var node graphstore.Node
-		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner, row.project, row.parties)
+		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event, graphstore.VisibilityProject,
+			row.anchor, row.owner, row.project, row.parties)
 		nodes = append(nodes, node)
 		// One write writes a node once, so an author several comments of the batch name is made
 		// by the first of them, and so is the owner a proved session names; each comment still

@@ -824,9 +824,11 @@ func writeCostStoreWrite(t *testing.T, arm *costArm, nodes, relations int64) (ti
 	at := time.Now().UTC()
 	batch := make([]graphstore.Node, 0, nodes)
 	for index := range int(nodes) {
+		// Every block carries the supertag block alone, the type a node write of a block holds it
+		// to (graphstore's checkSupertags), whatever the block's own type.
 		batch = append(batch, graphstore.Node{
 			Kind: "block", ID: fmt.Sprintf("00000000-0000-4000-9000-%012d", index),
-			Supertag: "paragraph", Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+			Supertag: "block", Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
 			MadeAt: at, MadeBy: actor, SourceEvent: graphstore.NoEvent,
 		})
 	}

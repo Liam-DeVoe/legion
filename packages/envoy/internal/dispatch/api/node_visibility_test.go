@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -64,10 +65,11 @@ const privateBlockID = "private"
 // TestNoReadAnswersANodeTheActingPersonMayNotSee: a node whose `visibility` is `author` is
 // absent from every read a second person makes, and present in each of them for its author.
 //
-// Nothing writes such a node from a production path yet - no route asks for `author` - so the
-// seed writes it through the store's own writer (graphstore.Write), which is the write this
-// ticket's read side is built against: the rule under test is the read, not the write that one
-// day asks for it.
+// The store's writer takes a node reserved for its author of no kind these reads answer - the
+// kinds dispatch://INFRA-1149 registers, none of which every read binds the predicate of
+// (graphstore.ErrVisibilityNotAdmitted) - so the seed writes the rows such a write would store
+// straight into the store (graphstoretest.SeedAuthorOnly): the rule under test is the read, not
+// the write that asks for it.
 //
 // The bound of a node-level predicate: the keyword `document` arm of search ranks a document's
 // whole body, and the private block's text is part of its document's body, so that document
@@ -389,7 +391,9 @@ var storeTableRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:graph_nodes|gr
 //     statement that stopped binding it fails here, whatever else the read binds; a count of
 //     the markers against the rules a statement states would pass such a statement at 0 == 0;
 //   - every visibility rule a statement states is one the registry rendered
-//     (refs.VisibilityMarker opens each of them), so no read carries a copy of the rule.
+//     (refs.VisibilityMarker opens each of them), so no read carries a copy of the rule; the
+//     column a loader selects to answer a node's stored state and visibility reads
+//     `visibility` too and tests nothing, and refs.StoredNodeMarker opens each such read.
 func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 	t.Helper()
 	if len(reads) == 0 {
@@ -410,7 +414,7 @@ func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 				t.Errorf("%s reads the store's tables in a statement that binds no predicate of the registry's:\n%s",
 					read.name, statement.SQL)
 			}
-			if rules := strings.Count(statement.SQL, ".visibility"); markers != rules {
+			if rules := strings.Count(statement.SQL, ".visibility") - strings.Count(statement.SQL, refs.StoredNodeMarker); markers != rules {
 				t.Errorf("%s states %d visibility rule and the registry rendered %d of them:\n%s",
 					read.name, rules, markers, statement.SQL)
 			}
@@ -649,13 +653,13 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	seedExec(t, database, "the comment's citation of the private block", `
 		insert into refs (from_kind, from_id, kind, to_kind, to_id) values ('comment', $1, 'mentions', 'block', $2)
 	`, fixture.comment, fixture.private)
-	// The nodes themselves, reserved for their author. No route writes one yet, so the store's
-	// own writer writes them, exactly as a route that asked for `author` would
-	// (graphstore.VisibilityFor answers the visibility, and refuses this one to a credential
-	// that proves no author).
+	// The nodes themselves, reserved for their author. The store's writer takes a node reserved
+	// for its author of no kind these reads answer (graphstore.ErrVisibilityNotAdmitted), so the
+	// rows a route that asked for `author` would store are seeded straight into the store
+	// (graphstoretest.SeedAuthorOnly), on a credential that proves an author
+	// (graphstore.VisibilityFor, which refuses one to a credential that proves none).
 	author := privateNodeAuthor()
-	visibility, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, author)
-	if err != nil {
+	if _, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, author); err != nil {
 		t.Fatalf("reserve the node for its author: %v", err)
 	}
 	if err := database.Pool.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&fixture.privateComment); err != nil {
@@ -667,15 +671,13 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 		t.Fatalf("begin the private nodes' write: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{{
-		Kind: "block", ID: fixture.private, Supertag: "block",
-		Visibility: visibility, State: graphstore.StateLive,
+	if err := graphstoretest.SeedAuthorOnly(ctx, tx, graphstore.Node{
+		Kind: "block", ID: fixture.private, Supertag: "block", State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
-	}, {
-		Kind: graphstore.KindComment, ID: fixture.privateComment, Supertag: graphstore.KindComment,
-		Visibility: visibility, State: graphstore.StateLive,
+	}, graphstore.Node{
+		Kind: graphstore.KindComment, ID: fixture.privateComment, Supertag: graphstore.KindComment, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
-	}}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("write the private nodes: %v", err)
 	}
 	// The private comment's row, the projection of its node, written after the node as the

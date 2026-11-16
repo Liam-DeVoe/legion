@@ -184,10 +184,11 @@ func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 //
 // Over a store the census agrees with (seedAgreeingStore), the test states both through the
 // store's writer: a constraint node and a constrained_by to it out of the inner block, which
-// holds a block_refs row already, and a lens node with a finding block under it, part_of the lens
-// and authored_by the person who wrote the agreeing store's comment. The census reads zero
-// differences in both directions over every kind, and its block line compares as many present
-// nodes as document_blocks holds rows.
+// holds a block_refs row already and is made a requirement first, since the store's type rule
+// takes a constrained_by out of a requirement block alone (graphstore's pointerRules), and a lens
+// node with a finding block under it, part_of the lens and authored_by the person who wrote the
+// agreeing store's comment. The census reads zero differences in both directions over every kind,
+// and its block line compares as many present nodes as document_blocks holds rows.
 func TestTheBlockCensusReadsNoFindingAndNoTupleTheBlockIndexDoesNotProject(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -210,6 +211,11 @@ func TestTheBlockCensusReadsNoFindingAndNoTupleTheBlockIndexDoesNotProject(t *te
 			FromKind: refs.BlockNodeKind, FromID: fromID, Kind: kind, ToKind: toKind, ToID: toID,
 			At: at, Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
 		}
+	}
+	// The block's type is no part of what the block census compares (its digest is the row's
+	// document and parent), so the census still agrees after it.
+	if tag, err := database.Pool.Exec(ctx, `update document_blocks set type = 'requirement' where node_id = $1`, seeded.inner); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("make the inner block a requirement: %d rows, %v", tag.RowsAffected(), err)
 	}
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {

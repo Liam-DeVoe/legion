@@ -86,7 +86,10 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		var marks, tests int
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
-			statementTests := strings.Count(statement, ".visibility")
+			// The column every loader selects to answer a node's stored state and visibility
+			// (storedNode) reads `visibility` once and tests nothing, and the registry opens it
+			// with a marker of its own; every other `visibility` a statement reads is a test.
+			statementTests := strings.Count(statement, ".visibility") - strings.Count(statement, StoredNodeMarker)
 			marks, tests = marks+statementMarks, tests+statementTests
 			// A statement may bind no predicate where another statement of its read filters
 			// its rows, but a test of `visibility` that no marker opens is a rule the
@@ -170,6 +173,9 @@ var readsWithoutAViewer = map[string]string{
 	"DocumentIsCited":      noNode,
 	"DocumentsOwedWindows": serverWork,
 	"DriftedExcerpts":      serverWork,
+	"IsConversationNode": noNode + " - R2's test of the one node its caller names, which decides what kind of node it is and " +
+		"not what a reader sees: the nodes of a conversation reach a reader through nodeRegistry's loaders, which bind the " +
+		"reader's predicate (ConversationNodes)",
 	"IssueAncestors": "every caller is a rule of a write - a reparent's cycle refusal, an issue event's ancestors, the near-copy " +
 		"gate's exclusion, a block pointer's ancestor rule and the scope a result's check resolves in - and a rule that " +
 		"skipped an issue it may not see would let a cycle through that issue or route an event short of its root",
@@ -396,6 +402,18 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := IssueDescendants(ctx, recorder, who, "CORE-1")
 		return err
 	})
+	record("LensCatalogue", "LensCatalogue", func() error {
+		_, err := LensCatalogue(ctx, recorder, who)
+		return err
+	})
+	conversed := seedConversation(t, ctx, database)
+	record("ConversationNodes", "ConversationNodes of "+conversed, func() error {
+		nodes, err := ConversationNodes(ctx, recorder, who, conversed, time.Now())
+		if err == nil && len(nodes) == 0 {
+			err = fmt.Errorf("the conversation of %s lists no node: with no item that passes R2's test the read never reaches the loaders that bind their predicates", conversed)
+		}
+		return err
+	})
 	return reads
 }
 
@@ -431,6 +449,29 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		t.Fatalf("commit the block link seed: %v", err)
 	}
 	return artifact
+}
+
+// seedConversation writes one issue whose conversation holds a person's ask, which R2's test
+// always passes, with its parts indexed as a write of this build indexes them, and answers the
+// issue's key. ConversationNodes lists an issue's items and reads R2's test over them in
+// statements that bind no predicate, and loads what passes through nodeRegistry's loaders, which
+// bind the ask's and the ask block's: with no item that passes it never reaches the loaders, and
+// the census would read only the statements that bind none.
+func seedConversation(t *testing.T, ctx context.Context, database *store.Store) string {
+	t.Helper()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the conversation seed: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	const issue = "CONV-1"
+	createReferenceProject(t, tx, "CONV")
+	createReferenceIssue(t, tx, issue, "CONV")
+	conversationItem(t, tx, "asks", issue, `{"kind":"user","id":"alice"}`, "Which order first?", time.Now(), "")
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the conversation seed: %v", err)
+	}
+	return issue
 }
 
 // storeReads is every exported function of this package that reads the store, read out of the

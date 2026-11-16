@@ -2,6 +2,7 @@ package refs
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -45,9 +46,11 @@ type nodeLoader func(ctx context.Context, q Queryer, who model.Actor, kind strin
 // Three lines keep a kind from reaching a read unguarded, and each one sees what the others
 // cannot:
 //
-//   - The constructors below take the predicate as an argument, so a kind registered with a
-//     loader and no predicate is a call with an argument missing and the package does not
-//     build. This is the line a kind added the way every kind here was added meets.
+//   - The constructors below state the predicate: resolvedKind and unresolvedKind take it as an
+//     argument, so a kind registered with a loader and no predicate is a call with an argument
+//     missing and the package does not build, and personAuthoredKind and credentialAuthoredKind
+//     each make the one predicate their name says. This is the line a kind added the way every
+//     kind here was added meets.
 //   - init refuses an entry no constructor made: a hand-written literal such as
 //     {load: loadIssueNodes} compiles, and its predicate is the zero value nobody chose
 //     rather than none at all, so the kind would run on a rule no one wrote. The process does
@@ -62,7 +65,14 @@ type nodeKind struct {
 	load nodeLoader
 	// visibility is the kind's rule: which of its nodes a read answers (VisibleKind).
 	visibility nodeVisibility
-	// stated is true of an entry one of the two constructors made, which is every entry whose
+	// authorOnly says every read of the kind binds its predicate, so the kind may hold a node
+	// reserved for its author: init hands every kind flagged so to the store, which refuses such
+	// a node of any other kind (graphstore.AdmitAuthorOnly). It is set by personAuthoredKind and
+	// credentialAuthoredKind alone, the constructors of the kinds dispatch://INFRA-1950 adds that
+	// take `author` - interaction, lens, lens_block, risk and constraint - each called in the
+	// commit that registers its kind; a lens_kind is always project-visible and takes neither.
+	authorOnly bool
+	// stated is true of an entry one of the constructors made, which is every entry whose
 	// predicate someone stated: the zero value of nodeVisibility is a predicate in its own
 	// right, the rule most kinds take, so the entry carries whether it was chosen rather than
 	// defaulted. init refuses the registry over an entry whose stated is false.
@@ -70,7 +80,7 @@ type nodeKind struct {
 }
 
 // resolvedKind registers a node kind the graph addresses: the loader that reads its nodes, and
-// the predicate every read of the kind binds.
+// the predicate every read of the kind binds. The kind takes no node reserved for its author.
 func resolvedKind(load nodeLoader, visibility nodeVisibility) nodeKind {
 	return nodeKind{load: load, visibility: visibility, stated: true}
 }
@@ -79,6 +89,24 @@ func resolvedKind(load nodeLoader, visibility nodeVisibility) nodeKind {
 // resolves into a node. It answers a predicate like every other kind and carries no loader.
 func unresolvedKind(visibility nodeVisibility) nodeKind {
 	return nodeKind{visibility: visibility, stated: true}
+}
+
+// personAuthoredKind registers a node kind that may hold a node reserved for its author and whose
+// predicate compares the person a credential proves (comparesPerson): the loader that reads its
+// nodes, every one of which binds that predicate. A lens, a block of a lens's finding
+// (lens_block), a risk and a constraint are registered by it, so a person's own personal token
+// reads what that person's cookie wrote.
+func personAuthoredKind(load nodeLoader) nodeKind {
+	return nodeKind{load: load, visibility: nodeVisibility{compares: comparesPerson}, authorOnly: true, stated: true}
+}
+
+// credentialAuthoredKind registers a node kind that may hold a node reserved for its author and
+// whose predicate compares the whole acting credential (comparesCredential): the loader that
+// reads its nodes, every one of which binds that predicate. An interaction is registered by it,
+// since a run is read by the credential that made it, as the going stream reads its run
+// (model.Actor.SameCredential), and a run whose author is nobody by nobody.
+func credentialAuthoredKind(load nodeLoader) nodeKind {
+	return nodeKind{load: load, visibility: nodeVisibility{compares: comparesCredential}, authorOnly: true, stated: true}
 }
 
 // nodeRegistry is every node kind this build knows: how each one resolves, and the visibility
@@ -101,6 +129,11 @@ var nodeRegistry map[string]nodeKind
 // the address of no node a read of the graph answers, so it is none of these.
 var nodeKinds []string
 
+// personComparedKinds is every node kind of nodeRegistry whose predicate compares the person a
+// credential proves (comparesPerson), sorted: what a predicate over a node whose kind is a column
+// reads to pick the comparison of each node's own kind (authorIsOfRow).
+var personComparedKinds []string
+
 func init() {
 	nodeRegistry = map[string]nodeKind{
 		// The kinds the projection tables hold, whose nodes the graph addresses by the id
@@ -122,6 +155,13 @@ func init() {
 		graphstore.KindSession: resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindRole:    resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindPage:    resolvedKind(loadStoreNodes, nodeVisibility{}),
+		// The kinds of dispatch://INFRA-1950 the store holds alone, each registered in the commit
+		// that first writes a node of it (migration 20261116123354 writes both). A lens kind is a
+		// node of the catalogue, always project-visible, so its entry takes no node reserved for its
+		// author; a constraint may be reserved for its author, and its predicate compares the person
+		// a credential proves.
+		graphstore.KindLensKind:   resolvedKind(loadLensKindNodes, nodeVisibility{}),
+		graphstore.KindConstraint: personAuthoredKind(loadConstraintNodes),
 		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
 		// writes one outside a migration, every one of them is project-visible and no read of
 		// the graph resolves one, but they are nodes of the store like any other, so the
@@ -134,13 +174,41 @@ func init() {
 	for _, kind := range slices.Sorted(maps.Keys(nodeRegistry)) {
 		if !nodeRegistry[kind].stated {
 			// Nothing of this build runs rather than one read of this kind answering under a
-			// rule nobody wrote: the entry was written as a literal instead of through
-			// resolvedKind or unresolvedKind, and took the zero predicate by default.
+			// rule nobody wrote: the entry was written as a literal instead of through one of
+			// the constructors, and took the zero predicate by default.
 			panic("refs: the node kind " + kind + " is registered with no visibility predicate: " +
-				"every entry of nodeRegistry is made by resolvedKind or unresolvedKind, which take one")
+				"every entry of nodeRegistry is made by one of its constructors, each of which states one")
 		}
 	}
+	deriveRegistryLists()
+	// The store takes a node reserved for its author of the kinds flagged here and of no other,
+	// so this is the one place that decides which kinds those are (graphstore.AdmitAuthorOnly).
+	graphstore.AdmitAuthorOnly(authorOnlyKinds()...)
+}
+
+// deriveRegistryLists sets the lists read off nodeRegistry once it is built: the kinds it
+// resolves (nodeKinds) and the kinds whose predicate compares the person (personComparedKinds).
+func deriveRegistryLists() {
 	nodeKinds = resolvedNodeKinds()
+	var persons []string
+	for _, kind := range VisibilityKinds() {
+		if nodeRegistry[kind].visibility.compares == comparesPerson {
+			persons = append(persons, kind)
+		}
+	}
+	personComparedKinds = persons
+}
+
+// authorOnlyKinds is every kind of nodeRegistry flagged as one that may hold a node reserved for
+// its author (nodeKind.authorOnly), sorted.
+func authorOnlyKinds() []string {
+	var kinds []string
+	for _, kind := range VisibilityKinds() {
+		if nodeRegistry[kind].authorOnly {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
 }
 
 // resolvedNodeKinds is the registry's keys that carry a loader, sorted.
@@ -156,6 +224,30 @@ func resolvedNodeKinds() []string {
 	return kinds
 }
 
+// comparison is what a kind's predicate compares the author of a node reserved for that author
+// with (nodeVisibility.compares).
+type comparison uint8
+
+const (
+	// comparesCredential compares the whole acting credential with the one that wrote the node
+	// (graphstore.AuthorIsSQL): every kind dispatch://INFRA-1149 registers, and an interaction.
+	comparesCredential comparison = iota
+	// comparesPerson compares the person the acting credential proves with the person the node's
+	// author names - a user's login or a token's owner - and the whole credential where that
+	// author names none (graphstore.AuthorPersonIsSQL): a lens, a block of a lens's finding, a
+	// risk and a constraint.
+	comparesPerson
+)
+
+// authorIs is the comparison c states of the author a node's `made_by` column records and the
+// acting credential bound at param.
+func (c comparison) authorIs(column, param string) string {
+	if c == comparesPerson {
+		return graphstore.AuthorPersonIsSQL(column, param)
+	}
+	return graphstore.AuthorIsSQL(column, param)
+}
+
 // nodeVisibility is one node kind's visibility rule, the half of its registry entry that says
 // who may see its nodes.
 type nodeVisibility struct {
@@ -165,6 +257,11 @@ type nodeVisibility struct {
 	// is written at, and the store holds it under the ref_key its `dispatch://` address
 	// spells.
 	fromAddress func(expr string) string
+	// compares is what the predicate compares the author of a node reserved for that author
+	// with: the whole acting credential, the zero value and the comparison of every kind
+	// dispatch://INFRA-1149 registers, or the person that credential proves, which
+	// personAuthoredKind states.
+	compares comparison
 }
 
 // artifactStoreAddress is the ref_key of the artifact whose uuid expr names.
@@ -183,9 +280,16 @@ func VisibilityKinds() []string {
 	return slices.Sorted(maps.Keys(nodeRegistry))
 }
 
+// ResolvesNodeKind is whether a read of the graph answers nodes of kind at all: the registry
+// holds a loader for it (nodeKinds). A kind it does not resolve is the address of no node.
+func ResolvesNodeKind(kind string) bool {
+	return slices.Contains(nodeKinds, kind)
+}
+
 // VisibilityArg is the one argument every rendered predicate binds: the acting credential, as
-// graphstore's one author rule compares it. A read binds it once and names its placeholder in
-// each predicate it renders.
+// graphstore's one author rule compares it, with the person that credential proves beside it,
+// which the kinds that compare the person read (graphstore.ActingCredential). A read binds it
+// once and names its placeholder in each predicate it renders, whatever kinds those are.
 func VisibilityArg(who model.Actor) any {
 	return graphstore.ActingCredential(who)
 }
@@ -193,7 +297,8 @@ func VisibilityArg(who model.Actor) any {
 // VisibleKind is the predicate of one node kind: the SQL that is true of a node of that kind
 // the acting person may see. address is the SQL naming the node's id as `graph_nodes` keys it,
 // a column of the read's own query, and param the placeholder the acting credential is bound at
-// (VisibilityArg).
+// (VisibilityArg). A node reserved for its author is compared with the acting credential as the
+// kind's registry entry states (nodeVisibility.compares).
 //
 // A node the store holds no row for is visible: `graph_nodes` is the store's own list and the
 // projections are still the ones most reads walk, so a node no write has recorded there is as
@@ -205,17 +310,79 @@ func VisibilityArg(who model.Actor) any {
 // resolves at all.
 // TestEveryNodeKindAnswersAVisibilityPredicate is what keeps that branch unreachable.
 func VisibleKind(kind, address, param string) string {
-	if _, held := nodeRegistry[kind]; !held {
+	entry, held := nodeRegistry[kind]
+	if !held {
 		return "false"
 	}
-	return VisibilityMarker + kind + ` */` + visibleWhere(`'`+kind+`'`, address, param)
+	return VisibilityMarker + kind + ` */` +
+		visibleWhere(`'`+kind+`'`, address, entry.visibility.compares.authorIs(`visible_node.made_by`, param))
+}
+
+// StoredNodeMarker opens the one read of `visibility` that is no test of it: the column a loader
+// selects to answer a node's own stored state and visibility (storedNode). It decides nothing
+// about which nodes a read answers, which the kind's predicate has already decided, so the census
+// of the registry (TestEveryNodeKindAnswersAVisibilityPredicate) tells it from a predicate by
+// this marker, and still holds every other `visibility` a statement reads to a predicate the
+// registry rendered.
+const StoredNodeMarker = "/* the node's stored state and visibility */"
+
+// storedNode is the column every loader of kind selects for the node whose id address names, as
+// `graph_nodes` keys it - the address that kind's predicate reads (VisibleKind): the state and
+// the visibility the store holds for the node, as a text array of two, or null where the store
+// holds no row of it (setStored). It reads `visibility` once, which StoredNodeMarker accounts
+// for.
+//
+// It is a column and not a test, so it runs only for a row the read's own filters kept: one more
+// probe of the `graph_nodes` primary key for each node a read answers, beside the predicate's own
+// probe of the same row. That is a choice. Folding the two into one read of the row would move
+// every loader's predicate from VisibleKind's scalar sub-plan to a join over the row it holds
+// (VisibleKindRow): a rewrite of each loader's plan to save one index probe per answered node,
+// 8,001 of them on a read that answers every block of an 8,001-block document.
+func storedNode(kind, address string) string {
+	return StoredNodeOf(`'`+kind+`'`, address)
+}
+
+// StoredNodeOf is storedNode for a node whose kind is the SQL kindExpr rather than a literal, for
+// a read outside this package that answers each node's stored state and visibility beside rows
+// of several kinds (api's person page): the same column, opened by the same marker. Its answer
+// is read by StoredStateAndVisibility.
+func StoredNodeOf(kindExpr, address string) string {
+	return StoredNodeMarker + `(select array[stored_node.state, stored_node.visibility] from graph_nodes stored_node
+		where stored_node.kind = ` + kindExpr + ` and stored_node.id = ` + address + `)`
+}
+
+// StoredStateAndVisibility is the state and the visibility a storedNode column read for a node,
+// and live and project where the store holds no row of it, as VisibleKind reads such a node:
+// `graph_nodes` is the store's own list, and a node no write has recorded there is as live and as
+// project-visible as every node Dispatch wrote before the store existed. A row is two values; ok
+// is false for anything else.
+func StoredStateAndVisibility(stored []string) (state, visibility string, ok bool) {
+	switch len(stored) {
+	case 0:
+		return graphstore.StateLive, graphstore.VisibilityProject, true
+	case 2:
+		return stored[0], stored[1], true
+	}
+	return "", "", false
+}
+
+// setStored gives node the state and visibility storedNode read for it
+// (StoredStateAndVisibility), and fails the read, naming the node, for a column that is not one.
+func setStored(node *model.GraphNode, stored []string) error {
+	state, visibility, ok := StoredStateAndVisibility(stored)
+	if !ok {
+		return fmt.Errorf("read the stored state and visibility of %s %s: %d values, want 2", node.Kind, node.ID, len(stored))
+	}
+	node.State, node.Visibility = state, visibility
+	return nil
 }
 
 // VisibleEnd is the predicate over an end of an edge, whose node kind is a column rather than a
 // literal: one read of `graph_nodes` keyed on that column and on the id beside it, with the
-// address rewrites the registry declares applied per kind. byRefKey says the ids are the ones
-// the to side of an edge carries, which are already the ids the store keys a node by; the from
-// side carries an artifact's uuid instead, and that kind's rewrite translates it.
+// address rewrites the registry declares applied per kind, and the comparison of the kind of the
+// row it reads (authorIsOfRow). byRefKey says the ids are the ones the to side of an edge
+// carries, which are already the ids the store keys a node by; the from side carries an
+// artifact's uuid instead, and that kind's rewrite translates it.
 //
 // A kind the registry does not hold passes: such an end resolves to no node and the read drops
 // its edge anyway (resolveNodes), and refusing here would refuse the whole read for one row a
@@ -235,14 +402,28 @@ func VisibleEnd(kindExpr, idExpr string, byRefKey bool, param string) string {
 			address = `case ` + kindExpr + rewrites.String() + ` else ` + idExpr + ` end`
 		}
 	}
-	return VisibilityMarker + `every kind */` + visibleWhere(kindExpr, address, param)
+	return VisibilityMarker + `every kind */` + visibleWhere(kindExpr, address, authorIsOfRow(`visible_node`, param))
+}
+
+// VisibleNode is the predicate of a node whose kind is a column of the read's own query rather
+// than a literal, named as the store keys it - the far end of a tuple, say: kindExpr and idExpr
+// are its kind and its id as `graph_nodes` holds them. It is the predicate of the node's own kind,
+// with that kind's comparison (authorIsOfRow), and false for a node whose kind the registry does
+// not hold, as VisibleKind refuses one, so a node of a kind a newer build adds counts for nothing
+// here until its entry does. A block's kind is read off its id (graphstore.AddressKind): a finding
+// of a lens is a lens_block, a block of a document a block.
+//
+// A node the store holds no row for is visible, as VisibleKind reads one.
+func VisibleNode(kindExpr, idExpr, param string) string {
+	return VisibilityMarker + `the row's own kind */(` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` +
+		quotedKinds(VisibilityKinds()) + `) and ` + visibleWhere(kindExpr, idExpr, authorIsOfRow(`visible_node`, param)) + `)`
 }
 
 // VisibleRow is the predicate over a `graph_nodes` row a read already holds, for the one read
-// that walks the store's own table (loadStoreNodes): the same test, with no second read of the
-// table to make it.
+// that walks the store's own table (loadStoreNodes): the same test, with the comparison of the
+// row's own kind (authorIsOfRow) and no second read of the table to make it.
 func VisibleRow(alias, param string) string {
-	return VisibilityMarker + `the row's own kind */` + visibleHeldRow(alias, param)
+	return VisibilityMarker + `the row's own kind */` + visibleHeldRow(alias, authorIsOfRow(alias, param))
 }
 
 // VisibleKindRow is one node kind's predicate over a `graph_nodes` row a read already holds:
@@ -257,28 +438,53 @@ func VisibleRow(alias, param string) string {
 // the one difference, and it is the caller's to keep: a test over a row is a test of a row that
 // is there, and a read binds this only where it answers nothing for a node that has none.
 func VisibleKindRow(kind, alias, param string) string {
-	if _, held := nodeRegistry[kind]; !held {
+	entry, held := nodeRegistry[kind]
+	if !held {
 		return "false"
 	}
-	return VisibilityMarker + kind + ` */` + visibleHeldRow(alias, param)
+	return VisibilityMarker + kind + ` */` + visibleHeldRow(alias, entry.visibility.compares.authorIs(alias+`.made_by`, param))
 }
 
 // visibleHeldRow is the body both of those render: the row itself says whether the acting
-// person may see the node, with no read of the table to find it.
-func visibleHeldRow(alias, param string) string {
-	return `(` + alias + `.visibility <> '` + graphstore.VisibilityAuthor +
-		`' or ` + graphstore.AuthorIsSQL(alias+`.made_by`, param) + `)`
+// person may see the node, with no read of the table to find it. authorIs is the comparison of
+// the row's author with the acting credential that its kind states.
+func visibleHeldRow(alias, authorIs string) string {
+	return `(` + alias + `.visibility <> '` + graphstore.VisibilityAuthor + `' or ` + authorIs + `)`
 }
 
 // visibleWhere is the body every rendered predicate shares: the store's row for the node, if it
-// holds one, says whether the acting person may see it.
+// holds one, says whether the acting person may see it. authorIs is the comparison of that row's
+// author, visible_node.made_by, with the acting credential that the node's kind states.
 //
 // It is a scalar subquery and not an `exists`, so the planner keeps it a sub-plan over the
 // `graph_nodes` primary key rather than flattening it into an anti-join that reads the whole
 // table: every read that binds this is keyed on an index of its own, and a count that gained a
 // sequential scan of the store would be paid on every list.
-func visibleWhere(kindExpr, address, param string) string {
-	return `coalesce((select visible_node.visibility <> '` + graphstore.VisibilityAuthor +
-		`' or ` + graphstore.AuthorIsSQL(`visible_node.made_by`, param) + `
+func visibleWhere(kindExpr, address, authorIs string) string {
+	return `coalesce((select visible_node.visibility <> '` + graphstore.VisibilityAuthor + `' or ` + authorIs + `
 		from graph_nodes visible_node where visible_node.kind = ` + kindExpr + ` and visible_node.id = ` + address + `), true)`
+}
+
+// authorIsOfRow is the comparison of the author of the `graph_nodes` row alias names with the
+// acting credential bound at param, by the row's own kind: the person for a kind whose entry
+// compares the person (personComparedKinds), with a block's kind read off its id
+// (graphstore.AddressKindSQL), and the whole credential for every other kind. While no kind
+// compares the person, it is the whole credential's comparison alone, with no test of the kind.
+func authorIsOfRow(alias, param string) string {
+	credential := graphstore.AuthorIsSQL(alias+`.made_by`, param)
+	if len(personComparedKinds) == 0 {
+		return credential
+	}
+	return `(case when ` + graphstore.AddressKindSQL(alias+`.kind`, alias+`.id`) + ` in (` + quotedKinds(personComparedKinds) +
+		`) then ` + graphstore.AuthorPersonIsSQL(alias+`.made_by`, param) + ` else ` + credential + ` end)`
+}
+
+// quotedKinds is kinds as the SQL literals of an `in` list. Every kind is a constant of this
+// build, never a value a request carried.
+func quotedKinds(kinds []string) string {
+	quoted := make([]string, len(kinds))
+	for index, kind := range kinds {
+		quoted[index] = `'` + kind + `'`
+	}
+	return strings.Join(quoted, ", ")
 }

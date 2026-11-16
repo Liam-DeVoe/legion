@@ -1388,23 +1388,26 @@ func (f blockFirst) maker() ([]model.Actor, *time.Time, error) {
 // RemovedBlockNode is the node nodeID of block blockID of document (its resolved artifact node),
 // which no current version holds since version removedVersion deleted it, built as loadBlockNodes
 // builds a current block's but with no text or changed version: made as a current block is
-// (blockFirstVersion), last changed by that deletion, with its version's authors and time, and
-// part of the document at the latest version a block-aware build indexed below removedVersion, the
-// last one known to hold it (null when none is). The caller adds its pin. Authors that do not
-// decode (storedActors) fail the read.
+// (blockFirstVersion), last changed by that deletion, with its version's authors and time, part of
+// the document at the latest version a block-aware build indexed below removedVersion, the last
+// one known to hold it (null when none is), and at the state and visibility the store holds for
+// it (storedNode), which the index pass that deleted it stated gone. The caller adds its pin.
+// Authors that do not decode (storedActors) fail the read.
 func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, nodeID, blockID string, removedVersion int) (model.GraphNode, error) {
 	var first blockFirst
 	var removedBy []byte
 	var removedAt *time.Time
 	var held *int
+	var stored []string
 	documentID := document.ID
 	if err := q.QueryRow(ctx, `
 		select `+blockFirstColumns("first")+`, removed.authors, removed.created_at,
-		       (select max(i.version) from document_indexed_versions i where i.artifact_id = b.artifact_id and i.version < $3)
+		       (select max(i.version) from document_indexed_versions i where i.artifact_id = b.artifact_id and i.version < $3),
+		       `+storedNode(BlockNodeKind, "$4")+`
 		from (select $1::uuid as artifact_id, $2::text as block_id) b
 		`+blockFirstVersion("first", "b.artifact_id", "b.block_id")+`
 		left join artifact_versions removed on removed.artifact_id = b.artifact_id and removed.number = $3
-	`, documentID, blockID, removedVersion).Scan(append(first.targets(), &removedBy, &removedAt, &held)...); err != nil {
+	`, documentID, blockID, removedVersion, nodeID).Scan(append(first.targets(), &removedBy, &removedAt, &held, &stored)...); err != nil {
 		return model.GraphNode{}, fmt.Errorf("read the facts of removed block %q of %s: %w", blockID, documentID, err)
 	}
 	madeBy, madeAt, err := first.maker()
@@ -1415,7 +1418,7 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 	if err != nil {
 		return model.GraphNode{}, fmt.Errorf("decode the last change of removed block %q of %s: %w", blockID, documentID, err)
 	}
-	return model.GraphNode{
+	node := model.GraphNode{
 		Kind:          "block",
 		ID:            nodeID,
 		BlockID:       blockID,
@@ -1429,7 +1432,11 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 		ChangedAt:     removedAt,
 		Parent:        &model.NodeParent{Kind: "artifact", ID: documentID, Ref: document.Ref},
 		ParentVersion: held,
-	}, nil
+	}
+	if err := setStored(&node, stored); err != nil {
+		return model.GraphNode{}, err
+	}
+	return node, nil
 }
 
 // uniqueBlocks keeps the first block of each id, in order, as the node GET …/blocks addresses by

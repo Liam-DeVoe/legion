@@ -27,17 +27,18 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same eight docs' register of the tree's passes scans for
+// package goes through, the same ones docs' register of the tree's passes scans for
 // (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
 // caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
 // Authored, Reached and SessionRecorded, which run those arms for the writers that record an
 // author, a reached session and a session an ask names, EraseNode, the erase's delete of a node
-// and its tuples, and FillScopes, the backfill's fill of the project of a node stored with none.
+// and its tuples, FillScopes, the backfill's fill of the project of a node stored with none, and
+// Retarget, the move of one pointer tuple of a node from one far end to another.
 // Each is a function of the package, never a method, so a call of one is named by the package
 // and found here wherever it is made. A write that holds a statement of its own instead is found
 // by rawStoreWrite, and none outside this package may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes"}
+	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes", "Retarget"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -88,6 +89,12 @@ var storeWriteCallSites = []string{
 	"api/comment_delivery.go#recordAnsweredDelivery",
 	"api/comment_delivery.go#replyComment",
 	"api/message_delivery.go#completeMessageDelivery",
+	// The nodes and tuples of dispatch://INFRA-1950's reasoning kinds - a lens, its findings, a
+	// risk and a constraint - with the author's node where the credential proves one: the issue's
+	// owner row, then one Write of every node in ascending (kind, id) and every tuple at the
+	// sentinel, appending no event. Its order is the order TestEveryStoreWriteTakesOneLockOrder
+	// proves of Write.
+	"api/reasoning_write.go#writeReasoningNodes",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and
@@ -189,6 +196,14 @@ var storeWriteCallSites = []string{
 	"docs/ask_blocks.go#claimCopies",
 	"graphcensus/backfill.go#writeAskBatch",
 	"graphcensus/backfill.go#writeAskFollowerBatch",
+	// Retarget moves one pointer through Write, after the row of the node it moves it out of.
+	"graphstore/reasoning.go#Retarget",
+	// AddLensKind adds one kind to the lens catalogue through Write: the kind's constraint and
+	// lens_kind nodes in ascending (kind, id) and the constrained_by tuple between them, at the
+	// sentinel, under a transaction lock on the id and no owner row, since a catalogue node
+	// stands under no issue. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of
+	// Write; `envoy-dispatch lens-kind-add` is its one caller.
+	"graphstore/lens_catalogue.go#AddLensKind",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies",

@@ -488,8 +488,8 @@ type liveWritePauseQuery struct {
 // the richer one: writeAdvice holds every field documentWriteAdvice and suggestionsOnlyAdvice
 // hold, so a document write with an issue and one without differ by which of its fields are
 // present, not by which type describes them. And a route whose success answer is an object this
-// server does not model - a relay's bytes, a pre-rendered schema, an event stream, a file's
-// bytes - carries no Response and says why in Opaque.
+// server does not model - a relay's bytes, an event stream, a file's bytes - carries no Response
+// and says why in Opaque.
 //
 // A third: a row names the shape its handler writes, trees and all. A read that shows a stored
 // text answers a shaped read whose fields carry that text's tree (display_trees.go), and the row
@@ -506,13 +506,9 @@ type liveWritePauseQuery struct {
 // at all, which is why model.MyAnswersResponse, model.MyRepliesResponse and
 // model.SearchResponse stand as they are.
 var routeShapes = map[string]routeShape{
-	"GET /api/v1": {Status: http.StatusOK, Response: routeIndex{}},
-	"GET /api/v1/schema/blocks": {
-		Status:             http.StatusOK,
-		Opaque:             "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
-		OpaqueContentTypes: []string{"application/json"},
-	},
-	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"GET /api/v1":               {Status: http.StatusOK, Response: routeIndex{}},
+	"GET /api/v1/schema/blocks": {Status: http.StatusOK, Response: blockSchemaRead{}},
+	"GET /api/v1/limits":        {Status: http.StatusOK, Response: model.DispatchLimits{}},
 	"POST /api/v1/markdown/round-trip": {
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
 	},
