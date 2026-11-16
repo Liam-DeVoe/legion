@@ -1,6 +1,8 @@
 package natsgrant_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"slices"
@@ -22,6 +24,94 @@ var pubScope = natsgrant.Scope{
 	Projects:     []string{"PUB"},
 	Repositories: []string{"acme/widgets", "acme/gadgets.js"},
 	Identity:     "legion-daemon-PUB",
+}
+
+// The repositories that stretch a GitHub consumer's name furthest, by GitHub's own grammar
+// (packages/daemon/internal/ghrepo: an owner of at most 39 bytes of [A-Za-z0-9_-] beginning with a
+// letter or digit, a name of at most 100 bytes of [A-Za-z0-9._-]): the deep review's 100-byte name
+// of underscores, and the longest owner and name with every byte the name escapes.
+var (
+	reviewersRepository = "acme/repo" + strings.Repeat("_", 96)
+	longestRepository   = "a" + strings.Repeat("_", 38) + "/" + strings.Repeat("._", 50)
+)
+
+// A consumer's name is at most 255 bytes, nats-server's JSMaxNameLen
+// (server/jetstream_api.go:418-420), past which the server refuses the create with err_code
+// 10102 (server/consumer.go:1256-1261). Every repository GitHub serves gets a name within it,
+// under the longest project key there is, and the name stays one subject token, stays the
+// daemon's for the project, and is the same name for GitHub's and Dispatch's spellings.
+func TestGitHubConsumerNameFitsTheServersNameLimit(t *testing.T) {
+	for _, row := range []struct{ project, repository string }{
+		{"PUB", reviewersRepository},
+		{"ABCDEFGHIJ", reviewersRepository},
+		{"ABCDEFGHIJ", longestRepository},
+		{"ABCDEFGHIJ", strings.Repeat("A", 39) + "/" + strings.Repeat("Z", 100)},
+	} {
+		name := natsgrant.GitHubConsumerName(row.project, row.repository)
+		require.LessOrEqual(t, len(name), 255, "%s's consumer for %q is %d bytes", row.project, row.repository, len(name))
+		require.True(t, natsgrant.SessionToken(name), "%q is one subject token", name)
+		require.True(t, strings.HasPrefix(name, "legion-go-"+row.project+"-github-"), name)
+		require.Equal(t, name, natsgrant.GitHubConsumerName(row.project, strings.ToUpper(row.repository)), "one name for either spelling")
+	}
+	// A name that fits keeps the readable encoding whole.
+	require.Equal(t, "legion-go-ABCDEFGHIJ-github-"+strings.Repeat("a", 39)+"_2f"+strings.Repeat("z", 100),
+		natsgrant.GitHubConsumerName("ABCDEFGHIJ", strings.Repeat("A", 39)+"/"+strings.Repeat("Z", 100)))
+	// One that would not keeps the longest head of the readable encoding that leaves room, cut
+	// between escapes, then `_z` and the first 32 hex digits of the SHA-256 of the whole
+	// repository in lower case. Written out here rather than read back, so a change that would
+	// rename every long repository's consumer (and leave its old one behind on the stream) fails
+	// here first.
+	digest := sha256.Sum256([]byte(strings.ToLower(reviewersRepository)))
+	require.Equal(t,
+		"legion-go-PUB-github-acme_2frepo"+strings.Repeat("_5f", 63)+"_z"+hex.EncodeToString(digest[:16]),
+		natsgrant.GitHubConsumerName("PUB", reviewersRepository))
+}
+
+// Long names stay one-to-one: two repositories whose readable heads are the same get two names,
+// and no long name is the name of a short one, since `_z` never appears in the readable encoding
+// (it writes `_` only before two hex digits).
+func TestGitHubConsumerNameKeepsLongRepositoriesApart(t *testing.T) {
+	shared := "acme/" + strings.Repeat("_", 95)
+	a, b := natsgrant.GitHubConsumerName("PUB", shared+"a"), natsgrant.GitHubConsumerName("PUB", shared+"b")
+	require.NotEqual(t, a, b)
+	head, _, found := strings.Cut(a, "_z")
+	require.True(t, found, "%q is past the limit, so it carries a digest", a)
+	require.True(t, strings.HasPrefix(b, head+"_z"), "the two share their readable head %q", head)
+
+	// Every owner and name length GitHub serves, each filled with a byte the encoding escapes or
+	// keeps: no two share a name, each fits, and a name carries a digest exactly when its readable
+	// encoding would not fit.
+	const prefix = "legion-go-ABCDEFGHIJ-github-"
+	seen := map[string]string{}
+	for _, owner := range []string{"acme", "a" + strings.Repeat("_", 38), strings.Repeat("x", 39)} {
+		for length := 1; length <= 100; length++ {
+			for _, fill := range []string{"_", ".", "-", "z"} {
+				repository := owner + "/" + strings.Repeat(fill, length-1) + "q"
+				name := natsgrant.GitHubConsumerName("ABCDEFGHIJ", repository)
+				require.LessOrEqual(t, len(name), 255, repository)
+				if other, taken := seen[name]; taken && other != repository {
+					t.Fatalf("%q and %q share the consumer %q", other, repository, name)
+				}
+				seen[name] = repository
+				readable := prefix + strings.TrimPrefix(natsgrant.InboxPrefix(strings.ToLower(repository)), "_INBOX_")
+				if overflows := len(readable) > 255; strings.Contains(name, "_z") != overflows {
+					t.Fatalf("%q: its readable name is %d bytes, and its name %q carries a digest: %v", repository, len(readable), name, !overflows)
+				}
+				if len(readable) <= 255 {
+					require.Equal(t, readable, name, "a name that fits is the readable encoding whole")
+					continue
+				}
+				// A name that does not fit is the longest head of the readable name that leaves
+				// room for "_z" and 32 hex digits, short of the full budget only by the bytes of
+				// an escape it would have split.
+				head, digest, _ := strings.Cut(name, "_z")
+				require.True(t, strings.HasPrefix(readable, head), "%q's head %q is the start of its readable name", repository, head)
+				require.NotContains(t, head[len(head)-2:], "_", "%q's head %q ends between escapes", repository, head)
+				require.Len(t, digest, 32, repository)
+				require.GreaterOrEqual(t, len(head), 255-2-32-2, "%q's head %q is the longest that leaves room", repository, head)
+			}
+		}
+	}
 }
 
 // A repository's GitHub consumer name, prefix and filter. The name escapes as InboxPrefix does,
