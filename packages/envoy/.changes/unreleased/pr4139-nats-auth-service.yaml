@@ -15,7 +15,9 @@ body: |-
   not turned for ten seconds, so a liveness probe restarts a replica that has stalled.
   Go clients present those credentials through `NATS_SERVICE_TOKEN_FILE` or
   `NATS_SERVICE_GOOGLE_AUDIENCE` for a service, and through the token client for a session, each
-  reconnecting before its user expires; `natsprobe` tries one subject by hand.
+  reconnecting before its user expires, a service only once the auth service admits its new token,
+  so an outage of the service cuts no connection before its user expires; `natsprobe` tries one
+  subject by hand.
   `scripts/dev-stack.sh --callout` runs the whole local stack behind the service and
   `scripts/callout-check.sh` proves it. A hub with no auth service, and clients configured with
   none, run exactly as before.

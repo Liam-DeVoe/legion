@@ -1059,12 +1059,12 @@ request, and that stops the retry at once.
 ## Metrics
 
 The broker serves its metrics in the Prometheus text format at `GET /metrics`, on a port of its
-own: `BROKER_METRICS_LISTEN_ADDR`, by default `127.0.0.1:13382`. The API's port serves no
-`/metrics`, and the metrics port serves nothing else: every other path answers `404`, and a method
-other than `GET` or `HEAD` answers `405`. The boot binds it after the API's port and the airlock's
-proxy port and logs `broker metrics listening addr=<host:port>`, and a pod that cannot bind it
-does not start. A draining pod goes on answering scrapes through its drain, and the port closes
-with the others.
+own: `BROKER_METRICS_LISTEN_ADDR`, by default `127.0.0.1:13382`. The same port serves `GET /livez`,
+the NATS auth service's liveness (below). The API's port serves neither, and the metrics port
+serves nothing else: every other path answers `404`, and a method other than `GET` or `HEAD`
+answers `405`. The boot binds it after the API's port and the airlock's proxy port and logs
+`broker metrics listening addr=<host:port>`, and a pod that cannot bind it does not start. A
+draining pod goes on answering scrapes through its drain, and the port closes with the others.
 
 The default address answers on the pod itself alone, so a scraper in another pod needs an address
 it can reach, such as `0.0.0.0:13382`. Let that scraper alone reach the port, and never route it
@@ -1114,6 +1114,16 @@ boot, so nobody adds it up by hand: `broker stop budget drain=5s shutdown=60s to
 **`/healthz` as the readiness probe, and as nothing else.** A liveness probe on it has the kubelet
 kill the container in the middle of the drain, which is what the drain exists to prevent
 ([Health and logs](#health-and-logs)).
+
+**`/livez` on the metrics port as the liveness probe, where the broker runs the NATS auth
+service.** It answers `200` while the service's loop has turned in the last ten seconds, and `503`
+with a line naming how long ago it last turned once it has not; a broker that runs no auth service
+answers `200`. A stalled replica keeps its place in the hub's queue group and is sent requests it
+never answers, so the probe must read the status: a probe that only checks the port answers passes
+a `503`. Probe it on the metrics port, which a pod must make reachable to the kubelet (the default
+address answers on the pod alone), every five seconds with three failures before a restart. Unlike
+the `/livez` of `envoy-dispatch` and `envoy-listener`, which answer `204` reading nothing, this one
+reads the service's own heartbeat, which a decision that never ends stops.
 
 **One more Postgres connection per pod, on a session-mode path.** The fan-out below listens on a
 connection of its own, held for as long as the process runs and outside whatever `pool_max_conns`

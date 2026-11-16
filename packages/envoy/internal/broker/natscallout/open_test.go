@@ -22,9 +22,18 @@ var emptyDirections = map[string]natsgrant.Permissions{
 	"subscribe": {Publish: []string{"_INBOX.>"}},
 }
 
-// A grant whose list holds only a blank entry is the same fault by another road: jwt drops a blank
-// entry when it adds it to a user (StringList.Add), so the encoded allow list is empty. It is
-// refused naming the direction, and no user is encoded for it.
+// answering is a decideFunc that admits every request with grant, so a test hands the answer a
+// grant of its own and only the guard in admit stands between that grant and the server.
+func answering(grant natsgrant.Permissions) decideFunc {
+	return func(context.Context, Deps, []ServiceEntry, Request) (Decision, error) {
+		return Decision{Name: "session/test", Grant: grant, Expires: time.Now().Add(time.Hour)}, nil
+	}
+}
+
+// A grant whose list holds only a blank entry is the same fault by another road. jwt drops an
+// empty entry when it adds it to a user (StringList.Add skips ""), so a list of "" encodes as an
+// empty one; a whitespace entry names no subject any client could be granted. OpenDirection counts
+// both as an open direction, so each is refused naming the direction, and no user is encoded.
 func TestAGrantOfBlankEntriesIsRefused(t *testing.T) {
 	issuer, err := nkeys.CreateAccount()
 	require.NoError(t, err)
@@ -48,9 +57,8 @@ func TestAGrantOfBlankEntriesIsRefused(t *testing.T) {
 	}
 }
 
-// A grant with an empty allow list in either direction is refused at both guards, naming the
-// direction: decide's, whatever produced the grant, and encodeAnswer's, which every answer
-// passes, so a producer that bypassed decide could not reach the server with it either.
+// A grant with an empty allow list in either direction is refused by the guard every answer passes
+// (admit), naming the direction, and no user is encoded for it.
 func TestAGrantWithAnEmptyDirectionIsRefused(t *testing.T) {
 	issuer, err := nkeys.CreateAccount()
 	require.NoError(t, err)
@@ -59,25 +67,16 @@ func TestAGrantWithAnEmptyDirectionIsRefused(t *testing.T) {
 	userKey, err := user.PublicKey()
 	require.NoError(t, err)
 	for direction, grant := range emptyDirections {
-		want := "grant opens every subject: its " + direction + " allow list is empty"
-		t.Run(direction+": decide", func(t *testing.T) {
-			a := newSession(t, "ses_a", 15*time.Minute)
-			_, err := decide(t.Context(), Deps{Introspect: introspector(a)}, nil, a.request(t, "nonce"), grantSource{
-				session: func(string) (natsgrant.Permissions, error) { return grant, nil },
-				service: serviceGrant,
-			})
-			var refused *Refusal
-			require.ErrorAs(t, err, &refused)
-			require.Equal(t, want, refused.Reason)
-		})
-		t.Run(direction+": encodeAnswer", func(t *testing.T) {
+		t.Run(direction, func(t *testing.T) {
 			encoded, err := encodeAnswer(issuer, Request{UserNkey: userKey, ServerID: "NSERVER"},
 				Decision{Name: "session/ses_a", Grant: grant, Expires: time.Now().Add(time.Hour)}, nil)
 			require.NoError(t, err)
 			response, err := jwt.DecodeAuthorizationResponseClaims(encoded)
 			require.NoError(t, err)
-			require.Equal(t, want, response.Error)
+			require.Equal(t, "grant opens every subject: its "+direction+" allow list is empty", response.Error)
 			require.Empty(t, response.Jwt, "a user was encoded for a grant that opens its %s direction", direction)
+			_, refused := admit(Request{UserNkey: userKey}, Decision{Grant: grant}, nil)
+			require.Equal(t, labelOpenDirection, refused.Label)
 		})
 	}
 	t.Run("every grant natsgrant builds closes both directions", func(t *testing.T) {
@@ -133,13 +132,7 @@ func requireAnEmptyPublishListRefused(t *testing.T, start func(testnats.CalloutK
 
 	t.Run("the service refuses the same grant", func(t *testing.T) {
 		a := newSession(t, "ses_a", 15*time.Minute)
-		bypassingDecide := func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
-			return decideCredential(ctx, deps, services, req, grantSource{
-				session: func(string) (natsgrant.Permissions, error) { return emptyDirections["publish"], nil },
-				service: serviceGrant,
-			})
-		}
-		service := startService(t, url, keys, Deps{Introspect: introspector(a)}, bypassingDecide)
+		service := startService(t, url, keys, Deps{Introspect: introspector(a)}, answering(emptyDirections["publish"]))
 		t.Cleanup(service.Close)
 		_, err := connectSession(t, url, a, nil)
 		require.ErrorIs(t, err, nats.ErrAuthorization, "the service admitted a user that may publish to every subject")

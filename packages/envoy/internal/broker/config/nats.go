@@ -41,7 +41,7 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 		{"BROKER_NATS_ISSUER_SEED_FILE", settings.IssuerSeedFile, nkeys.PrefixByteAccount},
 		{"BROKER_NATS_XKEY_SEED_FILE", settings.XKeySeedFile, nkeys.PrefixByteCurve},
 	} {
-		if err := checkSeedFile(file.setting, file.path, file.kind); err != nil {
+		if _, err := ReadSeedFile(file.setting, file.path, file.kind); err != nil {
 			return NATSCallout{}, err
 		}
 	}
@@ -51,22 +51,29 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 	return settings, nil
 }
 
-// checkSeedFile refuses, naming setting, a path that is unset or unreadable, or whose trimmed
-// contents are not an nkey seed of kind.
-func checkSeedFile(setting, path string, kind nkeys.PrefixByte) error {
+// ReadSeedFile is the key pair the nkey seed in the file at path makes, refused, naming setting
+// and never the seed, when path is unset or unreadable or its trimmed contents are not a seed of
+// kind. It is the one reader of the NATS auth service's seeds: the broker's start checks each with
+// it (loadNATSCallout), and the service reads its keys with it (natscallout.Start).
+func ReadSeedFile(setting, path string, kind nkeys.PrefixByte) (nkeys.KeyPair, error) {
 	if path == "" {
-		return fmt.Errorf("the NATS auth service needs %s", setting)
+		return nil, fmt.Errorf("the NATS auth service needs %s", setting)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("%s names %s, which could not be read: %w", setting, path, err)
+		return nil, fmt.Errorf("%s names %s, which could not be read: %w", setting, path, err)
 	}
-	prefix, _, err := nkeys.DecodeSeed([]byte(strings.TrimSpace(string(raw))))
+	seed := []byte(strings.TrimSpace(string(raw)))
+	prefix, _, err := nkeys.DecodeSeed(seed)
 	if err != nil {
-		return fmt.Errorf("%s names %s, which holds no nkey seed", setting, path)
+		return nil, fmt.Errorf("%s names %s, which holds no nkey seed", setting, path)
 	}
 	if prefix != kind {
-		return fmt.Errorf("%s names %s, which holds a %s seed where it needs a %s seed", setting, path, prefix, kind)
+		return nil, fmt.Errorf("%s names %s, which holds a %s seed where it needs a %s seed", setting, path, prefix, kind)
 	}
-	return nil
+	pair, err := nkeys.FromSeed(seed)
+	if err != nil {
+		return nil, fmt.Errorf("%s names %s, whose seed makes no key: %w", setting, path, err)
+	}
+	return pair, nil
 }
