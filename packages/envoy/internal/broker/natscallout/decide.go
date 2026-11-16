@@ -40,12 +40,16 @@ type Deps struct {
 	// whether that is a Google account, and when the token was issued and expires.
 	ServiceToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
 	// Exchange is the person and the projects the broker's own exchange list gives account, and
-	// false for an account no entry lists (exchange.Set.MappedForAccount). Nil, or a nil Access,
-	// holds no service to its projects, and refuses every entry that is not an all-projects one.
+	// false for an account no entry lists (exchange.Set.MappedForAccount). Nil, or a nil Access or
+	// RepoProjects, holds no service to its projects, and refuses every entry that is not an
+	// all-projects one.
 	Exchange func(account string) (person string, projects []string, ok bool)
 	// Access is Dispatch's answer about one project (projectaccess). A decision never calls it:
-	// the service asks it in the background and decides on the answers it holds (heldAccess).
+	// the service asks it in the background and decides on the pass it holds (heldAccess).
 	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
+	// RepoProjects is Dispatch's whole repository mapping (projectaccess.Client.RepoProjects),
+	// which each pass reads beside Access's answers; a decision never calls it either.
+	RepoProjects func(ctx context.Context) ([]projectaccess.RepoProject, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
 	// Log records each refusal with the connection's host, never its credential. Nil logs
@@ -55,9 +59,9 @@ type Deps struct {
 	// nothing.
 	Metrics *Metrics
 
-	// held is Dispatch's last answer about each project a held entry can name, which Start asks
-	// for and a decision reads (scopeGrant); nil until then, when every such project is not yet
-	// known.
+	// held is the pass of Dispatch's answers and repository mapping a held entry's grant is built
+	// from, which Start makes and a decision reads (scopeGrant); nil until Start, when no held
+	// entry is admitted.
 	held *heldAccess
 }
 
@@ -142,10 +146,12 @@ const (
 	labelServiceNotListed  = "service_not_listed"
 	labelHeldToProjects    = "held_to_projects"
 	labelNoExchangeEntry   = "no_exchange_entry"
-	labelProjectNotKnown   = "project_not_known"
 	labelProjectNotFound   = "project_not_found"
 	labelProjectNotVisible = "project_not_visible"
-	labelNotHeldToProjects = "not_held_to_projects"
+	labelAccessRefused     = "project_access_refused"
+	labelNoProjects        = "no_exchange_projects"
+	labelGrantNotHoldable  = "grant_not_holdable"
+	labelSharedLane        = "shared_lane"
 	labelSystemSubject     = "system_subject"
 	labelOpenDirection     = "open_direction"
 	labelBudget            = "budget"

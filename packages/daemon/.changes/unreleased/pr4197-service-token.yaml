@@ -10,5 +10,7 @@ body: |-
   second, doubling, capped at a minute: at boot each refused attempt is logged with its reason and
   the daemon is not ready until it is admitted, so it neither exits nor restarts. A daemon seed
   beside the key, or a token file that cannot be read or names no account, refuses boot naming
-  it. Every refusal of a reconnect's credential, a seed's included, is now logged at warn as
-  `NATS refused the connection's credential`. A seed's connection otherwise behaves as before.
+  it, and `legion start --check-config` reads the token as boot does and names its account on its
+  OK line (`nats-daemon-service-account=`), never the token. Every refusal of a reconnect's
+  credential, a seed's included, is now logged at warn as `NATS refused the connection's
+  credential`. A seed's connection otherwise behaves as before.

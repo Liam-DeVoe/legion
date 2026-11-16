@@ -515,11 +515,14 @@ func main() {
 		fatal(err)
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
 	}
+	// projectAccess is Dispatch's project access client, nil with BROKER_PROJECT_ACCESS_URL unset.
+	var projectAccess *projectaccess.Client
 	if cfg.ProjectAccessURL != "" {
 		// The broker's own projected ServiceAccount token for Dispatch's audience, read at call
 		// time through the reader every projected token here goes through, so a rotation needs no
 		// restart. config.Load holds the two settings to both or neither.
-		exchangeConfig.Projects = projectaccess.New(cfg.ProjectAccessURL, brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		projectAccess = projectaccess.New(cfg.ProjectAccessURL, brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		exchangeConfig.Projects = projectAccess
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {
 		slog.Info("project access check", "state", "off",
@@ -732,21 +735,20 @@ func main() {
 	// the drain begins.
 	if cfg.NATS.Enabled() {
 		// A service held to its exchange projects is held by the exchange list this broker trades
-		// by and by Dispatch's answers about those projects, which the service asks for in the
-		// background; with no Dispatch to ask (BROKER_PROJECT_ACCESS_URL unset), it refuses that
-		// service by name.
-		var projectAccess func(context.Context, string, string) (projectaccess.Answer, error)
-		if exchangeConfig.Projects != nil {
-			projectAccess = exchangeConfig.Projects.Access
+		// by, by Dispatch's answers about those projects and by its repository mapping, which the
+		// service reads in the background; with no Dispatch to ask (BROKER_PROJECT_ACCESS_URL
+		// unset), it refuses that service by name.
+		deps := natscallout.Deps{
+			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify, Exchange: exchangePolicy.MappedForAccount,
+			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
+		}
+		if projectAccess != nil {
+			deps.Access, deps.RepoProjects = projectAccess.Access, projectAccess.RepoProjects
 		}
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
 			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
-		}, natscallout.Deps{
-			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
-			Exchange: exchangePolicy.MappedForAccount, Access: projectAccess,
-			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
-		})
+		}, deps)
 		fatal(err)
 		callout.Store(service)
 		go func() {

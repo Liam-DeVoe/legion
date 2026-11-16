@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -188,6 +189,55 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 			t.Fatalf("chooseNATSConnection = %v, want the refusal naming the key and the path", err)
 		}
 	})
+}
+
+// `legion start --check-config` (CheckStart) names whom each NATS credential boot reads
+// authenticates as, as boot logs it, and never the credential: beside the pane seed's user, the
+// daemon seed's user by public key, or, for nats_daemon_service_token_file, the account the token
+// names. A configuration with no project mapped, run on tmux with LEGION_OMP_PATH naming an
+// executable, gets past every other read.
+func TestCheckStartNamesWhomTheDaemonsNATSCredentialAuthenticatesAs(t *testing.T) {
+	omp, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGION_OMP_PATH", omp)
+	paneSeed, paneUser := testnats.User(t)
+	daemonSeed, daemonUser := testnats.User(t)
+	const account = "system:serviceaccount:legion-pub:legion-daemon"
+	token := testnats.ServiceToken(account, time.Now().Add(time.Hour))
+	dir := t.TempDir()
+	tokenFile, operatorToken := filepath.Join(dir, "nats-token"), filepath.Join(dir, "operator-token")
+	for path, contents := range map[string]string{tokenFile: token, operatorToken: testOperatorToken + "\n"} {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name              string
+		tokenFile, daemon string
+		want              CheckedNATS
+	}{
+		{"the service token", tokenFile, "", CheckedNATS{PaneUser: paneUser, DaemonServiceAccount: account}},
+		{"the daemon seed", "", daemonSeed, CheckedNATS{PaneUser: paneUser, DaemonUser: daemonUser}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{
+				Project: "TEST", Runtime: config.Runtime{Name: "tmux"}, OperatorTokenFile: operatorToken,
+				NatsNkeySeedFile: testnats.SeedFile(t, paneSeed+"\n"), NatsDaemonServiceTokenFile: tc.tokenFile,
+			}
+			if tc.daemon != "" {
+				cfg.NatsDaemonNkeySeedFile = testnats.SeedFile(t, tc.daemon+"\n")
+			}
+			checked, err := CheckStart(cfg, lookup(map[string]string{}))
+			if err != nil || checked != tc.want {
+				t.Fatalf("CheckStart = %+v, %v; want %+v", checked, err, tc.want)
+			}
+			if printed := fmt.Sprintf("%+v", checked); strings.Contains(printed, token) || strings.Contains(printed, daemonSeed) || strings.Contains(printed, paneSeed) {
+				t.Fatal("CheckStart answered a credential")
+			}
+		})
+	}
 }
 
 // The service token's connection waits its reconnects out on the boot's own schedule

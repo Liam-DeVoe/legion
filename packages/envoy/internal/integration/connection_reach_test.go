@@ -93,6 +93,11 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 			"PUB":  {Project: "PUB", Visibility: "public", Visible: true, Repositories: []string{"acme/pub"}},
 			"PRIV": {Project: "PRIV", Visibility: "private", Repositories: []string{"acme/priv"}},
 		}),
+		// Dispatch's whole repository mapping, which each pass reads beside the answers: PUB and
+		// PRIV share no GitHub lane, so nothing of PUB's is withheld.
+		RepoProjects: func(context.Context) ([]projectaccess.RepoProject, error) {
+			return []projectaccess.RepoProject{{Repo: "acme/pub", Project: "PUB"}, {Repo: "acme/priv", Project: "PRIV"}}, nil
+		},
 		Log: slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	})
 
