@@ -705,7 +705,7 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 	for _, id := range facts.typed {
 		only[id] = struct{}{}
 	}
-	parents, err := reconcileBlockParents(ctx, tx, artifactID, refKey, facts.nodes, facts.fits, facts.askParents, only, versionAt, writer)
+	_, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, facts.nodes, facts.fits, facts.askParents, only)
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}

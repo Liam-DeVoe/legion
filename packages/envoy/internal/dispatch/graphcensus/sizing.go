@@ -147,13 +147,17 @@ type StoreKind struct {
 	// of them did not parse (replayParents), zero for every other term.
 	Replayed, Unreadable int64
 	// count is the scalar SQL that counts the kind's writes inside the window, over the rows
-	// sizingWritesWith names, and empty for the term replayParents counts.
+	// sizingWritesWith names, and empty for the two terms replayParents counts.
 	count string
 }
 
 // movedParents is the name of the term no statement can count: a block's parent is the nesting
 // of its rendered version, which no table written before the store holds (replayParents).
-const movedParents = "block_parent_moved"
+// movedRanks is the rank each of those blocks takes in its new place, counted by the same replay.
+const (
+	movedParents = "block_parent_moved"
+	movedRanks   = "block_rank_moved"
+)
 
 // storeKinds are the terms R4 states, each beside the writer whose tuples it counts:
 //   - a comment's node and its visibility and state (graphstore.Write), the authored_by and the
@@ -166,11 +170,13 @@ const movedParents = "block_parent_moved"
 //     moved; a block it drops, its state gone; a block whose parent moved, the retraction of the
 //     old parent and the assertion of the new; and a block reference, the pair's assertion and,
 //     at most, the retraction that ends it, which no table records once the pair is gone;
-//   - dispatch://INFRA-1253's text value and rank value of each block whose text a version wrote,
-//     each version's node with its base attributes, its part_of and its two values
-//     (graphstore.VersionFacts), the mime, size and sha256 values an image's or a file's version
-//     states on its document (graphstore.ArtifactBytes), and the part_of an issue's new document
-//     states (graphstore.ArtifactPartOf);
+//   - dispatch://INFRA-1253's values of each block a version wrote: the text value of each block
+//     whose text it wrote, the rank and the placement of a block's first row, and the new rank of
+//     a block it moved under another parent (refs' reconcileBlockValues); each version's node with
+//     its base attributes, its part_of and its two values (graphstore.VersionFacts), the mime,
+//     size and sha256 values an image's or a file's version states on its document
+//     (graphstore.ArtifactBytes), and the part_of an issue's new document states
+//     (graphstore.ArtifactPartOf);
 //   - dispatch://INFRA-1152's delivered_to of a message, and one tuple for each read mark, clear,
 //     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
 //     a key and no earlier one, so its term counts every key marked inside the window once.
@@ -224,9 +230,17 @@ func storeKinds() []StoreKind {
 		Driver: "block_refs.created_at: the pair's assertion and, at most, the retraction that ends it",
 		count:  `(select count(*) from block_refs where created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "block_text", MovedBy: movedWithBlocks, Tuples: 2,
-		Driver: "document_block_texts of the versions written in the window, each row with a text: a text value and a rank value",
+		Name: "block_text", MovedBy: movedWithBlocks, Tuples: 1,
+		Driver: "document_block_texts of the versions written in the window, each row with a text: its text value",
 		count:  `(select count(*) from sized_texts where written)`,
+	}, {
+		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 2,
+		Driver: "document_block_texts of the versions written in the window, a block's first row: its rank and its placement values",
+		count:  `(select count(*) from sized_texts where written and earlier is null)`,
+	}, {
+		Name: movedRanks, MovedBy: movedWithBlocks, Tuples: 1,
+		Driver: "each block the moved-parent term counts: its rank among its new siblings, where no sibling it left or" +
+			" joined takes a new one",
 	}, {
 		Name: graphstore.KindVersion, MovedBy: movedWithBlocks, Nodes: 1, Tuples: 6,
 		Driver: "artifact_versions.created_at: a version's node, its visibility, its state and its document's project or" +
@@ -395,6 +409,51 @@ func versionBackfillOwed(ctx context.Context, tx pgx.Tx) (int64, error) {
 	return owed, nil
 }
 
+// blockDrainOwed counts the blocks the block index drain (drainBlockIndexes) still owes the store
+// its values for, once: values, every document_blocks row inside the address bound of a document
+// the drain has not reached, each of which takes its rank, its text and its placement; and tops,
+// those of them at the top of an issue's spec, Verification or plan document, each of which takes
+// the retraction of its part_of to its document and its part_of to the issue. A database the
+// drain's own table does not exist in yet, which R4 takes its readings on, owes every row, and
+// one that holds no parent_block_id column, from before the store, says nothing of which rows are
+// at the top, so every row of such a document is counted there.
+func blockDrainOwed(ctx context.Context, tx pgx.Tx) (values, tops int64, err error) {
+	var drained, parents bool
+	var after *string
+	if err := tx.QueryRow(ctx, `
+		select to_regclass('issue_tree_block_drain') is not null,
+		       exists (select 1 from information_schema.columns
+		               where table_schema = current_schema() and table_name = 'document_blocks'
+		                 and column_name = 'parent_block_id')
+	`).Scan(&drained, &parents); err != nil {
+		return 0, 0, fmt.Errorf("look up the block index drain: %w", err)
+	}
+	if drained {
+		var done bool
+		err := tx.QueryRow(ctx, `select after::text, done from issue_tree_block_drain`).Scan(&after, &done)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			return 0, 0, fmt.Errorf("read the block index drain: %w", err)
+		case done:
+			return 0, 0, nil
+		}
+	}
+	top := `true`
+	if parents {
+		top = `d.parent_block_id is null`
+	}
+	if err := tx.QueryRow(ctx, `
+		select count(*), count(*) filter (where `+refs.DocumentBandSQL("a")+` <> '`+string(refs.RankBandOther)+`' and `+top+`)
+		from document_blocks d
+		join artifacts a on a.id = d.artifact_id
+		where octet_length(d.node_id) <= `+addressBound+` and ($1::uuid is null or d.artifact_id > $1::uuid)
+	`, after).Scan(&values, &tops); err != nil {
+		return 0, 0, fmt.Errorf("count the blocks the block index drain owes: %w", err)
+	}
+	return values, tops, nil
+}
+
 // readSizing reads the growth pass in the census's own snapshot: the write rate by kind over
 // the last 28 days of events, the size of every table this branch's migrations touch, the
 // tuples and nodes a write of each kind states, where graph_tuples and graph_nodes reach in a
@@ -448,10 +507,23 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	values, tops, err := blockDrainOwed(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	report.Backfills = []StoreBackfill{{
 		Name: graphstore.KindVersion, MovedBy: movedWithBlocks, Nodes: 1, Tuples: 6, Owed: owed,
 		Driver: "artifact_versions whose version node the store does not hold: the node, its visibility, its state and" +
 			" its document's project or parties, its part_of its document, and its number and created_at values",
+	}, {
+		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 3, Owed: values,
+		Driver: "document_blocks rows the block index drain has not reached (drainBlockIndexes): each block's rank, text and" +
+			" placement values",
+	}, {
+		Name: "block_top", MovedBy: movedWithBlocks, Tuples: 2, Owed: tops,
+		Driver: "document_blocks rows of an issue's spec, Verification or plan document the drain has not reached, each at its" +
+			" document's top (parent_block_id null; every row of such a document where the column does not exist): the" +
+			" retraction of its part_of to the document and its part_of to the issue",
 	}}
 	var backfillTuples, backfillNodes int64
 	for _, backfill := range report.Backfills {
@@ -492,7 +564,7 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 
 // readStoreKinds reads how many writes of each term the window holds: every term a statement
 // counts in one statement over sizingWritesWith, so each set of rows it names is read once, and
-// the moved parents by replayParents.
+// the moved parents and their ranks by one replayParents.
 func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 	kinds := storeKinds()
 	counts := make([]string, 0, len(kinds))
@@ -507,14 +579,17 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 	if err := tx.QueryRow(ctx, sizingWritesWith+"\n\tselect "+strings.Join(counts, ",\n\t\t")).Scan(targets...); err != nil {
 		return nil, fmt.Errorf("read the writes of each kind inside the window: %w", err)
 	}
+	replayed, err := replayParents(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	for index := range kinds {
 		kind := &kinds[index]
-		if kind.Name == movedParents {
-			replayed, err := replayParents(ctx, tx)
-			if err != nil {
-				return nil, err
-			}
+		switch kind.Name {
+		case movedParents:
 			kind.Writes, kind.Replayed, kind.Unreadable = replayed.moved, replayed.read, replayed.unreadable
+		case movedRanks:
+			kind.Writes = replayed.moved
 		}
 		kind.RowsADay = float64(kind.Writes) / sizingWindowDays
 		kind.TuplesADay = kind.RowsADay * float64(kind.Tuples)

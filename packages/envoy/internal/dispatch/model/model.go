@@ -1133,6 +1133,15 @@ const (
 	ArtifactRoleDecisions    = "decisions"
 )
 
+// ArtifactSlugVerification and ArtifactSlugPlan are the slugs that name an issue's Verification
+// and Plan documents: a document whose row a rolling deploy left with no role, or whose role the
+// issue room's conversion cleared, plays the part its slug names (api's roleSlugs, and the band
+// a block's rank stands in, refs.DocumentBandSQL).
+const (
+	ArtifactSlugVerification = "verification-md"
+	ArtifactSlugPlan         = "plan-md"
+)
+
 // ArtifactReview is one human review of a document, pinned to the version it was
 // given on: an approval, or a request for changes with a reason. EventSeq is the
 // sequence of the artifact.* event the review appended on its document's owner, nil

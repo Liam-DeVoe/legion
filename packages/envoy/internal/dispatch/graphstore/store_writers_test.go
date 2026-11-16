@@ -32,13 +32,14 @@ const graphstoreDirectory = "internal/dispatch/graphstore"
 // caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
 // Authored, Reached and SessionRecorded, which run those arms for the writers that record an
 // author, a reached session and a session an ask names, EraseNode, the erase's delete of a node
-// and its tuples, FillScopes, the backfill's fill of the project of a node stored with none, and
-// Retarget, the move of one pointer tuple of a node from one far end to another.
+// and its tuples, RedactValues, the erase's rewrite of the quote of an erased block in the text
+// values of the blocks holding it, FillScopes, the backfill's fill of the project of a node stored
+// with none, and Retarget, the move of one pointer tuple of a node from one far end to another.
 // Each is a function of the package, never a method, so a call of one is named by the package
 // and found here wherever it is made. A write that holds a statement of its own instead is found
 // by rawStoreWrite, and none outside this package may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes", "Retarget"}
+	"Authored", "Reached", "SessionRecorded", "EraseNode", "RedactValues", "FillScopes", "Retarget"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -184,6 +185,11 @@ var storeWriteCallSites = []string{
 	// transaction, under the owner rows the erase takes first (dispatch://INFRA-1253; grapherase's
 	// TestTheEraseOfABlockAVersionHeldEndsThatVersionsNode).
 	"grapherase/erase.go#endErasedVersions",
+	// The erase's rewrite of the text values of the blocks holding the erased block, through
+	// RedactValues, in the erase's transaction and under the owner rows it takes first, beside its
+	// rewrite of those blocks' document_block_texts rows (dispatch://INFRA-1253; grapherase's
+	// TestTheEraseTakesTheStoreLockOrder).
+	"grapherase/redaction.go#redactBlocks",
 	// This package's own writers that run another of them: Authored and SessionRecorded are
 	// arms of one statement, and Reached is SessionRecorded for an attempt that was sent.
 	"graphstore/people.go#Authored",

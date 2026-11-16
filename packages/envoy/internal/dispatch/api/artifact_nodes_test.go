@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -89,13 +90,16 @@ func TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues(t *testing.T) {
 	requireNoBytes(t, database, spec.refKey)
 
 	// An upload refused at its commit leaves neither its document's row, nor its node, nor a tuple
-	// out of it or into the issue: the issue holds the spec's part_of alone, before and after.
+	// out of it or into the issue: the issue holds the spec's part_of alone, before and after. The
+	// spec's top-level blocks hang under the issue too (refs.IndexBlocks), and are no part of what
+	// an upload could leave, so they are not counted.
 	underTheIssue := func() int {
 		t.Helper()
 		var count int
 		if err := database.Pool.QueryRow(ctx, `
-			select count(*) from graph_tuples where to_kind = $1 and to_id = $2
-		`, graphstore.KindIssue, key).Scan(&count); err != nil {
+			select count(*) from graph_tuples
+			where to_kind = $1 and to_id = $2 and not (from_kind = $3 and starts_with(from_id, $4))
+		`, graphstore.KindIssue, key, refs.BlockNodeKind, spec.refKey+"#").Scan(&count); err != nil {
 			t.Fatalf("count the tuples into issue %s: %v", key, err)
 		}
 		return count

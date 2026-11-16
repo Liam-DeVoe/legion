@@ -54,6 +54,38 @@ func EraseNode(ctx context.Context, tx pgx.Tx, kind, id string, seqs []int64) er
 	return nil
 }
 
+// RedactValues rewrites the value each tuple of seqs carries to the value beside it in values,
+// inside the caller's transaction: the one write of this store that moves a tuple it keeps, and
+// `envoy-dispatch erase` (grapherase) is its one caller. A block's text value is its whole slice of
+// its version, the blocks inside it included (refs.IndexBlocks), so the text of every block that
+// holds an erased block quotes the erased words, and those tuples are another node's, which the
+// erase keeps: it rewrites the quote in them, as it rewrites the same quote in the
+// document_block_texts row they project, and leaves each tuple's seq, time, writer and cause as
+// they were.
+//
+// It rewrites value tuples alone, by seq, and refuses unless it rewrote every one it was handed,
+// so a tuple that is no value or no longer there rolls the caller's transaction back having moved
+// nothing. The caller holds the owner rows of the document those blocks stand in, which every
+// writer of a block's values holds first, so no pass of the block index writes these tuples'
+// blocks meanwhile.
+func RedactValues(ctx context.Context, tx pgx.Tx, seqs []int64, values []string) error {
+	if len(seqs) == 0 {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `
+		update graph_tuples t set to_id = redacted.value
+		from unnest($1::bigint[], $2::text[]) as redacted (seq, value)
+		where t.seq = redacted.seq and t.to_kind = '`+KindValue+`'`, seqs, values)
+	if err != nil {
+		return fmt.Errorf("redact %d value tuple(s): %w", len(seqs), err)
+	}
+	if tag.RowsAffected() != int64(len(seqs)) {
+		return fmt.Errorf("the erase refuses to redact %d value tuple(s): %d of them stand as values, so the tuples moved while it ran; nothing was rewritten, and the erase can be run again",
+			len(seqs), tag.RowsAffected())
+	}
+	return nil
+}
+
 // tuplesLeft is every tuple of either side of the node the delete by seq left, which is every
 // tuple another writer appended since the listing was read, by seq with the fact it states.
 func tuplesLeft(ctx context.Context, tx pgx.Tx, kind, id string) ([]string, error) {

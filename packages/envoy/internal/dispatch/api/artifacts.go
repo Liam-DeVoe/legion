@@ -2160,8 +2160,8 @@ func artifactSlug(name string) string {
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
 // documentRoleOf, which names the part one row plays.
 var roleSlugs = map[string]string{
-	model.ArtifactRoleVerification: "verification-md",
-	model.ArtifactRolePlan:         "plan-md",
+	model.ArtifactRoleVerification: model.ArtifactSlugVerification,
+	model.ArtifactRolePlan:         model.ArtifactSlugPlan,
 	// The Decisions view already spells the decisions document's slug, which a reference to it
 	// names, so the role takes that constant rather than a second copy of the same word.
 	model.ArtifactRoleDecisions: decisionsDocumentSlug,

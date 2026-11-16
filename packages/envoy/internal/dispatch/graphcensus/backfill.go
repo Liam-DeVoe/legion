@@ -36,7 +36,8 @@ type KindBackfill struct {
 	// Rows is how many projection rows it gave a node, Nodes and Tuples how many of each it
 	// wrote, and Skipped how many rows it could not do and left as they were.
 	Rows, Nodes, Tuples, Skipped int64
-	// Owed is how many documents it marked owed a block index, for the block kind alone.
+	// Owed is how many documents it marked owed a block index, for the block kind and the drain
+	// of every stored document's block index (drainBlockIndexes) alone.
 	Owed int64
 	// Complete is whether every row of the kind the store can hold now names its node, which
 	// is when the arm of graph_edges over that kind's table answers nothing: each of the four

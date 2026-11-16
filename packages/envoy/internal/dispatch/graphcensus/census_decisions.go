@@ -53,12 +53,12 @@ var decisionProjections = []projection{
 		nodeKind: refs.BlockNodeKind,
 		table:    "document_blocks.parent_block_id",
 		note: "the parent of each reading: the row side is the document_blocks row of every reading's node, and" +
-			" the digest is the block its parent_block_id names against the part_of the node states now, a part_of" +
-			" to an ask's node read as the ask's block in the node's own document",
+			" the digest is the block its parent_block_id names, or its document's top where it names none, against" +
+			" the part_of the node states now, a part_of to an ask's node read as the ask's block in the node's own document",
 		rows: `
 		select 'reading ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
-			`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is null then 'artifact:' || a.ref_key
+			`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is null then `+refs.DocumentTopSQL("a")+`
 		      else '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id end`) + `)
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id

@@ -3,12 +3,15 @@ package refs
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/rank"
 )
 
 // blockNodeAddress is a block's address in the store, which document_blocks.node_id and
@@ -92,12 +95,81 @@ func blockNode(address string, document indexedDocument, at time.Time, state, su
 // issue is read against (DecisionFacts). A conversation holds no markdown document (api's
 // agentOwnsFilesOnly), so no block has parties today; the read keeps the one rule every
 // document's node follows.
+//
+// band is the first byte of every rank a block of the document stands at (DocumentBandSQL), and
+// at is the pass's own time: every placement and every value the pass states is dated there
+// (dispatch://INFRA-1253/spec#b-r-one-tree). It is the database's clock_timestamp(), read once,
+// after the pass holds the document's owner row and the revision fence (IndexBlocks reads this
+// record after standsAtVersion), and not the transaction's now(): a pass that waited at the owner
+// row behind another pass of the same document began before that one committed and appends its
+// tuples after it, so only a time read once the wait is over orders the tuples' times as their
+// seqs are ordered. It is later than the version the pass describes, on the request path as on
+// the block-index reconciliation's, so no tuple a renderer reads claims to describe a moment
+// before the pass that wrote it.
 type indexedDocument struct {
 	refKey  string
 	writer  model.Actor
 	project string
 	parties []string
 	issue   string
+	band    byte
+	at      time.Time
+}
+
+// top is the node a top-level block of the document hangs under: the issue's node for a block of
+// an issue's spec, Verification or plan document (and, once the issue room exists, of its tree's
+// own fragment), so one walk from the issue reaches every node of it, and the document's own node
+// for an upload or a project document, whose body is that document's. document_blocks keeps a
+// null parent_block_id for either, and in_document still says which document the block is in.
+func (d indexedDocument) top() (kind, id string) {
+	if d.band != RankBandOther && d.issue != "" {
+		return graphstore.KindIssue, d.issue
+	}
+	return graphstore.KindArtifact, d.refKey
+}
+
+// The bands a block's rank stands in (D15 of dispatch://INFRA-1253's plan): its first byte says
+// which document the block is in, and the rest is rank.Between inside that band. So under one
+// parent the spec's blocks come first, then the tree's own fragment's, then the Verification
+// document's, then the plan's, then any other document's, each in its own document order, and the
+// pass over one document never moves another's ranks: the issue's first child is the spec's first
+// top-level block whatever the other documents hold, which is what makes the spec's memo the
+// issue's first child. RankBandTree is the band of the issue room's own fragment, which no
+// document kind names yet.
+const (
+	RankBandSpec         byte = '1'
+	RankBandTree         byte = '2'
+	RankBandVerification byte = '3'
+	RankBandPlan         byte = '4'
+	RankBandOther        byte = '5'
+)
+
+// DocumentBandSQL is the band of the artifacts row aliased alias as one character of SQL text, the
+// one statement of which document plays which part that the block index ranks by and the census
+// reads the ranks back against: an issue's primary document is its spec; an issue's markdown
+// document whose role is Verification or plan, or that holds no role and carries that role's slug
+// (a row a rolling deploy left with none, or one the issue room's conversion cleared), is that
+// document; and every other document - an upload, a project's document - stands in the last band.
+// It reads the row's kind, so the issue room's tree takes its band by one more arm here.
+func DocumentBandSQL(alias string) string {
+	a := alias + "."
+	role := func(role, slug string) string {
+		return `(` + a + `role = '` + role + `' or (` + a + `role is null and ` + a + `slug = '` + slug + `'))`
+	}
+	return `(case when ` + a + `issue_key is null or ` + a + `kind <> 'doc' then '` + string(RankBandOther) + `'
+		when ` + a + `is_primary then '` + string(RankBandSpec) + `'
+		when ` + role(model.ArtifactRoleVerification, model.ArtifactSlugVerification) + ` then '` + string(RankBandVerification) + `'
+		when ` + role(model.ArtifactRolePlan, model.ArtifactSlugPlan) + ` then '` + string(RankBandPlan) + `'
+		else '` + string(RankBandOther) + `' end)`
+}
+
+// DocumentTopSQL is the far end a top-level block of the document of the artifacts row aliased
+// alias hangs under, written kind:id as the census writes a link (indexedDocument.top): the
+// issue's node for a document of a band other than RankBandOther, which only an issue's document
+// takes, and the document's own node for every other.
+func DocumentTopSQL(alias string) string {
+	return `(case when ` + DocumentBandSQL(alias) + ` <> '` + string(RankBandOther) + `' then '` + graphstore.KindIssue + `:' || ` +
+		alias + `.issue_key else '` + graphstore.KindArtifact + `:' || ` + alias + `.ref_key end)`
 }
 
 // indexedVersionRecord reads indexedDocument in one statement, under the owner row the pass's
@@ -108,14 +180,16 @@ func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, ver
 	var document indexedDocument
 	var project, session, issue *string
 	var authors []byte
+	var band string
 	if err := tx.QueryRow(ctx, `
-		select a.ref_key, a.project_key, a.session_id, a.issue_key, v.authors
+		select a.ref_key, a.project_key, a.session_id, a.issue_key, v.authors, `+DocumentBandSQL("a")+`, clock_timestamp()
 		from artifacts a
 		left join artifact_versions v on v.artifact_id = a.id and v.number = $2
 		where a.id = $1::uuid
-	`, artifactID, version).Scan(&document.refKey, &project, &session, &issue, &authors); err != nil {
+	`, artifactID, version).Scan(&document.refKey, &project, &session, &issue, &authors, &band, &document.at); err != nil {
 		return indexedDocument{}, fmt.Errorf("read version %d of %s for its block index: %w", version, artifactID, err)
 	}
+	document.band = band[0]
 	if project != nil {
 		document.project = *project
 	}
@@ -161,16 +235,34 @@ func scanFreshBlocks(rows pgx.Rows, err error) (map[string]time.Time, error) {
 // blockFarEnd is one far end a block's part_of points at now.
 type blockFarEnd struct{ kind, id string }
 
+// blockPlacement is where a pass placed the blocks of a version: ids are the blocks it states
+// a parent for, in document order, and beside each its index among the version's unique blocks
+// (placed), the index there of the block holding it (parents, -1 for one at the document's top
+// level), and, where the version holds readings in an answered ask, that ask's id for each
+// reading in one (asks, nil for every other block, and nil as a whole where there is none).
+type blockPlacement struct {
+	ids             []string
+	placed, parents []int
+	asks            []*string
+}
+
 // reconcileBlockParents states the parent of every block of the version and projects it into
-// document_blocks. It returns the tuples it states, which its caller appends to the pass's
-// write as it appends the reference pass's.
+// document_blocks. It returns where it placed each block, which the pass's values are stated
+// against (reconcileBlockValues), and the tuples it states, which its caller appends to the
+// pass's write as it appends the reference pass's.
 //
 // It reads the parent each block holds in the store, over every block of the document and not
 // the changed ones alone, so a block another block now holds, whose own text no version
 // changed, gets its new parent here. It states a tuple only where the render disagrees with
 // what the store asserts: one retraction for the parent that changed, one assertion for the new
-// one. A re-index of a document nothing moved states nothing, which is what keeps a second pass
-// from asserting a parent twice, since no code may update or delete a tuple row.
+// one, both dated at the pass's own time (indexedDocument.at). A re-index of a document nothing
+// moved states nothing, which is what keeps a second pass from asserting a parent twice, since
+// no code may update or delete a tuple row.
+//
+// A block no block holds hangs under the document's top (indexedDocument.top): the issue for a
+// block of an issue's spec, Verification or plan document, and the document's own node for any
+// other. A block an earlier build placed under its document's node is moved under the issue by
+// the first pass that reaches it, as any other block that moved is.
 //
 // The comparison is the read's own (heldBlockParentDifferences): the parent the render gives
 // travels with the probe, so a document nothing moved reads back no row at all rather than one
@@ -181,7 +273,8 @@ type blockFarEnd struct{ kind, id string }
 // The projection is a statement of its own rather than a column of the insert above, so that
 // insert keeps firing only for a block whose text changed: a block that only moved keeps its
 // changed_version and changed_at. The statement carries the node columns beside the parent, so
-// a row the insert did not touch learns the address of its node here.
+// a row the insert did not touch learns the address of its node here. A block at the top
+// projects a null parent_block_id, whichever node its part_of names.
 //
 // askParents is each reading of the version that stands in an answered ask, by its id, with that
 // ask's id (DecisionFacts): its part_of is the ask's node, since the decision a reading there
@@ -193,17 +286,17 @@ type blockFarEnd struct{ kind, id string }
 func reconcileBlockParents(
 	ctx context.Context,
 	tx pgx.Tx,
-	artifactID, refKey string,
+	artifactID string,
+	document indexedDocument,
 	nodes []model.ArtifactBlock,
 	fits []bool,
 	askParents map[string]string,
 	only map[string]struct{},
-	at time.Time,
-	writer model.Actor,
-) ([]graphstore.UncausedTuple, error) {
+) (blockPlacement, []graphstore.UncausedTuple, error) {
 	if len(nodes) == 0 {
-		return nil, nil
+		return blockPlacement{}, nil, nil
 	}
+	refKey := document.refKey
 	placed, parents := placeBlocks(nodes, fits)
 	if only != nil {
 		kept := 0
@@ -216,14 +309,15 @@ func reconcileBlockParents(
 		placed, parents = placed[:kept], parents[:kept]
 	}
 	if len(placed) == 0 {
-		return nil, nil
+		return blockPlacement{}, nil, nil
 	}
-	blockIDs := make([]string, len(placed))
+	placement := blockPlacement{ids: make([]string, len(placed)), placed: placed, parents: parents}
+	blockIDs := placement.ids
 	parentIDs := make([]*string, len(placed))
-	var askIDs []*string
 	if len(askParents) > 0 {
-		askIDs = make([]*string, len(placed))
+		placement.asks = make([]*string, len(placed))
 	}
+	askIDs := placement.asks
 	for index, block := range placed {
 		blockIDs[index] = nodes[block].ID
 		if parents[index] >= 0 {
@@ -233,27 +327,28 @@ func reconcileBlockParents(
 			askIDs[index] = &ask
 		}
 	}
-	differences, err := heldBlockParentDifferences(ctx, tx, refKey, blockIDs, parentIDs, askIDs)
+	topKind, topID := document.top()
+	differences, err := heldBlockParentDifferences(ctx, tx, refKey, topKind, topID, blockIDs, parentIDs, askIDs)
 	if err != nil {
-		return nil, fmt.Errorf("read the parents the blocks of %s hold: %w", artifactID, err)
+		return blockPlacement{}, nil, fmt.Errorf("read the parents the blocks of %s hold: %w", artifactID, err)
 	}
 	var tuples []graphstore.UncausedTuple
 	for _, difference := range differences {
 		address := blockNodeAddress(refKey, blockIDs[difference.block])
 		for _, far := range difference.retract {
-			tuples = append(tuples, parentTuple(address, far.kind, far.id, at, writer, false))
+			tuples = append(tuples, parentTuple(address, far.kind, far.id, document.at, document.writer, false))
 		}
 		if difference.holds {
 			continue
 		}
-		toKind, toID := "artifact", refKey
+		toKind, toID := topKind, topID
 		switch parent := parentIDs[difference.block]; {
 		case askIDs != nil && askIDs[difference.block] != nil:
 			toKind, toID = graphstore.KindAsk, *askIDs[difference.block]
 		case parent != nil:
 			toKind, toID = BlockNodeKind, blockNodeAddress(refKey, *parent)
 		}
-		tuples = append(tuples, parentTuple(address, toKind, toID, at, writer, true))
+		tuples = append(tuples, parentTuple(address, toKind, toID, document.at, document.writer, true))
 	}
 	if _, err := tx.Exec(ctx, `
 		update document_blocks d
@@ -264,9 +359,318 @@ func reconcileBlockParents(
 		       or d.node_kind is distinct from $3
 		       or d.node_address is distinct from $4 || '#' || p.block_id)
 	`, artifactID, blockIDs, BlockNodeKind, refKey, parentIDs); err != nil {
-		return nil, fmt.Errorf("project the parents of the blocks of %s: %w", artifactID, err)
+		return blockPlacement{}, nil, fmt.Errorf("project the parents of the blocks of %s: %w", artifactID, err)
+	}
+	return placement, tuples, nil
+}
+
+// The values the block index states of every block beside its parent (R1 and R15 of
+// dispatch://INFRA-1253, D1 and D9 of its plan): AttributeRank, its place among its siblings, a
+// base-62 string compared byte for byte (`collate "C"`), which stands in its document's band
+// (RankBandSpec and the rest); graphstore.AttributeText, the block's whole slice of its version's
+// markdown, its children's text included, which document_block_texts projects; and
+// AttributePlacement, which says what decides the block's parent: PlacementText, the text it
+// stands in, for every block this index places.
+const (
+	AttributeRank      = "rank"
+	AttributePlacement = "placement"
+	PlacementText      = "text"
+)
+
+// heldBlockValue is what the store holds now of one block the values pass reads: its current
+// rank, "" where it holds none, whether it holds a current text value, and its current placement,
+// "" where it holds none.
+type heldBlockValue struct {
+	rank, placement string
+	text            bool
+}
+
+// reconcileBlockValues states the rank, the text and the placement of every block placement
+// placed, in the pass's own transaction and dated at its own time (indexedDocument.at). It
+// returns the values it states, which the caller appends with the pass's other facts.
+//
+// It reads what the store holds of every one of those blocks in one statement (heldBlockValues)
+// and states a value only where it moves: a rank where the block's place among its siblings moved
+// (rankBlocks), a text where its text sum changed - changed is the blocks whose document_blocks
+// row the pass wrote, so the text value and the document_block_texts row move together - or
+// where the block holds no current text yet, and a placement where the block holds none or
+// another. So a block a version only moved takes its new parent and its new rank here although
+// the pass writes no row of it, a re-index of a document nothing moved states nothing, and the
+// first index of a document, or the first pass to reach a block an earlier build indexed, gives
+// every block all three. A block the version dropped is no block the pass places: it keeps the
+// values it held, and its node, stated gone, says it is no part of the version.
+func reconcileBlockValues(
+	ctx context.Context,
+	tx pgx.Tx,
+	document indexedDocument,
+	markdown string,
+	nodes []model.ArtifactBlock,
+	placement blockPlacement,
+	changed map[string]struct{},
+) ([]graphstore.UncausedTuple, error) {
+	if len(placement.ids) == 0 {
+		return nil, nil
+	}
+	held, err := heldBlockValues(ctx, tx, document.refKey, placement.ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the values the blocks of %s hold: %w", document.refKey, err)
+	}
+	ranks := rankBlocks(document.band, len(nodes), placement, held)
+	var tuples []graphstore.UncausedTuple
+	value := func(id, attribute, to string) {
+		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			FromKind: BlockNodeKind, FromID: blockNodeAddress(document.refKey, id), Kind: attribute,
+			ToKind: graphstore.KindValue, ToID: to,
+			At: document.at, Who: document.writer, Asserted: true,
+		}})
+	}
+	for index, id := range placement.ids {
+		if ranks[index] != held[index].rank {
+			value(id, AttributeRank, ranks[index])
+		}
+		if _, wrote := changed[id]; wrote || !held[index].text {
+			block := nodes[placement.placed[index]]
+			value(id, graphstore.AttributeText, markdown[block.From:block.To])
+		}
+		if held[index].placement != PlacementText {
+			value(id, AttributePlacement, PlacementText)
+		}
 	}
 	return tuples, nil
+}
+
+// heldBlockValues reads, in one statement, the current rank, text and placement of each block of
+// ids, as graphstore.CurrentValue reads one value - the newest tuple under the attribute's name,
+// kept while it asserts - through graph_tuples_values, one probe a value. Each lateral writes
+// to_kind = 'value' into its text rather than binding it, as CurrentValue does, because
+// graph_tuples_values is partial on that predicate: a bound kind is a parameter the planner of a
+// generic plan cannot match the index's predicate against. Of a block's text it reads whether one
+// is held and not the text itself, which no comparison here needs. It answers the blocks in ids'
+// order, and names each by its id, building its address from refKey as every other statement of
+// the pass does.
+func heldBlockValues(ctx context.Context, tx pgx.Tx, refKey string, ids []string) ([]heldBlockValue, error) {
+	rows, err := tx.Query(ctx, `
+		select coalesce(rank.held, ''), coalesce(text.held, false), coalesce(placement.held, '')
+		from unnest($1::text[]) with ordinality as block (id, position)
+		left join lateral (
+			select case when t.asserted then t.to_id end as held from graph_tuples t
+			where t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $4
+			  and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1
+		) rank on true
+		left join lateral (
+			select t.asserted as held from graph_tuples t
+			where t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $5
+			  and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1
+		) text on true
+		left join lateral (
+			select case when t.asserted then t.to_id end as held from graph_tuples t
+			where t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $6
+			  and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1
+		) placement on true
+		order by block.position
+	`, ids, BlockNodeKind, refKey, AttributeRank, graphstore.AttributeText, AttributePlacement)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	held := make([]heldBlockValue, 0, len(ids))
+	for rows.Next() {
+		var value heldBlockValue
+		if err := rows.Scan(&value.rank, &value.text, &value.placement); err != nil {
+			return nil, err
+		}
+		held = append(held, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(held) != len(ids) {
+		return nil, fmt.Errorf("read the values of %d blocks and got %d back", len(ids), len(held))
+	}
+	return held, nil
+}
+
+// rankBlocks is the rank each block placement placed stands at once the pass has run, beside it
+// in placement's order. held is what the store holds of each (heldBlockValues), and nodes how
+// many unique blocks the version holds, the indexes placement.parents ranges over.
+//
+// The children of one parent are this document's blocks that parent holds, in document order:
+// the blocks of the document's top level, the blocks one block holds, or the readings one answered
+// ask holds. Each parent's children are ranked on their own, and only among themselves, inside
+// the document's band (rankChildren), so the children another document hangs under the same
+// parent - the issue's other documents' top-level blocks, or the checks and the plan nodes under
+// one requirement - keep the ranks their own documents' passes gave them, and stand before or
+// after these by their bands.
+func rankBlocks(band byte, nodes int, placement blockPlacement, held []heldBlockValue) []string {
+	ranks := make([]string, len(placement.ids))
+	// Each parent's children as a list in document order, threaded through next: a parent is
+	// the index of the block holding the child plus one, 0 for the document's top, or past
+	// nodes+1 for an ask, so no map of slices is built for a document of thousands of blocks.
+	parents := nodes + 1
+	var asks map[string]int
+	parentOf := make([]int, len(placement.ids))
+	for index := range placement.ids {
+		parentOf[index] = placement.parents[index] + 1
+		if placement.asks != nil && placement.asks[index] != nil {
+			if asks == nil {
+				asks = map[string]int{}
+			}
+			ask, seen := asks[*placement.asks[index]]
+			if !seen {
+				ask = nodes + 1 + len(asks)
+				asks[*placement.asks[index]] = ask
+			}
+			parentOf[index] = ask
+		}
+	}
+	parents += len(asks)
+	first, last := make([]int, parents), make([]int, parents)
+	next := make([]int, len(placement.ids))
+	for parent := range first {
+		first[parent], last[parent] = -1, -1
+	}
+	for index, parent := range parentOf {
+		next[index] = -1
+		if last[parent] < 0 {
+			first[parent] = index
+		} else {
+			next[last[parent]] = index
+		}
+		last[parent] = index
+	}
+	var ranker childRanker
+	for parent := range first {
+		if first[parent] < 0 {
+			continue
+		}
+		ranker.children = ranker.children[:0]
+		for child := first[parent]; child >= 0; child = next[child] {
+			ranker.children = append(ranker.children, child)
+		}
+		ranker.rank(band, held, ranks)
+	}
+	return ranks
+}
+
+// childRanker ranks the children of one parent at a time, holding the slices that work takes
+// from one parent to the next, so a document of many parents allocates them once.
+type childRanker struct {
+	children, tails, previous []int
+	standing                  []string
+	kept                      []bool
+}
+
+// rank writes into ranks the rank of each of the children: the longest run of the ranks they hold
+// that stand in the band and already increase in document order, compared byte for byte, keeps
+// its ranks (increasingRun), and every other child takes rank.Between the kept ranks on either
+// side of it, or the band's own bounds where it has none, its first character band and the next.
+// So a block moved under another parent, or among its siblings, takes a new rank and its siblings
+// keep theirs; a block that holds a rank of another band - one moved into this document from
+// another's fragment - takes one of this band; two siblings holding one rank cannot both be kept,
+// so the later is given a new one; and no rank.Between is ever asked for bounds out of order. A
+// run of children with no rank to keep, as at a document's first index, is spread evenly between
+// its bounds (spreadRanks), so the ranks of a list of thousands of items stay a few bytes long.
+func (r *childRanker) rank(band byte, held []heldBlockValue, ranks []string) {
+	count := len(r.children)
+	r.standing = slices.Grow(r.standing[:0], count)[:count]
+	for index, child := range r.children {
+		r.standing[index] = ""
+		if standsInBand(held[child].rank, band) {
+			r.standing[index] = held[child].rank
+		}
+	}
+	r.increasingRun()
+	start, below, above := 0, string(band), string(band+1)
+	for index := 0; index <= count; index++ {
+		if index < count && !r.kept[index] {
+			continue
+		}
+		bound := above
+		if index < count {
+			bound = r.standing[index]
+		}
+		spreadRanks(ranks, r.children[start:index], below, bound)
+		if index < count {
+			ranks[r.children[index]] = bound
+			below = bound
+		}
+		start = index + 1
+	}
+}
+
+// increasingRun marks in r.kept the longest run of r.standing, left to right, whose ranks
+// increase strictly, an empty rank taking no part, by patience sorting over byte order. Of two
+// equal ranks the earlier stays in the run and the later does not, so of two siblings that hold
+// one rank the one first in the document keeps it.
+func (r *childRanker) increasingRun() {
+	count := len(r.standing)
+	r.kept = slices.Grow(r.kept[:0], count)[:count]
+	clear(r.kept)
+	r.tails = r.tails[:0]
+	r.previous = slices.Grow(r.previous[:0], count)[:count]
+	for index, held := range r.standing {
+		if held == "" {
+			continue
+		}
+		at, equal := slices.BinarySearchFunc(r.tails, held, func(tail int, held string) int {
+			return strings.Compare(r.standing[tail], held)
+		})
+		if equal {
+			continue
+		}
+		r.previous[index] = -1
+		if at > 0 {
+			r.previous[index] = r.tails[at-1]
+		}
+		if at == len(r.tails) {
+			r.tails = append(r.tails, index)
+		} else {
+			r.tails[at] = index
+		}
+	}
+	if len(r.tails) == 0 {
+		return
+	}
+	for index := r.tails[len(r.tails)-1]; index >= 0; index = r.previous[index] {
+		r.kept[index] = true
+	}
+}
+
+// spreadRanks gives each block of run, in order, a rank strictly between below and above, by
+// halving: the middle block takes rank.Between the bounds, and each half is spread between it and
+// its own bound. Taking the ranks one after another from below would lengthen them by a byte
+// every 32 blocks (rank.Between's after), which a list of thousands of items would carry in every
+// rank it holds.
+func spreadRanks(ranks []string, run []int, below, above string) {
+	if len(run) == 0 {
+		return
+	}
+	middle := len(run) / 2
+	ranks[run[middle]] = rank.Between(below, above)
+	spreadRanks(ranks, run[:middle], below, ranks[run[middle]])
+	spreadRanks(ranks, run[middle+1:], ranks[run[middle]], above)
+}
+
+// standsInBand reports whether held is a rank of band that rank.Between may take as a bound: its
+// first character the band's and at least one character after it, every character a base-62
+// digit, and its last not the alphabet's first, below which no rank sorts and so none can stand
+// between it and the rank it ends. A rank no pass of this index wrote - another band's, or
+// anything else - is no rank to keep, and its block takes a new one.
+func standsInBand(held string, band byte) bool {
+	if len(held) < 2 || held[0] != band || held[len(held)-1] == '0' {
+		return false
+	}
+	for index := 1; index < len(held); index++ {
+		switch character := held[index]; {
+		case character >= '0' && character <= '9', character >= 'A' && character <= 'Z', character >= 'a' && character <= 'z':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // PlaceBlocks is where the block index places each block of a version of the document refKey
@@ -338,10 +742,11 @@ type blockParentDifference struct {
 // order is the one the distinct on walks.
 //
 // blockIDs are the blocks that are nodes of the store, in document order, and parentIDs the
-// block each of them sits in, nil for a block the document itself holds. The statement builds
-// both addresses from refKey, as the insert of document_blocks does, so the caller hands over
-// one ref_key and not one address per block. askIDs, nil or as long as blockIDs, names the ask
-// whose node a reading in an answered ask takes for its parent in place of the block holding it
+// block each of them sits in, nil for a block at the document's top level, whose parent is the
+// node topKind and topID name (indexedDocument.top). The statement builds both block addresses
+// from refKey, as the insert of document_blocks does, so the caller hands over one ref_key and
+// not one address per block. askIDs, nil or as long as blockIDs, names the ask whose node a
+// reading in an answered ask takes for its parent in place of the block holding it
 // (reconcileBlockParents' askParents), nil for every other block.
 //
 // The comparison is the statement's: a block answers a row only where the store asserts a far
@@ -351,7 +756,7 @@ type blockParentDifference struct {
 func heldBlockParentDifferences(
 	ctx context.Context,
 	tx pgx.Tx,
-	refKey string,
+	refKey, topKind, topID string,
 	blockIDs []string,
 	parentIDs []*string,
 	askIDs []*string,
@@ -366,7 +771,7 @@ func heldBlockParentDifferences(
 			select held.to_kind, held.to_id,
 			       held.to_kind = case when block.ask is not null then $9 when block.parent is null then $6 else $3 end
 			       and held.to_id = case when block.ask is not null then block.ask
-			                             when block.parent is null then $7 else $7 || '#' || block.parent end
+			                             when block.parent is null then $10 else $7 || '#' || block.parent end
 			         as wanted
 			from (
 				`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
@@ -379,7 +784,7 @@ func heldBlockParentDifferences(
 		having not coalesce(bool_or(current.wanted), false)
 		    or count(*) filter (where not current.wanted) > 0
 		order by block.ordinality
-	`, blockIDs, parentIDs, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, "artifact", refKey, askIDs, graphstore.KindAsk)
+	`, blockIDs, parentIDs, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, topKind, refKey, askIDs, graphstore.KindAsk, topID)
 	if err != nil {
 		return nil, err
 	}

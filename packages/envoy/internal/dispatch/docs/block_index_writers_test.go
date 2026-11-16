@@ -589,6 +589,10 @@ var indexPasses = map[string]string{
 	// tuples left of the node to refuse a run whose set moved, and deletes the node its one
 	// caller names.
 	"graphstore/erase.go#EraseNode": "the node its caller names",
+	// RedactValues is the erase's rewrite of the quote of an erased block in the text values of the
+	// blocks holding it: it reads nothing, and writes the values its one caller computed from the
+	// listing of the node the operator named (grapherase's readAncestorValues).
+	"graphstore/erase.go#RedactValues": "the redacted values its caller names, by seq",
 	// The two seeds other packages' tests share (graphstoretest), which no deployment builds. Each
 	// writes rows the store's writers refuse - a node reserved for its author of a kind no read
 	// registry flags, the type of a kind only a test writes - from the nodes or the names its test
@@ -647,7 +651,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
 // the same use as one.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|RedactValues|FillScopes|Retarget)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

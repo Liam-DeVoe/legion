@@ -354,11 +354,16 @@ func IndexBlocks(
 			return nil, false, graphstore.Uncaused{}, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
 		}
 	}
-	parents, err := reconcileBlockParents(ctx, tx, artifactID, refKey, nodes, fits, typed.askParents, nil, versionAt, writer)
+	placement, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, nodes, fits, typed.askParents, nil)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
 	write.Tuples = append(write.Tuples, parents...)
+	values, err := reconcileBlockValues(ctx, tx, document, markdown, nodes, placement, changed)
+	if err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
+	write.Tuples = append(write.Tuples, values...)
 
 	pairs := typed.pairs(blockPairs(nodes, located, typed.withTies(pointers)))
 	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, version, versionAt, writer, firstIndexing, pairs, nil)

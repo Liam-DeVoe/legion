@@ -307,9 +307,11 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// the callout, so seven rows of the window hold a text.
 		"block": {tuples: 4, writes: 6}, "block_restored": {tuples: 4}, "block_gone": {tuples: 1, writes: 1},
 		// Version 1 is the document's first indexed version, so it is compared with nothing, and
-		// version 2 moved one paragraph out of the callout.
-		movedParents: {tuples: 2, writes: 1, read: 2},
-		"block_ref":  {tuples: 2}, "block_text": {tuples: 2, writes: 7},
+		// version 2 moved one paragraph out of the callout, which takes a rank in its new place.
+		movedParents: {tuples: 2, writes: 1, read: 2}, movedRanks: {tuples: 1, writes: 1},
+		// Seven rows hold a text, each a text value; six are a block's first, each a rank and a
+		// placement; one deleted a block, whose text value stays as the block's node goes gone.
+		"block_ref": {tuples: 2}, "block_text": {tuples: 1, writes: 7}, "block_values": {tuples: 2, writes: 6},
 		// Each of the two versions writes its node and six tuples (graphstore.VersionFacts); neither
 		// is a file's, and the one document is an issue's, created inside the window.
 		"version": {tuples: 6, writes: 2}, "version_bytes": {tuples: 3}, "document_part_of": {tuples: 1, writes: 1},
@@ -351,6 +353,71 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 			t.Errorf("the sizing prints no line %q:\n%s", line, printed)
 		}
 	}
+}
+
+// The sizing counts what the block index drain (drainBlockIndexes) owes the store once, beside
+// the rates: a rank, a text and a placement for every stored block, and for every block at the
+// top of an issue's spec, Verification or plan document the retraction of its part_of to the
+// document and its part_of to the issue. A spec of two top-level blocks and one nested, and an
+// upload of one, are stored as the release before stored them; the sizing owes four blocks their
+// values and two their top, and once the drain has run it owes neither.
+func TestTheSizingCountsWhatTheDrainOwesEachStoredBlock(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank) values
+			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("seed issue CORE-1: %v", err)
+	}
+	for _, document := range []struct {
+		slug    string
+		primary bool
+		blocks  [][2]string
+	}{
+		{"spec", true, [][2]string{{"outer", ""}, {"inner", "outer"}, {"after", ""}}},
+		{"notes-md", false, [][2]string{{"note", ""}}},
+	} {
+		var artifactID, refKey string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('CORE-1', 'CORE', $1, $1, 'doc', $2, '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`, document.slug, document.primary).Scan(&artifactID, &refKey); err != nil {
+			t.Fatalf("create document %s: %v", document.slug, err)
+		}
+		for _, block := range document.blocks {
+			var parent *string
+			if block[1] != "" {
+				parent = &block[1]
+			}
+			if _, err := database.Pool.Exec(ctx, `
+				insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, parent_block_id)
+				values ($1::uuid, $2, $3, 'paragraph', '', $2, 1, now(), $4)
+			`, artifactID, block[0], refKey+"#"+block[0], parent); err != nil {
+				t.Fatalf("write block %s of %s: %v", block[0], document.slug, err)
+			}
+		}
+	}
+	owes := func(printed string, values, tops int) {
+		t.Helper()
+		for _, line := range []string{
+			fmt.Sprintf("census: sizing backfill kind=block_values moved_by=%s owed_rows=%d nodes_a_row=0 tuples_a_row=3 nodes=0 tuples=%d ",
+				movedWithBlocks, values, 3*values),
+			fmt.Sprintf("census: sizing backfill kind=block_top moved_by=%s owed_rows=%d nodes_a_row=0 tuples_a_row=2 nodes=0 tuples=%d ",
+				movedWithBlocks, tops, 2*tops),
+		} {
+			if !strings.Contains(printed, line) {
+				t.Errorf("the sizing prints no line %q:\n%s", line, printed)
+			}
+		}
+	}
+	owes(sizingCensus(t, database), 4, 2)
+	if _, err := drainBlockIndexes(ctx, database); err != nil {
+		t.Fatalf("run the block index drain: %v", err)
+	}
+	owes(sizingCensus(t, database), 0, 0)
 }
 
 // The sizing reads nothing of the store: R4 takes its readings before the branch's first

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -139,12 +140,13 @@ func (e *Erasure) readSearch(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 }
 
 // readExcerpts lists the rows of other blocks that quote the node's text and that the run
-// rewrites: the text and the excerpt the redaction moves in every block holding the node's block
-// (readAncestors, written back by redactBlocks), and the excerpt each mention of the node's
-// document shows when it was cut from the node's block or from one of those
+// rewrites: the text, the text value tuples and the excerpt the redaction moves in every block
+// holding the node's block (readAncestors, written back by redactBlocks), and the excerpt each
+// mention of the node's document shows when it was cut from the node's block or from one of those
 // (refs.RecordExcerpts), which clearExcerpts takes away for the reconciliation to cut again from
 // the latest version left. A mention's excerpt is the first refs.BlockExcerptRunes runes of its
-// block, so it is taken whether or not it holds a whole erased text.
+// block, so it is taken whether or not it holds a whole erased text. A value tuple is listed by
+// its seq and its block and without its value, as readTuples lists one.
 func (e *Erasure) readExcerpts(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if read.document == nil || len(read.texts) == 0 {
 		return nil
@@ -152,6 +154,10 @@ func (e *Erasure) readExcerpts(ctx context.Context, tx pgx.Tx, read *erasedRead)
 	for _, text := range read.blockTexts {
 		read.listing.excerpts = append(read.listing.excerpts,
 			fmt.Sprintf("redact document_block_texts %s#%s version %d", read.document.refKey, text.blockID, text.version))
+	}
+	for _, value := range read.blockValues {
+		read.listing.excerpts = append(read.listing.excerpts,
+			fmt.Sprintf("redact graph_tuples %d: block:%s#%s text", value.seq, read.document.refKey, value.blockID))
 	}
 	for _, excerpt := range read.excerpts {
 		read.listing.excerpts = append(read.listing.excerpts, "redact document_blocks "+excerpt.nodeID+" excerpt")
@@ -195,9 +201,16 @@ type derivedRows struct {
 // it and its project's term statistics, which the run counts again. The rows that cannot exist
 // without a projection row are added by leftDerived, from the foreign keys into the projections.
 var derivedTables = map[string][]derivedRows{
-	"graph_nodes":  {{where: `held.kind = bound.kind and held.id = bound.id`}},
-	"graph_tuples": {{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`}},
-	"comments":     {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
+	"graph_nodes": {{where: `held.kind = bound.kind and held.id = bound.id`}},
+	"graph_tuples": {
+		{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`},
+		// The text values of the blocks holding the node's block, which the redaction rewrites
+		// beside their document_block_texts rows (redactBlocks).
+		{where: `bound.document_ref <> '' and held.from_kind = '` + refs.BlockNodeKind + `'
+			and held.from_id = any(array(select bound.document_ref || '#' || ancestor from unnest(bound.ancestors) ancestor))
+			and held.kind = '` + graphstore.AttributeText + `' and held.to_kind = '` + graphstore.KindValue + `'`},
+	},
+	"comments": {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
 	"document_blocks": {
 		{where: `held.node_kind = bound.kind and held.node_address = bound.id`},
 		{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = any(bound.ancestors)`},
@@ -220,10 +233,11 @@ var derivedTables = map[string][]derivedRows{
 }
 
 // leftBound is the one row of values every statement of readLeft reads its derivation from, so
-// each binds the same thirteen parameters whichever of them its table's predicate names.
+// each binds the same fourteen parameters whichever of them its table's predicate names.
 const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::text[] as texts, $4::text as document,
 	$5::text as block, $6::text[] as ancestors, $7::bigint[] as events, $8::int[] as numbers, $9::text as window_kind,
-	$10::text as owner_key, $11::text as spec_issue, $12::text as project, $13::text[] as histories)`
+	$10::text as owner_key, $11::text as spec_issue, $12::text as project, $13::text[] as histories,
+	$14::text as document_ref)`
 
 // readLeft searches every column of every table a text can be written into for the erased texts,
 // and lists each row it finds that does not derive from the node - by its table, its primary key
@@ -253,9 +267,9 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		return err
 	}
 	windowKind, ownerKey := e.itemWindows()
-	document := ""
+	document, documentRef := "", ""
 	if read.document != nil {
-		document = read.document.artifact
+		document, documentRef = read.document.artifact, read.document.refKey
 	}
 	eventIDs := make([]int64, len(read.events))
 	for index, event := range read.events {
@@ -266,7 +280,7 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		histories = append(histories, replaced.document.artifact)
 	}
 	args := []any{e.Kind, e.ID, read.texts, document, read.blockID, read.ancestors, eventIDs, read.numbers,
-		windowKind, ownerKey, read.document.specIssue(), read.project, histories}
+		windowKind, ownerKey, read.document.specIssue(), read.project, histories, documentRef}
 	held := map[string][]string{}
 	for _, column := range columns {
 		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures") {

@@ -58,9 +58,11 @@ type erasedRead struct {
 	// it, so it quotes the node's own text as well as its siblings'.
 	ancestors []string
 	// blockTexts and excerpts are those rows as the redaction leaves them, computed by the read
-	// the listing is made of and written back by redactBlocks.
-	blockTexts []redactedBlockText
-	excerpts   []redactedExcerpt
+	// the listing is made of and written back by redactBlocks, and blockValues the text value
+	// tuples of those blocks the same redaction rewrites (graphstore.RedactValues).
+	blockTexts  []redactedBlockText
+	excerpts    []redactedExcerpt
+	blockValues []redactedValue
 	// tupleSeqs are the seqs of the tuples the listing names, which the delete takes and no
 	// others (graphstore.EraseNode).
 	tupleSeqs []int64
@@ -394,9 +396,9 @@ func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 }
 
 // readAncestors reads the blocks of the node's document that hold its block, up the
-// parent_block_id chain, and keeps those whose stored text or excerpt the redaction rewrites: a
-// container's text is the document cut across every block inside it, so it holds the node's text
-// as well as its siblings', and redactBlocks writes back what the redaction leaves.
+// parent_block_id chain, and keeps those whose stored text, text value or excerpt the redaction
+// rewrites: a container's text is the document cut across every block inside it, so it holds the
+// node's text as well as its siblings', and redactBlocks writes back what the redaction leaves.
 //
 // The rewrite is computed here, under the same read the listing is made of, so a confirmed run
 // writes the rows it listed and no others, and a container holding the erased words only where
@@ -429,6 +431,9 @@ func (e *Erasure) readAncestors(ctx context.Context, tx pgx.Tx, read *erasedRead
 	if err := e.readAncestorTexts(ctx, tx, read, holding); err != nil {
 		return err
 	}
+	if err := e.readAncestorValues(ctx, tx, read, holding); err != nil {
+		return err
+	}
 	if err := e.readAncestorExcerpts(ctx, tx, read, holding); err != nil {
 		return err
 	}
@@ -436,10 +441,49 @@ func (e *Erasure) readAncestors(ctx context.Context, tx pgx.Tx, read *erasedRead
 	for _, text := range read.blockTexts {
 		quoting[text.blockID] = true
 	}
+	for _, value := range read.blockValues {
+		quoting[value.blockID] = true
+	}
 	for _, excerpt := range read.excerpts {
 		quoting[excerpt.blockID] = true
 	}
 	read.ancestors = slices.Sorted(maps.Keys(quoting))
+	return nil
+}
+
+// readAncestorValues reads every text value tuple each of those blocks' nodes holds, the asserted
+// and the retracted alike, since each carries a whole text (dispatch://INFRA-1253's D9: a block's
+// text value is its slice of its version, the blocks inside it included), and keeps each the
+// redaction rewrites, with the text as it leaves it, as readAncestorTexts keeps the rows those
+// values project. It reads each block's node by its address, the document's ref_key and the
+// block's id, through graph_tuples_values, with to_kind = 'value' written into the text so the
+// index's predicate is met.
+func (e *Erasure) readAncestorValues(ctx context.Context, tx pgx.Tx, read *erasedRead, holding []string) error {
+	rows, err := tx.Query(ctx, `
+		select t.seq, held.block_id, t.to_id
+		from unnest($2::text[]) as held (block_id)
+		join graph_tuples t on t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = $1 || '#' || held.block_id
+		 and t.kind = '`+graphstore.AttributeText+`' and t.to_kind = '`+graphstore.KindValue+`'
+		order by t.seq`, read.document.refKey, holding)
+	if err != nil {
+		return fmt.Errorf("read the text values of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
+	}
+	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (redactedValue, error) {
+		var value redactedValue
+		err := row.Scan(&value.seq, &value.blockID, &value.text)
+		return value, err
+	})
+	if err != nil {
+		return fmt.Errorf("read the text values of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
+	}
+	for _, value := range held {
+		redacted := redactBlockQuote(value.text, read.texts, e.marker())
+		if redacted == value.text {
+			continue
+		}
+		value.text = redacted
+		read.blockValues = append(read.blockValues, value)
+	}
 	return nil
 }
 
