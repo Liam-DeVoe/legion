@@ -778,11 +778,13 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, model.Event{}, err
 	}
-	// The request's node goes in before its row, in the project of the issue or the document it
-	// is asked on; what that write states waits for the ask.opened event below.
-	project, parties, err := graphstore.ScopeOf(ctx, tx, owner.IssueKey, owner.ArtifactID)
-	if err != nil {
-		return nil, model.Event{}, err
+	// The request's node goes in before its row, in the project of the document it is asked on,
+	// which the issue that owns the request is in too (an issue's document carries its issue's
+	// project); what that write states waits for the ask.opened event below. The document is read
+	// already, so its project costs no round trip of its own.
+	project, parties := artifact.Project, []string(nil)
+	if project == "" && artifact.SessionID != nil {
+		parties = []string{graphstore.PartySession(*artifact.SessionID)}
 	}
 	askNode, err := graphstore.WriteUncaused(ctx, tx,
 		[]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, time.Now().UTC())}, nil)
