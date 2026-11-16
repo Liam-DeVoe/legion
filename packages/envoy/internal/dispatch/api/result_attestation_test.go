@@ -78,11 +78,13 @@ type attestedWireResult struct {
 }
 
 // checkWithRawResults is one check of the results read, each result as the raw object the wire
-// carries, so a test can tell a member left out from one that is null.
+// carries, so a test can tell a member left out from one that is null. A check CI proves holds
+// what was recorded against it in recorded_results, beside its derived result in results.
 type checkWithRawResults struct {
-	BlockID string            `json:"block_id"`
-	Ref     string            `json:"ref"`
-	Results []json.RawMessage `json:"results"`
+	BlockID         string            `json:"block_id"`
+	Ref             string            `json:"ref"`
+	Results         []json.RawMessage `json:"results"`
+	RecordedResults []json.RawMessage `json:"recorded_results"`
 }
 
 // recordedWithStatement decodes a 201 answer of the record route, failing the test on any other
@@ -131,7 +133,7 @@ func rawCheck(t *testing.T, checks []checkWithRawResults, blockID string) checkW
 // check holds none.
 func rawResultOf(t *testing.T, check checkWithRawResults, id string) (attestedWireResult, json.RawMessage) {
 	t.Helper()
-	for _, raw := range check.Results {
+	for _, raw := range append(append([]json.RawMessage{}, check.Results...), check.RecordedResults...) {
 		var result attestedWireResult
 		if err := json.Unmarshal(raw, &result); err != nil {
 			t.Fatalf("decode a result of %s %s: %v", check.BlockID, raw, err)

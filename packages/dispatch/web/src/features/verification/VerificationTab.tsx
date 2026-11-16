@@ -1,3 +1,4 @@
+import { checkWithNewerFields } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -390,7 +391,7 @@ function Checks({ issueKey }: { issueKey: string }): ReactNode {
   return (
     <ul aria-label="Checks" className="space-y-3" data-testid="verification-checks">
       {(results.data.checks ?? []).map((check) => (
-        <Check check={check} key={check.block_id} />
+        <Check check={checkWithNewerFields(check)} key={check.block_id} />
       ))}
     </ul>
   );

@@ -8292,8 +8292,12 @@ describe("executeDispatchTool", () => {
     expect(read.details).toMatchObject({ issue: "DSP-42", checks: 4, results: 2 });
   });
 
-  /** A check CI proves, k5, whose results the route serves as `results`, with `ci` as given. */
+  /** A check CI proves, k5, with `ci` as given, as the route serves it: of `results`, the derived
+   *  one (id `ci-run:`) alone in `results`, and every one recorded against it in
+   *  `recorded_results`, out of the field a command released before them reads. */
   function ciCheckRead(ci: Record<string, unknown>, results: readonly Record<string, unknown>[]) {
+    const derived = results.filter((result) => String(result.id).startsWith("ci-run:"));
+    const recorded = results.filter((result) => !String(result.id).startsWith("ci-run:"));
     return {
       issue: "DSP-42",
       verification_artifact_id: "artifact-9",
@@ -8307,7 +8311,8 @@ describe("executeDispatchTool", () => {
           ci_check: "contracts",
           pass_stands: { answer: "yes", roles: ["ci"] },
           ci,
-          results,
+          results: derived,
+          ...(recorded.length === 0 ? {} : { recorded_results: recorded }),
         },
       ],
     };

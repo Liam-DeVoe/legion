@@ -1492,6 +1492,11 @@ type CheckResult struct {
 	// CI proves (ResultNotCountedRoleOnCICheck). No surface counts such a result as evidence, and
 	// it is left out of the JSON on every result that counts.
 	NotCounted string `json:"not_counted,omitempty"`
+	// AtBranchHead is the head of a branch of the check's issue that this result's commit is, on a
+	// result of CheckBlock.Results; CommitStands then answers as against CheckBlock.ComparedWith,
+	// which names no branch head. A field of its own, since a dispatch command released before
+	// this one reads CommitStands and prints a basis of a kind it does not know as a commit it named.
+	AtBranchHead *CheckBasis `json:"at_branch_head,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
 	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
@@ -1526,10 +1531,10 @@ type CheckResultRetraction struct {
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
 // `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check
-// is its block's kind alone: its results are the one derived from that run (id
-// `ci-run:<check run id>`) beside each result a run of its CI job recorded (role `ci`, Branch
-// set), newest first, so a reader finds the derived one by its id and not by its place, and a
-// role's result of it carries NotCounted.
+// is its block's kind alone: Results holds the one result derived from that run (id
+// `ci-run:<check run id>`) alone, as a dispatch command released before this one reads it, and
+// RecordedResults every result recorded against it, newest first: each one a run of its CI job
+// recorded (role `ci`, Branch set), and each role's, which carries NotCounted.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -1545,10 +1550,19 @@ type CheckBlock struct {
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
-	// ComparedWith is every commit and branch this check's results are compared with, in the
-	// order they are asked about, and ComparedNothing is why there are none where it is empty
-	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
+	// RecordedResults is, for a check CI proves, every result recorded against it, newest first,
+	// which Results does not hold (Results holds its derived result alone). Left out for any other
+	// check, whose Results holds every result.
+	RecordedResults []CheckResult `json:"recorded_results,omitempty"`
+	// ComparedWith is every commit and branch this check's results are compared with but the head
+	// of a branch of its issue, in the order they are asked about, and ComparedNothing is why
+	// there are none where it and BranchHeads are both empty (ReasonNoPullRequestOrBranch,
+	// ReasonRepositoryUnreadable, ReasonReadFailed). BranchHeads is the heads of the issue's
+	// branches a `before_merge` check compares with where its issue has no open pull request, in
+	// name order: a field of its own, since a dispatch command released before this one prints a
+	// basis of a kind it does not know as a commit it named.
 	ComparedWith    []CheckBasis    `json:"compared_with"`
+	BranchHeads     []CheckBasis    `json:"branch_heads,omitempty"`
 	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
 	PassStands      CheckPassStands `json:"pass_stands"`
 }

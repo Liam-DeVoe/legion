@@ -7,6 +7,7 @@ import type {
   CheckResult,
   IssueCheckResults,
 } from "@legion/contracts";
+import { checkWithNewerFields } from "@legion/contracts";
 import { actorText } from "../actor-text";
 
 // check-results.ts is what `dispatch results --issue` prints: each check of an issue's
@@ -245,6 +246,6 @@ export function formatCheckResults(results: IssueCheckResults, brief = false): s
   if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
-  const blocks = checks.map((check) => checkLines(check, brief).join("\n"));
+  const blocks = checks.map((check) => checkLines(checkWithNewerFields(check), brief).join("\n"));
   return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }

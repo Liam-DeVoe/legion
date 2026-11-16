@@ -293,9 +293,11 @@ test("a check names what the server compared its results with", async () => {
       compared_with: [],
       pass_stands: { answer: "no" },
     }),
-    // A CI job pushed its issue's branch, and its pass stands at that branch's head.
+    // A CI job pushed its issue's branch, and its pass stands at that branch's head, which the
+    // server lists in branch_heads, out of the compared_with a command released before it reads.
     check("c-pushed", [result({ id: "result-3" })], {
-      compared_with: [{ branch: "legion/CORE-1", commit, kind: "branch_head" }],
+      branch_heads: [{ branch: "legion/CORE-1", commit, kind: "branch_head" }],
+      compared_with: [],
     }),
   ]);
   restore = () => {

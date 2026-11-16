@@ -460,8 +460,52 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		reader.answer(r.Context(), &checks[index])
 	}
 	answerCompatibilityCurrency(checks, at)
+	keepFieldsOlderCommandsRead(checks)
 	body.Checks = checks
 	WriteJSON(w, http.StatusOK, body)
+}
+
+// keepFieldsOlderCommandsRead moves each fact the results read gained with the branch heads and
+// a CI job's own results out of the fields a dispatch command released before them reads, into
+// fields of its own, so each of those keeps the meaning that command reads it with:
+//
+//   - a branch head a check compares with moves from compared_with to branch_heads, since that
+//     command prints a basis of a kind it does not know as a commit it named;
+//   - a result of results whose commit is such a head answers commit_stands as against
+//     compared_with, other_commit, and names the head in at_branch_head;
+//   - every result of a check CI proves but its derived one moves from results to
+//     recorded_results, since that command reads results[0] of such a check as the derived one.
+//
+// It runs last: every answer, pass_stands among them, and the compatibility currency are made from
+// the whole lists first. @legion/contracts' checkWithNewerFields puts them back for a reader of
+// this build.
+func keepFieldsOlderCommandsRead(checks []model.CheckBlock) {
+	for index := range checks {
+		check := &checks[index]
+		compared := make([]model.CheckBasis, 0, len(check.ComparedWith))
+		for _, basis := range check.ComparedWith {
+			if basis.Kind == model.CheckBasisBranchHead {
+				check.BranchHeads = append(check.BranchHeads, basis)
+				continue
+			}
+			compared = append(compared, basis)
+		}
+		check.ComparedWith = compared
+		results := make([]model.CheckResult, 0, len(check.Results))
+		for _, result := range check.Results {
+			if check.CI != nil && !strings.HasPrefix(result.ID, ciResultIDPrefix) {
+				check.RecordedResults = append(check.RecordedResults, result)
+				continue
+			}
+			if stands := result.CommitStands; stands != nil && stands.Basis != nil && stands.Basis.Kind == model.CheckBasisBranchHead {
+				head := *stands.Basis
+				result.AtBranchHead = &head
+				result.CommitStands = &model.ResultCommitStands{Answer: model.CommitOtherCommit}
+			}
+			results = append(results, result)
+		}
+		check.Results = results
+	}
 }
 
 // refusalFor is every refusal a result's own fields earn before anything is read, for the

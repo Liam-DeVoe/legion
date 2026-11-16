@@ -398,10 +398,9 @@ Each item below names a task and where its code is, then notes on it.
     `GET` also derives a result on every read, and stores nothing of it (`api/results_ci.go`, `deriveCIResults`):
     at the head of the issue's open pull request of the highest number, else of its merged one of the highest number (`delivery.NewestPullRequestHead`), one paged read of that commit's check runs under one 10-second deadline (`ciReadDeadline`), made only when the issue holds such a check, decides each such check by the run of its name with the highest id.
     The check carries `ci`, `{run, state, case, detail, line}` (`model.CheckCI`), and for a pass or a fail one derived result, `ci-run:<run id>` by role `ci` and actor kind `github_app`, which `comparisonReader` judges as it judges a recorded result.
-    The derived result comes beside each result the CI job recorded, newest first, so a reader finds it by its id and not by its place.
+    The derived result is alone in `results`; recorded results are in `recorded_results`, branch heads in `branch_heads`, a result's head in `at_branch_head` (`keepFieldsOlderCommandsRead`).
     `?at=` leaves that read in place, so a derived result stands at the named commit only where that commit is the head.
-    A check carrying a `ci_check` that breaks a rule reads as an ordinary check.
-    A role's result of a check CI proves, which a build that counted such rows took while it served beside this one, carries `not_counted` and counts for nothing (`notCountedOnCICheck`, `standingCommit`).
+    A check carrying a `ci_check` that breaks a rule reads as an ordinary check; a role's result of a check CI proves carries `not_counted` and counts for nothing.
 
   - each result of a read that names no commit also answers `currency`, a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it and read none of the fields above (`results_currency.go`, `compatibilityCurrency`):
     `current` at a basis under the check's words now with no retraction, `older` at another commit or at a basis under words that moved, and left out otherwise, so those clients print "unknown".

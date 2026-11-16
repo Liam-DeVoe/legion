@@ -326,12 +326,14 @@ func jobRecorded(t *testing.T, what string, response *httptest.ResponseRecorder)
 	}](t, response).Result
 }
 
-// jobCheckRead is one check of the results read as the wire carries it.
+// jobCheckRead is one check of the results read as the wire carries it, with the results of
+// recorded_results, where a check CI proves holds what was recorded against it, after its own.
 type jobCheckRead struct {
-	BlockID string         `json:"block_id"`
-	CICheck string         `json:"ci_check"`
-	CI      *model.CheckCI `json:"ci"`
-	Results []jobResult    `json:"results"`
+	BlockID         string         `json:"block_id"`
+	CICheck         string         `json:"ci_check"`
+	CI              *model.CheckCI `json:"ci"`
+	Results         []jobResult    `json:"results"`
+	RecordedResults []jobResult    `json:"recorded_results"`
 }
 
 // readJobCheck is check blockID of the issue's results read, as a person reads it.
@@ -345,6 +347,7 @@ func (r *ciJobRig) readJobCheck(t *testing.T, blockID string) jobCheckRead {
 		Checks []jobCheckRead `json:"checks"`
 	}](t, response).Checks {
 		if check.BlockID == blockID {
+			check.Results = append(check.Results, check.RecordedResults...)
 			return check
 		}
 	}
@@ -646,9 +649,10 @@ func TestAJobsResultLeavesTheCheckCIs(t *testing.T) {
 }
 
 // TestTheReadShowsTheJobsResultBesideTheDerivedOne: c1's read carries its ci member, read at the
-// head of the issue's pull request, and every result: the one derived from the run at that head
-// and each one the job recorded at the commit it tested, newest first. The derived run concluded
-// between the job's two results, so a read that put it first or last would be out of order.
+// head of the issue's pull request, and every result: in results, the one derived from the run at
+// that head alone, as a dispatch command released before the job's own results reads results[0]
+// of such a check as the derived one; and in recorded_results each one the job recorded at the
+// commit it tested, newest first.
 func TestTheReadShowsTheJobsResultBesideTheDerivedOne(t *testing.T) {
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
@@ -672,8 +676,11 @@ func TestTheReadShowsTheJobsResultBesideTheDerivedOne(t *testing.T) {
 		order = append(order, result.ID)
 	}
 	derived := ciResultIDPrefix + "11"
-	if want := []string{newer.ID, derived, older.ID}; strings.Join(order, " ") != strings.Join(want, " ") {
-		t.Fatalf("c1 holds the results %v, want %v: the job's newer result, the derived one, the job's older one", order, want)
+	if want := []string{derived, newer.ID, older.ID}; strings.Join(order, " ") != strings.Join(want, " ") {
+		t.Fatalf("c1 holds the results %v, want %v: the derived one, then the job's newer and older ones", order, want)
+	}
+	if wire := rawCheck(t, rig.readRawChecks(t, rig.issue), "c1"); len(wire.Results) != 1 || len(wire.RecordedResults) != 2 {
+		t.Fatalf("c1's results hold %d and its recorded_results %d, want the derived result alone and the job's two", len(wire.Results), len(wire.RecordedResults))
 	}
 	for _, result := range check.Results {
 		wantBranch, wantCommit := ciJobBranch, ciJobCommit

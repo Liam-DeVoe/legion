@@ -72,11 +72,14 @@ interface ReadResult {
   readonly attestation?: ReadStatement;
 }
 
-/** One check of `dispatch results --issue --json`. */
+/** One check of `dispatch results --issue --json`: the route's answer whole, which keeps the
+ *  branch heads in branch_heads and a check CI proves's recorded results in recorded_results,
+ *  out of the fields a command released before them reads. */
 interface ReadCheck {
   readonly block_id: string;
   readonly ref: string;
   readonly compared_with?: readonly Record<string, unknown>[];
+  readonly branch_heads?: readonly Record<string, unknown>[];
   readonly pass_stands?: {
     readonly answer: string;
     readonly roles?: readonly string[];
@@ -84,6 +87,7 @@ interface ReadCheck {
   };
   readonly ci?: { readonly case: string };
   readonly results?: readonly ReadResult[];
+  readonly recorded_results?: readonly ReadResult[];
 }
 
 describe.skipIf(!dispatchStackEnabled)(
@@ -192,9 +196,14 @@ describe.skipIf(!dispatchStackEnabled)(
       return found;
     }
 
+    /** Every result of `check`, in results and in recorded_results. */
+    function allResults(check: ReadCheck): readonly ReadResult[] {
+      return [...(check.results ?? []), ...(check.recorded_results ?? [])];
+    }
+
     /** The results of `check` that a CI job recorded at `at`. */
     function jobResultsAt(check: ReadCheck, at: string): readonly ReadResult[] {
-      return (check.results ?? []).filter(
+      return allResults(check).filter(
         (result) => result.branch !== undefined && result.commit_sha === at
       );
     }
@@ -213,7 +222,12 @@ describe.skipIf(!dispatchStackEnabled)(
 
       expect({ code: ran.code, stderr: ran.stderr }, ran.stdout).toEqual({ code: 0, stderr: "" });
       const c1 = checkOf(await readChecks(), CI_CHECK);
-      expect(c1.compared_with).toEqual([{ kind: "branch_head", branch: branch(), commit: at }]);
+      // The branch head is in branch_heads, and compared_with names none, as a command released
+      // before the branch heads reads it.
+      expect({ compared: c1.compared_with, heads: c1.branch_heads }).toEqual({
+        compared: [],
+        heads: [{ kind: "branch_head", branch: branch(), commit: at }],
+      });
       // The branch head is the issue's one subject, and a pass stands there.
       expect(c1.pass_stands).toEqual({
         answer: "yes",
@@ -281,7 +295,7 @@ describe.skipIf(!dispatchStackEnabled)(
 
       running().setBranch(branch(), moved);
       const c1 = checkOf(await readChecks(), CI_CHECK);
-      expect(c1.compared_with).toEqual([{ kind: "branch_head", branch: branch(), commit: moved }]);
+      expect(c1.branch_heads).toEqual([{ kind: "branch_head", branch: branch(), commit: moved }]);
       expect(c1.pass_stands?.answer).toBe("no");
     }, 120_000);
 
@@ -337,7 +351,7 @@ describe.skipIf(!dispatchStackEnabled)(
       );
       refused(ran, "CHECK_PROVED_BY_CI");
       expect(
-        (checkOf(await readChecks(), CI_CHECK).results ?? []).filter((r) => r.commit_sha === at)
+        allResults(checkOf(await readChecks(), CI_CHECK)).filter((r) => r.commit_sha === at)
       ).toEqual([]);
     }, 120_000);
   }

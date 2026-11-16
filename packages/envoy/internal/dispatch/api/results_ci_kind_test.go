@@ -28,17 +28,19 @@ func olderBuildsRow(t *testing.T, rig *ciJobRig, blockID, commit string) {
 }
 
 // notCountedOf is, by check, the not_counted member of each result with role role, as the wire
-// carries it.
+// carries it in results and in recorded_results.
 func notCountedOf(t *testing.T, handler http.Handler, issue, role string) map[string][]string {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/results", nil, "alice")
+	type wireResult struct {
+		Role       string `json:"role"`
+		NotCounted string `json:"not_counted"`
+	}
 	var read struct {
 		Checks []struct {
-			BlockID string `json:"block_id"`
-			Results []struct {
-				Role       string `json:"role"`
-				NotCounted string `json:"not_counted"`
-			} `json:"results"`
+			BlockID         string       `json:"block_id"`
+			Results         []wireResult `json:"results"`
+			RecordedResults []wireResult `json:"recorded_results"`
 		} `json:"checks"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
@@ -46,7 +48,7 @@ func notCountedOf(t *testing.T, handler http.Handler, issue, role string) map[st
 	}
 	held := map[string][]string{}
 	for _, check := range read.Checks {
-		for _, result := range check.Results {
+		for _, result := range append(check.Results, check.RecordedResults...) {
 			if result.Role == role {
 				held[check.BlockID] = append(held[check.BlockID], result.NotCounted)
 			}

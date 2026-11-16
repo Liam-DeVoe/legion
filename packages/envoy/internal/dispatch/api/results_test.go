@@ -107,13 +107,32 @@ func recordResult(t *testing.T, handler http.Handler, issue string, body map[str
 	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/results", body, "alice")
 }
 
+// readResults is the results read of issue, as alice reads it, with the facts the answer serves in
+// the fields a command released before the branch heads does not read (branch_heads,
+// recorded_results, at_branch_head) put back into compared_with, results and commit_stands, as
+// @legion/contracts' checkWithNewerFields puts them back: the tests of the comparison read one
+// list. TestEachFieldAnOlderCommandReadsKeepsItsMeaning holds the wire itself.
 func readResults(t *testing.T, handler http.Handler, issue string) issueResults {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/results", nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("read the results of %s: status=%d body=%s", issue, response.Code, response.Body.String())
 	}
-	return decodeBody[issueResults](t, response)
+	read := decodeBody[issueResults](t, response)
+	for index := range read.Checks {
+		check := &read.Checks[index]
+		check.ComparedWith = append(check.ComparedWith, check.BranchHeads...)
+		check.BranchHeads = nil
+		for result := range check.Results {
+			if head := check.Results[result].AtBranchHead; head != nil {
+				check.Results[result].CommitStands = &model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: head}
+				check.Results[result].AtBranchHead = nil
+			}
+		}
+		check.Results = newestResultsFirst(append(check.Results, check.RecordedResults...))
+		check.RecordedResults = nil
+	}
+	return read
 }
 
 // checkOf is the check of the read with that block id.

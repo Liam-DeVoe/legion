@@ -4338,8 +4338,8 @@ Each item below names a path with its method and identity, then its purpose.
     `id` `ci-run:<check run id>`, `role` `ci`, `actor` `{kind: "github_app", id: <the slug of the App that made the run>}`, `session` `""`, `run` the run's name, `surface` and `negative_control` the check's, `commit_sha` the head read, `created_at` the run's `completed_at`, `observed` the conclusion, then the run's output title and summary cut together to 2,000 runes, then its URL, one a line, `check_sha256` the check's own digest, the counts 0, `screenshots` `[]`, no `branch` and no `event_seq`.
     It is judged as a recorded result is (`comparisonReader`), so its `commit_stands` and the check's `pass_stands` read as a recorded result's would.
 
-  - Beside it are the results that runs of the check's CI job recorded through POST below, each with `role` `ci`, `run` the check run's name and `branch` the branch whose push the job ran on, all newest first by `created_at`.
-    A client that reads one result of such a check finds the derived one by its `id`, not as the first.
+  - Its `results` hold the derived result alone, and `recorded_results` the results that runs of the check's CI job recorded through POST below, each with `role` `ci`, `run` the check run's name and `branch` the branch whose push the job ran on, newest first by `created_at`.
+    A branch head a check compares with is in `branch_heads`, not `compared_with`, and a result of `results` at one names it in `at_branch_head`: each field an older `dispatch` reads keeps its meaning.
     `branch` is set on a result that a CI job recorded, and on no other result.
     Such a result also carries `attestation`, the in-toto Statement v1 of its run, built by the builder of the project's results route (`attestedResult.statement`).
     Its subject is the run's repository at `commit_sha`, and its predicate type is `https://github.com/cybermonklabs/legion/attestations/check-block-result/v1`.

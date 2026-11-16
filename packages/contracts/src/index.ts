@@ -1,6 +1,7 @@
 export * from "./actor-label";
 export * from "./agent-stream";
 export * from "./block-schema.generated";
+export * from "./check-results-fields";
 export * from "./claim-holds";
 export * from "./dispatch-api";
 export * from "./dispatch-block-ref";
