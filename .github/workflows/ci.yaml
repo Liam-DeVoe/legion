@@ -343,7 +343,7 @@ jobs:
       contracts: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.contracts }}
       test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.test_fixtures }}
       conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.conflicts_script }}
-      broker_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.broker_client }}
+      broker_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.broker_client }}
       envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.envoy_client }}
       pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_shared }}
       pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_envoy }}
@@ -2119,21 +2119,6 @@ jobs:
               # and its last step holds the bun on PATH to that row's digest.
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
-            # The secrets broker's TypeScript client: its own sources and tests, the one
-            # first-party package its sources import, the fixtures its tests use, the Bun install
-            # and the Bun it runs, and Biome.
-            broker_client:
-              - *ci_router
-              - '.github/workflows/ci-job-broker-client.yaml'
-              - *bun_install
-              - 'packages/broker-client/**'
-              # src/token-client.ts imports @legion/contracts/trailing-slash.
-              - 'packages/contracts/src/**'
-              # src/__tests__ import @legion/test-fixtures.
-              - 'packages/test-fixtures/src/**'
-              # src/__tests__/dpop.test.ts reads both signers' committed connection proofs.
-              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-go.json'
-              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-ts.json'
             # The private workspace package both Oh My Pi plugins import, and the jj
             # .github/actions/install-jj installs for the one case of src/jj-attribution.test.ts
             # that runs the real jj.
@@ -3833,11 +3818,22 @@ jobs:
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
-              # The connection proofs each client's checker reads of the other's signer:
-              # packages/broker-client/src/__tests__/dpop.test.ts:212-215 reads both by relative
-              # path, so a vector written again on either side must start this job.
-              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-go.json'
-              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-ts.json'
+              # broker-client's dpop.test.ts:212-215 reads both connection proofs.
+              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-*.json'
+            # The secrets broker's TypeScript client: its own sources and tests, the one
+            # first-party package its sources import, the fixtures its tests use, the Bun install
+            # and the Bun it runs, and Biome.
+            broker_client:
+              - *ci_router
+              - '.github/workflows/ci-job-broker-client.yaml'
+              - *bun_install
+              - 'packages/broker-client/**'
+              # src/token-client.ts imports @legion/contracts/trailing-slash.
+              - 'packages/contracts/src/**'
+              # src/__tests__ import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
+              # src/__tests__/dpop.test.ts:212-215 reads both signers' connection proofs.
+              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-*.json'
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache and kvwatch (`go
             # list -deps -test -race` in packages/envoy), and every .md file under packages/envoy,
