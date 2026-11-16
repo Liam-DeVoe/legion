@@ -29,6 +29,13 @@ can be left out of the split.
 pattern selects runs in no leg, and a test two patterns select runs twice; it names each one.
 `pattern` runs it over the patterns it made, in every leg, before the leg runs its tests.
 
+A pattern may hold no `/`. `-test.list` matches each top-level name against the whole pattern,
+but `go test -run` splits the pattern at every `/` outside a bracket expression, matches the
+first part against the top-level name and starts a test whose name matches it partly, for the
+subtests the rest may select. So `^TestAlpha$` and `^TestBeta$|^TestAlpha$/child` list TestAlpha
+once and run it in both legs. `check` fails such a pattern, naming it, before it lists anything.
+The patterns `pattern` makes are alternations of top-level names, which hold no `/`.
+
 Where the names come from. Both commands build the package's test binary with
 `go test -c` under the build flags given (`-race`, `-tags T`), which are the flags the leg's own
 `go test` uses, then ask the binary itself: `-test.list .` for every name, and `-test.list
@@ -58,7 +65,7 @@ legs than the package needs), and a pattern longer than 131,071 bytes, which Lin
 argument (MAX_ARG_STRLEN), so `go test` could not start the binary with it; add a leg.
 
 Exit status: 0 when every test is in exactly one shard, 1 when a test is in no shard or in two,
-2 for every refusal above.
+or a pattern holds a `/`, 2 for every refusal above.
 
 Run from the directory the package path is relative to, as `go test` is: the leg runs it in
 packages/envoy. Needs python3 and go on PATH; `-race` needs cgo and a C compiler, as it does for
@@ -77,7 +84,8 @@ from pathlib import Path
 
 USAGE = """\
 usage: go-test-shards.py pattern <index> <total> [<build flag>...] <package>
-       go-test-shards.py check [<build flag>...] <package> -- <pattern>..."""
+       go-test-shards.py check [<build flag>...] <package> -- <pattern>...
+A <pattern> may hold no `/`: go test -run splits it there, which -test.list does not."""
 
 # A name `-test.list` prints that `-run` can start: a top-level test, fuzz target or example.
 # Benchmarks, which it also prints, are left out (`-run` never starts one), and a line with a space
@@ -152,12 +160,19 @@ def package_tests(flags: list[str], package: str, purpose: str):
 
 def prove(binary: Path, everything: list[str], patterns: list[str]) -> None:
     """Raise Uncovered naming each test of `everything` that no pattern, or more than one,
-    selects in the binary."""
+    selects in the binary; or, before it lists anything, each pattern that holds a `/`, whose
+    selection -test.list cannot show (the module's head says why)."""
+    total = len(patterns)
+    slashed = [f"pattern {number} of {total}, `{pattern}`, holds a `/`: go test -run splits it there and "
+               f"starts every test whose name matches the part before it, which -test.list does not show, "
+               f"so no listing can prove what it runs; a shard's pattern may hold no `/`"
+               for number, pattern in enumerate(patterns, start=1) if "/" in pattern]
+    if slashed:
+        raise Uncovered("\n".join(slashed))
     shards_of: dict[str, list[int]] = {name: [] for name in everything}
     for number, pattern in enumerate(patterns, start=1):
         for name in listed(binary, pattern):
             shards_of.setdefault(name, []).append(number)
-    total = len(patterns)
     problems = []
     for name in sorted(shards_of):
         shards = shards_of[name]

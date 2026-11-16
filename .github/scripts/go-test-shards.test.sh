@@ -193,6 +193,25 @@ check "TestEpsilon is in two shards" "$(contains "$err" '^go-test-shards.py: Tes
 check "and so is TestEta" "$(contains "$err" '^go-test-shards.py: TestEta is in shards [123] and 4 of 4')"
 check "and nothing else" "$(is "$(grep -c 'is in' <<<"$err")" 2)"
 
+echo "case: control - a pattern holding a / fails the check, by pattern"
+# -test.list matches each top-level name against the whole pattern, so it lists TestAlpha under
+# '^TestAlpha$' alone. go test -run splits '^TestBeta$|^TestAlpha$/child' at the / and starts
+# TestAlpha for its subtest too, so the two legs would both run TestAlpha while every listing said
+# once.
+root_slash=$(module slash)
+tests "$root_slash/slash_test.go" TestAlpha TestBeta
+run_shards "$root_slash" check . -- '^TestAlpha$' '^TestBeta$|^TestAlpha$/child'
+check "exits 1" "$(is "$status" 1)"
+check "prints nothing on standard output" "$(is "$out" "")"
+# shellcheck disable=SC2016 # literal backticks and $ of the message, no expansion wanted
+check "names the pattern and the /" \
+  "$(contains "$err" '^go-test-shards.py: pattern 2 of 2, `^TestBeta\$|^TestAlpha\$/child`, holds a `/`: ')"
+check "and names nothing else" "$(is "$(grep -c '^go-test-shards.py: ' <<<"$err")" 1)"
+run_shards "$root_slash" check . -- '^TestAlpha$' '^TestBeta$'
+check "the same tests without the / pass" "$(is "$status" 0)"
+run_shards "$root_slash" pattern 0 1 .
+check "and the pattern the split prints holds no /" "$(is "$(grep -c / <<<"$out" || true)" 0)"
+
 echo "case: a test whose name is not ASCII is split and checked like any other"
 # go test runs TestÉclair, Test日本 and TestᲉ: cmd/go asks only that the rune after `Test` is not
 # lower case. A listing that kept ASCII names alone would leave them in no shard, and its proof,
