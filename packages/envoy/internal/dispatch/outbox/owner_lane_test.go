@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -381,9 +382,10 @@ func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 	})
 	outbox.signal()
 	testwait.Eventually(t, "a second batch beside the settle", func() bool { return outbox.claims.Load() >= 2 })
-	testwait.Span(t, 500*time.Millisecond, "that batch's read waits on the statement gate of lanes the scan "+
-		"makes for itself, which the row cannot reach, and a read blocked there changes nothing anything reads, "+
-		"so only a span gives it the time to get there")
+	// That batch's read waits on the statement gate of lanes the scan makes for itself, a
+	// sync.Mutex the settle holds and which records no waiter, so the read's own goroutine parked
+	// there is what shows it arrived (readWaitsOnTheStatementGate).
+	testwait.Eventually(t, "the second batch's read to wait on the statement gate the settle holds", readWaitsOnTheStatementGate)
 	if err := claim.Commit(context.Background()); err != nil {
 		t.Fatalf("release the owner's lock: %v", err)
 	}
@@ -401,6 +403,19 @@ func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 			t.Fatalf("event %d was published with attempt_count %d and publish_error %v, want neither", event.ID, attempts, failure)
 		}
 	}
+}
+
+// readWaitsOnTheStatementGate reports whether a goroutine is parked on a scan's statement gate
+// (lanes.lock), found by name in the goroutine dump: a rename of lock must be made here too, and a
+// name that no longer matches fails the row at the shared wait's bound, naming the wait. This
+// package's tests run one at a time, so the goroutine is the running test's.
+func readWaitsOnTheStatementGate() bool {
+	for _, trace := range goroutinetest.Traces() {
+		if header, _, _ := strings.Cut(trace, "\n"); strings.Contains(header, "[sync.Mutex.Lock") && strings.Contains(trace, ".(*lanes).lock(") {
+			return true
+		}
+	}
+	return false
 }
 
 // A release blocks its batch whichever settle wrote it, and wakes nothing. An owner whose chains

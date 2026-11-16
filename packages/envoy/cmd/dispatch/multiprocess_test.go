@@ -1516,9 +1516,11 @@ func (s publisherSample) at() time.Time {
 }
 
 // sampleOutboxPublisher reads both processes' /healthz every 100 ms, the two at once, until stop
-// is closed, and returns the func that waits for the last read and answers them all.
-func sampleOutboxPublisher(pair *dispatchPair, stop <-chan struct{}) func() []publisherSample {
+// is closed. It returns a channel it closes once its first sample is taken, and the func that
+// waits for the last read and answers them all.
+func sampleOutboxPublisher(pair *dispatchPair, stop <-chan struct{}) (<-chan struct{}, func() []publisherSample) {
 	started := time.Now()
+	first := make(chan struct{})
 	done := make(chan []publisherSample, 1)
 	go func() {
 		processes := []*dispatchProcess{pair.a, pair.b}
@@ -1546,9 +1548,12 @@ func sampleOutboxPublisher(pair *dispatchPair, stop <-chan struct{}) func() []pu
 				sample.err = errors.Join(sample.err, got[i].err)
 			}
 			samples = append(samples, sample)
+			if len(samples) == 1 {
+				close(first)
+			}
 		}
 	}()
-	return func() []publisherSample { return <-done }
+	return first, func() []publisherSample { return <-done }
 }
 
 // startOutboxPair is startPair for a row about the outbox's publisher, which logs both processes'
@@ -1594,7 +1599,7 @@ func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
 	const samplingSpan = 12 * time.Second
 	pair := startOutboxPair(t)
 	stopSampling := make(chan struct{})
-	samples := sampleOutboxPublisher(pair, stopSampling)
+	sampledOnce, samples := sampleOutboxPublisher(pair, stopSampling)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	stop := scene.writeAtRate(t, 4, pair.a, pair.b)
 	// Deferred so that a t.Fatalf below - the wait for a publisher is one of the failures this
@@ -1602,6 +1607,17 @@ func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
 	// stopped processes until the binary exits with its write failures reported to nobody. stop
 	// does nothing when it is called again, so the call after the wait stands as it is.
 	defer stop()
+	// What the window must hold for the assertions below to read anything is waited for first: a
+	// sample of both processes' /healthz, and a batch either process logged it sent.
+	testwait.Receive(t, "the sampler's first read of both processes' /healthz", sampledOnce)
+	testwait.Eventually(t, "either process to log "+strconv.Quote(outboxLogPrefix+sentBatch), func() bool {
+		for _, process := range []*dispatchProcess{pair.a, pair.b} {
+			if slices.ContainsFunc(process.outboxLines(t), func(line outboxLine) bool { return line.message == sentBatch }) {
+				return true
+			}
+		}
+		return false
+	})
 	testwait.Span(t, samplingSpan, "this row's subject is a stretch with no publisher, read off /healthz on both "+
 		"processes while they write: nothing either process records marks such a stretch's end, both are child "+
 		"processes so synctest does not reach them, and an action of the test's would end the very hand-over it "+
@@ -4221,9 +4237,9 @@ func waitOutABucketBoundary(t *testing.T, period time.Duration) {
 		return
 	}
 	t.Logf("waiting %v for the next bucket of the %v period, so both processes tick inside one", left, period)
-	testwait.Span(t, left+time.Second, "each process buckets a tick by floor(epoch / period) on its own wall clock, "+
-		"inside a child process no clock of the test reaches, and nothing either process reports marks the next "+
-		"bucket's start: the row needs both processes' first ticks inside one bucket, so it waits the boundary out")
+	testwait.Eventually(t, fmt.Sprintf("the next bucket of the %v period to begin, with %v of it left for both processes' first ticks", period, margin), func() bool {
+		return period-time.Duration(time.Now().UnixNano()%period.Nanoseconds()) >= margin
+	})
 }
 
 // ───── a sign-in across the processes ───────────────────────────────────────
@@ -6366,10 +6382,18 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		start := time.Now().Truncate(period).Add(period)
 		end := start.Add(period)
 		t.Logf("counting the resumptions of the document in the period from %s to %s", start.Format(time.TimeOnly), end.Format(time.TimeOnly))
-		testwait.Span(t, time.Until(end)+2*time.Second, "the count is of a whole period of the clock, which is what "+
-			"'one resumption per period across both processes' means: each process's own tick meets that period once, "+
-			"neither writes anything that says the period is over, both are child processes so synctest does not reach "+
-			"them, and an action of the test's would arm a settlement rather than end the period")
+		// The resumption the period owes is a fact of one process's tick, recorded as it arms the
+		// settlement (the room-counters hook), so it is waited for.
+		testwait.Until(t, fmt.Sprintf("a resumption of the document's owed settlement in the period from %s to %s", start.Format(time.TimeOnly), end.Format(time.TimeOnly)),
+			func() ([]string, bool) {
+				resumed := pair.resumedBetween(t, artifactID, start, end)
+				return resumed, len(resumed) > 0
+			})
+		testwait.Span(t, time.Until(end)+2*time.Second, "a second resumption inside the period is what must not "+
+			"come, and the other process's tick in it leaves no record that says so for certain: it logs a skip "+
+			"naming the period when it finds the period served, but one naming none when it finds the lease held, "+
+			"both are child processes so synctest does not reach them, and an action of the test's would arm a "+
+			"settlement rather than end the period. The span is the rest of the period and two seconds")
 		resumed := pair.resumedBetween(t, artifactID, start, end)
 		if len(resumed) != 1 {
 			t.Fatalf("the processes' settlement resumptions armed the document's owed settlement %d times in one %v period, want once across both processes:\n%s",

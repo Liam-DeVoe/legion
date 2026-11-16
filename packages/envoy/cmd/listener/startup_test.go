@@ -232,7 +232,13 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 			return record["topic"] == contracts.RoleTopicPrefix+role
 		})
 	}
-	byOld, byReplacement := roleForwards(old), roleForwards(replacement)
+	// A task logs a forward once the stream has acknowledged storing it, which can come after the
+	// holder already received the copy, so the count is waited for rather than read once.
+	var byOld, byReplacement int
+	testwait.Until(t, fmt.Sprintf("the two tasks to log the %d role forwards between them", messages), func() (string, bool) {
+		byOld, byReplacement = roleForwards(old), roleForwards(replacement)
+		return fmt.Sprintf("%d by the old task and %d by the replacement", byOld, byReplacement), byOld+byReplacement >= messages
+	})
 	if byOld+byReplacement != messages {
 		t.Fatalf("the two tasks logged %d + %d role forwards, want %d in all", byOld, byReplacement, messages)
 	}

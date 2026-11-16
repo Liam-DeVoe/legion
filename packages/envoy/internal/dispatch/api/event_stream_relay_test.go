@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -158,15 +159,20 @@ func relayPublished(relay *eventStreamRelay) int64 {
 	return relay.generation.cursor
 }
 
-// relayResetHandOverWhy is why TestEventLogResetClearsTheRelaysHorizon holds spans around the
-// subscription it makes during the reset: process B's relay hears the refill's commit and finds
-// the reset on a goroutine of its own, and a subscribe reaches that relay from the socket's own
-// read loop. The relay's state is shared with B's delivery hub, which starts generations of its
-// own, so no state of this test names the moment either happened, and the hand-over that comes
-// after them is what the test proves rather than an effect it can wait for first.
-const relayResetHandOverWhy = "process B's relay finds the reset and takes the subscribe on goroutines of its own, " +
-	"and its state is shared with B's delivery hub, which starts generations of its own, so no state of this test " +
-	"names either moment; the hand-over that follows is what the test proves"
+// feedsAtTheRelay counts the events subscriptions whose feed is inside a relay's subscribe
+// (feedEvents calling eventStreamRelay.subscribe): waiting behind a generation whose start waits
+// on the horizon, or starting one itself. Such a subscribe records nothing and its socket is sent
+// nothing before events_start, so the goroutine's own stack is the one state that shows it. The
+// package's tests run one at a time, so every such goroutine is the running test's.
+func feedsAtTheRelay() int {
+	at := 0
+	for _, trace := range goroutinetest.Traces() {
+		if strings.Contains(trace, ".(*server).feedEvents(") && strings.Contains(trace, ".(*eventStreamRelay).subscribe(") {
+			at++
+		}
+	}
+	return at
+}
 
 // relayGapRereadsWhy is why a test holds a span while a gap in the event log stands open: the
 // relay's re-reads of a gap run on its own goroutine, on a schedule of its own, and a re-read
@@ -502,17 +508,9 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	if high >= head {
 		t.Fatalf("event %d committed after the reset is not below the pre-reset head %d: the reset reused no id, so this test proves nothing", high, head)
 	}
-	// Time for B's relay to hear the refill's commit and find the reset.
-	testwait.Span(t, 500*time.Millisecond, relayResetHandOverWhy)
-	// This subscription hands over only once the relay's reset, which waits for a, has run, so it
-	// subscribes first and a commits once it has had time to reach the relay.
-	waiting := dial()
-	sendEventsSubscribe(t, waiting, "events", nil)
-	testwait.Span(t, 300*time.Millisecond, relayResetHandOverWhy)
-	commitLow()
-	renameIssue(t, first, issue.Key, "Renamed after the reset")
-
-	// The subscription open across the reset ends without an event of the new log, whose ids it has
+	// B's relay finds the reset once it hears the refill's commit, and the finding ends its
+	// generation with every subscription on it (resetCursor): the subscription open across the
+	// reset ending is that finding, and it ends without an event of the new log, whose ids it has
 	// already seen stand for other events.
 	for ended := false; !ended; {
 		switch frame := across.next(t, "the end of the subscription open across the reset").(type) {
@@ -529,6 +527,18 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 			t.Fatalf("frame = %+v, want the events subscription's end", frame)
 		}
 	}
+	// This subscription hands over only once the relay's reset, which waits for a, has run, so it
+	// subscribes first and a commits once its subscribe has reached the relay.
+	feeds := feedsAtTheRelay()
+	waiting := dial()
+	sendEventsSubscribe(t, waiting, "events", nil)
+	testwait.Until(t, "the subscription made while a is open to reach B's relay", func() (int, bool) {
+		at := feedsAtTheRelay()
+		return at, at > feeds
+	})
+	commitLow()
+	renameIssue(t, first, issue.Key, "Renamed after the reset")
+
 	// The subscription made while a was open is sent it first.
 	eventsStartID(t, waiting, "events")
 	if id := mustEventFrameID(t, waiting.event(t, "events")); id != low {

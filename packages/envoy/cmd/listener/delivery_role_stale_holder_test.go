@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -49,6 +50,7 @@ func storeSessionHeartbeat(t *testing.T, client *bus.Client, sessionID string, h
 // subscription of that subject is what puts the copy on forwards, which settled waits for.
 type staleHolderRig struct {
 	harness    listenerDeliveryHarness
+	holder     string
 	forwards   chan *natsgo.Msg
 	exceptions *natsgo.Subscription
 }
@@ -69,7 +71,7 @@ func newStaleHolderRig(t *testing.T, role, holder string, since time.Duration) s
 	if err := harness.client.Conn.Flush(); err != nil {
 		t.Fatalf("flush the test's subscriptions: %v", err)
 	}
-	return staleHolderRig{harness: harness, forwards: forwards, exceptions: exceptions}
+	return staleHolderRig{harness: harness, holder: holder, forwards: forwards, exceptions: exceptions}
 }
 
 // captureAgentSubject puts every message the holder's agent subject carries on a channel, as the
@@ -91,23 +93,32 @@ func captureAgentSubject(t *testing.T, client *bus.Client, holder string) chan *
 	return forwards
 }
 
-// staleHolderSettled is the span settled holds before it reads what the delivery made. The flush
-// above has the server holding every publication the delivery made, and the exception lane is
-// read from this test's own sync subscription; the forward, though, reaches this test on the
-// client's callback goroutine, which neither this test's state nor a later action of its own
-// reaches, since a delivery that forwarded nothing and one whose forward is still on that
-// goroutine look alike here.
-const staleHolderSettled = 500 * time.Millisecond
+// staleHolderMarker is what settled publishes on the holder's agent subject behind everything the
+// delivery published, so the marker reaches forwards after any forward the delivery made.
+var staleHolderMarker = []byte("the stale holder rig's marker, published behind the delivery")
 
 // settled reads what the delivery just made of the message: the reason the role topic's exception
 // lane carried (empty for none), the forward the holder received (nil for none) and the session
 // the role's claim names now (empty once it is released).
+//
+// The role lane hands a forward to the role forwarder, which publishes it and reports its outcome
+// on goroutines of its own (roleForwarder.enqueue), so settled first waits for every forward the
+// delivery handed over to be reported (roleForwarder.wait). Everything the delivery published went
+// out on the harness's connection, so after a flush the server has delivered all of it to this
+// test's subscriptions of that connection: the exception lane is read from its sync subscription
+// at once. A forward, though, reaches forwards on the client's callback goroutine, so settled
+// publishes a marker on the holder's subject after the flush and reads forwards up to it: one
+// subscription's messages reach its callback in the order the server delivered them, so what
+// arrives ahead of the marker is what the delivery forwarded.
 func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason string, forwarded *natsgo.Msg, claimant string) {
 	t.Helper()
-	if err := r.harness.client.Conn.Flush(); err != nil {
+	if !r.harness.config.roleForwards.wait(testwait.Context(t)) {
+		t.Fatal("the role forwarder still had a forward of the delivery unreported when the shared wait's bound came")
+	}
+	conn := r.harness.client.Conn
+	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the delivery's publications: %v", err)
 	}
-	testwait.Span(t, staleHolderSettled, "a forward reaches this test on the client's callback goroutine, which neither its state nor a later action of its own reaches")
 	// A timeout of zero reads what the subscription already holds and waits for nothing.
 	if message, err := r.exceptions.NextMsg(0); err == nil {
 		var exception contracts.Envelope
@@ -122,9 +133,17 @@ func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason stri
 	} else if !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("read the exception lane: %v", err)
 	}
-	select {
-	case forwarded = <-r.forwards:
-	default:
+	if err := conn.Publish(contracts.AgentSubject(r.holder), staleHolderMarker); err != nil {
+		t.Fatalf("publish the marker on the holder's subject: %v", err)
+	}
+	for {
+		message := testwait.Receive(t, "the marker published behind the delivery to reach the holder's subject", r.forwards)
+		if bytes.Equal(message.Data, staleHolderMarker) {
+			break
+		}
+		if forwarded == nil {
+			forwarded = message
+		}
 	}
 	claimant, err := r.harness.registry.RoleHolder(role)
 	if err != nil {

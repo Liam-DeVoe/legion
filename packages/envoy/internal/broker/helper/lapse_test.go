@@ -62,19 +62,20 @@ func revoked(r *rig, id string) bool {
 }
 
 // endSessionThenReleaseRevokes ends sess while every revoke is failing (reg.Remove, as retire and
-// unregister do), waits for the next revoke attempt after that, then clears the fake's revoke
-// fault. The fake fails an attempt in the same critical section that counts it, so the attempt the
-// helper sees has already failed. That attempt is the handed-off revoke's first, or at most one
-// last try of the session's own loop, which then returns at once. In that second case the
-// handed-off revoke's first try follows at once, and the 200 ms sleep before the fault is cleared
-// makes that try fail too. Either way the id lands on the handed-off revoke's next try, 2 s later,
-// although no test asserts which try lands it. The helper fails the test when no attempt comes
-// within 5 s: nothing handed the id on.
+// unregister do), waits for the next revoke attempt after that and for the session's own revoke
+// loop to have handed the id on, then clears the fake's revoke fault. The fake fails an attempt in
+// the same critical section that counts it, so the attempt the helper sees has already failed.
+// That attempt is the handed-off revoke's first, or one last try of the session's own loop, which
+// then returns at once and hands the id to the bounded revoke (Server.revoke) on a goroutine of
+// its own: that goroutine in the dump (handedOffRevokes) says the session's loop has made its last
+// try, so no revoke after the fault clears is that loop's. The id lands on one of the handed-off
+// revoke's tries, 2 s apart, although no test asserts which.
 func endSessionThenReleaseRevokes(t *testing.T, r *rig, reg *Registry, sess *Session) {
 	t.Helper()
 	r.fake.mu.Lock()
 	before := r.fake.revokeAttempts
 	r.fake.mu.Unlock()
+	handedOff := handedOffRevokes()
 	reg.Remove(sess)
 	if sess.peer != nil {
 		sess.peer.Close()
@@ -84,10 +85,28 @@ func endSessionThenReleaseRevokes(t *testing.T, r *rig, reg *Registry, sess *Ses
 		defer r.fake.mu.Unlock()
 		return r.fake.revokeAttempts > before
 	})
-	testwait.Span(t, 200*time.Millisecond, "the session's own revoke retry ends on its stop, which nothing reports: no state of the server says that loop has returned, no later action's effect separates its last try from the handed-off revoke's (both are revokes of the same id), and the fake broker is real HTTP, which synctest cannot hold")
+	testwait.Until(t, "the ended session's revoke loop to hand its lapsed id to the bounded revoke", func() (int, bool) {
+		now := handedOffRevokes()
+		return now, now > handedOff
+	})
 	r.fake.mu.Lock()
 	r.fake.revokeFailFirst = 0
 	r.fake.mu.Unlock()
+}
+
+// handedOffRevokes counts the goroutines running the bounded revoke a session's revoke loop hands
+// an id to when the session ends (Server.revoke, which revokeLapsed starts as it returns), found
+// by name in the goroutine dump as blockedInRegisterReply finds its goroutine: a rename of revoke
+// must be made here too, and a name that no longer matches fails the row at the shared wait's
+// bound, naming the wait.
+func handedOffRevokes() int {
+	running := 0
+	for _, g := range goroutinetest.Traces() {
+		if strings.Contains(g, ".(*Server).revoke(") {
+			running++
+		}
+	}
+	return running
 }
 
 // testGate returns a gate for the fake's enrollGate or renewGate and the func that opens it, once

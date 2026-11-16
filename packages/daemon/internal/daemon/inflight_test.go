@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -543,6 +544,27 @@ func operatorRequest(d *daemon, method, path string, body []byte) <-chan int {
 	return answered
 }
 
+// awaitHalted waits until d's stop has halted supervision. Nothing in the halt leaves state a test
+// can read, but serve begins the API's drain only once the halt has returned, and the drain's
+// server.Shutdown closes the API's listener before anything else: a dial of the API's port refused
+// is the halt's effect, while the drain itself, which waits for the requests still in flight, stays
+// open.
+func awaitHalted(t *testing.T, d *daemon) {
+	t.Helper()
+	address := strings.TrimPrefix(d.base, "http://")
+	testwait.Eventually(t, "the daemon's API to refuse a new connection, which its drain does once the halt has returned", func() bool {
+		conn, err := net.Dial("tcp", address)
+		if err == nil {
+			conn.Close()
+			return false
+		}
+		if !errors.Is(err, syscall.ECONNREFUSED) {
+			t.Fatalf("dial the daemon's API at %s while it stops: %v, want it accepted or refused", address, err)
+		}
+		return true
+	})
+}
+
 // An operator's spawn waiting in the runtime when the daemon is told to stop runs until the API's
 // drain ends, then ends with it inside the stop's budget, and the stop names it among the decisions
 // in flight: the operator, claims and controller routes run their decisions past a client that
@@ -617,12 +639,10 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 		return strings.Contains(logs.String()[mark:], `"msg":"legion daemon stopping"`)
 	})
 	// The agent exits a moment after the halt, inside the drain. The halt is in-memory work that
-	// the stopping line above begins and that leaves nothing a test can read behind it — no state
-	// of the daemon's says it is through, no later action of the test's has an effect that waits
-	// on it, and synctest reaches none of this, the daemon running real goroutines over a real
-	// socket and a real Postgres — so the exit is held for a span, as an agent told to shut down
-	// holds before it goes.
-	testwait.Span(t, 100*time.Millisecond, "the halt is in-memory work the stopping line begins and leaves nothing readable behind it, so nothing but a span puts the agent's exit after it and inside the drain")
+	// the stopping line above begins, and the drain that follows it closes the API's listener
+	// first, so the exit waits for a refused connection (awaitHalted): the drain stays open, held
+	// by the suspension this test lets go only below.
+	awaitHalted(t, d)
 	close(rt.exit)
 	if err := testwait.Receive(t, "run to return once its context was cancelled", d.done); err != nil {
 		t.Fatalf("run: %v", err)
@@ -846,10 +866,9 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 	testwait.Eventually(t, "the daemon to say it is stopping", func() bool {
 		return strings.Contains(logs.String()[mark:], `"msg":"legion daemon stopping"`)
 	})
-	// The root exits a moment after the halt, inside the drain. The halt is in-memory work that
-	// the stopping line above begins and that leaves nothing a test can read behind it, so the
-	// exit is held for a span, as a process told to shut down holds before it goes.
-	testwait.Span(t, 100*time.Millisecond, "the halt is in-memory work the stopping line begins and leaves nothing readable behind it, so nothing but a span puts the root's exit after it and inside the drain")
+	// The root exits a moment after the halt, inside the drain, which awaitHalted reads from the
+	// API's listener closing; the drain stays open, held by the close this test lets go below.
+	awaitHalted(t, d)
 	close(rt.exit)
 	if err := testwait.Receive(t, "run to return once its context was cancelled", d.done); err != nil {
 		t.Fatalf("run: %v", err)

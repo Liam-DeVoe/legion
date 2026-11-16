@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/goroutinetest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -751,8 +752,12 @@ func TestAstraSuspensionNotYetComplete(t *testing.T) {
 	testwait.Receive(t, "the suspension to reach the runtime", gated.entered)
 	delivered := make(chan error, 1)
 	go func() { delivered <- h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the steer"}) }()
-	testwait.Span(t, 50*time.Millisecond, "the steer waits on the machine's sync.Mutex, which records nothing a test can read, "+
-		"which a synctest bubble does not count as durably blocked, and behind which every later request queues too")
+	testwait.Until(t, "the steer to wait on the machine's lock, which the suspension in the runtime holds", func() (string, bool) {
+		if resumes := h.calls("Resume"); len(resumes) != 0 {
+			t.Fatal("resumed while the suspension was still in the runtime")
+		}
+		return "no goroutine parked on the lock inside Machine.Handle", handleWaitsOnTheLock()
+	})
 	if resumes := h.calls("Resume"); len(resumes) != 0 {
 		t.Fatal("resumed while the suspension was still in the runtime")
 	}
@@ -780,6 +785,17 @@ func TestAstraSuspensionNotYetComplete(t *testing.T) {
 	h.wantCalls("Spawn", 1)
 	h.wantBudgets(Budgets{})
 	h.wantState(StateLaunching)
+}
+
+// handleWaitsOnTheLock reports whether a goroutine is parked on a machine's lock inside Handle, as
+// a request behind one that holds the lock is. A sync.Mutex records no waiter, so the goroutine's
+// own stack is the one state that shows it (goroutinetest); this package's tests run one at a
+// time, so the goroutine is the running test's.
+func handleWaitsOnTheLock() bool {
+	return slices.ContainsFunc(goroutinetest.Traces(), func(trace string) bool {
+		header, _, _ := strings.Cut(trace, "\n")
+		return strings.Contains(header, "[sync.Mutex.Lock") && strings.Contains(trace, ".(*Machine).Handle(")
+	})
 }
 
 func TestAstraDuplicateObservations(t *testing.T) {

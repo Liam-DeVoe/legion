@@ -76,6 +76,19 @@ func (p *heldPublisher) accept(from, to int) {
 	p.answered += to - from
 }
 
+// taken reports whether the outbox has read the answers numbered from through to-1, which accept
+// gave: each answer waits in its channel until the batch receives it.
+func (p *heldPublisher) taken(from, to int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, answer := range p.answers[from:to] {
+		if len(answer) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // An issue's events go to each destination one at a time, in id order: the second event is sent
 // to the issue's topic only once NATS answered the first event's send there, and to the role route
 // only once the first event's role send was answered, while the first event's three destinations
@@ -147,9 +160,10 @@ func TestAnOutboxStoppedMidBatchMarksTheAnsweredAndReleasesTheRest(t *testing.T)
 	testwait.Eventually(t, "the first event sent", func() bool { return len(publisher.sent()) == 3 })
 	publisher.accept(0, 3)
 	testwait.Eventually(t, "the second event sent", func() bool { return len(publisher.sent()) == 5 })
-	testwait.Span(t, 100*time.Millisecond, "the batch reads the first event's third answer with nothing to show for it: "+
-		"no send waits on it and the owner settles only with the second event, so neither state nor a later "+
-		"action's effect says the batch read it before the stop")
+	// The batch reads the first event's third answer with nothing to show for it: no send waits on
+	// it and the owner settles only with the second event, so the read is waited for in the
+	// answers' own channels.
+	testwait.Eventually(t, "the batch to read the first event's three answers", func() bool { return publisher.taken(0, 3) })
 	stop()
 
 	if publishedAt(t, database, first.ID) == nil {

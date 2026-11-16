@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -2166,17 +2167,33 @@ func syncRepoInBackground(process *Importer, repo string) <-chan syncAnswer {
 }
 
 // joinInBackground starts a caller of repo's sync meant to join the flight already running, and
-// gives it the moment it needs to reach that flight. A caller that joins a flight makes no call
-// of its own — no GitHub read, no query, nothing a test can wait for — so this settle is what
-// keeps the test about one shared flight; the flight cannot end underneath it meanwhile, because
-// the caller returns while the test still holds the read that flight is stopped at.
+// waits until it has. A caller that joins a flight makes no call of its own — no GitHub read, no
+// query, nothing a product reports — so what shows the join is the caller's own goroutine parked
+// in Sync's wait for the flight's answer (callersAwaitingAFlight); the flight cannot end
+// underneath it meanwhile, because the caller joins while the test still holds the read that
+// flight is stopped at.
 func joinInBackground(t *testing.T, process *Importer, repo string) <-chan syncAnswer {
 	t.Helper()
+	awaiting := callersAwaitingAFlight()
 	answer := syncRepoInBackground(process, repo)
-	testwait.Span(t, 500*time.Millisecond, "a caller joining a flight already running makes no call of its own — "+
-		"no GitHub read, no query, no report — so no state of the product says it has joined, and the flight it joins "+
-		"is held by the test meanwhile")
+	testwait.Until(t, "the caller to join the flight already running", func() (int, bool) {
+		now := callersAwaitingAFlight()
+		return now, now > awaiting
+	})
 	return answer
+}
+
+// callersAwaitingAFlight counts the goroutines parked in Sync's wait for a flight's answer: the
+// caller that started a flight and every caller that joined it. This package's tests run one at a
+// time, so each such goroutine is the running test's.
+func callersAwaitingAFlight() int {
+	awaiting := 0
+	for _, trace := range goroutinetest.Traces() {
+		if header, _, _ := strings.Cut(trace, "\n"); strings.Contains(header, "[select") && strings.Contains(trace, ".(*Importer).Sync(") {
+			awaiting++
+		}
+	}
+	return awaiting
 }
 
 // waitForSync answers what a background sync returned, failing the test rather than hanging when
