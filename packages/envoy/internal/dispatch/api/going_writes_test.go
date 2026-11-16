@@ -1507,13 +1507,17 @@ func TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns(t *test
 // goingUploadRefusedAsWithheld sends one write of the run's first invocation of dispatch_artifact,
 // approved as approved, and holds it to 409 GOING_NOT_PROPOSED, the answer of a pick of an upload
 // the proposal withheld, its message naming stored - the name the document it would write over is
-// stored under - with nothing recorded.
+// stored under, the name to write in the question - and nothing the person at the bar does not
+// hold (goingInternals), with nothing recorded.
 func (rig goingWritesRig) goingUploadRefusedAsWithheld(t *testing.T, run, approved, stored string) {
 	t.Helper()
 	response := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": approved})
 	refusal := decodeBody[errorBody](t, response)
 	if response.Code != http.StatusConflict || refusal.Code != codeGoingNotProposed || !strings.Contains(refusal.Error, stored) {
 		t.Fatalf("the upload approved %s answered %d %s, want 409 %s naming %s", approved, response.Code, response.Body.String(), codeGoingNotProposed, stored)
+	}
+	if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
+		t.Errorf("the upload approved %s is refused %q, which names %q, none of which the person at the bar holds", approved, refusal.Error, internals)
 	}
 	if writes := rig.record(t, "alice", run).Writes; len(writes) != 0 {
 		t.Fatalf("the refused upload approved %s was recorded as %+v", approved, writes)
@@ -1596,9 +1600,9 @@ func TestGoingWriteOfAForcedUploadOverADocumentTheWordsDoNotAskForIsRefusedHowev
 // a fill naming a document the issue holds - by its stored name or by its slug - is refused with
 // nothing written. The reason is what is so: it does not say the upload was not offered, nor that
 // their own words do not name the document they just typed, and it names the stored name to write
-// in the question and the command's --force, the two ways to ask for that document's next version.
-// The first of those is true: the same fill, under words that write plan.md, writes its next
-// version.
+// in the question, the way the bar asks for that document's next version, and nothing the person
+// at the bar does not hold (goingInternals). That way is true: the same fill, under words that
+// write plan.md, writes its next version.
 func TestGoingWriteOfAnUploadWhoseHeldNameThePersonFilledInSaysWhatIsSo(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
@@ -1650,10 +1654,11 @@ func TestGoingWriteOfAnUploadWhoseHeldNameThePersonFilledInSaysWhatIsSo(t *testi
 					t.Errorf("the fill of %q is refused %q, which says %q of an upload the bar offered and a name the person typed", tc.fill, refusal.Error, untrue)
 				}
 			}
-			for _, says := range []string{"plan.md", "--force"} {
-				if !strings.Contains(refusal.Error, says) {
-					t.Errorf("the fill of %q is refused %q, want it to name %q, one of the two ways to ask for that document's next version", tc.fill, refusal.Error, says)
-				}
+			if !strings.Contains(refusal.Error, "plan.md") {
+				t.Errorf("the fill of %q is refused %q, want it to name plan.md, the name to write in the question to ask for that document's next version", tc.fill, refusal.Error)
+			}
+			if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
+				t.Errorf("the fill of %q is refused %q, which names %q, none of which the person at the bar holds", tc.fill, refusal.Error, internals)
 			}
 			// A filled slug is what fails, whatever the words write, so the reason tells the
 			// person to fill in the stored name, not only to write it.
@@ -1791,8 +1796,10 @@ func TestGoingWriteOfAForcedUploadNeverWritesOverADocumentMadeAsItRuns(t *testin
 // TestGoingWriteOfAnUploadOverAHeldNameIsRefusedWithoutForceHoweverApproved (review round 5,
 // finding 3): `force` is what asks for the next version of a document the owner already holds
 // under the upload's name, as the tool states it. Without it the upload is refused, however it
-// came to run - at once, picked by the person, or confirmed - and the document keeps its one
-// version; with it the upload writes that next version, however it came to run.
+// came to run - at once, picked by the person, or confirmed - naming the document's name, the
+// name the person writes in the question to ask for that next version, and nothing the person at
+// the bar does not hold (goingInternals); the document keeps its one version. With force the
+// upload writes that next version, however it came to run.
 func TestGoingWriteOfAnUploadOverAHeldNameIsRefusedWithoutForceHoweverApproved(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Held notes", "The spec.\n").Key
@@ -1803,9 +1810,12 @@ func TestGoingWriteOfAnUploadOverAHeldNameIsRefusedWithoutForceHoweverApproved(t
 			upload := map[string]any{"issue": issue, "name": name, "content": "# Notes\n\nReplaced by the bar.\n"}
 			run := rig.proposed(t, "alice", true, "dispatch_artifact", upload)
 			refused := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": approved})
-			if refused.Code != http.StatusBadRequest || decodeBody[errorBody](t, refused).Code != codeGoingArguments ||
-				!strings.Contains(refused.Body.String(), "force") {
-				t.Fatalf("an upload over %s without force, approved %s, answered %d %s, want 400 %s naming force", name, approved, refused.Code, refused.Body.String(), codeGoingArguments)
+			refusal := decodeBody[errorBody](t, refused)
+			if refused.Code != http.StatusBadRequest || refusal.Code != codeGoingArguments || !strings.Contains(refusal.Error, name) {
+				t.Fatalf("an upload over %s without force, approved %s, answered %d %s, want 400 %s naming %s", name, approved, refused.Code, refused.Body.String(), codeGoingArguments, name)
+			}
+			if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
+				t.Errorf("an upload over %s without force, approved %s, is refused %q, which names %q, none of which the person at the bar holds", name, approved, refusal.Error, internals)
 			}
 			if versions := rig.goingDocumentVersions(t, issue, slug); versions != 1 {
 				t.Fatalf("%s holds %d versions after the upload without force, want its one", name, versions)

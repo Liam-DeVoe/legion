@@ -26,5 +26,4 @@ body: |-
   update names as it found it) and, for a rank, `rank_place`; `PATCH /api/v1/asks/{id}` answers
   `AskEdited` and `POST /api/v1/comments/{id}/resolve` `ResolvedComment`, each with `previous`;
   `EditArtifactResponse` carries `previous_token` and `ArtifactUploadResponse`
-  `previous_version`; a run's write carries `before_unread`. `bun run gen:go` writes
-  `ARTIFACT_NAME_EXISTS_RULE` into the Go package as `ArtifactNameExistsRule`.
+  `previous_version`; a run's write carries `before_unread`.

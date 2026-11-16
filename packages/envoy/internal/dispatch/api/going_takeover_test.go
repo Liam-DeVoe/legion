@@ -687,6 +687,7 @@ func TestGoingUndoLandedWholeAfterItsProcessEndedAnswersEachFieldAsItsWriteBack(
 		fields["labels"].OK || !strings.Contains(fields["labels"].Message, "bobs") || !fields["title"].OK {
 		t.Fatalf("the undo after the process ended answered %+v, want 409 %s with the labels refused naming bob's and the title put back", line, codeGoingUndoChanged)
 	}
+	requireNoFieldSaidTwice(t, line)
 	if read := rig.issueRead(t, issue); read.Title != "Titled before the turn" || len(read.Labels) != 1 || read.Labels[0] != "bobs" || sent[patch] != 0 {
 		t.Fatalf("the issue reads %q %v with the write back sent %d times after the takeover, want its title back, bob's labels kept and nothing sent",
 			read.Title, read.Labels, sent[patch])
@@ -742,6 +743,7 @@ func TestGoingUndoTakenOverWhoseWriteBackRecordedNoPreviousIsLoggedAsAFailure(t 
 			if line.Outcome.Code != codeGoingUndoUnsettled || len(line.Fields) != 1 || line.Fields[0].Field != "title" || line.Fields[0].OK || sent[patch] != 0 {
 				t.Fatalf("the undo taken over answered %+v with the write back sent %d times, want the title unsettled, %s, and nothing sent", line, sent[patch], codeGoingUndoUnsettled)
 			}
+			requireNoFieldSaidTwice(t, line)
 			var levels []slog.Level
 			for _, record := range recorder.Records() {
 				namesWrite, namesRun := false, false

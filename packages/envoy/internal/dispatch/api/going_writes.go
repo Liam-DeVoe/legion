@@ -1128,9 +1128,10 @@ func goingSendRefusal(approved string, prepared goingPrepared, before goingObser
 		return refused
 	}
 	if approved == goingApprovedAuto && goingUploadsOver(prepared, before, person.words) {
+		name := goingText(prepared.arguments, goingUploadNames[prepared.action])
 		return errorf(http.StatusConflict, codeGoingNotAutomatic,
-			"%s under %q writes to an owner the write cannot name, so nothing read says whether that owner already holds a document of that name, and the words do not write the name. It runs only when the person picks it, as the proposal offers an upload whose owner it could not read: send it as approved person or confirmed",
-			prepared.action, goingText(prepared.arguments, goingUploadNames[prepared.action]))
+			"an upload under %q writes to an owner the bar cannot name, so nothing it read says whether that owner already holds a document of that name, and your question does not write the name, so it does not run at once: to run it, ask again with %s written in your question",
+			name, name)
 	}
 	return nil
 }

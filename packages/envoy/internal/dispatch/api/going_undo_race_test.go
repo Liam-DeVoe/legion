@@ -207,6 +207,7 @@ func TestGoingUndoWritesBackOnlyWhatTheTurnLeftAsTheWriteLands(t *testing.T) {
 		if title := rig.issueRead(t, issue).Title; title != "Bob's title" {
 			t.Fatalf("the issue is titled %q after the undo answered %+v, want bob's title kept", title, line.Outcome)
 		}
+		requireNoFieldSaidTwice(t, line)
 	})
 
 	t.Run("an issue's rank", func(t *testing.T) {
@@ -235,6 +236,7 @@ func TestGoingUndoWritesBackOnlyWhatTheTurnLeftAsTheWriteLands(t *testing.T) {
 		if question := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+ask, nil)).Ask.Question; question != "Ship it on Tuesday?" {
 			t.Fatalf("the ask reads %q after the undo answered %+v, want the later words kept", question, line.Outcome)
 		}
+		requireNoFieldSaidTwice(t, line)
 	})
 
 	t.Run("a document's content", func(t *testing.T) {
@@ -254,6 +256,7 @@ func TestGoingUndoWritesBackOnlyWhatTheTurnLeftAsTheWriteLands(t *testing.T) {
 		if !strings.Contains(text, "later line") {
 			t.Fatalf("the document reads %q after the undo answered %+v, want the later edit kept", text, line.Outcome)
 		}
+		requireNoFieldSaidTwice(t, line)
 	})
 
 	t.Run("a created issue's close", func(t *testing.T) {

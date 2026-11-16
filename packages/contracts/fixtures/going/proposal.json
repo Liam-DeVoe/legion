@@ -62,7 +62,7 @@
       "invocations": [],
       "offered": false,
       "withheld": [
-        "dispatch_artifact under \"notes.md\" is not offered: issue DEMO-12 already holds notes.md (slug notes-md), and an upload would write its next version over the text it holds, which the bar offers only with force where your own words name that document. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force."
+        "an upload under \"notes.md\" is not offered: issue DEMO-12 already holds notes.md (slug notes-md), and the upload would replace the text it holds. The bar replaces a document only where your question writes the name it is stored under: to replace it, ask for that by its name, as in \"replace notes.md with this\". To change part of it, open the document and edit it there."
       ]
     }
   ]

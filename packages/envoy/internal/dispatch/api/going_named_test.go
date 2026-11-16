@@ -9,13 +9,24 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// goingInternals is what a reason the bar shows a person may not name, since the person at the bar
+// holds none of it: a tool's id (dispatch_doc_edit), the dispatch command line - one of its
+// commands or flags (dispatch artifact, --force) - and the members of a write the bar fills in
+// itself (force, approved person). A reason naming one tells that person of nothing they can do.
+var goingInternals = regexp.MustCompile(`dispatch_[a-z_]+|--[a-z]|\bdispatch (command|artifact|[a-z]+-[a-z]+)\b|\bforce\b|\bapproved (auto|person|confirmed)\b`)
 
 // goingAutomaticOf is whether the one invocation the answer wrote for action, as the proposal of a
 // run typed as words marks it: about the page's DEMO-12 where onPage, about the items the words
@@ -359,8 +370,97 @@ func TestGoingUploadOverAHeldDocumentIsWithheldUnlessTheWordsWriteTheNameTheAnsw
 			t.Errorf("%q uploading as %q over %s (slug %s) is withheld %q, which never names %s, the name to write",
 				tc.words, tc.upload, tc.stored, tc.slug, withheld, tc.stored)
 		}
+		if internals := goingInternals.FindAllString(withheld, -1); len(internals) > 0 {
+			t.Errorf("%q uploading as %q over %s is withheld %q, which names %q, none of which the person at the bar holds",
+				tc.words, tc.upload, tc.stored, withheld, internals)
+		}
 	}
 }
+
+// TestGoingUploadRefusalsSayWhatThePersonCanDoInTheBar: each reason the writes route gives for an
+// upload it does not send - one over a document the words do not ask for, by its slug or by its
+// stored name, one whose name the person filled in, one with no force over a held name or over an
+// owner it cannot name, and one sent at once whose owner it cannot name - reaches the person in
+// the bar's panel. So it names the name to write in the question, the document's stored name or
+// the upload's own, and none of goingInternals; and each keeps the status and the code it is
+// answered with (goingWriteClaim.refuse). The one refused for being sent at once tells the person
+// to pick or confirm nothing: the bar shows no pick of an invocation it sent at once, so writing
+// the name in the question is what that person can do.
+func TestGoingUploadRefusalsSayWhatThePersonCanDoInTheBar(t *testing.T) {
+	issueUpload := GoingRoute{Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts"}
+	unnamedUpload := GoingRoute{Method: http.MethodPost, Pattern: "/api/v1/somewhere/{key}/artifacts"}
+	plan := &model.Artifact{Name: "plan.md", Slug: "plan-md", Kind: "doc", CreatedBy: model.Actor{Kind: "user", ID: "alice"},
+		Versions: []model.Version{{Number: 2, Authors: []model.Actor{{Kind: "user", ID: "bob"}}}}}
+	content := "# Plan\n\nWritten by the model.\n"
+	unnamedPrepared := goingPrepared{action: "dispatch_artifact", route: unnamedUpload,
+		arguments: map[string]any{"name": "notes", "content": content}, call: goingCall{path: map[string]string{"key": "DEMO-12"}}}
+	unnamed, err := (goingObserver{}).uploadedOver(context.Background(), unnamedPrepared, goingFields("artifact"), "")
+	if err != nil || !unnamed.ownerUnnamed {
+		t.Fatalf("read what an upload to an owner it cannot name writes over: %+v, %v", unnamed, err)
+	}
+	// answered is a refusal as the writes route answers it (goingWriteClaim.refuse).
+	answered := func(err error) (int, string, string) {
+		var argument GoingArgumentError
+		if errors.As(err, &argument) {
+			return http.StatusBadRequest, codeGoingArguments, argument.Error()
+		}
+		var refused *apiError
+		if errors.As(err, &refused) {
+			return refused.status, refused.code, refused.message
+		}
+		return 0, "", fmt.Sprint(err)
+	}
+	for _, tc := range []struct {
+		name, approved string
+		route          GoingRoute
+		arguments      map[string]any
+		before         goingObservation
+		person         goingPerson
+		status         int
+		code, write    string
+	}{
+		{"its slug, which the words do not ask for", goingApprovedPerson, issueUpload,
+			map[string]any{"issue": "DEMO-12", "name": "plan-md", "content": content, "force": true},
+			goingObservation{held: plan}, goingPerson{words: "save this as plan-md"}, http.StatusConflict, codeGoingNotProposed, "plan.md"},
+		{"its stored name, which the words do not write", goingApprovedConfirmed, issueUpload,
+			map[string]any{"issue": "DEMO-12", "name": "plan.md", "content": content, "force": true},
+			goingObservation{held: plan}, goingPerson{words: "save this as the plan"}, http.StatusConflict, codeGoingNotProposed, "plan.md"},
+		{"its slug, filled in by the person", goingApprovedPerson, issueUpload,
+			map[string]any{"issue": "DEMO-12", "name": "plan-md", "content": content, "force": true},
+			goingObservation{held: plan}, goingPerson{words: "save this to the issue", filled: "name"}, http.StatusConflict, codeGoingNotProposed, "plan.md"},
+		{"its stored name, filled in by the person", goingApprovedPerson, issueUpload,
+			map[string]any{"issue": "DEMO-12", "name": "plan.md", "content": content, "force": true},
+			goingObservation{held: plan}, goingPerson{words: "save this to the issue", filled: "name"}, http.StatusConflict, codeGoingNotProposed, "plan.md"},
+		{"a held name, with no force", goingApprovedAuto, issueUpload,
+			map[string]any{"issue": "DEMO-12", "name": "plan.md", "content": content},
+			goingObservation{held: plan}, goingPerson{words: "replace plan.md with this"}, http.StatusBadRequest, codeGoingArguments, "plan.md"},
+		{"an owner it cannot name, with no force", goingApprovedPerson, unnamedUpload,
+			map[string]any{"name": "notes", "content": content},
+			unnamed, goingPerson{words: "save this as a doc"}, http.StatusBadRequest, codeGoingArguments, "notes"},
+		{"an owner it cannot name, sent at once", goingApprovedAuto, unnamedUpload,
+			map[string]any{"name": "notes", "content": content, "force": true},
+			unnamed, goingPerson{words: "save this as a doc"}, http.StatusConflict, codeGoingNotAutomatic, "notes"},
+	} {
+		prepared := goingPrepared{action: "dispatch_artifact", route: tc.route, arguments: tc.arguments,
+			call: goingCall{path: map[string]string{"key": "DEMO-12"}}}
+		status, code, reason := answered(goingSendRefusal(tc.approved, prepared, tc.before, tc.person))
+		if status != tc.status || code != tc.code {
+			t.Errorf("%s: the upload is answered %d %s %q, want %d %s", tc.name, status, code, reason, tc.status, tc.code)
+		}
+		if !strings.Contains(reason, tc.write) {
+			t.Errorf("%s: the upload is refused %q, which never names %s, the name to write in the question", tc.name, reason, tc.write)
+		}
+		if internals := goingInternals.FindAllString(reason, -1); len(internals) > 0 {
+			t.Errorf("%s: the upload is refused %q, which names %q, none of which the person at the bar holds", tc.name, reason, internals)
+		}
+		if tc.code == codeGoingNotAutomatic && goingPickOrConfirm.MatchString(reason) {
+			t.Errorf("%s: the upload is refused %q, which tells the person to pick or confirm an invocation the bar sent at once and shows no pick of", tc.name, reason)
+		}
+	}
+}
+
+// goingPickOrConfirm is a reason telling the person to pick or to confirm a write.
+var goingPickOrConfirm = regexp.MustCompile(`(?i)\b(pick|confirm)`)
 
 // TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt (deep review round 5,
 // finding D): an upload with force the proposal offers because the answer wrote the held

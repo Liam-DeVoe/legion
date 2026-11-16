@@ -107,6 +107,22 @@ func oneLine(t *testing.T, answer goingUndoAnswer, ok bool) goingUndoLine {
 	return answer.Lines[0]
 }
 
+// requireNoFieldSaidTwice fails the test where a refused field of an undo's line says its own name
+// first: the bar prints each refused field as its name and then its message (undoneText,
+// "status: holds ..."), so a message that starts with that name as well reads the field twice
+// ("status: status holds ...").
+func requireNoFieldSaidTwice(t *testing.T, line goingUndoLine) {
+	t.Helper()
+	for _, field := range line.Fields {
+		if field.OK || field.Field == "" {
+			continue
+		}
+		if said := strings.ToLower(field.Message); strings.HasPrefix(said, field.Field+" ") || strings.HasPrefix(said, field.Field+":") {
+			t.Errorf("the undo's %s field says %q, which the bar prints as %q", field.Field, field.Message, field.Field+": "+field.Message)
+		}
+	}
+}
+
 // runOne records a run of alice's proposing action with arguments, writes it as the person and
 // answers the run's id and the write's line.
 func (rig goingWritesRig) runOne(t *testing.T, action string, arguments map[string]any, fill any) (string, goingWriteLine) {
@@ -224,6 +240,7 @@ func TestGoingUndoRefusesAnAdvancesRelationASecondWriterChanged(t *testing.T) {
 	if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "advances") {
 		t.Fatalf("the undo answered %+v, want advances refused as changed", line)
 	}
+	requireNoFieldSaidTwice(t, line)
 	if read := rig.issueRead(t, issue); !slices.Equal(advanceEntries(read.Advances), []string{third + " own"}) {
 		t.Fatalf("the undo left %s advancing %v, want bob's %s untouched", issue, advanceEntries(read.Advances), third)
 	}
@@ -289,6 +306,29 @@ func TestGoingUndoReversesAClaimAFollowACommentResolveAndAnOpenedAsk(t *testing.
 			t.Fatalf("the approval ask is %s after the undo, want resolved", state)
 		}
 	})
+}
+
+// TestGoingUndoRefusesAFollowAnotherWriterUndid: a follow another writer undid before the undo is
+// left as that writer left it, and the undo is refused, 409 GOING_UNDO_CHANGED, saying what holds
+// now on the field the write changed, in words the bar prints after that field's name.
+func TestGoingUndoRefusesAFollowAnotherWriterUndid(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Followed, then not", "The spec.\n").Key
+	ask := rig.ask(t, issue, "Which region first?")
+	run, _ := rig.runOne(t, "dispatch_follow", map[string]any{"ask": ask, "action": "follow"}, goingPlannerTitle)
+	rig.fixture(t, "bob", http.MethodDelete, "/api/v1/asks/"+ask+"/followers/"+goingPlanner, nil)
+
+	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	if line.Outcome.Code != codeGoingUndoChanged || len(line.Fields) != 1 || line.Fields[0].OK || line.Fields[0].Message == "" {
+		t.Fatalf("the undo answered %+v, want the follow refused as changed, its one field saying why", line)
+	}
+	requireNoFieldSaidTwice(t, line)
+	followers := decodeBody[askFollowersRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+ask+"/followers", nil)).Followers
+	for _, follower := range followers {
+		if follower.SessionID == goingPlanner {
+			t.Fatalf("%s follows again after the undo answered %+v, want bob's unfollow kept", goingPlanner, line)
+		}
+	}
 }
 
 // TestGoingUndoClosesAnIssueTheTurnCreatedWithTheReason: an issue the turn created is closed by its
@@ -521,13 +561,14 @@ func TestGoingUndoRefusesAFieldAnotherWriterChangedAndUndoesTheRest(t *testing.T
 		t.Fatalf("after the undo the first reads %s %q and the second %s, want bob's title kept and both statuses back",
 			afterFirst.Status, afterFirst.Title, afterSecond.Status)
 	}
-	fields := map[string]bool{}
+	fields := map[string]goingUndoField{}
 	for _, field := range changed.Fields {
-		fields[field.Field] = field.OK
+		fields[field.Field] = field
 	}
-	if len(fields) != 2 || !fields["status"] || fields["title"] {
-		t.Fatalf("the first issue's undo reports its fields as %+v, want status put back and title left", changed.Fields)
+	if len(fields) != 2 || !fields["status"].OK || fields["title"].OK || !strings.Contains(fields["title"].Message, "Bob's title") {
+		t.Fatalf("the first issue's undo reports its fields as %+v, want status put back and title left, naming what it holds", changed.Fields)
 	}
+	requireNoFieldSaidTwice(t, changed)
 
 	// The refusal is the turn's verdict on that write: a second undo tries nothing again, and the
 	// run no longer reads undoable.
@@ -593,6 +634,7 @@ func TestGoingUndoPutsARankBackBetweenItsOldNeighbours(t *testing.T) {
 			!strings.Contains(fields["rank"].Message, second) || !strings.Contains(fields["rank"].Message, third) {
 			t.Fatalf("the undo answered %+v, want rank refused naming where bob left it and status put back", line)
 		}
+		requireNoFieldSaidTwice(t, line)
 		if !between(t, moved, second, third) || rig.issueRead(t, moved).Status != status {
 			t.Fatalf("after the undo %s is %s at %s, want bob's place kept and the status back to %s",
 				moved, rig.issueRead(t, moved).Status, rank(moved), status)
@@ -978,9 +1020,11 @@ func TestGoingUndoOfAnAdvancesRelationWhoseRecordDoesNotDecodeClearsNothing(t *t
 		t.Fatalf("garble the record's value before: %v", err)
 	}
 	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if len(line.Fields) != 1 || line.Fields[0].Field != goingAdvances || line.Fields[0].OK || !strings.Contains(line.Fields[0].Message, "advances") {
+	if len(line.Fields) != 1 || line.Fields[0].Field != goingAdvances || line.Fields[0].OK || line.Fields[0].Message == "" ||
+		!strings.Contains(line.Outcome.Message, goingAdvances) {
 		t.Fatalf("the undo answered %+v, want advances refused, naming why", line)
 	}
+	requireNoFieldSaidTwice(t, line)
 	if read := rig.issueRead(t, issue); !slices.Equal(advanceEntries(read.Advances), []string{second + " own"}) {
 		t.Fatalf("the undo left %s advancing %v, want the %s the turn left kept", issue, advanceEntries(read.Advances), second)
 	}

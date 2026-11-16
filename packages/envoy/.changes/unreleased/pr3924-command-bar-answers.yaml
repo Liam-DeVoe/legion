@@ -24,8 +24,8 @@ body: |-
   words saying that a filled-in name does not ask for that document to be replaced, with
   nothing written. A write of an upload without `force`
   under a name the store holds when it runs is refused, however it came to run:
-  `400 GOING_ARGUMENTS` in the
-  `dispatch artifact` command's words where its read before finds the document. Every upload is
+  `400 GOING_ARGUMENTS` naming the document and the name to write in the question to ask for
+  its replacement, where its read before finds the document. Every upload is
   sent as a create alone, one with `force` too unless its read before found the document of its
   name, so a document made after that read is the route's `409 DOCUMENT_EXISTS` and is never
   written over. Each write is
