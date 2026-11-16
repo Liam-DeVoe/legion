@@ -131,9 +131,10 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 }
 
 // writeSubscribers answers the sessions whose interests deliver an event published under base,
-// each one the viewer may see (seenSessions). hidden is an owner of a project the viewer does not
-// see: a topic scoped exactly to it (exactTopics) is that owner's own, and is left out of every
-// row, a row holding no other topic with it, so the answer is the one a key nobody holds gets.
+// each one the viewer may see (seenSessions). hidden says base names an owner of a project the
+// viewer does not see: a topic scoped exactly to that owner (exactTopics) is its own, so it is
+// left out of every row, and a row left with no topic is dropped; the answer is then the one a
+// key nobody holds gets.
 func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, viewer any, base string, hidden bool) {
 	if s.deps.Envoy == nil {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
@@ -202,7 +203,7 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, viewer
 
 // seenSessions is which sessions of subscribers the viewer may see (access.SessionClause): every
 // session for an open viewer; for any other, its own and those that have acted in a project it
-// sees. No subscriber reads nothing.
+// sees. With no subscriber it reads nothing.
 func (s *server) seenSessions(ctx context.Context, viewer any, subscribers []subscriber) (map[string]bool, error) {
 	seen := map[string]bool{}
 	if len(subscribers) == 0 {
