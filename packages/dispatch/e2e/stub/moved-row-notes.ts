@@ -27,7 +27,7 @@ export const unchangedByTheMove =
  *  gives, joined by ` › `. */
 export const movedRowNotes: Record<string, string> = {
   "agent-name.stub.e2e.ts › a claimed List row and Board card open their issue by keyboard, and the claim's agent link opens the agent @pr":
-    'the List\'s row is read inside the issues table pull request #3513 ships (`getByRole("table", { name: "Project issues table" })`), since `[data-issue-row]` alone now also matches the Board\'s own rows; every key, link and address it asserts is main\'s',
+    'the List\'s row is read inside the issues table pull request #2988 shipped (`getByRole("table", { name: "Project issues table" })`), since `[data-issue-row]` alone now also matches the Board\'s own rows; every key, link and address it asserts is main\'s',
   "keyboard-issue.stub.e2e.ts › j and k cross a collapsed band instead of dead-ending in it, and reach its rows once it opens @pr":
     "the bands are the table's status groups: the row opens `?group=status&sort=key&nofilter=1`, collapses Todo through its heading button rather than a `details` summary, and walks the same four rows in the same order with the same keys. What it asserts - that j steps over a collapsed group and k comes back, and that opening it puts its rows between the two they sit between - is main's",
   "keyboard-issue.stub.e2e.ts › the project List view roves with j/k and opens the focused row with Enter and o @pr":
