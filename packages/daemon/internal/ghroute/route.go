@@ -95,6 +95,19 @@ func sentFiles(parsed ghArgs) []leakguard.GhFile {
 	return files
 }
 
+// CallerToken is the first of GH_TOKEN and GITHUB_TOKEN that env sets, in gh's own order, and
+// "" where env sets neither. gh sends that token in place of any gh directory's token, so
+// TargetOf refuses a call under it, and `legion gh` runs only the guard's own visibility read
+// under it (cmd/legion's runGh).
+func CallerToken(env map[string]string) string {
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		if env[name] != "" {
+			return name
+		}
+	}
+	return ""
+}
+
 // TargetOf reads the Target of the gh command argv (gh's arguments, without `gh`): the owner of
 // the repository it acts on, the leaf command it runs, and whether the call writes nothing
 // (writesNothing, over argv as typed and the leaf's path). It fails closed: whenever it cannot be
@@ -142,10 +155,8 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
 		return Target{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
 	}
-	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
-		if env[name] != "" {
-			return Target{}, fmt.Errorf("%s is set, and gh sends it in place of the token of the owner the command targets, so it sends no token; unset %s", name, name)
-		}
+	if name := CallerToken(env); name != "" {
+		return Target{}, fmt.Errorf("%s is set, and gh sends it in place of the token of the owner the command targets, so it sends no token; unset %s", name, name)
 	}
 	walk := ghWalk{help: help}
 	var rest []string

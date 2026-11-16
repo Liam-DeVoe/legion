@@ -153,8 +153,10 @@ const RoleTopicPrefix = "notifications.role."
 // agent the daemon's answer loop passed on (`agent-question`, the daemon's controllerPassOn), a
 // claim whose turns keep ending in a provider error (`provider-errors`, supervise's
 // tellControllerOfProviderErrors), a tree of the project that has stopped (`tree-stalled`, admit's
-// tellStalledTrees, once for each stall), and the slot wakes admission sends through
-// wakeController, `slot-free`, `todo` and `tick`
+// tellStalledTrees, once for each stall), a root whose own architect is not taking the work the
+// daemon states it is owed (`architect-stalled`, admit's wakeStalledArchitects, once for each arm
+// and run of its tree), and the slot wakes admission sends through wakeController, `slot-free`,
+// `todo` and `tick`
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
 // admit.Admission.ReportCapabilities). The controller takes no issue for `slot-free`,
