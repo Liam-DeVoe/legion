@@ -4,7 +4,12 @@ import { Link } from "react-router-dom";
 import type { Artifact, Ask } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import { type PageWords, usePageWords } from "../../components/tooltips";
-import { linkText, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
+import {
+  pageInkText,
+  pageMutedText,
+  textMutedOnSurface,
+  textSecondaryOnSurface,
+} from "../../theme/classes";
 import { ApprovalChip, approvalVersion } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/routes";
@@ -28,13 +33,22 @@ function approvalLinkVersion(document: Artifact, asks: readonly Ask[]): number |
   const approval = document.approval;
   if (approval === undefined || approval.state === "draft") return undefined;
   if (approval.state !== "awaiting") return approvalVersion(approval);
-  const named = asks.flatMap((ask) => {
+  // The first open request that names the document decides; one that names it with no version
+  // leaves the document's own approval to say it, and no later request is read.
+  let named: number | undefined;
+  for (const ask of asks) {
     const request = ask.kind === "approval" && ask.state === "open" ? ask.approval : undefined;
-    if (request === undefined) return [];
+    if (request === undefined) continue;
     const listed = request.documents?.find((entry) => entry.artifact_id === document.id);
-    if (listed !== undefined) return [listed.version];
-    return request.artifact_id === document.id ? [request.version] : [];
-  })[0];
+    if (listed !== undefined) {
+      named = listed.version;
+      break;
+    }
+    if (request.artifact_id === document.id) {
+      named = request.version;
+      break;
+    }
+  }
   return (
     named ??
     approval.documents?.find((entry) => entry.artifact_id === document.id)?.version ??
@@ -46,6 +60,9 @@ function approvalLinkVersion(document: Artifact, asks: readonly Ask[]): number |
  * The link to the version of `document` an approval speaks for, opened in place of the outline
  * at that version (`?v=`, dispatch://INFRA-1196 R16, R20), as the old panel's card of an
  * approval request linked it (R19): the document's name and the version, `spec.md, version 1`.
+ * It is drawn inside `NoTooltips` alone, so it is the new issue page's link, in the ink with
+ * its underline, and never the application's blue (dispatch://INFRA-3935 R6, decision 56 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md).
  */
 function ApprovalVersionLink({
   document,
@@ -60,7 +77,7 @@ function ApprovalVersionLink({
 }): ReactNode {
   return (
     <Link
-      className={`dispatch-inline-link text-xs underline ${linkText}`}
+      className={`dispatch-inline-link text-xs underline ${pageInkText}`}
       data-approval-version={document.id}
       to={buildIssuePath({ key: issueKey, kind: "artifact", slug: document.slug, version })}
     >
@@ -94,7 +111,7 @@ function StepState({
   const { document } = entry;
   if (document?.approval === undefined || document.approval.state === "draft") {
     return (
-      <span className={approvalPillClassName("draft", size)} {...page?.pageChrome}>
+      <span className={approvalPillClassName("draft", size, page !== null)} {...page?.pageChrome}>
         {page?.CONTROL_LABELS.not_requested ?? "Not requested"}
       </span>
     );
@@ -153,7 +170,8 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
   const reason = approval.reason ?? null;
   return (
     <p
-      className={`min-w-0 text-xs [overflow-wrap:anywhere] ${textSecondaryOnSurface}`}
+      // Inside `NoTooltips` the line is the new issue page's secondary words (R6).
+      className={`min-w-0 text-xs [overflow-wrap:anywhere] ${page === null ? textSecondaryOnSurface : pageMutedText}`}
       data-approval-step-reason={entry.step}
       {...page?.pageChrome}
     >
@@ -227,6 +245,7 @@ export function ApprovalSteps({
    *  speaks for. */
   versions?: ApprovalVersions;
 }): ReactNode {
+  const page = usePageWords();
   return (
     // The list takes the header row's full width and wraps within itself: three steps, their
     // chips and the two actions never fit a phone's line, and a row that cannot wrap scrolls
@@ -247,7 +266,13 @@ export function ApprovalSteps({
             data-approval-step={entry.step}
             key={entry.step}
           >
-            <span className={`text-xs font-medium ${textMutedOnSurface}`}>{entry.label}</span>
+            {/* Inside `NoTooltips` the step's name is the new issue page's secondary words, and
+                each chip and pill its own colours (R6). */}
+            <span
+              className={`text-xs font-medium ${page === null ? textMutedOnSurface : pageMutedText}`}
+            >
+              {entry.label}
+            </span>
             <StepState
               actions={actions}
               actionsOn={actionsOn}

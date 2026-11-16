@@ -931,7 +931,7 @@ export const pageComposer = {
   answering:
     "border-page-waiting shadow-[0_0_0_1px_var(--color-page-waiting),0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-waiting",
   box: "group flex min-w-0 flex-col gap-[3px] rounded-[10px] border border-page-hair bg-page-paper py-[5px] pr-1.5 pl-3 shadow-[0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-ink",
-  chip: "inline-flex items-center gap-1 rounded-full border px-2 text-xs leading-5 font-semibold max-[760px]:hidden max-[760px]:group-focus-within:inline-flex",
+  chip: "inline-flex items-center gap-1 rounded-full border px-2 text-xs leading-5 font-semibold max-[761px]:hidden max-[761px]:group-focus-within:inline-flex",
   chipOff: {
     ask: "border-page-question bg-page-paper text-page-question",
     comment: "border-page-ink bg-page-paper text-page-ink",
@@ -947,9 +947,9 @@ export const pageComposer = {
   // On a phone the field takes the line's whole width once the box holds the caret, and the
   // kinds and Send stand under it (the prototype's `.cbox:focus-within .crow1`).
   field:
-    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-quiet max-[760px]:group-focus-within:basis-full",
-  foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[760px]:pt-2.5",
-  line: "flex min-w-0 items-end gap-2 max-[760px]:group-focus-within:flex-wrap",
+    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-quiet max-[761px]:group-focus-within:basis-full",
+  foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[761px]:pt-2.5",
+  line: "flex min-w-0 items-end gap-2 max-[761px]:group-focus-within:flex-wrap",
   option:
     "inline-flex items-center gap-1 rounded-full border border-page-waiting px-2 text-xs leading-5 font-semibold text-page-waiting-text aria-pressed:bg-page-waiting-tint aria-pressed:text-page-ink",
   target:

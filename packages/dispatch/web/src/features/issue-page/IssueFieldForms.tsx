@@ -128,6 +128,10 @@ function RouteForm({
       onClose();
     }
   };
+  const cancel = () => {
+    drafts.discardRoute();
+    onClose();
+  };
   return (
     <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
       <label
@@ -145,8 +149,13 @@ function RouteForm({
         onChange={(event) => drafts.writeRoute(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
-            drafts.discardRoute();
-            onClose();
+            // The press is the box's: it closes the box and nothing around it. On a phone the
+            // box sits in Details, a sheet that closes on Escape through the key registry's
+            // dialog binding (`useDialog`), which takes a press inside a field and passes over
+            // one already `defaultPrevented` (`keymap.ts`); unmarked, one Escape would close the
+            // box and the whole sheet with it.
+            event.preventDefault();
+            cancel();
           }
         }}
         placeholder="role:legion-controller-core"
@@ -154,10 +163,7 @@ function RouteForm({
         value={drafts.route}
       />
       <FormActions
-        cancel={() => {
-          drafts.discardRoute();
-          onClose();
-        }}
+        cancel={cancel}
         saveLabel={CONTROL_LABELS.save_route}
         saving={isClosed || !drafts.routeIsValid || saving}
       />
@@ -198,6 +204,10 @@ function ParentForm({
       onClose();
     }
   };
+  const cancel = () => {
+    drafts.discardParent();
+    onClose();
+  };
   return (
     <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
       <label
@@ -215,8 +225,10 @@ function ParentForm({
         onChange={(event) => drafts.writeParent(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
-            drafts.discardParent();
-            onClose();
+            // Escape closes the box alone, as in the route box above: marked, the press passes
+            // the dialog binding that would close the Details sheet around it.
+            event.preventDefault();
+            cancel();
           }
         }}
         placeholder={`${issue.project}-12`}
@@ -224,10 +236,7 @@ function ParentForm({
         value={drafts.parent}
       />
       <FormActions
-        cancel={() => {
-          drafts.discardParent();
-          onClose();
-        }}
+        cancel={cancel}
         saveLabel={CONTROL_LABELS.save_parent}
         saving={isClosed || saving}
       />

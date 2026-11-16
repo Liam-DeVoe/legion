@@ -59,6 +59,12 @@ export function relativeTimeLabel(at: Date, now: number): string | undefined {
   }
 }
 
+/** The instant as words, its date and its time in the reader's locale, for a surface with no
+ *  tooltip to carry it (the new issue page). */
+export function exactTimeLabel(at: Date): string {
+  return at.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+}
+
 export interface TimestampProps {
   at: string;
   className?: string;
@@ -95,9 +101,7 @@ export function Timestamp({ at, className, exact = false }: TimestampProps): Rea
       {...page?.authorText}
     >
       {relativeTimeLabel(date, Date.now())}
-      {exact && !tooltips
-        ? ` (${date.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })})`
-        : null}
+      {exact && !tooltips ? ` (${exactTimeLabel(date)})` : null}
     </time>
   );
 }
