@@ -36,7 +36,7 @@ const specDir = ".dispatch/spec"
 // The codes of this route's own refusals, and of the gate that holds a results token to it.
 const (
 	// codeResultsOnlyToken refuses a results token on every route the results list does not
-	// name (refuseResultsOnlyToken).
+	// name (refuseLimitedToken).
 	codeResultsOnlyToken = "RESULTS_ONLY_TOKEN"
 	// codeResultsScopeRequired refuses every other credential on the route: only a CI job's
 	// results token writes a result of a spec check.
@@ -563,7 +563,7 @@ func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (mo
 
 // listSpecCheckResults is GET /api/v1/projects/{key}/results: every stored result of the project
 // at ?commit=, of ?check= alone when it is given, newest first by record number. A results token
-// never reaches it (refuseResultsOnlyToken): it writes results and reads nothing.
+// never reaches it (refuseLimitedToken): it writes results and reads nothing.
 func (s *server) listSpecCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

@@ -3894,7 +3894,7 @@ A results token is the token a result entry mints (`BROKER_EXCHANGE_RESULT_WORKF
 A verifier built with `brokertoken.Options.ServesResults` accepts it and marks its caller `brokertoken.Caller.ResultsOnly`, with the run as `brokertoken.Caller.CI`;
 a verifier built without that switch answers it `brokertoken.ErrNotASession`, as a build before the switch does.
 Dispatch's verifier sets the switch, so Dispatch serves a results token on the routes its results list names (`resultsScopeRoutes`), today `POST /api/v1/projects/{key}/results` alone;
-`brokerTokenActor` carries the mark as `model.Credential.ResultsOnly`, with the run as `model.Credential.CI` and no OAuth scope, and `refuseResultsOnlyToken` answers the token `403 RESULTS_ONLY_TOKEN` on every other route and on `/ws/live`, before the route's handler, its sign-in check and its idempotency key.
+`brokerTokenActor` carries the mark as `model.Credential.ResultsOnly`, with the run as `model.Credential.CI` and no OAuth scope, and `refuseLimitedToken` answers the token `403 RESULTS_ONLY_TOKEN` on every other route and on `/ws/live`, before the route's handler, its sign-in check and its idempotency key.
 The person a results token names stays inside Dispatch: the result it writes names the run as its recorder, and its access-log line names the run's session as the caller.
 `GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
 A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and the live socket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
@@ -3927,7 +3927,7 @@ A read-only token reaches the routes that `api/routes_table.go`'s `readScopeRout
 The list stands beside `routeScopes` and is not a value of it, because a scope there is one the caller must hold and no person holds `read`.
 `routes()` stamps it onto `apiRoute.ReadScope`, and `GET /api/v1`, the OpenAPI document and the reference generated from it do not carry it.
 `register` refuses to mount a table whose list names anything but a GET row it mounts (`readRoutesNotMountedAsGET`), so a route added later stays closed to such a token until someone lists it.
-`api.refuseReadOnlyToken` is the gate, and it is the outermost check of every row:
+`api.refuseLimitedToken` is the gate, and it is the outermost check of every row:
 `register` wraps every row in it outside `gateRouteScopes` and every layer inside that, and inside the drain and `varyOnDisplayTrees` (`routeHandler`), and puts it on `GET /ws/live` just inside `decideBrokerToken`, before the upgrade (`liveSocketHandler`).
 On every row the list does not name, and on `/ws/live`, a read-only token is `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`), with no `WWW-Authenticate` challenge, since no scope makes the route the token's to call.
 That answer comes before the row's scopes, a `Dispatch-Login` check, an id prefix's lookup, the sign-in, project and session checks, the `Idempotency-Key` and the handler, so the refused request claims no key and writes nothing.

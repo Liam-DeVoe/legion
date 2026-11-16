@@ -906,6 +906,11 @@ func (s *Set) Registration(account, podUID, session string) error {
 // that exact ref answers a token that writes its project; a workflow no such entry lists is
 // looked for among the result entries (resultRun).
 //
+// GitHub's token of a job that is written directly in its workflow holds `job_workflow_ref` equal
+// to `workflow_ref` (measured on real runs on 2026-11-16, and Sigstore's Fulcio requires the claim
+// of every GitHub Actions token, https://github.com/sigstore/fulcio/blob/main/docs/oidc.md#github),
+// so a token with no such claim is refused (ErrClaimMissing).
+//
 // The principal is that listed workflow, not the run: every run of it is one holder, so the next
 // run of a release workflow keeps writing under the name the run before it held, however soon
 // after it starts.
