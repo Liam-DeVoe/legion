@@ -382,3 +382,39 @@ test("a delivery of an agents' thread names its agent, never its address", () =>
     ["delivered a comment mention to ", { sessionId: "reviewer", storedTitle: undefined }],
   ]);
 });
+
+// R22 of dispatch://INFRA-1196 and ruling 5: the page draws a stored text by its words, never
+// the markup its author typed or an address. An approval request is a line of the history (the
+// outline draws no row for it), and its line quotes the request's question. Found by the tester
+// on a running build of b0082656 with INFRA-1196's copy: the lines of the spec's approval request
+// read “… The new page reaches `main` in parts …”, the backticks drawn as typed.
+test("an approval request's line draws its question's words, never its markup or an address", () => {
+  seq = 0;
+  const question =
+    "Approve **spec.md** (version 10)? It reaches `main` in parts, as dispatch://CORE-2/spec#b-r1 asks.";
+  const events = [
+    event("ask.opened", "2026-11-15T09:00:00Z", { id: "a1", kind: "approval", question }),
+    event("ask.answered", "2026-11-15T09:01:00Z", { id: "a1", kind: "approval", question }, PERSON),
+  ];
+  const lines = flat(
+    buildHistory({
+      artifacts: [],
+      asks: [{ id: "a1", kind: "approval" }],
+      comments: [],
+      events,
+      lastReadSeq: 0,
+      messages: [],
+      today: "2026-11-15",
+    })
+  ).flatMap((entry) =>
+    entry.kind === "event"
+      ? [entry.description.filter((part): part is string => typeof part === "string").join("")]
+      : []
+  );
+  expect(lines, "the request's two lines are not drawn").toHaveLength(2);
+  for (const line of lines) {
+    for (const typed of ["`", "**", "dispatch://"]) {
+      expect(line, `the approval request's line draws "${typed}" as typed`).not.toContain(typed);
+    }
+  }
+});
