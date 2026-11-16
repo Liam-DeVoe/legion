@@ -939,6 +939,10 @@ func exchangeIssuers(value, audience string, issuers []oidc.NamedIssuer) ([]oidc
 	return taken, nil
 }
 
+// exchangeIssuerField says where a BROKER_EXCHANGE_ACCOUNTS entry names its issuers, for the
+// refusals of an entry not of that setting's form and of the issuer names an entry gives.
+const exchangeIssuerField = `an entry names its issuers in a fifth "="-separated field, after its session field (empty for none), which the broker reads after the entry's last "="`
+
 // exchangeAccountIssuers answers the names of the issuers whose tokens the exchange takes for the
 // BROKER_EXCHANGE_ACCOUNTS entry text, which names names: accountIssuers' answer, so the first of
 // issuers alone where it names none, each of which must be one of exchangeTakes, the issuers
@@ -957,7 +961,7 @@ func exchangeAccountIssuers(setting, text string, names []string, issuers, excha
 	// namesRefused is err, a refusal of the names the entry gives, saying as well which field
 	// holds those names and, where the issuers have names, which of them the exchange takes.
 	namesRefused := func(err error) error {
-		err = fmt.Errorf(`%w; an entry names its issuers in a fifth "="-separated field, after its session field (empty for none), which the broker reads after the entry's last "=", so a fixed session that holds "=" is written with the issuer field after it, <service account>=<project>=<person>=<session>=<issuer name>`, err)
+		err = fmt.Errorf(`%w; %s, so a fixed session that holds "=" is written with the issuer field after it, <service account>=<project>=<person>=<session>=<issuer name>`, err, exchangeIssuerField)
 		if exchangeTakes[0].Name == "" {
 			return err
 		}
@@ -1321,7 +1325,7 @@ func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.
 	for _, text := range strings.Fields(value) {
 		fields, names, ok := exchangeAccountFields(text)
 		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
-			return nil, fmt.Errorf(`%s must be <service account>=<project>=<person>[=<session>] or <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] entries: an entry names its issuers in a fifth "="-separated field, after its session field (empty for none), which the broker reads after the entry's last "=", got %q`, setting, text)
+			return nil, fmt.Errorf(`%s must be <service account>=<project>=<person>[=<session>] or <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] entries: %s, got %q`, setting, exchangeIssuerField, text)
 		}
 		if !serviceAccountPattern.MatchString(fields[0]) {
 			return nil, fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)

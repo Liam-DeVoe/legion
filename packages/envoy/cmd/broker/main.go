@@ -1254,10 +1254,14 @@ func issuerAttrs(issuer oidc.NamedIssuer) []any {
 	return []any{"name", issuer.Name, "url", issuer.URL}
 }
 
-// The lines loggedIssuers writes about a cluster issuer after the boot's line of it. Each says that
-// the issuer was found other than its line before it said, as the sign-in client check's lines do:
-// an issuer whose key set cannot be read for a day writes one line, not one for each token.
+// The lines loggedIssuers writes about a cluster issuer: the boot's line of it, and the lines
+// after it. Each line after the boot's says that the issuer was found other than its line before
+// it said, as the sign-in client check's lines do: an issuer whose key set cannot be read for a
+// day writes one line, not one for each token.
 const (
+	// issuerBootMessage is logged, at INFO, once for each issuer at boot, followed by name= (none
+	// for one bare URL), url= and read=, whether the boot read the issuer's discovery document.
+	issuerBootMessage = "broker: kubernetes issuer"
 	// issuerUnreadableMessage is logged, at WARN, when a token of an issuer is answered
 	// oidc.ErrIssuerUnavailable and the issuer's last line, if it has one, did not say that it
 	// could not be read, followed by name= (none for one bare URL), url= and error=, which names
@@ -1302,10 +1306,10 @@ func newLoggedIssuers(set *oidc.IssuerSet, issuers []oidc.NamedIssuer) loggedIss
 // boot tries each issuer of the set once, all at the same time (IssuerSet.Boot), and logs a line
 // for each, naming it and whether it was read. It marks each one it could not read as unreadable,
 // so that a token of it answered oidc.ErrIssuerUnavailable writes nothing more, and the issuer's
-// next line is the one issuerReadableMessage its recovery writes (readable).
+// next line is the one issuerReadableMessage its recovery writes (markReadable).
 func (l loggedIssuers) boot(ctx context.Context) {
 	for _, read := range l.set.Boot(ctx) {
-		slog.Info("broker: kubernetes issuer", append(issuerAttrs(read.Issuer), "read", read.Read)...)
+		slog.Info(issuerBootMessage, append(issuerAttrs(read.Issuer), "read", read.Read)...)
 		if !read.Read {
 			l.unreadable[read.Issuer.URL].Store(true)
 		}
@@ -1360,18 +1364,24 @@ func (l loggedIssuers) note(ctx context.Context, issuer oidc.NamedIssuer, err er
 			slog.Warn(issuerUnreadableMessage, append(issuerAttrs(issuer), "error", err)...)
 		}
 	case err == nil:
-		l.readable(issuer)
+		markReadable(issuer, unreadable)
 	}
 }
 
-// readable notes that issuer, an issuer of the set, can be read: it clears the issuer's mark, and
+// readable notes that issuer, an issuer of the set, can be read (markReadable).
+func (l loggedIssuers) readable(issuer oidc.NamedIssuer) {
+	if unreadable := l.unreadable[issuer.URL]; unreadable != nil {
+		markReadable(issuer, unreadable)
+	}
+}
+
+// markReadable notes that issuer, whose mark is unreadable, can be read: it clears the mark, and
 // where the mark was set, logs issuerReadableMessage. Of the tokens of a burst, the exchange's key
 // reads and the background read, which can find one recovery at once, one alone swaps true for
 // false, so the recovery writes one line.
-func (l loggedIssuers) readable(issuer oidc.NamedIssuer) {
-	unreadable := l.unreadable[issuer.URL]
+func markReadable(issuer oidc.NamedIssuer, unreadable *atomic.Bool) {
 	// Loaded before it is swapped, so a token of an issuer that can be read writes nothing.
-	if unreadable != nil && unreadable.Load() && unreadable.Swap(false) {
+	if unreadable.Load() && unreadable.Swap(false) {
 		slog.Info(issuerReadableMessage, issuerAttrs(issuer)...)
 	}
 }

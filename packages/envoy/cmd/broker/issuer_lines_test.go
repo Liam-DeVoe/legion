@@ -137,7 +137,7 @@ func TestAnIssuerTheBootCouldNotReadWritesOneLineWhenRead(t *testing.T) {
 
 	b.FailDiscovery(http.StatusServiceUnavailable)
 	verifier.boot(context.Background())
-	booted := lines("broker: kubernetes issuer")
+	booted := lines(issuerBootMessage)
 	if len(booted) != 2 || !strings.Contains(booted[1], "name=b") || !strings.Contains(booted[1], "read=false") {
 		t.Fatalf("the boot wrote %v, want one line for each issuer, B's saying it was not read:\n%s", booted, logged)
 	}

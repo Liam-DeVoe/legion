@@ -115,8 +115,8 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 	if len(d.asked) != 0 {
 		t.Fatalf("read the key sets of %v at boot, want none: the clusters' issuers are the pod verifier's own to read, and there is no exchange or Google issuer", d.asked)
 	}
-	wantLine := `msg="broker: kubernetes issuer" url=` + cluster.URL() + ` read=true`
-	if lines := strings.Count(logged.String(), `msg="broker: kubernetes issuer"`); lines != 1 || !strings.Contains(logged.String(), wantLine) {
+	wantLine := `msg="` + issuerBootMessage + `" url=` + cluster.URL() + ` read=true`
+	if lines := strings.Count(logged.String(), `msg="`+issuerBootMessage+`"`); lines != 1 || !strings.Contains(logged.String(), wantLine) {
 		t.Fatalf("log = %q, want one line holding %q: the one issuer, read at boot", logged, wantLine)
 	}
 	pods, ok := found.Pod.(enroll.K8sPodVerifier)
