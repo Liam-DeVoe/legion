@@ -228,7 +228,10 @@ const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::t
 // readLeft searches every column of every table a text can be written into for the erased texts,
 // and lists each row it finds that does not derive from the node - by its table, its primary key
 // and the columns holding them - as a row the run leaves as it is. Those rows are another node's
-// text, which an operator erases by a run of that node, and the run writes none of them.
+// text, which an operator erases by a run of that node, and the run writes none of them. It lists
+// as well an event about the node whose payload holds the texts in its structural values alone:
+// the redaction rewrites no such value (structuralKey), so the run leaves that row whole, and the
+// listing says so.
 //
 // The search names no store, so a table a later build adds is listed without anyone adding it
 // here. A bytea is searched for the texts' UTF-8 bytes, since its text form is hex, and a json
