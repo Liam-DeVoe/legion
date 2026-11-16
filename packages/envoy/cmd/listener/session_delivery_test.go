@@ -243,7 +243,7 @@ func TestSessionConsumerRegistrationAnswersConsumerModeAndFiltersOnStoredFollowe
 	if answer.Delivery.Gap == nil || *answer.Delivery.Gap {
 		t.Fatalf("answer %s, want gap false", answer.raw)
 	}
-	want := []string{"notifications.agent." + sessionID, "notifications.dispatch.issue.A.>", "notifications.team.deploy"}
+	want := []string{"notifications.agent.*." + sessionID, "notifications.agent." + sessionID, "notifications.dispatch.issue.A.>", "notifications.team.deploy"}
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v (the stream stores a team topic, so the session's consumer carries it)", got, want)
 	}
@@ -286,7 +286,7 @@ func TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds(t *test
 		"topics":["notifications.legion.ACME.controller"],"delivery":{"consumer":true,"epoch":"e"}}`
 	rig.subscribe(t, registration)
 
-	want := []string{contracts.LegacyAgentSubject(sessionID), lane}
+	want := []string{"notifications.agent.*." + sessionID, contracts.LegacyAgentSubject(sessionID), lane}
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the lane the controller registered must be in them", got, want)
 	}
@@ -328,8 +328,8 @@ func TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits(t *testing.T
 		t.Fatalf("stored topics %v, want the lane %s the holder registered", stored.Topics, lane)
 	}
 	// The row holds the session's own agent subject, which sessionConsumerFilter names anyway,
-	// and the consumer keeps each subject once (bus.SessionConsumers).
-	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
+	// and the consumer keeps each subject once, in every form (bus.SessionConsumerFilters).
+	want := bus.SessionConsumerFilters(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the filter and the stored row must name one set after a heartbeat that omits the lane", got, want)
 	}
@@ -383,7 +383,7 @@ func TestSessionConsumerFiltersAgainWhenItsWriteLosesTheCompareAndSwap(t *testin
 	if !slices.Contains(stored.Topics, added) {
 		t.Fatalf("stored topics %v, want the topic %s the second registration was answered 200 for", stored.Topics, added)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
+	want := bus.SessionConsumerFilters(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: a registration that re-plans after a lost compare-and-swap must filter on the plan it stores", got, want)
 	}
@@ -448,7 +448,7 @@ func TestSessionConsumerCarriesTheGapAndTheUnsubscribeAcrossARefusedWrite(t *tes
 	if slices.Contains(stored.Topics, dropped) {
 		t.Fatalf("stored topics %v; the unsubscribe removed %s, so the registration must not write it back", stored.Topics, dropped)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
+	want := bus.SessionConsumerFilters(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the filter is the plan that was stored", got, want)
 	}
@@ -503,7 +503,7 @@ func TestSessionConsumerOverlappingFollowsAreAccepted(t *testing.T) {
 	if answer.Delivery == nil || answer.Delivery.Mode != "consumer" {
 		t.Fatalf("answer %s, want delivery mode consumer", answer.raw)
 	}
-	want := []string{"notifications.agent." + sessionID, "notifications.dispatch.>"}
+	want := []string{"notifications.agent.*." + sessionID, "notifications.agent." + sessionID, "notifications.dispatch.>"}
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v", got, want)
 	}
@@ -839,7 +839,7 @@ func TestSessionConsumerUnsubscribeShrinksTheFilter(t *testing.T) {
 
 	rig.post(t, "/v1/interests/unsubscribe", `{"session_id":"ses_shrink","topics":["notifications.dispatch.issue.B.>"]}`)
 
-	want := []string{"notifications.agent." + sessionID, "notifications.dispatch.issue.A.>"}
+	want := []string{"notifications.agent.*." + sessionID, "notifications.agent." + sessionID, "notifications.dispatch.issue.A.>"}
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters after the unsubscribe %v, want %v", got, want)
 	}
@@ -936,11 +936,11 @@ func followWhileLocked(t *testing.T, rig *sessionConsumerRig, sessionID, topic s
 }
 
 // requireFilters fails the test unless sessionID's consumer filters on its agent subject and
-// topics, and nothing else: the stored topics as they stood when that filter was last written.
+// topics, and nothing else, each in every form a reader takes it in (bus.SessionConsumerFilters):
+// the stored topics as they stood when that filter was last written.
 func requireFilters(t *testing.T, rig *sessionConsumerRig, sessionID string, topics ...string) {
 	t.Helper()
-	want := append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...)
-	slices.Sort(want)
+	want := bus.SessionConsumerFilters(append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("the consumer of %s filters on %v, want %v: the stored topics as they stood when its filter was last written", sessionID, got, want)
 	}

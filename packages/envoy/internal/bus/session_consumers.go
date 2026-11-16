@@ -863,29 +863,35 @@ func (s *SessionConsumers) StreamID(ctx context.Context) (string, error) {
 	return state.id, nil
 }
 
-// sessionConsumerTarget names sessionID's consumer and reduces subjects to its filters, refusing a
-// session that can have no consumer and a filter set that is empty, which would deliver the whole
-// stream.
-//
-// The filters take every form of each subject (contracts.TopicForms) while readers take the old
-// form of a name too: an issue's topic in either form, and the session's agent subject in the old
-// form and under any project. A producer can then move to the new form without the session missing
-// one message, whichever form the session registered, and the two forms of a name never overlap,
-// since they differ in their token count or in the token after the family's prefix.
+// sessionConsumerTarget names sessionID's consumer and reduces subjects to its filters
+// (SessionConsumerFilters), refusing a session that can have no consumer and a filter set that is
+// empty, which would deliver the whole stream.
 func sessionConsumerTarget(sessionID string, subjects []string) (string, []string, error) {
 	name, err := sessionConsumerNameOf(sessionID)
 	if err != nil {
 		return "", nil, err
 	}
-	forms := make([]string, 0, 2*len(subjects))
-	for _, subject := range subjects {
-		forms = append(forms, contracts.TopicForms(subject)...)
-	}
-	filters := ReduceFilterSubjects(forms)
+	filters := SessionConsumerFilters(subjects)
 	if len(filters) == 0 {
 		return "", nil, fmt.Errorf("bus: no filter subject for the consumer of session %q", sessionID)
 	}
 	return name, filters, nil
+}
+
+// SessionConsumerFilters is the filter set a session consumer asked to follow subjects carries:
+// every form of each subject (contracts.TopicForms), reduced so no two overlap
+// (ReduceFilterSubjects). The forms are there while readers take the old form of a name too: an
+// issue's topic in either form, and the session's agent subject in the old form and under any
+// project, so a producer can move to the new form without the session missing one message,
+// whichever form the session registered. The two forms of a name never overlap, since they differ
+// in their token count or in the token after the family's prefix. It is the one computation of
+// that set, which a caller comparing a consumer with the row it was built from reads too.
+func SessionConsumerFilters(subjects []string) []string {
+	forms := make([]string, 0, 2*len(subjects))
+	for _, subject := range subjects {
+		forms = append(forms, contracts.TopicForms(subject)...)
+	}
+	return ReduceFilterSubjects(forms)
 }
 
 // applySettings sets the session consumer settings and filters on config, leaving what an update
