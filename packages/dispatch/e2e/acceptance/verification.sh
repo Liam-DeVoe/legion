@@ -820,13 +820,15 @@ else
   # own results, every one of which the read prints.
   record reading "record a pass at the commit that reads like the head" "$root" --check c1 \
     --role tester --verdict pass --commit "$commit_lookalike" --surface cli \
-    --run "bash e2e/acceptance/verification.sh" --observed "the result at the look-alike"
+    --run "bash e2e/acceptance/verification.sh" --observed "the result at the look-alike" \
+    --negative-control "Deleted the check and the flag came back."
   record reading "record a pass at the pull request's head" "$root" --check c1 --role tester \
     --verdict pass --commit "$commit_two" --surface cli --run "bash e2e/acceptance/verification.sh" \
-    --observed "the first result at the head"
+    --observed "the first result at the head" --negative-control "Deleted the check and the flag came back."
   record reading "record the newest pass at the pull request's head" "$root" --check c1 \
     --role tester --verdict pass --commit "$commit_two" --surface cli \
-    --run "bash e2e/acceptance/verification.sh" --observed "the last of the three results"
+    --run "bash e2e/acceptance/verification.sh" --observed "the last of the three results" \
+    --negative-control "Deleted the check and the flag came back."
   run reading "read the results of $root" results --issue "$root"
   grep -qE "^- c1 \(before_merge\)\. Compared with the head of pull request #7 at ${commit_two}.*\. A pass stands: yes, from tester\.$" \
     "$work/out" ||

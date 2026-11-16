@@ -4536,6 +4536,9 @@ Each item below names a path with its method and identity, then its purpose.
   The result is appended as `result.recorded` on the check's own issue, naming the recording issue.
   A closed issue, the recording one or the check's, takes a result only for a check whose `when` is `after_merge` or `default_branch` — the production check after the merge
   — and refuses every other with `409 ISSUE_CLOSED`; every other write on a closed issue stays refused.
+  A pass of a `before_merge` check states the negative control that would have caught its failure:
+  one whose `negative_control` is empty or whitespace alone is `400 NEGATIVE_CONTROL_REQUIRED`, naming the field and the check's block id, asked after the closed-issue refusal, so a closed issue still answers `409 ISSUE_CLOSED` first.
+  A pass of an `after_merge` or `default_branch` check and any fail may leave the field empty, and a row stored with an empty one reads back as it was stored.
   The answer is `{result, line}`, `line` the pull-request body line the result implies, which carries no link to Dispatch.
 
 - `/api/v1/issues/{key}/coverage` (GET; cookie, trusted header, or bearer)
@@ -4588,6 +4591,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A document stored under one of those names before its role existed carries no role, and a reader finds it by its slug instead;
     the next upload of that name sets the role on the row it already has.
+    Only a markdown document (`kind` `doc`) is found so: a file or an image uploaded under one of those names, bytes that are not markdown, plays no role, whatever its slug.
 
   - A role decides what a document is for: `POST /api/v1/artifacts/{id}/plan-reviews` takes only a `plan`, `POST /api/v1/artifacts/{id}/approval-requests` refuses one, and `--include-verification` and `GET .../results` read the `verification` document's `check` blocks.
 
@@ -4710,7 +4714,7 @@ Each item below names a path with its method and identity, then its purpose.
   Record a plan review's approval of a plan version: `{version}`, the version the review read.
   It writes an `approved` review of kind `plan_review` and emits `artifact.approved`, so every read of the document shows it approved and a later version makes it stale, as a spec's approval goes stale.
   It is `409 NOT_PLAN_DOCUMENT` on any document that is not the issue's plan, the issue's spec and a project document named `plan.md` included
-  — an issue document whose `role` is `plan`, or an issue document a rolling deploy left with no role whose slug is `plan-md`, is the plan
+  — an issue document whose `role` is `plan`, or an issue's markdown document a rolling deploy left with no role whose slug is `plan-md`, is the plan, and a file uploaded as `plan.md` is not
   — `409 NO_VERSION` on a plan with no settled version, and `400 INVALID_REVIEW` for a version the plan does not have.
   No person is ever asked to approve a plan, which is why `/api/v1/artifacts/{id}/approval-requests` refuses one.
   A review Dispatch carries to a later version keeps the `kind` of the review it carries, so a plan version restored to the text its plan review approved is still `plan_review` and no carry ever records a plan's approval as a person's.

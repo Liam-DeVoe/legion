@@ -28,6 +28,11 @@ const (
 	codeInternal              = "INTERNAL"
 )
 
+// codeNegativeControlRequired is the 400 recordCheckResult answers a pass of a before_merge check
+// whose input carries an empty negative_control, or one of whitespace alone: a passing
+// before_merge result states the negative control that would have caught its failure.
+const codeNegativeControlRequired = "NEGATIVE_CONTROL_REQUIRED"
+
 // documentErrorCode names an error a document operation returns when it could not read or serve
 // the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
 // document error by it, and both in one order, so the two cannot name one error differently.

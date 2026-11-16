@@ -1632,6 +1632,7 @@ export const dispatchToolSpecs = [
       role: "implementer",
       verdict: "pass",
       commit: "1111111111111111111111111111111111111111",
+      negative_control: "Removed the guard and the test failed.",
     },
     description:
       "Record one result of one check of an issue's Verification document, or retract a result " +
@@ -1655,6 +1656,10 @@ export const dispatchToolSpecs = [
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
       "every other record with 409 ISSUE_CLOSED, as it refuses every other write. " +
+      "A pass of a before_merge check states its negative_control: the deliberately broken " +
+      "input and the refusal seen. A pass of one with no negative_control, or one of " +
+      "whitespace alone, is 400 NEGATIVE_CONTROL_REQUIRED, which names the field and the " +
+      "check. A pass of an after_merge or default_branch check and any fail may leave it out. " +
       RESULT_RETRACT_RULE +
       " The retraction keeps both records: the result stays readable, and it proves nothing " +
       "from then on. Record a new result where the check still needs one. A retraction is " +
@@ -1687,7 +1692,9 @@ export const dispatchToolSpecs = [
       observed: z.string().describe("What the command printed.").optional(),
       negative_control: z
         .string()
-        .describe("The deliberately broken input and the refusal seen.")
+        .describe(
+          "The deliberately broken input and the refusal seen. A pass of a before_merge check requires it."
+        )
         .optional(),
       failed: z
         .number({ int: true, min: 0 })
