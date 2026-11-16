@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  After a session switch whose move to the new session's NATS token failed, the previous session's
+  agent-stream control subject stayed open, and a viewer of that session was replayed the new
+  session's turns. A switch now closes another session's control subject and resets the ring before
+  anything else of the new session's opens.
+time: 2026-11-16T15:18:43Z
+custom:
+    Issue: pr4140

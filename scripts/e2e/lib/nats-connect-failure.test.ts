@@ -1,18 +1,46 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { nkeys } from "nats";
 
 // The operator's NATS helpers given a server URL that holds a credential, and a connect that
-// fails: each names the failure and exits 1, and neither the credential nor nats.js's own error
-// (which quotes the URL it could not parse, `input` and all) reaches its output. No server runs:
-// port 99999 does not parse, and nothing listens on 127.0.0.1:1.
-const CANARY = "canary-pw-7f3a";
+// fails: each names the failure and exits 1, and the credential reaches its output neither in the
+// server it names nor in nats.js's own error text. No server runs: port 99999 does not parse,
+// nothing listens on 127.0.0.1:1, and the other hosts do not resolve.
+//
+// nats.js's text carries a credential in two of these forms, which are the rows that fail when
+// the helper prints that text unredacted: an nkey seed pasted as the host, which its resolver
+// error names lowercased, and a token holding an unencoded `/`, whose first segment the URL makes
+// the host. Each URL's user info is joined here, so the source holds no credential-bearing URL
+// for the push leak check to find.
+const userinfo = (...parts: string[]) => `${parts.join(":")}@`;
+const UNNAMED = "a server address that does not read as a host";
+const seed = new TextDecoder().decode(nkeys.createUser().getSeed());
 const cases = [
   [
     "a URL that does not parse",
-    `nats://user:${CANARY}@127.0.0.1:99999`,
-    "a server address that does not read as a host",
+    `nats://${userinfo("user", "canary-pw-7f3a")}127.0.0.1:99999`,
+    UNNAMED,
+    "canary-pw-7f3a",
   ],
-  ["a server that refuses", `nats://user:${CANARY}@127.0.0.1:1`, "nats://127.0.0.1:1"],
+  [
+    "a server that refuses a user and password",
+    `nats://${userinfo("user", "canary-pw-7f3a")}127.0.0.1:1`,
+    "nats://127.0.0.1:1",
+    "canary-pw-7f3a",
+  ],
+  [
+    "a server that refuses a token",
+    `nats://${userinfo("canary-token-7f3a")}127.0.0.1:1`,
+    "nats://127.0.0.1:1",
+    "canary-token-7f3a",
+  ],
+  ["an nkey seed pasted as the server", `nats://${seed}:4222`, UNNAMED, seed],
+  [
+    "a token holding an unencoded /",
+    `nats://${userinfo("canarytok/def+gh==")}127.0.0.1:4222`,
+    UNNAMED,
+    "canarytok",
+  ],
 ] as const;
 
 function run(script: string, ...args: string[]) {
@@ -27,12 +55,12 @@ function run(script: string, ...args: string[]) {
   };
 }
 
-describe.each(cases)("a failed NATS connect at %s", (_, url, named) => {
+describe.each(cases)("a failed NATS connect at %s", (_, url, named, secret) => {
   test("nats-stream names it and never prints the credential", () => {
     const result = run("nats-stream.ts", "last", url, "STREAM", "subject", "1");
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain(`nats-stream: could not connect to NATS at ${named}: `);
-    expect(result.output.toLowerCase()).not.toContain(CANARY);
+    expect(result.output.toLowerCase()).not.toContain(secret.toLowerCase());
   });
 
   for (const [command, ...rest] of [
@@ -46,7 +74,7 @@ describe.each(cases)("a failed NATS connect at %s", (_, url, named) => {
       expect(result.output).toContain(
         `dispatch-user-turns: could not connect to NATS at ${named}: `
       );
-      expect(result.output.toLowerCase()).not.toContain(CANARY);
+      expect(result.output.toLowerCase()).not.toContain(secret.toLowerCase());
     });
   }
 });

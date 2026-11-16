@@ -19295,6 +19295,59 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_switch_to"));
   });
 
+  test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
+    // The move to the new session's token fails (its trade is refused), so the new session's
+    // agent-stream subject never opens. What the host records next is the new session's, and the
+    // old session's control subject must not answer a replay with it.
+    const tokenFile = join(configDirectory, "projected-token");
+    writeFileSync(tokenFile, "projected.service.account.token\n");
+    process.env.NATS_AUTH = "broker";
+    process.env.AGENT_SECRETS_URL = "http://broker.test";
+    process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+    process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).host !== "broker.test")
+        return responseWithRegistration(input, init, []);
+      const session = new URLSearchParams(await request.text()).get("session") ?? "";
+      if (session !== "ses_failed_from") return new Response("the broker is away", { status: 503 });
+      return Response.json({
+        access_token: `nats-access-of-${session}`,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      });
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-failed-switch");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_failed_from"));
+    const oldControl = "agentstream.ses_failed_from.control";
+    expect(natsState.controls.get(oldControl)?.active()).toBe(true);
+
+    const next = sessionContext("ses_failed_to");
+    await fixture.handlers.get("session_switch")?.({}, next);
+    expect(natsState.controls.has("agentstream.ses_failed_to.control")).toBe(false);
+    const marker = "a turn of the session switched to";
+    await fixture.handlers.get("message_end")?.(
+      { message: { content: [{ text: marker, type: "text" }], role: "assistant", timestamp: 30 } },
+      next
+    );
+
+    // A viewer of the old session asks for its history.
+    const control = natsState.controls.get(oldControl);
+    control?.push(JSON.stringify({ type: "watch", v: 1 }));
+    control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-old-viewer");
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    await Bun.sleep(50);
+    const replayed = natsState.published
+      .filter((each) => each.subject === "inbox-old-viewer")
+      .map((each) => new TextDecoder().decode(each.data));
+    expect(replayed.join("\n")).not.toContain(marker);
+    expect(natsState.controls.get(oldControl)?.active()).toBe(false);
+    await fixture.handlers.get("session_shutdown")?.({}, next);
+  }, 30_000);
+
   test("natsCredential is kept renewed for the connection's life, and the keeper stops at shutdown", async () => {
     // Two-second tokens, so the keeper renews within the test: each renewal lands a new token,
     // and the connection reconnects to present it before the old one lapses. Shutdown stops it.

@@ -525,6 +525,31 @@ describe("followNatsCredential", () => {
     expect(credential.needsReconnect()).toBe(false);
     expect(rig.stoppedReader()).toBe(true);
   });
+
+  test("a redial already in flight with the old token is followed by another reconnect", async () => {
+    // The connection is redialling when the switch comes: nats.js's reconnect() does nothing
+    // while it is not connected, and the redial's CONNECT presented the old token, so its
+    // reconnect leaves the move undone. The follow asks again, and the next CONNECT presents the
+    // new session's token.
+    const credential = await switched();
+    const rig = controlledConnection(credential);
+    const asked: string[] = [];
+    (rig.connection as { reconnect: () => Promise<void> }).reconnect = async () => {
+      if (asked.push("reconnect") === 1) return;
+      credential.authenticator("nonce-again");
+      rig.push("reconnect");
+    };
+    const following = followNatsCredential(rig.connection, credential);
+    await Bun.sleep(50);
+    // The in-flight redial comes back, admitted as the old session.
+    rig.push("reconnect");
+    const started = Date.now();
+    await following;
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(asked).toEqual(["reconnect", "reconnect"]);
+    expect(credential.needsReconnect()).toBe(false);
+    expect(rig.stoppedReader()).toBe(true);
+  }, 30_000);
 });
 
 /** A connection as the keeper sees it: each reconnect is a new CONNECT, which asks the

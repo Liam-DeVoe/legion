@@ -3592,6 +3592,19 @@ export default function envoyExtension(pi: PiApi): void {
     }
     // Another session's relay: its unsettled frames go back to the listener (`nak`).
     if (relay !== undefined && relay.sessionID !== host) closeRelay();
+    // Another session's agent-stream control subject: what the host records from here is this
+    // session's, and the ring is otherwise reset only once this session's own subject opens
+    // (`watchAgentStream`), which a failed move never reaches. Closed here, a viewer of the other
+    // session is answered nothing of this one.
+    if (agentStreamControlSession !== "" && agentStreamControlSession !== host) {
+      agentStreamControl?.unsubscribe();
+      agentStreamControl = undefined;
+      agentStreamControlSession = "";
+      agentStream.reset();
+      agentStreamViewerAttached = false;
+      agentStreamCommandsRefreshedOnWatchAt = -Infinity;
+      forgetAgentStreamContext();
+    }
     if (host === "") {
       handle.markEstablished(host);
       ensureHeartbeat(context);

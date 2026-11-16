@@ -2,14 +2,19 @@ kind: Added
 body: |-
   `natsServerForLog(server)` and `natsErrorForLog(text, servers)` (`nats-connection`) name a NATS
   server, and a connect error's text, as a log may: a server by scheme, host and port alone, and
-  not at all where its address does not read as a host (a pasted nkey seed or token parses as one);
-  and in nats.js's own error text neither such an address, as written or as its host, nor any
-  credential a URL holds, whatever its case, also for a URL nats.js cannot parse. Each part is
-  replaced once, in one pass over the text as nats.js wrote it; `natsUnnamedParts(servers)` and
+  not at all where its address does not read as a host (a pasted nkey seed or token parses as one,
+  and a label of 16 or more hexadecimal characters is read as a token), or where its URL holds more
+  than scheme, host and port (a token or password with an unencoded `/`, `?` or `#` ends the
+  authority there, so the host is the credential's first segment); and in nats.js's own error text
+  neither such an address, as written or as its host, nor any credential a URL holds, its user info
+  taken whole up to the last `@` whatever its characters, in any case, also for a URL nats.js cannot
+  parse. Each part is replaced once, in one pass over the text as nats.js wrote it, searched as
+  written with Unicode case folding; `natsUnnamedParts(servers)` and
   `replaceEachOnce(text, replacements)` are the two halves, for a log that hides other parts in the
-  same pass. A broker token's `ready` waits at
-  most 20 s, nats.js's own dial timeout, for the secrets broker to answer the trade, and then fails
-  naming the setting that chose the broker token, rather than holding a session's start in silence.
-time: 2026-11-16T13:03:12Z
+  same pass. A broker token's `ready` waits at most 20 s, nats.js's own dial timeout, for the
+  secrets broker to answer the trade, and then fails naming the setting that chose the broker
+  token, rather than holding a session's start in silence. `followNatsCredential` reconnects again
+  when a redial that was in flight comes back with the old token, rather than waiting out its 15 s.
+time: 2026-11-16T15:18:43Z
 custom:
     Issue: pr4140

@@ -176,6 +176,30 @@ test("a credential pasted as a bare server address is never named", async () => 
   )
 })
 
+test("a token holding an unencoded / is named by none of its segments", async () => {
+  // The URL's authority ends at the `/`, so its host is the token's first segment, which nats.js
+  // resolves and names in its error.
+  const userinfo = (...parts: string[]) => `${parts.join(":")}@`
+  const refused = async (): Promise<NatsConnection> => {
+    throw new Error("getaddrinfo EAI_AGAIN e2sentineltok")
+  }
+  const failure = await dialChannelNats(
+    {
+      natsUrls: [`nats://${userinfo("e2sentineltok/def+gh==")}127.0.0.1:4222`],
+      natsCredential: { kind: "none" },
+    },
+    "claude-envoy-channel-ses_slash",
+    () => {},
+    refused,
+  ).then(
+    () => "dialled",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  expect(failure).toBe(
+    "could not connect to NATS at a server address that does not read as a host presenting no credential: getaddrinfo EAI_AGAIN <a server address not shown>",
+  )
+})
+
 test("a stop ends the wait for the token and for the dial, and closes a connection made late", async () => {
   const STOPPING = "the channel server stopped before its NATS subscriptions reached the server"
   // The dial: pending until after the stop, then a connection the stop must close.

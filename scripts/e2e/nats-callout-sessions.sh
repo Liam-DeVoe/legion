@@ -559,8 +559,11 @@ claude_transcript() {
 # omp_entries ID: the texts of Oh My Pi's session entries as the host holds them now, its answer
 # to one `get_entries` request named ID. Each request needs an ID of its own, or the first answer
 # in the log would be read again; received numbers them in its own shell, since this function
-# runs in the subshell of the command substitution that reads it.
+# runs in the subshell of the command substitution that reads it. An answer that is an error is
+# no record of the host's: it fails, and its error is kept in omp_entries_error for the failure
+# line, which would otherwise say the host shows no message.
 omp_requests=0
+omp_entries_error=$scratch/omp-entries-error
 omp_answer() {
   jq -ecnR --arg id "$1" 'first(inputs | fromjson? | select(.type == "response" and .id == $id))' \
     "$omp_home/rpc.log"
@@ -570,6 +573,11 @@ omp_entries() {
   printf '{"type":"get_entries","id":"%s"}\n' "$1" >&"$omp_fd"
   wait_for 10 omp_answer "$1" >/dev/null || return 1
   answer=$(omp_answer "$1") || return 1
+  if ! jq -e '.success == true' <<<"$answer" >/dev/null; then
+    jq -r '.error // "an answer with success not true"' <<<"$answer" >"$omp_entries_error"
+    return 1
+  fi
+  rm -f -- "$omp_entries_error"
   jq -r ".data.entries[]? | $omp_entry_text" <<<"$answer"
 }
 received() {
@@ -582,6 +590,16 @@ received() {
     texts=$(omp_entries "ncs-entries-$omp_requests") && grep -qF -- "$2" <<<"$texts"
   else
     file=$(claude_transcript) && jq -rnR "$claude_entries" "$file" 2>/dev/null | grep -qF -- "$2"
+  fi
+}
+# not_received LABEL MARKER: why received found no MARKER: the host's own error, where its last
+# answer was one, else that it shows no such message.
+not_received() {
+  if [ "$1" = omp ] && [ "$hosts" = real ] && [ -s "$omp_entries_error" ]; then
+    printf "Oh My Pi's get_entries answered an error, so the host's record could not be read: %s" \
+      "$(<"$omp_entries_error")"
+  else
+    printf "the host shows no message naming '%s'" "$2"
   fi
 }
 
@@ -634,7 +652,7 @@ message_each() {
       if ! admitted_as "$session"; then
         failed "$step ($label)" "s-$session acked stream sequence $sequence, but the hub lists no connection admitted as session/$session"
       elif ! wait_for 15 received "$label" "$marker"; then
-        failed "$step ($label)" "s-$session acked stream sequence $sequence, but the host shows no message naming '$marker'"
+        failed "$step ($label)" "s-$session acked stream sequence $sequence, but $(not_received "$label" "$marker")"
       else
         pass "$step ($label): s-$session acked stream sequence $sequence, admitted as session/$session"
       fi

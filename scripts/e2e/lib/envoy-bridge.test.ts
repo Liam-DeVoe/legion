@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { nkeys } from "nats";
 import {
   bridgeConfigFromEnvironment,
   bridgeFailureLine,
@@ -206,6 +207,29 @@ describe("the bridge's output lines", () => {
       expect(bridgeFailureLine(failure, overlapping)).toBe(
         "BRIDGE UNHEALTHY getaddrinfo ENOTFOUND SMOKE_UPSTREAM_NATS"
       );
+    }
+  });
+
+  // The two rig forms nats.js's own text carries: a seed pasted as the host, which its resolver
+  // names lowercased, and a token holding an unencoded `/`, whose first segment the URL makes the
+  // host it then resolves.
+  test("a rig seed pasted as the host, or a rig token with an unencoded /, is in neither line", () => {
+    const seed = new TextDecoder().decode(nkeys.createUser().getSeed());
+    for (const [rig, resolved] of [
+      [`nats://${seed}:4222`, seed.toLowerCase()],
+      [`nats://${userinfo("canarytok/def+gh==")}172.30.0.1:31000`, "canarytok"],
+    ] as const) {
+      const config = bridgeConfigFromEnvironment({
+        SMOKE_REPO: "a/b",
+        SMOKE_RIG_NATS: rig,
+        SMOKE_UPSTREAM_NATS: "nats://envoy-nats.tailnet.example:4222",
+      });
+      const lines = [
+        bridgeReadyLine(config),
+        bridgeFailureLine(new Error(`getaddrinfo EAI_AGAIN ${resolved}`), config),
+      ].join("\n");
+      expect(lines.toLowerCase()).not.toContain(resolved);
+      expect(lines).toContain("downstream=a server address that does not read as a host");
     }
   });
 });

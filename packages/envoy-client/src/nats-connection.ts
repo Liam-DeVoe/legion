@@ -56,6 +56,9 @@ export const NATS_ADDRESS_NOT_SHOWN = "<a server address not shown>";
 /** One label of a host name a log names: letters, digits and inner hyphens, at most 32
  *  characters. A pasted nkey seed (58 characters) or a token's segment is a longer label. */
 const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/i;
+/** A label that is 16 or more hexadecimal characters alone: a token or key (a 128-bit hex token
+ *  is 32), never a host name a log should print. */
+const HEX_CREDENTIAL = /^[0-9a-f]{16,}$/i;
 
 /** `server` parsed as nats.js dials it: a value written without a scheme is `nats://`. */
 function parsedServer(server: string): URL | undefined {
@@ -67,11 +70,13 @@ function parsedServer(server: string): URL | undefined {
 }
 
 /** Whether `hostname` (a URL's, so an IPv6 literal keeps its brackets) reads as a host: an IP
- *  literal, or a name whose every label is a `HOST_LABEL`. */
+ *  literal, or a name whose every label is a `HOST_LABEL` and no `HEX_CREDENTIAL`. */
 function readsAsHost(hostname: string): boolean {
   if (/^\[[0-9a-f:.]+\]$/i.test(hostname) || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname))
     return true;
-  return hostname.split(".").every((label) => HOST_LABEL.test(label));
+  return hostname
+    .split(".")
+    .every((label) => HOST_LABEL.test(label) && !HEX_CREDENTIAL.test(label));
 }
 
 /**
@@ -79,29 +84,42 @@ function readsAsHost(hostname: string): boolean {
  * written without a scheme. A URL may carry a token or a user and password
  * (`nats://token@host:port`), and a value that does not read as a host may be a credential pasted
  * into the wrong setting (an nkey seed parses as a host name), so neither reaches a log: such an
- * address is `UNNAMED_NATS_SERVER`.
+ * address is `UNNAMED_NATS_SERVER`. So is one whose URL holds more than scheme, host and port,
+ * which is all nats.js dials: a token or password holding an unencoded `/`, `?` or `#` ends the
+ * authority there, and the host is then the credential's first segment.
  */
 export function natsServerForLog(server: string): string {
   const parsed = parsedServer(server);
   if (parsed === undefined || parsed.host === "" || /\s/.test(server)) return UNNAMED_NATS_SERVER;
+  if (!["", "/"].includes(parsed.pathname) || parsed.search !== "" || parsed.hash !== "")
+    return UNNAMED_NATS_SERVER;
   if (!readsAsHost(parsed.hostname)) return UNNAMED_NATS_SERVER;
   return server.includes("://") ? `${parsed.protocol}//${parsed.host}` : parsed.host;
 }
 
-/** A server written as `[scheme://][userinfo@]host…`, read without parsing it as a URL. */
-const WRITTEN_SERVER = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:([^/?#@]*)@)?([^/?#:]*)/i;
+/**
+ * The user info `server` is written with: everything between its scheme and its last `@`,
+ * whatever its characters, since a credential may hold `/`, `?` or `#` that ends a URL's
+ * authority early; and the host after it as written.
+ */
+function writtenParts(server: string): { userInfo: string; hostname: string } {
+  const rest = server.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  const at = rest.lastIndexOf("@");
+  const hostname = /^[^/?#:]*/.exec(at < 0 ? rest : rest.slice(at + 1))?.[0] ?? "";
+  return { userInfo: at < 0 ? "" : rest.slice(0, at), hostname };
+}
 
-/** The user, password and host `server` holds: its URL's, or, for one nats.js cannot parse
- *  either (a port out of range), the user info and host as written, which its error quotes. */
+/** The user, password and host `server` holds: its user info as written (whole, and split at
+ *  its first `:`), the URL's user and password where it parses, and the host nats.js dials, or
+ *  the host as written for a server it cannot parse (a port out of range). */
 function serverParts(server: string): { secrets: string[]; hostname: string } {
   const parsed = parsedServer(server);
-  if (parsed !== undefined)
-    return { secrets: [parsed.username, parsed.password], hostname: parsed.hostname };
-  const [, userInfo = "", hostname = ""] = WRITTEN_SERVER.exec(server.trim()) ?? [];
+  const { userInfo, hostname } = writtenParts(server);
   const colon = userInfo.indexOf(":");
   const secrets =
     colon < 0 ? [userInfo] : [userInfo, userInfo.slice(0, colon), userInfo.slice(colon + 1)];
-  return { secrets, hostname };
+  if (parsed !== undefined) secrets.push(parsed.username, parsed.password);
+  return { secrets, hostname: parsed?.hostname ?? hostname };
 }
 
 /**
@@ -132,26 +150,31 @@ export function natsUnnamedParts(servers: readonly string[]): string[] {
  * over `text` as written: a stand-in is never searched again, so a part that is a word of one (a
  * user `a`) does not grow the text, and no replacement can break a longer part's match for
  * another. Longest first: at any one place the longest part that matches is the one replaced, so a
- * part inside another leaves nothing of the longer behind. Of two entries for one part (whatever
+ * part inside another leaves nothing of the longer behind. Each part is searched as written, with
+ * Unicode case folding (a part whose lowercasing is not its fold, U+0130 or U+212A, is still
+ * found); its lowercasing only chooses the stand-in, and of two entries for one part (whatever
  * its case) the later's stand-in is used.
  */
 export function replaceEachOnce(
   text: string,
   replacements: Iterable<readonly [part: string, standIn: string]>
 ): string {
+  const spellings = new Set<string>();
   const standIns = new Map<string, string>();
   for (const [part, standIn] of replacements) {
-    if (part.trim() !== "") standIns.set(part.toLowerCase(), standIn);
+    if (part.trim() === "") continue;
+    spellings.add(part);
+    standIns.set(part.toLowerCase(), standIn);
   }
-  if (standIns.size === 0) return text;
-  const alternatives = [...standIns.keys()]
+  if (spellings.size === 0) return text;
+  const alternatives = [...spellings]
     .sort((a, b) => b.length - a.length)
     .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  // A match whose lowercasing is not its part's (a case fold the search makes and toLowerCase
-  // does not) still gets a stand-in: the first, which hides it as well as its own would.
+  // A match whose lowercasing is no part's (a case the fold reaches and toLowerCase does not)
+  // still gets a stand-in: the first, which hides it as well as its own would.
   const fallback = standIns.values().next().value as string;
   return text.replace(
-    new RegExp(alternatives.join("|"), "gi"),
+    new RegExp(alternatives.join("|"), "giu"),
     (match) => standIns.get(match.toLowerCase()) ?? fallback
   );
 }

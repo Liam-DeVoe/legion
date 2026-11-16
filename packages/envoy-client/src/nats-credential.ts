@@ -283,9 +283,11 @@ const RECONNECTED: `${Events.Reconnect}` = "reconnect";
  * of the new session's subjects, and the server refuses a subscribe to one, which nats.js answers
  * by closing the subscription. Nothing happens where the token in hand is the one the connection
  * presented. A reconnect counts only once the CONNECT it made presented the token in hand, so one
- * that began before the move does not end it. Throws where the connection does not come back
- * within 15 s, or closes first. The status reader it opens is stopped on every way out: nats.js
- * keeps a reader registered until it is stopped, whatever becomes of the connection.
+ * that began before the move does not end it; and since nats.js's `reconnect()` does nothing while
+ * the connection is redialling, a redial that comes back with the old token is followed by another
+ * reconnect, which presents the new one. Throws where the connection does not come back within
+ * 15 s, or closes first. The status reader it opens is stopped on every way out: nats.js keeps a
+ * reader registered until it is stopped, whatever becomes of the connection.
  */
 export async function followNatsCredential(
   connection: Pick<NatsConnection, "reconnect" | "status" | "closed">,
@@ -297,7 +299,10 @@ export async function followNatsCredential(
   const statuses: AsyncIterable<Status> & { stop?: () => void } = connection.status();
   const back = (async () => {
     for await (const status of statuses) {
-      if (status.type === RECONNECTED && !credential.needsReconnect()) return;
+      if (status.type !== RECONNECTED) continue;
+      if (!credential.needsReconnect()) return;
+      // Back as the old session: a redial that was in flight when the move asked for one.
+      connection.reconnect().catch(() => {});
     }
     throw new Error("the NATS connection's status ended before it came back as the new session");
   })();
