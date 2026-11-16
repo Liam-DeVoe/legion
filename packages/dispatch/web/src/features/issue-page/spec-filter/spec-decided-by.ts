@@ -1,7 +1,16 @@
-import type { Actor, CheckBlock, Decision, IssueDecisions } from "../../../api/types";
+import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
-import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
-import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
+import type { TextSource } from "../../refs/text-references";
+import { wordsOf } from "../../refs/tree-fragment";
+import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
+import { namedLine } from "../one-line";
+import {
+  isReader,
+  NODE_TYPE_NAMES,
+  type NodeState,
+  type NodeType,
+  type StatementState,
+} from "../page-words";
 import { statementStandings } from "../verification-filter/statement-state";
 
 /**
@@ -28,13 +37,18 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    missing tie visible (R35).
  *
  * What a person's decision quotes is the person's own answer, never a restatement of it
- * (dispatch://INFRA-1150 R4): the answer's first sentence word for word (`firstSentenceOf`),
- * or, where they wrote none, the options they chose; the whole answer is carried beside it, for
- * the focus on the line to draw character for character (R5). A section of `decisions.md` the
- * server marks a person's whose answered question this tree does not hold is the agent's record
- * of that decision, so it is drawn as an agent's words and never quoted as the person's (R9).
- * What an agent's decision quotes is its own text, with the one word the model holds for how
- * sure it was (`Decision.unsure`).
+ * (dispatch://INFRA-1150 R4): the answer's first sentence word for word (`firstSentenceOf`), with
+ * each reference in it named in plain words (`namedLine`), or, where they wrote none, the options
+ * they chose; the whole answer is carried beside it as stored, for the focus on the line to draw
+ * character for character (R5). A section of `decisions.md` the server marks a person's whose
+ * answered question this tree does not hold is the agent's record of that decision, so it is
+ * drawn as an agent's words and never quoted as the person's (R9).
+ *
+ * An agent's decision carries its own text whole, which the cell draws as a row draws a node's
+ * words (`RowText`), and is quoted by its first line with each reference named: the line under a
+ * statement quotes it as one link, and a text drawn with its own links cannot stand inside one
+ * (departure 2 of dispatch://INFRA-3939's plan). With it goes the one word the model holds for
+ * how sure it was (`Decision.unsure`).
  *
  * Whether a statement's words changed after the decision beside it is the model's half, on
  * dispatch://INFRA-1150's branch: the view draws nothing of it.
@@ -67,11 +81,12 @@ export interface SpecDecision {
    *  to from a statement (`tree-keys.ts`'s `decisionBehind`). A person's decision is drawn by
    *  their answer (`id`), and this is the section of `decisions.md` that names it. */
   readonly node?: string;
-  /** The question the words answer, its first line as R1 cuts a row's; absent where the words
-   *  answer no question. */
+  /** The question the words answer, its first line as R1 cuts a row's with each reference
+   *  named; absent where the words answer no question. */
   readonly question?: string;
-  /** The words the decision came from: a person's answer's first sentence, or the options they
-   *  chose where they wrote nothing, or an agent's decision's own text. */
+  /** The one line the decision is quoted by under a statement, in plain words with each
+   *  reference named (`namedLine`): a person's answer's first sentence, or the options they
+   *  chose where they wrote nothing, or the first line of an agent's decision's own words. */
   readonly quote: string;
   /** The node's own `dispatch://` address, which the link to the whole of it follows. */
   readonly reference?: string;
@@ -85,6 +100,13 @@ export interface SpecDecision {
   /** A person's whole answer as the store holds it, where it says more than `quote`: what the
    *  focus on the decision's line draws, character for character (R5). */
   readonly whole?: string;
+  /** An agent's decision's own text whole, as the cell draws it (`RowText`): as stored, the
+   *  server's reading of it where one was sent, and the record it is. Absent for a person's. */
+  readonly words?: {
+    readonly markdown: string;
+    readonly source?: TextSource;
+    readonly tree?: DisplayTree;
+  };
 }
 
 /** One statement of the Spec filter, as its row draws it. */
@@ -110,7 +132,8 @@ export interface SpecParent {
   readonly at?: string;
   readonly by?: Actor;
   readonly id: string;
-  /** Its first line, as R1 cuts a row's (`TreeNode.parentLine`). */
+  /** Its first line, as R1 cuts a row's (`TreeNode.parentLine`), with each reference named; its
+   *  kind's word where it has no words. */
   readonly line: string;
   readonly type: NodeType;
 }
@@ -139,12 +162,14 @@ export interface SpecReading {
  * the decisions and each statement's checks, none of which the Spec filter draws as rows (R2).
  * `nodeIdOf` is how this issue addresses a node, which is the one rule the tree is built with
  * (`tree-drafts.ts`'s `treeContext`), so a tie resolves to the node it names however its
- * address is written. `checks` is the issue's results read, which each statement's mark is
- * read from as the Verification filter reads it (`statement-state.ts`).
+ * address is written. `nameOf` is how the page names a reference a plain line cites
+ * (`one-line.ts`'s `useReferenceNames`). `checks` is the issue's results read, which each
+ * statement's mark is read from as the Verification filter reads it (`statement-state.ts`).
  */
 export function specDecidedBy({
   checks,
   decisions,
+  nameOf,
   nodeIdOf,
   reader,
   root,
@@ -152,6 +177,7 @@ export function specDecidedBy({
 }: {
   readonly checks: readonly CheckBlock[];
   readonly decisions: IssueDecisions | undefined;
+  readonly nameOf: (reference: string) => string | undefined;
   readonly nodeIdOf: (reference: string) => string | undefined;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   readonly reader: string | undefined;
@@ -162,7 +188,7 @@ export function specDecidedBy({
 }): SpecReading {
   const nodes = nodesById(root);
   const asks = asksById(nodes);
-  const shaped = shapedBy({ asks, decisions, nodeIdOf, nodes, reader });
+  const shaped = shapedBy({ asks, decisions, nameOf, nodeIdOf, nodes, reader });
   const standings = statementStandings(root, checks);
   const groups: {
     parent?: SpecParent;
@@ -170,8 +196,8 @@ export function specDecidedBy({
   }[] = [];
   const rows = rowsOf(view);
   for (const node of rows.filter((row) => row.type === "requirement")) {
-    const parent = parentOf(node, nodes);
-    const under = answerUnder(parent, nodes, reader);
+    const parent = parentOf(node, nodes, nameOf);
+    const under = answerUnder(parent, nodes, reader, nameOf);
     // The answered question the statement hangs under first, then each tie, each decision once.
     const ties = [
       ...(under === undefined ? [] : [under]),
@@ -263,12 +289,14 @@ function rowsOf(view: TreeNode): readonly TreeNode[] {
 function shapedBy({
   asks,
   decisions,
+  nameOf,
   nodeIdOf,
   nodes,
   reader,
 }: {
   asks: ReadonlyMap<string, TreeNode>;
   decisions: IssueDecisions | undefined;
+  nameOf: (reference: string) => string | undefined;
   nodeIdOf: (reference: string) => string | undefined;
   nodes: ReadonlyMap<string, TreeNode>;
   reader: string | undefined;
@@ -280,7 +308,7 @@ function shapedBy({
     if (decision.replaced) continue;
     const links = decision.links ?? [];
     if (links.length === 0) continue;
-    const made = decisionOf(decision, { asks, nodeIdOf, nodes, reader });
+    const made = decisionOf(decision, { asks, nameOf, nodeIdOf, nodes, reader });
     for (const link of links) {
       const id = link.to.ref === undefined ? undefined : nodeIdOf(link.to.ref);
       if (id === undefined) continue;
@@ -299,11 +327,13 @@ function decisionOf(
   decision: Decision,
   {
     asks,
+    nameOf,
     nodeIdOf,
     nodes,
     reader,
   }: {
     asks: ReadonlyMap<string, TreeNode>;
+    nameOf: (reference: string) => string | undefined;
     nodeIdOf: (reference: string) => string | undefined;
     nodes: ReadonlyMap<string, TreeNode>;
     reader: string | undefined;
@@ -317,7 +347,7 @@ function decisionOf(
     .find((ask) => ask?.answer !== undefined);
   if (decision.kind === "person" && answered?.answer !== undefined) {
     return {
-      ...answerDecision(answered, reader),
+      ...answerDecision(answered, reader, nameOf),
       ...(node === undefined ? {} : { node: node.id }),
     };
   }
@@ -326,25 +356,43 @@ function decisionOf(
   // tree places elsewhere, or one whose read failed. That record is never put in the person's
   // mouth (R9: "no agent's words are drawn under a person's name").
   const at = node?.at ?? decision.changed_at ?? undefined;
+  const tree = decision.text_tree ?? node?.tree;
+  // The one line is read from the words as a reader reads them, with none of the symbols the
+  // cell draws as formatting: the node's (`nodeWords`), else the decision's own reading.
+  const words =
+    node !== undefined
+      ? nodeWords(node)
+      : decision.text_tree === undefined
+        ? decision.text
+        : wordsOf(decision.text_tree);
   return {
     ...(at === undefined ? {} : { at }),
     ...(node?.author === undefined ? {} : { by: node.author }),
     chose: [],
     id: node?.id ?? decision.ref,
     ...(node === undefined ? {} : { node: node.id }),
-    quote: node === undefined ? decision.text : nodeWords(node),
+    quote: drawnLine(firstLineOf(namedLine(words, nameOf))),
     reference: decision.ref,
     said: "agent",
     ...(node?.state === undefined ? {} : { state: node.state }),
     type: "decision",
     unsure: decision.unsure,
+    words: {
+      markdown: decision.text,
+      ...(node?.source === undefined ? {} : { source: node.source }),
+      ...(tree === undefined ? {} : { tree }),
+    },
   };
 }
 
 /** A person's answer to `ask` as the column draws it: their first sentence word for word, or
  *  the options they chose where they wrote none (R5), with the whole answer where it says
  *  more. */
-function answerDecision(ask: TreeNode, reader: string | undefined): SpecDecision {
+function answerDecision(
+  ask: TreeNode,
+  reader: string | undefined,
+  nameOf: (reference: string) => string | undefined
+): SpecDecision {
   const answer = ask.answer;
   if (answer === undefined) throw new Error("an answered ask with no answer");
   const written = firstSentenceOf(answer.text);
@@ -353,8 +401,8 @@ function answerDecision(ask: TreeNode, reader: string | undefined): SpecDecision
     by: answer.by,
     chose: answer.selected,
     id: ask.id,
-    question: firstLineOf(nodeWords(ask)).line,
-    quote: written === "" ? answer.selected.join(", ") : written,
+    question: drawnLine(firstLineOf(namedLine(nodeWords(ask), nameOf))),
+    quote: written === "" ? answer.selected.join(", ") : namedLine(written, nameOf),
     ...(ask.reference === undefined ? {} : { reference: ask.reference }),
     said: isReader(answer.by, reader) ? "you" : "person",
     type: "ask",
@@ -368,17 +416,22 @@ function answerDecision(ask: TreeNode, reader: string | undefined): SpecDecision
 function answerUnder(
   parent: SpecParent | undefined,
   nodes: ReadonlyMap<string, TreeNode>,
-  reader: string | undefined
+  reader: string | undefined,
+  nameOf: (reference: string) => string | undefined
 ): SpecDecision | undefined {
   if (parent === undefined) return undefined;
   const node = nodes.get(parent.id);
   if (node === undefined || node.type !== "ask" || node.answer === undefined) return undefined;
-  return answerDecision(node, reader);
+  return answerDecision(node, reader, nameOf);
 }
 
 /** The node a statement hangs under, where the filter draws it as no row (R2), with who made it
  *  and when, which its line says. */
-function parentOf(node: TreeNode, nodes: ReadonlyMap<string, TreeNode>): SpecParent | undefined {
+function parentOf(
+  node: TreeNode,
+  nodes: ReadonlyMap<string, TreeNode>,
+  nameOf: (reference: string) => string | undefined
+): SpecParent | undefined {
   const line = node.parentLine;
   if (line === undefined) return undefined;
   const parent = nodes.get(line.id);
@@ -386,7 +439,9 @@ function parentOf(node: TreeNode, nodes: ReadonlyMap<string, TreeNode>): SpecPar
     ...(parent?.at === undefined ? {} : { at: parent.at }),
     ...(parent?.author === undefined ? {} : { by: parent.author }),
     id: line.id,
-    line: line.line,
+    // A parent with no words is given its id as its line (`presets.ts`), which is no word of
+    // it: it is named by its kind's word, never by its id (decision 66).
+    line: line.line === line.id ? NODE_TYPE_NAMES[line.type] : namedLine(line.line, nameOf),
     type: line.type,
   };
 }

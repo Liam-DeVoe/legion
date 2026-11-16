@@ -1,18 +1,21 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../../__tests__/display-trees";
 import { api } from "../../../api/client";
 import { issueResultsQuery } from "../../../api/queries";
-import type { CheckBlock, Decision } from "../../../api/types";
+import type { Actor, CheckBlock, Decision } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
 import type { TreeNode } from "../issue-tree";
+import { shortDay } from "../node-time";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import {
@@ -20,10 +23,12 @@ import {
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
   GAP_WORDS,
+  NODE_TYPE_NAMES,
   SPEC_WORDS,
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
+import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -59,11 +64,29 @@ function IssueScope(): ReactNode {
   return null;
 }
 
+/** The names the page's one batched read brought, published as the page publishes them
+ *  (`useIssueTree.ts`), which a reference in a node's drawn words is named from (`RowText`). */
+function Named({
+  children,
+  names,
+}: {
+  children: ReactNode;
+  names: ReadonlyMap<string, string> | undefined;
+}): ReactNode {
+  usePublishReferenceNames(names);
+  return children;
+}
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 /** The body over `tree`, with `made` as the issue's decisions read and `checks` as its results
- *  read. `decisions: "out"` leaves the decisions read unanswered, and `"failed"` fails it. The
- *  page's provider of the Contents list's requests stands above the body, so `request` is
- *  taken as the page takes it; `redraw(false)` takes the body off the page and `redraw(true)`
- *  draws a new one under the same provider, as the view turned off and on again does. */
+ *  read. `decisions: "out"` leaves the decisions read unanswered, and `"failed"` fails it;
+ *  `names` is what the page's batched reference read named. The page's provider of the
+ *  Contents list's requests stands above the body, so `request` is taken as the page takes it;
+ *  `redraw(false)` takes the body off the page and `redraw(true)` draws a new one under the same
+ *  provider, as the view turned off and on again does. */
 function drawBody(
   tree: TreeNode,
   made: readonly Decision[] = [],
@@ -72,6 +95,7 @@ function drawBody(
     context = new Set<string>(),
     decisions = "answered",
     named = [],
+    names,
     reader = READER,
     request,
     reveal,
@@ -80,6 +104,7 @@ function drawBody(
     context?: Set<string>;
     decisions?: "answered" | "failed" | "out";
     named?: readonly string[];
+    names?: ReadonlyMap<string, string>;
     reader?: string;
     request?: OutlineRequest;
     reveal?: string;
@@ -105,29 +130,33 @@ function drawBody(
   }
   const page = (drawn: boolean): ReactNode => (
     <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <KeymapProvider>
-          <MarginProvider>
-            <OutlineRequestProvider>
-              <IssueScope />
-              {drawn ? (
-                <SpecFilterBody
-                  context={context}
-                  emptyLine={EMPTY_STATE_LINES.spec}
-                  holdsEscape={false}
-                  issue={issueDetails()}
-                  reader={reader}
-                  reading={false}
-                  {...(request === undefined ? {} : { request })}
-                  {...(reveal === undefined ? {} : { reveal })}
-                  root={tree}
-                  view={presetView(tree, "spec", "", new Set(named)).root}
-                />
-              ) : null}
-            </OutlineRequestProvider>
-          </MarginProvider>
-        </KeymapProvider>
-      </MemoryRouter>
+      <ReferenceNamesProvider>
+        <Named names={names}>
+          <MemoryRouter>
+            <KeymapProvider>
+              <MarginProvider>
+                <OutlineRequestProvider>
+                  <IssueScope />
+                  {drawn ? (
+                    <SpecFilterBody
+                      context={context}
+                      emptyLine={EMPTY_STATE_LINES.spec}
+                      holdsEscape={false}
+                      issue={issueDetails()}
+                      reader={reader}
+                      reading={false}
+                      {...(request === undefined ? {} : { request })}
+                      {...(reveal === undefined ? {} : { reveal })}
+                      root={tree}
+                      view={presetView(tree, "spec", "", new Set(named)).root}
+                    />
+                  ) : null}
+                </OutlineRequestProvider>
+              </MarginProvider>
+            </KeymapProvider>
+          </MemoryRouter>
+        </Named>
+      </ReferenceNamesProvider>
     </QueryClientProvider>
   );
   const view = render(page(true));
@@ -310,21 +339,19 @@ test("the column says no decision shaped a statement only once the decisions are
   }
 });
 
-// R5: an agent's decision draws its text and the one word the model holds for how sure it was;
-// R2: wherever a decision is drawn, one waiting for review says so.
+// R5: an agent's decision draws its own words whole in its cell, as a row draws a node's words
+// (`RowText`, in a block: departure 2 of dispatch://INFRA-3939's plan), while the line under the
+// statement quotes their first line, and the one word the model holds for how sure it was; R2:
+// wherever a decision is drawn, one waiting for review says so.
 test("an agent's decision draws its own words, how sure it was and how it stands", () => {
-  const made = decisionNode("d1", {
-    state: "waiting_review",
-    text: "One batched read names every address.",
-    unsure: true,
-    waiting: true,
-  });
+  const text = "One batched read names every address. The page asks the server once.";
+  const made = decisionNode("d1", { state: "waiting_review", text, unsure: true, waiting: true });
   const { read, view } = drawBody(issueTree([statement("r1"), made]), [
     decision({
       block_id: "d1",
       kind: "agent",
       links: [shaped(statementRef("r1"))],
-      text: "One batched read names every address.",
+      text,
       unsure: true,
       waiting_review: true,
     }),
@@ -334,12 +361,164 @@ test("an agent's decision draws its own words, how sure it was and how it stands
     expect(cell?.getAttribute("data-said")).toBe("agent");
     expect(cell?.className).toContain("border-dashed");
     expect(textsOf(view, "[data-spec-said]")).toEqual([SPEC_WORDS.said_agent]);
-    expect(textsOf(view, "[data-spec-quote]")).toEqual(["“One batched read names every address.”"]);
+    const quote = cell?.querySelector("[data-spec-quote]");
+    expect(quote?.tagName).toBe("DIV");
+    expect(quote?.querySelector("[data-node-words]")?.textContent).toBe(text);
+    expect(textsOf(view, "[data-spec-because-link]")).toEqual([
+      "“One batched read names every address.”",
+    ]);
     const source = view.container.querySelector("[data-spec-source]")?.textContent ?? "";
     expect(source).toContain("Waiting for review");
     expect(source).toContain("Unsure");
     expect(view.container.querySelector("[data-spec-whole]")?.textContent?.trim()).toBe(
       `${SPEC_WORDS.whole_decision} ›`
+    );
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// Reading (c) of dispatch://INFRA-3939's plan, R5: the decisions read holds no author for a
+// decision, so a cell, a group's heading and a because line draw none - no name, no shape, and no
+// dot where it would stand - and only the focused cell says "Author unknown". An agent is named
+// by its role's word (ruling 6).
+test("a decision with no author draws none, and says Author unknown with the focus", () => {
+  const planner: Actor = {
+    id: "session-planner",
+    kind: "session",
+    origin: { session_title: "Legion planner · INFRA-1" },
+  };
+  const day = shortDay("2026-11-13T07:00:00Z");
+  const { read, view } = drawBody(
+    issueTree([
+      node({
+        at: "2026-11-13T07:00:00Z",
+        children: [statement("r1")],
+        id: "comment-1",
+        text: "Where the statements go.",
+        type: "comment",
+      }),
+      statement("r2"),
+      statement("r3"),
+      // Decisions as the tree builds them from the decisions read, which names no author
+      // (`tree-drafts.ts`): the first with the time of its last change, the second with none.
+      node({
+        at: "2026-11-13T07:00:00Z",
+        id: "decisions-md#b-d1",
+        reference: `dispatch://${KEY}/artifact/decisions-md#b-d1`,
+        text: "The decision d1.",
+        type: "decision",
+      }),
+      node({
+        id: "decisions-md#b-d2",
+        reference: `dispatch://${KEY}/artifact/decisions-md#b-d2`,
+        text: "The decision d2.",
+        type: "decision",
+      }),
+      decisionNode("d3", { author: planner }),
+    ]),
+    [
+      decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] }),
+      decision({
+        block_id: "d2",
+        changed_at: null,
+        kind: "agent",
+        links: [shaped(statementRef("r2"))],
+      }),
+      decision({ block_id: "d3", kind: "agent", links: [shaped(statementRef("r3"))] }),
+    ]
+  );
+  const cellOf = (block: string) =>
+    view.container.querySelector<HTMLElement>(
+      `[data-spec-cell][data-node-id="decisions-md#b-${block}"]`
+    );
+  try {
+    const heading = view.container.querySelector("[data-spec-group-heading]");
+    for (const drawn of [
+      heading,
+      cellOf("d1"),
+      cellOf("d2"),
+      rowOf(view, "spec#b-r1").querySelector("[data-spec-because]"),
+      rowOf(view, "spec#b-r2").querySelector("[data-spec-because]"),
+    ]) {
+      expect(drawn).not.toBeNull();
+      expect(drawn?.textContent).not.toContain(CONTROL_LABELS.unknown_author);
+      expect(drawn?.querySelector('svg[data-glyph^="author-"]')).toBeNull();
+    }
+    expect(heading?.querySelector("p")?.textContent).toBe(`${NODE_TYPE_NAMES.comment} · ${day}`);
+    expect(cellOf("d1")?.querySelector("[data-spec-source]")?.textContent).toBe(day);
+    expect(textsOf(view, "[data-spec-because]")).toEqual([
+      `${SPEC_WORDS.because} “The decision d1.” — ${day}`,
+      `${SPEC_WORDS.because} “The decision d2.”`,
+      `${SPEC_WORDS.because} “The decision d3.” — planner · ${day}`,
+    ]);
+    expect(cellOf("d3")?.querySelector("[data-spec-author]")?.textContent).toBe("planner");
+    act(() => cellOf("d1")?.focus());
+    expect(cellOf("d1")?.querySelector("[data-spec-source]")?.textContent).toBe(
+      `${CONTROL_LABELS.unknown_author} · ${day}`
+    );
+    expect(cellOf("d1")?.querySelector('svg[data-glyph="author-unknown"]')).not.toBeNull();
+    // Nothing but the focused cell says it.
+    expect(view.container.textContent?.split(CONTROL_LABELS.unknown_author)).toHaveLength(2);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5, the tester's F20 and reading (b) of dispatch://INFRA-3939's plan: an agent's words that cite
+// a statement and quote a typed block draw the statement by its name, never its address, and
+// none of the block's source lines: whole in the cell through `RowText`, and as one line of plain
+// words on the because line.
+test("an agent's decision draws its words with each reference named, in its cell and on its because line", async () => {
+  const cited = statementRef("r4");
+  const name = "Every statement is drawn whole";
+  const words = [
+    `Keep ${cited} as its author wrote it.`,
+    "",
+    ":::requirement{#r4}",
+    "Each row is one line.",
+    ":::",
+  ].join("\n");
+  const tree = displayTree(words);
+  if (tree === undefined) throw new Error("the engine read no tree of the decision's words");
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r4", { text: `**R4.** ${name}.` }),
+      // The tree names the statement a decision shaped by a chip on the decision, from the
+      // batched read (`tree-drafts.ts`), which is the name the page gives it (`namedLine`).
+      decisionNode("d1", {
+        chips: [{ answered: true, gone: false, name, ref: cited }],
+        text: words,
+        tree,
+      }),
+    ]),
+    [
+      decision({
+        block_id: "d1",
+        kind: "agent",
+        links: [shaped(cited)],
+        text: words,
+        text_tree: tree,
+      }),
+    ],
+    { names: new Map([[cited, `:::requirement{#r4}\n${name}\n:::`]]) }
+  );
+  try {
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-spec-cell] a[data-row-reference]")?.textContent
+      ).toBe(name)
+    );
+    for (const selector of ["[data-spec-cell]", "[data-spec-because]"]) {
+      const drawn = view.container.querySelector(selector)?.textContent ?? "";
+      expect(drawn).toContain(name);
+      expect(drawn).not.toContain("dispatch://");
+      expect(drawn).not.toContain(":::");
+    }
+    expect(view.container.querySelector("[data-spec-because-link]")?.textContent).toBe(
+      `“Keep ${name} as its author wrote it.”`
     );
   } finally {
     view.unmount();

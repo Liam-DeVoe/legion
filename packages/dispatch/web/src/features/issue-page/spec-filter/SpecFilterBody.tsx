@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -22,6 +22,7 @@ import {
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { useAgentText } from "../../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
+import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
@@ -31,6 +32,7 @@ import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
 import { DETAILS_ATTRIBUTE } from "../margin-slot";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
+import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
 import { useReferenceNames } from "../one-line";
 import { useTakeOutlineRequest } from "../outline-request";
@@ -150,12 +152,21 @@ export function SpecFilterBody({
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
-  // How a reference the three sentences cite is named, read once over the whole tree
-  // (`namedLine`).
+  // How a reference a plain line cites is named - in the three sentences, a quote, a question,
+  // a group's heading - read once over the whole tree (`namedLine`).
   const nameOf = useReferenceNames(root, nodeIdOf);
   const { groups, others } = useMemo(
-    () => specDecidedBy({ checks: results?.checks ?? [], decisions, nodeIdOf, reader, root, view }),
-    [decisions, nodeIdOf, reader, results, root, view]
+    () =>
+      specDecidedBy({
+        checks: results?.checks ?? [],
+        decisions,
+        nameOf,
+        nodeIdOf,
+        reader,
+        root,
+        view,
+      }),
+    [decisions, nameOf, nodeIdOf, reader, results, root, view]
   );
   const specSlug = primarySpec(issue)?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
@@ -408,18 +419,64 @@ function Legend(): ReactNode {
 }
 
 /** Who made something, by a name and a shape, as every other row of the page draws an author
- *  (R9): never an identifier, and the page's own words where the model holds none. */
+ *  (R9): never an identifier, and an agent by its role's word, as a row names one (ruling 6,
+ *  `NodeRow.tsx`). Where the model holds no author it draws nothing: only the focused cell says
+ *  so (`UnknownAuthor`, reading (c) of dispatch://INFRA-3939's plan). */
 function Author({ actor }: { actor: Actor | undefined }): ReactNode {
   const agentText = useAgentText();
   const kind = authorKind(actor);
+  if (kind === "unknown") return null;
+  const name = agentText.author(actor);
   return (
     <span className="inline-flex items-center gap-1" data-spec-author="">
       <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors[kind]} />
-      <span {...(actor === undefined ? pageChrome : authorText)}>
-        {actor === undefined ? CONTROL_LABELS.unknown_author : agentText.author(actor)}
-      </span>
+      <span {...authorText}>{kind === "agent" ? agentRoleWord(name) : name}</span>
     </span>
   );
+}
+
+/** What the focused cell says where the model holds no author for its decision (R5), in the
+ *  page's own words and with the shape of an author nobody recorded, as a row's opened body says
+ *  it (`NodeRow.tsx`). */
+function UnknownAuthor(): ReactNode {
+  return (
+    <span className="inline-flex items-center gap-1" data-spec-author="">
+      <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.unknown} />
+      <span {...pageChrome}>{CONTROL_LABELS.unknown_author}</span>
+    </span>
+  );
+}
+
+/** When something was made, by its day. */
+function Day({ at }: { at: string }): ReactNode {
+  return (
+    <span className="whitespace-nowrap" {...authorText}>
+      {shortDay(at)}
+    </span>
+  );
+}
+
+/** One part of a line `dotted` draws. */
+interface LinePart {
+  /** Whether it draws anything: false for an `Author` of nobody, which draws nothing. */
+  readonly drawn?: boolean;
+  readonly key: string;
+  /** What it draws; `null` where the model holds nothing for it. */
+  readonly part: ReactNode;
+}
+
+/** The parts of one line with a middle dot before each drawn part that follows another, so a
+ *  part that draws nothing leaves no dot behind. */
+function dotted(parts: readonly LinePart[]): ReactNode {
+  const drawn = parts.map(({ drawn: shown, part }) => shown ?? part !== null);
+  return parts.map(({ key, part }, place) => (
+    <Fragment key={key}>
+      {drawn[place] === true && drawn.slice(0, place).includes(true) ? (
+        <span {...pageChrome}> · </span>
+      ) : null}
+      {part}
+    </Fragment>
+  ));
 }
 
 /** The statements under one parent: that parent's own line as the group's heading, then one row
@@ -495,20 +552,16 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
       role="presentation"
     >
       <p className={`min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}>
-        <span {...pageChrome}>{NODE_TYPE_NAMES[parent.type]} · </span>
-        <Author actor={parent.by} />
-        {parent.at === undefined ? null : (
-          <>
-            <span {...pageChrome}> · </span>
-            <span className="whitespace-nowrap" {...authorText}>
-              {shortDay(parent.at)}
-            </span>
-          </>
-        )}
+        {dotted([
+          { key: "kind", part: <span {...pageChrome}>{NODE_TYPE_NAMES[parent.type]}</span> },
+          { drawn: parent.by !== undefined, key: "author", part: <Author actor={parent.by} /> },
+          { key: "day", part: parent.at === undefined ? null : <Day at={parent.at} /> },
+        ])}
       </p>
       <p
         className={`min-w-0 text-[15px] leading-6 font-semibold break-words ${pageInkText}`}
-        {...authorText}
+        // A parent with no words is named by its kind's word, which is the page's own.
+        {...(parent.line === NODE_TYPE_NAMES[parent.type] ? pageChrome : authorText)}
       >
         {parent.line}
       </p>
@@ -523,9 +576,12 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
  * decided; a run no decision shaped says so in words (R35), once the decisions read has
  * answered, and says nothing before that or where the read failed, since it does not know.
  *
- * The focus on the cell draws a person's whole answer character for character under its first
- * sentence (R5: "The focus on the line draws the whole answer word for word"); `w` on a
- * statement is how a keyboard reader puts it there.
+ * A person's words are quoted, their first sentence in plain words; an agent's are drawn whole
+ * as a row draws a node's words (`RowText`), each reference by its name, and cut as an agent's
+ * are at six lines (ruling 1). The focus on the cell draws a person's whole answer character
+ * for character under its first sentence (R5: "The focus on the line draws the whole answer word
+ * for word"), an agent's words whole, and "Author unknown" where the model holds no author;
+ * `w` on a statement is how a keyboard reader puts it there.
  */
 function DecisionCell({
   decision,
@@ -592,14 +648,27 @@ function DecisionCell({
                   ? SPEC_WORDS.said_you
                   : SPEC_WORDS.said_person}
             </p>
-            <p
-              className={`min-w-0 text-sm leading-[21px] [overflow-wrap:anywhere] ${pageInkText}`}
-              data-spec-quote=""
-            >
-              <span {...pageChrome}>“</span>
-              <span {...authorText}>{decision.quote}</span>
-              <span {...pageChrome}>”</span>
-            </p>
+            {decision.words === undefined ? (
+              <p
+                className={`min-w-0 text-sm leading-[21px] [overflow-wrap:anywhere] ${pageInkText}`}
+                data-spec-quote=""
+              >
+                <span {...pageChrome}>“</span>
+                <span {...authorText}>{decision.quote}</span>
+                <span {...pageChrome}>”</span>
+              </p>
+            ) : (
+              // A block, since a text drawn from its reading holds paragraphs, lists and links.
+              <div className="flex min-w-0 flex-col [overflow-wrap:anywhere]" data-spec-quote="">
+                <CutWords className={`text-sm leading-[21px] ${pageInkText}`} whole={focused}>
+                  <RowText
+                    markdown={decision.words.markdown}
+                    source={decision.words.source}
+                    tree={decision.words.tree}
+                  />
+                </CutWords>
+              </div>
+            )}
             {focused && decision.whole !== undefined ? (
               <p
                 className={`min-w-0 text-sm leading-[21px] whitespace-pre-wrap [overflow-wrap:anywhere] ${pageInkText}`}
@@ -610,43 +679,50 @@ function DecisionCell({
               </p>
             ) : null}
             <p className={`min-w-0 [overflow-wrap:anywhere] ${pageQuietText}`} data-spec-source="">
-              {question === undefined ? null : (
-                <>
-                  <span {...authorText}>{question}</span>
-                  <span {...pageChrome}> · </span>
-                </>
-              )}
-              <Author actor={decision.by} />
-              {decision.at === undefined ? null : (
-                <>
-                  <span {...pageChrome}> · </span>
-                  <span className="whitespace-nowrap" {...authorText}>
-                    {shortDay(decision.at)}
-                  </span>
-                </>
-              )}
-              {decision.chose.length === 0 ? null : (
-                <>
-                  <span {...pageChrome}> · {SPEC_WORDS.chose} </span>
-                  <span {...authorText}>{decision.chose.join(", ")}</span>
-                </>
-              )}
-              {decision.state === undefined ? null : (
-                <>
-                  <span {...pageChrome}> · </span>
-                  <span data-node-state={decision.state} {...pageChrome}>
-                    {nodeStateWord(decision.state)}
-                  </span>
-                </>
-              )}
-              {decision.unsure ? (
-                <>
-                  <span {...pageChrome}> · </span>
-                  <span data-node-unsure="" {...pageChrome}>
-                    {CONTROL_LABELS.unsure}
-                  </span>
-                </>
-              ) : null}
+              {dotted([
+                {
+                  key: "question",
+                  part: question === undefined ? null : <span {...authorText}>{question}</span>,
+                },
+                {
+                  drawn: decision.by !== undefined || focused,
+                  key: "author",
+                  part:
+                    decision.by === undefined && focused ? (
+                      <UnknownAuthor />
+                    ) : (
+                      <Author actor={decision.by} />
+                    ),
+                },
+                { key: "day", part: decision.at === undefined ? null : <Day at={decision.at} /> },
+                {
+                  key: "chose",
+                  part:
+                    decision.chose.length === 0 ? null : (
+                      <>
+                        <span {...pageChrome}>{SPEC_WORDS.chose} </span>
+                        <span {...authorText}>{decision.chose.join(", ")}</span>
+                      </>
+                    ),
+                },
+                {
+                  key: "state",
+                  part:
+                    decision.state === undefined ? null : (
+                      <span data-node-state={decision.state} {...pageChrome}>
+                        {nodeStateWord(decision.state)}
+                      </span>
+                    ),
+                },
+                {
+                  key: "unsure",
+                  part: decision.unsure ? (
+                    <span data-node-unsure="" {...pageChrome}>
+                      {CONTROL_LABELS.unsure}
+                    </span>
+                  ) : null,
+                },
+              ])}
             </p>
             <WholeOf decision={decision} />
           </>
@@ -825,7 +901,9 @@ function OtherRow({
  * The one line under a statement that names the decision that shaped it (R5): the words it
  * came from, as the link to the whole of that decision, who decided and when, and then every
  * other decision that informed it, each a link to it. A statement no decision shaped draws no
- * line here: its cell says so beside it (R35).
+ * line here: its cell says so beside it (R35). The quote is plain words, an agent's its first
+ * line: the link is one line, and a text drawn with its own links stands in none (departure 2
+ * of dispatch://INFRA-3939's plan).
  */
 function Because({
   decision,
@@ -866,16 +944,17 @@ function Because({
               {quoted}
             </Link>
           )}
-          <span {...pageChrome}> — </span>
-          <Author actor={decision.by} />
-          {decision.at === undefined ? null : (
-            <>
-              <span {...pageChrome}> · </span>
-              <span className="whitespace-nowrap" {...authorText}>
-                {shortDay(decision.at)}
-              </span>
-            </>
+          {decision.by === undefined && decision.at === undefined ? null : (
+            <span {...pageChrome}> — </span>
           )}
+          {dotted([
+            {
+              drawn: decision.by !== undefined,
+              key: "author",
+              part: <Author actor={decision.by} />,
+            },
+            { key: "day", part: decision.at === undefined ? null : <Day at={decision.at} /> },
+          ])}
         </>
       )}
       {statement.alsoShapedBy.length === 0 ? null : (
@@ -896,35 +975,41 @@ function Because({
   );
 }
 
-/** One other decision that shaped the statement, named by who decided it and when, as a link to
- *  it: the model holds no short name for a decision, and a block id is an identifier (R22). */
+/** One other decision that shaped the statement, named by its own words as a chip names its
+ *  target (`chipWords`), as a link to it, then when it was made (reading (c) of
+ *  dispatch://INFRA-3939's plan): the model holds no short name for a decision, and a block id
+ *  is an identifier (R22). A decision with no words is named by its kind's word, so no link is
+ *  empty (decision 66). */
 function Informed({ decision }: { decision: SpecDecision }): ReactNode {
   const route =
     decision.reference === undefined ? undefined : parseNodeReference(decision.reference);
-  const named = (
+  const words = chipWords(decision.quote);
+  const named =
+    words === "" ? (
+      <span {...pageChrome}>{NODE_TYPE_NAMES[decision.type]}</span>
+    ) : (
+      <span {...authorText}>{words}</span>
+    );
+  return (
     <>
-      <Author actor={decision.by} />
+      {route === undefined ? (
+        <span data-spec-informed="">{named}</span>
+      ) : (
+        <Link
+          className="dispatch-inline-link underline decoration-page-hair underline-offset-[3px]"
+          data-spec-informed=""
+          tabIndex={-1}
+          to={buildReferencePath(route)}
+        >
+          {named}
+        </Link>
+      )}
       {decision.at === undefined ? null : (
         <>
           <span {...pageChrome}> · </span>
-          <span className="whitespace-nowrap" {...authorText}>
-            {shortDay(decision.at)}
-          </span>
+          <Day at={decision.at} />
         </>
       )}
     </>
-  );
-  if (route === undefined) {
-    return <span data-spec-informed="">{named}</span>;
-  }
-  return (
-    <Link
-      className="dispatch-inline-link underline decoration-page-hair underline-offset-[3px]"
-      data-spec-informed=""
-      tabIndex={-1}
-      to={buildReferencePath(route)}
-    >
-      {named}
-    </Link>
   );
 }

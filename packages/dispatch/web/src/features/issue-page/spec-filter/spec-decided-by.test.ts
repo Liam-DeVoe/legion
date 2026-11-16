@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { CheckBlock, Decision } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
+import { CHIP_LIMIT, chipWords } from "../node-row-chip";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
 import {
@@ -41,16 +42,22 @@ import {
 /** How this issue addresses a node, which is how a tie finds the statement it names. */
 const { nodeIdOf } = treeContext({ issue: issueDetails() });
 
-/** The Spec filter's body over `tree`, as the page reads it. */
+/** A page that names no reference, which `namedLine` then names by its kind's word. */
+const NO_NAMES = (): undefined => undefined;
+
+/** The Spec filter's body over `tree`, as the page reads it; `nameOf` is how the page names a
+ *  reference a plain line cites (`useReferenceNames`). */
 function bodyOf(
   tree: TreeNode,
   made: readonly Decision[] = [],
   reader: string | undefined = READER,
-  checks: readonly CheckBlock[] = []
+  checks: readonly CheckBlock[] = [],
+  nameOf: (reference: string) => string | undefined = NO_NAMES
 ): readonly SpecGroup[] {
   return specDecidedBy({
     checks,
     decisions: decisionsRead(made),
+    nameOf,
     nodeIdOf,
     reader,
     root: tree,
@@ -190,15 +197,21 @@ test("another person's answer is not drawn as the reader's own words", () => {
 });
 
 // R5: an agent's decision is drawn in its own text, with how sure it was and how it stands with
-// the reader.
+// the reader. Departure 2 of dispatch://INFRA-3939's plan: the cell draws its words whole, as
+// stored and as the server read them, and the line under a statement quotes their first line.
 test("an agent's decision is quoted by its own words, with how sure it was and how it stands", () => {
+  const text = "One batched read names every address. The page asks the server once for them all.";
+  const tree = { content: [{ content: [{ text, type: "text" }], type: "paragraph" }], type: "doc" };
+  const source = { id: "artifact-dec", kind: "artifact" } as const;
   const made = node({
     at: "2026-11-13T07:00:00Z",
     author: { id: "session-planner", kind: "agent" },
     id: "decisions-md#b-d1",
     reference: `dispatch://${KEY}/artifact/decisions-md#b-d1`,
+    source,
     state: "waiting_review",
-    text: "One batched read names every address.",
+    text,
+    tree,
     type: "decision",
     unsure: true,
     waiting: true,
@@ -208,12 +221,14 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
       block_id: "d1",
       kind: "agent",
       links: [shaped(statementRef("r1"))],
-      text: "One batched read names every address.",
+      text,
+      text_tree: tree,
       unsure: true,
       waiting_review: true,
     }),
   ]);
-  expect(groups[0]?.runs[0]?.decision).toMatchObject({
+  const decided = groups[0]?.runs[0]?.decision;
+  expect(decided).toMatchObject({
     at: "2026-11-13T07:00:00Z",
     by: { id: "session-planner", kind: "agent" },
     id: "decisions-md#b-d1",
@@ -223,6 +238,38 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
     type: "decision",
     unsure: true,
   });
+  expect(decided?.words).toEqual({ markdown: text, source, tree });
+});
+
+// R5: every decision after the first that shaped a statement is named after "informed by" on
+// its line; reading (c) of dispatch://INFRA-3939's plan names it by its own words, cut as a
+// chip names its target, each reference in them named and never an address.
+test("a statement informed by two decisions names the second by its words within 32 characters", () => {
+  const cited = statementRef("r2");
+  const words = `Name each tie by ${cited} and never by its address. Then say why.`;
+  const groups = bodyOf(
+    issueTree([
+      statement("r1"),
+      statement("r2"),
+      decisionNode("d1"),
+      decisionNode("d2", { text: words }),
+    ]),
+    [
+      decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] }),
+      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r1"))], text: words }),
+    ],
+    READER,
+    [],
+    (reference) => (reference === cited ? "the second statement" : undefined)
+  );
+  const informed = groups[0]?.runs[0]?.statements[0]?.alsoShapedBy ?? [];
+  expect(informed.map((one) => one.id)).toEqual(["decisions-md#b-d2"]);
+  expect(informed[0]?.quote).toBe(
+    "Name each tie by the second statement and never by its address."
+  );
+  const named = chipWords(informed[0]?.quote ?? "");
+  expect(named).toBe("Name each tie by the second…");
+  expect(named.length).toBeLessThanOrEqual(CHIP_LIMIT);
 });
 
 // R5: a replaced decision draws no line, so the statement it shaped stands with none.
@@ -381,6 +428,7 @@ test("a row the filter kept that is no statement is in no run", () => {
   const read = specDecidedBy({
     checks: [],
     decisions: decisionsRead([]),
+    nameOf: NO_NAMES,
     nodeIdOf,
     reader: READER,
     root: tree,
