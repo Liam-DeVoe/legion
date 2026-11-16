@@ -113,6 +113,24 @@ func TestTheBuiltBinary(t *testing.T) {
 		}
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{stdout: validLine(dir), stderr: "spec-check: " + dir + noList})
 	})
+	t.Run("tree refuses a file that is not UTF-8 or holds a NUL byte, naming the file and the line", func(t *testing.T) {
+		t.Parallel()
+		for name, content := range map[string]string{
+			"Latin-1": ":::term{#cafe-term name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n",
+			"NUL":     ":::term{#nul-term name=\"nul term\"}\nA nul\x00term is a word.\n:::\n",
+		} {
+			dir := copyOf(t, valid)
+			writeFile(t, filepath.Join(dir, "bytes.md"), []byte(content))
+			got := runBinary(t, binary, "", "tree", "--dir", dir)
+			if want := (result{
+				code:   1,
+				stdout: "spec-check: " + dir + ": 3 statements, 4 checks, 2 components, 1 interface, 2 terms; the tree is refused\n",
+				stderr: "spec-check: " + dir + noList + "spec-check: " + filepath.Join(dir, "bytes.md") + ":2: -: bad-encoding: a spec file is UTF-8 text with no NUL byte\n",
+			}); got != want {
+				t.Errorf("%s: exit %d, stdout %q, stderr %q\nwant exit %d, stdout %q, stderr %q", name, got.code, got.stdout, got.stderr, want.code, want.stdout, want.stderr)
+			}
+		}
+	})
 	t.Run("tree with --retired names a retired id", func(t *testing.T) {
 		t.Parallel()
 		dir := fixture(t, "trees", "retired-id")
@@ -219,6 +237,31 @@ func TestTheBuiltBinary(t *testing.T) {
 		expect(t, runBinary(t, binary, "", "changes", "--base", fixture(t, "changes", "relations", "base"), "--dir", fixture(t, "changes", "relations", "head")),
 			result{stdout: "spec-check: a-claim-survives-a-restart: relations\nspec-check: a-lost-claim-is-reported: text, parent\n"})
 	})
+	// Git keeps no empty directory, so a version with no spec file has no .dispatch/spec, and the
+	// first change that adds a spec file, or the change that removes the last one, compares a tree
+	// with a directory that does not exist.
+	t.Run("changes reads a base that does not exist as the empty tree", func(t *testing.T) {
+		t.Parallel()
+		base := filepath.Join(t.TempDir(), "missing")
+		expect(t, runBinary(t, binary, "", "changes", "--base", base, "--dir", valid), result{
+			stdout: "spec-check: a-claim-survives-a-restart: added\nspec-check: legion-keeps-each-claim-in-dispatch: added\nspec-check: legion-reads-issues-only-through-dispatch: added\n",
+			stderr: "spec-check: " + base + ": does not exist, so it is read as the empty tree\n",
+		})
+	})
+	t.Run("changes reads a directory that does not exist as the empty tree", func(t *testing.T) {
+		t.Parallel()
+		head := filepath.Join(t.TempDir(), "missing")
+		expect(t, runBinary(t, binary, "", "changes", "--base", valid, "--dir", head), result{
+			stdout: "spec-check: a-claim-survives-a-restart: removed\nspec-check: legion-keeps-each-claim-in-dispatch: removed\nspec-check: legion-reads-issues-only-through-dispatch: removed\n",
+			stderr: "spec-check: " + head + ": does not exist, so it is read as the empty tree\n",
+		})
+	})
+	t.Run("changes reads an empty base directory as the empty tree", func(t *testing.T) {
+		t.Parallel()
+		expect(t, runBinary(t, binary, "", "changes", "--base", t.TempDir(), "--dir", valid), result{
+			stdout: "spec-check: a-claim-survives-a-restart: added\nspec-check: legion-keeps-each-claim-in-dispatch: added\nspec-check: legion-reads-issues-only-through-dispatch: added\n",
+		})
+	})
 	t.Run("changes exits 2 when a tree has a problem", func(t *testing.T) {
 		t.Parallel()
 		base := fixture(t, "trees", "leaf-without-check")
@@ -243,6 +286,14 @@ func TestTheBuiltBinary(t *testing.T) {
 	t.Run("checks prints [] for a job that no check names", func(t *testing.T) {
 		t.Parallel()
 		expect(t, runBinary(t, binary, "", "checks", "--dir", valid, "--job", "other"), result{stdout: "[]\n"})
+	})
+	t.Run("checks reads a directory that does not exist as the empty tree", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), "missing")
+		expect(t, runBinary(t, binary, "", "checks", "--dir", dir, "--job", "go-checks"), result{
+			stdout: "[]\n",
+			stderr: "spec-check: " + dir + ": does not exist, so it is read as the empty tree\n",
+		})
 	})
 	t.Run("checks exits 2 when the tree has a problem", func(t *testing.T) {
 		t.Parallel()
@@ -692,4 +743,14 @@ func writeFile(t *testing.T, path string, content []byte) {
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// copyOf is a copy of the files of dir in a new temporary directory.
+func copyOf(t *testing.T, dir string) string {
+	t.Helper()
+	copied := filepath.Join(t.TempDir(), filepath.Base(dir))
+	if err := os.CopyFS(copied, os.DirFS(dir)); err != nil {
+		t.Fatal(err)
+	}
+	return copied
 }

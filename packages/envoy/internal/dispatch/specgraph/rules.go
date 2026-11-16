@@ -3,6 +3,7 @@ package specgraph
 import (
 	"cmp"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -21,14 +22,16 @@ type Options struct {
 //     hyphens, or a word that states a position), retired-id (an id the approved spec removed);
 //   - a statement: no-text, bad-kind, no-parent, missing-target (a serves or about relation to a
 //     node the files do not hold as a statement, or as a component or interface), no-about (a
-//     structure statement about no component), leaf-without-check, and loop (a cycle through
-//     parent and serves relations, or through the parents of components);
+//     structure statement about no component), leaf-without-check, supported-without-check (a
+//     statement with statements under it that other statements serve, and that no check serves:
+//     R5), and loop (a cycle through parent and serves relations, or through the parents of
+//     components);
 //   - a check: check-serves (not exactly one statement), no-claim, no-procedure,
 //     no-failing-example, bad-subject, bad-procedure, no-test and no-job (a program check without
 //     its test part), test-on-non-program, bad-selector (a go selector that picks no one test);
-//   - a component: bad-component (no name or purpose, a parent that is no component, or joins on a
-//     component that is no interface) and bad-interface (fewer than two components joined, or a
-//     joined node that is no component);
+//   - a component: bad-component (no name, a purpose that is not one sentence, a parent that is no
+//     component, or joins on a component that is no interface) and bad-interface (fewer than two
+//     components joined, or a joined node that is no component);
 //   - a term: bad-term (no name or definition);
 //   - any text: code-in-text, a name of code in a statement's text, a check's claim, procedure or
 //     failing example, a component's name or purpose, or a term's definition (R4 and R15). A
@@ -170,10 +173,21 @@ func (v *validator) statement(s Statement) {
 	if s.Kind == KindStructure && len(s.About) == 0 {
 		v.problem(s.Pos, s.ID, "no-about: a statement of kind structure names its components or interfaces")
 	}
-	if s.ID != "" && len(v.tree.Children(s.ID)) == 0 && len(v.tree.ChecksOf(s.ID)) == 0 {
-		v.problem(s.Pos, s.ID, "leaf-without-check: no statement is under it and no check serves it")
+	if s.ID != "" && len(v.tree.ChecksOf(s.ID)) == 0 {
+		switch {
+		case len(v.tree.Children(s.ID)) == 0:
+			v.problem(s.Pos, s.ID, "leaf-without-check: no statement is under it and no check serves it")
+		case v.served(s.ID):
+			v.problem(s.Pos, s.ID, "supported-without-check: other statements serve it and no check serves it")
+		}
 	}
 	v.code(s.Pos, s.ID, "text", s.Text)
+}
+
+// served reports whether another statement serves the statement id: one that other statements
+// support still has checks of its own (R5).
+func (v *validator) served(id string) bool {
+	return slices.ContainsFunc(v.tree.Statements, func(s Statement) bool { return s.ID != id && slices.Contains(s.Serves, id) })
 }
 
 func (v *validator) check(c Check) {
@@ -223,8 +237,13 @@ func (v *validator) check(c Check) {
 	v.code(c.Pos, c.ID, "failing example", c.FailingExample)
 }
 
+// sentenceEnd is the end of a sentence that more text follows: ".", "!" or "?", then white space,
+// where ste-lint splits a line into its sentences. A dot inside a word, such as the one of 1.2 or
+// Node.js, ends no sentence.
+var sentenceEnd = regexp.MustCompile(`[.!?]\s+\S`)
+
 func (v *validator) component(c Component) {
-	if c.Name == "" || c.Purpose == "" {
+	if c.Name == "" || c.Purpose == "" || sentenceEnd.MatchString(c.Purpose) {
 		v.problem(c.Pos, c.ID, "bad-component: a component has a name and one sentence of purpose")
 	}
 	if c.Parent != "" {
