@@ -16696,6 +16696,56 @@ for (const [name, ownerAnswer] of [
   });
 }
 
+// A refusal names only what it read (dispatch://INFRA-1523). When the read of a reference's
+// issue fails - a gateway page, or Dispatch's own 500 - the command has not learned whether the
+// issue exists, so it must not tell the reader that the issue holds no such post: for an issue
+// that is not there, that sentence says the issue stands. The positive control drives the same
+// fixture with the issue read answered, where the claim is true and is made.
+const issueReadFixture =
+  (issueRead: "gateway" | "server error" | "stands") =>
+  async (url: RequestInfo | URL): Promise<Response> => {
+    const { pathname } = new URL(String(url));
+    if (/^\/api\/v1\/issues\/[^/]+$/.test(pathname)) {
+      if (issueRead === "gateway") {
+        return new Response("<html>bad gateway</html>", {
+          status: 502,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      if (issueRead === "server error") {
+        return response({ code: "INTERNAL", error: "internal" }, 500);
+      }
+      return response({ issue: { key: "NOPE-9", title: "An issue", status: "todo" } });
+    }
+    return response({ code: "NOT_FOUND", error: "not found" }, 404);
+  };
+
+for (const [tool, args, kind] of [
+  [
+    "dispatch_edit_comment",
+    { comment: "dispatch://NOPE-9/comment/11111111-2222-4333-8444-555555555555", body: "x" },
+    "comment",
+  ],
+  ["dispatch_read", { ref: "dispatch://NOPE-9/ask/11111111-2222-4333-8444-555555555555" }, "ask"],
+] as const) {
+  const claim = `NOPE-9 holds no ${kind} 11111111-2222-4333-8444-555555555555`;
+  for (const failure of ["gateway", "server error"] as const) {
+    test(`${tool} claims nothing of an issue whose read met a ${failure}`, async () => {
+      const error = await runWithFixture(tool, args, issueReadFixture(failure));
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toContain(claim);
+    });
+  }
+
+  test(`${tool} names the post an issue it read holds none of`, async () => {
+    const error = await runWithFixture(tool, args, issueReadFixture("stands"));
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(claim);
+  });
+}
+
 // Dispatch answers a correction of a post it does not hold `404 NOT_FOUND` with the word
 // "not found", which names neither the post nor the id, so a reader cannot tell a post that is
 // gone from an issue or a route that is not there. The refusal names the id the call used.
