@@ -31,7 +31,7 @@ import { focusOnDocument } from "../shell/roving";
 import { BlockedByControl, IssueLine } from "./BlockedByControl";
 import { DetailsErrorLine } from "./details-error";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
-import { DETAILS_ROW_ATTRIBUTE, type DetailsRow } from "./details-rows";
+import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
@@ -57,11 +57,6 @@ import { waitingOnReader } from "./waiting";
 /** How many entries a list of unbounded length draws before it folds behind a count that opens
  *  the rest (dispatch://INFRA-1196 R13). */
 const FOLD_AFTER = 10;
-
-/** The event a control elsewhere on the page sends the Details drawer for the row it opens
- *  Details at, its `detail` the row (decision 69 of the parts, `details-rows.ts`'s
- *  `useOpenDetailsAt`), before it looks for that row. */
-const DETAILS_ROW_REQUEST = "details-row-request";
 
 /** The rows of each section that a control elsewhere on the page opens Details at
  *  (`DetailsRow`), each where it is drawn: the section opens for a request of one of them.
@@ -229,7 +224,8 @@ export function IssueMarginPanel({
   // hands it no decisions.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const approvalWaits =
-    waitingOnReader(issue, viewer, undefined, () => false, undefined).approvals.length > 0;
+    waitingOnReader(issue, viewer, undefined, () => false, undefined, undefined).approvals.length >
+    0;
   // The status as the header draws it: the one being saved while any caller's write of it is
   // in flight, so the page never says two statuses at once.
   const status = writes.pendingStatus ?? issue.status;
@@ -649,7 +645,8 @@ function PropertySection({
 }): ReactNode {
   const open = sections.isOpen(name);
   // A control elsewhere on the page that opens Details at one of this section's rows asks the
-  // drawer for that row before it looks for it (`DETAILS_ROW_REQUEST`). A closed section opens
+  // drawer for that row before it looks for it (`DETAILS_ROW_REQUEST_EVENT`, part D's
+  // `useOpenDetailsAt`). A closed section opens
   // for it as its heading opens it, so the reader's kept choice follows, and in the same task,
   // so the row is on the page when the control looks for it.
   const latest = useRef(sections);
@@ -666,8 +663,8 @@ function PropertySection({
       }
       flushSync(() => latest.current.toggle(name));
     };
-    drawerBox.addEventListener(DETAILS_ROW_REQUEST, openForRow);
-    return () => drawerBox.removeEventListener(DETAILS_ROW_REQUEST, openForRow);
+    drawerBox.addEventListener(DETAILS_ROW_REQUEST_EVENT, openForRow);
+    return () => drawerBox.removeEventListener(DETAILS_ROW_REQUEST_EVENT, openForRow);
   }, [drawerBox, name]);
   return (
     <section data-margin-section={name}>

@@ -32,7 +32,7 @@ import { buildDispatchReference } from "../refs/routes";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
-import { DETAILS_ROW_ATTRIBUTE, type DetailsRow } from "./details-rows";
+import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
 import {
@@ -1120,7 +1120,7 @@ test("a request for the Labels row opens a closed Development in the drawer that
     expect(drawer, "the panel is not in the drawer's aside").not.toBeNull();
     const request = (row: DetailsRow) =>
       act(() => {
-        drawer?.dispatchEvent(new CustomEvent("details-row-request", { detail: row }));
+        drawer?.dispatchEvent(new CustomEvent(DETAILS_ROW_REQUEST_EVENT, { detail: row }));
       });
 
     request("labels");

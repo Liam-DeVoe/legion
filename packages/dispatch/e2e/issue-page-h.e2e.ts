@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
 import {
   MARGIN_SECTION_ORDER,
   PROPERTY_LABELS,
@@ -913,6 +914,22 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       await page.evaluate(() => localStorage.getItem("dispatch.issue.margin-sections:alice"))
     ).toBe("development");
     await reopen(one);
+    await expect(marginSectionDisclosure(page, "development")).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    // A control elsewhere on the page that opens Details at a row of a closed section asks the
+    // drawer for that row first (part D's `useOpenDetailsAt`), and the section opens for it.
+    await marginShell(page).evaluate(
+      (aside, [event, row]) => aside.dispatchEvent(new CustomEvent(event, { detail: row })),
+      [DETAILS_ROW_REQUEST_EVENT, "labels"] as const
+    );
+    await expect(
+      marginSectionDisclosure(page, "development"),
+      "a request for the Labels row left Development closed"
+    ).toHaveAttribute("aria-expanded", "true");
+    await expect(detailsRow(page, PROPERTY_LABELS.labels)).toBeVisible();
+    await marginSectionDisclosure(page, "development").click();
     await expect(marginSectionDisclosure(page, "development")).toHaveAttribute(
       "aria-expanded",
       "false"
