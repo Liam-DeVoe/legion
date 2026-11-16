@@ -398,6 +398,37 @@ test("a summary sentence that cites a block draws the block's name, not its addr
   }
 });
 
+// R1: each sentence whole as its author wrote it, after its own label. A cited statement is
+// named by its own first words (`useReferenceNames`), which on an INFRA spec open with a label
+// ("R1."), so a sentence end read after the naming splits the author's first sentence at the
+// name and moves "Why it matters:" onto its second half.
+test("a summary sentence that cites a labelled statement stays one sentence under its own label", () => {
+  const cited = `dispatch://${KEY}/spec#b-r1`;
+  const summary = summaryNode(
+    `The page draws ${cited} first. Every reader finds the work. It fits a phone.`
+  );
+  const root = treeNode(KEY, "issue", {
+    children: [
+      summary,
+      treeNode(blockNodeId("spec", "r1"), "requirement"),
+      treeNode(blockNodeId("decisions", "d1"), "decision", {
+        chips: [{ answered: true, gone: false, name: "R1. Every node is whole", ref: cited }],
+      }),
+    ],
+  });
+  const { labels, lines, unmount } = bullets(summary, false, "contents", root);
+  try {
+    expect(lines).toEqual([
+      "The page draws R1. Every node is whole first.",
+      "Every reader finds the work.",
+      "It fits a phone.",
+    ]);
+    expect(labels).toHaveLength(3);
+  } finally {
+    unmount();
+  }
+});
+
 const decisionsDocument: Artifact = {
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
