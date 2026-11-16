@@ -21,7 +21,7 @@ Both statements are claims of the project, not measurements of its code [t-dg-pr
 
 Only three of the four components have a repository [t-dg-profile-components].
 
-There is no repository for the Cognition Engines, and none for the Cognition Fabric [t-org-no-engines-repo].
+There is no repository for the Cognition Engines [t-org-no-engines-repo].
 
 The profile states that Outshift by Cisco maintains the project [t-org-owner].
 

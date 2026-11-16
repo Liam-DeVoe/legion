@@ -23,7 +23,7 @@ The whole written architecture of the project is about 25 kilobytes of markdown 
 
 The repository has no release and no tag [t-site-no-release].
 
-The default branch holds at least 18 commits [t-site-commits].
+The default branch held 18 commits when GitHub was read on 2026-11-12 [t-site-commits].
 
 It was made on 2026-10-12 and last pushed on 2026-11-05 [t-all-age].
 

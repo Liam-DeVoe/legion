@@ -30,7 +30,7 @@ It has eight published releases, and each is for one skill or one package [t-cp-
 
 The first release is of 2026-10-22, which is 20 days before the pinned commit [t-cp-releases].
 
-The default branch holds at least 85 commits, and the repository was made on 2026-10-12 [t-cp-commits].
+The default branch held 87 commits when GitHub was read on 2026-11-12, and the repository was made on 2026-10-12 [t-cp-commits].
 
 It is one month old [t-all-age].
 

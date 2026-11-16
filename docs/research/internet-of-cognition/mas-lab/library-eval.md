@@ -130,7 +130,7 @@ The decision rule stays ours to write.
 **The judge.**
 A model id and an OpenAI-compatible endpoint with a key [m-eval-needs-key].
 The slot is `evaluation.model` or `models.judge` [m-eval-judge-slot].
-We run judges already: ten judge prompts, nine of them on each spec run [m-eval-our-judge-prompts], each in a fresh container [m-eval-our-judge].
+We run judges already: ten judge prompts [m-eval-our-judge-prompts], each in a fresh container [m-eval-our-judge].
 
 One more thing is needed that the list above hides: a control.
 A comparison of two labels measures the rule only when a label whose skills lack the rule scores lower.
@@ -151,7 +151,7 @@ One scorer scores every label, from what the stand-ins and the scratch Dispatch 
 
 `score.ts` holds six scenario rules [m-eval-our-scorers].
 
-`judge.ts` runs ten judge prompts on the spec scenarios [m-eval-our-judge-prompts].
+`judge-prompts.ts` holds ten judge prompts [m-eval-our-judge-prompts].
 
 The rig is 18144 lines [m-eval-our-rig-size].
 
@@ -161,7 +161,7 @@ There is no MCE and no deepeval anywhere in our tree [m-eval-our-no-mce].
 
 There is no confidence interval and no significance number in the rig [m-eval-our-no-stats].
 
-No continuous-integration job runs a batch, so an operator runs the rig [m-eval-our-rig-not-ci].
+No continuous-integration job runs a batch [m-eval-our-rig-not-ci].
 
 ## Cost
 

@@ -10,11 +10,11 @@ Requirement: r3.
 
 ## What the library is
 
-`library-kg` turns one agent run into one graph document [m-kg-purpose].
+`library-kg` turns one agent trace into one graph document [m-kg-purpose].
 
 The input is a trace: a native `events.jsonl` file, or OpenTelemetry spans [m-kg-inputs].
 
-The output is `kg.jsonld`: typed nodes and typed edges that follow the SCOPE MAS ontology [m-kg-purpose].
+The output is `kg.jsonld`, a knowledge graph document that conforms to the MAS ontology [m-kg-purpose].
 
 It is a trace-analysis library and not a store of record [m-kg-artifact].
 
@@ -68,7 +68,7 @@ The query surface is four pure-Python classes over the loaded document: `KGIndex
 
 `KGIndex` walks edges, `KGSource` cuts a subgraph from a facet filter, `KGView` searches nodes of one type, and `FacetQuery` is the filter as plain data [m-kg-query].
 
-There is no query language of its own [m-kg-query].
+Those four are the only classes of `core/query.py` [m-kg-query], and I found no query language of its own beside them.
 
 Cypher is reached only after a push to Neo4j [m-kg-neo4j-merge].
 
@@ -99,8 +99,8 @@ Under that rule, two parts of `library-kg` could cross: the event schema `schema
 
 Both are data files and neither needs a Python runtime [m-kg-events-schema] [m-kg-ontology-ext].
 
-The ontology extension is of limited use alone, because it names itself a temporary file beside SCOPE's own ontology [m-kg-ontology-ext].
+The ontology extension is of limited use alone, because its header names its classes as pending upstream in SCOPE and says not to treat the file as a second ontology [m-kg-ontology-ext].
 
-Everything else in the directory is Python that runs beside a run, so it crosses only as a service or as a rebuild [m-kg-cross-rest].
+Everything else in the directory is 101 Python files beside markdown, YAML and JSON data [m-kg-cross-rest], so it crosses only as a service or as a rebuild.
 
 Whether either file is worth adopting for Legion is a judgement and not a measurement [m-kg-cross-verdict].

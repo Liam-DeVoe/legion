@@ -116,22 +116,22 @@ The share of coordination inside one session, between an agent and the subagents
 
 Every one of the thirty-nine event types INFRA wrote inside the window names an act on an issue, a document, an ask, a comment, a message, a handoff, a result or a setting, and no type names a subagent, a task, a turn or a tool call [c-session-absent-1].
 
-That coordination is in the shared session store, which this pod may read only through the agent login that writes the live conversations.
-The pod holds `OMP_SESSION_SQL_DSN_FILE`, the writer's URL, and holds no `SESSION_READER_DSN_FILE`, the read-only login a deployment gives where it gives one [c-session-route-1].
+That coordination is in the shared session store, which the pod this reading ran in could read only through the agent login that writes the live conversations.
+The pod this reading ran in held `OMP_SESSION_SQL_DSN_FILE`, the writer's URL, and no `SESSION_READER_DSN_FILE`, the read-only login a deployment gives where it gives one [c-session-route-1].
 The exact checks and their empty output are in `evidence/session-reader.txt` [c-session-route-1].
 
 Our own instructions say what that absence means: where a deployment names no read-only route, a role reads nothing of the shared database and reports the gap, rather than reaching for the writer URL [c-session-rule-1].
 
-dispatch://INFRA-1325 is the issue that would open it: it puts the sessions reader URL in the role containers as a file and tells every role to use it [c-session-open-1].
+On 2026-11-12, dispatch://INFRA-1325, then at status `todo`, was the issue that would open it: its title says it puts the sessions reader URL in the role containers as a file and tells every role to use it [c-session-open-1].
 
 ## What Legion, Envoy and Dispatch do today for the three alignment problems
 
 ### Agreement on the plan before the work
 
 Legion holds a tree's work until a person has approved a named document.
-The daemon reads `gates.design` as an ordered list of steps, each step one document of the root issue: `decisions`, `criteria` (its Verification document) and `spec` (its primary document); the default is `[spec]`, the word `root-issues` means that, and `off` or `[]` gates nothing and asks no person [c-plan-gate-1].
+The daemon declares the steps of `gates.design`, `decisions`, `criteria` (its Verification document) and `spec` (its primary document), and the two gate words `root-issues` and `off` [c-plan-gate-1].
 
-The gate is a record the daemon keeps per step, and the tree's phases, each released child and the merger's READY wait on it [c-plan-gate-1].
+By my reading of `config/stage3.go` and `record/project.go`, which no row prints, an unset list is the one step `spec`, which `root-issues` also names, `off` or `[]` gates nothing and asks no person, and the gate is a record the daemon keeps per step, on which the tree's phases, each released child and the merger's READY wait.
 
 Dispatch holds the act itself: a document's approval request is an ask whose answer approves that version or requests changes, and the server hands the request back to the agent when the document changes [c-plan-dispatch-1].
 
@@ -157,7 +157,7 @@ The document block schema has one `check` block type, whose attributes are `serv
 
 The server reads those blocks out of the issue's Verification document and records a result against one of them, with the role that ran it, its verdict and the commit it ran at [c-crit-results-2].
 
-`dispatch results --issue INFRA-1095` prints six checks, each with its verdict, the commit it was proved at and the role that recorded it, five before the merge and one after it [c-crit-results-1].
+dispatch://INFRA-1095's Verification document, at its one version, carries six checks, five before the merge and one after it, and before 2026-11-12 each had a result recorded with its verdict, the commit it was proved at and the role that recorded it [c-crit-results-1].
 
 Envoy carries each recorded result on the same issue topic, so the architect that accepts the work reads the verdicts without asking for them [c-plan-envoy-1].
 
@@ -174,12 +174,11 @@ Dispatch reports, at the moment of an approval, the requirements of a spec that 
 Nothing in Dispatch holds a definition of a term.
 The typed block schema has five block types, `callout`, `ask`, `requirement`, `plan_task` and `check`, and none of them defines a term [c-terms-1].
 
-The project record holds a glossary written by hand, as an ordinary document: `dispatch://INFRA-460/artifact/glossary-md`, at three versions, on a standup issue [c-terms-2].
+The project record holds a glossary written by hand, as an ordinary document: `dispatch://INFRA-460/artifact/glossary-md`, at three versions written at or before 2026-11-16T13:00:00Z, on a standup issue [c-terms-2].
 
-The reference graph holds no link to it.
-Backlinks to `dispatch://INFRA-460` number 402, and backlinks to `dispatch://INFRA-460/artifact/glossary-md` numbered 0 when the count was taken.
-They number 1 now, and the one link is a block of dispatch://INFRA-3134/artifact/judgement-md, this reading itself [c-terms-3].
-So the one glossary this project wrote is cited by nothing it wrote [c-terms-3].
+The reference graph holds no link to it from anything the project wrote.
+The backlinks to `dispatch://INFRA-460/artifact/glossary-md` written by 2026-11-16T13:00:00Z number one, a block of dispatch://INFRA-3134/artifact/judgement-md, this reading itself [c-terms-3].
+So the glossary this project wrote is cited by nothing it wrote [c-terms-3].
 
 Our own tree holds no glossary either.
 At 9542c6fb the word appears in one file, the ASD-STE100 writing skill, which tells a writer that a project glossary is allowed and notes that the dictionary it would extend is absent [c-terms-4].
@@ -187,6 +186,6 @@ No file under `packages` or `deploy` holds the word at all, so no part of the pr
 
 What Legion gives instead is word discipline for the writer: `skills/plain-words` and `skills/asd-ste100` are instructions an agent reads before it writes, not a record two agents can agree on and cite [c-terms-5].
 
-Envoy carries whatever Dispatch records, by topic and by name, so with no record of a term there is nothing of a term for it to carry [c-terms-6].
+Envoy's publisher names each topic it publishes on under `notifications.`, from the recorded event [c-terms-6], so with no record of a term, which is what [c-terms-1] [c-terms-3] [c-terms-7] find, there is nothing of a term for it to carry.
 
-So of the three problems, two have a surface in the record and one has none: a plan and a Verification document each have a document, an approval and an event, and a term has a document nobody cites and no block, no route and no check [c-terms-6].
+So, by my reading of those rows, of the three problems two have a surface in the record and one has none: a plan and a Verification document each have a document, an approval and an event, and a term has a document nobody cites and no block, no route and no check.

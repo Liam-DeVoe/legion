@@ -770,7 +770,7 @@ admitted_read() {
 refused_read xargs-sh-ls "printf 'x\\n' | xargs sh -c 'ls /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'sh -c, a command given to a shell'
 refused_read xargs-sh "printf 'x\\n' | xargs sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'sh -c, a command given to a shell'
 refused_read xargs-bash "printf 'x\\n' | xargs bash -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'bash, a shell other than sh'
-refused_read xargs-env "printf 'x\\n' | xargs env sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'env running a program'
+refused_read xargs-env "printf 'x\\n' | xargs env sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'env, a wrapper, which runs a program past the function that records it'
 refused_read xargs-find "printf '' | xargs find . -maxdepth 0 -exec cat /nonexistent-ioc 2>/dev/null \\; ; printf 'ran once\\n'" 'find, whose -exec runs a program'
 admitted_read xargs-cat "printf '/dev/null\\n' | xargs cat; printf 'ran once\\n'"
 
@@ -865,9 +865,11 @@ admitted_read printf-literal-format "printf '%s %s\\n' ran once"
 
 # 54. env -S hands env a command line of its own, which ran a shell string past every
 # function at 0da660be6e, since every word that started with - was read as an option.
-# env now takes no option; the one row that runs env, with none, passes.
-refused_read env-split-string "env \"-Ssh -c 'cat /nonexistent-ioc 2>/dev/null; true'\"; printf 'ran once\\n'" 'env -Ssh -c .cat /nonexistent-ioc 2>/dev/null; true., an option of env'
-admitted_read env-alone "env | grep -c . >/dev/null; printf 'ran once\\n'"
+# The one row that ran env, c-session-route-1, read the environment of whatever pod ran
+# it, and since round 31 it reads the checks the reading recorded, so no row runs env and
+# env is refused in every form, as a wrapper, alone as well as with an option.
+refused_read env-split-string "env \"-Ssh -c 'cat /nonexistent-ioc 2>/dev/null; true'\"; printf 'ran once\\n'" 'env, a wrapper, which runs a program past the function that records it'
+refused_read env-alone "env | grep -c . >/dev/null; printf 'ran once\\n'" 'env, a wrapper, which runs a program past the function that records it'
 
 # 55. uv run runs the program its arguments name, and at 0da660be6e uv was admitted with
 # any arguments, so uv run ran a shell string unread. Its program is now held to every
@@ -2214,6 +2216,52 @@ pinned_old checksum "the checksum of the whole pinned read" \
     "{\"contains\":\"$(sha256sum <"$PINNED/recorded/doc-read.txt" | cut -d' ' -f1)\"}"
 pinned_old approval "the count of the read's Approval: line" \
     "dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | grep -c '^Approval: approved v97 by sami@theorem.dev'" '{"equals":"1"}'
+
+# 94. A predicate holds every part its claim names (the architect's note of
+# 2026-11-16T19:54Z). At f63516e5dbe tm-validate claimed that mas-ctl validate prints OK for
+# the Agent manifest and for the Workflow manifest and exits 0, and held the exit status
+# alone, while its own tm-schema-wheel shows mas-ctl answering OK, exit 0, when it finds no
+# schema and so checks nothing. The case runs the row as claims.jsonl holds it, its command
+# and its predicate, over a fixture whose mas-ctl is a stub of the case's own, as
+# IOC_MASLAB_CTL: one prints both OK lines and lists the agent and workflow schemas, and
+# passes; the other prints both OK lines with a warning under each that no schema file was
+# found, exits 0 and lists no schema, and fails. The old predicate, the exit status alone,
+# passes that second stub.
+NOSCHEMA="$WORK/no-schema"
+mkdir -p "$NOSCHEMA/found" "$NOSCHEMA/missing"
+cat >"$NOSCHEMA/found/mas-ctl" <<'STUB'
+#!/bin/sh
+case "$1" in
+validate) printf 'OK  legion-workflow.yaml  kind=agent\nOK  legion-workflow-kind.yaml  kind=workflow\n' ;;
+schemas) printf 'schema root: /case-94/docs/schemas\n  agent\n  mas\n  workflow\n' ;;
+*) exit 2 ;;
+esac
+STUB
+cat >"$NOSCHEMA/missing/mas-ctl" <<'STUB'
+#!/bin/sh
+case "$1" in
+validate) printf "OK  legion-workflow.yaml  kind=agent\n  [warning] no schema file for kind 'agent'\nOK  legion-workflow-kind.yaml  kind=workflow\n  [warning] no schema file for kind 'workflow'\n" ;;
+schemas) printf 'schema root: /case-94/no-schemas\n' ;;
+*) exit 2 ;;
+esac
+STUB
+chmod +x "$NOSCHEMA/found/mas-ctl" "$NOSCHEMA/missing/mas-ctl"
+# schema_run <name> <found|missing> <command> <predicate>; plants the form into a fresh
+# fixture and sets SCHEMA_OUT to its --replay with that stub as mas-ctl.
+schema_run() {
+    local dir
+    dir="$(fresh "schema-$1-$2")"
+    plant_behaviour "$dir" "$3" "$4"
+    SCHEMA_OUT="$(IOC_EVID="$dir/repo/docs/research/internet-of-cognition" IOC_MASLAB_CTL="$NOSCHEMA/$2/mas-ctl" fixture_run "$dir" --replay)"
+}
+SCHEMA_COMMAND="$(jq -r 'select(.id == "tm-validate") | .command' "$HERE/claims.jsonl")"
+SCHEMA_PREDICATE="$(jq -c 'select(.id == "tm-validate") | .expect' "$HERE/claims.jsonl")"
+schema_run row found "$SCHEMA_COMMAND" "$SCHEMA_PREDICATE"
+honest_result "tm-validate as claims.jsonl holds it passes over a mas-ctl that finds both schemas" replay-command "$SCHEMA_OUT"
+schema_run row missing "$SCHEMA_COMMAND" "$SCHEMA_PREDICATE"
+case_result "tm-validate as claims.jsonl holds it fails over a mas-ctl that answers OK, exit 0, with no schema found" replay-command "$SCHEMA_OUT"
+schema_run old missing 'cd "$IOC_EVID" && "$IOC_MASLAB_CTL" validate legion-workflow.yaml legion-workflow-kind.yaml' '{"exit":0}'
+honest_result "the old form of tm-validate, the exit status alone, passes a mas-ctl that answers OK with no schema found" replay-command "$SCHEMA_OUT"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending

@@ -33,7 +33,7 @@ It has one published release, the Helm charts 1.0.0 of 2026-11-05 [t-sc-releases
 
 The backend, ui and ontology tags carry no release entry [t-sc-releases].
 
-The default branch holds at least 81 commits, and the repository was made on 2026-10-12 [t-sc-commits].
+The default branch held 81 commits when GitHub was read on 2026-11-12, and the repository was made on 2026-10-12 [t-sc-commits].
 
 It is one month old [t-all-age].
 
@@ -56,7 +56,7 @@ backend/pyproject.toml declares version 1.0.0 for the package ioc-scope-lib [t-s
 This agrees with the version the plan cites.
 
 But the repository does not hold one version.
-The mce packages are at 2.0.0, the api, dem, norm, worker and backend packages are at 1.0.0, and two plugin packages are at 0.2.0 and 0.1.0 [t-sc-version-range].
+Its pyproject files declare five version strings: ten packages are at 2.0.0, twenty-one at 1.0.0, one at 1.1.0, one at 0.2.0 and three at 0.1.0 [t-sc-version-range].
 
 The five ontologies are each at 1.1.0, which agrees with the ontology-v1.1.0 tag [t-sc-version-ontology].
 

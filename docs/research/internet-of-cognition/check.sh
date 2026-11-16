@@ -299,6 +299,13 @@
 #                  the row sends them where the predicate does not look, or its predicate
 #                  matches the measured line, as {"matches":"^rows 38$"} does beside go's
 #                  "go: downloading" lines.
+#                  The pinned-read rule: a row that reads a live node, of Dispatch, GitHub,
+#                  PyPI or any other address, is held to a fact fixed in time, such as a
+#                  version's content, an event by its id or bounded by a time, or a file at
+#                  a commit, never to the node's present state, and its predicate can still
+#                  fail as the node moves on, an exact value rather than a bound on the
+#                  side the node moves. The predicate of a row with a command holds every
+#                  part its claim names, and the claim names no more than that.
 #   questions.md   the question list, which every candidate page answers from
 #   judgement.md   read live from Dispatch, the document the reader reads
 #
@@ -1183,28 +1190,28 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                                82  runs the next pipeline when this one exits 0
+#   &&                               108  runs the next pipeline when this one exits 0
 #   ||                                 6  runs the next pipeline when this one fails
-#   |                                372  joins the commands of a pipeline
-#   ;                                 47  ends a pipeline
+#   |                                384  joins the commands of a pipeline
+#   ;                                 48  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
-#   >                                  4  writes the output to a file
-#   2>                                 6  writes the error output to a file
-#   2>&1                               4  sends the error output where the output goes
-#   {                                 28  opens a group
-#   }                                 28  closes a group
+#   >                                  5  writes the output to a file
+#   2>                                 5  writes the error output to a file
+#   2>&1                               5  sends the error output where the output goes
+#   {                                 24  opens a group
+#   }                                 24  closes a group
 #   (                                  2  opens a subshell
 #   )                                  2  closes a subshell
-#   for                               14  opens a for loop
-#   in                                14  comes before a for loop's words
-#   do                                14  comes before a for loop's body
-#   done                              14  closes a for loop
+#   for                               16  opens a for loop
+#   in                                16  comes before a for loop's words
+#   do                                16  comes before a for loop's body
+#   done                              16  closes a for loop
 #   simple command                   569  a command word and its arguments
-#   pipeline                         372  two or more commands joined by |
-#   list                              99  two or more pipelines joined by ;, &&, || or newline
-#   group                             28  { list; }, whose status is its last command's
+#   pipeline                         384  two or more commands joined by |
+#   list                             127  two or more pipelines joined by ;, &&, || or newline
+#   group                             24  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
-#   for loop                          14  for NAME in words; do list; done
+#   for loop                          16  for NAME in words; do list; done
 #   assignment before a command       23  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
 #   command substitution in a word    13  $( ) in a word, its code admitted by this table
@@ -1220,38 +1227,37 @@ prepare_env() {
 #   assigns m                          1  a name the rows assign
 #   assigns n                          5  a name the rows assign
 #   assigns o                          1  a name the rows assign
-#   assigns p                          3  a name the rows assign
+#   assigns p                          5  a name the rows assign
 #   assigns r                          4  a name the rows assign
 #   program awk                       14  wrapped in a function that records its status
-#   program cat                       27  wrapped in a function that records its status
+#   program cat                       26  wrapped in a function that records its status
 #   program cd                        70  wrapped in a function that records its status
 #   program cmp                        1  wrapped in a function that records its status
 #   program cp                         1  wrapped in a function that records its status
-#   program curl                      18  wrapped in a function that records its status
-#   program cut                        4  wrapped in a function that records its status
-#   program dispatch                  79  wrapped in a function that records its status
-#   program echo                       6  wrapped in a function that records its status
-#   program env                        1  wrapped in a function that records its status
+#   program curl                      28  wrapped in a function that records its status
+#   program cut                        5  wrapped in a function that records its status
+#   program dispatch                  68  wrapped in a function that records its status
+#   program echo                       7  wrapped in a function that records its status
 #   program gh                         2  wrapped in a function that records its status
 #   program git                      313  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     163  wrapped in a function that records its status
-#   program jq                        28  wrapped in a function that records its status
+#   program grep                     187  wrapped in a function that records its status
+#   program jq                        43  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    10  wrapped in a function that records its status
 #   program python3                   37  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      211  wrapped in a function that records its status
+#   program sed                      229  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  7  wrapped in a function that records its status
-#   program sort                      17  wrapped in a function that records its status
-#   program stat                       1  wrapped in a function that records its status
+#   program sort                      23  wrapped in a function that records its status
+#   program stat                       2  wrapped in a function that records its status
 #   program tail                       1  wrapped in a function that records its status
-#   program tr                         5  wrapped in a function that records its status
-#   program uniq                       7  wrapped in a function that records its status
+#   program tr                         7  wrapped in a function that records its status
+#   program uniq                      12  wrapped in a function that records its status
 #   program uv                         8  wrapped in a function that records its status
-#   program wc                        74  wrapped in a function that records its status
+#   program wc                        65  wrapped in a function that records its status
 #   program xargs                      4  wrapped in a function that records its status
 #   variable $IOC_PY                  32  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
@@ -1267,7 +1273,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               6  a command whose status is no read
-#   $NAME or ${NAME}                 372  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 385  a parameter, its name in braces or not
 #   $?                                 6  the status of the last command
 #   $( )                              13  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
@@ -1336,9 +1342,9 @@ prepare_env() {
 # time, function definitions and the keywords if, while, until, case and select, each
 # named with why; a shell given a string with -c, a shell reading its commands from its
 # input or from a script under /dev/ or /proc/, such as /dev/stdin, a shell given an
-# option, and a shell other than sh; env given any option, env running a program, and env
-# run by xargs, whose input can name one; xargs with no program, with an option the table
-# holds no entry for, or running a program by a form no command word may take; uv given
+# option, and a shell other than sh; env in any form, a wrapper no row runs, as are
+# timeout, nice, nohup, sudo and stdbuf; xargs with no program, with an option the
+# table holds no entry for, or running a program by a form no command word may take; uv given
 # an option before its subcommand, and uv run with an option or a program the table holds
 # no entry for, or with none; printf -v, which assigns a variable, printf with a format
 # that is not a literal word, holds a $ or a substitution or starts with -, which could
@@ -2017,7 +2023,7 @@ class Refused(Exception):
 # The programs the rows run by a bare word. Each is an entry "program <name>" of ADMITTED,
 # and the runner wraps each in a function of its name that records its status; a program
 # name with no entry is refused by name, whatever the shell would run.
-PROGRAMS = ("awk", "cat", "cd", "cmp", "cp", "curl", "cut", "dispatch", "echo", "env", "gh",
+PROGRAMS = ("awk", "cat", "cd", "cmp", "cp", "curl", "cut", "dispatch", "echo", "gh",
             "git", "go", "grep", "jq", "mkdir", "mktemp", "printf", "python3", "rm", "sed",
             "sh", "sha256sum", "sort", "stat", "tail", "tr", "uniq", "uv", "wc", "xargs")
 
@@ -2918,7 +2924,7 @@ class Parser:
 REFUSAL_REASONS = {
     **dict.fromkeys(("eval", "source", "."), "which runs code the evaluator does not read"),
     **dict.fromkeys(("exec", "command", "builtin"), "which runs a program past the function that records it"),
-    **dict.fromkeys(("timeout", "nice", "nohup", "sudo", "stdbuf"), "a wrapper, which runs a program past the function that records it"),
+    **dict.fromkeys(("env", "timeout", "nice", "nohup", "sudo", "stdbuf"), "a wrapper, which runs a program past the function that records it"),
     **dict.fromkeys(("bash", "zsh", "dash", "ksh"), "a shell other than sh, a program the evaluator does not admit"),
     "find": "whose -exec runs a program past the function that records it",
     **dict.fromkeys(("declare", "local", "typeset", "readonly"), "which a wrapping function would make local to it"),
@@ -3009,14 +3015,6 @@ def check_program(name, args):
             raise Refused(name + " " + args[0] + ", a script path that is no literal file and not under $IOC_EVID")
         else:
             admit(name + " running a script file")
-    elif name == "env":
-        # An option of env can hand it a command, as -S does, so env takes none; and a
-        # word that is no assignment is a program env runs.
-        for a in args:
-            if a.startswith("-"):
-                raise Refused("env " + a + ", an option of env the evaluator does not admit")
-        if any(not ASSIGNMENT.match(a) for a in args):
-            raise Refused("env running a program, which runs it past the function that records it")
     elif name == "printf":
         # printf -v assigns a variable, and a format that is not a literal word can expand
         # to -v, so the format is a literal word, read as written, that starts with no -.
@@ -3044,9 +3042,6 @@ def check_program(name, args):
         inner, _ = classify_word(args[j:])
         if inner[0] != "program":
             raise Refused("xargs " + args[j] + ", a program xargs runs that is no plain program")
-        if inner[1] == "env":
-            # env runs whatever program xargs's input names after its arguments.
-            raise Refused("env running a program, which runs it past the function that records it")
         check_program(inner[1], args[j + 1:])
         admit("xargs running a program")
     elif name == "uv" and args and args[0].startswith("-"):

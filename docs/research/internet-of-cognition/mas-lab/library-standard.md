@@ -72,7 +72,7 @@ The plan's second measurement, that the format is used by `ctl` and by `runtime`
 
 ## What could cross into our runtime
 
-Only one artifact class in this directory crosses unchanged: the prompt-shaped skill [m-std-cross-yaml].
+Only one artifact class in this directory crosses unchanged: the prompt-shaped skill, since no file here is named as a schema, an ontology or a vocabulary [m-std-cross-yaml] and the one skill is a markdown file [m-std-skill-file].
 
 That is the single `SKILL.md` file [m-std-skill-file].
 

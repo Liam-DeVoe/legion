@@ -46,9 +46,9 @@ Compilation produces no transition table and no generated code.
 
 `execute_run_mas` composes the manifest, materializes the agents and then runs one session loop on the entry agent [m-ctl-run-entry].
 
-The other agents are reached as tools: `wire_peer_delegation` gives each agent a delegation tool for every peer the workflow names in `delegates_to` [m-ctl-run-delegation].
+The other agents are reached through `wire_peer_delegation`, which builds an `agent_comm` route for every peer the workflow names in `delegates_to` [m-ctl-run-delegation].
 
-The order of work inside one user turn is therefore the model's choice of tool calls, not a table [m-ctl-run-delegation].
+The order of work inside one user turn is therefore the model's choice of which peer to call, not a table: that is my reading of those routes, and no line of theirs states it.
 
 ## Our own workflow table
 

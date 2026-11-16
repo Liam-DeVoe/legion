@@ -28,19 +28,19 @@ A native trace is a stream of JSON lines, one line for each event of one run [m-
 
 Each line is an event with an envelope.
 
-The envelope fields in the shipped example are these [m-tel-event-fields]:
+The envelope fields, which every line of the shipped example carries, are these [m-tel-event-fields]:
 
 - `kind`, the event name, for example `llm_call_start`.
 
-- `agent_id`, `run_id`, `turn_id`, `session_id`, `task_id`, `app_name` and `mas_id`, the identities.
-
-- `call_id` and `parent_call_id`, which build the call tree.
+- `agent_id`, `run_id`, `app_name` and `mas_id`, the identities.
 
 - `block`, `summand`, `mealy_symbol` and `layer`, the internal classification of the event.
 
 - `timestamp`, a float of seconds.
 
-The other fields of a line depend on the kind, for example `input`, `messages`, `tools`, `decision`, `policy_name` or `total_tokens` [m-tel-event-fields].
+`call_id` is on 35 of the 39 lines [m-tel-event-fields], and with `parent_call_id` it builds the call tree [m-tel-purpose].
+
+Other fields are on some lines of the example and not on others, for example `input`, `messages`, `tools`, `decision`, `policy_name` and `total_tokens` [m-tel-event-fields].
 
 The example trace holds 39 events of 29 kinds [m-tel-event-fields].
 
@@ -108,7 +108,7 @@ The string `gen_ai.ioa` does not occur in the fetched copy of the OTel registry 
 
 The span specification also requires `gen_ai.system`, and recommends `gen_ai.usage.prompt_tokens` and `gen_ai.usage.completion_tokens`, which are the older forms of the token names [m-tel-legacy-names].
 
-The third namespace is the package's own: the span names are `TaskCall`, `AgentCall`, `LLMCall`, `ToolCall` and 18 more, and the per-span attributes are `mas.*` [m-tel-span-taxonomy].
+The third namespace I read as the package's own: the span specification keys its 22 span shapes by span name, `TaskCall`, `AgentCall`, `LLMCall`, `ToolCall` and 18 more [m-tel-span-taxonomy], and the per-span attributes are `mas.*` [m-tel-mas-attr-count].
 
 The level model names level L1 "OTel GenAI Semantic Conventions" and level L2 the "observe-sdk / GenAI attribute contract", so the project itself says that conformance to the OTel convention is only the first of four levels [m-tel-levels].
 

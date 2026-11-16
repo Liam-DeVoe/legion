@@ -14,7 +14,7 @@ The driver is `evidence/concord-drive.py`, the pinned corpus is `evidence/concor
 
 ## The input, taken from our own record
 
-The corpus is the review bodies of the last 200 merged pull requests of `cybermonklabs/legion`, read with `gh` on 2026-11-12, pinned as the number list in `evidence/concord-prs.txt`: 5160 review bodies [tc-corpus-1].
+The corpus is the review bodies of the last 200 merged pull requests of `cybermonklabs/legion`, read with `gh` on 2026-11-12, pinned as the number list in `evidence/concord-prs.txt`: 5159 review bodies submitted by the time of that reading [tc-corpus-1].
 
 The search over that corpus for a thermonuclear-pair line carrying both graders' verdict words finds 23 lines, on 15 pull requests, where `thermonuclear-deep-review` and `thermonuclear-code-quality` returned different verdicts at one head [tc-disagree-1].
 
@@ -45,7 +45,7 @@ The raw 0-100 ratings driven into the library are not in our record.
 Our record holds a verdict word and a finding count for each grader and no satisfaction rating and no anchor pair anywhere in the 155 review bodies of the corpus that carry a thermonuclear-pair line [tc-derive-1].
 The ratings of `evidence/concord-input.json` are derived by the rule that file declares under `derivation`, which is this evidence's author's and not our record's, so every number of the two runs rests on it.
 
-The library has no place for a finding's severity: our deep review grader's verdict turns on whether a finding is Medium or High, and the word Medium, High, Critical, Minor or severity appears nowhere in the library [tc-gap-sev].
+The library has no place for a finding's severity: the word Medium, High, Critical, Minor or severity appears nowhere in the library [tc-gap-sev], and our deep review grader's verdict turns on whether a finding is Medium or High [tc-our-2].
 
 It has no place for a finding at all, nor for a verdict, an abstention or a confidence: none of those words appears in the library [tc-gap-find].
 

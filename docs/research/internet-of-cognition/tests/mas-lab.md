@@ -32,7 +32,7 @@ The brief's premise that mas-lab is not on PyPI is false today: `https://pypi.or
 
 Their table loader takes the workflow: `normalize_table` followed by `validate_definition` returns an empty problem list, and the loaded table holds 10 states and 38 transitions, one for each row of ours [tm-table-loads].
 
-Their manifest validator takes both files: `mas-ctl validate legion-workflow.yaml legion-workflow-kind.yaml` prints `OK` for each and exits 0 [tm-validate].
+Their manifest validator takes both files against their schemas: `mas-ctl validate legion-workflow.yaml legion-workflow-kind.yaml` prints `OK` for each with no warning that a schema is missing and exits 0, and `mas-ctl schemas` lists the agent and workflow schemas [tm-validate].
 
 Their spec parser takes the manifest: `parse_agent_spec` returns a `KernelConfig` whose `pattern_plugin_id` is `state_machine` and whose `max_auto_steps` is the 200 I wrote [tm-parse].
 
@@ -67,8 +67,8 @@ A transition carries `set` and `goto` alone, `grep -rnE "effect"` over their `st
 The `set: {effects: start,notice}` lines in my file write the effect words into a variable; nothing in their engine reads that variable, so they are a note to the reader, not an effect [tm-gap-effects].
 
 Nothing is durable or transactional.
-Their module says the run state "lives on the plugin for the turn", and `grep -rnE "durable|persist"` and `grep -rnE "transaction|atomic|rollback"` over their `state_machine.py` are both empty.
-Our engine applies a row's effects and its phase write in one transaction [tm-gap-durable].
+Their module says the run state "lives on the plugin for the turn", and `grep -rnE "durable|persist"` and `grep -rnE "transaction|atomic|rollback"` over their `state_machine.py` are both empty [tm-gap-durable].
+Our engine applies a row's effects in one database transaction [m-ctl-our-effects].
 
 A phase that waits for an outside event has no run kind.
 `RUN_KINDS` is `delegate, react, pattern, parallel, tool, end`, and `grep -rnE "'wait'"` over their `state_machine.py` is empty; every state that is not `end` runs a child, and a transition is tried only at that child's boundary.

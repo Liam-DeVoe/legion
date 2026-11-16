@@ -32,7 +32,7 @@ It has two published releases, and the newest is v0.2.0 of 2026-09-30 [t-ml-rele
 
 One of the two releases is a dataset, not the software [t-ml-releases].
 
-The default branch holds at least 201 commits [t-ml-commits].
+The default branch held 202 commits when GitHub was read on 2026-11-12 [t-ml-commits].
 
 The repository was made on 2026-06-29 and is not archived [t-ml-created].
 
