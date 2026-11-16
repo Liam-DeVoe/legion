@@ -394,9 +394,12 @@ type server struct {
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
-	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
-	// (the forced create whose check does not answer), so a case's outcome is its own choice
-	// rather than its machine's speed.
+	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it, so
+	// a case's outcome is its own choice rather than its machine's speed: a case whose create must
+	// meet no check gives a bound already spent (spentGateBound), which gateBounds ends before the
+	// read starts, and every test server the rig builds takes a bound past any read it makes
+	// (gateBoundPastEveryRead in newRegisteredTestServer), since production's 500 ms is a bound a
+	// loaded machine can miss.
 	duplicateBound time.Duration
 	// broadcastResolveBudget overrides the budget a broadcast's recipient resolution runs under;
 	// zero, which every server the deployment builds leaves it, means broadcastResolveTimeout.
@@ -1540,6 +1543,30 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 		s.deps.Events.Publish(event)
 	}
 	s.storeEventDisplayTrees(ctx, events)
+}
+
+// boundedByClock is ctx ended d from now on the server's clock, with cause as the cause its end
+// carries (context.Cause), so the work behind it tells its own bound from the request that ran it
+// going away. The caller cancels it, as it would a context.WithTimeout's. It is the one bound a
+// product timer of this package takes (relatedBounds, gateBounds): a test moves the server's own
+// fake clock to the deadline the code armed, and no real time decides the outcome.
+//
+// A d already spent (zero or less, which only a test sets - suggestionTimeout, duplicateBound)
+// ends the context here, before this returns, so nothing behind it reads at all. A timer of zero
+// or less runs its function on a goroutine of its own, on the real clock as on the fake
+// (clocktest's placeLocked), and work that began before that goroutine ran would be the machine
+// deciding the outcome rather than the case (INFRA-3149).
+func (s *server) boundedByClock(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
+	bounded, end := context.WithCancelCause(ctx)
+	if d <= 0 {
+		end(cause)
+		return bounded, func() { end(context.Canceled) }
+	}
+	timer := s.clock.AfterFunc(d, func() { end(cause) })
+	return bounded, func() {
+		timer.Stop()
+		end(context.Canceled)
+	}
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {

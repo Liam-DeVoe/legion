@@ -279,6 +279,14 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)
+	// Every create this server answers runs the near-copy gate, and production's bound for it
+	// (duplicateGateTimeout, 500 ms, on the gate's context and as its read's own
+	// statement_timeout) is one a loaded machine misses: a row would then read an unchecked
+	// create as a verdict about the gate. So the gate here is given a bound past any read of a
+	// test project, as the take-over window above is shortened, and a row whose outcome is that
+	// no check was made spends its bound instead (spentGateBound). The deployment's own bound is
+	// pinned by TestTheDeploymentsNearCopyGateBoundIsTheDocumentedOne.
+	served.duplicateBound = gateBoundPastEveryRead
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,

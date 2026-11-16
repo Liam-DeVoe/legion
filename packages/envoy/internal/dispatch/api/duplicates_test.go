@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -68,6 +72,63 @@ const (
 		"and the weighbridge answers only while the loading dock has power. " +
 		"Buffer each crate locally and reconcile the weights when the dock comes back."
 )
+
+// The two bounds a case gives the near-copy gate. Production's (duplicateGateTimeout, 500 ms on
+// the gate's context and as its read's own statement_timeout) is a bound a loaded machine misses,
+// and a case held to it would read an unchecked create as a verdict about the gate (INFRA-3149).
+const (
+	// gateBoundPastEveryRead is what every server a test builds runs the gate under
+	// (newRegisteredTestServer): a minute, past any read of a test project, so what a case reads
+	// is what its project holds. The replay sets a bound of its own, for its own reason
+	// (nearCopyGateBound).
+	gateBoundPastEveryRead = time.Minute
+	// spentGateBound is what a case gives the gate where its outcome is that no near-copy check
+	// was made: a bound already spent, which gateBounds ends before the read starts, so the
+	// create meets no check whatever the machine does.
+	spentGateBound = -time.Nanosecond
+)
+
+// The deployment's own near-copy bound is the documented one: duplicateGateTimeout is what a
+// create waits for its check, and the literal, not the constant, is the pin. It reads the server
+// register mounts, which is the only one a deployment runs, because every server a test builds
+// takes gateBoundPastEveryRead instead (newRegisteredTestServer): without this row that override
+// would hide a change of what a filer actually waits.
+func TestTheDeploymentsNearCopyGateBoundIsTheDocumentedOne(t *testing.T) {
+	if got := register(http.NewServeMux(), t.Context(), Deps{}).duplicateGateBound(); got != 500*time.Millisecond {
+		t.Fatalf("the server a deployment runs bounds its near-copy gate at %s, want the documented 500ms", got)
+	}
+}
+
+// A bound already spent ends the gate's context before gateBounds returns, on the real clock and
+// on a fake alike, so a case that spends it (spentGateBound) meets no check because the code said
+// so and not because its machine lost a race: a timer of zero or less runs its function on a
+// goroutine of its own on either clock, and a read begun before that goroutine ran would answer
+// the case (INFRA-3149). The cause is the gate's own, which is how duplicateGate tells a bound
+// that ended from a create whose request went away.
+func TestASpentGateBoundEndsTheGatesContextBeforeItIsReturned(t *testing.T) {
+	for _, on := range []struct {
+		name  string
+		clock clock.Clock
+	}{
+		{"the real clock", clock.Real()},
+		{"a fake nothing moves", clocktest.New(checkStart)},
+	} {
+		t.Run(on.name, func(t *testing.T) {
+			srv := &server{clock: on.clock, duplicateBound: spentGateBound}
+			gateCtx, cancel, bound := srv.gateBounds(context.Background())
+			defer cancel()
+			if bound != spentGateBound {
+				t.Fatalf("the bound it answers = %s, want the spent %s the case set", bound, spentGateBound)
+			}
+			if err := gateCtx.Err(); err == nil {
+				t.Fatalf("the gate's context is live where gateBounds returned it, so its read would start; want it ended")
+			}
+			if cause := context.Cause(gateCtx); !errors.Is(cause, errNearCopyGateBoundEnded) {
+				t.Fatalf("the context's cause = %v, want %v, which is what has such a create told no check was made", cause, errNearCopyGateBoundEnded)
+			}
+		})
+	}
+}
 
 func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
 	handler := newTestHandler(t)
