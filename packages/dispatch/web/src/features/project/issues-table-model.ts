@@ -218,7 +218,7 @@ export function workHoursOf(item: Pick<Item, "facts">): number | undefined {
  */
 export const MEASURE_METHODS: Partial<Record<ColumnId, string>> = {
   work_hours:
-    "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours that the issue waits to start with no free capacity.",
+    "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours when Legion has admitted the issue but not started it.",
   phase_hours:
     "Work time goes to Waiting on a person while the issue's ask or root waits, else to its phase or Other. A root does not count the hours it waits on its children.",
   review_rounds:

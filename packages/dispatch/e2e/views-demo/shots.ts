@@ -395,13 +395,41 @@ const createElsewhere = (page: Page, title: string) =>
 /** The title of the issue the pictures create elsewhere, which says it is invented. */
 const NEW_ISSUE_TITLE = "An issue another reader just made (invented by the demo)";
 
-/** Work time's method sentence, which its header tooltip, a Board card's Work time fact and the
+/** Work time's method sentences, which its header tooltip, a Board card's Work time fact and the
  *  Columns menu show alike. */
 const WORK_TIME_METHOD =
-  "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours that the issue waits to start with no free capacity.";
+  "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours when Legion has admitted the issue but not started it.";
 
 /** What a Queue number says in its tooltip. */
 const QUEUE_HELP = "Legion starts issues in this order";
+
+/** What every claim chip's tooltip says a claim is, after the line naming its holder. */
+const CLAIM_HELP =
+  "A claim marks who is implementing this issue, so two agents never take the same work.";
+
+/** Checks every claim chip drawn on the page: a chip whose holder's name is whole carries no
+ *  browser title, since the shared tooltip holds its help, and a chip whose name is cut carries
+ *  "Claimed by <name>" as its title. A Board card's chip stacks its name over its age and wraps
+ *  it, so its name is never cut. */
+async function checkClaimChipTitles(page: Page, name: string): Promise<void> {
+  const chips = await page.locator('[data-testid="issue-claim"]').evaluateAll((all) =>
+    all.map((chip) => {
+      const label = chip.querySelector<HTMLElement>(".truncate");
+      return {
+        cut: label !== null && label.scrollWidth > label.clientWidth,
+        title: chip.getAttribute("title"),
+      };
+    })
+  );
+  const whole = chips.filter((chip) => !chip.cut);
+  const cut = chips.filter((chip) => chip.cut);
+  const wholeTitled = whole.filter((chip) => chip.title !== null).length;
+  const cutTitled = cut.filter((chip) => chip.title?.startsWith("Claimed by ") === true).length;
+  check(
+    chips.length > 0 && wholeTitled === 0 && cutTitled === cut.length,
+    `${name}: of ${chips.length} claim chips drawn, ${wholeTitled} of the ${whole.length} whose name is whole carry a title, and ${cutTitled} of the ${cut.length} whose name is cut carry "Claimed by …"`
+  );
+}
 
 /** The sort hint of a sortable header the reader may drag: main's words. */
 const SORT_HINT = "Sort (shift-click to add a second sort); drag to move the column";
@@ -1349,6 +1377,7 @@ const afterShots: Shot[] = [
     take: async (page) => {
       await open(page, view("open", "&layout=board"));
       await checkCards(page, "board-open-1440");
+      await checkClaimChipTitles(page, "board-open-1440");
     },
   },
   {
@@ -1539,6 +1568,49 @@ const afterShots: Shot[] = [
       await page.waitForTimeout(200);
       const tip = (await page.locator('[role="tooltip"]').first().textContent())?.trim() ?? "";
       check(tip === WORK_TIME_METHOD, `${name}: the Work time fact's tooltip reads "${tip}"`);
+      await checkTooltipInWindow(page, name);
+    },
+  },
+  // The pointer on the first Board card's claim chip: its help in the shared tooltip (who holds
+  // the claim and since when, what a claim is, and the holder's state), and no browser title,
+  // since a card's chip never cuts its holder's name. Before the Board, the table sorted by
+  // Claimed by puts its chips on the first page, where a chip carries a title only if its name
+  // is cut.
+  {
+    name: "board-card-claim-tooltip-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      const name = "board-card-claim-tooltip-1440";
+      await open(page, view("open", "&sort=claim"));
+      await checkClaimChipTitles(page, `${name} (the table sorted by Claimed by)`);
+      await open(page, view("open", "&layout=board"), page.locator("[data-board-card]").first());
+      const chip = page.locator('[data-board-card] [data-testid="issue-claim"]').first();
+      const key = await chip.evaluate(
+        (each) => each.closest("[data-board-card]")?.getAttribute("data-board-card") ?? ""
+      );
+      await chip.evaluate((each) => each.scrollIntoView({ block: "center", inline: "center" }));
+      await page.waitForTimeout(300);
+      const box = await chip.boundingBox();
+      if (box === null) throw new Error("no Board card draws a claim chip");
+      // On the chip's "Claimed by", clear of the holder's link.
+      await pointAt(page, box.x + 24, box.y + 8);
+      await page.waitForTimeout(300);
+      const lines = await page
+        .locator('[role="tooltip"] p')
+        .evaluateAll((all) => all.map((line) => line.textContent?.trim() ?? ""));
+      const [holder = "", help = ""] = lines;
+      check(
+        lines.length === 2 &&
+          holder.startsWith("Claimed by ") &&
+          holder.includes(" · since ") &&
+          help.startsWith(CLAIM_HELP),
+        `${name}: ${key}'s claim chip opens its tooltip: "${holder}", then "${help}"`
+      );
+      const title = await chip.getAttribute("title");
+      check(
+        title === null,
+        `${name}: ${key}'s chip carries ${title === null ? "no title" : `the title "${title}"`}`
+      );
       await checkTooltipInWindow(page, name);
     },
   },

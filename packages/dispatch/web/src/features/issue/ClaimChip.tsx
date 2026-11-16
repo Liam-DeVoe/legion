@@ -5,11 +5,13 @@ import {
   claimTakeableAt,
   claimTakeableNow,
 } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueClaim } from "../../api/types";
 import { pillClassName, pillToneClassName } from "../../components/Pill";
+import { Tooltip, useTooltip } from "../../components/Tooltip";
+import { focusVisibleRing } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { Timestamp } from "../refs/Timestamp";
@@ -100,11 +102,11 @@ export function claimIsTakeable(
  * "Claimed by <holder> · <age>" wherever an issue is shown: the issue header's state row, a
  * List row, a Board card. The holder is drawn by `AgentName`, as every agent is: its current
  * registry title, else the title stamped on the claim, else `session:<8>…`, with its running
- * state and a link to its live conversation. The age keeps itself current through the shared
- * `Timestamp` tick, and the whole label with the absolute time is in the `title`, which also
- * says what a claim is: the chip sits among status, priority and assignee, and nothing else on
- * the page defines it. An unclaimed issue renders nothing at all, so a board of unclaimed work
- * stays quiet.
+ * `Timestamp` tick. What a claim is, and the holder's state with its absolute times, are help
+ * the shared tooltip draws on hover and keyboard focus: the chip sits among status, priority and
+ * assignee, and nothing else on the page defines it. A native title is kept only for the chip's
+ * cut text, where the holder's name ellipsizes. An unclaimed issue renders nothing at all, so a
+ * board of unclaimed work stays quiet.
  *
  * A holder the registry no longer lists reads "· not running" in the muted tone, beside its
  * name's own not-running mark, because that claim is free for the taking and a chip that looked
@@ -146,6 +148,16 @@ export function ClaimChip({
 }): ReactNode {
   const registry = useAgentRegistry(claim?.actor.kind === "session");
   const text = useAgentText();
+  const chipRef = useRef<HTMLSpanElement>(null);
+  const tooltip = useTooltip();
+  // Whether the holder's name ellipsizes (a single-line chip only; a stacked one wraps it):
+  // measured after each render and again as the pointer arrives, a read of one name's widths.
+  const [cut, setCut] = useState(false);
+  const measureCut = useCallback(() => {
+    const name = stacked ? null : chipRef.current?.querySelector<HTMLElement>(".truncate");
+    setCut(name != null && name.scrollWidth > name.clientWidth);
+  }, [stacked]);
+  useLayoutEffect(measureCut);
   if (claim === null) {
     return null;
   }
@@ -231,32 +243,60 @@ export function ClaimChip({
       ) : null}
     </>
   );
-  const title = `${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`;
+  const help = (
+    <>
+      <p>{since}</p>
+      <p className="mt-1">
+        {explains}
+        {lapsedNote}
+        {unresponsiveNote}
+        {uncheckedNote}
+      </p>
+    </>
+  );
   const tone = takeable ? "label" : "selected-label";
+  // The help opens on hover and on keyboard focus of the chip or of a link inside it.
+  const hint = {
+    ...tooltip.props,
+    onMouseEnter: () => {
+      measureCut();
+      tooltip.show();
+    },
+    ref: chipRef,
+    tabIndex: 0,
+  };
+  const tip = (
+    <Tooltip anchorRef={chipRef} trigger={tooltip}>
+      {help}
+    </Tooltip>
+  );
   if (stacked)
     return (
       <span
-        className={`flex w-full min-w-0 flex-col items-start gap-0.5 rounded-lg px-2 py-1 text-xs font-medium ${pillToneClassName(tone)}`}
+        {...hint}
+        className={`flex w-full min-w-0 flex-col items-start gap-0.5 rounded-lg px-2 py-1 text-xs font-medium outline-none focus-visible:ring-2 ${focusVisibleRing} ${pillToneClassName(tone)}`}
         data-testid="issue-claim"
-        title={title}
       >
         <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
           Claimed by <AgentName actor={claim.actor} inline />
         </span>
         <span className="flex w-full min-w-0 flex-wrap items-center gap-1">{state}</span>
+        {tip}
       </span>
     );
   return (
     <span
-      className={`${pillClassName(tone)} min-w-0 max-w-full gap-1`}
+      {...hint}
+      className={`${pillClassName(tone)} min-w-0 max-w-full gap-1 outline-none focus-visible:ring-2 ${focusVisibleRing}`}
       data-testid="issue-claim"
       style={{ flexShrink: 1 }}
-      title={title}
+      title={cut ? `Claimed by ${text.label(claim.actor)}` : undefined}
     >
       <span className="shrink-0">Claimed by</span>
       <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
       {dot}
       {state}
+      {tip}
     </span>
   );
 }

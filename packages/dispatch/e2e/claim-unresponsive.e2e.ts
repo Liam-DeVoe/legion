@@ -79,6 +79,14 @@ async function expectInstant(locator: Locator, want: number, what: string) {
     .toBe(want);
 }
 
+/** The claim chip's help, which the shared tooltip draws while the pointer rests on the chip. */
+async function claimHelp(chip: Locator): Promise<string> {
+  await chip.hover();
+  const help = (await chip.page().getByRole("tooltip").textContent()) ?? "";
+  await chip.page().mouse.move(0, 0);
+  return help;
+}
+
 // @pr: A claim the server settles: an unresponsive holder keeps it, the page says since when and until when, and a second agent's claim is refused.
 test("an unresponsive holder keeps its claim: the issue page says unresponsive since its last heartbeat and names when it becomes takeable, and a second agent is refused @pr", async ({
   browser,
@@ -115,7 +123,7 @@ test("an unresponsive holder keeps its claim: the issue page says unresponsive s
     const stalled = page.getByTestId("issue-claim-unresponsive");
     await expect(stalled).toBeVisible();
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
-    await expect(chip).toHaveAttribute("title", /missed its heartbeats without ending/);
+    expect(await claimHelp(chip)).toContain("missed its heartbeats without ending");
     // R5's wording: the state, and the heartbeat the silence is dated from.
     await expect(stalled).toContainText("unresponsive since");
     await expectInstant(
@@ -184,7 +192,7 @@ test("an unresponsive holder past its takeable moment reads takeable now, is lis
     await expect(stalled).toContainText("unresponsive since");
     await expect(stalled.getByTestId("issue-claim-takeable")).toHaveText(", takeable now");
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
-    await expect(chip).toHaveAttribute("title", /another agent may take it now/);
+    expect(await claimHelp(chip)).toContain("another agent may take it now");
     await expect(chip.locator(`[data-agent-name="${holder.session_id}"]`)).toHaveAttribute(
       "data-agent-state",
       "unresponsive"

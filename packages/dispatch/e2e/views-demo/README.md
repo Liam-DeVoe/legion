@@ -206,7 +206,10 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
   scrolling the window, and the new card shows above it. Todo and the Open tab count the new
   issue;
 - `board-card-work-time-tooltip-1440`: the pointer on a Board card's Work time fact, its
-  tooltip open with the same sentence as Work time's header tooltip;
+  tooltip open with the same sentences as Work time's header tooltip;
+- `board-card-claim-tooltip-1440`: the pointer on the first Board card's claim chip, its
+  tooltip open with who holds the claim and since when, what a claim is, and the holder's
+  state;
 - `board-own-drag-applies-1440`: the reader's own drag of the first Todo card onto Backlog,
   which moves it at once;
 - `save-view-popover-1440` and `save-view-saved-tab-1440`: Open narrowed to the triage issues,
@@ -283,6 +286,9 @@ check of what the page drew failed:
 - Work time's header tooltip not opening on keyboard focus, or not holding its method's two
   sentences word for word and then main's sort hint; a Board card's Work time tooltip or the
   Columns menu's line under Work time not holding the same two sentences;
+- a claim chip whose holder's name is whole carrying a browser title, or one whose name is cut
+  not carrying "Claimed by <name>", on Open's Board and in Open sorted by Claimed by; the
+  first Board card's chip tooltip not naming its holder and since when, then what a claim is;
 - Status's header tooltip not opening on keyboard focus, or holding anything but main's sort
   hint; a sort button carrying a browser title, on Open or on the priority pages;
 - the first row's Queue number not taking the focus by Tab from its key, or its tooltip

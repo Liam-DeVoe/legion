@@ -114,6 +114,15 @@ function header(
   };
 }
 
+/** The help the claim chip's tooltip draws on hover: what a claim is and its holder's state. */
+async function claimHelp(user: UserEvent): Promise<string> {
+  const chip = screen.getByTestId("issue-claim");
+  await user.hover(chip);
+  const help = (await screen.findByRole("tooltip")).textContent ?? "";
+  await user.unhover(chip);
+  return help;
+}
+
 /** One live session, as `GET /api/v1/agents` lists it. */
 function running(sessionID: string, title: string): Agent {
   return {
@@ -145,12 +154,22 @@ test("a claimed issue names its holder and releases the claim from the header", 
   const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
   const view = header({ ...base, claim });
   try {
-    expect(await screen.findByTitle(/Claimed by Implementer/)).toBeDefined();
-    // The chip is the only place a reader is told what a claim is.
-    expect(await screen.findByTitle(/two agents never take the same work/)).toBeDefined();
+    const chip = await screen.findByTestId("issue-claim");
+    // The chip is the only place a reader is told what a claim is: in the shared tooltip, on
+    // hover and on keyboard focus, which Escape closes. No browser title repeats it.
+    expect(chip.getAttribute("title")).toBeNull();
+    const help = await claimHelp(view.user);
+    expect(help).toContain("Claimed by Implementer");
+    expect(help).toContain("two agents never take the same work");
+    chip.focus();
+    expect((await screen.findByRole("tooltip")).textContent).toContain(
+      "two agents never take the same work"
+    );
+    await view.user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+    chip.blur();
     // The holder is drawn by `AgentName`: its name links to its live conversation, and the
     // registry lists it, so it reads as running and the chip adds nothing.
-    const chip = screen.getByTestId("issue-claim");
     expect(within(chip).getByRole("link", { name: "Implementer" })).toHaveAttribute(
       "href",
       "/agents/session-one/live"
@@ -181,7 +200,7 @@ test("a holder the registry no longer lists reads as not running", async () => {
   const view = header({ ...base, claim });
   try {
     expect(await screen.findByText("not running")).toBeDefined();
-    expect(screen.getByTitle(/no longer running, so anyone may claim it/)).toBeDefined();
+    expect(await claimHelp(view.user)).toContain("no longer running, so anyone may claim it");
     const chip = screen.getByTestId("issue-claim");
     expect(
       chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
@@ -287,14 +306,15 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
         ?.getAttribute("datetime")
     ).toBe(new Date(lastSeen).toISOString());
     const chip = screen.getByTestId("issue-claim");
-    expect(chip.getAttribute("title")).toContain("missed its heartbeats without ending");
-    expect(chip.getAttribute("title")).toContain(
-      `last seen ${new Date(lastSeen).toLocaleString()}`
-    );
+    // The help is the shared tooltip's, never a browser title.
+    expect(chip.getAttribute("title")).toBeNull();
+    const help = await claimHelp(view.user);
+    expect(help).toContain("missed its heartbeats without ending");
+    expect(help).toContain(`last seen ${new Date(lastSeen).toLocaleString()}`);
     // The wait the chip names is the sum the server refuses by, not a guess of its own, and the
     // issue is not free until then.
     const takeableAt = lastSeen + ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS;
-    expect(chip.getAttribute("title")).toContain(
+    expect(help).toContain(
       `keeps this issue until ${new Date(takeableAt).toLocaleString()}, when another agent may take it`
     );
     expect(
@@ -331,8 +351,9 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
     expect(screen.queryByText("not running")).not.toBeInTheDocument();
     const chip = screen.getByTestId("issue-claim");
-    expect(chip.getAttribute("title")).toContain("another agent may take it now");
-    expect(chip.getAttribute("title")).toContain("It has not ended, and may yet answer.");
+    const help = await claimHelp(view.user);
+    expect(help).toContain("another agent may take it now");
+    expect(help).toContain("It has not ended, and may yet answer.");
     expect(
       chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
     ).toBe("unresponsive");
@@ -373,7 +394,7 @@ test("the issue read's own holder_state outranks an agent list that does not nam
         .querySelector("time")
         ?.getAttribute("datetime")
     ).toBe(takeableAt);
-    expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(
+    expect(await claimHelp(view.user)).toContain(
       `keeps this issue until ${new Date(takeableAt).toLocaleString()}`
     );
   } finally {
