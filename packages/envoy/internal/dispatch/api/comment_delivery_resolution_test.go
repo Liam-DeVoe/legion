@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -117,7 +118,7 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 		t.Fatalf("complete pending absent-holder mention: status=%d body=%s", missingHolder.Code, missingHolder.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, missingHolder); attempt.Attempt != 1 || attempt.SessionID == nil ||
-		*attempt.SessionID != "s1" || attempt.State != "failed" || attempt.Error == nil || *attempt.Error != "no live session s1" {
+		*attempt.SessionID != "s1" || attempt.State != "failed" || attempt.Error == nil || *attempt.Error != contracts.NoLiveSession+" s1" {
 		t.Fatalf("absent original holder retry = %#v, want the pin kept on a failed no-live-session attempt", attempt)
 	}
 	// "no live session" is what a listener take-over answers too, so the retry rechecks the pin
@@ -569,7 +570,7 @@ func TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession(t *
 	if delivery.State != "failed" || sends != 0 {
 		t.Fatalf("delivery during a silent bus = %#v sends=%d, want a failure and no send", delivery, sends)
 	}
-	if failure := *delivery.Error; strings.HasPrefix(failure, "no live session ") {
+	if failure := *delivery.Error; strings.HasPrefix(failure, contracts.NoLiveSession+" ") {
 		t.Fatalf("delivery error = %q, want the listener's own reason, not an ended session", failure)
 	} else if !strings.Contains(failure, busSilent) {
 		t.Fatalf("delivery error = %q, want it to carry the listener's reason %q", failure, busSilent)
@@ -619,7 +620,7 @@ func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
 	gone := served.resolveDeliveryTarget(
 		context.Background(), model.Route{Kind: "session", ID: "s2"}, "steer",
 	)
-	if gone.sessionID != "s2" || gone.resolveError != "no live session s2" {
+	if gone.sessionID != "s2" || gone.resolveError != contracts.NoLiveSession+" s2" {
 		t.Fatalf("a session the registry calls gone resolved %q with %q, want it refused as no live session", gone.sessionID, gone.resolveError)
 	}
 }

@@ -1,3 +1,5 @@
+import { NO_LIVE_SESSION } from "@legion/contracts";
+
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import {
   createIssue,
@@ -203,7 +205,7 @@ test("Retry of a failed delivery on a closed issue posts a new attempt", async (
   try {
     const page = await alice.newPage();
     const card = await openMessage(page, issueKey, testerMessageId);
-    await expect(card).toContainText(`Failed: no live session ${tester.session_id}`);
+    await expect(card).toContainText(`Failed: ${NO_LIVE_SESSION} ${tester.session_id}`);
     const retry = card.getByRole("button", { exact: true, name: "Retry" });
     await expect(retry).toBeVisible();
     await setSessionSendStatus(tester.session_id, 200);

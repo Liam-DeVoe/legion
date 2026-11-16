@@ -7460,9 +7460,10 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 			t.Fatalf("decode the message: %v", err)
 		}
 		took := time.Since(started)
+		want := contracts.NoLiveSession + " never-known"
 		if len(message.Deliveries) != 1 || message.Deliveries[0].State != "failed" ||
-			message.Deliveries[0].Error == nil || *message.Deliveries[0].Error != "no live session never-known" {
-			t.Fatalf("deliveries = %#v, want attempt 1 failed with %q", message.Deliveries, "no live session never-known")
+			message.Deliveries[0].Error == nil || *message.Deliveries[0].Error != want {
+			t.Fatalf("deliveries = %#v, want attempt 1 failed with %q", message.Deliveries, want)
 		}
 		if took > 15*time.Second {
 			t.Fatalf("the send to a session the listener never knows answered %v after it was made, want within 15s: "+

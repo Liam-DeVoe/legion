@@ -113,12 +113,13 @@ func resolvedMention(target, delivery string, found deliveryTarget) ResolvedMent
 	// A missing session is not a resolved target, even though the legacy message delivery
 	// model retains its requested id in an attempt row. A live session that lacks a mode is
 	// still resolved and participates in the event's session-level suppression calculation.
-	// resolveDeliveryTarget writes this exact prefix for one answer only - the listener
-	// holds no record under that session id - so the prefix test separates "no record",
-	// whose requested id is kept on the attempt row, from a capability refusal. A read that
-	// did not answer gives no session id here, so it sets no pin; an existing attempt keeps
-	// the one it holds only through the coalesce(session_id, ...) update further down.
-	if found.sessionID != "" && !strings.HasPrefix(found.resolveError, "no live session ") {
+	// resolveDeliveryTarget writes this exact prefix (contracts.NoLiveSession and a space) for one
+	// answer only - the listener holds no record under that session id - so the prefix test
+	// separates "no record", whose requested id is kept on the attempt row, from a capability
+	// refusal. A read that did not answer gives no session id here, so it sets no pin; an existing
+	// attempt keeps the one it holds only through the coalesce(session_id, ...) update further
+	// down.
+	if found.sessionID != "" && !strings.HasPrefix(found.resolveError, contracts.NoLiveSession+" ") {
 		item.SessionID = new(found.sessionID)
 	}
 	return item
@@ -178,7 +179,7 @@ func (s *server) sendResolvedDelivery(
 		return s.publishForRole(ctx, target, body, idempotencyKey, urgency, wanted, frame, connectedOnly)
 	}
 	if target.SessionID == nil {
-		return sendOutcome{failure: "no live session"}
+		return sendOutcome{failure: contracts.NoLiveSession}
 	}
 	// Message is the body a second time, beside the frame, and the listener puts it on the
 	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy

@@ -2,6 +2,7 @@ import {
   type ExpectsReply,
   LEGION_ROLES,
   type LegionRole,
+  NO_LIVE_SESSION,
   ROLE_TOPIC_PREFIX,
 } from "@legion/contracts";
 import type { TmuxPlace } from "../web/src/api/types";
@@ -464,17 +465,17 @@ const server = Bun.serve({
       const session = state.sessions.find((item) => item.session_id === sessionID);
       const stopped = state.stoppedSessions.has(sessionID);
       if (record === "absent" || session === undefined || (stopped && !includes(url, "stopped"))) {
-        return Response.json({ error: `no live session ${sessionID}` }, { status: 404 });
+        return Response.json({ error: `${NO_LIVE_SESSION} ${sessionID}` }, { status: 404 });
       }
       if (stopped) return Response.json(stoppedBody(session));
       const answered = asAnswered(session, Date.now());
       // A session past the live window is the 404 it always was unless the caller asked for it
       // with include=unresponsive, and that refusal keeps the "no live session <id>" prefix
-      // Dispatch classifies on, with the state and the heartbeat added beside it.
+      // (NO_LIVE_SESSION) Dispatch classifies on, with the state and the heartbeat added beside it.
       if (answered.state === "unresponsive" && !includes(url, "unresponsive")) {
         return Response.json(
           {
-            error: `no live session ${sessionID}`,
+            error: `${NO_LIVE_SESSION} ${sessionID}`,
             last_seen: answered.last_seen,
             state: answered.state,
           },
@@ -533,7 +534,7 @@ const server = Bun.serve({
         (!known && !isLive(message.target_session))
       ) {
         return Response.json(
-          { error: `no live session ${message.target_session}` },
+          { error: `${NO_LIVE_SESSION} ${message.target_session}` },
           { status: 404 }
         );
       }

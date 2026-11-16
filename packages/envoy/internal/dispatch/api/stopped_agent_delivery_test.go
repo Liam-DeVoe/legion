@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -412,7 +413,7 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
 					t.Fatalf("%s: deliveries = %#v, want failed %q", name, got, failure)
 				}
 			}
-			noLive := "no live session " + tc.session
+			noLive := contracts.NoLiveSession + " " + tc.session
 			noHolder := "no holder for role " + tc.role
 			failed("an issue message", createIssueMessage(t, handler, issue.Key, map[string]any{
 				"body": "Anyone?", "target": "session:" + tc.session, "delivery": "btw",

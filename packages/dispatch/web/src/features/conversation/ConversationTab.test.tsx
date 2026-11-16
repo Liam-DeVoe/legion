@@ -1,4 +1,5 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { NO_LIVE_SESSION } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -616,7 +617,7 @@ test("offers targeted-message retries and Reply on a closed issue", async () => 
     messages: [
       thread(
         message("message-1", {
-          deliveries: [attempt({ error: "no live session s1", state: "failed" })],
+          deliveries: [attempt({ error: `${NO_LIVE_SESSION} s1`, state: "failed" })],
           target: "session:s1",
         })
       ),
@@ -626,7 +627,7 @@ test("offers targeted-message retries and Reply on a closed issue", async () => 
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient, true));
 
   try {
-    await screen.findByText(/Failed: no live session s1/);
+    await screen.findByText(new RegExp(`Failed: ${NO_LIVE_SESSION} s1`));
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     const turns = screen.getByRole("list", { name: "Conversation turns" });
     expect(within(turns).getByRole("button", { name: "Reply" })).toBeTruthy();
@@ -1766,7 +1767,7 @@ test("a comment-delivery retry disables when the target no longer advertises the
     comments: [
       comment("comment-1", {
         body: "@Worker take a look",
-        deliveries: [mentionAttempt({ error: "no live session worker" })],
+        deliveries: [mentionAttempt({ error: `${NO_LIVE_SESSION} worker` })],
         mentions: [
           { delivery: "steer", session_id: "worker-session", target: "session:worker-session" },
         ],
@@ -1777,7 +1778,7 @@ test("a comment-delivery retry disables when the target no longer advertises the
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
-    await screen.findByText(/no live session worker/);
+    await screen.findByText(new RegExp(`${NO_LIVE_SESSION} worker`));
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByText(wholeText("Worker no longer supports Send."))).toBeTruthy();
   } finally {
@@ -1797,7 +1798,7 @@ test("a comment-delivery retry to a role target checks the role's current live h
         body: "@reviewer take a look",
         deliveries: [
           mentionAttempt({
-            error: "no live session reviewer",
+            error: `${NO_LIVE_SESSION} reviewer`,
             session_id: "old-reviewer-session",
             target: "role:reviewer",
           }),
@@ -1810,7 +1811,7 @@ test("a comment-delivery retry to a role target checks the role's current live h
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
-    await screen.findByText(/no live session reviewer/);
+    await screen.findByText(new RegExp(`${NO_LIVE_SESSION} reviewer`));
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByText(/role:reviewer no longer supports Send\./)).toBeTruthy();
   } finally {
@@ -1825,7 +1826,7 @@ test("a comment-delivery retry guards a same-tick double click to exactly one at
     comments: [
       comment("comment-1", {
         body: "@Worker take a look",
-        deliveries: [mentionAttempt({ error: "no live session worker" })],
+        deliveries: [mentionAttempt({ error: `${NO_LIVE_SESSION} worker` })],
       }),
     ],
   });
@@ -1875,7 +1876,7 @@ test("a root targeted-message retry checks the role's current holder after a han
           deliveries: [
             attempt({
               delivery: "steer",
-              error: "no live session old-reviewer-session",
+              error: `${NO_LIVE_SESSION} old-reviewer-session`,
               session_id: "old-reviewer-session",
               state: "failed",
             }),
@@ -1924,7 +1925,7 @@ test("a reply's targeted-message retry checks the thread's current role holder a
             deliveries: [
               attempt({
                 delivery: "steer",
-                error: "no live session old-reviewer-session",
+                error: `${NO_LIVE_SESSION} old-reviewer-session`,
                 message_id: "message-2",
                 session_id: "old-reviewer-session",
                 state: "failed",

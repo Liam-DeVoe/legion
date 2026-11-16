@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -282,7 +283,7 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 		"body": "Retry me", "target": "session:s1", "delivery": "btw",
 	}, "alice")
 	if len(failed.Deliveries) != 1 || failed.Deliveries[0].State != "failed" ||
-		failed.Deliveries[0].Error == nil || *failed.Deliveries[0].Error != "no live session s1" {
+		failed.Deliveries[0].Error == nil || *failed.Deliveries[0].Error != contracts.NoLiveSession+" s1" {
 		t.Fatalf("failed delivery = %#v", failed.Deliveries)
 	}
 
@@ -506,7 +507,7 @@ func TestTargetedMessageRecordsCapabilityAndListenerFailures(t *testing.T) {
 		"body": "Can you receive now?", "target": "session:s1", "delivery": "btw",
 	}, "alice")
 	if got := listenerFailure.Deliveries; len(got) != 1 || got[0].State != "failed" ||
-		got[0].Error == nil || *got[0].Error != "no live session s1" {
+		got[0].Error == nil || *got[0].Error != contracts.NoLiveSession+" s1" {
 		t.Fatalf("listener 404 delivery = %#v", got)
 	}
 }
@@ -785,7 +786,7 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 	}
 	failedMessage := decodeBody[model.Message](t, failed)
 	if len(failedMessage.Deliveries) != 1 || failedMessage.Deliveries[0].State != "failed" ||
-		failedMessage.Deliveries[0].Error == nil || *failedMessage.Deliveries[0].Error != "no live session s1" {
+		failedMessage.Deliveries[0].Error == nil || *failedMessage.Deliveries[0].Error != contracts.NoLiveSession+" s1" {
 		t.Fatalf("failed issue-less delivery = %#v", failedMessage.Deliveries)
 	}
 

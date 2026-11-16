@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { SettledDeliveryState } from "@legion/contracts";
+import { NO_LIVE_SESSION, type SettledDeliveryState } from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
 import { activityDescription, buildActivityItems, dateKey } from "./activity-model";
@@ -135,7 +135,7 @@ function commentDelivery(receipt: {
       reply_id: null,
       session_id: null,
       target: "session:planner",
-      ...(receipt.state === "failed" ? { error: "no live session planner" } : {}),
+      ...(receipt.state === "failed" ? { error: `${NO_LIVE_SESSION} planner` } : {}),
       ...receipt,
     },
     seq: 1,

@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import {
+  DELIVERY_DUPLICATE_WINDOW_MS,
+  NO_LIVE_SESSION,
+  RECEIPT_TIMEOUT_CAUSE,
+} from "@legion/contracts";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -131,14 +135,13 @@ test("an ordinary sent attempt still reads as sent", () => {
 // that a same-mode retry publishes a second frame. The card promises a safe retry, and offers the
 // button the promise describes, only inside that window.
 test("a failed attempt inside the duplicate window promises a safe retry and offers it", () => {
-  const view = render(card({ attempts: [attempt({ error: "no live session s1" })] }));
+  const failure = `${NO_LIVE_SESSION} s1`;
+  const view = render(card({ attempts: [attempt({ error: failure })] }));
   try {
     // A cause with no trailing punctuation gets a separator, and a failure that never reached
     // the listener is not told a different mode would deliver it "again".
     expect(
-      screen.getByText(
-        `Failed: no live session s1. ${safeRetryGuidance("card", "no live session s1")}`
-      )
+      screen.getByText(`Failed: ${failure}. ${safeRetryGuidance("card", failure)}`)
     ).toBeTruthy();
     expect(screen.queryByText(/sending in a different mode/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
@@ -166,11 +169,11 @@ test("a receipt timeout is told what a mode change would do", () => {
 test("a failed attempt past the duplicate window makes no promise and offers no Retry", () => {
   const stale = attempt({
     createdAt: new Date(Date.now() - DELIVERY_DUPLICATE_WINDOW_MS - 60_000).toISOString(),
-    error: "no live session s1",
+    error: `${NO_LIVE_SESSION} s1`,
   });
   const view = render(card({ attempts: [stale] }));
   try {
-    expect(screen.getByText("Failed: no live session s1")).toBeTruthy();
+    expect(screen.getByText(`Failed: ${NO_LIVE_SESSION} s1`)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     // The mode-change actions stay: they are a different key and genuinely deliver.
     expect(screen.getByRole("button", { name: "Use BTW instead" })).toBeTruthy();

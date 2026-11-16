@@ -1627,7 +1627,7 @@ While the active listener pod is replaced its successor refuses connections, ans
 The listener client reads a 502, 503 or 504 on any route, a role lookup and a send included, as `ErrUnavailable` whatever its body says, keeping the body's reason in the text, and marks it `ErrUnreachable`, as it marks a connection refused, reset or timed out;
 a status the listener chose (a 401 for a token it refuses, a 403, a 500) and an answer that does not decode are `ErrUnavailable` alone, the listener's own answer.
 A try whose outcome is a take-over's - the listener unreachable (`envoy listener: …`, never the `ENVOY_URL is
-not configured` text), a receipt timeout, or `no live session` (`retryableDeliveryFailure`) - is tried again under the same attempt and the same idempotency key, without a new claim:
+not configured` text), a receipt timeout, or `no live session` (`contracts.NoLiveSession`, generated from `NO_LIVE_SESSION` in `packages/contracts`, the words the listener's 404 and Dispatch's own failure for an absent session both open with; `retryableDeliveryFailure`) - is tried again under the same attempt and the same idempotency key, without a new claim:
 the sender resolves again only the recipient the attempt names (its pinned session, rechecked;
 for a row no session is pinned to yet, the message's or the mention's own target, pinning what it finds), renews its claim (`claimed_at = now()`, scoped to the claim it holds, as every settle statement is) before each try, and settles on the claim it renewed last.
 The backoff is 250 ms doubling to 2 s, and no try starts later than `listenerTakeoverWindow` (12 s) after the first;

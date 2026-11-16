@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import {
+  DELIVERY_DUPLICATE_WINDOW_MS,
+  NO_LIVE_SESSION,
+  RECEIPT_TIMEOUT_CAUSE,
+} from "@legion/contracts";
 
 import {
   broadcastDelivery,
@@ -142,8 +146,8 @@ test("an unparseable timestamp is not promised anything", () => {
 // Only the receipt-timeout cause ends in a sentence, so joining with a bare space ran every
 // other cause into the guidance: "Failed: no live session Retry won't deliver it twice."
 test("the guidance is separated from a cause that has no trailing punctuation", () => {
-  expect(withGuidance("Failed: no live session", "Retry won't deliver it twice.")).toBe(
-    "Failed: no live session. Retry won't deliver it twice."
+  expect(withGuidance(`Failed: ${NO_LIVE_SESSION}`, "Retry won't deliver it twice.")).toBe(
+    `Failed: ${NO_LIVE_SESSION}. Retry won't deliver it twice.`
   );
   expect(withGuidance(`Failed: ${RECEIPT_TIMEOUT_CAUSE}`, "Retry won't deliver it twice.")).toBe(
     `Failed: ${RECEIPT_TIMEOUT_CAUSE} Retry won't deliver it twice.`
@@ -156,7 +160,7 @@ test("the guidance is separated from a cause that has no trailing punctuation", 
 test("the mode-change clause is offered only for a receipt timeout, and never on a mention", () => {
   const modeChange = "sending in a different mode delivers it again";
   expect(safeRetryGuidance("card", RECEIPT_TIMEOUT_CAUSE)).toContain(modeChange);
-  expect(safeRetryGuidance("card", "no live session s1")).not.toContain(modeChange);
+  expect(safeRetryGuidance("card", `${NO_LIVE_SESSION} s1`)).not.toContain(modeChange);
   expect(safeRetryGuidance("card", null)).not.toContain(modeChange);
   expect(safeRetryGuidance("mention", RECEIPT_TIMEOUT_CAUSE)).not.toContain(modeChange);
 });

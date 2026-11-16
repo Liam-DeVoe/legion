@@ -103,9 +103,10 @@ type sendResponse struct {
 // noLiveSessionRefusal is the 404 of a send, or of a registry lookup, for a session this listener
 // will not answer for: one no record is held for or whose record is past the gone horizon. State
 // and LastSeen say which of those it was and when the session last registered, and the error
-// keeps the "no live session <id>" prefix exactly: Dispatch classifies a delivery failure by that
-// prefix (internal/dispatch/api/envoy_resolve.go), so a listener that says more must still say it
-// after those words, and a Dispatch that reads only the prefix is unaffected.
+// keeps the "no live session <id>" prefix exactly (contracts.NoLiveSession, then the id): Dispatch
+// classifies a delivery failure by that prefix (internal/dispatch/api/envoy_resolve.go), so a
+// listener that says more must still say it after those words, and a Dispatch that reads only the
+// prefix is unaffected.
 type noLiveSessionRefusal struct {
 	Error    string        `json:"error"`
 	State    session.State `json:"state"`
@@ -120,7 +121,7 @@ type noLiveSessionRefusal struct {
 // registered here — may be alive on another listener (dispatch://INFRA-392, A6).
 func noLiveSession(sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry, state session.State) noLiveSessionRefusal {
 	refusal := noLiveSessionRefusal{
-		Error:    fmt.Sprintf("no live session %s", sessionID),
+		Error:    contracts.NoLiveSession + " " + sessionID,
 		State:    state,
 		LastSeen: lastSeenOf(sessions, sessionID, entry),
 	}

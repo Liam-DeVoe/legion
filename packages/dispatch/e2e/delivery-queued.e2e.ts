@@ -1,4 +1,4 @@
-import { shortSessionId } from "@legion/contracts";
+import { NO_LIVE_SESSION, shortSessionId } from "@legion/contracts";
 
 import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
@@ -83,7 +83,7 @@ test("a person's message to a stopped but known session is queued for it, and th
     // The registry no longer holds the session, so the card names it by the short form of its
     // id, as it names every session that has left.
     await expect(turn(page, body)).toContainText(QUEUED(shortSessionId(planner.session_id)));
-    await expect(turn(page, body)).not.toContainText("no live session");
+    await expect(turn(page, body)).not.toContainText(NO_LIVE_SESSION);
     // Queued is the listener having taken it, so the send is real and Retry is not offered: a
     // second copy is exactly what the stored message makes unnecessary.
     expect(await sentTo()).toEqual([planner.session_id]);
@@ -141,7 +141,7 @@ test("a mention of a stopped but known session is queued for it, and the listene
       .click();
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText(QUEUED("Planner"));
-    await expect(deliveries).not.toContainText("no live session");
+    await expect(deliveries).not.toContainText(NO_LIVE_SESSION);
     await expect(deliveries.getByRole("button", { name: "Retry" })).toHaveCount(0);
     await expect.poll(sentTo).toEqual([planner.session_id]);
   } finally {
@@ -264,8 +264,10 @@ test("the broadcast strip counts a queued copy rather than calling the broadcast
 });
 
 // The other half of the rule: a session Envoy knows nothing of has really ended, and that is the
-// one answer a reader may act on, so its wording has not moved. (A mention of one is
-// `mention-composer.e2e.ts`; a broadcast recipient is `broadcast.e2e.ts`.)
+// one answer a reader may act on, so its wording has not moved. The words are spelt out here
+// rather than read from NO_LIVE_SESSION for that reason: a change to the constant changes the
+// wording and fails this row. (A mention of one is `mention-composer.e2e.ts`; a broadcast
+// recipient is `broadcast.e2e.ts`.)
 test("a message to a session Envoy does not know is still refused as no live session", async ({
   browser,
 }) => {

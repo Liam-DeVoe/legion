@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -122,9 +123,9 @@ func resolveThenLock[R, T any](
 // stopped session holds no role.
 //
 // Only ErrNotFound - no entry and no record under that id - and a record the registry calls
-// gone are "no live session <id>", the text comment_delivery.go tests the prefix of and the
-// dashboard prints verbatim. Every other failure takes the error path, so an unreachable
-// listener never reads as an ended session.
+// gone are "no live session <id>" (contracts.NoLiveSession, then the id), the text
+// comment_delivery.go tests the prefix of and the dashboard prints verbatim. Every other failure
+// takes the error path, so an unreachable listener never reads as an ended session.
 //
 // A session the listener holds no record of or calls gone, and a role whose issue has finished
 // and that it holds no live holder for, may still be a stopped Legion agent whose daemon answers
@@ -167,7 +168,7 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	} else {
 		target, err = s.deps.Envoy.SessionIncludingStopped(ctx, route.ID)
 		if errors.Is(err, dispatchenvoy.ErrNotFound) {
-			return s.registeredTarget(ctx, route, deliveryTarget{sessionID: route.ID, resolveError: "no live session " + route.ID})
+			return s.registeredTarget(ctx, route, deliveryTarget{sessionID: route.ID, resolveError: contracts.NoLiveSession + " " + route.ID})
 		}
 	}
 	if err != nil {
@@ -175,7 +176,7 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	}
 	if target.State == dispatchenvoy.StateGone {
 		return s.registeredTarget(ctx, route, deliveryTarget{
-			sessionID: target.SessionID, title: target.Title, resolveError: "no live session " + target.SessionID,
+			sessionID: target.SessionID, title: target.Title, resolveError: contracts.NoLiveSession + " " + target.SessionID,
 		})
 	}
 	if !advertisesDelivery(target, delivery) {
@@ -368,12 +369,13 @@ const (
 // gives, which a later try can outlast: the listener unreachable (listenerUnreachablePrefix - a
 // connection refused, reset or timed out, a 502, 503 or 504 - but never
 // listenerNotConfiguredText), a receipt timeout, or the listener holding no record of the session
-// yet - "no live session", as the registry read is recorded and as the send's own 404 words it. A
-// receipt timeout is safe to repeat because the retry carries the same idempotency key, which the
-// listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). Anything
-// else is the listener's answer - a session that does not take this mode, a send it refused, a
-// status it chose such as a 401 for a token it refuses (listenerAnsweredPrefix) - which no
-// successor answers differently, and the attempt settles with it at once.
+// yet - "no live session" (contracts.NoLiveSession), as the registry read is recorded and as the
+// send's own 404 words it. A receipt timeout is safe to repeat because the retry carries the same
+// idempotency key, which the listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in
+// packages/contracts). Anything else is the listener's answer - a session that does not take this
+// mode, a send it refused, a status it chose such as a 401 for a token it refuses
+// (listenerAnsweredPrefix) - which no successor answers differently, and the attempt settles with
+// it at once.
 //
 // It reads the recorded text rather than the error behind it because a resumed mention's first
 // try sends with the resolve error its row already holds (mentionResolutionFor), which survives
@@ -384,7 +386,7 @@ func retryableDeliveryFailure(failure string) bool {
 		return false
 	case failure == receiptTimeoutText,
 		strings.HasPrefix(failure, listenerUnreachablePrefix),
-		strings.HasPrefix(failure, "no live session"):
+		strings.HasPrefix(failure, contracts.NoLiveSession):
 		return true
 	}
 	return false

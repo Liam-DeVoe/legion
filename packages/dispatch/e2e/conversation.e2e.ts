@@ -1,3 +1,5 @@
+import { NO_LIVE_SESSION } from "@legion/contracts";
+
 import {
   type FakeSession,
   getSentMessages,
@@ -385,7 +387,7 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const card = turn(page, question);
-    await expect(card).toContainText("Failed: no live session s1");
+    await expect(card).toContainText(`Failed: ${NO_LIVE_SESSION} s1`);
 
     // The receipt was wrong: the session did get the message and answers on that attempt.
     const answer = (await replyToMessageDelivery(

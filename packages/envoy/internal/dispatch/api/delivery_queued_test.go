@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -342,9 +343,10 @@ func TestASessionTheListenerDoesNotKnowIsStillRefusedByTheSameText(t *testing.T)
 	}
 	message := decodeBody[model.Message](t, created)
 	attempts := messageAttempts(t, database, message.ID)
+	refused := contracts.NoLiveSession + " ghost"
 	if len(attempts) != 1 || attempts[0].State != "failed" || attempts[0].Error == nil ||
-		*attempts[0].Error != "no live session ghost" {
-		t.Fatalf("the stored attempts = %#v, want one failed attempt reading \"no live session ghost\"", attempts)
+		*attempts[0].Error != refused {
+		t.Fatalf("the stored attempts = %#v, want one failed attempt reading %q", attempts, refused)
 	}
 	if sends := listener.sentTo("ghost"); len(sends) != 0 {
 		t.Fatalf("the listener took %d sends for a session it does not know, want none", len(sends))
@@ -358,8 +360,8 @@ func TestASessionTheListenerDoesNotKnowIsStillRefusedByTheSameText(t *testing.T)
 	}
 	broadcast := decodeBody[broadcastResponse](t, response)
 	if len(broadcast.Excluded) != 1 || broadcast.Excluded[0].SessionID != "ghost" ||
-		broadcast.Excluded[0].Reason != "no live session" {
-		t.Fatalf("excluded = %#v, want ghost alone, for no live session", broadcast.Excluded)
+		broadcast.Excluded[0].Reason != contracts.NoLiveSession {
+		t.Fatalf("excluded = %#v, want ghost alone, for %s", broadcast.Excluded, contracts.NoLiveSession)
 	}
 	if len(broadcast.Recipients) != 1 || broadcast.Recipients[0].SessionID != "s1" {
 		t.Fatalf("recipients = %#v, want the stopped but known session alone", broadcast.Recipients)
