@@ -336,29 +336,13 @@ export function NodeRow({
           )}
           {more || (!oneLine && !trailInWords && trail !== null) ? (
             <p className="flex min-w-0 flex-wrap items-baseline">
-              {/* A press on it leaves the focus where it is: focusing the row would draw the
-                  words whole under the pointer and move the control before the press ends, so
-                  the press would land on nothing. */}
               {more ? (
-                <button
-                  className={`dispatch-inline-link text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
-                  data-node-more=""
-                  onClick={() => setOpened((held) => !held)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  tabIndex={tabStops ? undefined : -1}
-                  type="button"
-                  {...pageChrome}
-                >
-                  {opened ? (
-                    CONTROL_LABELS.read_less
-                  ) : (
-                    <>
-                      {CONTROL_LABELS.read_more} ·{" "}
-                      <span {...authorText}>{clamp.hidden.toLocaleString()}</span>{" "}
-                      {CONTROL_LABELS.read_more_words}
-                    </>
-                  )}
-                </button>
+                <MoreWords
+                  hidden={clamp.hidden}
+                  onToggle={() => setOpened((held) => !held)}
+                  opened={opened}
+                  tabStops={tabStops}
+                />
               ) : null}
               {trailInWords ? null : trail}
             </p>
@@ -1192,6 +1176,49 @@ function NodeBody({
         </button>
       </p>
     </div>
+  );
+}
+
+/**
+ * The control under cut words (ruling 1): "more · N words", `hidden` the words the cut holds
+ * back, which draws the rest in place, and "less" once `opened` holds. A press on it leaves the
+ * focus where it is: focusing the row would draw the words whole under the pointer and move the
+ * control before the press ends, so the press would land on nothing. It is out of the tab order
+ * unless `tabStops` holds. A row of the outline and `CutWords` draw it, and so can any view that
+ * cuts a node's words; `className` adds the place it takes in its own box.
+ */
+export function MoreWords({
+  className,
+  hidden,
+  onToggle,
+  opened,
+  tabStops,
+}: {
+  className?: string;
+  hidden: number;
+  onToggle: () => void;
+  opened: boolean;
+  tabStops: boolean;
+}): ReactNode {
+  return (
+    <button
+      className={`dispatch-inline-link text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}${className === undefined ? "" : ` ${className}`}`}
+      data-node-more=""
+      onClick={onToggle}
+      onMouseDown={(event) => event.preventDefault()}
+      tabIndex={tabStops ? undefined : -1}
+      type="button"
+      {...pageChrome}
+    >
+      {opened ? (
+        CONTROL_LABELS.read_less
+      ) : (
+        <>
+          {CONTROL_LABELS.read_more} · <span {...authorText}>{hidden.toLocaleString()}</span>{" "}
+          {CONTROL_LABELS.read_more_words}
+        </>
+      )}
+    </button>
   );
 }
 
