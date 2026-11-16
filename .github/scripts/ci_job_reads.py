@@ -299,6 +299,10 @@ RULES = {
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:269-270 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:782,855")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:161")),
+    f"{DAEMON}/internal/prompts/prompts_test.go": reads(
+        ("AGENTS.md", "internal/prompts/prompts_test.go:785 ../../../.."),
+        ("scripts/e2e/README.md", "internal/prompts/prompts_test.go:785 ../../../.."),
+        ("docs/site/src/content/docs/legion/concepts.md", "internal/prompts/prompts_test.go:785 ../../../..")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*", "internal/prompts/roles_test.go:260"),
         ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:578")),
@@ -1153,8 +1157,8 @@ GATES = [
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
         (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
         (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1061,2738, legion-role-claim.test.ts:12, src/daemon-api-version.test.ts:14"),
-        (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:768-770"),
-        (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:776,874"),
+        (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:847-848"),
+        (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:854,966,968"),
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:96 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:51"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:14 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
@@ -1457,7 +1461,7 @@ GATES = [
     # reduce, so the step is pinned whole, as dispatch-browser-multiprocess's is.
     gate("dispatch_two_builds", "dispatch-two-builds", runs=[
         step_run("dispatch-two-builds", "Two-build tests of the Dispatch server",
-                 "go test -tags twobuild -count=1 -timeout 30m -run '^(TestTwoBuilds|TestThisBuilds)' ./cmd/dispatch", ENVOY, ["./cmd/dispatch"], tags="twobuild"),
+                 "go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch", ENVOY, ["./cmd/dispatch"], tags="twobuild"),
         script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, "started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer (harness-start.ts, which "
                    "e2e/global-setup.ts runs) in "
                    + at("dispatch-two-builds", "Browser-test each build's page against the other build's server")
