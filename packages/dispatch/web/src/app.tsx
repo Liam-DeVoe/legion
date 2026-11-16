@@ -114,7 +114,7 @@ import {
   textSecondaryOnSurface,
 } from "./theme/classes";
 
-const importIssuePage = () => import("./features/issue/IssuePage");
+const importIssuePage = () => import("./features/issue-page/IssuePage");
 const importProjectPage = () => import("./features/project/ProjectPage");
 const importDocumentPage = () => import("./features/document/DocumentPage");
 
