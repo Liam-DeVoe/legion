@@ -33,6 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // The tags a namespace secret carries, and their fixed values.
@@ -115,6 +116,15 @@ const (
 	// ShapeDocument is a stored value whose every byte is part of it — a PEM key, a JSON service
 	// account file — which the broker releases unchanged.
 	ShapeDocument = "document"
+	// TagProject names the one Dispatch project the secret belongs to, by its key as written
+	// (ParseProject): a secret of a private project goes only to a credential that names that
+	// project (Evaluate, ReasonProjectNotNamed), and one whose tag names a project Dispatch does
+	// not hold goes to nobody (ReasonProjectMissing). A secret with no tag belongs to no project
+	// and is decided by owner and tier alone, as before the tag existed. It is not "project",
+	// which AWS accounts commonly use as a cost-allocation tag and which the loader would then
+	// refuse as malformed. Only a broker that can ask Dispatch whether a project is private
+	// serves a tagged secret (Loader.ProjectChecks, ReasonProjectUnchecked).
+	TagProject = "dispatch-project"
 	// kindSourcePrefix opens the Source of a kind secret (KindSource). The kind and store source
 	// are frozen into a request, so changing or clearing the kind ends every live grant.
 	kindSourcePrefix = "mint:"
@@ -221,6 +231,42 @@ func ParseMaxGrant(raw string) (time.Duration, error) {
 	}
 	return maxGrant, nil
 }
+
+// ErrProjectMalformed is a dispatch-project tag that is not one Dispatch project key.
+var ErrProjectMalformed = errors.New("dispatch-project names one Dispatch project key: " + contracts.ProjectKeyRule)
+
+// projectKey is a whole Dispatch project key (contracts.ProjectKeyPattern), the one pattern the
+// server creates keys by and the dispatch command checks them against.
+var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
+
+// ParseProject reads a dispatch-project tag (TagProject): one Dispatch project key, matched as
+// written. A key in another case, one with white space around it, an empty tag and the word
+// none are each ErrProjectMalformed rather than read as a key or as no project: a project key
+// is upper case, and a tag that names no project is one the secret does not carry, which
+// `agent-secrets secret retag --project none` removes rather than writes.
+func ParseProject(raw string) (string, error) {
+	if !projectKey.MatchString(raw) {
+		return "", ErrProjectMalformed
+	}
+	return raw, nil
+}
+
+// ProjectState is what Dispatch holds of one project, as the broker resolved it before it
+// evaluates (Requester.ProjectStates). It is plain data, so Evaluate does no I/O and is safe to
+// call while a transaction holds a lock.
+type ProjectState int
+
+const (
+	// ProjectStateUnknown is the zero value: no state was resolved, and Evaluate answers
+	// ErrNoProjectState for a secret tagged with that project rather than guess.
+	ProjectStateUnknown ProjectState = iota
+	// ProjectPublic is a project every person and credential may see.
+	ProjectPublic
+	// ProjectPrivate is a project only its own people may see.
+	ProjectPrivate
+	// ProjectMissing is a key Dispatch holds no project for.
+	ProjectMissing
+)
 
 // ErrGitHubOwnersMissing is a github-owners tag that names no account.
 var ErrGitHubOwnersMissing = errors.New("github-owners names at least one GitHub account")
@@ -733,6 +779,11 @@ type Secret struct {
 	// Shape is the secret's shape tag (TagShape), and "" for a secret carrying none, whose value
 	// TrimForShape reads for itself. A string, not a pointer, for the same reason as MaxGrant.
 	Shape string
+	// Project is the secret's dispatch-project tag as ParseProject answers it, and "" for a
+	// secret carrying none, which belongs to no project and is decided by owner and tier alone.
+	// A string, not a pointer, for the same reason as MaxGrant. It is in Version, so tagging a
+	// secret, or moving it to another project, ends the grants the policy decided before.
+	Project string
 	// Admin is true when the secret carries admin: "true" (TagAdmin): its grant is an
 	// administrator's, which the rules hold to human tier, a requesters list and an hour's cap
 	// (TagRules).
@@ -825,14 +876,15 @@ func (secret Secret) approver() string {
 // Set is the policy as one load read it, or as a single name's reread left it (NewSet builds both).
 type Set struct {
 	// Version is the SHA-256 of every served secret's name, owner, tier, source, max-grant,
-	// github-owners, requesters, scopes, admin and shape, and of the fingerprint of each one's
-	// airlock entry: equal versions are equal policies. A request records the version it was
-	// decided under, so a live grant is re-evaluated only once the policy changed. The shape tag
-	// is in it because the airlock proxy holds a grant's released values per pod and reads them
-	// again only when one of the grant's names is reread or this version moves
+	// github-owners, requesters, scopes, admin, shape and project, and of the fingerprint of each
+	// one's airlock entry: equal versions are equal policies. A request records the version it
+	// was decided under, so a live grant is re-evaluated only once the policy changed. The shape
+	// tag is in it because the airlock proxy holds a grant's released values per pod and reads
+	// them again only when one of the grant's names is reread or this version moves
 	// (internal/broker/airlockproxy/bound.go): a shape retag a console or an infra-applier made
 	// reaches a pod that already holds values by no other road, and that pod would go on
-	// spending the untrimmed value.
+	// spending the untrimmed value. Whether a project is private is Dispatch's state and not in
+	// it, so a caller re-checks a grant of a tagged name on every use.
 	Version string
 	Secrets map[string]Secret
 	// Refused is every secret under the prefix the policy refuses to serve, keyed by its whole
@@ -873,13 +925,14 @@ func setOf(secrets map[string]Secret, refused map[string]Refusal, versions map[s
 
 // NewSet builds the one Set shape both Load and the single-name merges produce, keeping secrets
 // (keyed by Name) as its Secrets. A secret with no max-grant, no github-owners, no requesters, no
-// scopes, no admin and no shape tag writes the pre-kind digest bytes,
+// scopes, no admin, no shape and no project tag writes the pre-kind digest bytes,
 // "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a kind secret's kind is in its Source); one with any of
 // them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
 // (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>",
-// "\tadmin=true" and "\tshape=<word>", in that order, for each of those four it carries. The
-// shape tag is written only by a secret that carries one, so the secrets of a deployment that
-// tags none write the bytes they wrote before the tag existed and no deployed version shifts. A
+// "\tadmin=true", "\tshape=<word>" and "\tproject=<KEY>", in that order, for each of those five
+// it carries. The shape and project tags are written only by a secret that carries one, so the
+// secrets of a deployment that tags none write the bytes they wrote before the tag existed and
+// no deployed version shifts. A
 // secret the airlock's rules name adds one line more, "<Name>\tairlock=<digest>\n", rather than a
 // field of the line above it, so every line a deployment with no rules file writes is
 // byte-identical to the one it writes
@@ -915,13 +968,17 @@ func NewSet(secrets map[string]Secret) *Set {
 		if s.secret.Shape != "" {
 			shape = "\tshape=" + s.secret.Shape
 		}
+		project := ""
+		if s.secret.Project != "" {
+			project = "\tproject=" + s.secret.Project
+		}
 		switch {
-		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && s.secret.Shape == "":
+		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && s.secret.Shape == "" && s.secret.Project == "":
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source)
 		case s.secret.SessionDefault:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, shape)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, shape, project)
 		default:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, shape)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, shape, project)
 		}
 		if s.secret.AirlockDigest != "" {
 			fmt.Fprintf(digest, "%s\tairlock=%s\n", s.secret.Name, s.secret.AirlockDigest)
@@ -946,6 +1003,15 @@ type Requester struct {
 	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as
 	// a human-tier secret.
 	Withheld []string
+	// Projects is the projects the credential names that its person may see, as the caller
+	// resolved them: a session's enrollment's list, or the project an operator's entry maps a
+	// pod to. Evaluate reads it for a secret tagged with a private project alone.
+	Projects []string
+	// ProjectStates is the state of each project a tagged name being evaluated carries, resolved
+	// by the caller from Dispatch before any transaction begins. It is plain data, not a lookup,
+	// so Evaluate stays pure and is safe to call while a lock is held. A secret tagged with a
+	// project it holds no state for is ErrNoProjectState.
+	ProjectStates map[string]ProjectState
 }
 
 // Decision is how the policy answers one requester's ask for one name.
@@ -980,12 +1046,43 @@ const ReasonRequesterNotListed = "requester-not-listed"
 // policy's to see.
 const ReasonNoReason = "a reason is necessary; ask again with --reason"
 
+// ReasonProjectNotNamed is the Reason of a Deny the project tag decided: the secret belongs to
+// a private project and the asking credential does not name it, so it is refused whatever its
+// owner and tier would have given it.
+const ReasonProjectNotNamed = "project-not-named"
+
+// ReasonProjectMissing is the Reason of a Deny for a secret whose project tag names a key
+// Dispatch holds no project for: it goes to nobody, since the broker cannot tell whether the
+// project it was meant for is private. A caller is told ReasonProjectNotNamed instead
+// (CallerReason), so a refusal never says whether a project exists.
+const ReasonProjectMissing = "project-missing"
+
+// ErrNoProjectState is Evaluate's answer for a secret tagged with a project the requester holds
+// no state for (Requester.ProjectStates): the caller did not resolve it, and Evaluate does no
+// I/O to resolve it itself.
+var ErrNoProjectState = errors.New("policy: a project-tagged secret was evaluated with no state for its project")
+
+// CallerReason is the reason a session is told for a Deny whose Reason is reason. It is reason
+// itself, except that ReasonProjectMissing is told as ReasonProjectNotNamed: the two differ only
+// in whether Dispatch holds the project, which a caller who may not see the project must not
+// learn. The broker's own log keeps the reason Evaluate answered.
+func CallerReason(reason string) string {
+	if reason == ReasonProjectMissing {
+		return ReasonProjectNotNamed
+	}
+	return reason
+}
+
 // Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A secret
 // whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
-// requester the list does not name, before owner and tier are read at all. A name withheld from r
-// (Requester.Withheld) is decided as a human-tier secret: what r would have got at once is an
-// approval request to the owner, or to anyone for a shared secret, and a service's own secret,
-// which no person approves, is denied.
+// requester the list does not name, before owner and tier are read at all. A secret tagged with
+// a project (Secret.Project) is read against the state r carries for it: no state is
+// ErrNoProjectState, a project Dispatch does not hold is denied to everyone
+// (ReasonProjectMissing), and a private project is denied to a credential that does not name it
+// (ReasonProjectNotNamed); a public project, and a private one r names, go on to owner and tier
+// unchanged. A name withheld from r (Requester.Withheld) is decided as a human-tier secret: what
+// r would have got at once is an approval request to the owner, or to anyone for a shared
+// secret, and a service's own secret, which no person approves, is denied.
 func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	secret, ok := s.Secrets[name]
 	if !ok {
@@ -993,6 +1090,19 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	}
 	if secret.Requesters != "" && !secret.lists(r) {
 		return Decision{Outcome: Deny, Reason: ReasonRequesterNotListed, Source: secret.Source}, nil
+	}
+	if secret.Project != "" {
+		switch r.ProjectStates[secret.Project] {
+		case ProjectPublic:
+		case ProjectPrivate:
+			if !slices.Contains(r.Projects, secret.Project) {
+				return Decision{Outcome: Deny, Reason: ReasonProjectNotNamed, Source: secret.Source}, nil
+			}
+		case ProjectMissing:
+			return Decision{Outcome: Deny, Reason: ReasonProjectMissing, Source: secret.Source}, nil
+		default:
+			return Decision{}, fmt.Errorf("%w: %s is tagged %s", ErrNoProjectState, name, secret.Project)
+		}
 	}
 	withheld := slices.Contains(r.Withheld, name)
 	d := Decision{Source: secret.Source}

@@ -132,6 +132,16 @@ const (
 	// (TagRules). The tag says what the stored value is, so a word the broker does not know
 	// leaves it unable to say what a release of the secret would hand over.
 	ReasonShapeMalformed = "shape-malformed"
+	// ReasonProjectMalformed: the dispatch-project tag is not one Dispatch project key
+	// (ParseProject): another case, white space, an empty value or the word none. A tag the
+	// broker cannot read names no project it could check, so the secret goes to nobody rather
+	// than to every session as an untagged one would.
+	ReasonProjectMalformed = "project-malformed"
+	// ReasonProjectUnchecked: the secret carries a dispatch-project tag and the broker holds no
+	// client of Dispatch's project access (Loader.ProjectChecks is false), so it cannot tell
+	// whether the project is private. It is refused rather than served by owner and tier alone,
+	// which would release a private project's secret to every session.
+	ReasonProjectUnchecked = "project-unchecked"
 	// ReasonValueMalformed: a kind secret's stored value is one secrets.ParseValue refuses under
 	// its kind and shape, or one that is not text (secrets.ErrValueNotText), so no release could
 	// mint from it. It is no tag's: a load sets it from the value Current reads and decodes once
@@ -192,6 +202,11 @@ type Loader struct {
 	// all the same. In production: NewStoreReads on the registry the metrics port serves. A nil
 	// counter counts nothing, which is every Loader a test builds that is not about the count.
 	StoreReads *metrics.Counter
+	// ProjectChecks is true when the broker holds a client of Dispatch's project access
+	// (BROKER_PROJECT_ACCESS_URL), which resolves whether a tagged secret's project is private
+	// before Evaluate reads it. A loader without one refuses every secret carrying a
+	// dispatch-project tag (ReasonProjectUnchecked) and serves every other secret as before.
+	ProjectChecks bool
 }
 
 // Load reads the namespace into a Set: each secret it serves, and each it refuses with why
@@ -403,6 +418,16 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Se
 		BoundAccount: l.ServiceAccounts[s.Name],
 	}); reason != "" {
 		return Secret{}, reason, nil
+	}
+	// Read after the shape tag and the rules that weigh it: no rule of TagRules reads the project.
+	// A malformed tag is the tag's own fault, refused before whether the broker could check it.
+	if raw, tagged := ls.Tags[TagProject]; tagged {
+		if s.Project, err = ParseProject(raw); err != nil {
+			return Secret{}, ReasonProjectMalformed, nil
+		}
+		if !l.ProjectChecks {
+			return Secret{}, ReasonProjectUnchecked, nil
+		}
 	}
 	if !ls.HasCurrentValue {
 		return Secret{}, ReasonNoCurrentValue, nil
