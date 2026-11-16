@@ -409,16 +409,17 @@ Each item below names a task and where its code is, then notes on it.
   The body is `{commit, check, verdict, observed}`, verdict `pass`, `fail` or `could_not_run`, and any other member is `400 RESULT_INPUT` naming it, since the identity on a result is the one the token proved and never a field the caller set.
   Dispatch reads the rest from the token, from GitHub and from `.dispatch/spec` at the run's commit, in this order:
   the commit is the run's (`403 COMMIT_NOT_THE_RUNS`, naming both);
-  the project, which must be the token's (`withinProjectScope`), maps the run's repository (`403 REPOSITORY_NOT_THE_PROJECTS`);
+  the project, which must be the token's (`withinProjectScope`), maps the run's repository, compared lowercased on both sides as every comparison of a repository is (`403 REPOSITORY_NOT_THE_PROJECTS`);
   GitHub names the token's check run at that commit (`githubapp.Client.CheckRun`, `403 CHECK_RUN_NOT_THE_RUNS`);
-  the graph logic takes the files, as spec-check reads them (`specgraph.Judge`, `409 SPEC_FILES_REFUSED` naming the first problem), a file over `notes.MaxFileSize` among the problems;
+  the graph logic takes the files, as spec-check reads them (`specgraph.Judge`, `409 SPEC_FILES_REFUSED` naming the first problem), each file over `notes.MaxFileSize` one problem;
   the files hold the check (`409 CHECK_NOT_IN_FILES`);
   and the check's job is the check run's name without its matrix values, cut at its last ` (` (`409 CHECK_NOT_THIS_JOBS`).
   A check run or files GitHub does not answer is `503 CHECK_RUN_UNREADABLE` or `503 FILES_UNREADABLE`, and nothing is stored.
   A check run's name and commit, and what a commit's files hold, are kept for the life of the process in byte-bounded caches, since neither changes.
   The result is stored as a new row of `spec_check_results` (`insertSpecCheckResult`, its one writer), with Dispatch's record number `seq` and an in-toto Statement v1 of the run: its subject the repository at the commit, and its predicate the check, its procedure digest (`specgraph.Check.Digest`), its test part, the verdict, `observed`, the job and the leg, the run, the recorder, and `recorded_at`.
-  The recorder is the run's session and principal, and no person: the person of the result entry is the broker's configuration, who ran no test, so no result, no answer and no access-log line names that person (the line names the run's session as the caller).
-  A result keeps `contracts.SpecCheckObservedMax` (2000) runes of `observed`: a longer text is its first runes and `contracts.SpecCheckObservedCutNote`, which says that the text was cut (`cutObserved`).
+  The recorder is the run's session and principal, and no person: the person of the result entry is the broker's configuration, who ran no test, so no result, no answer and no access-log line names that person (the line names the run's session as the caller), and the run's keys are its own (`requestKeyLogin`).
+  The principal is read by the broker's own rule from the run it authenticated: the workflow_ref without the repository and without `@` and the run's ref (`oauthwire.WorkflowPath`, `oauthwire.ResultPrincipal`), so a workflow file or a branch whose name holds an `@` is recorded as the broker authenticated it.
+  A result keeps `contracts.SpecCheckObservedMax` (2000) runes of `observed`: a longer text is its first `contracts.SpecCheckObservedStart` runes, `contracts.SpecCheckObservedCutNote`, which says that the middle was cut, and its last `contracts.SpecCheckObservedEnd` runes, since a test's output names the test at its start and says why it failed at its end (`cutObserved`).
   `dispatch result --project` cuts the text by the same rule before it sends it, and sends a NUL as U+FFFD, so a test log of any size still writes its result.
   No row is updated or deleted: another run, attempt or leg of one job is another row.
   `GET /api/v1/projects/{key}/results?commit=<sha>[&check=<id>]` answers every row of the project at that commit, newest first by `seq`, and a results token is refused it.
@@ -3912,7 +3913,7 @@ A read-only token is the token a read entry mints (`BROKER_EXCHANGE_READ_ACCOUNT
 Dispatch's verifier accepts it because `brokerTokenVerifier` sets `brokertoken.Options.ServesReadOnly`, and marks its caller `brokertoken.Caller.ReadOnly`.
 `brokerTokenActor` carries that mark as `model.Credential.ReadOnly` with no OAuth scope, and the read-only gate below reads only that mark.
 A verifier built without the switch answers that token `brokertoken.ErrNotASession`, as a build before the switch does.
-A results token is the token a result entry mints (`BROKER_EXCHANGE_RESULT_WORKFLOWS`): it holds the OAuth scope `results` alone and the project scope `results`, names a person, one project, the session of its workflow and the run it was minted for (`ci`, every field set), and names no service.
+A results token is the token a result entry mints (`BROKER_EXCHANGE_RESULT_WORKFLOWS`): it holds the OAuth scope `results` alone and the project scope `results`, names a person, one project, the session of its workflow and the run it was minted for (`ci`, every field set in the form the broker mints it, the `workflow_ref` one `oauthwire.WorkflowPath` reads under its repository and its ref), and names no service.
 A verifier built with `brokertoken.Options.ServesResults` accepts it and marks its caller `brokertoken.Caller.ResultsOnly`, with the run as `brokertoken.Caller.CI`;
 a verifier built without that switch answers it `brokertoken.ErrNotASession`, as a build before the switch does.
 Dispatch's verifier sets the switch, so Dispatch serves a results token on the routes its results list names (`resultsScopeRoutes`), today `POST /api/v1/projects/{key}/results` alone;
@@ -5325,7 +5326,7 @@ the page drops the presser's writes on that answer.
 A caller that resolves to nobody (a lapsed cookie) keeps the route's own `401`, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
 
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
-`login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
+`login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, `ci-run:<repository>#<check run>` for a CI job's results token, whose result entry's person sent nothing, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
 The row holds a SHA-256 of the method, the route pattern, its path values, the query, the media type and the body (a multipart body with its boundary masked, since a client mints a boundary per attempt), so a repeat is told from a reuse:
 
 - Before it spools a byte of the body, the layer looks the key up by login and key alone, naming no digest.
@@ -6748,7 +6749,7 @@ Needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`;
 unset, no workflow exchanges), `BROKER_EXCHANGE_RESULT_WORKFLOWS` (optional;
 whitespace-separated `<repository>=<workflow path>=<ref pattern>=<project>=<person>` entries, such as `example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com`:
 the token minted for a run of that workflow on a ref the pattern matches holds the OAuth scope `results` alone and the project scope `results`, acts for that person, names that project, writes under the session `ci-results:<repository>/<workflow path>`, and carries the run as its `ci` claim (`oauthwire.CIRun`: the repository, the workflow, the ref, the commit, the event, the run, the attempt, the runner and the check run of the job).
-The repository and the path are compared exactly, and the pattern is read as `path.Match` reads one, so a `*` stands for one segment of the ref and never a `/`;
+The repository and the path are compared exactly, the path being the run's `workflow_ref` without its repository and without `@` and its `ref` claim (`oauthwire.WorkflowPath`), since a workflow file's name and a branch's name can each hold an `@`, and the pattern is read as `path.Match` reads one, so a `*` stands for one segment of the ref and never a `/`;
 its first two segments are literal, `refs/` and a kind of ref such as `refs/heads/` (`exchange.CheckRefPattern`).
 Every field is required and none may carry `=`.
 The run's GitHub token must carry every claim of the run, the `check_run_id` of its job among them, and a run whose ref two patterns of one workflow match is refused (`exchange.ErrTwoEntries`).

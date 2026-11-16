@@ -847,21 +847,27 @@ be written, the result still prints, with one line saying so.
 
 `dispatch result --project <KEY> --check <id> --verdict pass|fail|could_not_run --commit <sha>`
 is a CI job's record of its result of a check of the spec files, and the one call that is no
-session's (`ownIdentityResult` in `dispatch-cli.ts`). It reads no `DISPATCH_HOST`, no session id,
-no envoy.json and no session state, and it asks no AskGate and no listener. Dispatch is
-`DISPATCH_URL`, and the credential is this machine's own identity traded at the secrets broker
+session's (`ownIdentityResult` in `dispatch-cli.ts`). It reads no `DISPATCH_HOST`, no envoy.json
+and no session state, and it asks no AskGate and no listener. A refusal is written to a session's
+ledger only where the environment names a session id, as every refusal of the command is. Dispatch
+is `DISPATCH_URL`, and the credential is this machine's own identity traded at the secrets broker
 (`ownIdentityDispatch` in `dispatch-config.ts`: `AGENT_SECRETS_URL` with
-`AGENT_SECRETS_MACHINE_IDENTITY`, `github-actions` in a GitHub Actions job). It reads no bearer and
-trades no person's sign-in, and the trade names no session, since the broker's result entry fixes
+`AGENT_SECRETS_MACHINE_IDENTITY`, `github-actions` in a GitHub Actions job, with
+`AGENT_SECRETS_MACHINE_AUDIENCE` and the runner's `ACTIONS_ID_TOKEN_REQUEST_URL` and
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`). It reads no bearer and trades no person's sign-in, and the
+trade names no session, `AGENT_SECRETS_SESSION` included, since the broker's result entry fixes
 it. The body is `{commit, check, verdict, observed}` and nothing else. A result keeps 2000
 characters of `observed` (`SPEC_CHECK_OBSERVED_MAX`), so the command sends at most that: a
-longer text goes as its first characters and a last line that says the text was cut
-(`SPEC_CHECK_OBSERVED_CUT_NOTE`), and a test log of any size still writes its result. A NUL,
-which Dispatch cannot store, goes as U+FFFD, and so does each byte of a file that is not UTF-8.
-It prints the stored result as JSON and exits 0. The stored result names the run as its
-recorder and no person, so the job's log holds no person's address. It prints Dispatch's
-refusal as `<CODE>: <message>` and exits 1, such as `SPEC_FILES_REFUSED` with the first problem
-of spec files the graph logic refuses. A refusal of its arguments, or an identity with a
+longer text goes as its first 500 characters (`SPEC_CHECK_OBSERVED_START`), a line that says the
+middle was cut (`SPEC_CHECK_OBSERVED_CUT_NOTE`) and its last characters
+(`SPEC_CHECK_OBSERVED_END`), since a test's output names the test at its start and says why it
+failed at its end, and a test log of any size still writes its result. A NUL, which Dispatch
+cannot store, goes as U+FFFD, and so does each byte of a file that is not UTF-8. It prints the
+stored result as JSON and exits 0. A write that landed with its answer lost prints
+`{"landed_without_answer":"<code>"}` and exits 0: the result is stored. The stored result names
+the run as its recorder and no person, so the job's log holds no person's address. It prints
+Dispatch's refusal as `<CODE>: <message>` and exits 1, such as `SPEC_FILES_REFUSED` with the first
+problem of spec files the graph logic refuses. A refusal of its arguments, or an identity with a
 variable missing, sends nothing and exits 2. `--observed` text that opens with `-`, such as a
 test's `--- FAIL` line, goes as `--observed=<text>` or through `--observed-file`.
 `dispatch results --project <KEY> --commit <sha> [--check <id>]` is a session's read of those

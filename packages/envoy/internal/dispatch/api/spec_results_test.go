@@ -12,6 +12,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -159,9 +160,10 @@ func (g *specGitHub) serve(t *testing.T) string {
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 			return
 		}
+		// GitHub lists a tree's entries in name order, as a checkout's directory reads.
 		var entries []map[string]any
-		for name, content := range files {
-			entries = append(entries, map[string]any{"path": name, "mode": "100644", "type": "blob", "sha": "blob-" + commit + "-" + name, "size": len(content)})
+		for _, name := range slices.Sorted(maps.Keys(files)) {
+			entries = append(entries, map[string]any{"path": name, "mode": "100644", "type": "blob", "sha": "blob-" + commit + "-" + name, "size": len(files[name])})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"sha": "tree-" + commit, "truncated": false, "tree": entries})
 	})
@@ -365,6 +367,39 @@ func TestAResultNamesItsRunAndNoPerson(t *testing.T) {
 	}
 }
 
+// TestTheRecorderIsThePrincipalTheBrokerAuthenticated: the identity on a result is the one the
+// airlock authenticated (R12). The broker authenticates a result entry's run as
+// workflow-results:<repository>/<path>, the path being the run's workflow_ref without its
+// repository and without "@" and the run's own ref (oauthwire.WorkflowPath), and Dispatch stores
+// the recorder by that same rule. A workflow file's name and a branch's name can each hold an
+// "@", so a cut at the first or the last "@" stores a principal the broker did not authenticate,
+// or one that two workflows share. The plain row is the control.
+func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
+	for _, row := range []struct{ name, path, ref string }{
+		{"a plain path on a plain branch", ".github/workflows/ci-results.yaml", "refs/heads/topic"},
+		{"a workflow file whose name holds an @", ".github/workflows/ci@probe.yaml", "refs/heads/topic"},
+		{"a branch whose name holds an @", ".github/workflows/ci-results.yaml", "refs/heads/legion/a@b"},
+		{"both at one time", ".github/workflows/ci@probe.yaml", "refs/heads/legion/a@b"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			workflow := specResultsRepository + "/" + row.path
+			token := rig.token(func(answer *brokertoken.Introspection) {
+				answer.Session = "ci-results:" + workflow
+				answer.CI.WorkflowRef, answer.CI.Ref = workflow+"@"+row.ref, row.ref
+			})
+			result := stored201(t, rig.post(t, specResultsProject, token, passOf(probeCheck)))
+			want := model.SpecCheckRecorder{Session: "ci-results:" + workflow, Principal: "workflow-results:" + workflow}
+			if got := result.Attestation.Predicate.Recorder; got != want {
+				t.Fatalf("the recorder is %+v, want %+v", got, want)
+			}
+			if read := rig.read(t, specResultsCommit, probeCheck); len(read) != 1 || read[0].Attestation.Predicate.Recorder != want {
+				t.Fatalf("the read answered %+v, want the one row with the recorder %+v", read, want)
+			}
+		})
+	}
+}
+
 // TestAnotherCommitIsRefusedNamingBoth: a job writes a result only for the commit of its own
 // run, and the refusal names both commits.
 func TestAnotherCommitIsRefusedNamingBoth(t *testing.T) {
@@ -441,6 +476,24 @@ func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
 	}
 }
 
+// TestEachFileOverTheBoundIsAProblem: spec-check refuses a tree with every file over the size
+// bound as a problem of its own, one line each, before it reads any file (notes.ReadSet). The
+// route counts the problems the same way, so two files over the bound are two problems, and the
+// first is the first file in name order. The one-file row of
+// TestSpecFilesTheGraphLogicRefusesAreRefused is the control.
+func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
+	rig := newSpecResultsRig(t)
+	files := maps.Clone(specResultsFiles)
+	files["big-b.md"] = strings.Repeat("\n", notes.MaxFileSize+2)
+	files["big-a.md"] = strings.Repeat("\n", notes.MaxFileSize+1)
+	rig.github.files[specResultsCommit] = files
+	refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusConflict, "SPEC_FILES_REFUSED")
+	const want = "have 2 problems, so they hold no check to write a result for. The first: file too large: .dispatch/spec/big-a.md is 1048577 bytes (limit 1048576)"
+	if !strings.Contains(refusal.Error, want) {
+		t.Fatalf("the refusal %q does not say %q", refusal.Error, want)
+	}
+}
+
 // TestACheckOfAnotherJobIsRefused: the check names the job envoy-go, and the run's check run is
 // the job go-checks, which did not run that check.
 func TestACheckOfAnotherJobIsRefused(t *testing.T) {
@@ -482,11 +535,45 @@ func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 }
 
 // TestARepositoryTheProjectDoesNotMapIsRefused: the token's run is of a repository the project
-// does not map, so its files are no files of the project.
+// does not map, so its files are no files of the project. The run is whole, its workflow_ref
+// under that repository, as the broker mints one.
 func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	token := rig.token(func(answer *brokertoken.Introspection) { answer.CI.Repository = "example-org/another-repo" })
+	token := rig.token(func(answer *brokertoken.Introspection) {
+		answer.CI.Repository = "example-org/another-repo"
+		answer.CI.WorkflowRef = "example-org/another-repo/.github/workflows/ci-results.yaml@refs/heads/topic"
+	})
 	rig.refusedWith(t, rig.post(t, specResultsProject, token, passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
+}
+
+// TestARepositorySpelledWithCapitalsIsTheProjectsRepository: GitHub spells a run's repository as
+// its owner does (`Example-Org/Example-Repo`), and Dispatch stores a mapping's repository, and the
+// name it was renamed to, lowercased (canonicalRepo). Every comparison of a repository reads both
+// sides lowercased (refs.CanonicalRepoSQL), so the run of a mapped repository, and of a repository
+// a mapping was renamed to, writes its result whatever the case of its name. The row is stored
+// under the repository as the run names it. The lowercase run of every other test is the control.
+func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
+	for _, row := range []struct{ name, repository string }{
+		{"a mapped repository", "Example-Org/Example-Repo"},
+		{"a repository a mapping was renamed to", "Example-Org/New-Repo"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			renamed := map[string]any{"project": specResultsProject, "renamed_to": "Example-Org/New-Repo"}
+			if mapped := rig.asPerson(t, http.MethodPut, "/api/v1/settings/repo-projects/example-org/old-repo", renamed); mapped.Code != http.StatusOK {
+				t.Fatalf("map example-org/old-repo, renamed to Example-Org/New-Repo: status=%d body=%s", mapped.Code, mapped.Body.String())
+			}
+			token := rig.token(func(answer *brokertoken.Introspection) {
+				answer.Session = "ci-results:" + row.repository + "/.github/workflows/ci-results.yaml"
+				answer.CI.Repository = row.repository
+				answer.CI.WorkflowRef = row.repository + "/.github/workflows/ci-results.yaml@refs/heads/topic"
+			})
+			result := stored201(t, rig.post(t, specResultsProject, token, passOf(probeCheck)))
+			if got := result.Attestation.Predicate.Run.Repository; got != row.repository {
+				t.Fatalf("the result is stored under the repository %q, want %q as the run names it", got, row.repository)
+			}
+		})
+	}
 }
 
 // TestGitHubUnreadableIsAServiceError: a check run or files GitHub does not answer leave the
@@ -630,6 +717,35 @@ func TestTwoLegsOfOneNameInOneAttemptAreTwoRows(t *testing.T) {
 	}
 }
 
+// TestAKeyOfOneRunNeverAnswersAnotherRun: an Idempotency-Key belongs to whoever sent it, and a
+// results token was sent by its run, not by the person its result entry names. So two jobs of one
+// entry that write the same body under one key are two results, and only a repeat by the same
+// run is answered the first answer. The repeat is the control: the key layer is on.
+func TestAKeyOfOneRunNeverAnswersAnotherRun(t *testing.T) {
+	rig := newSpecResultsRig(t)
+	rig.github.checkRuns[11] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsCommit}
+	first := rig.token(nil)
+	other := rig.token(func(answer *brokertoken.Introspection) { answer.CI.CheckRunID = "11" })
+	keyed := func(token string) *httptest.ResponseRecorder {
+		request := rig.caller.presenting(t, http.MethodPost, "/api/v1/projects/"+specResultsProject+"/results", token, passOf(probeCheck))
+		request.Header.Set(contracts.IdempotencyKeyHeader, "one-key")
+		return rig.serve(request)
+	}
+	written := keyed(first)
+	if written.Code != http.StatusCreated || replayed(written) {
+		t.Fatalf("the first run's write: status=%d replayed=%v body=%s, want 201 written", written.Code, replayed(written), written.Body.String())
+	}
+	if another := keyed(other); another.Code != http.StatusCreated || replayed(another) {
+		t.Fatalf("the other run's write under the same key: status=%d replayed=%v body=%s, want 201 of its own", another.Code, replayed(another), another.Body.String())
+	}
+	if again := keyed(first); !replayed(again) || again.Body.String() != written.Body.String() {
+		t.Fatalf("the first run's repeat: replayed=%v body=%s, want the first answer %s", replayed(again), again.Body.String(), written.Body.String())
+	}
+	if held := rig.stored(t); held != 2 {
+		t.Fatalf("spec_check_results holds %d rows, want one for each run", held)
+	}
+}
+
 // TestTwoRunsAtOneCommitAreTwoRows: two workflow runs of one commit each write a row.
 func TestTwoRunsAtOneCommitAreTwoRows(t *testing.T) {
 	rig := newSpecResultsRig(t)
@@ -644,15 +760,19 @@ func TestTwoRunsAtOneCommitAreTwoRows(t *testing.T) {
 
 // TestAnObservedTextPastTheBoundIsCutAndSaysSo: a result keeps at most
 // contracts.SpecCheckObservedMax runes of what the job observed. A longer text is kept as its
-// first runes and contracts.SpecCheckObservedCutNote, that many runes in all, so the stored text
-// says that it was cut; a text of exactly the bound is kept whole.
+// first contracts.SpecCheckObservedStart runes, contracts.SpecCheckObservedCutNote and its last
+// contracts.SpecCheckObservedEnd runes, that many runes in all, so the stored text says where it
+// was cut; a text of exactly the bound is kept whole. A rune outside the basic plane, two UTF-16
+// units and four bytes, is one rune of the count.
 func TestAnObservedTextPastTheBoundIsCutAndSaysSo(t *testing.T) {
-	note := contracts.SpecCheckObservedCutNote
+	const start, end, note = contracts.SpecCheckObservedStart, contracts.SpecCheckObservedEnd, contracts.SpecCheckObservedCutNote
 	for _, row := range []struct {
 		name, sent, kept string
 	}{
-		{"a text past the bound", strings.Repeat("é", 2500), strings.Repeat("é", contracts.SpecCheckObservedMax-utf8.RuneCountInString(note)) + note},
 		{"a text of the bound", strings.Repeat("é", contracts.SpecCheckObservedMax), strings.Repeat("é", contracts.SpecCheckObservedMax)},
+		{"a text one past the bound", "s" + strings.Repeat("é", contracts.SpecCheckObservedMax-1) + "e",
+			"s" + strings.Repeat("é", start-1) + note + strings.Repeat("é", end-1) + "e"},
+		{"a text outside the basic plane", strings.Repeat("🙂", 2500), strings.Repeat("🙂", start) + note + strings.Repeat("🙂", end)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
@@ -660,10 +780,34 @@ func TestAnObservedTextPastTheBoundIsCutAndSaysSo(t *testing.T) {
 			body["observed"] = row.sent
 			observed := stored201(t, rig.post(t, specResultsProject, rig.token(nil), body)).Attestation.Predicate.Observed
 			if observed != row.kept || utf8.RuneCountInString(observed) != contracts.SpecCheckObservedMax {
-				t.Fatalf("observed holds %d runes ending %q, want %d ending %q",
-					utf8.RuneCountInString(observed), observed[max(0, len(observed)-120):], contracts.SpecCheckObservedMax, row.kept[max(0, len(row.kept)-120):])
+				t.Fatalf("observed holds %d runes, starting %q and ending %q; want %d, starting %q and ending %q",
+					utf8.RuneCountInString(observed), observed[:min(len(observed), 60)], observed[max(0, len(observed)-160):],
+					contracts.SpecCheckObservedMax, row.kept[:min(len(row.kept), 60)], row.kept[max(0, len(row.kept)-160):])
 			}
 		})
+	}
+}
+
+// TestAFailingTestsLogKeepsItsStartAndItsEnd: a failing test's output says which test ran in its
+// first line and why it failed at its end (the message and the --- FAIL line), so a text over the
+// bound keeps both, with the note that says the middle was cut between them, and the stored text
+// is still contracts.SpecCheckObservedMax runes.
+func TestAFailingTestsLogKeepsItsStartAndItsEnd(t *testing.T) {
+	const first, last = "=== RUN   TestX\n", "--- FAIL: TestX (0.01s)\n"
+	sent := first + strings.Repeat("x\n", (10000-len(first)-len(last))/2) + last
+	if utf8.RuneCountInString(sent) != 10000 {
+		t.Fatalf("the sent text holds %d runes, want 10000", utf8.RuneCountInString(sent))
+	}
+	rig := newSpecResultsRig(t)
+	body := passOf(probeCheck)
+	body["verdict"], body["observed"] = "fail", sent
+	observed := stored201(t, rig.post(t, specResultsProject, rig.token(nil), body)).Attestation.Predicate.Observed
+	note := strings.Index(observed, contracts.SpecCheckObservedCutNote)
+	if !strings.HasPrefix(observed, first) || !strings.HasSuffix(observed, last) || note < len(first) ||
+		note+len(contracts.SpecCheckObservedCutNote) > len(observed)-len(last) || utf8.RuneCountInString(observed) != contracts.SpecCheckObservedMax {
+		t.Fatalf("observed holds %d runes, starting %q, ending %q, the note at byte %d; want %d runes starting %q and ending %q with the note between them",
+			utf8.RuneCountInString(observed), observed[:min(len(observed), 40)], observed[max(0, len(observed)-40):], note,
+			contracts.SpecCheckObservedMax, first, last)
 	}
 }
 

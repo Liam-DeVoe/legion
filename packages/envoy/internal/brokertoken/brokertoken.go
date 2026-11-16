@@ -525,13 +525,19 @@ func shapeOf(answer Introspection) tokenShape {
 }
 
 // wholeRun reports whether run names every field of the run a result entry mints its token for,
-// in the forms the broker mints it with: the commit as oauthwire.IsCommit holds it, and the run,
-// the attempt and the check run as oauthwire.IsPositiveDecimal holds them (exchange.Set.Workflow
-// reads the run with the same two rules). A service holds what the token may write to that run's
-// commit, repository and job, and reads its numbers as such, so a run missing any of them, or
-// holding one in another form, is no results token's.
+// in the forms the broker mints it with: the workflow_ref as oauthwire.WorkflowPath reads it
+// under the repository and the ref, the commit as oauthwire.IsCommit holds it, and the run, the
+// attempt and the check run as oauthwire.IsPositiveDecimal holds them (exchange.Set.Workflow reads
+// the run with the same three rules). A service holds what the token may write to that run's
+// commit, repository and job, reads its numbers as such, and reads the workflow its recorder
+// names by the same rule, so a run missing any of them, or holding one in another form, is no
+// results token's.
 func wholeRun(run *CIRun) bool {
-	return run != nil && run.Repository != "" && run.WorkflowRef != "" && run.Ref != "" && oauthwire.IsCommit(run.SHA) &&
+	if run == nil {
+		return false
+	}
+	_, workflowReads := oauthwire.WorkflowPath(run.WorkflowRef, run.Repository, run.Ref)
+	return run.Repository != "" && workflowReads && run.Ref != "" && oauthwire.IsCommit(run.SHA) &&
 		run.EventName != "" && oauthwire.IsPositiveDecimal(run.RunID) && oauthwire.IsPositiveDecimal(run.RunAttempt) &&
 		run.RunnerEnvironment != "" && oauthwire.IsPositiveDecimal(run.CheckRunID)
 }

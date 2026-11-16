@@ -444,7 +444,7 @@ async function forgeOnly(): Promise<void> {
   console.log(`export ACTIONS_ID_TOKEN_REQUEST_TOKEN='${request.requestToken}'`);
   console.log("export AGENT_SECRETS_MACHINE_IDENTITY=github-actions");
   console.error(
-    "ci-results-stack: each token is signed by a key no issuer publishes; set AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_AUDIENCE to the broker's, then run dispatch result --project. Ctrl-C stops."
+    "ci-results-stack: each token is signed by a key no issuer publishes; set DISPATCH_URL to Dispatch's, and AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_AUDIENCE to the broker's, then run dispatch result --project. Ctrl-C stops."
   );
   await untilInterrupted();
   await github.stop();

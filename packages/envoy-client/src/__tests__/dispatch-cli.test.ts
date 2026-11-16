@@ -14,7 +14,9 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   PROJECT_KEY_RULE,
   SPEC_CHECK_OBSERVED_CUT_NOTE,
+  SPEC_CHECK_OBSERVED_END,
   SPEC_CHECK_OBSERVED_MAX,
+  SPEC_CHECK_OBSERVED_START,
 } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { forgetBrokerClients } from "../broker-credential";
@@ -2031,6 +2033,38 @@ describe("dispatch result --project, as a CI job writes it", () => {
     namesNoToken(record, brokerRefused.stdout, brokerRefused.stderr);
   }, 30_000);
 
+  // A write whose answer was lost after Dispatch stored it (409 KEY_COMMITTED) is done, and the
+  // job's log is read by a program: it prints the JSON the session path records for the same
+  // case and exits 0. It gives no advice, since a results token reads nothing back.
+  test("a result stored with its answer lost prints landed_without_answer as JSON and exits 0", async () => {
+    dispatchAnswer = () =>
+      Response.json(
+        { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
+        { status: 409 }
+      );
+    const { code, stdout, stderr } = await runJob(record, jobEnvironment());
+    expect({ code, stdout, stderr }).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ landed_without_answer: "KEY_COMMITTED" })}\n`,
+      stderr: "",
+    });
+    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+      ["POST", "/api/v1/projects/ACME/results"],
+    ]);
+  });
+
+  // The broker's result entry fixes the session a job writes under, so the trade names none, even
+  // where the job's environment sets the session a command of this machine trades under.
+  test("the trade names no session where AGENT_SECRETS_SESSION is set", async () => {
+    const { code, stdout } = await runJob(record, {
+      ...jobEnvironment(),
+      AGENT_SECRETS_SESSION: "a-session-of-the-runner",
+    });
+    expect(code, stdout).toBe(0);
+    expect(trades).toHaveLength(1);
+    expect(trades[0]?.form.has(FORM_SESSION)).toBe(false);
+  });
+
   test("a job whose runner gave it no token URL is refused naming the variable, and sends nothing", async () => {
     const {
       ACTIONS_ID_TOKEN_REQUEST_URL: _url,
@@ -2096,18 +2130,48 @@ describe("dispatch result --project, as a CI job writes it", () => {
     expect(requests).toEqual([]);
   });
 
-  test("sends what a result keeps of observed: cut and saying so, with what Dispatch cannot store replaced", async () => {
+  test("sends what a result keeps of observed: its start and its end around the note, with what Dispatch cannot store replaced", async () => {
     // A failing test's log over 1 MiB is ordinary, and Dispatch takes no request that large. A
     // result keeps SPEC_CHECK_OBSERVED_MAX characters, so that is what the command sends: the
-    // first of them, then the note that says the text was cut. A NUL, which Dispatch cannot store,
+    // first SPEC_CHECK_OBSERVED_START of them, the note that says the middle was cut, and the last
+    // SPEC_CHECK_OBSERVED_END. A text of the bound goes whole, and a character outside the basic
+    // plane, two UTF-16 units, is one character of the count. A NUL, which Dispatch cannot store,
     // and each byte that is not UTF-8 are sent as U+FFFD, so the result is still written.
-    const long = join(stateDir, "observed-long.txt");
-    writeFileSync(long, `--- FAIL: TestP\n${"x".repeat(1024 * 1024)}`);
-    const binary = join(stateDir, "observed-binary.txt");
-    writeFileSync(binary, Buffer.from([0x61, 0x00, 0x62, 0xff, 0x63]));
-    for (const file of [long, binary]) {
+    const start = SPEC_CHECK_OBSERVED_START;
+    const end = SPEC_CHECK_OBSERVED_END;
+    const note = SPEC_CHECK_OBSERVED_CUT_NOTE;
+    const rows: [name: string, content: string | Buffer, sent: string][] = [
+      [
+        "a log of 1 MiB",
+        `=== RUN   TestP\n${"x".repeat(1024 * 1024)}--- FAIL: TestP\n`,
+        `=== RUN   TestP\n${"x".repeat(start - 16)}${note}${"x".repeat(end - 16)}--- FAIL: TestP\n`,
+      ],
+      [
+        "a text of the bound",
+        "é".repeat(SPEC_CHECK_OBSERVED_MAX),
+        "é".repeat(SPEC_CHECK_OBSERVED_MAX),
+      ],
+      [
+        "a text one past the bound",
+        `s${"é".repeat(SPEC_CHECK_OBSERVED_MAX - 1)}e`,
+        `s${"é".repeat(start - 1)}${note}${"é".repeat(end - 1)}e`,
+      ],
+      [
+        "a text outside the basic plane",
+        "🙂".repeat(2500),
+        `${"🙂".repeat(start)}${note}${"🙂".repeat(end)}`,
+      ],
+      [
+        "a NUL and bytes that are not UTF-8",
+        Buffer.from([0x61, 0x00, 0x62, 0xff, 0x63]),
+        "a\uFFFDb\uFFFDc",
+      ],
+    ];
+    for (const [name, content] of rows) {
+      const file = join(stateDir, `observed-${name.replaceAll(" ", "-")}.txt`);
+      writeFileSync(file, content);
       const ran = await runJob([...record, "--observed-file", file], jobEnvironment());
-      expect(ran.code, ran.stdout).toBe(0);
+      expect(ran.code, `${name}: ${ran.stdout}`).toBe(0);
     }
 
     const sent = written.map(({ body }) =>
@@ -2118,12 +2182,29 @@ describe("dispatch result --project, as a CI job writes it", () => {
         ? body.observed
         : ""
     );
-    const kept = SPEC_CHECK_OBSERVED_MAX - [...SPEC_CHECK_OBSERVED_CUT_NOTE].length;
-    expect(sent).toEqual([
-      `--- FAIL: TestP\n${"x".repeat(kept - 16)}${SPEC_CHECK_OBSERVED_CUT_NOTE}`,
-      "a\uFFFDb\uFFFDc",
-    ]);
-    expect([...(sent[0] ?? "")].length).toBe(SPEC_CHECK_OBSERVED_MAX);
+    expect(sent).toEqual(rows.map(([, , kept]) => kept));
+    for (const kept of sent.slice(0, 4)) expect([...kept].length).toBe(SPEC_CHECK_OBSERVED_MAX);
+  });
+
+  test("a failing test's log of 10,000 characters sends its first line and its --- FAIL line, with the note between them", async () => {
+    // A test's output names the test in its first line and says why it failed at its end.
+    const first = "=== RUN   TestX\n";
+    const last = "--- FAIL: TestX (0.01s)\n";
+    const log = join(stateDir, "observed-failing.txt");
+    writeFileSync(log, `${first}${"x\n".repeat((10_000 - first.length - last.length) / 2)}${last}`);
+    const ran = await runJob([...record, "--observed-file", log], jobEnvironment());
+    expect(ran.code, ran.stdout).toBe(0);
+    const body = written[0]?.body as { observed?: string } | undefined;
+    const sent = body?.observed ?? "";
+    const note = sent.indexOf(SPEC_CHECK_OBSERVED_CUT_NOTE);
+    expect({
+      characters: [...sent].length,
+      first: sent.startsWith(first),
+      last: sent.endsWith(last),
+      noteBetween:
+        note >= first.length &&
+        note + SPEC_CHECK_OBSERVED_CUT_NOTE.length <= sent.length - last.length,
+    }).toEqual({ characters: SPEC_CHECK_OBSERVED_MAX, first: true, last: true, noteBetween: true });
   });
 
   test("dispatch results --project lists each stored result of the commit, one line each, newest first", async () => {

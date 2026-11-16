@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -326,7 +327,9 @@ func TestAPanickingHandlerReleasesItsKey(t *testing.T) {
 
 // A key belongs to the login that sent it. Another person's identical request under the same key
 // is another request; the same person under another casing of the identity header is the same
-// person; the shared agent token's keys are its own.
+// person; the shared agent token's keys are its own. A CI job's results token names its result
+// entry's person, who sent nothing: its keys are its run's, the repository and the check run of
+// its job, so two runs or two legs of one entry never replay each other's writes.
 func TestAKeyBelongsToItsLogin(t *testing.T) {
 	rig := newKeyedRig(t, answerRun)
 	alices := rig.send(t, "a", nil, "alice", "shared")
@@ -349,6 +352,7 @@ func TestAKeyBelongsToItsLogin(t *testing.T) {
 	}
 
 	owner, service := "Carol@example.com", "system:serviceaccount:legion:worker"
+	run := &oauthwire.CIRun{Repository: "example-org/example-repo", CheckRunID: "97"}
 	for name, test := range map[string]struct {
 		actor model.Actor
 		human bool
@@ -356,8 +360,10 @@ func TestAKeyBelongsToItsLogin(t *testing.T) {
 	}{
 		"a person":                {model.Actor{Kind: "user", ID: " Carol@Example.com "}, true, "carol@example.com"},
 		"that person's own token": {model.Actor{Kind: "session", Owner: &owner}, false, "carol@example.com"},
-		"a service token":         {model.Actor{Service: &service}, false, "service:" + service},
-		"the shared agent token":  {model.Actor{}, false, requestKeyAgentToken},
+		"a CI job's results token": {model.Actor{Kind: "session", Owner: &owner, Credential: &model.Credential{ResultsOnly: true, CI: run}},
+			false, "ci-run:example-org/example-repo#97"},
+		"a service token":        {model.Actor{Service: &service}, false, "service:" + service},
+		"the shared agent token": {model.Actor{}, false, requestKeyAgentToken},
 	} {
 		if got := requestKeyLogin(test.actor, test.human); got != test.want {
 			t.Errorf("%s's keys belong to %q, want %q", name, got, test.want)

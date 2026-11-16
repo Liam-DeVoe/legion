@@ -895,12 +895,15 @@ func (s *Set) Registration(account, podUID, session string) error {
 // claims GitHub puts in it: `repository`, `workflow_ref`, `job_workflow_ref` and `ref`, and, for
 // a run of a result entry's workflow, the run's own claims (readCIRun).
 //
-// The identity is the repository, the workflow file's path and the ref. A run whose job comes
-// from a reusable workflow other than the one the run started in is refused: `job_workflow_ref`
-// names the workflow file the job is written in and `workflow_ref` the one the run entered
-// through, and where they differ the code that is running is not the code the entry names. An
-// entry that lists the workflow on that exact ref answers a token that writes its project; a
-// workflow no such entry lists is looked for among the result entries (resultRun).
+// The identity is the repository, the workflow file's path and the ref. The path is the
+// workflow_ref without the repository and without "@" and the ref (oauthwire.WorkflowPath), since
+// a workflow file's name and a branch's name can each hold an "@"; a workflow_ref that is not of
+// that form is refused, naming it and the ref. A run whose job comes from a reusable workflow
+// other than the one the run started in is refused: `job_workflow_ref` names the workflow file
+// the job is written in and `workflow_ref` the one the run entered through, and where they differ
+// the code that is running is not the code the entry names. An entry that lists the workflow on
+// that exact ref answers a token that writes its project; a workflow no such entry lists is
+// looked for among the result entries (resultRun).
 //
 // The principal is that listed workflow, not the run: every run of it is one holder, so the next
 // run of a release workflow keeps writing under the name the run before it held, however soon
@@ -925,9 +928,9 @@ func (s *Set) Workflow(token map[string]any, session string) (Claims, error) {
 	if jobRef != workflowRef {
 		return Claims{}, fmt.Errorf("%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", ErrNoEntry, repository, workflowRef, jobRef)
 	}
-	workflow, ok := workflowPath(workflowRef, repository)
+	workflow, ok := oauthwire.WorkflowPath(workflowRef, repository, ref)
 	if !ok {
-		return Claims{}, fmt.Errorf("%w: the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s", ErrClaimMissing, repository)
+		return Claims{}, fmt.Errorf("%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", ErrClaimMissing, workflowRef, repository, ref)
 	}
 	key := workflowKey{repository, workflow, ref}
 	entry, listed := s.workflows[key]
@@ -1246,7 +1249,8 @@ func (s *Set) Machine(credential, approver, session string) (Claims, error) {
 // <repository>/<path>@<ref>, as an operator reads one elsewhere; a path or ref carrying "@" could
 // make two entries spell one string, and NewSet refuses that pair rather than let one's runs hold
 // the other's names. A result workflow's is <repository>/<path>, since every ref of it is one
-// holder, and a repository holds exactly one "/", so no two pairs spell it alike.
+// holder, and a repository holds exactly one "/", so no two pairs spell it alike; it is
+// oauthwire.ResultPrincipal, since Dispatch stores it as the recorder of a result.
 //
 // Three of them are exported because a broker grant follows a session name under one principal
 // too: enroll.Service.Create writes one of these into enrollments.carry_principal, and the next
@@ -1264,7 +1268,7 @@ func workflowPrincipal(key workflowKey) string {
 }
 
 func resultPrincipal(key resultKey) string {
-	return "workflow-results:" + key.repository + "/" + key.workflow
+	return oauthwire.ResultPrincipal(key.repository, key.workflow)
 }
 
 // GooglePrincipal is a Google account's spelling: the fleet a machine's own identity belongs to.
@@ -1338,19 +1342,4 @@ func podUID(token map[string]any) string {
 	pod, _ := kubernetes["pod"].(map[string]any)
 	uid, _ := pod["uid"].(string)
 	return uid
-}
-
-// workflowPath is the workflow file's path inside repository that workflowRef names, a GitHub
-// workflow_ref being "<owner>/<name>/<path>@<ref>". It answers false for a ref that is not of that
-// form or not under repository.
-func workflowPath(workflowRef, repository string) (string, bool) {
-	rest, under := strings.CutPrefix(workflowRef, repository+"/")
-	if !under {
-		return "", false
-	}
-	at := strings.LastIndex(rest, "@")
-	if at <= 0 {
-		return "", false
-	}
-	return rest[:at], true
 }
