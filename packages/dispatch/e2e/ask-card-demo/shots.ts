@@ -651,10 +651,8 @@ const shots: Shot[] = [
       const record = `main [data-testid="ask-${ANSWERED}"]`;
       const thread = `main [data-testid="thread-${ANSWERED}"]`;
       await open(page, "/issues/PANE-2/conversation", `${thread} .dispatch-markdown`);
-      // The answered question right under the tab's composer, the agent's reply under its answer
-      // and the card above it out of the window.
+      // The answered question under the tab's composer, the agent's reply under its answer.
       await page.locator(record).evaluate((element) => element.scrollIntoView({ block: "start" }));
-      await page.evaluate(() => window.scrollBy(0, 24));
       await page.waitForTimeout(400);
       await drag(page, thread, "skip", "the skipped leases too.");
       const actions = await page
@@ -672,6 +670,9 @@ const shots: Shot[] = [
         "> - `skip` and the lease's id, for a lease another holder has\n>\n> - `stale` and the id, for a lease past its renewal\n>\n> **One thing changed:** the summary line counts the skipped leases too.\n\n",
         "q on a reply under an answered ask opens its thread's reply box and quotes the words there, their list items, code and bold kept"
       );
+      // The card above the answered question out of the window, the Reply button well inside it.
+      await page.evaluate(() => window.scrollBy(0, 36));
+      await page.waitForTimeout(300);
       await rest(page);
     },
   },
