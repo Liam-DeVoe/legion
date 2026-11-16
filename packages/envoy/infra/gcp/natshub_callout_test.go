@@ -170,6 +170,80 @@ func TestACalloutHubRunsItsListenerByServiceIdentity(t *testing.T) {
 	})
 }
 
+// systemd expands specifiers and environment references and parses quotes and backslashes in
+// ExecStart. The listener must receive natsAudience literally, not a different token audience or
+// a command systemd cannot start. Ordinary audiences retain the existing unit's bytes.
+func TestACalloutHubPreservesItsListenerAudienceInTheUnit(t *testing.T) {
+	for _, row := range []struct {
+		name, audience, argument string
+	}{
+		{"ordinary", "example-nats-audience", "NATS_SERVICE_GOOGLE_AUDIENCE=example-nats-audience"},
+		{"encoded URL", "https://broker.example/nats%2Flistener", `"NATS_SERVICE_GOOGLE_AUDIENCE=https://broker.example/nats%%2Flistener"`},
+		{"unit specifier", "nats-%n", `"NATS_SERVICE_GOOGLE_AUDIENCE=nats-%%n"`},
+		{"environment reference", "nats-${USER}", `"NATS_SERVICE_GOOGLE_AUDIENCE=nats-$${USER}"`},
+		{"quotes", `nats-'listener'"audience"`, `"NATS_SERVICE_GOOGLE_AUDIENCE=nats-'listener'\"audience\""`},
+		{"backslash", `nats-\x41`, `"NATS_SERVICE_GOOGLE_AUDIENCE=nats-\\x41"`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := calloutNatsHub()
+			args.Listener = calloutListener()
+			args.Listener.NatsAudience = row.audience
+			doc, _, err := gcp.CloudConfigOf(args)
+			require.NoError(t, err)
+			unit := fileOf(t, doc, "/etc/systemd/system/envoy-listener.service")
+			require.Contains(t, unit, " -e "+row.argument+" "+listenerImage+"\n")
+		})
+	}
+}
+
+// A hub's own listener behind the auth service is no user of the hub, but it still binds the
+// durable and the queue group of its machine id, so a static user given that machine id is
+// refused on each hub as it is beside a seeded listener: two listeners would share one durable.
+func TestACalloutHubReservesItsServiceListenersDurable(t *testing.T) {
+	t.Run("gcp:NatsHub", func(t *testing.T) {
+		args := calloutNatsHub()
+		args.Listener = calloutListener()
+		args.Users[3].ListenerMachineID = pulumi.StringRef("example-hub")
+		requireMachineIDRefusal(t, args, "users[3].listenerMachineId",
+			"users[3]: listenerMachineId gives the same durable name as the hub's own listener")
+	})
+	t.Run("gcp:ClusteredNatsHub", func(t *testing.T) {
+		args := calloutClusteredHubWithTailnet()
+		args.Tailnet.Listener.MachineID = pulumi.StringRef("example host a")
+		_, err := gcp.ResolveClusteredNatsHub(args)
+		var input *core.InputError
+		require.ErrorAs(t, err, &input)
+		require.Equal(t, "users[0].machineId", input.Input, "%v", err)
+		require.ErrorContains(t, err, "users[0]: machineId gives the same durable name as the hub's own listener")
+	})
+}
+
+// A control character that is no whitespace (NUL, DEL) in a hub listener's natsAudience is refused
+// as whitespace is: no environment line or unit can carry it.
+func TestAHubListenersAudienceRefusesAControlCharacter(t *testing.T) {
+	for _, value := range []string{"nats\x00audience", "nats\x7faudience"} {
+		t.Run("gcp:NatsHub", func(t *testing.T) {
+			args := calloutNatsHub()
+			args.Listener = calloutListener()
+			args.Listener.NatsAudience = value
+			err := gcp.ResolveNatsHub(args)
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "listener.natsAudience", input.Input, "%v", err)
+			require.ErrorContains(t, err, "whitespace or a control character")
+		})
+		t.Run("gcp:ClusteredNatsHub", func(t *testing.T) {
+			args := calloutClusteredHubWithTailnet()
+			args.Tailnet.Listener.NatsAudience = value
+			_, err := gcp.ResolveClusteredNatsHub(args)
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "tailnet.listener.natsAudience", input.Input, "%v", err)
+			require.ErrorContains(t, err, "whitespace or a control character")
+		})
+	}
+}
+
 // Without authCallout a hub renders its listener exactly as before: the listener connects as the
 // user the hub renders for its seed, and the goldens the other tests pin are that text. So
 // natsAudience, which only the auth service reads, is refused without it, and with it the

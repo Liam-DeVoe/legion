@@ -53,9 +53,9 @@ type ListenerEnv struct {
 	Webhooks       []string
 	ReviewerAppId  *string // written only with github
 	MentionTrigger *string // written only with github
-	// PrivateProjects is ENVOY_PRIVATE_PROJECTS=1 (core.ListenerConfig.PrivateProjects): the
-	// deployment may make a Dispatch project private, so the listener decides a project frame
-	// that carries no stamp as private. False writes nothing.
+	// PrivateProjects is ENVOY_PRIVATE_PROJECTS=1 (core.ListenerConfig.PrivateProjects, which says
+	// when the listener reads it): the deployment may make a Dispatch project private. False writes
+	// nothing.
 	PrivateProjects bool
 }
 

@@ -55,8 +55,10 @@ type ListenerConfig struct {
 	// listener then takes no broker token at all.
 	//
 	// The audience is a VM's identity. A listener in a pod presents a projected
-	// ServiceAccount token instead, through a variable of its own, and the listener refuses
-	// that file beside the audience, so a component renders one identity and never both.
+	// ServiceAccount token instead, through ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which this
+	// config does not carry and which the listener refuses beside the audience, so a component
+	// renders one identity and never both. ServiceTokenFile below is the NATS connection's
+	// identity, not this one.
 	AgentSecretsURL      string
 	AgentSecretsAudience string
 	PublicURL            string
@@ -73,17 +75,19 @@ type ListenerConfig struct {
 	ServiceTokenFile      string
 	ServiceGoogleAudience string
 	// PrivateProjects is ENVOY_PRIVATE_PROJECTS=1: the listener's deployment may make a Dispatch
-	// project private (dispatch://INFRA-3862), so a project frame that carries no stamp is decided
+	// project private (dispatch://INFRA-3862). The listener reads it once it holds each session to
+	// its token's projects (PlanC's #t-c-8): a project frame that carries no stamp is then decided
 	// as private rather than by the listener's copy of the private projects. A component sets it
-	// from the same value as its hub's privateProjects. False leaves the variable unset, and the
-	// listener decides by its copy alone, as before the field existed.
+	// from the same value as its hub's privateProjects. False leaves the variable unset, which
+	// renders what the listener rendered before the field existed.
 	PrivateProjects bool
 }
 
-// EnvPrivateProjects names the variable PrivateProjects renders. The listener reads the name
-// (dispatch://INFRA-3862, PlanC's rule 3); core may not import the listener's packages, for the
-// reason brokerVars gives, so the name is written here once.
-const EnvPrivateProjects = "ENVOY_PRIVATE_PROJECTS"
+// envPrivateProjects names the variable PrivateProjects renders, which PlanC's #t-c-8
+// (dispatch://INFRA-3862, rule 3) makes the listener read; core may not import the listener's
+// packages, for the reason brokerVars gives, so the name is written here once. It is unexported,
+// as brokerVars is: a component sets PrivateProjects and never renders the variable itself.
+const envPrivateProjects = "ENVOY_PRIVATE_PROJECTS"
 
 // serviceVars are the two variables of the listener's service identity, in the order Env renders
 // them, each with the input a refusal names it by: the bus's own names.
@@ -369,7 +373,7 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 		}
 	}
 	if c.PrivateProjects {
-		env = append(env, EnvPrivateProjects+"=1")
+		env = append(env, envPrivateProjects+"=1")
 	}
 	return env, nil
 }

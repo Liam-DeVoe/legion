@@ -454,8 +454,9 @@ func TestListenerWatchdogOnAnotherPortMovesOnlyItsTwoPortLines(t *testing.T) {
 }
 
 // A host's listener carries ENVOY_PRIVATE_PROJECTS=1 exactly when its privateProjects input is
-// true: the deployment may make a Dispatch project private, so the listener decides a project frame
-// that carries no stamp as private (dispatch://INFRA-3862). The container's envs and the watchdog's
+// true: the deployment may make a Dispatch project private (dispatch://INFRA-3862), which a listener
+// that holds each session to its token's projects reads to decide a project frame that carries no
+// stamp as private. The container's envs and the watchdog's
 // env file, which recreates a removed container, both carry it, last. With privateProjects false or
 // unset, each is what it was before the input existed: exampleEnvs, and the watchdog's golden byte
 // for byte (R9). Negative control, run by hand: copy true into the plan whatever the input says;

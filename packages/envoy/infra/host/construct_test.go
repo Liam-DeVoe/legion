@@ -89,6 +89,33 @@ func TestConstructRefusesAPlainFieldFromAnotherResource(t *testing.T) {
 	require.Empty(t, m.Types())
 }
 
+// privateProjects reaches the listener through the plugin's own Construct, under the name a
+// consumer's program sends: true renders ENVOY_PRIVATE_PROJECTS=1, last, in the container's envs,
+// and false renders what an unset input renders. A Go field read under another name would leave
+// every consumer's true ignored, which the direct-constructor test cannot see.
+func TestConstructTakesPrivateProjects(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		value *bool
+	}{{"unset", nil}, {"false", new(bool)}, {"true", func() *bool { v := true; return &v }()}} {
+		t.Run(row.name, func(t *testing.T) {
+			inputs := plainInputs()
+			inputs["natsUrls"] = property.New(property.NewArray([]property.Value{property.New("nats://hub.internal.example:4222")}))
+			if row.value != nil {
+				inputs["privateProjects"] = property.New(*row.value)
+			}
+			m, err := construct(t, inputs, false)
+			require.NoError(t, err)
+			envs, _ := envsOf(t, m.One(t, containerType))
+			if row.value != nil && *row.value {
+				require.Equal(t, append(slices.Clone(exampleEnvs), "ENVOY_PRIVATE_PROJECTS=1"), envs)
+				return
+			}
+			require.Equal(t, exampleEnvs, envs, "privateProjects %s renders no ENVOY_PRIVATE_PROJECTS", row.name)
+		})
+	}
+}
+
 // seedValue is a user seed (nkeys v0.4.15 README.md line 45).
 const seedValue = "SUAKYRHVIOREXV7EUZTBHUHL7NUMHPMAS7QMDU3GTIUWEI5LDNOXD43IZY"
 

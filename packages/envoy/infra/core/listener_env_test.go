@@ -262,6 +262,10 @@ func TestListenerEnvServiceIdentity(t *testing.T) {
 			func(c *core.ListenerConfig) { c.ServiceTokenFile = "/var/run/token --privileged" }},
 		{"an audience with a line break", "serviceGoogleAudience", "serviceGoogleAudience holds whitespace or a control character, which NATS_SERVICE_GOOGLE_AUDIENCE cannot carry (not echoed)",
 			func(c *core.ListenerConfig) { c.ServiceGoogleAudience = "example-nats-audience\nENVEOF" }},
+		{"a token file with a NUL", "serviceTokenFile", "serviceTokenFile holds whitespace or a control character, which NATS_SERVICE_TOKEN_FILE cannot carry (not echoed)",
+			func(c *core.ListenerConfig) { c.ServiceTokenFile = "/var/run/token\x00" }},
+		{"an audience with a DEL", "serviceGoogleAudience", "serviceGoogleAudience holds whitespace or a control character, which NATS_SERVICE_GOOGLE_AUDIENCE cannot carry (not echoed)",
+			func(c *core.ListenerConfig) { c.ServiceGoogleAudience = "example-nats\x7faudience" }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			config := base
@@ -275,8 +279,9 @@ func TestListenerEnvServiceIdentity(t *testing.T) {
 	}
 }
 
-// PrivateProjects renders ENVOY_PRIVATE_PROJECTS=1, last, which the listener reads to decide a
-// project frame that carries no stamp as private (dispatch://INFRA-3862, PlanC's rule 3), and
+// PrivateProjects renders ENVOY_PRIVATE_PROJECTS=1, last, which a listener that holds each session
+// to its token's projects reads to decide a project frame that carries no stamp as private
+// (dispatch://INFRA-3862, PlanC's rule 3), and
 // false renders no such line: every config written before the field existed renders what it always
 // rendered (R9), so the goldens every component that renders a listener pins (gcp/testdata,
 // aws/testdata, host's) hold no such line. Negative control, run by hand: render the line whatever

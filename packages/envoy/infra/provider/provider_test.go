@@ -97,6 +97,10 @@ func TestSchemaServesTheListenerComponentWithASecretSeed(t *testing.T) {
 	require.True(t, ok, "the schema lists envoy-infra:host:Listener")
 	require.True(t, listener.IsComponent)
 	require.True(t, listener.InputProperties["seed"].Secret, "seed is a secret input")
+	// privateProjects is an optional boolean under that name (t-e-45), the one a consumer's
+	// program sends; the hub it sits beside takes the same name.
+	require.Equal(t, "boolean", listener.InputProperties["privateProjects"].Type)
+	require.NotContains(t, listener.RequiredInputs, "privateProjects")
 
 	// Generated SDKs append Args to an object type's name for its input type, so a type named
 	// WatchdogArgs would reach consumers as WatchdogArgsArgs.

@@ -375,9 +375,9 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 			in.NatsUrls = pulumi.ToStringArray(c.natsUrls)
 			in.ListenHost, in.NatsReplicas = c.listenHost, c.replicas
 			in.Webhooks = c.webhooks
-			if c.private {
-				in.PrivateProjects = pulumi.BoolRef(true)
-			}
+			// Explicit on every row: false through the component's pointer is what an unset
+			// input renders, which the component's own goldens pin for nil.
+			in.PrivateProjects = pulumi.BoolRef(c.private)
 			in.MentionTrigger, in.ReviewerAppId = pulumi.StringRef(c.trigger), pulumi.StringRef(c.appID)
 			if !github {
 				in.GitHubWebhookSecretArn, in.MentionTrigger, in.ReviewerAppId = nil, nil, nil

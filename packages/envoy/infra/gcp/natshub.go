@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/compute"
 	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/secretmanager"
@@ -500,9 +498,9 @@ func calloutSeedFields(callout *nats.AuthCalloutArgs) [][2]string {
 // listenerIdentity refuses a hub's own listener's NATS identity where it does not fit the hub,
 // each refusal a core.InputError naming the input by prefix, the hub's path for its listener.
 // callout says the hub has authCallout, audience is the listener's natsAudience, carrier what
-// carries the audience to the listener (for a refusal of whitespace or a control character in
-// it), brokerVariable the broker's setting it must equal, and seed the listener's seed inputs,
-// each as {name, value}.
+// carries the audience to the listener (core.CheckEnvValue names it in a refusal of whitespace
+// or a control character), brokerVariable the broker's setting it must equal, and seed the
+// listener's seed inputs, each as {name, value}.
 //
 // Without the callout the listener connects as the user the hub renders for its seed, so
 // natsAudience, which only the auth service reads, is refused, and the seed's inputs are left to
@@ -530,10 +528,7 @@ func listenerIdentity(prefix string, callout bool, audience, carrier, brokerVari
 		return core.InputErrorf(input, "%s is required with authCallout: behind the auth service the listener connects by its platform "+
 			"identity token for this audience, the one the broker's %s names", input, brokerVariable)
 	}
-	if strings.ContainsFunc(audience, unicode.IsSpace) || strings.ContainsFunc(audience, unicode.IsControl) {
-		return core.InputErrorf(input, "%s holds whitespace or a control character, which %s cannot carry (not echoed)", input, carrier)
-	}
-	return nil
+	return core.CheckEnvValue(input, carrier, audience)
 }
 
 // calloutRefusal is a refusal of the hub's authorization, with core's refusal of the callout, a

@@ -46,11 +46,13 @@ const (
 
 	// The listener pod's credential volume and where its container mounts it: its NATS seed from
 	// the operator's Secret, by reference, or, behind the auth service, the projected token of its
-	// own ServiceAccount, read afresh at each connect.
-	clusteredHubListenerSeedMount = "/var/run/secrets/envoy"
-	clusteredHubListenerSeedFile  = "nats-seed"
-	clusteredHubListenerTokenName = "nats-token"
-	clusteredHubListenerTokenFile = clusteredHubListenerSeedMount + "/" + clusteredHubListenerTokenName
+	// own ServiceAccount, read afresh at each connect. Each volume is named for the one file it
+	// holds.
+	clusteredHubListenerCredentialMount = "/var/run/secrets/envoy"
+	clusteredHubListenerSeedFile        = "nats-seed"
+	clusteredHubListenerSeedPath        = clusteredHubListenerCredentialMount + "/" + clusteredHubListenerSeedFile
+	clusteredHubListenerTokenName       = "nats-token"
+	clusteredHubListenerTokenFile       = clusteredHubListenerCredentialMount + "/" + clusteredHubListenerTokenName
 	// clusteredHubListenerTokenSeconds is the projected token's expirationSeconds: the kubelet
 	// rewrites the file at 80% of that life, 48 minutes, ahead of the 50 minutes at which the
 	// listener's bus moves to a later token (natscred.ServiceRenewBefore), and the auth service
@@ -68,33 +70,35 @@ const (
 func clusteredHubListenerEnv(l clusteredHubListener) corev1.EnvVarArray {
 	env := envVars(l.env)
 	if l.natsAudience == "" {
-		env = append(env, valueEnv("NATS_NKEY_SEED_FILE", clusteredHubListenerSeedMount+"/"+clusteredHubListenerSeedFile))
+		env = append(env, valueEnv("NATS_NKEY_SEED_FILE", clusteredHubListenerSeedPath))
 	}
 	return append(env, valueEnv("ENVOY_API_ALLOW_UNAUTHENTICATED", "1"))
 }
 
 // clusteredHubListenerCredential is the listener pod's one credential volume, mounted read-only at
-// clusteredHubListenerSeedMount: the projected token of the pod's own ServiceAccount for
+// clusteredHubListenerCredentialMount: the projected token of the pod's own ServiceAccount for
 // natsAudience behind the auth service, and otherwise the seed from the operator's Secret.
 func clusteredHubListenerCredential(l clusteredHubListener) (corev1.VolumeMountArgs, corev1.VolumeArgs) {
+	name, volume := clusteredHubListenerSeedFile, corev1.VolumeArgs{}
 	if l.natsAudience != "" {
-		return corev1.VolumeMountArgs{
-			Name: pulumi.String(clusteredHubListenerTokenName), MountPath: pulumi.String(clusteredHubListenerSeedMount), ReadOnly: pulumi.Bool(true),
-		}, corev1.VolumeArgs{Name: pulumi.String(clusteredHubListenerTokenName), Projected: &corev1.ProjectedVolumeSourceArgs{
+		name, volume.Projected = clusteredHubListenerTokenName, &corev1.ProjectedVolumeSourceArgs{
 			Sources: corev1.VolumeProjectionArray{corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{
 				Audience: pulumi.String(l.natsAudience), ExpirationSeconds: pulumi.Int(clusteredHubListenerTokenSeconds),
 				Path: pulumi.String(clusteredHubListenerTokenName),
 			}}},
-		}}
+		}
+	} else {
+		volume.Secret = &corev1.SecretVolumeSourceArgs{
+			SecretName: pulumi.String(l.seedSecretName),
+			Items: corev1.KeyToPathArray{corev1.KeyToPathArgs{
+				Key: pulumi.String(l.seedSecretKey), Path: pulumi.String(clusteredHubListenerSeedFile),
+			}},
+		}
 	}
+	volume.Name = pulumi.String(name)
 	return corev1.VolumeMountArgs{
-		Name: pulumi.String("nats-seed"), MountPath: pulumi.String(clusteredHubListenerSeedMount), ReadOnly: pulumi.Bool(true),
-	}, corev1.VolumeArgs{Name: pulumi.String("nats-seed"), Secret: &corev1.SecretVolumeSourceArgs{
-		SecretName: pulumi.String(l.seedSecretName),
-		Items: corev1.KeyToPathArray{corev1.KeyToPathArgs{
-			Key: pulumi.String(l.seedSecretKey), Path: pulumi.String(clusteredHubListenerSeedFile),
-		}},
-	}}
+		Name: pulumi.String(name), MountPath: pulumi.String(clusteredHubListenerCredentialMount), ReadOnly: pulumi.Bool(true),
+	}, volume
 }
 
 // clusteredHubListenerSelector is the selector labels of the hub's session listener, the pod the

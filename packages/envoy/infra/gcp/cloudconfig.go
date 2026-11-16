@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/internal/bus"
 )
 
 // Where the VM keeps what its units read. Container-Optimized OS mounts / read-only; /etc and
@@ -404,6 +405,11 @@ func (v vm) natsUnit() string {
 	}, "ExecStop=/usr/bin/docker stop -t 30 nats")
 }
 
+// systemdEnvEscapes keeps the service audience literal through ExecStart's quoting,
+// backslash, environment-variable and unit-specifier expansion. Other environment arguments
+// retain their existing rendering, including when the new service identity inputs are unset.
+var systemdEnvEscapes = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$", "%", "%%")
+
 // listenerUnit runs the hub's Envoy listener on the host's network, after NATS. A listener with a
 // seed has it fetched before every start: a fetch that fails fails the start, and the unit's
 // restart fetches again 10 seconds later. A listener behind the auth service has no seed, and so
@@ -419,6 +425,9 @@ func (v vm) listenerUnit() string {
 		service = append(service, "ExecStartPre="+seedEnvPath+" "+listenerEnvPath+" "+v.listener.seedSecret)
 	}
 	for _, e := range v.listener.env {
+		if strings.HasPrefix(e, bus.ServiceGoogleAudienceEnvVar+"=") && strings.ContainsAny(e, `\'"$%`) {
+			e = `"` + systemdEnvEscapes.Replace(e) + `"`
+		}
 		run = append(run, "-e", e)
 	}
 	return containerUnit("Envoy's listener, which the tailnet reaches through Tailscale Serve", natsService, "envoy-listener",
