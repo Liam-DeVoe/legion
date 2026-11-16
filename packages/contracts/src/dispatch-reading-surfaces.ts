@@ -114,12 +114,13 @@ export type DispatchReadingSurface =
   | "delivery-excluded-repos";
 
 /**
- * The six ways a stored text names a node, each of which a rendered surface reads as the node's
- * name and opens (INFRA-1702's check A7): an issue key written bare, a `dispatch://` address, a
- * URL of this dashboard, a question block's `#id`, an address whose item id is written short,
- * and a mention of a party. Five of them are read from the text and the graph alone. A
- * question id is read against the document the text's own record belongs to, so a surface
- * whose text is no record, or is a record that belongs to no document, cannot carry it.
+ * The seven ways a stored text names a node, each of which a rendered surface reads as R8 says
+ * (INFRA-1702's checks A7 and A8): an issue key written bare, a `dispatch://` address, a URL of
+ * this dashboard, a question block's `#id`, an address whose item id is written short and a
+ * mention of a party each read as the node's name, and a link to a node whose words its author
+ * wrote reads as those words; each opens its node. Six of them are read from the text and the
+ * graph alone. A question id is read against the document the text's own record belongs to, so a
+ * surface whose text is no record, or is a record that belongs to no document, cannot carry it.
  */
 export const DISPATCH_READING_FORMS = [
   "bare-key",
@@ -128,6 +129,7 @@ export const DISPATCH_READING_FORMS = [
   "question-id",
   "short-id",
   "party",
+  "worded-link",
 ] as const;
 
 export type DispatchReadingForm = (typeof DISPATCH_READING_FORMS)[number];
@@ -159,13 +161,15 @@ export interface DispatchReadingSurfaceRow {
    *  belongs to no document. The row's browser driver reads this, so the text it stores holds
    *  every other form and the surface is held to each of them (`e2e/reading-rows.ts`). */
   readonly cannotCarry?: DispatchReadingUncarried;
-  /** The test that proves a row drawn through the plain-text projection reads its text as the
-   *  one reader does: a browser driver or a unit test. Such a row has no driver in the walk, which
-   *  drives the rendered rows alone, so this names what holds it; the walk's gate fails when the
-   *  file does not exist or holds no test of that title (`e2e/__tests__/reading-walk.test.ts`),
-   *  and the source test fails when a row with a mount of the projection names none
-   *  (`surface-lists.test.ts`). */
-  readonly proof?: DispatchReadingProof;
+  /** The test that proves a row the walk does not drive reads its text as the row says: a row
+   *  drawn through the plain-text projection, which reads its text as the one reader does, or a
+   *  card a reader of its own draws. Each is a browser driver or a unit test, and a row whose
+   *  claim takes more than one test names each of them. Such a row has no driver in the walk,
+   *  which drives the rendered rows alone, so this names what holds it; the walk's gate fails
+   *  when a file does not exist or holds no test of that title
+   *  (`e2e/__tests__/reading-walk.test.ts`), and the source test fails when a row with a mount of
+   *  the projection names none (`surface-lists.test.ts`). */
+  readonly proof?: DispatchReadingProof | readonly DispatchReadingProof[];
   /** The kinds of record a rendered surface shows that carry fewer forms than the rest of it -
    *  each with its own driver in the walk, which stores the forms that arm carries. A row's own
    *  `cannotCarry` is what its other records cannot carry. */
@@ -916,6 +920,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // The cards under a body: the renderer draws them itself, so no surface pairs a card with a
   // body by hand.
   {
+    cannotCarry: {
+      forms: ["worded-link"],
+      why: "A body draws cards only when it is nothing but references (`Unfurl.tsx`'s `referencesOnly`), and a worded link's words are words of the body's own, so a body that holds one draws no card. The worded link is held on every other rendered surface.",
+    },
     files: ["packages/dispatch/web/src/features/refs/MarkdownBody.tsx"],
     reach:
       "Any rendered body whose text is nothing but references, `.dispatch-markdown` + the cards after it",
@@ -945,9 +953,21 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "reference-card-words",
   },
   // The one reader this change does not fold: a GitHub issue or pull request, matched and drawn
-  // by the card itself.
+  // by the card itself. The walk drives it not, so its proofs are the card's own rows: an
+  // issue's card draws its title and its body formatted, and a pull request's card matches the
+  // URL the body wrote, reads it from GitHub and links to it.
   {
     files: ["packages/dispatch/web/src/features/refs/Unfurl.tsx"],
+    proof: [
+      {
+        file: "packages/dispatch/web/src/features/refs/Unfurl.test.tsx",
+        test: "Unfurl renders a GitHub issue's body formatted, on one run of text, with no syntax",
+      },
+      {
+        file: "packages/dispatch/web/src/features/refs/Unfurl.test.tsx",
+        test: "Unfurl links a GitHub pull request's card to the URL the body wrote",
+      },
+    ],
     reach: "A GitHub issue or pull-request card under a body",
     reason:
       "A GitHub issue or pull request is no record of this Dispatch and no `dispatch://` address names one: the card matches the GitHub URL itself and reads the title and body from GitHub's API, which is the one reader this change does not fold into the shared one.",

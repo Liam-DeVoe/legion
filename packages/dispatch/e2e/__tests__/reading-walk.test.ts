@@ -243,7 +243,7 @@ function readRepositoryFile(file: string): string | undefined {
 
 test("every proof a row names is a test its file declares", () => {
   const proved = DISPATCH_READING_SURFACES.flatMap((row) =>
-    row.proof === undefined ? [] : [[row.surface, row.proof] as const]
+    row.proof === undefined ? [] : [row.proof].flat().map((proof) => [row.surface, proof] as const)
   );
   // A guard on the list itself: were no row to name a proof, this rule would hold nothing.
   expect(proved.length).toBeGreaterThan(5);

@@ -2,8 +2,11 @@ import {
   kindOrder,
   REF_PICKER_HEADINGS,
   REF_PICKER_INSTRUCTION,
+  REF_PICKER_WORDS,
   type RefPickerDoor,
 } from "../web/src/features/refs/ref-picker";
+import { getArtifactText } from "./api";
+import { documentEditor, openSpec, placeCaret } from "./editor";
 import {
   commentField,
   highlightedRow,
@@ -13,6 +16,7 @@ import {
   refPicker,
 } from "./ref-picker";
 import {
+  ANCHOR,
   COMPONENT_TITLE,
   PERSON_LOGIN,
   ROLE_REFERENCE,
@@ -23,6 +27,7 @@ import {
 } from "./reference-surfaces";
 import { expect, test } from "./test";
 import { asUser } from "./users";
+import { NO_MATCH } from "./writing-boxes";
 
 /**
  * INFRA-1702's `c-picker-three-doors`: one picker behind `[[`, `@` and `#`.
@@ -36,9 +41,17 @@ import { asUser } from "./users";
  * picker lists the kinds whose sources need no query, the parties and the components, with one
  * row saying what the next two letters will add.
  *
- * One box carries all of it: the issue Conversation's comment composer, which offers every
- * kind. That each of the other boxes opens the same doors over the same rows is
+ * One box carries every row but the last: the issue Conversation's comment composer, which
+ * offers every kind. That each of the other boxes opens the same doors over the same rows is
  * `writing-surfaces.e2e.ts`.
+ *
+ * The check's negative controls are rows here too. In the same comment composer, a space typed
+ * before any row is taken closes the list and leaves the typed words, Escape closes it and
+ * leaves the trigger, a query nothing answers shows the empty state and inserts nothing, and
+ * Ctrl+K opens the search palette and no reference dialog. The last row types a heading as `#`
+ * and a space in the document body, the one box whose editor makes those two characters a
+ * heading (the commonmark preset's heading input rule, which the live editor installs), and
+ * holds that it stays one.
  */
 
 /** The headings this door ranks `present` in: the door's own kind order, restricted to the
@@ -189,6 +202,120 @@ test("the arrows move, Enter and Tab take the row, and the pick lands at the car
     await field.pressSequentially("[the warm one](#cache");
     await list.getByRole("option", { name: world.target.title }).click();
     await expect(field).toHaveValue(`[the warm one](dispatch://${world.target.key}`);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): the one reference world again, and the picker opened four times in the comment
+// composer, three of them over a query the search route answers before the row goes on.
+test("a space or Escape closes the picker over the typed words, a query nothing answers inserts nothing, and Ctrl+K opens the search palette", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const world = await seedReferenceWorld();
+  const alice = await asUser(browser, "alice");
+
+  // The four controls share one box, the Conversation's comment composer that the two rows
+  // above drive, because what each one asserts is the shared field's: the list it closes, the
+  // draft it leaves, and the key it hands on to the page.
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${world.host.key}/conversation`);
+    const field = commentField(page);
+    const list = refPicker(page);
+
+    // A space typed before any row is taken closes the list, and every word typed stays: the
+    // door, its query and the words after the space. The list has a row to take when the space
+    // is typed, so the space is what declines it. The unit row is useRefPicker.test.tsx's "a
+    // space typed before a row is taken closes the picker, leaving a heading a heading".
+    const answered = await openRefPicker(field, "@cache");
+    await expect.poll(() => pickerRows(answered)).toContain(`Issues: ${world.target.title}`);
+    await field.pressSequentially(" is warm");
+    await expect(list).toHaveCount(0);
+    await expect(field).toHaveValue("@cache is warm");
+
+    // Escape closes the list and leaves the trigger the reader typed, and the list stays shut
+    // while the reader writes on after it. The unit rows are useRefPicker.test.tsx's "Escape
+    // closes the picker and leaves the character the reader typed" and MentionField.test.tsx's
+    // "an open picker takes the arrows, Enter, Tab and Escape ahead of the host".
+    await field.fill("");
+    await openRefPicker(field, "@ca");
+    await field.press("Escape");
+    await expect(list).toHaveCount(0);
+    await expect(field).toHaveValue("@ca");
+    await field.pressSequentially("che");
+    await expect(field).toHaveValue("@cache");
+    await expect(list).toHaveCount(0);
+
+    // A query nothing answers shows the empty state and no row, so Enter takes nothing: the box
+    // types its own line break, as Enter does in this composer, and no address is written. The
+    // unit row is useRefPicker.test.tsx's "the list says it is loading, that nothing matches,
+    // and that Dispatch is unreachable".
+    await field.fill("");
+    const empty = await openRefPicker(field, `[[${NO_MATCH}`);
+    await expect(empty.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
+    await expect(empty.getByRole("option")).toHaveCount(0);
+    await field.press("Enter");
+    await expect(field).toHaveValue(`[[${NO_MATCH}\n`);
+    await expect(list).toHaveCount(0);
+
+    // Ctrl+K in the composer, with the list open, opens the search palette and no other dialog:
+    // the build before this change opened a reference dialog of the composer's own on that key
+    // instead. The key reaches the palette and types nothing into the draft, and the list
+    // closes with the box the palette takes the focus from. The unit row is
+    // surface-lists.test.ts's "no file imports a reader this change deleted", whose row "the
+    // Ctrl+K reference dialog is imported nowhere" holds that the dialog's module is gone.
+    await field.fill("");
+    await openRefPicker(field, "@ca");
+    await field.press("Control+k");
+    await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Search" })).toBeFocused();
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+    await expect(list).toHaveCount(0);
+    await expect(field).toHaveValue("@ca");
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): the one reference world, and the host's spec opened in the live editor and
+// connected before the row types a heading into it and reads it back from the stored text.
+test("in the document body `#` and a space make a heading, and the picker the `#` opened closes", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const world = await seedReferenceWorld();
+  const alice = await asUser(browser, "alice");
+
+  // The document body is the box where `#` and a space make a heading: its editor converts a
+  // block that starts with them into one. A textarea keeps the characters as they are typed,
+  // which the row above already holds for a space. The unit row is useRefPicker.test.tsx's "a
+  // space typed before a row is taken closes the picker, leaving a heading a heading", which
+  // reads the characters in a textarea; no unit row types a heading into the editor.
+  try {
+    const page = await alice.newPage();
+    await openSpec(page, world.host.key, ANCHOR);
+    const editor = documentEditor(page);
+    const list = refPicker(page);
+
+    // A block of its own after the anchor paragraph, where `#` is both a door and the start of
+    // a heading.
+    await placeCaret(page, "after", ANCHOR);
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("#");
+    await expect(list).toBeVisible();
+
+    // The space closes the list and reaches the editor, which makes the block a heading.
+    await page.keyboard.type(" Release notes");
+    await expect(list).toHaveCount(0);
+    await expect(editor.getByRole("heading", { level: 1, name: "Release notes" })).toBeVisible();
+    // The stored text holds the heading, and not a paragraph holding `\# Release notes`.
+    await expect
+      .poll(async () => (await getArtifactText(world.host.primary_artifact_id)).markdown, {
+        timeout: 30_000,
+      })
+      .toContain(`${ANCHOR}\n\n# Release notes\n\n`);
   } finally {
     await alice.close();
   }

@@ -8,7 +8,7 @@ import {
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { type FakeSession, setLiveSessions } from "./agents";
+import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import {
   createAsk,
   createComment,
@@ -33,6 +33,11 @@ import { sessionIds } from "./session-ids";
  * the line under the box says what a pick does on its write (`hintWords`). One `test()` per
  * covered box, driven from `DISPATCH_WRITING_BOXES`, so a box the list gains with no row of its
  * own, and a row for a box the list no longer holds, are both visible.
+ *
+ * A box whose write delivers is held to its delivery as well (INFRA-1702's
+ * `c-delivery-unchanged`): the party picked in it reaches the write, and the fake Envoy listener
+ * takes one frame for that party, carrying the body the box held, once the box's own send control
+ * is pressed (`expectDeliveryClaim`). The driver of each box hands that control in.
  *
  * The rows the picker finds are the world's own, and the query that finds them (`QUERY`) is a
  * word no party, person or component holds: so every box lists the same three rows whatever it
@@ -65,6 +70,9 @@ export const SESSION: FakeSession = {
   session_id: sessionIds.planner,
   title: "Zephyr bot",
 };
+
+/** What a pick of `SESSION` writes into a box: the link that names the session. */
+export const SESSION_MENTION = `[@${SESSION.title}](dispatch://agent/${SESSION.session_id})`;
 
 /** The agent writes of this world, which are never the reader's own. */
 const AGENT = { actor: { id: SESSION.session_id, kind: "session" as const }, as: "agent" as const };
@@ -337,16 +345,33 @@ async function expectCaretPick(field: Locator, world: BoxWorld): Promise<void> {
   await field.fill("");
 }
 
-/** What a box says it does with a picked party, which is its row's own `delivers`: a box that
- *  delivers lists the party under the field, and one that does not lists nobody. The claim is
+/** The words a delivering box's draft holds after the party picked in it, so the frame its send
+ *  makes is read against the whole body the box held, not the mention alone. */
+const DELIVERED_WORDS = " can you take a look?";
+
+/** Presses a box's own send control: the button the box draws, which its driver names. */
+export type SendBox = () => Promise<void>;
+
+/** What a box does with a picked party, which is its row's own `delivers`. A box that does not
+ *  deliver lists nobody under the field. A box that delivers lists the party there, and its own
+ *  send then reaches that party: the fake Envoy listener takes one frame, for the session picked,
+ *  carrying the body the box held (a comment's frame carries its body as `message`). The claim is
  *  driven rather than read, because a row that promises a delivery no reader of the write makes
  *  is exactly what misleads the writer: the suggestion Replacement box said a picked party was
- *  told while neither reader of a comment reads `suggestion.replace_with`. */
+ *  told while neither reader of a comment reads `suggestion.replace_with`. So a delivering row
+ *  needs `send`, and a delivering row the list gains with a driver that hands none fails here
+ *  rather than passing unsent. A delivering box's send may close it, so the box is left as the
+ *  send leaves it, and its driver goes on from there. */
 export async function expectDeliveryClaim(
   field: Locator,
   box: DispatchWritingBox,
-  write: DispatchWriting
+  write: DispatchWriting,
+  send?: SendBox
 ): Promise<void> {
+  const sends = dispatchWritingBox(box, write).delivers ? send : null;
+  if (sends === undefined) {
+    throw new Error(`${box} writing ${write} delivers, and its driver passes no send to prove it`);
+  }
   const page = field.page();
   await keyboardOnly(field);
   await field.fill("");
@@ -355,12 +380,24 @@ export async function expectDeliveryClaim(
   await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["@"]);
   await field.press("Enter");
   const targets = page.getByRole("list", { name: "Mention targets" });
-  if (dispatchWritingBox(box, write).delivers) {
-    await expect(targets).toHaveText(`session:${SESSION.session_id}`);
-  } else {
+  if (sends === null) {
     await expect(targets).toHaveCount(0);
+    await field.fill("");
+    return;
   }
-  await field.fill("");
+  await expect(targets).toHaveText(`session:${SESSION.session_id}`);
+  await field.press("End");
+  await field.pressSequentially(DELIVERED_WORDS);
+  const body = `${SESSION_MENTION}${DELIVERED_WORDS}`;
+  await expect(field).toHaveValue(body);
+  const before = (await getSentMessages()).length;
+  await sends();
+  // `toMatchObject` holds an array to its length, so a second frame fails as a missing one does.
+  await expect
+    .poll(async () => (await getSentMessages()).slice(before), {
+      message: `${box} writing ${write}: the frames its send made`,
+    })
+    .toMatchObject([{ message: body, target_session: SESSION.session_id }]);
 }
 
 /** Everything the box itself is held to, which is every claim but the hint: the three doors,
