@@ -363,8 +363,57 @@ run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the pin" "$(has_line "UNKNOWN: envoy: ${envoy_pin} is an index with no platform but unknown/unknown")"
 
-echo "case: --listeners, the measured shape: envoy's pin built before the transfer"
+# sjawhar/legion is this repository under its name before the transfer, and the deployment records
+# the two names as one repository in legion/Pulumi.prod.yaml's repositoryRenames, the value the
+# daemon's ghrepo.Renames reads (packages/daemon/internal/ghrepo/renames.go). A build made under
+# the old name is a build of this repository: it is compared like any other, and refused only for
+# what the comparison says. A source no recorded pair makes one with this repository is still
+# refused by name, and an unreadable record is UNKNOWN rather than a guess either way.
+#
+# Negative control, run when this was written: drop the alias check from judge; the rows below
+# that record the pair print `GATE SHUT: envoy runs an image built from …` and make no compare.
+readonly renamed_fleet="    - key: INFRA
+      replicas: 0
+      repositoryRenames:
+        - from: sjawhar/legion
+          to: cybermonklabs/legion"
+readonly renamed_note="; built as ${old_name}, which legion/Pulumi.prod.yaml's repositoryRenames makes one repository with ${legion}"
+
+echo "case: --listeners, a pin built under the repository's old name, the rename recorded, ahead"
+new_case listeners-renamed-ahead
+legion_stack "$renamed_fleet"
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+index "$envoy_pin" "$old_name" "$other_rev"
+index "$cluster_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+compare "$other_rev" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "compares it and names the recorded rename" "$(has_line "PASS: envoy runs ${other_rev} (ahead of ${commit})${renamed_note}")"
+check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
+
+echo "case: --listeners, the measured shape: envoy's pin built under the old name, behind"
 new_case listeners-measured
+legion_stack "$renamed_fleet"
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+index "$envoy_pin" "$old_name" "$other_rev"
+index "$cluster_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+compare "$other_rev" behind 400
+run_gate -- --listeners "$commit"
+check "exits 1" "$(is "$status" 1)"
+check "shuts naming its revision and how far behind, not its source" \
+  "$(has_line "GATE SHUT: envoy runs ${other_rev} (behind ${commit} by 400)${renamed_note}")"
+check "compares its revision in cybermonklabs/legion" "$(grep -qF "compare/${commit}...${other_rev}" "$calls" && echo true || echo false)"
+check "still reads and compares the other two" \
+  "$(grep -qxF "PASS: envoy-cluster runs ${ahead_rev} (ahead of ${commit})" "$out" && grep -qxF "PASS: dispatch runs ${ahead_rev} (ahead of ${commit})" "$out" && echo true || echo false)"
+
+echo "case: --listeners, a pin built under the old name with no rename recorded"
+new_case listeners-no-rename
+legion_stack "    - key: INFRA
+      replicas: 0"
 listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
 index "$envoy_pin" "$old_name" "$other_rev"
 index "$cluster_pin" "$legion" "$ahead_rev"
@@ -373,10 +422,62 @@ compare "$ahead_rev" ahead 0
 compare "$other_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 1" "$(is "$status" 1)"
-check "refuses naming the pre-transfer source" "$(has_line "GATE SHUT: envoy runs an image built from ${old_name}")"
+check "refuses naming the source" "$(has_line "GATE SHUT: envoy runs an image built from ${old_name}")"
 check "makes no compare call for its revision" "$(lacks "...${other_rev}" "$calls")"
-check "still reads and compares the other two" \
-  "$(grep -qxF "PASS: envoy-cluster runs ${ahead_rev} (ahead of ${commit})" "$out" && grep -qxF "PASS: dispatch runs ${ahead_rev} (ahead of ${commit})" "$out" && echo true || echo false)"
+
+echo "case: --listeners, a pin built under the old name when the rename record cannot be read"
+new_case listeners-renames-unreadable
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+index "$envoy_pin" "$old_name" "$other_rev"
+index "$cluster_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+compare "$other_rev" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the record it could not read" \
+  "$(has_line "UNKNOWN: envoy: built from ${old_name}, and the repository renames of theorem-labs/agent-infra legion/Pulumi.prod.yaml could not be read: gh: Not Found (HTTP 404)")"
+check "makes no compare call for its revision" "$(lacks "...${other_rev}" "$calls")"
+
+echo "case: --listeners, a recorded rename holds whatever the case of the source's name"
+new_case listeners-renamed-case
+legion_stack "$renamed_fleet"
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+index "$envoy_pin" "https://github.com/SJawhar/Legion" "$other_rev"
+index "$cluster_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+compare "$other_rev" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
+
+echo "case: --listeners, a recorded rename makes no other repository one with this one"
+new_case listeners-renamed-other-source
+legion_stack "$renamed_fleet"
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+index "$envoy_pin" "$agent_infra" "$other_rev"
+index "$cluster_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+compare "$other_rev" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 1" "$(is "$status" 1)"
+check "refuses naming the source" "$(has_line "GATE SHUT: envoy runs an image built from ${agent_infra}")"
+check "makes no compare call for its revision" "$(lacks "...${other_rev}" "$calls")"
+
+echo "case: a daemon built under the old name, the rename recorded on another project's entry"
+new_case daemons-renamed
+legion_stack "$renamed_fleet
+    - key: LINUX
+      replicas: 1
+      daemonImage: ${worker_a}"
+single "$worker_a" "$old_name" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+run_gate -- "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "compares it and names the recorded rename" "$(has_line "PASS: LINUX runs ${ahead_rev} (ahead of ${commit})${renamed_note}")"
+check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 
 echo "case: --listeners, a listener pin behind the commit"
 new_case listeners-behind

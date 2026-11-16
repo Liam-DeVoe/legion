@@ -4511,6 +4511,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   and a claim record no read can decode is, as on the publish route, `500 {"error":"envoy: the claim record of role <role> is unreadable: <reason>"}` with no `Retry-After`.
   Every holder answer, the 200 and the 404 alike, carries `claim_revision`: the `envoy_roles` revision of the role's claim record as this lookup leaves it, which `/v1/roles/set` takes back as `if_claim_revision` (the 503s and the unreadable-record 500 above carry an error alone, as they always did).
   It is the revision the live holder's claim was read at, the revision of a lapsed claim this lookup kept (a restored claim still inside its restart grace), and `0` for a role no record claims — an unclaimed one, and a lapsed holder whose claim this lookup released.
+  The role is named in either form, `INFRA.<role>` or `<role>` alone, and a claim is keyed by the bare name whichever form claimed it, so this route, a publish to a role's lane and the lane's own delivery each read the name through `contracts.CanonicalRole` before they resolve the holder:
+  a send to `notifications.role.<P>.<role>` reaches the holder that claimed `<role>`.
 
 - `/v1/roles/set` (POST)
 
@@ -4606,6 +4608,9 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 - A topic stored in the old form of its name, an issue's key without its project, a role's or an agent's name without one, is stored as the caller wrote it and named in `warnings` with its new form (`<old> is the old form of <new>; register <new>`), and counted on `envoy_listener_legacy_subjects_total{kind="interest"}` (`store.Registry.LegacyTopicWarnings`).
   The session's own agent subject in the old form, which the plugins add to every registration, is counted and not named, and only the caller's own topics are weighed, so the agent subject the route adds itself is never counted ("Session consumers").
+
+- A session's own client is the last reader of a delivered frame, and it takes both forms too (`packages/envoy-client/src/consumer-delivery.ts`): a frame whose subject names the project reaches a session that followed the form without it, and the other way round, and a message on the session's own inbox under any project is its own, while another session's is refused in either form.
+  A client that compared the spellings as they stand would answer such a frame `done` and move its resume point past it, losing the message with no notice.
 
 - The registration is also the holder's heartbeat for the role claims it holds:
   it stamps `renewed_at` on each claim this session holds that names this same `client_instance_id`, among the roles it weighs, and the first registration of that session id stating any instance adopts a claim that names no process (`store.Registry.RenewRoleClaims`), which is what `/v1/roles/set` and the role claim reaper weigh against the live window.
