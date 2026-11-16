@@ -57,8 +57,11 @@ const (
 // such line, as the importer of .dispatch/architecture refuses it (both by text.Storable's rule),
 // and is read all the same. A block whose opening line the grammar refuses, or whose name is not
 // one of the four, gives no node, and its lines up to its closing line are its own; every other
-// block gives its node even when Parse finds a problem in it, so one fault does not make others
-// appear.
+// block gives its node even when Parse finds a problem in it. A block with no closing line runs on
+// to the next line that is exactly ":::", so the block after it gives no node either
+// (nested-block). So one fault can give more than one problem: a node that names a lost block, or
+// that a lost block named, can then break a rule of its own, such as leaf-without-check or
+// check-serves.
 func Parse(files map[string][]byte) (Tree, []Problem) {
 	var r reader
 	for _, name := range slices.Sorted(maps.Keys(files)) {

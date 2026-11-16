@@ -1,14 +1,12 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"slices"
 
-	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
@@ -55,16 +53,13 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	j, err := read(stderr, dir)
+	what, empty := noSpecFile(j, err)
 	switch {
-	case errors.Is(err, notes.ErrNoDirectory) || err == nil && j.files == 0:
+	case empty:
 		// An instrument that read no file has not passed: every text of no file is approved. But
 		// git keeps no empty directory, so a revert of the change that added the last spec file
 		// leaves none (R2: the revert "takes it out of the files"), and the caller can ask for the
 		// empty tree.
-		what := "holds no spec file"
-		if err != nil {
-			what = "does not exist"
-		}
 		if !*allowEmpty {
 			say(stderr, "%s: %s, and compare reads it as the empty tree only with --allow-empty", dir, what)
 			return 2
