@@ -11,33 +11,38 @@ import (
 
 // AccountTokenCacheTTL is how long an AccountToken reuses the bytes it last read. Opening the file
 // on every call would cost a read per request for a credential that changes a few times a day: the
-// kubelet rewrites a projected token in place well before it expires, and the broker refuses one
-// that lives longer than an hour from its issue, so bytes this fresh are never near expiry and a
-// rewrite reaches the broker within this window of it.
+// kubelet rewrites a projected token in place well before it expires, and every token read here
+// lives at most an hour from its issue (the secrets broker refuses a longer one, and Dispatch's
+// listener token is projected for that hour too), so bytes this fresh are never near expiry and a
+// rewrite reaches the callee within this window of it.
 const AccountTokenCacheTTL = 30 * time.Second
 
-// Account is the caller's own platform identity, read fresh at call time: the bearer every call
-// this package makes to the secrets broker presents, from which the broker resolves the calling
-// service (BROKER_API_ACCOUNTS). It is an interface because the two callers hold two kinds of
-// identity and the broker takes either: Dispatch and a listener in a pod hold a projected
-// Kubernetes ServiceAccount token in a file (AccountToken), and a listener on a Compute Engine
-// VM holds no Kubernetes token at all and asks its metadata server for the machine's own Google
-// identity token instead (GoogleAccount).
+// Account is the caller's own platform identity, read fresh at call time: the bearer a call
+// presents to a callee that resolves its caller from it, for the audience that callee verifies.
+// The secrets broker is one, for every call this package makes (BROKER_API_ACCOUNTS); Dispatch's
+// Envoy listener is another, for every call Dispatch makes to it with ENVOY_ACCOUNT_TOKEN_FILE
+// (internal/dispatch/envoy, WithAccount), which the listener verifies with its ENVOY_OIDC_ISSUER
+// and ENVOY_OIDC_AUDIENCE. It is an interface because the callers hold two kinds of identity and
+// the broker takes either: Dispatch and a listener in a pod hold a projected Kubernetes
+// ServiceAccount token in a file (AccountToken), and a listener on a Compute Engine VM holds no
+// Kubernetes token at all and asks its metadata server for the machine's own Google identity
+// token instead (GoogleAccount).
 //
-// Read is called on the path of one introspection, so an implementation caches what it read: the
+// Read is called on the path of one call, so an implementation caches what it read: the
 // credentials behind both implementations rotate, which is why neither is read once at boot.
 type Account interface {
-	// Read is the bearer to present, or an error that never reached the broker: a deployment's
-	// own credential it could not read is never an empty bearer for the broker to refuse.
+	// Read is the bearer to present, or an error that never reached the callee: a deployment's
+	// own credential it could not read is never an empty bearer for the callee to refuse.
 	Read() (string, error)
 }
 
 // AccountToken is the Account of a caller holding a projected Kubernetes ServiceAccount token in
-// a file: Dispatch's own (DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE) and a listener's in a pod
-// (ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE). The broker resolves the calling service from it
-// (BROKER_API_ACCOUNTS). One reader serves every call a program makes — the credential-request
-// UI's relay (internal/dispatch/agentsecrets) and this package's introspection — so a projected
-// token is cached once rather than once per caller.
+// a file: Dispatch's own for the secrets broker (DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE) and
+// for its Envoy listener (ENVOY_ACCOUNT_TOKEN_FILE), and a listener's in a pod for the broker
+// (ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE). Each callee resolves the caller from it. One reader
+// serves every call a program makes with its file — for the broker's, the credential-request UI's
+// relay (internal/dispatch/agentsecrets) and this package's introspection — so a projected token
+// is cached once rather than once per caller.
 //
 // A projected token rotates, so the path is read at call time and never once at boot.
 type AccountToken struct {
@@ -59,12 +64,13 @@ func NewAccountToken(path string) *AccountToken {
 	return &AccountToken{Path: path, TTL: AccountTokenCacheTTL}
 }
 
-// AccountTokenError is a call that never reached the broker because Dispatch could not read its
-// own ServiceAccount token from Path: the file is missing or unreadable, or holds nothing. It is
-// its own type because what is wrong is Dispatch's deployment, not the broker, and a route must
-// say so rather than send the operator to a broker that was never asked.
+// AccountTokenError is a call that never reached its callee (the secrets broker, or Dispatch's
+// Envoy listener) because the caller could not read its own ServiceAccount token from Path: the
+// file is missing or unreadable, or holds nothing. It is its own type because what is wrong is the
+// caller's deployment, not the callee, and a route must say so rather than send the operator to a
+// callee that was never asked.
 type AccountTokenError struct {
-	// Path is the token file Dispatch tried to read.
+	// Path is the token file the caller tried to read.
 	Path string
 	// Err is why it could not: the read's own error, or errEmptyAccountToken.
 	Err error
@@ -81,8 +87,8 @@ var errEmptyAccountToken = errors.New("the file is empty")
 
 // Read is the bearer a call presents: Path's trimmed contents, read again once the copy it cached
 // is older than TTL. A file that cannot be read, or that holds nothing, is an *AccountTokenError
-// naming the path and no request at all, never an empty bearer for the broker to refuse: a
-// projected token Dispatch cannot read is Dispatch's own misconfiguration.
+// naming the path and no request at all, never an empty bearer for the callee to refuse: a
+// projected token the caller cannot read is the caller's own misconfiguration.
 func (a *AccountToken) Read() (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

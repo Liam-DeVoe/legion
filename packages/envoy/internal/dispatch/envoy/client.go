@@ -277,8 +277,9 @@ func WithToken(token string) Option {
 // WithAccount sets the account whose own token every listener call presents as its bearer
 // (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE, a projected Kubernetes ServiceAccount token the
 // listener verifies through its ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair), in place of
-// WithToken's shared bearer. The token is read for each call, never once here: a projected token
-// rotates, and the kubelet rewrites the file in place. A call whose token cannot be read sends no
+// WithToken's shared bearer. Each call asks account for the token, never once here: a projected
+// token rotates, and the kubelet rewrites the file in place, which brokertoken.AccountToken reads
+// again once its copy is AccountTokenCacheTTL old. A call whose token cannot be read sends no
 // request, since one without it would only be refused: it is ErrUnavailable carrying the
 // account's own error (a *brokertoken.AccountTokenError names the file), and never ErrUnreachable,
 // since asking again repeats it.
