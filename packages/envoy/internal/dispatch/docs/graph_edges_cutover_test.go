@@ -1061,8 +1061,10 @@ func rewriteAsThePreviousRelease(t *testing.T, database *store.Store, what, tabl
 }
 
 // The documents the fixture writes. target.md holds the two requirements a plan_task's serves
-// may point at; its second version retypes one of them to a callout, which the attribute does
-// not allow, so the link stored at it is listed by no arm. plan.md holds a pointer at each, the
+// may point at, and the check a risk's prevented_by points at (writeTheStoreClass), since the
+// store's type rule lets prevented_by point at a check block alone; its second version retypes
+// one of the requirements to a callout, which the attribute does not allow, so the link stored
+// at it is listed by no arm. plan.md holds a pointer at each, the
 // first holding a paragraph that mentions both CORE-2 and the target, a mention of CORE-2 from a
 // block inside another block, a block a later version drops and a later one brings back, and a
 // block a later version drops for good.
@@ -1072,11 +1074,13 @@ func rewriteAsThePreviousRelease(t *testing.T, database *store.Store, what, tabl
 const (
 	graphEdgeTarget = ":::requirement{#r1}\nThe view answers one row per edge.\n:::\n\n" +
 		":::requirement{#r2}\nA requirement a later version retypes.\n:::\n\n" +
-		"A paragraph of the target.\n"
+		"A paragraph of the target.\n\n" +
+		":::check{#c1}\nThe view answers the risk's check.\n:::\n"
 
 	graphEdgeRetyped = ":::requirement{#r1}\nThe view answers one row per edge.\n:::\n\n" +
 		":::callout{#r2 kind=\"note\" title=\"\"}\nA requirement a later version retypes.\n:::\n\n" +
-		"A paragraph of the target.\n"
+		"A paragraph of the target.\n\n" +
+		":::check{#c1}\nThe view answers the risk's check.\n:::\n"
 
 	graphEdgePlanPointers = ":::plan_task{#t1 serves=\"dispatch://CORE-1/artifact/target#b-r1\"}\n" +
 		"Serve the requirement, after dispatch://CORE-2 and dispatch://CORE-1/artifact/target.\n:::\n\n" +
@@ -1202,10 +1206,13 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 // microsecond Postgres keeps, so each row the view answers of them is the row stated here.
 var graphEdgeStoredAt = time.Date(2026, time.November, 16, 9, 0, 0, 0, time.UTC)
 
-// graphEdgeConstrained is the block the fixture holds to a constraint and a risk's check points
-// at: the target's first requirement, which every version of the target holds and the rollback
-// leaves alone.
-const graphEdgeConstrained = "CORE-1/target#r1"
+// graphEdgeConstrained is the block the fixture holds to a constraint: the target's first
+// requirement, which every version of the target holds and the rollback leaves alone. A risk's
+// check points at graphEdgeChecked, the target's check, which every version holds as well.
+const (
+	graphEdgeConstrained = "CORE-1/target#r1"
+	graphEdgeChecked     = "CORE-1/target#c1"
+)
 
 // writeTheStoreClass states, through the store's own writer, one tuple of each kind the view's
 // tuple arm answers as its class `store` (migration 20261116091932) and a part_of out of a lens:
@@ -1247,7 +1254,7 @@ func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 		{graphstore.KindLens, lens, graphstore.TupleTriggeredBy, graphstore.KindLens, trigger},
 		{graphstore.KindLens, lens, graphstore.TupleChangedByRun, graphstore.KindInteraction, run},
 		{refs.BlockNodeKind, graphEdgeConstrained, graphstore.TupleConstrainedBy, graphstore.KindConstraint, constraint},
-		{graphstore.KindRisk, risk, graphstore.TuplePreventedBy, refs.BlockNodeKind, graphEdgeConstrained},
+		{graphstore.KindRisk, risk, graphstore.TuplePreventedBy, refs.BlockNodeKind, graphEdgeChecked},
 	}
 	tuples := make([]graphstore.Tuple, 0, len(edges))
 	rows := make([]graphEdgeRow, 0, len(edges))

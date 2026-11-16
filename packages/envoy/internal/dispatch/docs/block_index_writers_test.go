@@ -476,6 +476,10 @@ var indexPasses = map[string]string{
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
+	// The nodes of dispatch://INFRA-1950's reasoning kinds - a lens, its findings, a risk and a
+	// constraint - written with their tuples and their author in one store write (graphstore.Write)
+	// from the request alone: they have no projection row, so there is no side of one to read.
+	"api/reasoning_write.go#writeReasoningNodes": "the request's nodes and tuples, its credential and the project of the issue it names",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
@@ -577,7 +581,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
 // the same use as one.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

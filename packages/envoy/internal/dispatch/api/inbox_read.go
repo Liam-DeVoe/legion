@@ -499,6 +499,15 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // and no document - an operator's own write, a session-addressed event - takes no owner row at
 // all, and invariant 1 says nothing about it. graphstore's TestEveryStoreWriteTakesOneLockOrder
 // reads this list and fails if these five are not in it.
+//
+// The pointer type rules (graphstore's pointerRules) add one row lock to a write's node step. A
+// write that asserts or retracts a lens's has_kind tuple without writing that lens's node itself
+// takes the lens's graph_nodes row `for no key update`, after the node rows it wrote and before
+// it appends a tuple (graphstore's checkPointers), so two writes asserting a kind of one lens
+// queue at that row and the second reads the first's tuple; graphstore.Retarget takes the row of
+// the node whose pointer it moves before the rest of its write. The reasoning write
+// (writeReasoningNodes) takes its issue's owner row first, as invariant 1 says, and writes its
+// nodes in one graphstore.Write.
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {

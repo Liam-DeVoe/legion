@@ -28,9 +28,17 @@ import (
 // comment path and the block index, whose projection rows carry a foreign key into graph_nodes
 // and must therefore follow the node - takes WriteUncaused instead, so that the base attributes
 // are appended under that event rather than under the sentinel.
+//
+// Every relation the write appends whose kind the pointer type rules hold (pointerRules) is held
+// to its rule once the nodes are written and before the first tuple is appended
+// (checkPointers), so a write that breaks one appends nothing; its refusal ends the caller's
+// transaction, which rolls back the nodes with it.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	base, err := writeNodes(ctx, tx, nodes, tuples)
 	if err != nil {
+		return err
+	}
+	if err := checkPointers(ctx, tx, nodes, tuples); err != nil {
 		return err
 	}
 	if len(base) == 0 {
@@ -113,7 +121,8 @@ func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple)
 // A held tuple that states a node's state or visibility at a value that attribute does not take
 // is refused (checkBaseValues) before the nodes move, so a refused write sends no statement: a
 // writer appends facts of its own to what WriteUncaused answered (refs.IndexBlocks does), and
-// those reach the store through here alone.
+// those reach the store through here alone. For the same reason a held relation whose kind the
+// pointer type rules hold is held to its rule here (checkPointers), before the nodes move.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	tuples := make([]Tuple, len(write.Tuples))
 	for index, held := range write.Tuples {
@@ -125,6 +134,9 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 		tuples[index] = tuple
 	}
 	if err := checkBaseValues(nil, tuples, nil); err != nil {
+		return err
+	}
+	if err := checkPointers(ctx, tx, write.Nodes, tuples); err != nil {
 		return err
 	}
 	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
