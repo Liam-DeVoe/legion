@@ -96,6 +96,12 @@ func TestWithinProjectsHoldsTheDaemonGrantToItsProjects(t *testing.T) {
 	)
 	require.Equal(t, gadgets, natsgrant.GitHubConsumerName("PUB", "acme/gadgets.js"))
 	require.Equal(t, widgets, natsgrant.GitHubConsumerName("PUB", "acme/widgets"))
+	// The filter each consumer's create names is the one Envoy's listener publishes a repository's
+	// events under (contracts.GithubSubject), a dot in the name written "_".
+	require.Equal(t, gads, natsgrant.GitHubFilter("acme/gadgets.js"))
+	require.Equal(t, wids, natsgrant.GitHubFilter("acme/widgets"))
+	require.True(t, strings.HasPrefix(contracts.GithubSubject("acme", "gadgets.js", "pr.1"), strings.TrimSuffix(gads, ">")),
+		"a published event of acme/gadgets.js falls under its filter")
 	consumers := []string{"dispatch", "mapping", "wake", "ready", "github-acme_2fgadgets_2ejs", "github-acme_2fwidgets"}
 	var info, next, acks []string
 	for _, consumer := range consumers {

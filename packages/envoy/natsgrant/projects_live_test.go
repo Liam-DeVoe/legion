@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -47,7 +48,9 @@ const (
 )
 
 func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
-	pubScope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets"}, Identity: livePUBIdentity}
+	// acme/gadgets.js holds a dot, which its subjects spell "_": the daemon's create and the grant
+	// must name one filter for it (natsgrant.GitHubFilter), or the server refuses the create.
+	pubScope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets", "acme/gadgets.js"}, Identity: livePUBIdentity}
 	privScope := natsgrant.Scope{Projects: []string{"PRIV"}, Repositories: []string{"acme/secret"}, Identity: livePRIVIdentity}
 	largest := natsgrant.Scope{Projects: []string{"INFRA"}, Identity: "legion-daemon-INFRA"}
 	for i := range largestRepositories {
@@ -88,7 +91,8 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	}
 	privIssue := "notifications.dispatch.issue.PRIV.PRIV-1.comment.created"
 	publish("notifications.dispatch.issue.PUB.PUB-1.comment.created", "PUB-1", "PUB-2", "PUB-3", "PUB-4", "PUB-5")
-	publish("notifications.github.acme.widgets.pr.1", "PUB-repository")
+	publish(contracts.GithubSubject("acme", "widgets", "pr.1"), "PUB-repository")
+	publish(contracts.GithubSubject("acme", "gadgets.js", "pr.1"), "PUB-dotted-repository")
 	publish("notifications.github.acme.secret.pr.1", "PRIV-repository")
 	publish(privIssue, "PRIV-secret-1", "PRIV-secret-2", "PRIV-secret-3", "PRIV-secret-4", "PRIV-secret-5")
 
@@ -176,15 +180,17 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		}
 		require.NoError(t, batch.Error(), name)
 	}
-	github := openConsumer(ctx, t, pubJS, natsgrant.GitHubConsumerName("PUB", "acme/widgets"), "notifications.github.acme.widgets.>")
-	batch, err := github.Fetch(2, jetstream.FetchMaxWait(2*time.Second))
-	require.NoError(t, err)
-	var repository []string
-	for msg := range batch.Messages() {
-		repository = append(repository, string(msg.Data()))
-		require.NoError(t, msg.DoubleAck(ctx))
+	for repository, want := range map[string]string{"acme/widgets": "PUB-repository", "acme/gadgets.js": "PUB-dotted-repository"} {
+		github := openConsumer(ctx, t, pubJS, natsgrant.GitHubConsumerName("PUB", repository), natsgrant.GitHubFilter(repository))
+		batch, err := github.Fetch(2, jetstream.FetchMaxWait(2*time.Second))
+		require.NoError(t, err, repository)
+		var bodies []string
+		for msg := range batch.Messages() {
+			bodies = append(bodies, string(msg.Data()))
+			require.NoError(t, msg.DoubleAck(ctx))
+		}
+		require.Equal(t, []string{want}, bodies, repository)
 	}
-	require.Equal(t, []string{"PUB-repository"}, repository)
 
 	// What the server refuses the narrowed PUB daemon: each call fails at the client, and the
 	// server reports a publish violation naming the call's subject.
