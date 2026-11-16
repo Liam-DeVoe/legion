@@ -410,8 +410,8 @@ func TestTheJobACheckNamesRecordsItsResult(t *testing.T) {
 // contracts.SpecCheckObservedMax runes is kept whole; a failing test's log of 10,000 runes keeps
 // its first contracts.SpecCheckObservedStart runes, contracts.SpecCheckObservedCutNote and its
 // last contracts.SpecCheckObservedEnd runes, so its first line and its --- FAIL line stay. The
-// answer, the stored row and the read all hold the kept text. The text of the bound is the
-// control: a route that cuts every text, or none, fails one of the two rows.
+// answer, the stored row, the read and the statement of the run all hold the kept text. The text
+// of the bound is the control: a route that cuts every text, or none, fails one of the two rows.
 func TestAJobsObservedTextIsCutByTheProjectRoutesRule(t *testing.T) {
 	const first, last = "=== RUN   TestX\n", "--- FAIL: TestX (0.01s)\n"
 	log := first + strings.Repeat("x\n", (10000-len(first)-len(last))/2) + last
@@ -428,7 +428,20 @@ func TestAJobsObservedTextIsCutByTheProjectRoutesRule(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			body := jobResultOf("c1", "fail")
 			body["observed"] = row.sent
-			result := jobRecorded(t, "the job's result for c1", rig.post(t, rig.issue, rig.jobToken(nil), body))
+			response := rig.post(t, rig.issue, rig.jobToken(nil), body)
+			result := jobRecorded(t, "the job's result for c1", response)
+			statement := decodeBody[struct {
+				Result struct {
+					Attestation *struct {
+						Predicate struct {
+							Observed string `json:"observed"`
+						} `json:"predicate"`
+					} `json:"attestation"`
+				} `json:"result"`
+			}](t, response).Result.Attestation
+			if statement == nil {
+				t.Fatalf("the job's result for c1 carries no attestation: %s", response.Body.String())
+			}
 			var stored string
 			if err := rig.database.Pool.QueryRow(context.Background(),
 				`select observed from check_results where id = $1::uuid`, result.ID).Scan(&stored); err != nil {
@@ -440,7 +453,9 @@ func TestAJobsObservedTextIsCutByTheProjectRoutesRule(t *testing.T) {
 					read = held.Observed
 				}
 			}
-			for _, got := range []struct{ where, text string }{{"the answer", result.Observed}, {"the stored row", stored}, {"the read", read}} {
+			for _, got := range []struct{ where, text string }{
+				{"the answer", result.Observed}, {"the stored row", stored}, {"the read", read}, {"the statement", statement.Predicate.Observed},
+			} {
 				if got.text != row.kept || utf8.RuneCountInString(got.text) != contracts.SpecCheckObservedMax {
 					t.Fatalf("%s's observed holds %d runes, starting %q and ending %q; want %d, starting %q and ending %q",
 						got.where, utf8.RuneCountInString(got.text), got.text[:min(len(got.text), 40)], got.text[max(0, len(got.text)-160):],

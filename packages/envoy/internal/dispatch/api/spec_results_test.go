@@ -18,6 +18,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
@@ -305,15 +306,15 @@ func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
 		t.Fatalf("the subject is %+v, want the repository at the token's commit", statement.Subject)
 	}
 	predicate := statement.Predicate
-	want := model.SpecCheckPredicate{
+	want := model.ResultPredicate{
 		Project: specResultsProject, Check: probeCheck, ProcedureDigest: specCheckDigest(t, probeCheck),
-		Test:    model.SpecCheckTest{Runner: "go", Selector: "example.com/m/p TestP", Job: "go-checks"},
+		Test:    model.ResultTest{Runner: "go", Selector: "example.com/m/p TestP", Job: "go-checks"},
 		Verdict: "pass", Observed: "ok  \texample.com/m/p\t0.01s", Job: "go-checks", Leg: "",
-		Run: model.SpecCheckRun{
+		Run: model.ResultRun{
 			Repository: specResultsRepository, WorkflowRef: specResultsRepository + "/.github/workflows/ci-results.yaml@refs/heads/topic",
 			Ref: "refs/heads/topic", EventName: "push", RunID: "7", Attempt: 1, CheckRunID: "97", RunnerEnvironment: "github-hosted",
 		},
-		Recorder: model.SpecCheckRecorder{
+		Recorder: model.ResultRecorder{
 			Session:   "ci-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
 			Principal: "workflow-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
 		},
@@ -389,7 +390,7 @@ func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
 				answer.CI.WorkflowRef, answer.CI.Ref = workflow+"@"+row.ref, row.ref
 			})
 			result := stored201(t, rig.post(t, specResultsProject, token, passOf(probeCheck)))
-			want := model.SpecCheckRecorder{Session: "ci-results:" + workflow, Principal: "workflow-results:" + workflow}
+			want := model.ResultRecorder{Session: "ci-results:" + workflow, Principal: "workflow-results:" + workflow}
 			if got := result.Attestation.Predicate.Recorder; got != want {
 				t.Fatalf("the recorder is %+v, want %+v", got, want)
 			}
@@ -644,9 +645,13 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 	defer tx.Rollback(ctx)
 	for range 2 {
 		row := specCheckRow{
-			project: specResultsProject, repository: specResultsRepository, check: probeCheck, commit: specResultsCommit,
-			procedureDigest: specCheckDigest(t, probeCheck), job: "go-checks", checkRunID: specResultsCheckRun, runID: 7, attempt: 1,
-			verdict: "pass", session: "ci-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
+			result: attestedResult{
+				predicateType: specCheckResultPredicateType, project: specResultsProject, check: probeCheck,
+				procedureDigest: specCheckDigest(t, probeCheck), verdict: "pass", checkRunName: "go-checks",
+				run:     oauthwire.CIRun{Repository: specResultsRepository, SHA: specResultsCommit},
+				attempt: 1, session: "ci-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
+			},
+			checkRunID: specResultsCheckRun, runID: 7,
 		}
 		stored, err := insertSpecCheckResult(ctx, tx, row)
 		if err != nil {

@@ -1,0 +1,27 @@
+-- 20261116162257_check_results_attestation.up.sql
+--
+-- The in-toto statement of a result that a CI job recorded against a check its ci_check names
+-- (POST /api/v1/issues/{key}/results under a results token), as spec_check_results.attestation
+-- holds one for a check of the spec files:
+--
+--   attestation   the statement the read answers whole: its subject the repository at the
+--                 commit the job tested, and its predicate the check, the digest of the check's
+--                 words, the job and its leg, the run, the recorder and recorded_at. It is set on
+--                 every row a CI job recorded and on no other: null on every row a role recorded,
+--                 and on every row stored before this migration, since no CI job recorded one
+--                 before it.
+--
+-- The insert writes it once (insertCheckResult), and nothing updates it: a result is appended and
+-- never edited.
+--
+-- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
+-- takes ACCESS EXCLUSIVE on check_results, which every recorded result and every results read
+-- touches, and holds it only for the catalog write; the runner bounds its wait at
+-- pgmigrate.LockTimeout and tries again up to pgmigrate.LockTimeoutAttempts times.
+--
+-- The release before this one neither reads nor writes the column, so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"): it refuses a results token on this route, so it
+-- writes no CI job's row, and a role's row it writes reads null here, as this release writes one.
+-- Rolling back past this migration is an image rollback alone; the column left behind is read by
+-- nothing.
+alter table check_results add column attestation jsonb;

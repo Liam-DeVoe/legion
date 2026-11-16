@@ -62,12 +62,6 @@ const (
 	codeFilesUnreadable    = "FILES_UNREADABLE"
 )
 
-// The in-toto statement a result is stored as: its own type, and the type of its predicate.
-const (
-	inTotoStatementType          = "https://in-toto.io/Statement/v1"
-	specCheckResultPredicateType = "https://github.com/cybermonklabs/legion/attestations/spec-check-result/v1"
-)
-
 // specCheckResultInput is the body POST /api/v1/projects/{key}/results takes: what the job ran
 // and what it observed, and nothing about who the job is. Every other member is refused by name.
 type specCheckResultInput struct {
@@ -206,7 +200,7 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, checkRunNotTheRuns(checkRun.HeadSHA, numbers.checkRun, run.SHA))
 		return
 	}
-	job, leg := jobAndLeg(checkRun.Name)
+	job, _ := jobAndLeg(checkRun.Name)
 	files, err := s.specFilesAt(ctx, reader, run.Repository, run.SHA)
 	if err != nil {
 		writeError(w, codeFilesUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
@@ -241,17 +235,14 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	row := specCheckRow{
-		project: project, repository: run.Repository, check: input.Check, commit: run.SHA,
-		procedureDigest: check.Digest, job: job, leg: leg,
-		checkRunID: numbers.checkRun, runID: numbers.run, attempt: numbers.attempt,
-		verdict: input.Verdict, observed: cutObserved(input.Observed),
-		session: actor.Credential.Session,
-		test:    model.SpecCheckTest{Runner: check.Runner, Selector: check.Selector, Job: check.Job},
-		run: model.SpecCheckRun{
-			Repository: run.Repository, WorkflowRef: run.WorkflowRef, Ref: run.Ref, EventName: run.EventName,
-			RunID: run.RunID, Attempt: numbers.attempt, CheckRunID: run.CheckRunID, RunnerEnvironment: run.RunnerEnvironment,
+		result: attestedResult{
+			predicateType: specCheckResultPredicateType, project: project, check: input.Check,
+			procedureDigest: check.Digest,
+			test:            model.ResultTest{Runner: check.Runner, Selector: check.Selector, Job: check.Job},
+			verdict:         input.Verdict, observed: cutObserved(input.Observed), checkRunName: checkRun.Name,
+			run: run, attempt: numbers.attempt, session: actor.Credential.Session, principal: principal,
 		},
-		recorder: model.SpecCheckRecorder{Session: actor.Credential.Session, Principal: principal},
+		checkRunID: numbers.checkRun, runID: numbers.run,
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -517,38 +508,25 @@ func runeOffset(text string, n int) int {
 	return len(text)
 }
 
-// specCheckRow is one row of spec_check_results before it is written, and the attestation the
-// row stores is built from it alone (insertSpecCheckResult).
+// specCheckRow is one row of spec_check_results before it is written: the result whose statement
+// it stores (attestedResult.statement), which every column but the run's two numbers is read
+// from, so no column can say another thing than the statement, and the check run and the
+// workflow run as runNumbersOf reads them.
 type specCheckRow struct {
-	project, repository, check, commit, procedureDigest, job, leg string
-	checkRunID, runID                                             int64
-	attempt                                                       int
-	verdict, observed, session                                    string
-	test                                                          model.SpecCheckTest
-	run                                                           model.SpecCheckRun
-	recorder                                                      model.SpecCheckRecorder
+	result            attestedResult
+	checkRunID, runID int64
 }
 
-// insertSpecCheckResult is the one writer of spec_check_results: it appends row with the in-toto
-// statement of it, whose recorded_at is the row's own (the transaction's now(), written in UTC
-// with a Z so every reader decodes one instant the same way), and answers the row as the read
-// answers it. Nothing updates or deletes a row.
+// insertSpecCheckResult is the one writer of spec_check_results: it appends row with its
+// statement, whose recorded_at is the row's own (stampedAttestation), and answers the row as the
+// read answers it. Nothing updates or deletes a row.
 func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (model.SpecCheckResult, error) {
-	statement := model.SpecCheckAttestation{
-		Type: inTotoStatementType,
-		Subject: []model.AttestationSubject{{
-			Name: "git+https://github.com/" + row.repository, Digest: map[string]string{"gitCommit": row.commit},
-		}},
-		PredicateType: specCheckResultPredicateType,
-		Predicate: model.SpecCheckPredicate{
-			Project: row.project, Check: row.check, ProcedureDigest: row.procedureDigest, Test: row.test,
-			Verdict: row.verdict, Observed: row.observed, Job: row.job, Leg: row.leg, Run: row.run, Recorder: row.recorder,
-		},
-	}
+	statement := row.result.statement()
 	encoded, err := json.Marshal(statement)
 	if err != nil {
 		return model.SpecCheckResult{}, fmt.Errorf("encode a spec check result: %w", err)
 	}
+	predicate := statement.Predicate
 	var (
 		result model.SpecCheckResult
 		stored []byte
@@ -556,12 +534,11 @@ func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (mo
 	if err := q.QueryRow(ctx, `
 		insert into spec_check_results (project_key, repository, check_id, commit_sha, procedure_digest, job, leg,
 			check_run_id, run_id, attempt, verdict, attestation, session)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			jsonb_set($12::jsonb, '{predicate,recorded_at}',
-				to_jsonb(to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))), $13)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, `+stampedAttestation("$12")+`, $13)
 		returning id::text, seq, attestation`,
-		row.project, row.repository, row.check, row.commit, row.procedureDigest, row.job, row.leg,
-		row.checkRunID, row.runID, row.attempt, row.verdict, encoded, row.session,
+		predicate.Project, predicate.Run.Repository, predicate.Check, statement.Subject[0].Digest["gitCommit"],
+		predicate.ProcedureDigest, predicate.Job, predicate.Leg, row.checkRunID, row.runID, predicate.Run.Attempt,
+		predicate.Verdict, encoded, predicate.Recorder.Session,
 	).Scan(&result.ID, &result.Seq, &stored); err != nil {
 		return model.SpecCheckResult{}, fmt.Errorf("insert a spec check result: %w", err)
 	}

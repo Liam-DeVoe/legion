@@ -216,7 +216,7 @@ A service whose verifier does not set the switch, the Envoy listener among them,
 
 A results token is the token the broker mints from a result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) for one GitHub Actions run.
 It holds the OAuth scope `results` alone and the project scope `results`, and names a person, one project, the session of its workflow and the run (`ci`).
-That person stays inside Dispatch: the result such a token writes names the run's session and principal as its recorder and no person (on `POST /api/v1/issues/{key}/results`, the row and its `result.recorded` event carry the run's session as their actor, with no `owner`), and the access log names the run's session as the caller.
+That person stays inside Dispatch: the result such a token writes names the run's session and principal as its recorder and no person (on `POST /api/v1/issues/{key}/results`, the row's `attestation` names the run's session and principal as its recorder, and the row and its `result.recorded` event carry the run's session as their actor, with no `owner`), and the access log names the run's session as the caller.
 `brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesResults` set too, so Dispatch accepts such a token and marks its credential results-only with the run (`model.Credential.ResultsOnly`, `model.Credential.CI`), with no OAuth scope.
 Dispatch serves it on the routes its results list names (`resultsScopeRoutes` in `internal/dispatch/api/routes_table.go`):
 `POST /api/v1/projects/{key}/results`, where a CI job writes the result of a check of the spec files at its commit, and `POST /api/v1/issues/{key}/results`, where it records the result of a check whose `ci_check` names its job (`/api/v1/issues/{key}/results` below).
@@ -2343,6 +2343,13 @@ Nothing updates or deletes a row: another run, attempt or leg is another row, an
 `spec_check_results_commit` on `(project_key, commit_sha, check_id)` serves the read of one project's results at one commit.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261116132624_check_results_branch` adds `branch` to `check_results`: the branch whose push a CI job ran on, set on every row a CI job recorded and null on every other.
+The fourth rule of a check carrying `ci_check` counts only the rows whose `branch` is null.
+A nullable column with no default: no row is rewritten, and its census answers `0`.
+
+Migration `20261116162257_check_results_attestation` adds `attestation` to `check_results`: the in-toto statement of the run of the CI job that recorded the row, written once by the insert and null on every row a role recorded.
+A nullable column with no default: no row is rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
 this table holds open ones too, by any author and in any repository, one row per pull request.
@@ -4334,6 +4341,10 @@ Each item below names a path with its method and identity, then its purpose.
   - Beside it are the results that runs of the check's CI job recorded through POST below, each with `role` `ci`, `run` the check run's name and `branch` the branch whose push the job ran on, all newest first by `created_at`.
     A client that reads one result of such a check finds the derived one by its `id`, not as the first.
     `branch` is set on a result that a CI job recorded, and on no other result.
+    Such a result also carries `attestation`, the in-toto Statement v1 of its run, built by the builder of the project's results route (`attestedResult.statement`).
+    Its subject is the run's repository at `commit_sha`, and its predicate type is `https://github.com/cybermonklabs/legion/attestations/check-block-result/v1`.
+    Its predicate holds the project, the check's `ref` as `check`, the result's `check_sha256` as `procedure_digest`, the check's `ci_check` as `test.job`, the verdict, `observed`, the job and the leg, the run, the recorder, and `recorded_at`, which is the result's `created_at`.
+    A role's result and a derived result carry none.
 
   A check carrying `ci_check` that breaks one of those rules, or that holds a result a role recorded, reads as an ordinary check with its recorded results.
 
@@ -4356,7 +4367,7 @@ Each item below names a path with its method and identity, then its purpose.
     A check that is not one CI proves, or whose `ci_check` names another check run, is `409 CHECK_NOT_THIS_JOBS`, naming the check, its `ci_check` or that it carries none, and the check run.
     GitHub names the token's check run at the run's commit (`403 CHECK_RUN_NOT_THE_RUNS`, naming both; `503 CHECK_RUN_UNREADABLE` where GitHub does not answer, and nothing is stored), read once a process for each check run, as the project's results route reads it.
     The run's repository is the one the check's issue resolves to, compared without case (`403 REPOSITORY_NOT_THE_ISSUES`, naming both).
-    The result is stored with `role` `ci`, `run` the check run's name, `surface` and `negative_control` the check's, `session` the token's, `commit_sha` the run's, `observed` kept as the project's results route keeps it (2,000 runes: a longer text is its first 500 runes, a line that says the middle was cut, and its last runes), and `branch` the run's ref without `refs/heads/`.
+    The result is stored with `role` `ci`, `run` the check run's name, `surface` and `negative_control` the check's, `session` the token's, `commit_sha` the run's, `observed` kept as the project's results route keeps it (2,000 runes: a longer text is its first 500 runes, a line that says the middle was cut, and its last runes), `branch` the run's ref without `refs/heads/`, and `attestation`, the in-toto statement of its run (GET above).
 
   - From a role, `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0;
     a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
