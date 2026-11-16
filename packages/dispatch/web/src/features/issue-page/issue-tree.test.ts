@@ -9,6 +9,7 @@ import type {
   CheckBlock,
   CheckResult,
   Comment,
+  CommentWithTrees,
   Decision,
   DisplayTree,
   IssueCheckResults,
@@ -1065,59 +1066,304 @@ test("an open question waits on the reader only where its turn is theirs", () =>
 });
 
 // The tester's F6: a Change is a comment a person anchored to a decision's words in the
-// decisions document. The Change control (`DecisionActions.tsx`) writes its anchor with the
-// document's id, and the server stores it with that id (`api/anchors.go`'s `resolveAnchor`),
-// while the decisions read names the document by its address (`api/decisions.go`). A Change
-// newer than the decision's words sits under the decision, which then reads Change requested
-// and waits on its agent, not on the reader; one older than its words is no Change, and the
-// decision waits for the reader's review.
+// decisions document. The fixture is the shape the Change control (`DecisionActions.tsx`) stored
+// on a running build of the checkpoint (preview of 29111db16c41,
+// dispatch://INFRA-3951/artifact/f6-reads-json), read with `Dispatch-Trees: 1`: the Change is
+// anchored with the decisions document's id (`api/anchors.go`'s `resolveAnchor`), while the
+// decisions read names that document by its address (`api/decisions.go`). A Change newer than
+// the decision's words sits under the decision, which then reads Change requested and waits on
+// its agent, not on the reader; one older than its words is no Change, and the decision waits
+// for the reader's review.
 test("a Change is drawn under its decision, which then waits on its agent", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
-  const words = "Keep the model pure.";
+  // As the reads sent them: the spec and the decisions document as the issue read lists them,
+  // the decision as the decisions read stored it, the requirements its tie names as the blocks
+  // read and the coverage read hold them, and the Change as the comments read sent it.
+  const spec: Artifact = {
+    approval: { latest_version: 2, state: "draft" },
+    created_at: "2026-11-16T11:11:06.995403Z",
+    created_by: { id: "alice", kind: "user" },
+    id: "98141a74-a34b-4cc1-b58c-57b6de4ed1f4",
+    issue_key: "LAY-2",
+    kind: "doc",
+    name: "spec.md",
+    primary: true,
+    project: "LAY",
+    ref_key: "LAY-2/spec",
+    session_id: null,
+    slug: "spec",
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-11-16T11:11:06.995403Z",
+        named: false,
+        number: 1,
+        size: 1594,
+        summary: null,
+      },
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-11-16T11:11:07.35439Z",
+        named: false,
+        number: 2,
+        size: 1713,
+        summary: null,
+      },
+    ],
+  };
+  const made: Artifact = {
+    approval: { latest_version: 1, state: "draft" },
+    created_at: "2026-11-16T11:11:07.225118Z",
+    created_by: { id: "alice", kind: "user" },
+    id: "3cdf7bea-53ea-4d9e-8576-68f45d5685a6",
+    issue_key: "LAY-2",
+    kind: "doc",
+    name: "decisions.md",
+    primary: false,
+    project: "LAY",
+    ref_key: "LAY-2/decisions-md",
+    role: "decisions",
+    session_id: null,
+    slug: "decisions-md",
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-11-16T11:11:07.225118Z",
+        named: false,
+        number: 1,
+        size: 1024,
+        summary: null,
+      },
+    ],
+  };
   const reviewed: Decision = {
-    ...decision("d1", `## Keep it\n\n${words}`, ["r1"]),
-    changed_at: "2026-11-05T10:00:00Z",
-    heading: "Keep it",
+    asks: [],
+    block_id: "4f4f7706-5e2f-4f98-ba08-ba9afa843985",
+    changed_at: "2026-11-16T11:11:07.225118Z",
+    changed_version: 1,
+    heading: "Draw the tree from one read",
+    kept: null,
+    kind: "agent",
+    links: [
+      {
+        created_at: "2026-11-16T11:11:07.225118Z",
+        created_version: 1,
+        from_block: "679d4ee9-addc-4934-9fb6-ef4cdf5f8d72",
+        stale: false,
+        to: {
+          block_id: "r1",
+          changed_at: "2026-11-16T11:11:06.995403Z",
+          changed_by: [{ id: "alice", kind: "user" }],
+          changed_version: 1,
+          document: "dispatch://LAY-2/spec",
+          id: "LAY-2/spec#r1",
+          issue_key: "LAY-2",
+          kind: "block",
+          made_at: "2026-11-16T11:11:06.995403Z",
+          made_by: [{ id: "alice", kind: "user" }],
+          parent: {
+            id: "98141a74-a34b-4cc1-b58c-57b6de4ed1f4",
+            kind: "artifact",
+            ref: "dispatch://LAY-2/spec",
+          },
+          parent_version: 1,
+          project: "LAY",
+          ref: "dispatch://LAY-2/spec#b-r1",
+        },
+      },
+      {
+        created_at: "2026-11-16T11:11:07.225118Z",
+        created_version: 1,
+        from_block: "679d4ee9-addc-4934-9fb6-ef4cdf5f8d72",
+        stale: false,
+        to: {
+          block_id: "r2",
+          changed_at: "2026-11-16T11:11:06.995403Z",
+          changed_by: [{ id: "alice", kind: "user" }],
+          changed_version: 1,
+          document: "dispatch://LAY-2/spec",
+          id: "LAY-2/spec#r2",
+          issue_key: "LAY-2",
+          kind: "block",
+          made_at: "2026-11-16T11:11:06.995403Z",
+          made_by: [{ id: "alice", kind: "user" }],
+          parent: {
+            id: "98141a74-a34b-4cc1-b58c-57b6de4ed1f4",
+            kind: "artifact",
+            ref: "dispatch://LAY-2/spec",
+          },
+          parent_version: 1,
+          project: "LAY",
+          ref: "dispatch://LAY-2/spec#b-r2",
+        },
+      },
+    ],
+    ref: "dispatch://LAY-2/artifact/decisions-md#b-4f4f7706-5e2f-4f98-ba08-ba9afa843985",
+    replaced: false,
+    text: "## Draw the tree from one read\n\nChosen so the page makes no request per node. Shapes dispatch://LAY-2/spec#b-r1 and dispatch://LAY-2/spec#b-r2.",
+    text_sha256: "86b47522df4be5cf892944e49934a341fcd5be73ebfa3c9677bca941946b6aba",
     text_tree: {
       content: [
-        { attrs: { level: 2 }, content: [{ text: "Keep it", type: "text" }], type: "heading" },
-        { content: [{ text: words, type: "text" }], type: "paragraph" },
+        {
+          attrs: { level: 2 },
+          content: [{ text: "Draw the tree from one read", type: "text" }],
+          type: "heading",
+        },
+        {
+          content: [
+            {
+              text: "Chosen so the page makes no request per node. Shapes dispatch://LAY-2/spec#b-r1 and dispatch://LAY-2/spec#b-r2.",
+              type: "text",
+            },
+          ],
+          type: "paragraph",
+        },
       ],
       type: "doc",
     },
+    unsure: false,
     waiting_review: true,
   };
-  const change = (createdAt: string): Comment => ({
-    ...comment("change-1", createdAt),
-    anchor: {
-      artifact_id: made.id,
-      block_id: "d1-words",
-      mark_id: "change-1",
-      orphaned: false,
-      quote: words,
-      version: 3,
+  const blocks: ArtifactBlock[] = [
+    {
+      embedding: "pending",
+      from: 251,
+      id: "r1",
+      references: { asks: 0, comments: 0 },
+      to: 449,
+      token: "sha256:3f5b5138044f406f940b91f745999c621fdf44a8d4ec8b9a3f0c8108ac003797",
+      type: "requirement",
     },
-    artifact_id: made.id,
-    body: "Say what pure means here.",
-  });
+    {
+      embedding: "pending",
+      from: 570,
+      id: "r2",
+      references: { asks: 0, comments: 0 },
+      to: 651,
+      token: "sha256:498e9451a36332ad527069faa33c552c1d5c66c47390fd7de2eff3d24d5b342a",
+      type: "requirement",
+    },
+  ];
+  const requirements: RequirementCoverage[] = [
+    {
+      block_id: "r1",
+      checks: 1,
+      gaps: [],
+      plan_tasks: 1,
+      ref: "dispatch://LAY-2/spec#b-r1",
+      text: "Every property of the issue that carries a value is visible at every width the page draws, with no control opened and no sideways scroll. The right-hand panel holds the rest.",
+      text_tree: {
+        content: [
+          {
+            content: [
+              {
+                text: "Every property of the issue that carries a value is visible at every width the page draws, with no control opened and no sideways scroll. The right-hand panel holds the rest.",
+                type: "text",
+              },
+            ],
+            type: "paragraph",
+          },
+        ],
+        type: "doc",
+      },
+    },
+    {
+      block_id: "r2",
+      checks: 1,
+      gaps: [],
+      plan_tasks: 1,
+      ref: "dispatch://LAY-2/spec#b-r2",
+      text: "Requirement 2 of the redesign stands on a row of its own.",
+      text_tree: {
+        content: [
+          {
+            content: [
+              { text: "Requirement 2 of the redesign stands on a row of its own.", type: "text" },
+            ],
+            type: "paragraph",
+          },
+        ],
+        type: "doc",
+      },
+    },
+  ];
+  const change: CommentWithTrees = {
+    anchor: {
+      artifact_id: "3cdf7bea-53ea-4d9e-8576-68f45d5685a6",
+      block_id: "679d4ee9-addc-4934-9fb6-ef4cdf5f8d72",
+      mark_id: "66fd1e9f-1adb-4c92-b7db-a731dcf223c1",
+      orphaned: false,
+      quote:
+        "Chosen so the page makes no request per node. Shapes dispatch://LAY-2/spec#b-r1 and dispatch://LAY-2/spec#b-r2.",
+      version: 1,
+    },
+    answers: null,
+    artifact_id: null,
+    ask_id: null,
+    author: { id: "implementer", kind: "user" },
+    body: "Please read the tree from the reads the page already makes, and say which read sends the names.",
+    body_tree: {
+      content: [
+        {
+          content: [
+            {
+              text: "Please read the tree from the reads the page already makes, and say which read sends the names.",
+              type: "text",
+            },
+          ],
+          type: "paragraph",
+        },
+      ],
+      type: "doc",
+    },
+    created_at: "2026-11-16T11:12:42.406314Z",
+    deliveries: [],
+    edited_at: null,
+    id: "66fd1e9f-1adb-4c92-b7db-a731dcf223c1",
+    issue_key: "LAY-2",
+    mentions: [],
+    reply_block: null,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+  const issue: IssueDetails = {
+    ...issueDetails([spec, made]),
+    decisions_artifact_id: "3cdf7bea-53ea-4d9e-8576-68f45d5685a6",
+    key: "LAY-2",
+    primary_artifact_id: "98141a74-a34b-4cc1-b58c-57b6de4ed1f4",
+    project: "LAY",
+  };
   const treeWith = (createdAt: string): TreeNode =>
     buildIssueTree({
-      comments: [change(createdAt)],
-      coverage: coverage([requirement("r1", "The first.")]),
-      decisions: decisions([reviewed]),
-      documents: [{ artifactId: spec.id, blocks: [block("r1", "requirement")] }],
-      issue: issueDetails([spec, made]),
-      viewer: "alice",
+      comments: [{ ...change, created_at: createdAt }],
+      coverage: {
+        gaps: [],
+        has_plan: true,
+        issue: "LAY-2",
+        requirements,
+        spec_artifact_id: "98141a74-a34b-4cc1-b58c-57b6de4ed1f4",
+      },
+      decisions: {
+        decisions: [reviewed],
+        document: "dispatch://LAY-2/artifact/decisions-md",
+        open_questions: [],
+      },
+      documents: [{ artifactId: spec.id, blocks }],
+      issue,
+      viewer: "implementer",
     });
-  const id = blockNodeId("decisions-md", "d1");
+  const id = blockNodeId(made.slug, reviewed.block_id);
 
-  const changed = treeWith("2026-11-05T11:00:00Z");
-  expect(placementsOf(changed, "change-1").map((one) => one.parent)).toEqual([id]);
+  const changed = treeWith(change.created_at);
+  expect(placementsOf(changed, change.id).map((one) => one.parent)).toEqual([id]);
   expect(nodeOf(changed, id)).toMatchObject({ state: "change_requested", waiting: false });
 
-  const older = treeWith("2026-11-05T09:00:00Z");
-  expect(placementsOf(older, "change-1").map((one) => one.parent)).toEqual([KEY]);
+  // The same Change, made before the decision's words last changed (`changed_at`).
+  const older = treeWith("2026-11-16T11:11:07.1Z");
+  expect(placementsOf(older, change.id).map((one) => one.parent)).toEqual([issue.key]);
   expect(nodeOf(older, id)).toMatchObject({ state: "waiting_review", waiting: true });
 });
 
