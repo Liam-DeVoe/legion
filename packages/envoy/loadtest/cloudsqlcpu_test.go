@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	cloudsqlTestProject  = "theorem-agent-infra"
+	cloudsqlTestProject  = "theorem-<deployment repo>"
 	cloudsqlTestInstance = "dispatch-60a4923"
 	cloudsqlTestToken    = "ya29.test-token"
 )

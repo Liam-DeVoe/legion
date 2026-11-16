@@ -17,7 +17,7 @@ func TestACauseIsOneLineUnderThePrefix(t *testing.T) {
 		want string
 	}{
 		{"what happened alone", "the daemon runs with no GitHub App, so it cannot read " + CheckSlug, nil,
-			"the shared public leak check could not be installed: the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra"},
+			"the shared public leak check could not be installed: the daemon runs with no GitHub App, so it cannot read <owner>/<deployment repo>"},
 		{"with the error underneath", "the served check could not be run", errors.New("fork/exec: permission denied"),
 			"the shared public leak check could not be installed: the served check could not be run: fork/exec: permission denied"},
 		{"newlines become spaces", "the served check did not answer", errors.New("line one\nline two\r\nline three"),

@@ -490,6 +490,9 @@ jobs:
               # is a module of its own, so Go's internal rule bars it from internal/contracts,
               # where the generated values are.
               - 'packages/envoy/sessiontiming/*'
+              # The daemon reads an issue event's key and a role lane's role in both forms of
+              # their names through this one public package, for the same reason.
+              - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/testnatsimages/*'
             # The Dispatch server, `go list -deps ./cmd/dispatch` in packages/envoy (its embedded
             # migrations and pmdoc schema included): what the daemon's outbox test builds
@@ -674,6 +677,9 @@ jobs:
               # liveness and notice rules read: it sits in the envoy module because the
               # daemon, a module of its own, cannot reach internal/contracts, where they are.
               - 'packages/envoy/sessiontiming/*'
+              # The one public door onto the readers of a message name's two forms
+              # (internal/contracts), which the daemon's intake and notice exceptions read.
+              - 'packages/envoy/subjectforms/*'
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
@@ -1264,6 +1270,7 @@ jobs:
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/subjectforms/*'
               - *go_workspace
               # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
               - 'AGENTS.md'
@@ -2103,6 +2110,7 @@ jobs:
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'
+              - 'packages/envoy/subjectforms/**'
               - 'packages/envoy/testnatsimages/**'
               - '.omp-pin'
               - '.bun-version'
@@ -4984,6 +4992,9 @@ jobs:
         working-directory: packages/envoy
       - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
         run: bash scripts/listener-deploy-probe.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
+        run: bash scripts/daemon-release-gate.test.sh
         working-directory: packages/envoy
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: bash loadtest/run-step.test.sh

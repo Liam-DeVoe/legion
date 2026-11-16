@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { dispatchIssueSubject, type Envelope } from "@legion/contracts";
+import { type Envelope, legacyDispatchIssueSubject } from "@legion/contracts";
 import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
 import {
@@ -50,7 +50,7 @@ function dispatchEvent(
       event_id: "dispatch-1",
       source: "dispatch",
       source_event_id: "1",
-      topic: dispatchIssueSubject("DSP-1", ">"),
+      topic: legacyDispatchIssueSubject("DSP-1", ">"),
       payload_summary: "Dispatch update",
       payload: JSON.stringify({
         id: 1,
@@ -1501,7 +1501,7 @@ describe("renderInbound dispatch events", () => {
         quiet: false,
       }),
       reader,
-      dispatchIssueSubject("DSP-1", "comment.created")
+      legacyDispatchIssueSubject("DSP-1", "comment.created")
     );
 
     expect(rendered.skip).toBe(false);
@@ -1520,7 +1520,7 @@ describe("renderInbound dispatch events", () => {
           quiet: true,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.delivery")
+        legacyDispatchIssueSubject("DSP-1", "comment.delivery")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1532,7 +1532,7 @@ describe("renderInbound dispatch events", () => {
           { notify: false, quiet: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "artifact.version")
+        legacyDispatchIssueSubject("DSP-1", "artifact.version")
       )
     ).toMatchObject({ skip: true, content: "" });
   });
@@ -1546,7 +1546,7 @@ describe("renderInbound dispatch events", () => {
           notify: false,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1558,7 +1558,7 @@ describe("renderInbound dispatch events", () => {
           { notify: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       ).skip
     ).toBe(false);
   });

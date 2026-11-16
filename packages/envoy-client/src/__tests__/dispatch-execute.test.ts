@@ -236,7 +236,7 @@ async function createIssueWithComponents(
       if (source === "several") {
         return response([
           architectureSource("LEGION"),
-          architectureSource("LEGION", "theorem-labs/agent-infra"),
+          architectureSource("LEGION", "<owner>/<deployment repo>"),
         ]);
       }
       if (source === "none") return noSources();

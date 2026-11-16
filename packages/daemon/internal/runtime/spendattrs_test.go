@@ -11,7 +11,7 @@ import (
 )
 
 // operatorSpendAttributesFor is the value the live deployment's operator writes, one per project
-// (legion/Pulumi.prod.yaml of theorem-labs/agent-infra), with the project's own lane.
+// (legion/Pulumi.prod.yaml of the deployment repository), with the project's own lane.
 func operatorSpendAttributesFor(lane string) string {
 	return "theorem.project=legion,theorem.lane=" + lane + ",theorem.credential=gateway,theorem.person=sami@theorem.dev"
 }

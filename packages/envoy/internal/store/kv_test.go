@@ -1321,7 +1321,7 @@ func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 		role      = "legion-acme-controller"
 		lane      = "notifications.legion.acme.controller"
 	)
-	own := contracts.AgentSubject(sessionID)
+	own := contracts.LegacyAgentSubject(sessionID)
 	if _, err := reg.SetRole(sessionID, "m1", role, false); err != nil {
 		t.Fatalf("SetRole: %v", err)
 	}
@@ -1399,7 +1399,7 @@ func TestUpsertPlannedKeepsAnUnsubscribeThatOutranItsPlan(t *testing.T) {
 		sessionID = "ses_unsubscribe_race"
 		followed  = "notifications.dispatch.issue.KEY-1.>"
 	)
-	own := contracts.AgentSubject(sessionID)
+	own := contracts.LegacyAgentSubject(sessionID)
 	ctx := context.Background()
 	registration, err := reg.PlanInterest(ctx, sessionID, []string{followed, own})
 	if err != nil {

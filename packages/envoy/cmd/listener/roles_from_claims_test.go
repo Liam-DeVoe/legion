@@ -26,7 +26,7 @@ import (
 // the route's answer carries the same.
 func publishedSender(t *testing.T, state *listenerDeps, source, target string) *contracts.EnvelopeSender {
 	t.Helper()
-	probe, err := state.client.Conn.SubscribeSync(contracts.AgentSubject(target))
+	probe, err := state.client.Conn.SubscribeSync(contracts.LegacyAgentSubject(target))
 	if err != nil {
 		t.Fatalf("subscribe to %s: %v", target, err)
 	}

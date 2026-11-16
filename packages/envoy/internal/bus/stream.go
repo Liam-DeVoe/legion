@@ -67,6 +67,13 @@ const (
 	// WebhookRedeliveryBucket holds the cursor and records of Dispatch's sweep of the GitHub App
 	// webhook's failed deliveries (internal/dispatch/redeliver).
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
+	// PrivateProjectsBucket holds one key per private project, its value the repositories
+	// Dispatch maps to it, and a key exists exactly while its project is private: Dispatch writes
+	// it and the listeners read it to hold each session to its token's projects
+	// (dispatch://INFRA-3862). It is deliberately in no list of the buckets a static grant
+	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
+	// refuses both its write and its read, which both sides read as no project being private.
+	PrivateProjectsBucket = "envoy_private_projects"
 )
 
 // ListenerBuckets reports the KV buckets envoy-listener opens, in the order its NATS grant lists
@@ -286,7 +293,8 @@ var streamCarriedSubjects = slices.Concat(streamSubjects, listenerOwnStreamLanes
 // subject carrying a session's payload cannot be added without listing it here.
 var privateStreamSubjects = []string{
 	// Each session's own inbox: Dispatch's routes, follower and author copies, and every
-	// message sent to one session (contracts.AgentSubject).
+	// message sent to one session (contracts.AgentSubject, and contracts.LegacyAgentSubject in
+	// the old form).
 	contracts.AgentTopicPrefix + ">",
 	// The Legion daemon's notices for one project's controller (daemon notify.ControllerTopic),
 	// which only the session holding that project's controller role may register
@@ -346,14 +354,17 @@ func NamesControllerNoticeLane(topics []string) bool {
 // wildcard rules (subjectsOverlap), so another session's inbox, a failed-delivery lane (a session's
 // own included), another project's controller notice lane, and wildcards reaching any of them
 // (notifications.>, notifications.*.<x>, notifications.envoy.>) count. Two literal subjects are a
-// session's own: its agent subject, and the controller notice lane of a project whose controller
-// role roles names (ControllerNoticeRole), which its holder registers because a session receives
-// what its own consumer delivers and nothing else, the lane's core subscription having gone with
-// the rest of that receive path (INFRA-771). roles is what the session holds, as each controller
-// role's own claim record says (store.Registry's controllerLaneRoles, which reads the record of
-// every lane's role from the claim bucket rather than the listener's copy of the claims), so a
-// session that lost the role loses the lane at its next registration. A session id holding `*`
-// or `>` makes a wildcard of its "own" agent subject, which is no session's alone and counts too.
+// session's own: its agent subject, in either form (contracts.LegacyAgentSubject, and
+// contracts.AgentSubject under a project, NoProject or a wildcard over every project, whose old
+// form contracts.LegacyTwin reads back), and the controller notice lane of a project whose
+// controller role roles names (ControllerNoticeRole), which its holder registers because a session
+// receives what its own consumer delivers and nothing else, the lane's core subscription having
+// gone with the rest of that receive path (INFRA-771). roles is what the session holds, as each
+// controller role's own claim record says (store.Registry's controllerLaneRoles, which reads the
+// record of every lane's role from the claim bucket rather than the listener's copy of the
+// claims), so a session that lost the role loses the lane at its next registration. A session id
+// holding `*` or `>` makes a wildcard of its "own" agent subject, which is no session's alone and
+// counts too.
 func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) }) {
 		return false
@@ -361,7 +372,9 @@ func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	if role, lane := ControllerNoticeRole(topic); lane {
 		return !slices.Contains(roles, role)
 	}
-	return topic != contracts.AgentSubject(sessionID) || strings.ContainsAny(sessionID, "*>")
+	own := contracts.LegacyAgentSubject(sessionID)
+	twin, _ := contracts.LegacyTwin(topic)
+	return (topic != own && twin != own) || strings.ContainsAny(sessionID, "*>")
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes

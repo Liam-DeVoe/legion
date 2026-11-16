@@ -90,7 +90,7 @@ func backlogEnvelope(p backlogPlan) contracts.Envelope {
 		Source:         "agent",
 		SourceEventID:  id,
 		SourceSession:  "loadgen-backlog",
-		Topic:          contracts.AgentSubject(p.Session),
+		Topic:          contracts.LegacyAgentSubject(p.Session),
 		DedupeKey:      "agent." + p.Session + "." + id,
 		IssuedAt:       contracts.NowMillis(),
 		PayloadSummary: "loadtest backlog " + id,
@@ -212,7 +212,7 @@ func publishBacklog(url string, plans []backlogPlan, wait time.Duration) (backlo
 		if err != nil {
 			return sum, err
 		}
-		future, err := js.PublishMsgAsync(&nats.Msg{Subject: contracts.AgentSubject(p.Session), Data: data}, nats.MsgId(backlogMsgID(p)))
+		future, err := js.PublishMsgAsync(&nats.Msg{Subject: contracts.LegacyAgentSubject(p.Session), Data: data}, nats.MsgId(backlogMsgID(p)))
 		if err != nil {
 			sum.PublishErrors++
 			if sum.FirstError == "" {

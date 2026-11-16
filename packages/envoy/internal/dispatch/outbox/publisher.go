@@ -972,7 +972,7 @@ func (d *destinations) addSession(sessionID, label, id string) {
 		return
 	}
 	d.addDestination(destination{
-		subject:   contracts.AgentSubject(sessionID),
+		subject:   contracts.LegacyAgentSubject(sessionID),
 		label:     label,
 		id:        id,
 		dedupeKey: d.mentions.fallbackKeys[sessionID],
@@ -1011,7 +1011,7 @@ func (d *destinations) addWorkingSession(sessionID, label, id string) {
 		return
 	}
 	d.addDestination(destination{
-		subject:   contracts.AgentSubject(sessionID),
+		subject:   contracts.LegacyAgentSubject(sessionID),
 		label:     label,
 		id:        id,
 		dedupeKey: d.mentions.fallbackKeys[sessionID],

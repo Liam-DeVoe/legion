@@ -92,7 +92,7 @@ Each item below names a task and where its code is, then notes on it.
   the one table of what each kind of NATS client may publish and subscribe: a listener's, a host's, Dispatch's, a Legion daemon's, the measurement job's, and a session's, both as the `*` pattern a hub's shared session user holds (`SessionPattern`) and as one session's own subjects (`Session`, which refuses an id that is not one subject token).
   envoy-infra renders a hub's static users from it (`infra/core/permissions.go` wraps each set as the rules a user takes), and the Legion daemon's real-NATS proof reads `Daemon` from it, so the hub and that proof cannot diverge.
   `NamesSystemSubject` finds an entry that can reach a `$SYS` subject.
-  `natsgrant_test.go` holds every set to the list `infra/core` rendered before the table moved here (`testdata/merge-base-grants.json`) and `Measure` to agent-infra's deployed list (`testdata/agent-infra-measure-grant.json`).
+  `natsgrant_test.go` holds every set to the list `infra/core` rendered before the table moved here (`testdata/merge-base-grants.json`) and `Measure` to the deployment repository's deployed list (`testdata/<deployment repo>-measure-grant.json`).
 
 - **Stream definition**: `internal/bus/stream.go`
 
@@ -4506,6 +4506,7 @@ Each item below names an endpoint and its method, then its contract, and an item
 - `/v1/roles/set` (POST)
 
   Claims a role for a live session; the claim alone makes it the holder, and the route also adds the role's topic to its interest record.
+  The role is read in either form, `INFRA.<role>` or the old `<role>` alone, which claims the same role and is answered with a `warnings` entry naming the new form and counted (`store.Registry.ClaimedRole`).
   Last-claim-wins by default.
   A claim states the process making it, `client_instance_id`, the same id that process's registrations carry, and the claim record names it as the process holding the role.
   With `"soft": true` the claim lands only if the role is unheld, held by a session that is no longer live, held under the claimant's own session id on the terms below, or held by the declared `previous_session_id` (the id a fork/branch continues) in one of three cases:
@@ -4584,7 +4585,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   each session's inbox `notifications.agent.>`, the failed-delivery lane `notifications.envoy.exceptions.notifications.agent.>`, the Legion controller notice lane `notifications.legion.>`) that is not the session's own — another session's agent subject, any failed-delivery lane (its own included), the controller notice lane of a project whose controller role the session does not hold, or a wildcard overlapping one (`notifications.agent.*`, `notifications.envoy.>`, `notifications.>`, `notifications.*.<x>`;
   `bus.ReachesPrivateStreamSubject`) — is not stored, since the stored topics drive the listener's fan-out and the filter of the session's own consumer, and such a topic would hand the session messages meant for another session or for another project's controller:
   the rest of the registration is stored, the answer stays 200, and `warnings` names each topic left out (`<topic> was not registered: …`).
-  Two literal subjects are a session's own: its `notifications.agent.<id>`, and `notifications.legion.<project>.controller` while the claim record of `legion-<project>-controller` names it as the holder (`bus.ControllerNoticeRole` pairs the lane with that token from the one project token the lane names, so neither is built twice;
+  Two literal subjects are a session's own: its agent subject, `notifications.agent.<id>` or its new form under a project, `_` or `*` (`notifications.agent.<PROJECT>.<id>`, "Session consumers"), and `notifications.legion.<project>.controller` while the claim record of `legion-<project>-controller` names it as the holder (`bus.ControllerNoticeRole` pairs the lane with that token from the one project token the lane names, so neither is built twice;
   `store.Registry.controllerLaneRoles` reads that claim record from the role bucket, never the registry's watched copy of the claims, which can lack a claim the store gives the session or name one the store has moved).
   Its holder registers that lane because a Legion controller receives those notices from its own consumer, the lane's core subscription having gone with the rest of the core receive path;
   a registration naming a lane, in its topics or in its row, is answered the bus-unavailable 503 when that claim read does not answer or fails, rather than stored without the lane, and one naming none reads no claim.
@@ -4593,6 +4594,9 @@ Each item below names an endpoint and its method, then its contract, and an item
   A row an earlier build stored with such a topic is cleaned at the session's next registration:
   the registry drops every such topic from the merged row, not only from the incoming topics (`store.Registry.Upsert`, which `/v1/roles/set` writes through too;
   `/v1/interests/unsubscribe` drops them from the row it rewrites as well), so `Match` stops fanning those messages out to the session after its next heartbeat, and so does the lane of a session that has since lost the controller role.
+
+- A topic stored in the old form of its name, an issue's key without its project, a role's or an agent's name without one, is stored as the caller wrote it and named in `warnings` with its new form (`<old> is the old form of <new>; register <new>`), and counted on `envoy_listener_legacy_subjects_total{kind="interest"}` (`store.Registry.LegacyTopicWarnings`).
+  The session's own agent subject in the old form, which the plugins add to every registration, is counted and not named, and only the caller's own topics are weighed, so the agent subject the route adds itself is never counted ("Session consumers").
 
 - The registration is also the holder's heartbeat for the role claims it holds:
   it stamps `renewed_at` on each claim this session holds that names this same `client_instance_id`, among the roles it weighs, and the first registration of that session id stating any instance adopts a claim that names no process (`store.Registry.RenewRoleClaims`), which is what `/v1/roles/set` and the role claim reaper weigh against the live window.
@@ -4853,6 +4857,19 @@ The one topic shape a session can follow that is not its own agent subject is a 
 A role lane stays on core NATS and is never a session's subscription:
 the listener forwards a role message to the holder's agent subject, which the stream captures, so the holder's own consumer delivers it (sjawhar/legion#753, 2026-08-26, took the role topics out of the stream).
 
+A message name the rename moves has two forms while every reader takes both (dispatch://INFRA-3862):
+an issue's events, `notifications.dispatch.issue.<KEY>.<type>` and `notifications.dispatch.issue.<PROJECT>.<KEY>.<type>`;
+one session's messages, `notifications.agent.<session>` and `notifications.agent.<PROJECT or _>.<session>`;
+a role's lane, `notifications.role.<role>` and `notifications.role.<PROJECT or _>.<role>` (`contracts.CanonicalTopic`, `contracts.LegacyTwin`, `contracts.TopicForms`).
+A session's consumer filters on every form of each topic it follows, and on its own agent subject in the old form and under any project (`notifications.agent.*.<session>`), so a message published in either form is delivered once, whichever form the session registered (`bus.SessionConsumers`, `sessionConsumerTarget`).
+The two forms of a name never overlap as filters, since they differ in their token count or in the token after the family's prefix.
+An issue's topic over every issue of one project in the new form (`notifications.dispatch.issue.INFRA.>`) has no old form, since no subject pattern names the issues of one project in the old form.
+The interest record stores each topic as its caller wrote it, because the plugins read their record back and an unfamiliar form would be unsubscribed or misread;
+the registry's own readers take both forms instead (`store.Registry.Match` through its subject index, `store.Remove`, the role read of a record), and `POST /v1/interests/subscribe` names each topic the caller gave in the old form in its answer's `warnings` with its new form, counted on `envoy_listener_legacy_subjects_total{kind="interest"}` (`store.Registry.LegacyTopicWarnings`).
+Each read of a stored row into a session's consumer filter (a repair, a restart, a fenced filter write: `storedRowFilter`) counts there too each topic the filter carries in the old form, so the counter keeps moving while any record holds one (`store.Registry.CountStoredLegacyTopics`);
+the session's own agent subject, which the subscribe route writes into every row itself, is not counted on that read.
+Nothing is refused for the old form yet.
+
 Where the rule is still weaker than the grant behind it:
 a session user may subscribe to every session's relay subject (`notifications.envoy.deliver.*`), so it can read another session's relay frames and acknowledge its messages away ("Trust" below);
 dispatch://INFRA-840 narrows that grant to the session's own.
@@ -4870,7 +4887,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` unlimited (-1: the server delivers a message until the session acks it, so one whose ack wait passed still awaits an ack and the ack floor stays below it, `bus.TestAMessageWhoseAckWaitPassedStillAwaitsAnAck`; the relay's nak ladder is the bound on how often one the session refuses comes back, "Relay over NATS" below), the stream's replica count, and an `InactiveThreshold` the listener derives at start.
   That threshold is the backstop for a consumer no listener deleted rather than the bound on how long one lives ("Deleted" below), and it must stand above the sweep's own bound, because the server's removal writes no resume record: `bus.InactiveThresholdFor` takes the longer of `ENVOY_SESSION_GONE_HORIZON` and the session bucket's maximum age, adds one `ENVOY_SESSION_REAP_INTERVAL` and one sweep interval and a 15-minute margin, and never answers below `bus.SessionConsumerInactiveThreshold` (1 hour, which is also what a listener that set nothing carries); a listener logs the value and those windows once at start.
   It is no bound of its own: nats-server restarts its clock at every consumer leader election (v2.15.1 arms the timer in `setLeader` and reschedules nothing while the consumer is not the leader), so on a replicated hub it removes nothing predictably.
-  A new consumer starts at the first of these the call has (`bus.SessionConsumers.Ensure`, `create`): the start a restart of it left pending ("Restart at the ack floor" below), the start the registration's `resume` asks for, the sequence after the floor the session's resume record holds ("Deleted" below), the first sequence the stream holds on that session's own agent subject (`bus.Client.NextStoredMessage`, one `$JS.API.STREAM.MSG.GET` by `next_by_subj`), and otherwise the sequence after the stream's last, which delivers what `DeliverNew` delivers.
+  A new consumer starts at the first of these the call has (`bus.SessionConsumers.Ensure`, `create`): the start a restart of it left pending ("Restart at the ack floor" below), the start the registration's `resume` asks for, the sequence after the floor the session's resume record holds ("Deleted" below), the first sequence the stream holds on that session's own agent subject in either form (`firstOwnMessage`: one `bus.Client.NextStoredMessage`, a `$JS.API.STREAM.MSG.GET` by `next_by_subj`, for each form), and otherwise the sequence after the stream's last, which delivers what `DeliverNew` delivers.
   A caller's start is the one the registration's `resume` asks for or the one a repair passes (`sessionDelivery.registeredTarget`), and the record rule lowers it: a caller's start above the resume record's floor plus one starts at that floor plus one instead, where the record names the stream's current `envoy_stream_id` ("The resume record each delete writes" below).
   A start a restart left pending reads no record, because it comes from the floor of the consumer that restart deleted, which is newer than any record.
   Every start, from each of these sources, that is past the sequence after the stream's last is then clamped to the stream's first sequence, so no consumer is created past the stream's end ("Past the stream's end" below).
