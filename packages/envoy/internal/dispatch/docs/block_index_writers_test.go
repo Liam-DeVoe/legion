@@ -285,7 +285,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 	} {
 		// A document of its own each step, since the tick indexes the one before it as soon as
 		// that step lets it through, and an indexed document is owed nothing to wait for.
-		document := createOwedDocument(t, database, service, "", step.slug, "- one\n- two\n", "")
+		document := createOwedDocument(t, database, service, "CORE-1", "", step.slug, "- one\n- two\n", "")
 		settle(t, database, document)
 		holder, err := database.Pool.Begin(ctx)
 		if err != nil {
@@ -451,6 +451,10 @@ var indexPasses = map[string]string{
 	// A delivery attempt's settle states the session it reached (graphstore.Reached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
+	// An answer that flips a stored attempt to sent records the session it reached and, where
+	// that flip is what makes the attempt a delivery, the delivered_to tuple, under the answer's
+	// own event. It reads the attempt row the answer flipped and no row of either side.
+	"api/comment_delivery.go#recordAnsweredDelivery": "the attempt the answer flipped and the answer's own event",
 	// A follow of an ask writes the follower row and the following session's node in one
 	// statement (graphstore.WriteArms), and each caller that appended an event after the follow
 	// moves the node that follow made onto it (graphstore.Caused). Neither reads a row of either
@@ -463,10 +467,10 @@ var indexPasses = map[string]string{
 	// The shaped ties of an ask block whose ask a settlement opened, stated beside the ask's row
 	// and caused by its ask.opened (refs.IndexAskTies), when that settlement writes no version.
 	"docs/ask_blocks.go#causeOpenedAskTies": "the ties writeOpenedAskTies stated of the asks the settlement opened and the ask.opened events it appended",
-	"api/reviews.go#renewApprovalAsk":       "the approval request the request renews and the event it appended after the follow",
-	// An answer that flips a delivery attempt to sent states the session the attempt reached,
-	// as the settle of an attempt does (graphstore.Reached).
-	"api/comment_delivery.go#recordAnsweredDelivery": "the delivery attempt the answer flips and the session it names",
+	// A renewed approval request follows its ask for the requester and moves the node that
+	// follow made onto the last event the renewal appended, or leaves it at the sentinel when
+	// the renewal appended none.
+	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
 	// The one writer of an ask's answer state (asks.Settle, dispatch://INFRA-1150): the answer on
 	// the ask's node, then its row, from the transition its caller names; and each site that
 	// appends what a transition held under the event it appended after it (graphstore.Caused).
@@ -597,10 +601,13 @@ var indexPasses = map[string]string{
 // store.
 var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)\s+(document_blocks|block_refs|comments|graph_nodes|graph_tuples)\b`)
 
-// storeWriterCall matches one call of the store's writer from outside its package: a pass that
-// writes the store through graphstore holds no statement of its own, and a scan of SQL alone
-// would never see it.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\(`)
+// storeWriterCall matches one use of the store's writer from outside its package, called or
+// passed on as a value: a pass that writes the store through graphstore holds no statement of its
+// own, and a scan of SQL alone would never see it. asks.Follow picks graphstore.WriteArms or
+// graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
+// alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
+// the same use as one.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

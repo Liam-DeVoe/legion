@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -184,7 +185,8 @@ type marginDocument struct {
 // is projected into that document's margin by the write that makes it: the record carries its
 // body under `text` (api's commentMarkRecord, docs.ProjectMark), keyed by its anchor's mark id,
 // and a reply's body stands in its thread root's record under `replies`, as an entry naming its
-// author (docs.ActorRef). So the two documents a comment's body can be in are the one its own
+// author (docs.ActorRef) and the time it was made (docs.MarkTime), by which the erase takes it
+// out (docs.ErasedReply). So the two documents a comment's body can be in are the one its own
 // anchor names and the one its root's anchor names, which is one document for a reply to an
 // anchored comment and none for a comment on an issue.
 //
@@ -210,7 +212,8 @@ func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]marginDocum
 		select a.id::text, a.ref_key, coalesce(a.issue_key, ''), coalesce(a.project_key, ''),
 		       a.is_primary and a.issue_key is not null,
 		       coalesce(c.anchor->>'mark_id', ''), thread.depth = 1,
-		       coalesce((select erased.author->>'kind' || ':' || (erased.author->>'id') from comments erased where erased.id = $1::uuid), '')
+		       coalesce((select erased.author->>'kind' || ':' || (erased.author->>'id') from comments erased where erased.id = $1::uuid), ''),
+		       (select erased.created_at from comments erased where erased.id = $1::uuid)
 		from thread
 		join comments c on c.id = thread.id
 		join artifacts a on a.id = (c.anchor->>'artifact_id')::uuid and a.kind = 'doc'
@@ -223,11 +226,12 @@ func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]marginDocum
 		document ownDocument
 		mark, by string
 		own      bool
+		made     time.Time
 	}
 	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (anchored, error) {
 		var held anchored
 		err := row.Scan(&held.document.artifact, &held.document.refKey, &held.document.issue, &held.document.project,
-			&held.document.spec, &held.mark, &held.own, &held.by)
+			&held.document.spec, &held.mark, &held.own, &held.by, &held.made)
 		return held, err
 	})
 	if err != nil {
@@ -245,7 +249,7 @@ func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]marginDocum
 		if held.own {
 			margin.records = append(margin.records, held.mark)
 		} else {
-			margin.replies = append(margin.replies, docs.ErasedReply{Record: held.mark, By: held.by})
+			margin.replies = append(margin.replies, docs.ErasedReply{Record: held.mark, By: held.by, At: docs.MarkTime(held.made)})
 		}
 	}
 	return margins, nil

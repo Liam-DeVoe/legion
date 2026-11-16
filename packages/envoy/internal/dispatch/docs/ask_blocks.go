@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
@@ -50,7 +51,8 @@ type settlementReconciliation struct {
 	// indexedAskBlocks are the blocks this settlement indexed or found indexed, whose author the
 	// room forgets once it commits (consumeAskAuthors) and whose durable author its transaction
 	// deletes (deleteSettledAskAuthors). A copy is neither: its author is kept for the ask it opens
-	// once its source is retracted.
+	// once its source is retracted. Nor is a new block a closed issue's settlement leaves with no
+	// row: its author is kept for the ask it opens once the issue reopens (reconcileAskBlocks).
 	indexedAskBlocks []string
 	// rewrites are the ask blocks whose server attributes repairAsk repaired, which
 	// withholdAnswers reads again where a repair wrote back an answer.
@@ -457,7 +459,9 @@ func (e *ErrInvalidAskBlock) Unwrap() error { return e.Reason }
 // SettlementActor writes what a document decides on its own rather than any one person: the
 // retraction of an ask whose block left the document, and an approval request's move when the
 // version credits no writer or several. Crediting the room's last editor instead would put a
-// change nobody made in their name.
+// change nobody made in their name. It is also the actor of each repair event a settlement of a
+// closed issue's document appends (planRepairs): a system actor's event notifies nobody, and such
+// a settlement wakes nobody.
 var SettlementActor = model.Actor{Kind: "system", ID: "document-settlement"}
 
 // SettlementRetractionReason opens the reason of every retraction settlement writes, followed by
@@ -476,10 +480,18 @@ func settlementRetracted(ask model.Ask) bool {
 }
 
 // settlementRetraction reports whether resolution is a retraction settlement wrote when its ask's
-// block left the document (settlementRetracted).
+// block left the document (settlementRetracted). reopenOwedAskDocuments holds this rule in SQL,
+// for the reopen's mark, so a change to one is a change to the other.
 func settlementRetraction(resolution model.AskResolution) bool {
 	return resolution.Kind == "retracted" &&
 		(resolution.Actor.SameAs(SettlementActor) || strings.HasPrefix(resolution.Reason, SettlementRetractionReason))
+}
+
+// closeWithdrawn reports whether ask is resolved as its issue's close withdrew it
+// (model.AskResolutionWithdrawn). That resolution is no decision on the ask's question: the
+// issue's reopen opens the ask again (api.restoreIssueAsksTx).
+func closeWithdrawn(ask model.Ask) bool {
+	return ask.State == "resolved" && ask.Resolution != nil && ask.Resolution.Kind == model.AskResolutionWithdrawn
 }
 
 // reconcileAskBlocks makes the asks rows and the ask blocks of tree, the document settlement read,
@@ -493,6 +505,26 @@ func settlementRetraction(resolution model.AskResolution) bool {
 // back to it, and its copies settle again.
 // before is the document's rendering as settlement read it ("" where it did not render), which the
 // answers settlement writes back into returning blocks are weighed against (withholdAnswers).
+//
+// issueClosed is whether the issue row, as the settlement's transaction locked it, reads closed
+// (settlement.issueClosed), and on a closed issue no ask changes: the close withdrew every ask of
+// the issue, so an ask opened, restored or edited now would contradict the close. A new block
+// opens no ask and is indexed by no row. It is written state="resolved", as the close's own sweep
+// writes such a block (resolveUnindexedAskBlock), and its author is recorded in tx
+// (recordAskAuthors, the first registration winning): this settlement deletes the document's
+// pending row, whose latest edit source would otherwise name the author. The reopen marks the
+// document owed (MarkReopenOwedAskDocuments), and the settlement after it opens the block's
+// ask, credited to that author. A block whose observer has not run is left as it is here too. An
+// ask a settlement retracted stays retracted when its block comes back, and its block shows it
+// resolved: the reopen marks its document owed too, and the settlement after the reopen restores
+// it, as a returning block's ask is restored on an open issue. No open ask whose block left is
+// retracted, and no open ask takes its block's new wording; a copy shows its source's state as on
+// an open issue. An ask the close withdrew whose block left stays withdrawn: the reopen restores
+// it and marks its block document owed, and the settlement after the reopen retracts it. Nor is
+// the close's withdrawal a decision whose wording settlement writes back (writeDecidedWording):
+// the block of an ask the close withdrew keeps the wording a person gave it while the issue was
+// closed, the row keeps the question it was asked, and the settlement after the reopen takes the
+// block's wording into the restored ask, as it takes an open ask's.
 func (s *Service) reconcileAskBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -501,6 +533,7 @@ func (s *Service) reconcileAskBlocks(
 	tree *pmdoc.Node,
 	credit settlementVersionCredit,
 	before string,
+	issueClosed bool,
 ) (settlementReconciliation, error) {
 	blocks, invalidBlocks, err := collectAskBlocksForSettlement(tree)
 	if err != nil {
@@ -552,6 +585,9 @@ func (s *Service) reconcileAskBlocks(
 	// The sources, with the durable record read above, are what the version this settlement writes
 	// reads the authors of its decisions and readings from (typedSources).
 	reconciled := settlementReconciliation{sources: credit.askSources}
+	// unindexed are the authors of the new blocks a closed issue's settlement leaves with no row,
+	// where the durable record holds none yet, recorded once the blocks are reconciled.
+	var unindexed map[string]model.Actor
 	for _, invalid := range invalidBlocks {
 		delete(rows, invalid.id)
 		if reconciled.repair(invalid.node, invalid.id, askInvalidAttribute(invalid.reason.Error())) {
@@ -597,6 +633,19 @@ func (s *Service) reconcileAskBlocks(
 			if !known {
 				continue
 			}
+			if issueClosed {
+				// No ask on a closed issue: the block reads resolved, as the close left the
+				// issue's asks, and keeps its author for the ask the reopen's settlement opens. An
+				// author the durable record holds already stays (askAuthorsStatement keeps it).
+				reconciled.repair(block.node, block.id, resolveUnindexedAskBlock)
+				if _, stored := credit.askSources.recorded[block.id]; !stored {
+					if unindexed == nil {
+						unindexed = make(map[string]model.Actor)
+					}
+					unindexed[block.id] = blockActor
+				}
+				continue
+			}
 			var opening openedFollow
 			ask, opening, err = createAskBlock(ctx, tx, artifactID, owner, block, blockActor)
 			if err != nil {
@@ -631,7 +680,7 @@ func (s *Service) reconcileAskBlocks(
 		reconciled.indexedAskBlocks = append(reconciled.indexedAskBlocks, block.id)
 		delete(rows, block.id)
 
-		if settlementRetracted(ask) {
+		if settlementRetracted(ask) && !issueClosed {
 			var held graphstore.Uncaused
 			restored, err := restoreRetractedAsk(ctx, tx, ask, actor, &held)
 			if err != nil {
@@ -660,7 +709,11 @@ func (s *Service) reconcileAskBlocks(
 		}
 
 		reworded := false
-		if previous := model.NewAskEditPrevious(ask); !block.asks(previous) && ask.State != "open" {
+		// The close's withdrawal decides nothing (closeWithdrawn): on a closed issue the block of
+		// an ask the close withdrew keeps the wording a person gave it, which the settlement after
+		// the reopen, left owed by the reopen's ask-state write, takes into the restored ask.
+		decided := ask.State != "open" && !(issueClosed && closeWithdrawn(ask))
+		if previous := model.NewAskEditPrevious(ask); !block.asks(previous) && decided {
 			// A decided ask's wording is fixed, as the edit route holds it (ASK_NOT_OPEN): its
 			// answer or resolution decides the question it was given on, so the block gets that
 			// wording back rather than the row taking the block's, which would show the decision on
@@ -676,7 +729,7 @@ func (s *Service) reconcileAskBlocks(
 				slog.Info("dispatch: wrote a decided ask's wording back into its block",
 					"ask", ask.ID, "artifact", artifactID, "block", block.id, "state", ask.State)
 			}
-		} else if !block.asks(previous) {
+		} else if !block.asks(previous) && !issueClosed {
 			options, err := json.Marshal(block.options)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("encode reconciled ask options: %w", err)
@@ -733,12 +786,15 @@ func (s *Service) reconcileAskBlocks(
 		}
 	}
 	reconciled.withholdAnswers(artifactID, tree, before)
+	if err := recordAskAuthors(ctx, tx, artifactID, unindexed); err != nil {
+		return settlementReconciliation{}, err
+	}
 
 	for _, ask := range rows {
 		// Only an open ask is retracted: an answered or resolved one is already closed, its
 		// answer or resolution is the record, and the asks table forbids a resolved row that
-		// still carries an answer.
-		if ask.State != "open" {
+		// still carries an answer. A closed issue's settlement retracts none.
+		if ask.State != "open" || issueClosed {
 			continue
 		}
 		reconciled.retracted = append(reconciled.retracted, ask)
@@ -1139,10 +1195,16 @@ func loadAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string) (map[strin
 }
 
 // createAskBlock writes the ask a settled document's new ask block opens: its node first, in the
-// project of the issue or the document that holds the block, then its row, then its author's
-// follow. The ask.opened that records this ask is appended with the settlement's other events,
-// after this, so the ask's node and the author's node are made at the sentinel and learn it then
-// (causeFollows).
+// project of the document that holds the block, then its row, then its author's follow. The
+// project is the owner's where the caller read it with the document's own row
+// (lockArtifactOwner), so the node reads no scope of its own; an owner a caller built without it
+// (ask_lifecycle's) has it read off the document (graphstore.ScopeOf). The ask's id is drawn here,
+// as the row's default would draw it, because the node goes in first; its time is read here too,
+// the transaction's now() the insert gives the row's created_at by default, so the node and its
+// relations are dated as graph_edges' old arm dates the row (graphstore.AskFacts) and by the
+// database's clock, never a host's. The ask.opened that records this ask is appended with the
+// settlement's other events, after this, so the ask's node and the author's node are made at the
+// sentinel and learn it then (causeFollows).
 func createAskBlock(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1163,16 +1225,16 @@ func createAskBlock(
 	if owner.IssueKey == nil {
 		ownerArtifactID = new(artifactID)
 	}
-	// The ask's id and created_at, drawn before anything is written, as the ask routes draw them:
-	// the node goes in before the row, dated by the default the insert gives created_at.
-	var ask model.Ask
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&ask.ID, &createdAt); err != nil {
-		return model.Ask{}, openedFollow{}, fmt.Errorf("draw the id of a new ask block: %w", err)
+	ask := model.Ask{ID: uuid.NewString()}
+	project, parties := owner.Project, []string(nil)
+	if project == "" {
+		if project, parties, err = graphstore.ScopeOf(ctx, tx, owner.IssueKey, &artifactID); err != nil {
+			return model.Ask{}, openedFollow{}, err
+		}
 	}
-	project, parties, err := graphstore.ScopeOf(ctx, tx, owner.IssueKey, &artifactID)
-	if err != nil {
-		return model.Ask{}, openedFollow{}, err
+	var createdAt time.Time
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&createdAt); err != nil {
+		return model.Ask{}, openedFollow{}, fmt.Errorf("read the created_at of a new ask block: %w", err)
 	}
 	// The ask is anchored to and part of the document holding its block, and belongs to that
 	// document where it is on no issue (graphstore.AskFacts).

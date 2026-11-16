@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -302,7 +303,56 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 	for _, place := range slices.Sorted(maps.Keys(held)) {
 		read.listing.left = append(read.listing.left, "leave "+place+" "+strings.Join(held[place], ", "))
 	}
+	margins, err := e.readKeptMargins(ctx, tx, read)
+	if err != nil {
+		return err
+	}
+	read.listing.left = append(read.listing.left, margins...)
 	return nil
+}
+
+// readKeptMargins lists every margin record that holds an erased text and that the seed of a
+// replaced history keeps (docs.KeptMarginQuoting): a suggestion whose replacement, or a comment
+// whose body, quotes the erased text. Each is that comment's text, another node's, which the run
+// leaves (R5), and it stands in that document's doc_updates after the run, which derive from the
+// node otherwise. So the listing names each such record by its document, its mark id and its
+// comment, and a search of that history after the run can tell those bytes from the node's own.
+//
+// It reads the stored history without taking the document's owner row or its room lock, as the
+// rest of the listing reads, so a run without --confirm lists them in its read-only transaction;
+// a confirmed run reads it again under its locks with the rest of its listing.
+func (e *Erasure) readKeptMargins(ctx context.Context, tx pgx.Tx, read *erasedRead) ([]string, error) {
+	var lines []string
+	for _, replaced := range read.replacedHistories() {
+		scope := replaced.scope
+		scope.Texts = read.texts
+		marks, err := docs.KeptMarginQuoting(ctx, tx, replaced.document.artifact, scope)
+		if err != nil {
+			return nil, fmt.Errorf("read the margin of %s: %w", replaced.document.refKey, err)
+		}
+		if len(marks) == 0 {
+			continue
+		}
+		rows, err := tx.Query(ctx, `
+			select marks.mark, coalesce((select 'comment:' || c.id::text from comments c
+			                             where (c.anchor->>'artifact_id')::uuid = $1::uuid and c.anchor->>'mark_id' = marks.mark
+			                             order by c.created_at limit 1), 'no comment row')
+			from unnest($2::text[]) as marks (mark)
+			order by 1`, replaced.document.artifact, marks)
+		if err != nil {
+			return nil, fmt.Errorf("read the comments of the margin of %s: %w", replaced.document.refKey, err)
+		}
+		named, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
+			var mark, comment string
+			err := row.Scan(&mark, &comment)
+			return "leave the margin record " + mark + " of " + replaced.document.refKey + " [" + comment + "] in its kept history", err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("read the comments of the margin of %s: %w", replaced.document.refKey, err)
+		}
+		lines = append(lines, named...)
+	}
+	return lines, nil
 }
 
 // rowNames names a row of the tables a reader knows the rows of by an address, beside the key the

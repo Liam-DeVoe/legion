@@ -393,3 +393,92 @@ func TestTheCommentEraseKeepsTheOtherCommentsOfItsDocument(t *testing.T) {
 		t.Errorf("after the accept the document reads %q, want the first line as it was and the second reworded", text)
 	}
 }
+
+// R5: an edited reply's erase takes the body it had before the edit out of its thread root's
+// margin record. An edit of a reply projects the root's record no more, so the record holds the
+// reply as it was first written - here two paragraphs holding a secret each - while the reply
+// itself now reads otherwise, and no one of the texts the erase reads is that whole old body. The
+// erase names the entry by its author and the time the reply was made, so after it neither
+// secret is in any column of any table, and the root's own record stands.
+func TestTheCommentEraseTakesAnEditedReplyOutOfItsRootsMargin(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	server := startDispatchProcess(t, databaseURL)
+	server.waitHealthy(t)
+	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERD","name":"Erase"}`, http.StatusCreated)
+
+	const anchored = "A line a person had something to say about."
+	const remark = "A remark with nothing secret in it."
+	issue, _ := createEraseIssue(t, server, "ERD", "An edited reply", "# Spec\n\nNothing here.\n")
+	thread := uploadEraseDocument(t, server, issue, "thread.md", "# Thread\n\n"+anchored+"\n")
+	root := writeAnchoredComment(t, server, issue, thread, anchored, remark)
+	first, second := eraseTestSecret()+"one", eraseTestSecret()+"two"
+	reply := writeCommentReply(t, server, issue, root, "The first paragraph says "+first+".\n\nThe second says "+second+".")
+	body, err := json.Marshal(map[string]string{"body": "Edited to say nothing."})
+	if err != nil {
+		t.Fatalf("encode the edit: %v", err)
+	}
+	if edited := server.send(t, http.MethodPatch, "/api/v1/comments/"+reply, string(body), asUser(dispatchTestLogin)); edited.status != http.StatusOK {
+		t.Fatalf("edit the reply: %s", edited)
+	}
+	// The control: after the edit the root's record still holds both secrets.
+	for _, secret := range []string{first, second} {
+		if held := updatesHolding(t, database, thread, secret); held == 0 {
+			t.Fatalf("after the edit no stored update of the thread's document holds %q, so the erase proves nothing", secret)
+		}
+	}
+
+	erasure, err := confirmErase(ctx, databaseURL, "comment", reply, time.Millisecond)
+	if err != nil || !erasure.Applied {
+		t.Fatalf("erase the edited reply: applied %t, %v", erasure != nil && erasure.Applied, err)
+	}
+	for _, secret := range []string{first, second} {
+		if places, searched := columnsHolding(t, database, secret); len(places) > 0 {
+			t.Errorf("after the erase %q is still in %s (%d columns searched)", secret, strings.Join(places, ", "), searched)
+		}
+	}
+	if len(erasure.Documents) != 1 || erasure.Documents[0].MarginRecords != 1 {
+		t.Errorf("the erase lists the documents %+v, want the thread's document with its root's record rewritten", erasure.Documents)
+	}
+	if held := updatesHolding(t, database, thread, remark); held == 0 {
+		t.Errorf("after the erase no stored update of the thread's document holds the root's own body: its record went with the reply's entry")
+	}
+}
+
+// R5: a block erase keeps every other comment's margin record, and a record that quotes the
+// erased text - here a comment on another line whose body repeats it - is that comment's text,
+// which stands in the document's history after the run. The listing names that record as left,
+// by its document and its comment, so it says which bytes of the replaced history the run keeps.
+func TestTheBlockEraseListsAMarginRecordThatQuotesItAsLeft(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	server := startDispatchProcess(t, databaseURL)
+	server.waitHealthy(t)
+	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERL","name":"Erase"}`, http.StatusCreated)
+
+	const anchored = "A line a person had something to say about."
+	secret := eraseTestSecret()
+	quote := "The paragraph above says " + secret + "."
+	issue, _ := createEraseIssue(t, server, "ERL", "A comment quoting a block", "# Spec\n\nNothing here.\n")
+	document := uploadEraseDocument(t, server, issue, "quoted.md", "# Quoted\n\n"+secret+"\n\n"+anchored+"\n")
+	block := blockWhoseTextIs(t, database, document, secret)
+	quoting := writeAnchoredComment(t, server, issue, document, anchored, quote)
+
+	listing, err := grapherase.Erase(ctx, databaseURL, "block", block, "", 0)
+	if err != nil {
+		t.Fatalf("erase --node block:%s without --confirm: %v", block, err)
+	}
+	if !listed(listing, "leave the margin record", "[comment:"+quoting+"]") {
+		t.Errorf("the listing does not name the margin record of comment %s, which quotes the erased text and stays:\n%s",
+			quoting, strings.Join(listing.Listing, "\n"))
+	}
+	erasure, err := grapherase.Erase(ctx, databaseURL, "block", block, listing.Digest, time.Millisecond)
+	if err != nil || !erasure.Applied {
+		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
+	}
+	if held := updatesHolding(t, database, document, quote); held == 0 {
+		t.Errorf("after the erase no stored update of the document holds the quoting comment's body, which the listing said stays")
+	}
+}

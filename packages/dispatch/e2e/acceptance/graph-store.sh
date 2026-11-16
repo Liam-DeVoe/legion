@@ -721,6 +721,14 @@ expect G11 "a session the store never recorded answers no node at all" "[]" \
   --arg id "$unseen_session" '[.edges[] | select(.node.id == $id) | .node.id]'
 want_value G11 "the read wrote no node" 0 \
   "select count(*) from graph_nodes where kind = 'session' and id = '$unseen_session'"
+# The row stood in for one the release before the store wrote, which only the backfill gives a
+# node. This run backfills nothing, so the row goes once it is read: left behind, it would stand in
+# the server's database as a session the store census holds the store to a node of, and every
+# later census over that database, another driver's among them, would read it as a difference.
+query G11 "remove the row written as the release before the store writes one" \
+  "delete from ask_followers where ask_id = '$ask' and session_id = '$unseen_session'"
+want_value G11 "the row the release before the store wrote is gone" 0 \
+  "select count(*) from ask_followers where ask_id = '$ask' and session_id = '$unseen_session'"
 
 # G12: every tuple this run wrote carries a time, an actor and a causing write the records hold.
 want_value G12 "every authored_by tuple of this run matches its record" 0 \

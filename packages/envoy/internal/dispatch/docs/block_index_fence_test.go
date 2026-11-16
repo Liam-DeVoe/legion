@@ -275,7 +275,7 @@ func currentPartOf(t *testing.T, database *store.Store, address string) graphsto
 func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
-	document := createOwedDocument(t, database, service, "", "race", raceVersion1, "")
+	document := createOwedDocument(t, database, service, "CORE-1", "", "race", raceVersion1, "")
 	settle(t, database, document)
 	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 {
 		t.Fatalf("the first tick indexed %d documents, want the fixture's one", tick.Documents)
@@ -565,7 +565,7 @@ func requireTheTickIsFenced(t *testing.T, database *store.Store, service *Servic
 	ctx := context.Background()
 	const writer = "the reconciliation tick (ReconcileBlockIndex)"
 	const own = 1
-	fenced := createOwedDocument(t, database, service, "", "fenced", "- alpha\n- beta\n", "")
+	fenced := createOwedDocument(t, database, service, "CORE-1", "", "fenced", "- alpha\n- beta\n", "")
 	settle(t, database, fenced)
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
