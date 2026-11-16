@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   canonicalRole,
   canonicalTopic,
+  claimProject,
   issueEventKey,
   issueProject,
   legacyTwin,
@@ -31,6 +32,7 @@ const fixture = JSON.parse(
   topicForms: { topic: string; forms: string[] }[];
   roleClaimKey: { project: string; role: string; key: string }[];
   issueEventKey: { subject: string; key: string; legacy: boolean; ok: boolean }[];
+  claimProject: { role: string; requested: string; project?: string; error?: boolean }[];
 };
 
 // Each section held at least this many rows when this was written: a read that finds a handful,
@@ -46,6 +48,7 @@ const least = {
   topicForms: 7,
   roleClaimKey: 9,
   issueEventKey: 13,
+  claimProject: 12,
 } as const;
 
 for (const [section, count] of Object.entries(least)) {
@@ -125,6 +128,17 @@ test("an issue event's name carries its key in either form, and any other name n
     expect(issueEventKey(row.subject), row.subject).toEqual(
       row.ok ? { key: row.key, legacy: row.legacy } : undefined
     );
+  }
+});
+
+test("a claim's project is its role's, or the one it asks for when the name has none", () => {
+  for (const row of fixture.claimProject) {
+    const answer = claimProject(row.role, row.requested);
+    if (row.error === true) {
+      expect(answer, `${row.role} asking for ${row.requested}`).toBeInstanceOf(Error);
+      continue;
+    }
+    expect(answer, `${row.role} asking for ${row.requested}`).toBe(row.project as string);
   }
 });
 

@@ -482,5 +482,19 @@
       "ok": false
     },
     { "subject": "notifications.agent.INFRA-12", "key": "", "legacy": false, "ok": false }
+  ],
+  "claimProject": [
+    { "role": "legion-infra-infra-12-architect", "requested": "", "project": "INFRA" },
+    { "role": "legion-infra-infra-12-architect", "requested": "INFRA", "project": "INFRA" },
+    { "role": "legion-infra-infra-12-architect", "requested": "PRIV", "error": true },
+    { "role": "legion-infra-infra-12-architect", "requested": "_", "error": true },
+    { "role": "legion-infra-controller", "requested": "INFRA", "project": "INFRA" },
+    { "role": "lead-reviewer", "requested": "", "project": "_" },
+    { "role": "lead-reviewer", "requested": "_", "project": "_" },
+    { "role": "lead-reviewer", "requested": "INFRA", "project": "INFRA" },
+    { "role": "reviewer", "requested": "PRIV", "project": "PRIV" },
+    { "role": "reviewer", "requested": "infra", "error": true },
+    { "role": "reviewer", "requested": "INFRA.PRIV", "error": true },
+    { "role": "reviewer", "requested": "*", "error": true }
   ]
 }

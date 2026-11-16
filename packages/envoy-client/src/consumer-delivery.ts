@@ -1,4 +1,4 @@
-import { legacyAgentSubject } from "@legion/contracts";
+import { legacyAgentSubject, topicForms } from "@legion/contracts";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -342,9 +342,19 @@ function parseIdentity(data: string) {
 /**
  * Whether a followed topic, expanded as the subscription it stands for, reaches `subject`: the
  * one "does this topic reach this frame" check the follow filter asks.
+ *
+ * Both are read in every form of their name while the rename that put a project into an issue's,
+ * an agent's and a role's name is under way (`topicForms`, dispatch://INFRA-3862): the listener's
+ * consumer filters carry both forms, so a frame arrives in a form the session did not follow in,
+ * and this client is the last reader of it. Comparing the spellings as they stand would drop
+ * every such frame, and drop it in silence (`receive` answers `done` and the resume point passes
+ * it). Until the old form is refused only.
  */
 function reaches(topic: string, subject: string): boolean {
-  return expandSubscriptionTopics([topic]).some((pattern) => subjectsOverlap(pattern, subject));
+  const patterns = topicForms(topic).flatMap((form) => expandSubscriptionTopics([form]));
+  return topicForms(subject).some((form) =>
+    patterns.some((pattern) => subjectsOverlap(pattern, form))
+  );
 }
 
 function every(ms: number, callback: () => void): () => void {
@@ -368,7 +378,12 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const render = options.render ?? renderInbound;
   const now = options.now ?? Date.now;
   const repeat = options.every ?? every;
+  // The session's own inbox, in the old form and under any project: every form of such a subject
+  // holds the old form (`topicForms`), which no other session's does, so a frame on any of them
+  // is its own, whenever the stream stored it. Named because the follow filter and the persisted
+  // follow times must read it the same way.
   const ownSubject = legacyAgentSubject(sessionID);
+  const ownsSubject = (subject: string): boolean => topicForms(subject).includes(ownSubject);
 
   let currentEpoch: ConsumerEpoch = { id: newEpoch(), startedAt: now() };
   // When each followed topic was first followed, on the host's clock.
@@ -443,7 +458,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   };
 
   const followedAt = (subject: string): number | undefined => {
-    if (subject === ownSubject) return Number.NEGATIVE_INFINITY;
+    if (ownsSubject(subject)) return Number.NEGATIVE_INFINITY;
     let earliest: number | undefined;
     for (const [topic, at] of follows) {
       if (!reaches(topic, subject)) continue;
@@ -766,7 +781,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       for (const topic of topics) {
         // The session's own agent subject is always followed (`followedAt`), so it is never one of
         // the follow times a host persists.
-        if (topic === ownSubject) continue;
+        if (ownsSubject(topic)) continue;
         next.set(topic, follows.get(topic) ?? at);
       }
       follows = next;

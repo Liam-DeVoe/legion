@@ -320,16 +320,23 @@ check "dispatch's server image is never read" "$(lacks "$server_pin" "$calls")"
 check "each real platform is read, and no attestation entry" \
   "$(grep -qF '(index .Image "linux/arm64")' "$calls" && grep -qF '(index .Image "linux/amd64")' "$calls" && lacks '(index .Image "unknown/unknown")' "$calls")"
 
-echo "case: --listeners, a dispatch stack with no listenerImage runs envoyImage"
-new_case listeners-fallback
+# The deployment requires dispatch's listenerImage (agent-infra dispatch/main.go loadSettings; its
+# pinListenerImage reads that key and no other), so a stack that sets none runs no listener this
+# gate can read. Reading the server's envoyImage in its place would open the gate on an image the
+# listener does not run, and for a configuration the deployment itself refuses.
+echo "case: --listeners, a dispatch stack with no listenerImage is UNKNOWN, never the server's image"
+new_case listeners-no-listener-pin
 listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin"
 index "$envoy_pin" "$legion" "$ahead_rev"
 index "$cluster_pin" "$legion" "$ahead_rev"
 index "$server_pin" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
 run_gate -- --listeners "$commit"
-check "exits 0" "$(is "$status" 0)"
-check "dispatch's listener is read from envoyImage" "$(grep -qF "$server_pin" "$calls" && echo true || echo false)"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the key it needs" \
+  "$(has_line "UNKNOWN: dispatch: dispatch/Pulumi.prod.yaml sets no agent-infra-dispatch:listenerImage")"
+check "never reads dispatch's server image" "$(lacks "$server_pin" "$calls")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: --listeners, an index whose platforms name different revisions"
 new_case listeners-disagree

@@ -258,7 +258,7 @@ listener() {
     return
   fi
   if [ -z "$ref" ]; then
-    printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets none of %s\n' "$key" "$stack" "$*"
+    printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets no %s\n' "$key" "$stack" "$*"
     unknown=$((unknown + 1))
     return
   fi
@@ -268,7 +268,11 @@ listener() {
 if [ "$mode" = listeners ]; then
   listener envoy envoy agent-infra-envoy:listenerImage
   listener envoy-cluster envoy-cluster agent-infra-envoy-cluster:envoyImage
-  listener dispatch dispatch agent-infra-dispatch:listenerImage agent-infra-dispatch:envoyImage
+  # dispatch's listener runs listenerImage and nothing else: agent-infra dispatch/main.go requires
+  # that key (loadSettings) and pinListenerImage sets the listener's container from it, leaving
+  # envoyImage to the Dispatch server. A stack that sets none runs no listener this gate can read,
+  # so it is UNKNOWN rather than a reading of the server's image.
+  listener dispatch dispatch agent-infra-dispatch:listenerImage
 elif stack_file legion/Pulumi.prod.yaml; then
   if ! daemon_pins >"$work/pins" 2>"$work/err"; then
     printf 'UNKNOWN: cannot read theorem-labs/agent-infra legion/Pulumi.prod.yaml: %s\n' "$(first_line "$work/err")"
