@@ -66,6 +66,7 @@ INFRA_TARGETS = ".github/envoy-infra-targets.json"
 NOTICES = "scripts/go-third-party-notices.sh"
 NOTICES_LOOPS = ".github/scripts/go-release-notices.sh"
 CI = ".github/workflows/ci.yaml"
+CI_FILTERS = ".github/ci-filters.yaml"
 DOCS_SITE = ".github/workflows/docs-site.yaml"
 BROWSER_SITE = ".github/workflows/dispatch-browser.yaml"
 BROWSER_NIGHTLY = ".github/workflows/dispatch-browser-nightly.yaml"
@@ -90,11 +91,12 @@ def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
     The job is ci.yaml's, which keeps the `if:` the filter gates whichever file holds the
     steps.
 
-    Every such gate reads two files: ci.yaml, where every job's `if:` is, and the job's own
-    ci-job-<id>.yaml, where the steps it runs are. That pair is appended here rather than
-    written out on each gate, so a gate's own `reads` say only what is its own. The two gates
-    that name a file - docs and dispatch_browser, whose called workflows carry job ids of their
-    own - declare the pair they read themselves."""
+    Every such gate reads three files: ci.yaml, where every job's `if:` is, .github/ci-filters.yaml,
+    where the filter that selects it is (both CI_SELF), and the job's own ci-job-<id>.yaml, where
+    the steps it runs are. Those are appended here rather than written out on each gate, so a
+    gate's own `reads` say only what is its own. The two gates that name a file - docs and
+    dispatch_browser, whose called workflows carry job ids of their own - declare what they read
+    themselves, CI_SELF among it."""
     if not workflow:
         reads = list(reads) + CI_SELF + job_self(job)
     return gate_in(filter, job, runs, reads, step, exact, workflow or job_file(job))
@@ -265,7 +267,15 @@ def setup_go(job, gomod, workflow=""):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 
 
-CI_SELF = reads((CI, "a job reads its own definition"))
+# Every job reads ci.yaml, where its `if:` is, and .github/ci-filters.yaml, where the filter that
+# selects it is: ci.yaml's `changes` job hands that file to dorny/paths-filter by its path, so a
+# change to it reaches every job as a change to ci.yaml does. The docs and dispatch_browser gates
+# add this by hand, since they name the file their steps are in, and take both through it.
+CI_SELF = reads(
+    (CI, "a job reads its own definition"),
+    (CI_FILTERS, "the filter that selects the job is in it, which ci.yaml's `changes` job hands "
+                 "dorny/paths-filter by its path"),
+)
 
 
 def job_self(job):
@@ -1815,7 +1825,8 @@ def harness(filter, step, harness_script, subjects, lib=True):
 # step was the test job's, that closure was on the `test` filter and a change to any package of
 # the daemon ran thirty-odd shell harnesses and the Bun suites of scripts/ beside it; a gate on
 # the step inside that job was no cure either, since the gate's own filter would be the closure
-# a second time and the changes job's filters string has no room for one (rule 18).
+# a second time, written out once more in .github/ci-filters.yaml for a gate that decides one
+# step of a job the `test` filter had already started.
 PRIVATE_NAMES_PORT_JOB = "private-names-port"
 PRIVATE_NAMES_PORT_STEP = "Test the private-name rules' port against the frozen script"
 PRIVATE_NAMES_PORT_BUILD = script_run(
@@ -2014,15 +2025,15 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:75-76)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:77-78)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2172 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2579 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2273 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2719 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:47)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:51-52)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
     ]),
@@ -3063,6 +3074,8 @@ GATES = [
     ], reads=reads(
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
         (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
+        (CI_FILTERS, f"{at('ci-filters', CHECK_STEP)} reads every filter from it, and writes rule 17's "
+                     f"generated blocks into it in its write mode"),
         (".github/scripts/check-workflow-files.sh",
          at("ci-filters", "Check every workflow file GitHub can read and its size")),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),

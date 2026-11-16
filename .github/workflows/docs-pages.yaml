@@ -30,6 +30,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/ci.yaml'
+      - '.github/ci-filters.yaml'
       - '.github/workflows/docs-pages.yaml'
       - '.github/workflows/docs-site.yaml'
       # ci.yaml's *bun_install:
