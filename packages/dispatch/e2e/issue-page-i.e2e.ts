@@ -1384,6 +1384,74 @@ test("an issue opened by a link opens with the focus on its question, or on its 
   });
 });
 
+// The tester's finding at #4205's e3136741, R10 and R9's "after each move the focused row is on
+// screen": Enter draws the statement's document - its one editor, and the whole of it - in the
+// row, and the document scrolls the caret's block to the middle of the screen. The row holding
+// the editor is still the focused row, and G's `useRowOnScreen` places a focused row again on
+// every change of its size: a row taller than the screen goes back to its top. So each new line
+// the reader writes, a picture that loads above the caret, and another reader's edit take the
+// page to the top of the document, and the caret off screen. On the real INFRA-1196 at 1440 by
+// 900 a picture that loaded during that scroll left the caret in its last statement 17,037 px
+// below the top of the window. The seeds' statements sit near their document's top and c-keys
+// (7) writes no new line, so no row met it.
+test("the caret Enter puts in a statement deep in its document stays on screen while the reader writes", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page) => {
+    const deep = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A spec whose one statement is under eighty paragraphs",
+        "",
+        ...Array.from({ length: 80 }, (_, n) => [
+          `Paragraph ${n + 1} of the words above the statement.`,
+          "",
+        ]).flat(),
+        ":::requirement{#r-deep}",
+        "The statement under eighty paragraphs.",
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose one statement is deep in its spec",
+    });
+    const statement = blockNodeId(await primarySlug(deep.key), "r-deep");
+    await gotoIssue(page, `/issues/${deep.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the page does not open on the statement" })
+      .toBe(statement);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    const caretOnScreen = (): Promise<boolean> =>
+      page.evaluate(() => {
+        const selection = window.getSelection();
+        if (selection === null || selection.rangeCount === 0) return false;
+        // A caret on an empty line has no rectangle of its own, so its line's box is read.
+        const anchor = selection.anchorNode;
+        const line = anchor instanceof Element ? anchor : anchor?.parentElement;
+        const box = selection.getRangeAt(0).getClientRects()[0] ?? line?.getBoundingClientRect();
+        return box !== undefined && box.top >= 0 && box.bottom <= window.innerHeight;
+      });
+    await expect
+      .poll(caretOnScreen, {
+        message: "the caret Enter put in the statement is off screen at 1440x900",
+      })
+      .toBe(true);
+    // A new line makes the row taller, and nothing else is pressed while it is drawn.
+    await page.keyboard.press("End");
+    await page.keyboard.press("Enter");
+    await nextFrames(page);
+    await nextFrames(page);
+    expect(
+      await caretOnScreen(),
+      "a new line written in the statement took the caret off screen at 1440x900"
+    ).toBe(true);
+  });
+});
+
 // c-children, as the architect's ruling 5 reads R12 (build-rulings-md): no view draws a
 // children's section above the outline; the children are one group of rows of the outline, where
 // the model places them, which for every child today is under the issue; each child's row holds
