@@ -1204,17 +1204,22 @@ func (s *server) insertSessionReply(
 		return model.Message{}, model.Event{}, err
 	}
 	// The reply's node goes in before its row, in the parent's issue's project or between its
-	// thread's parties; what that write states waits for the message.answered event below.
+	// thread's parties, under the message it answers; what that write states waits for the
+	// message.answered event below, and the row names the node in its insert.
 	replyID := uuid.NewString()
-	replyNode, err := writeMessageNode(ctx, tx, replyID, parent.IssueKey, &parent.ID, actor, parent.Target)
+	stored, err := writeMessageNode(ctx, tx, graphstore.MessageRow{
+		ID: replyID, IssueKey: deref(parent.IssueKey), InReplyTo: parent.ID,
+		RepliesToBlock: deref(block.nodeID()), Target: deref(parent.Target),
+	}, actor)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
+	nodeKind, nodeAddress := stored.rowNode()
 	reply, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6, $7)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		returning `+messageColumns+`
-	`, replyID, parent.IssueKey, author, body, parent.Target, parent.ID, block.nodeID()))
+	`, replyID, parent.IssueKey, author, body, parent.Target, parent.ID, block.nodeID(), stored.at, nodeKind, nodeAddress))
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
@@ -1247,8 +1252,15 @@ func (s *server) insertSessionReply(
 			return model.Message{}, model.Event{}, err
 		}
 	}
-	if err := graphstore.Caused(ctx, tx, replyNode, event.ID); err != nil {
+	if err := graphstore.Caused(ctx, tx, stored.written, event.ID); err != nil {
 		return model.Message{}, model.Event{}, err
+	}
+	// Who wrote it, before any write of the session the answered attempt names
+	// (recordAnsweredDelivery), which is the order that write is held to.
+	if stored.projected {
+		if err := graphstore.Authored(ctx, tx, graphstore.KindMessage, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
+			return model.Message{}, model.Event{}, err
+		}
 	}
 	return reply, event, nil
 }

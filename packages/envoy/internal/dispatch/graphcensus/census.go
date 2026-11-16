@@ -257,18 +257,18 @@ var projections = []projection{{
 }, {
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
-	table:    "comments.author",
+	table:    "comments.author, messages.author",
 	note: "no table projects a person, so the row side is the people the projected tables name as authors," +
 		" and the owner of each session the server proved that wrote one",
 	rows: `
 		select 'person ' || p.login, '` + graphstore.KindPerson + `', p.login, ''
-		from (` + commentPeople + `) p`,
+		from (` + authorPeople + `) p`,
 	nodes: `
 		select n.id, '' from graph_nodes n where n.kind = '` + graphstore.KindPerson + `'`,
 }, {
 	name:     graphstore.KindSession,
 	nodeKind: graphstore.KindSession,
-	table:    "comments.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers, events.payload",
+	table:    "comments.author, messages.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers, events.payload",
 	note: "no table projects a session, so the row side is the sessions those tables name as authors, as reached," +
 		" as askers and as followers, and every session an ask.follower_added event named",
 	rows: `
@@ -349,7 +349,7 @@ func currentLinks(fromKind, kinds string) string {
 
 // commentAuthor is the far end of the authored_by tuple a comment row states, written kind:id:
 // the node graphstore.AuthorOf reads off the actor the row stored, a login canonicalised as
-// commentPeople canonicalises one, and null for an actor that names nobody, whose comment states
+// authorPeople canonicalises one, and null for an actor that names nobody, whose comment states
 // no authored_by at all.
 const commentAuthor = `case
 			when c.author->>'kind' = 'user' and coalesce(c.author->>'id', '') <> ''
@@ -376,20 +376,25 @@ const commentStoreJoins = `
 var commentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key) <= ` + addressBound + `)
 		  and (owner.ref_key is null or octet_length(owner.ref_key) <= ` + addressBound + `)`
 
-// commentPeople are the people the projected tables name as the author of a row, as
+// authorPeople are the people the projected tables name as the author of a row, as
 // graphstore.AuthorOf reads an actor: the login an actor of kind user carries, or the owner a
 // personal token's actor carries, each canonicalised the way user_threads_login canonicalises a
 // login (migration 0095, which is model.CanonicalLogin in SQL). Beside them are the owners of the
-// sessions the server proved that wrote a comment: the comment's author is the session, whose act
-// names that same session and whose owner is the person it belongs to, and the write that ties
-// the two with an alias_of tuple makes the owner's node with it (graphstore.AuthorFacts), except
-// for a session past the store's bound, of which nothing is written.
+// sessions the server proved that wrote a comment or a message: the row's author is the session,
+// whose act names that same session and whose owner is the person it belongs to, and the write
+// that ties the two with an alias_of tuple makes the owner's node with it
+// (graphstore.AuthorFacts), except for a session past the store's bound, of which nothing is
+// written.
 //
 // Only the comments the store holds name anybody here (commentInTheStore): a comment anchored
 // to or owned by a document whose address is past the bound is left whole out of the store, so
 // it states no authored_by and makes no author node, and a person whose only comment is one of
 // those is no node of the store and no difference of this census.
-var commentPeople = `
+//
+// A message's author is recorded from this release on (graphstore.Authored, api's
+// writeMessageNode), by the write that names the message's node on its row, so only a messages
+// row whose node_kind is set names anybody here: an older build's row recorded no author.
+var authorPeople = `
 	select distinct user_threads_login(author.login) as login
 	from (
 		select case
@@ -406,19 +411,33 @@ var commentPeople = `
 		  and c.author->'act'->>'session' = c.author->>'id'
 		  and octet_length(c.author->>'id') <= ` + addressBound + `
 		  and ` + commentInTheStore + `
+		union all
+		select case
+			when m.author->>'kind' = 'user' and coalesce(m.author->>'id', '') <> '' then m.author->>'id'
+			when m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> '' then null
+			when coalesce(m.author->>'owner', '') <> '' then m.author->>'owner'
+		end
+		from messages m where m.node_kind is not null
+		union all
+		select m.author->>'owner'
+		from messages m
+		where m.node_kind is not null and m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> ''
+		  and m.author->'act'->>'session' = m.author->>'id'
+		  and octet_length(m.author->>'id') <= ` + addressBound + `
 	) author
 	where author.login is not null and user_threads_login(author.login) <> ''`
 
 // recordedSessions are the sessions a row of the store names, each once, with the first event
 // that named it (null for a session only a row names) and the earliest time a row or an event
 // names it. They are every write R14 records a session from: a comment a session wrote
-// (graphstore.AuthorOf); every session a delivery reached - a comment mention's and a targeted
-// message's attempt alike, whether the outbox's record states it (outbox.deliveredGraph) or the
-// attempt's own settle does (graphstore.Reached), and a fallback copy the outbox published to a
-// session's own topic (outbox.fallbackDelivered); an ask a session opened, every session that
-// follows an ask now, and every session an ask.follower_added event ever named (asks.Follow), so a
-// follower added and removed before the store existed is held to a node as well. A node is
-// history and never goes, so a session that once followed still owes it.
+// (graphstore.AuthorOf), and a message one wrote whose row names its node, which is the write
+// that records its author (authorPeople says why only those); every session a delivery reached -
+// a comment mention's and a targeted message's attempt alike, whether the outbox's record states
+// it (outbox.deliveredGraph) or the attempt's own settle does (graphstore.Reached), and a fallback
+// copy the outbox published to a session's own topic (outbox.fallbackDelivered); an ask a session
+// opened, every session that follows an ask now, and every session an ask.follower_added event
+// ever named (asks.Follow), so a follower added and removed before the store existed is held to a
+// node as well. A node is history and never goes, so a session that once followed still owes it.
 //
 // R14 is exact about which attempt is a delivery: an attempt the listener took is one, and a
 // pending or failed one is not. So this binds the two states that mean it
@@ -429,7 +448,7 @@ var commentPeople = `
 // no node the settle did not already write.
 //
 // Only the comments the store holds name a session here (commentInTheStore), for the reason
-// commentPeople binds the same: a comment left out of the store records no author at all.
+// authorPeople binds the same: a comment left out of the store records no author at all.
 //
 // It is one definition read by two: the census's session row side and the backfill's session
 // pass (backfillSessions), so the sessions the backfill gives a node are exactly the sessions the
@@ -440,6 +459,9 @@ var recordedSessions = `
 		from comments c` + commentStoreJoins + `
 		where c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
 		  and ` + commentInTheStore + `
+		union all
+		select m.author->>'id', null, m.created_at from messages m
+		where m.node_kind is not null and m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> ''
 		union all
 		select d.session_id, null, d.created_at from comment_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `

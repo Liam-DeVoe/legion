@@ -58,6 +58,62 @@ func RolePageID(role string) string { return KindRole + "/" + role }
 
 func SessionPageID(session string) string { return KindSession + "/" + session }
 
+// ClaimedRole is the role the store holds session in now: the role whose current held_by points
+// at the session, else the role the session is currently part_of. The part_of outlives the claim -
+// a session is part_of the role it claimed while it ran - so a session whose claim has since ended
+// still reads as one that claimed that role. claimed is false for a session that claimed none.
+//
+// It is the one rule of whose page a session is on (R14): a session that claimed a role carries
+// no page of its own, the role's page being its page, and a session that claimed none carries the
+// page SessionPageID names. The publisher reads it before it writes a session's page
+// (outbox.sessionsInARole) and a message to a session reads it for the page the message hangs
+// from (AgentPage), so the two cannot hang one session's things from two pages. Each read is the
+// current read of a relation (CurrentIn, CurrentOut).
+func ClaimedRole(ctx context.Context, q Queryer, session string) (role string, claimed bool, err error) {
+	held, err := CurrentIn(ctx, q, KindSession, session, []string{TupleHeldBy})
+	if err != nil {
+		return "", false, err
+	}
+	for _, claim := range held {
+		if claim.FromKind == KindRole {
+			return claim.FromID, true, nil
+		}
+	}
+	parts, err := CurrentOut(ctx, q, KindSession, session, []string{TuplePartOf})
+	if err != nil {
+		return "", false, err
+	}
+	for _, part := range parts {
+		if part.ToKind == KindRole {
+			return part.ToID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// AgentPage is the page the store gives the agent a message's target routes to (`role:<topic>`
+// or `session:<id>`): a role's own page, and for a session the page of the role it claimed or,
+// where it claimed none, its own (ClaimedRole). ok is false for a target that names no node the
+// store can key (routeNode) and for a page id past the store's address bound.
+func AgentPage(ctx context.Context, q Queryer, target string) (page string, ok bool, err error) {
+	route, routed := routeNode(target)
+	if !routed {
+		return "", false, nil
+	}
+	page = RolePageID(route.ID)
+	if route.Kind == KindSession {
+		role, claimed, err := ClaimedRole(ctx, q, route.ID)
+		if err != nil {
+			return "", false, fmt.Errorf("read the role session %s claimed: %w", route.ID, err)
+		}
+		page = SessionPageID(route.ID)
+		if claimed {
+			page = RolePageID(role)
+		}
+	}
+	return page, AddressFits(page), nil
+}
+
 // PersonNode, SessionNode, RoleNode and PageNode are the four nodes this store holds of people
 // and agents, as the write that first records one makes it: project-visible, live, carrying no
 // attribute of their own, and made by the actor of that write at its time.

@@ -711,12 +711,13 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 }
 
 // graphArmCount guards that the census reads every arm. It is the arm list of
-// 20261109215947_graph_edges_tuples, the last migration to restate graph_edges: the 27 arms
-// 20261105014808 restated it with, the comment answers arm among them, and the one arm over the
-// store's current tuples that migration adds. Each of the four arms over a kind the store now
-// writes answers only the rows of its table that name no node, and the seed names the node of
-// every row it writes, so those four answer nothing here (armGatedPerRow).
-const graphArmCount = 28
+// 20261116114517_graph_edges_message_tuples, the last migration to restate graph_edges: the 27
+// arms 20261105014808 restated it with, the comment answers arm among them, the one arm over the
+// store's current tuples 20261109215947 adds, and the arm over a message's reply to a message's
+// block that 20261116114517 adds. Each of the six arms over a kind the store now writes answers
+// only the rows of its table that name no node, and the seed names the node of every row it
+// writes, so those six answer nothing here (armGatedPerRow).
+const graphArmCount = 29
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)

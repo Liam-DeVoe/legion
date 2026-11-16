@@ -259,45 +259,94 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 	return owed, rows.Err()
 }
 
-// writeMessageNode writes the node of message id, which a request is about to store, before its
-// row (graphstore.MessageNode), and answers the write held for the event that records the
-// message. A message on an issue is in that issue's project. A message on none is between its
-// thread's parties (graphstore.ThreadParties): those of the root it answers, read up in_reply_to as
-// messageThreadCTE walks it, or, for a message that answers nothing, its own author and target.
-func writeMessageNode(
-	ctx context.Context, tx pgx.Tx, id string, issueKey, inReplyTo *string, author model.Actor, target *string,
-) (graphstore.Uncaused, error) {
+// messageStoreWrite is one message's write of the store, from the node written before its row to
+// the facts the message's event causes.
+type messageStoreWrite struct {
+	// node is the message's own node, written before its row.
+	node graphstore.Node
+	// written is the node write, with every fact of the message held for the event that stores
+	// it (graphstore.Caused).
+	written graphstore.Uncaused
+	// at is the time the node, the row and every fact carry: the transaction's own, which is what
+	// messages.created_at defaults to and what the insert writes, so graph_edges dates a reply's
+	// edge alike whether its tuple or its row answers it.
+	at time.Time
+	// projected is false for a message whose replies_to end the store cannot key
+	// (graphstore.MessageFacts): its row names no node and who wrote it is not recorded, so the
+	// old arms over messages answer its edges.
+	projected bool
+}
+
+// rowNode is the node columns the message's row names in its insert: the message kind and the
+// message's own id, or null and null for a message the store left out (projected).
+func (w messageStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
+	if !w.projected {
+		return nil, nil
+	}
+	return &w.node.Kind, &w.node.ID
+}
+
+// writeMessageNode writes the node of the message row names, which a request is about to store,
+// before its row (graphstore.MessageNode), with the page it hangs from where it hangs from one,
+// and answers the write held for the event that records the message, every pointer of the row
+// among its facts (graphstore.MessageFacts). A message on an issue is in that issue's project. A
+// message on none is between its thread's parties (graphstore.ThreadParties): those of the root it
+// answers, read up in_reply_to as messageThreadCTE walks it, or, for a message that answers
+// nothing, its own author and target.
+func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow, author model.Actor) (messageStoreWrite, error) {
 	var project string
 	var parties []string
 	switch {
-	case issueKey != nil:
+	case row.IssueKey != "":
 		var err error
-		if project, _, err = graphstore.ScopeOf(ctx, tx, issueKey, nil); err != nil {
-			return graphstore.Uncaused{}, err
+		if project, _, err = graphstore.ScopeOf(ctx, tx, &row.IssueKey, nil); err != nil {
+			return messageStoreWrite{}, err
 		}
-	case inReplyTo != nil:
+	case row.InReplyTo != "":
 		var rootAuthor []byte
 		var rootTarget *string
 		if err := tx.QueryRow(ctx, messageThreadCTE+`
 			select m.author, m.target from messages m join thread t on t.id = m.id
 			where t.in_reply_to is null
-		`, *inReplyTo).Scan(&rootAuthor, &rootTarget); err != nil {
-			return graphstore.Uncaused{}, fmt.Errorf("read the thread root of a reply to message %s: %w", *inReplyTo, err)
+		`, row.InReplyTo).Scan(&rootAuthor, &rootTarget); err != nil {
+			return messageStoreWrite{}, fmt.Errorf("read the thread root of a reply to message %s: %w", row.InReplyTo, err)
 		}
 		var root model.Actor
 		if err := json.Unmarshal(rootAuthor, &root); err != nil {
-			return graphstore.Uncaused{}, fmt.Errorf("decode the author of the thread root of message %s: %w", *inReplyTo, err)
+			return messageStoreWrite{}, fmt.Errorf("decode the author of the thread root of message %s: %w", row.InReplyTo, err)
 		}
 		parties = graphstore.ThreadParties(root, rootTarget)
 	default:
+		var target *string
+		if row.Target != "" {
+			target = &row.Target
+		}
 		parties = graphstore.ThreadParties(author, target)
 	}
-	written, err := graphstore.WriteUncaused(ctx, tx,
-		[]graphstore.Node{graphstore.MessageNode(id, project, parties, author, time.Now().UTC())}, nil)
-	if err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("write the node of message %s: %w", id, err)
+	// A message on no issue that answers nothing sits on the page the store gives the agent it
+	// was sent to, which for a session that claimed a role is that role's (graphstore.AgentPage),
+	// the rule the publisher writes a session's page by.
+	if row.OnAgentPage() {
+		page, ok, err := graphstore.AgentPage(ctx, tx, row.Target)
+		if err != nil {
+			return messageStoreWrite{}, err
+		}
+		if ok {
+			row.Page = page
+		}
 	}
-	return written, nil
+	write := messageStoreWrite{}
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&write.at); err != nil {
+		return messageStoreWrite{}, fmt.Errorf("read the time of message %s: %w", row.ID, err)
+	}
+	write.node = graphstore.MessageNode(row.ID, project, parties, author, write.at)
+	nodes, tuples, projected := graphstore.MessageFacts([]graphstore.Node{write.node}, nil, row, author, write.at, graphstore.NoEvent)
+	written, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)
+	if err != nil {
+		return messageStoreWrite{}, fmt.Errorf("write the node of message %s: %w", row.ID, err)
+	}
+	write.written, write.projected = written, projected
+	return write, nil
 }
 
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
@@ -372,17 +421,23 @@ func (s *server) createStoredMessage(
 		return model.Message{}, nil, err
 	}
 	// The message's node goes in before its row, in its issue's project or between its thread's
-	// parties; what that write states waits for the event below (graphstore.Caused).
+	// parties, with its pointers stated as facts that wait for the event below (graphstore.Caused).
+	// The row names the node in its own insert, which is the marker every trigger on that insert
+	// sees and graph_edges reads: a row that names its node is answered from its tuples.
 	messageID := uuid.NewString()
-	messageNode, err := writeMessageNode(ctx, tx, messageID, issueKey, input.InReplyTo, actor, input.Target)
+	stored, err := writeMessageNode(ctx, tx, graphstore.MessageRow{
+		ID: messageID, IssueKey: deref(issueKey), InReplyTo: deref(input.InReplyTo),
+		RepliesToBlock: deref(block.nodeID()), Target: deref(input.Target),
+	}, actor)
 	if err != nil {
 		return model.Message{}, nil, err
 	}
+	nodeKind, nodeAddress := stored.rowNode()
 	message, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6, $7)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		returning `+messageColumns+`
-	`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, block.nodeID()))
+	`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, block.nodeID(), stored.at, nodeKind, nodeAddress))
 	if err != nil {
 		return model.Message{}, nil, err
 	}
@@ -419,8 +474,16 @@ func (s *server) createStoredMessage(
 			return model.Message{}, nil, err
 		}
 	}
-	if err := graphstore.Caused(ctx, tx, messageNode, event.ID); err != nil {
+	if err := graphstore.Caused(ctx, tx, stored.written, event.ID); err != nil {
 		return model.Message{}, nil, err
+	}
+	// Who wrote it, under the same event, as a comment's author is recorded (graphstore.Authored).
+	// A message whose row names no node records none, as a comment left out of the store records
+	// none: the census holds the author of a row that names its node alone to a node.
+	if stored.projected {
+		if err := graphstore.Authored(ctx, tx, graphstore.KindMessage, message.ID, actor, message.CreatedAt, event.ID); err != nil {
+			return model.Message{}, nil, err
+		}
 	}
 	// A targeted message's attempt 1 is written here, in the transaction that stores the
 	// message, unclaimed and naming no session yet, as writeBroadcast opens each recipient's: a

@@ -325,17 +325,13 @@ func mentionReached(event model.Event) (comment, session string, ok bool) {
 }
 
 // sessionsInARole are the sessions the mention receipts among events reached, the attempts the
-// listener took (mentionReached), that the store
-// already holds in a role: a role's current held_by into the session, or the session's current
-// part_of a role, each read as every current read reads a relation (graphstore.CurrentIn,
-// graphstore.CurrentOut). A session that claimed a role carries no page of its own
-// (deliveredGraph), and the batch that records a receipt commonly resolves no role, so its own
-// resolution cannot say. The part_of outlives the claim - a session is part_of the role it
-// claimed while it ran - so a session whose claim has since ended still reads as one that
-// claimed a role. The reads run under the statement gate the batch's other statements take
-// (lanes.statement), and a read that fails fails the record: a page written or left out on a
-// guess would stand for good, while a record that fails leaves its events to be read and
-// recorded again.
+// listener took (mentionReached), that the store already holds in a role (graphstore.ClaimedRole,
+// the one rule a message to a session reads its page by too). A session that claimed a role
+// carries no page of its own (deliveredGraph), and the batch that records a receipt commonly
+// resolves no role, so its own resolution cannot say. The reads run under the statement gate the
+// batch's other statements take (lanes.statement), and a read that fails fails the record: a page
+// written or left out on a guess would stand for good, while a record that fails leaves its events
+// to be read and recorded again.
 func sessionsInARole(ctx context.Context, deps Deps, events []*batchEvent) (map[string]struct{}, error) {
 	var sessions []string
 	for _, event := range events {
@@ -349,7 +345,7 @@ func sessionsInARole(ctx context.Context, deps Deps, events []*batchEvent) (map[
 	inARole := map[string]struct{}{}
 	if err := deps.lanes.statement(func() error {
 		for _, session := range sessions {
-			claimed, err := claimedARole(ctx, deps.Store.Pool, session)
+			_, claimed, err := graphstore.ClaimedRole(ctx, deps.Store.Pool, session)
 			if err != nil {
 				return err
 			}
@@ -362,21 +358,4 @@ func sessionsInARole(ctx context.Context, deps Deps, events []*batchEvent) (map[
 		return nil, fmt.Errorf("read whether the sessions a mention reached claimed a role: %w", err)
 	}
 	return inARole, nil
-}
-
-// claimedARole reports whether the store holds session in a role now: a role's held_by into it,
-// or its part_of a role.
-func claimedARole(ctx context.Context, q graphstore.Queryer, session string) (bool, error) {
-	held, err := graphstore.CurrentIn(ctx, q, graphstore.KindSession, session, []string{graphstore.TupleHeldBy})
-	if err != nil {
-		return false, err
-	}
-	if slices.ContainsFunc(held, func(claim graphstore.Tuple) bool { return claim.FromKind == graphstore.KindRole }) {
-		return true, nil
-	}
-	parts, err := graphstore.CurrentOut(ctx, q, graphstore.KindSession, session, []string{graphstore.TuplePartOf})
-	if err != nil {
-		return false, err
-	}
-	return slices.ContainsFunc(parts, func(part graphstore.Tuple) bool { return part.ToKind == graphstore.KindRole }), nil
 }

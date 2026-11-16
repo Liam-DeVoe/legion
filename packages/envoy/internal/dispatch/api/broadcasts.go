@@ -477,17 +477,20 @@ func (s *server) writeBroadcast(
 	for position, recipient := range recipients {
 		target := "session:" + recipient.sessionID
 		// Each copy's node goes in before its row, between the sender and the recipient, the
-		// parties of the thread the copy opens; what that write states waits for its event.
+		// parties of the thread the copy opens, on the recipient's page and with its target and
+		// its broadcast stated as facts that wait for its event; the row names the node in its
+		// insert.
 		messageID := uuid.NewString()
-		messageNode, err := writeMessageNode(ctx, tx, messageID, nil, nil, actor, &target)
+		stored, err := writeMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, Target: target, BroadcastID: sent.ID}, actor)
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
+		nodeKind, nodeAddress := stored.rowNode()
 		message, err := scanMessage(tx.QueryRow(ctx, `
-			insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position)
-			values ($1, null, $2, $3, $4, $5, $6)
+			insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position, created_at, node_kind, node_address)
+			values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9)
 			returning `+messageColumns+`
-		`, messageID, author, body, target, sent.ID, position))
+		`, messageID, author, body, target, sent.ID, position, stored.at, nodeKind, nodeAddress))
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
@@ -511,8 +514,13 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		if err := graphstore.Caused(ctx, tx, messageNode, event.ID); err != nil {
+		if err := graphstore.Caused(ctx, tx, stored.written, event.ID); err != nil {
 			return broadcastRead{}, nil, err
+		}
+		if stored.projected {
+			if err := graphstore.Authored(ctx, tx, graphstore.KindMessage, message.ID, actor, message.CreatedAt, event.ID); err != nil {
+				return broadcastRead{}, nil, err
+			}
 		}
 		events = append(events, event)
 		// The recipient's first delivery attempt is opened here, unclaimed, rather than by the

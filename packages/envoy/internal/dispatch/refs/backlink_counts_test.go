@@ -767,6 +767,11 @@ var graphViewArms = []graphViewArm{
 	{table: "comments", fromKind: "comment", kind: "replies_to", toKind: "comment_block"},
 	{table: "comments", fromKind: "comment", kind: "replies_to", toKind: "ask_block"},
 	{table: "messages", fromKind: "message", kind: "replies_to", toKind: "message_block"},
+	// The store's arm of a message's reply to a message's block (migration 20261116114517),
+	// which renders that one relation under its address form: every select item of it is a
+	// column of its sub-select, so it reads as the tuple arm does, and the count reads it as the
+	// message_block arm's tupleSQL.
+	{table: "graph_tuples"},
 }
 
 // The view cannot gain an arm the count does not know. graph_edges' own text is parsed back into

@@ -59,7 +59,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			ask := r.plan.asks[index]
 			nodes = append(nodes, graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt))
 		}
-		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+		if err := writeItemNodes(ctx, tx, nodes, nil); err != nil {
 			return fmt.Errorf("the asks' nodes: %w", err)
 		}
 		for index := from; index < to; index++ {
@@ -195,10 +195,11 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 
 // writeItemNodes writes the nodes of the asks or the messages one batch copies, before any row of
 // the batch, each in its project (seedRun.itemProject), at the sentinel, as every write of the
-// seed's is. The rows carry no foreign key into the store, so where they fall beside this moves no
-// lock of the store's order.
-func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
-	return graphstore.Write(ctx, tx, nodes, nil)
+// seed's is, and the facts the batch states of them beside those nodes. The rows carry no foreign
+// key into the store but the node a message's row names, which this write precedes, so where they
+// fall beside this moves no lock of the store's order.
+func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node, tuples []graphstore.Tuple) error {
+	return graphstore.Write(ctx, tx, nodes, tuples)
 }
 
 // itemProject is the project of an item of the plan: its issue's, or its document's where it
@@ -441,35 +442,65 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 	return r.inBatches(ctx, "messages", len(r.plan.messages), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("message")
 		// Each message's node goes in before any row of the batch, in its issue's project, as the
-		// server's message create writes it; every seeded message is on an issue.
-		nodes := make([]graphstore.Node, 0, to-from)
+		// server's message create writes it; every seeded message is on an issue. Beside it go
+		// its pointers (graphstore.MessageFacts) and who wrote it, which graphstore.AuthorFacts
+		// states as graphstore.Authored does for a message of the server's, the author's node
+		// once, as commentStoreWrite gives a batch of comments theirs. Each row then names its
+		// node in its insert, as the server's does.
+		nodes := make([]graphstore.Node, 0, to-from+1)
+		tuples := make([]graphstore.Tuple, 0, 3*(to-from))
+		var authors []graphstore.Node
+		rows := make([]graphstore.MessageRow, 0, to-from)
+		projected := make([]bool, 0, to-from)
 		for index := from; index < to; index++ {
 			message := r.plan.messages[index]
+			row := graphstore.MessageRow{ID: message.ID, IssueKey: r.plan.issues[message.Issue].Key}
+			if message.InReplyTo >= 0 {
+				row.InReplyTo = r.plan.messages[message.InReplyTo].ID
+			}
+			if message.RepliesTo >= 0 {
+				row.RepliesToBlock = "message/" + r.plan.messages[message.RepliesTo].ID + "#b1"
+			}
 			nodes = append(nodes, graphstore.MessageNode(message.ID, r.itemProject(message.Issue, -1), nil, seedAuthor, message.CreatedAt))
+			var stated bool
+			nodes, tuples, stated = graphstore.MessageFacts(nodes, tuples, row, seedAuthor, message.CreatedAt, graphstore.NoEvent)
+			if stated {
+				made, facts, _ := graphstore.AuthorFacts(graphstore.KindMessage, message.ID, seedAuthor, message.CreatedAt, graphstore.NoEvent)
+				if authors == nil {
+					authors = made
+				}
+				tuples = append(tuples, facts...)
+			}
+			rows = append(rows, row)
+			projected = append(projected, stated)
 		}
-		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+		if err := writeItemNodes(ctx, tx, append(nodes, authors...), tuples); err != nil {
 			return fmt.Errorf("the messages' nodes: %w", err)
 		}
 		for index := from; index < to; index++ {
 			message := r.plan.messages[index]
+			row := rows[index-from]
 			mention := ""
 			if message.MentionTo >= 0 {
 				mention = r.plan.mentionText(message.MentionTo, message.MentionNth)
 			}
 			body := r.plan.itemBody(r.random, message.Blocks, mention, itemBodyBytes)
-			var inReplyTo, repliesTo *string
-			if message.InReplyTo >= 0 {
-				inReplyTo = &r.plan.messages[message.InReplyTo].ID
+			var inReplyTo, repliesTo, nodeKind, nodeAddress *string
+			if row.InReplyTo != "" {
+				inReplyTo = &row.InReplyTo
 			}
-			if message.RepliesTo >= 0 {
-				node := "message/" + r.plan.messages[message.RepliesTo].ID + "#b1"
-				repliesTo = &node
+			if row.RepliesToBlock != "" {
+				repliesTo = &row.RepliesToBlock
+			}
+			if projected[index-from] {
+				kind := graphstore.KindMessage
+				nodeKind, nodeAddress = &kind, &row.ID
 			}
 			if _, err := tx.Exec(ctx, `
-				insert into messages (id, issue_key, author, body, created_at, in_reply_to, replies_to_block)
-				values ($1, $2, $3::jsonb, $4, $5, $6, $7)
-			`, message.ID, r.plan.issues[message.Issue].Key, seedActor, body, message.CreatedAt,
-				inReplyTo, repliesTo); err != nil {
+				insert into messages (id, issue_key, author, body, created_at, in_reply_to, replies_to_block, node_kind, node_address)
+				values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9)
+			`, message.ID, row.IssueKey, seedActor, body, message.CreatedAt,
+				inReplyTo, repliesTo, nodeKind, nodeAddress); err != nil {
 				return fmt.Errorf("message %s: %w", message.ID, err)
 			}
 			if message.Reindexed {

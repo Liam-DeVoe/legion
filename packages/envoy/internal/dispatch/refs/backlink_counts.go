@@ -255,9 +255,15 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 // and only the row can say the edge still stands; that build may also write the row again with
 // no node, which its table's arm then answers alone. graph_edges' tuple arm makes the same join
 // (migration 20261109215947).
+//
+// The probe ends in `offset 0`, as each of graph_edges' does, which keeps it one probe of that
+// index per tuple the arm counts: without it PostgreSQL may pull it up into a semi-join it hashes
+// from a read of the whole projection table, and offset 0 is the fence that stops the pull-up
+// (simplify_EXISTS_query) while skipping no row.
 func projectionCarries(table, fromKind, alias string) string {
 	return `exists (select 1 from ` + table + ` projected
-		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id)`
+		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id
+		offset 0)`
 }
 
 // blockRefCarries is projectionCarries for a block's link, whose projection row is the
@@ -266,19 +272,20 @@ func blockRefCarries(alias string) string {
 	return `exists (select 1 from block_refs projected
 		where projected.node_kind = '` + BlockNodeKind + `' and projected.node_address = ` + alias + `.from_id
 			and projected.kind = ` + alias + `.kind and projected.to_kind = ` + alias + `.to_kind
-			and projected.to_id = ` + alias + `.to_id)`
+			and projected.to_id = ` + alias + `.to_id
+		offset 0)`
 }
 
 // TupleKinds is every relation kind this build writes as tuples and graph_edges answers from
 // them, sorted: a block's in_document and mentions, the pointer kinds the installed block schema
-// declares (pmdoc.LinkKinds), and a comment's anchored_to and owned_by. It is the list the view's
-// tuple arm renders (migration 20261109215947) and the list the announcer writes into
-// server_build_announcements.tuple_kinds (startup.Deps), which is how the release that deletes an
-// old arm of the view reads whether the release a rollback would reach writes that arm's kinds as
-// tuples too. A child that moves another relation into the store adds its kinds here, so the arm
-// and the announcement read one list.
+// declares (pmdoc.LinkKinds), a comment's anchored_to and owned_by, and a message's replies_to. It
+// is the list the view's tuple arm renders (migrations 20261109215947 and 20261116114517) and the
+// list the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which is
+// how the release that deletes an old arm of the view reads whether the release a rollback would
+// reach writes that arm's kinds as tuples too. A child that moves another relation into the store
+// adds its kinds here, so the arm and the announcement read one list.
 func TupleKinds() []string {
-	kinds := append([]string{TupleInDocument, "mentions", "anchored_to", "owned_by"}, pmdoc.LinkKinds()...)
+	kinds := append([]string{TupleInDocument, "mentions", "anchored_to", "owned_by", graphstore.TupleRepliesTo}, pmdoc.LinkKinds()...)
 	slices.Sort(kinds)
 	return kinds
 }
@@ -356,11 +363,15 @@ type backlinkArm struct {
 	// writes: projected is the node_kind column of the arm's own row, which the arm answers
 	// only while it is null, and tupleKind the kind the store states the edge under, which is
 	// the view's kind except for a block's membership of its document, stated as in_document
-	// and rendered as part_of. projectedIn is the table that row is in, which the store's
-	// reading joins (projectionCarries). An arm that names none of them reads its own table
-	// alone, as every arm did before the store existed.
+	// and rendered as part_of. tupleToKind is the kind the store names the far end by where it
+	// is not the target's own: a message's reply to a block of a message points at that block's
+	// node, of kind block, which the view renders as the message_block address form (migration
+	// 20261116114517). projectedIn is the table that row is in, which the store's reading joins
+	// (projectionCarries). An arm that names none of them reads its own table alone, as every
+	// arm did before the store existed.
 	projected   string
 	tupleKind   string
+	tupleToKind string
 	projectedIn string
 }
 
@@ -405,7 +416,11 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 // raises no count.
 func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 	counted, join, keyed, address := target.read(`tuple.to_id`)
-	where := `tuple.to_kind = '` + target.kind + `' and tuple.kind = '` + a.tupleKind +
+	toKind := target.kind
+	if a.tupleToKind != "" {
+		toKind = a.tupleToKind
+	}
+	where := `tuple.to_kind = '` + toKind + `' and tuple.kind = '` + a.tupleKind +
 		`' and tuple.from_kind = '` + a.fromKind + `'`
 	if a.addressIs != "" {
 		where += ` and ` + address + a.addressIs
@@ -485,9 +500,11 @@ var backlinkArms = map[string][]backlinkArm{
 			fromKind: "comment_block", fromID: `b.node_id`},
 	},
 	"message": {
-		// messages_in_reply_to_text.
+		// messages_in_reply_to_text; the store states the same fact as the reply's replies_to,
+		// answered while the reply's row names its node (migration 20261116114517).
 		{kind: "replies_to", from: `messages m`, where: `m.in_reply_to is not null`, toID: `m.in_reply_to::text`,
-			fromKind: "message", fromID: `m.id::text`},
+			fromKind: "message", fromID: `m.id::text`,
+			projected: `m.node_kind`, tupleKind: graphstore.TupleRepliesTo, projectedIn: "messages"},
 		// message_blocks_message_id_text, with the view's position filter.
 		{kind: "part_of", from: `message_blocks b`, where: `b.position is not null`, toID: `b.message_id::text`,
 			fromKind: "message_block", fromID: `b.node_id`},
@@ -538,9 +555,12 @@ var backlinkArms = map[string][]backlinkArm{
 			fromKind: "comment", fromID: `c.id::text`},
 	},
 	"message_block": {
-		// messages_replies_to_block, partial on replies_to_block is not null.
+		// messages_replies_to_block, partial on replies_to_block is not null. The store states
+		// the reply's replies_to to the block's own node, of kind block, which the view renders
+		// as this address form while the reply's row names its node.
 		{kind: "replies_to", from: `messages m`, where: `m.replies_to_block is not null`, toID: `m.replies_to_block`,
-			fromKind: "message", fromID: `m.id::text`},
+			fromKind: "message", fromID: `m.id::text`,
+			projected: `m.node_kind`, tupleKind: graphstore.TupleRepliesTo, tupleToKind: graphstore.KindBlock, projectedIn: "messages"},
 	},
 }
 
