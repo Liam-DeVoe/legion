@@ -4494,30 +4494,31 @@ Each item below names a path with its method and identity, then its purpose.
   - While the row waits on the human, the same summary or none is a repeat that answers `200` with no event, and a different one is `409 APPROVAL_WAITS_ON_HUMAN` and changes nothing, since it would rewrite the card the human is reading.
 
   It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting).
-  Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
-  it is empty for a document that is not a spec.
+  Two parts of the route have items of their own:
 
-  It never names a missing plan task, since the plan comes after the approval;
-  a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
+  - Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
+    it is empty for a document that is not a spec.
+    It never names a missing plan task, since the plan comes after the approval;
+    a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
 
-  The form of The Spec: `DISPATCH_SPEC_ROOTS` names the roots of The Spec, issue keys separated by commas.
-  A document is covered when its issue has a root as its nearest named ancestor and the document is the issue's spec or Verification document.
-  The `terms.md` (slug `terms-md`) of a root is covered too.
-  No other document of a root is covered, and an issue that is a root inside another root covers its own subtree.
-  Dispatch judges each covered document at the version that the request hands the person.
-  With no request open, these are the documents that the request names.
-  With a request open, they are the documents that the open request names.
-  These texts break the form: a statement of more than two sentences, a sentence of more than 25 words and a hard finding of ASD-STE100.
-  A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
-  A request that holds one is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
-  `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
-  A person's approval of a covered document gets the same refusal through three routes.
-  These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
-  That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
-  A request for changes is never refused.
-  When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms}`.
-  `texts` counts each kind of text that Dispatch read in the documents it judged.
-  A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
+  - The form of The Spec: `DISPATCH_SPEC_ROOTS` names the roots of The Spec, issue keys separated by commas.
+    A document is covered when its issue has a root as its nearest named ancestor and the document is the issue's spec or Verification document.
+    The `terms.md` (slug `terms-md`) of a root is covered too.
+    No other document of a root is covered, and an issue that is a root inside another root covers its own subtree.
+    Dispatch judges each covered document at the version that the request hands the person.
+    With no request open, these are the documents that the request names.
+    With a request open, they are the documents that the open request names.
+    These texts break the form: a statement of more than two sentences, a sentence of more than 25 words and a hard finding of ASD-STE100.
+    A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
+    A request that holds one is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
+    `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
+    A person's approval of a covered document gets the same refusal through three routes.
+    These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
+    That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
+    A request for changes is never refused.
+    When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms}`.
+    `texts` counts each kind of text that Dispatch read in the documents it judged.
+    A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
 
 - `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)
 
