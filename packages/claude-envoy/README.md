@@ -368,6 +368,25 @@ both committed files to none; the range is a field of the entry's source, not a 
 entry.
 A checkout's `package.json` version names no release either, for the same reason: the build job
 writes the release's version into the manifest it packs.
+On npm 12 or later, `claude plugin update claude-envoy@legion-plugins` fails with
+`code EALLOWREMOTE`, unless the one command allows a fetch from a URL:
+
+```sh
+npm_config_allow_remote=all claude plugin update claude-envoy@legion-plugins
+```
+
+Claude Code fetches the package by its tarball URL on the registry
+(`https://registry.npmjs.org/@sjawhar/claude-envoy/-/claude-envoy-<version>.tgz`) and not by its
+name. npm 12 sets `allow-remote` to `none` by default, and with that setting it refuses to fetch a
+package from a URL: `Could not download @sjawhar/claude-envoy@2.31.4 from the npm registry: code
+EALLOWREMOTE` (Claude Code 2.1.325, npm 12.0.1). The same package fetched by its name passes, and
+the package declares no dependencies, so the cause is in how Claude Code asks npm and no change to
+this package or to the marketplace entry removes it. The variable applies to that one command, so
+every other install on the machine keeps npm's default.
+In a shell that a Claude Code session started, `CLAUDE_CONFIG_DIR` names that session's
+configuration directory, so put `env -u CLAUDE_CONFIG_DIR` in front of the command to update the
+default `~/.claude`. Each scope that holds the plugin (user, project) updates on its own, so run
+the update in each one.
 Each release publishes its own changelog entries into its GitHub release body, rendered from the
 fragments its own commits added, and each fragment stays under `.changes/unreleased/`.
 `CHANGELOG.md` is the history before that and stops where the fragments begin.
