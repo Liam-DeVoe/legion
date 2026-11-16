@@ -438,23 +438,43 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 			t.Fatalf("resting-root notices = %#v, want none for an ancestor the daemon does not record", got)
 		}
 
-		// P's admission records it, and the task of its architect's start names R.
+		// P's admission records it, and the start its promotion queues for P's architect
+		// (Engine.StartArchitect) names R before P's first act and beside no decision: the roots
+		// that rest on P's approval are a fact of the record the derivation reads
+		// (ArchitectStart.Resting), whatever shape P is given.
 		ancestor := record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 			Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "T",
 			HandedOver: true, LastDispatchSeq: 1}
 		seedIssue(t, pool, ancestor)
-		var task string
-		var kept *record.KeptDecisions
-		seedRecord(t, pool, func(tx pgx.Tx) error {
-			var err error
-			task, kept, err = engine.ArchitectStartTask(t.Context(), tx, ancestor)
-			return err
-		})
-		want := "These roots rest on the approval of LEGION-100 and are still in the workflow: " + restingNamed + ". " +
+		seedRecord(t, pool, func(tx pgx.Tx) error { return engine.StartArchitect(t.Context(), tx, ancestor) })
+		var starts []record.SuperviseRequest
+		for _, start := range superviseRowsOf(t, pool, basisAncestor, "start") {
+			if start.Role == claim.RoleArchitect {
+				starts = append(starts, start)
+			}
+		}
+		if len(starts) != 1 {
+			t.Fatalf("P's architect starts = %+v, want the one its promotion queues", starts)
+		}
+		resting := "These roots rest on the approval of LEGION-100 and are still in the workflow: " + restingNamed + ". " +
 			"The daemon refuses the sign-off and the close of LEGION-100 while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 			"Each root's own architect, or a person, moves it."
-		if task != want || kept != nil {
-			t.Fatalf("P's start task = %q naming %#v, want %q naming no decision", task, kept, want)
+		fresh := ArchitectStartTask(ArchitectStart{Root: ancestor, Gate: record.TreeGate{Steps: engine.GatedSteps()}})
+		start := starts[0]
+		if want := resting + "\n\n" + fresh; start.Task != want || start.Kept != nil || start.Entry == 0 {
+			t.Fatalf("P's start = task %q naming %#v at entry %d, want %q naming no decision, at the entry it raised", start.Task, start.Kept, start.Entry, want)
+		}
+
+		// That task held and narrowed of every decision at its send (the daemon's rootTask) is
+		// written again from the record as it stands then, and still names R.
+		var narrowed string
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			read, err := ArchitectStartOf(t.Context(), tx, engine.store, engine.GatedSteps(), ancestor)
+			narrowed = NarrowRootTask(read, start.Entry, record.KeptDecisions{})
+			return err
+		})
+		if narrowed != start.Task {
+			t.Fatalf("P's held task narrowed of every decision = %q, want the task it was, %q, naming R", narrowed, start.Task)
 		}
 	})
 

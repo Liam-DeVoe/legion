@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -12,12 +13,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // An ancestor the daemon records in no live tree when a root comes to rest on its approval gets
 // no resting-root notice, so its architect's start at its admission is how it learns of that root
 // (dispatch://INFRA-3320, R8): the start's task names each root that rests on its approval and is
-// still in the workflow, apart from the decisions kept for it, which it names none of here. A
+// still in the workflow, apart from the decisions kept for it, which it names none of here, and
+// before the first act of the shape the record gives the ancestor (workflow.ArchitectStartTask). A
 // resting root that has left the workflow is not named. The ancestor may be one the daemon never
 // recorded, or one a person parked on the backlog and moves back to todo.
 func TestAnAncestorsStartTaskAtItsAdmissionNamesTheRootsRestingOnIt(t *testing.T) {
@@ -67,11 +70,18 @@ func TestAnAncestorsStartTaskAtItsAdmissionNamesTheRootsRestingOnIt(t *testing.T
 					started = append(started, start)
 				}
 			}
-			want := "These roots rest on the approval of LEGION-ROOT and are still in the workflow: LEGION-RESTS (its spec step, in implementing). " +
+			restingText := "These roots rest on the approval of LEGION-ROOT and are still in the workflow: LEGION-RESTS (its spec step, in implementing). " +
 				"The daemon refuses the sign-off and the close of LEGION-ROOT while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 				"Each root's own architect, or a person, moves it."
-			if len(started) != 1 || started[0].Task != want || started[0].Kept != nil {
-				t.Fatalf("the ancestor's architect starts = %#v, want one whose task is %q and which names no decision", started, want)
+			if len(started) != 1 || started[0].Kept != nil {
+				t.Fatalf("the ancestor's architect starts = %#v, want one, which names no decision", started)
+			}
+			task := started[0].Task
+			if want := architectStart(t, pool, admission, ancestor, ""); task != want || !strings.HasPrefix(task, restingText+"\n\n") {
+				t.Fatalf("the ancestor's start task = %q, want %q, the derivation over its record, which names the resting root %q first", task, want, restingText)
+			}
+			if !strings.Contains(task, workflow.ArchitectFreshTreeLabel) || strings.Contains(task, left) {
+				t.Fatalf("the ancestor's start task = %q, want the first act of a tree nobody has architected and no word of %s, which has left the workflow", task, left)
 			}
 		})
 	}

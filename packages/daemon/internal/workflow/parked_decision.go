@@ -109,12 +109,13 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 // KeptDecisionsTask is the text that names kept to the architect of tree, the one wording a start
 // task and a catch-up both use (ParkedDecisionTask) and the one a held task is written back to
 // when an issue it names leaves that tree while the task waits to be sent (supervise's
-// Deps.RootTask, the daemon's rootTask), beside the roots that rest on the root's approval
-// (ArchitectTask): a task whose decisions have all left and that names no such root is written
-// back to "", which is a task that names nothing and is retired rather than sent. The approval is
-// the root's own, so it is named whenever kept carries one — the gate was read where it was first
-// kept — and it is named on the document of its own step (record.DesignStep.Document), which is
-// the document the person reviewed and the one whose approval the architect requests again.
+// Deps.RootTask, the daemon's rootTask, NarrowRootTask), beside the roots that rest on the root's
+// approval (ArchitectStart.Resting): a task whose decisions have all left and that names no such
+// root and no first act is written back to "", which is a task that names nothing and is retired
+// rather than sent. The approval is the root's own, so it is named whenever kept carries one —
+// the gate was read where it was first kept — and it is named on the document of its own step
+// (record.DesignStep.Document), which is the document the person reviewed and the one whose
+// approval the architect requests again.
 //
 // The approval kept is a person's approval of an earlier version of the root's own document,
 // never the version an ancestor's approval opened a step at (Admission.keepStaleApproval reads
@@ -145,39 +146,6 @@ func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.
 func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
 	return ParkedDecisionTask(ctx, tx, e.store, e.cfg.Steps, root)
-}
-
-// ArchitectStartTask is the task of root's architect start at its admission: what the daemon kept
-// for it while nobody in its tree could hear it (ParkedDecisionTask), then each root that rests on
-// root's approval and is still in the workflow (RestingRootsTask, dispatch://INFRA-3320 R8), told
-// apart from the decisions. kept names the decisions alone, so a held task narrowed of them at
-// send time (the daemon's rootTask) writes the resting roots again from the record (ArchitectTask).
-// A root the daemon recorded in no live tree when another root came to rest on its approval hears
-// of that root here, since no resting-root notice was queued for it then (queueRestingRoot). An
-// ancestor that is a member of another tree hears of its resting roots from that tree's catch-up.
-func (e *Engine) ArchitectStartTask(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
-	task, kept, err := e.ParkedDecisionTask(ctx, tx, root)
-	if err != nil {
-		return "", nil, err
-	}
-	resting, err := RestingRootsTask(ctx, tx, e.store, root.Key)
-	if err != nil {
-		return "", nil, err
-	}
-	return ArchitectTask(task, resting), kept, nil
-}
-
-// ArchitectTask is a root architect's start task made of decided, the text of the decisions and the
-// approval kept for it (KeptDecisionsTask), and resting, the text of the roots that rest on its
-// approval (RestingRootsTask): the two joined, either of them "" for none, and "" when both are.
-func ArchitectTask(decided, resting string) string {
-	switch {
-	case decided == "":
-		return resting
-	case resting == "":
-		return decided
-	}
-	return decided + " " + resting
 }
 
 // EnqueueNaming enqueues payload for issue, due at, a root-architect start or a catch-up notice
@@ -285,11 +253,21 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 // that names decisions (supervise's Deps.RootHears, the daemon's rootHears) never drift: a root
 // that hears is told at once, and one that does not keeps what it is owed until it runs again.
 func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue, steps []record.DesignStep) (bool, error) {
-	if !claim.IsTreeRoot(root.Key, root.Tree) || root.Lingers() || record.OutOfWorkflow(root.Status) {
+	if !ArchitectHearsSlotted(root) {
 		return false, nil
 	}
 	waits, err := record.WaitsForSlot(ctx, tx, store, root, steps)
 	return !waits, err
+}
+
+// ArchitectHearsSlotted is ArchitectHears for a root the caller already knows waits for no
+// admission slot, which reads nothing: record.WaitsForSlot answers false for such a root, so what
+// is left is the rest of that one reading. Admission asks it of the roots its selection holds
+// (admit's readSlotHolders, through architectServed): each holds a slot, stands past its review
+// in a tree that runs, or was released for a wait in a tree that runs, and no queued root is one
+// of those.
+func ArchitectHearsSlotted(root record.Issue) bool {
+	return claim.IsTreeRoot(root.Key, root.Tree) && !root.Lingers() && !record.OutOfWorkflow(root.Status)
 }
 
 // GatedSteps is the design-gate steps the deployment gates, in the order it names them, which

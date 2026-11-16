@@ -10,13 +10,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // A root architect's start task names the roots that rest on the root's approval apart from the
-// decisions it names (workflow.ArchitectStartTask, dispatch://INFRA-3320 R8), so a held task the
-// send narrows of its decisions (the daemon's rootTask) still names those roots, as the record
-// shows them then: a task left naming no decision is sent naming them alone, beside the approval
-// it kept where it kept one, and is retired only when no such root is left in the workflow either.
+// decisions it names (workflow.ArchitectStart.Resting, dispatch://INFRA-3320 R8), so a held task
+// the send narrows of its decisions (the daemon's rootTask) still names those roots, as the record
+// shows them then: a task left naming no decision is sent naming them, beside the approval it kept
+// where it kept one and before the first act where the task is of an entry, and is retired only
+// when no such root is left in the workflow and the task is of no entry either.
 func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testing.T) {
 	const resting = "LEGION-320"
 	restingTask := "These roots rest on the approval of LEGION-310 and are still in the workflow: LEGION-320 (its spec step, in implementing). " +
@@ -26,25 +28,35 @@ func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testin
 	approvalTask := "A person approved version 2 of the primary document, and the primary document is now at version 4. " +
 		"Request approval of version 4, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. " +
 		"The other way is to write LEGION-310 as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says."
+	root := record.Issue{Key: heldTaskRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: heldTaskProject, Tree: heldTaskRoot, Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "A"}
+	// A held task of an entry is the derivation's, so its rewrite carries the first act again: the
+	// fresh tree's, since nothing of this root's tree has run and it holds no gate row.
+	firstAct := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: root})
 	for _, tc := range []struct {
 		name     string
 		at       phase.Phase
 		status   string
 		approval record.KeptApproval
+		entry    int64
 		want     string
 		kept     bool
 	}{
 		{name: "a resting root in the workflow", at: phase.Implementing, status: "in_progress", want: restingTask},
 		{name: "a resting root in the workflow beside the approval kept", at: phase.Implementing, status: "in_progress", approval: approval,
-			want: approvalTask + " " + restingTask, kept: true},
+			want: approvalTask + "\n\n" + restingTask, kept: true},
 		{name: "a resting root that is done", at: phase.Done, status: "done", want: ""},
+		{name: "a resting root in the workflow, the task of an entry", at: phase.Implementing, status: "in_progress", entry: 2,
+			want: restingTask + "\n\n" + firstAct},
+		{name: "a resting root in the workflow beside the approval kept, the task of an entry", at: phase.Implementing, status: "in_progress",
+			approval: approval, entry: 2, want: approvalTask + "\n\n" + restingTask + "\n\n" + firstAct, kept: true},
+		{name: "a resting root that is done, the task of an entry", at: phase.Done, status: "done", entry: 2, want: firstAct},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			putOutboxIssue(t, pool, records, record.Issue{Key: heldTaskRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Project: heldTaskProject, Tree: heldTaskRoot, Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "A"})
+			putOutboxIssue(t, pool, records, root)
 			putOutboxIssue(t, pool, records, record.Issue{Key: resting, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Project: heldTaskProject, Tree: resting, Title: "Resting", Phase: tc.at, Generation: 1, Status: tc.status, Rank: "B"})
 			at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
@@ -59,7 +71,7 @@ func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testin
 			}
 			runtime := &workflowRuntime{pool: pool, records: records}
 			task, kept, err := runtime.rootTask(ctx, supervise.Claim{Token: mustClaimToken(t, heldTaskRoot, claim.RoleArchitect), Tree: heldTaskRoot},
-				supervise.Delivery{ID: "outbox-71", Task: "a person decided on the tree", Kept: named})
+				supervise.Delivery{ID: "outbox-71", Task: "a person decided on the tree", Kept: named, Entry: tc.entry})
 			if err != nil {
 				t.Fatalf("narrow the held task: %v", err)
 			}

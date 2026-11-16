@@ -811,12 +811,15 @@ func statementBound(bound time.Duration) int64 {
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
 // GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
-// served every issue without `assignments` (withoutAssignments); and a caller below
-// gateBasisContract, the contract that let a root's gated step stand open on an ancestor's
-// approval or wait on an ancestor's approval request, served each root whether its tree runs and
-// added the phase awaiting_children, is served it without `treeRuns`, without the `gatedSteps` of
-// an issue any step of which reads `open_on_basis` or `pending_on_basis`, and with an issue in
-// awaiting_children read as `admitted` and that held word as `children_first`
+// served every issue without `assignments` (withoutAssignments); a caller below
+// entryTimesContract, the contract that added the two times of the task that entry was queued
+// as and the arms of the architect-stalled reading that hold for a root, is served it without
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
+// below gateBasisContract, the contract that let a root's gated step stand open on an
+// ancestor's approval or wait on an ancestor's approval request, served each root whether its
+// tree runs and added the phase awaiting_children, is served it without `treeRuns`, without the
+// `gatedSteps` of an issue any step of which reads `open_on_basis` or `pending_on_basis`, and
+// with an issue in awaiting_children read as `admitted` and that held word as `children_first`
 // (withoutGateBasis).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
@@ -949,6 +952,7 @@ var stateNarrowings = []stateNarrowing{
 		"of every member waiting on another issue"},
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
+	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
 	{gateBasisContract, carriesGateBasis, withoutGateBasis, "the issues' treeRuns, the gatedSteps " +
 		"of every issue with a step open or pending on an ancestor's basis, and the awaiting_children " +
 		"phase and held word read as admitted and children_first"},
@@ -1085,12 +1089,12 @@ const phaseEntriesContract = 94
 // strips them instead, so the strip is what keeps the pair from a caller that did not ask for
 // it rather than what keeps such a caller reading at all. The two are one gate because they are
 // one measure: a caller served the movement without the quiet time beside it, or the other way
-// about, would hold half of what one read of the tree said. waitingOnIssueContract,
-// mergeWaitContract, assignmentsContract and gateBasisContract stand above it, and the first
-// one's strip takes a word of the line's `kind` and no key, so a caller in a pod at 111 through
-// 146 is served the measure and neither `treeRuns` nor the gated steps of an issue a step of
-// which stands on a basis, one at 111 through 140 no `assignments` either, and one at 111 through
-// 132 no `mergeWait` either.
+// about, would hold half of what one read of the tree said. Every later row of stateNarrowings
+// stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
+// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's and
+// gateBasisContract's, the last this daemon's own contract — so a caller from it up is served the
+// measure, and none of what a later row adds until it reaches that row's contract (123,
+// INFRA-3146's contract, moves no shape of the state).
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1100,10 +1104,11 @@ const quietTimeContract = 111
 // INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
-// optional. mergeWaitContract, assignmentsContract and gateBasisContract stand above it, so a
-// caller in a pod at 132 through 146 is served the word and neither `treeRuns` nor the gated
-// steps of an issue a step of which stands on a basis, one at 132 through 140 no `assignments`
-// either, and one at 132 no `mergeWait` either.
+// optional. mergeWaitContract, assignmentsContract, entryTimesContract and gateBasisContract
+// stand above it, so a caller in a pod at 132 through 146 is served the word and neither
+// `treeRuns` nor the gated steps of an issue a step of which stands on a basis, one at 132
+// through 145 no `entryQueuedAt`, `entryConfirmedAt` or `architectStalls` either, one at 132
+// through 140 no `assignments` either, and one at 132 no `mergeWait` either.
 const waitingOnIssueContract = 132
 
 // mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
@@ -1126,6 +1131,18 @@ const mergeWaitContract = 133
 // and no assignments, whatever else its own band gives it, and a caller below 49 neither.
 const assignmentsContract = 141
 
+// entryTimesContract is the daemon contract that added each issue's `entryQueuedAt` and
+// `entryConfirmedAt`, the time the task of its phase entry was first queued to its role's claim
+// and the time that claim's worker confirmed it, and each root's `architectStalls`, the arms of
+// the architect-stalled reading that hold for its architect (version.go's 146). A plugin before
+// it is served the state without the three keys: one built before sjawhar/legion#2788 reads it
+// with a strict schema and would refuse the whole body for a key it does not name, and one built
+// after strips the keys instead, so the strip is what keeps them from a caller that did not ask
+// for them rather than what keeps such a caller reading at all. assignmentsContract stands below
+// it with no row of stateNarrowings between the two, so a caller in a pod at or above
+// assignmentsContract and below this contract is served `assignments` and not these three keys.
+const entryTimesContract = 146
+
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
 // ancestor's approval or wait on an ancestor's approval request (version.go's 147,
 // dispatch://INFRA-3320, R1 and R2), and served each root whether its tree runs. It added the
@@ -1142,7 +1159,11 @@ const assignmentsContract = 141
 // `admitted` and `children_first`, the values the wait replaced (withoutGateBasis). It is the
 // highest of the bands, this daemon's own contract, so of the pods whose claims record a contract
 // only one at it is served the basis, `treeRuns` and the two words; a pod whose claims record none
-// and a caller in no pod are served the state as it is (stateFor).
+// and a caller in no pod are served the state as it is (stateFor). entryTimesContract stands
+// right below it, and the two rows touch no key of each other's: withoutEntryTimes takes three
+// keys whatever the issue's phase, and withoutGateBasis reads no key it takes, so a caller at 146
+// is served both times and `architectStalls` and none of this contract's, and a caller below 146
+// neither.
 const gateBasisContract = 147
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
@@ -1442,6 +1463,34 @@ func withoutQuietTime(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.TreeMovedAt, issue.QuietHours = nil, nil
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesEntryTimes is whether any issue of state carries a key entryTimesContract added:
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls`. Like the two entry numbers they are
+// written only where the daemon has one to write — an issue whose role holds no task of its
+// entry carries neither time, and a root no arm holds for carries no arm — so this is asked of
+// the state rather than answered true.
+func carriesEntryTimes(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutEntryTimes is state with no issue carrying `entryQueuedAt`, `entryConfirmedAt` or
+// `architectStalls`, the three fields entryTimesContract added to the state; nothing else of that
+// contract is on the route. The issue map is copied, as every sibling strip copies it, so the
+// state the source answered is left as it was.
+func withoutEntryTimes(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
 		issues[key] = issue
 	}
 	state.Issues = issues

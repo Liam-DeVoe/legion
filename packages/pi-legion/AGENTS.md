@@ -100,8 +100,14 @@ number is the one `DaemonAPIVersion` declares, last bumped by contract 147's des
 request, `open_on_basis` and `pending_on_basis` with a `basis`, every root carries `treeRuns`, an
 issue may stand in the phase and held word `awaiting_children`, and a caller from a pod whose claims
 record a contract under 147 is served no basis word, no `treeRuns` and `admitted` and
-`children_first` for that phase and word, `api.stateFor`, `withoutGateBasis`), after contract
-144's memory guard
+`children_first` for that phase and word, `api.stateFor`, `withoutGateBasis`), after contract 146
+(dispatch://INFRA-2614: a root at `admitted` carries its architect's `phaseEntry` and
+`givenEntry`, every issue carries `entryQueuedAt` and `entryConfirmedAt`, the two times of a
+claim's own record of its handshake of its last entry, which outlast that entry's task and which
+a tree's own root carries from its architect's claim in every phase, and each tree root carries
+`architectStalls`, every arm of the daemon's architect-stalled reading that holds for its
+architect at that read, whether or not the controller was told of it, and a caller below 146 is
+served the issues without those three keys), after contract 144's memory guard
 (dispatch://INFRA-3557: the daemon's answer to an issue pod launcher's hello, `launcher_hello_ack`,
 carries the guard's settings in `memoryGuard`, and the launcher reports each process its guard
 ended in a new `launcher_memory_kill` frame, which names the process by its executable and no
