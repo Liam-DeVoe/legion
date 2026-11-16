@@ -17,8 +17,8 @@ const workflowsDir = ".github/workflows"
 
 // ciDirs are the directories of a repository, from its root, that guard reads: the workflows and
 // their actions, and the scripts of .github/scripts and scripts. A step can run a file outside
-// them, such as a package script or a make target, and compare's refusal in a CI job covers that
-// route (compare.go).
+// them, such as a package script or a make target. compare's refusal in a CI job covers that route
+// when the step passes the runner's environment on to the command (compare.go).
 var ciDirs = []string{workflowsDir, ".github/actions", ".github/scripts", "scripts"}
 
 // runGuard is "spec-check guard --root <dir>": it reads every regular file under the CI

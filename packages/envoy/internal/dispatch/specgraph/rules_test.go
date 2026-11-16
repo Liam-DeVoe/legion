@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -260,6 +261,26 @@ func TestTheOtherRules(t *testing.T) {
 			want: Problem{pos(9), "work-unit", "bad-term", "bad-term: a term has a name and a definition"},
 		},
 		{
+			name: "a term whose name names code",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil)}, Terms: []Term{{ID: "work-unit", Name: "read_set", Definition: "A work unit is work.", Pos: pos(9)}}},
+			want: Problem{pos(9), "work-unit", "code-in-text", "code-in-text: name names code: read_set"},
+		},
+		{
+			name: "a program procedure that names its go test in curly quotes",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(program("The program runs \u201cTestARestartKeepsTheClaim\u201d. It must find the claim."))}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "code-in-text", "code-in-text: procedure names code: TestARestartKeepsTheClaim"},
+		},
+		{
+			name: "a component whose name is only spaces",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Name = "   " })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
+			name: "a component whose purpose is only a zero-width space",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Purpose = "\u200b" })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
 			name: "a component whose purpose is two sentences",
 			tree: Tree{Components: []Component{component("dispatch", func(c *Component) {
 				c.Purpose = "It keeps each message until its session reads it. It also deletes each message after a week."
@@ -337,6 +358,30 @@ func TestAPurposeOfOneSentenceIsValid(t *testing.T) {
 		tree := Tree{Components: []Component{{ID: "dispatch", Name: "Dispatch", Purpose: purpose, Pos: Position{File: "x.md", Line: 1}}}}
 		if problems := Validate(tree, Options{}); len(problems) != 0 {
 			t.Errorf("purpose %q: %+v, want none", purpose, problems)
+		}
+	}
+}
+
+// The white space after a stop is each of the 29 code points that Python's \s matches, where
+// ste-lint splits a line into its sentences: each one ends the first of two sentences of a purpose.
+// A format character that Python's \s does not match, such as U+200B, ends none.
+func TestEachWhiteSpaceThatSteLintSplitsAtEndsASentence(t *testing.T) {
+	t.Parallel()
+	purpose := func(between rune) []Component {
+		return []Component{{ID: "dispatch", Name: "Dispatch", Purpose: "It keeps each issue." + string(between) + "It keeps each result.", Pos: Position{File: "x.md", Line: 1}}}
+	}
+	for _, space := range []rune{
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680,
+		0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+		0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+	} {
+		if got := Validate(Tree{Components: purpose(space)}, Options{}); len(got) != 1 || got[0].Rule != "bad-component" {
+			t.Errorf("U+%04X between two sentences: %+v, want one bad-component", space, got)
+		}
+	}
+	for _, other := range []rune{0x200b, 0x180e, 0xfeff, 0x2060} {
+		if got := Validate(Tree{Components: purpose(other)}, Options{}); len(got) != 0 {
+			t.Errorf("U+%04X after the stop: %+v, want none", other, got)
 		}
 	}
 }
@@ -421,4 +466,51 @@ func parseDir(t *testing.T, dir string) Tree {
 		t.Fatalf("Parse(%s): %+v", dir, problems)
 	}
 	return tree
+}
+
+// A required text with no letter and no digit is a missing one, in each place where a rule of
+// Validate asks for a text: a statement's text, a check's claim, procedure and failing example, a
+// component's name and purpose, and a term's name and definition. Each row gives the one problem
+// that an empty text gives, for each of three empty shapes.
+func TestATextWithNoLetterOrDigitIsMissing(t *testing.T) {
+	t.Parallel()
+	pos := Position{File: "x.md", Line: 1}
+	tree := func() Tree {
+		return Tree{
+			Statements: []Statement{{ID: "a-claim-survives-a-restart", Text: "Legion keeps each claim.", Kind: KindBehavior, Pos: pos}},
+			Checks: []Check{{
+				ID: "a-restart-keeps-the-claim", Serves: "a-claim-survives-a-restart", Claim: "The daemon reads the claim.",
+				ProcedureText: "An agent reads the claims.", FailingExample: "A daemon with no store.",
+				Subject: SubjectCode, Procedure: ProcedureAgent, Pos: pos,
+			}},
+			Components: []Component{{ID: "dispatch", Name: "Dispatch", Purpose: "It keeps each issue.", Pos: pos}},
+			Terms:      []Term{{ID: "work-unit", Name: "work unit", Definition: "A work unit is work.", Pos: pos}},
+		}
+	}
+	for _, place := range []struct {
+		name, node, detail string
+		set                func(*Tree, string)
+	}{
+		{"a statement's text", "a-claim-survives-a-restart", "no-text: a statement has a text", func(t *Tree, s string) { t.Statements[0].Text = s }},
+		{"a check's claim", "a-restart-keeps-the-claim", "no-claim: the check has no claim", func(t *Tree, s string) { t.Checks[0].Claim = s }},
+		{"a check's procedure", "a-restart-keeps-the-claim", "no-procedure: the check has no procedure", func(t *Tree, s string) { t.Checks[0].ProcedureText = s }},
+		{"a check's failing example", "a-restart-keeps-the-claim", "no-failing-example: the check has no failing example", func(t *Tree, s string) { t.Checks[0].FailingExample = s }},
+		{"a component's name", "dispatch", "bad-component: a component has a name and one sentence of purpose", func(t *Tree, s string) { t.Components[0].Name = s }},
+		{"a component's purpose", "dispatch", "bad-component: a component has a name and one sentence of purpose", func(t *Tree, s string) { t.Components[0].Purpose = s }},
+		{"a term's name", "work-unit", "bad-term: a term has a name and a definition", func(t *Tree, s string) { t.Terms[0].Name = s }},
+		{"a term's definition", "work-unit", "bad-term: a term has a name and a definition", func(t *Tree, s string) { t.Terms[0].Definition = s }},
+	} {
+		for shape, empty := range map[string]string{"only spaces": "   ", "only U+200B": "\u200b", "only punctuation": "...!?"} {
+			tr := tree()
+			place.set(&tr, empty)
+			got := Validate(tr, Options{})
+			rule, _, _ := strings.Cut(place.detail, ":")
+			if want := []Problem{{pos, place.node, rule, place.detail}}; !reflect.DeepEqual(got, want) {
+				t.Errorf("%s of %s:\n got %+v\nwant %+v", place.name, shape, got, want)
+			}
+		}
+	}
+	if got := Validate(tree(), Options{}); len(got) != 0 {
+		t.Errorf("control, every text present: %+v, want none", got)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // The five signs of code in a text ported from level_check.py's code_signs, and three more below
@@ -36,37 +37,55 @@ var productNames = []string{"GitHub", "PostgreSQL", "OpenAI", "JavaScript", "Typ
 
 // CodeNames is each name of code that text holds, in the order found: first each span in
 // backticks, backticks included, then each word of the rest with a file ending, a slash between two
-// letters, an ending "()", or an underscore between two letters or digits, and each word that has
-// the form of a Go test's name (goTestName), of a name in lower camel case (lowerCamel) or of a
-// package and its symbol (packageSymbol). Punctuation around a word and a possessive "'s" are not
-// part of it, and a plain product name such as GitHub or Node.js is no code.
+// letters, an ending "()", or an underscore between two letters or digits, or that has the form of
+// a name in lower camel case (lowerCamel) or of a package and its symbol (packageSymbol), and
+// else each name in the word that has the form of a Go test's name (goTestName). The quotes and
+// brackets of every script around a word, punctuation after it and a possessive "'s" are not part
+// of it, and a plain product name such as GitHub or Node.js is no code.
 func CodeNames(text string) []string {
 	found := backtickSpan.FindAllString(text, -1)
 	for _, token := range strings.Fields(backtickSpan.ReplaceAllString(text, " ")) {
-		word := strings.TrimLeft(token, `"'([{<`)
+		word := strings.TrimLeftFunc(token, func(r rune) bool { return strings.ContainsRune(`"'<`, r) || quoteOrBracket(r) })
 		if endsWithCall.MatchString(word) {
-			found = append(found, strings.TrimRight(word, `.,;:!?"'`))
+			found = append(found, strings.TrimRightFunc(word, func(r rune) bool {
+				return strings.ContainsRune(`.,;:!?"'`, r) || unicode.Is(unicode.Pf, r)
+			}))
 			continue
 		}
-		word = strings.TrimRight(word, `"')]}>.,;:!?`)
-		word = strings.TrimSuffix(word, "'s")
+		word = strings.TrimRightFunc(word, func(r rune) bool { return strings.ContainsRune(`"'>.,;:!?`, r) || quoteOrBracket(r) })
+		word = strings.TrimSuffix(strings.TrimSuffix(word, "'s"), "\u2019s")
 		if word == "" || slices.Contains(productNames, word) {
 			continue
 		}
 		if fileEnding.MatchString(word) || slashBetweenLetters.MatchString(word) || underscoreBetween.MatchString(word) ||
-			goTestName(word) || lowerCamel.MatchString(word) || packageSymbol.MatchString(word) {
+			lowerCamel.MatchString(word) || packageSymbol.MatchString(word) {
 			found = append(found, word)
+			continue
+		}
+		for _, name := range nameRun.FindAllString(word, -1) {
+			if goTestName(name) {
+				found = append(found, name)
+			}
 		}
 	}
 	return found
 }
 
-// goTestName reports whether word has the form of the name of a top-level Go test, the one form of
+// quoteOrBracket reports whether r is a quote or a bracket of any script: an opening or closing
+// quote (Pi, Pf) or an opening or closing bracket (Ps, Pe), such as “ ” « » „ 「 」 ( ).
+func quoteOrBracket(r rune) bool {
+	return unicode.In(r, unicode.Pi, unicode.Pf, unicode.Ps, unicode.Pe)
+}
+
+// nameRun is a run of letters, digits and underscores: each other character ends a name.
+var nameRun = regexp.MustCompile(`[\p{L}\p{N}_]+`)
+
+// goTestName reports whether name has the form of the name of a top-level Go test, the one form of
 // a test's name that the checker knows, since go is the one runner whose selector it reads
 // (ParseSelector): Test, then a capital letter, a digit or an underscore, then letters, digits and
 // underscores. The word Test alone is a plain word, and so are Tests and Testament.
-func goTestName(word string) bool {
-	return word != "Test" && topLevelTestName.MatchString(word)
+func goTestName(name string) bool {
+	return name != "Test" && topLevelTestName.MatchString(name)
 }
 
 // slug is an id's form: lower-case letters and digits, in words joined by single hyphens.
