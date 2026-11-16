@@ -646,7 +646,7 @@ function secretRequest(overrides: Partial<CredentialPendingRow> = {}): Credentia
   };
 }
 
-test("a credential request alone is listed and on the banner, and nothing says nothing needs you", async () => {
+test("a credential request alone is listed and counted by the Blocked on you control, and nothing says nothing needs you", async () => {
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   mocks.getCredentialPending.mockResolvedValue({ pending: [secretRequest()] });
   // A listed request names what the broker can still offer; this one needs no machine code.
@@ -667,7 +667,7 @@ test("a credential request alone is listed and on the banner, and nothing says n
   }
 });
 
-test("the banner counts credential requests beside the asks waiting on you, oldest of either", async () => {
+test("the Blocked on you control counts credential requests beside the asks waiting on you, oldest of either", async () => {
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([
     issueAsk({ created_at: new Date().toISOString() }),
   ]);
@@ -826,7 +826,8 @@ test("Inbox narrows to one agent's asks from ?agent and clears back to the whole
     });
     expect(live).toHaveAttribute("href", "/agents/session-1/live");
     expect(chip.contains(live)).toBe(false);
-    // The whole-inbox banner would contradict the filtered list (and its link clears the filter).
+    // The Blocked on you control counts the whole inbox, which would contradict the filtered
+    // list, so it is absent beside an agent filter.
     expect(screen.queryByText(/Blocked on you:/)).not.toBeInTheDocument();
   } finally {
     view.unmount();

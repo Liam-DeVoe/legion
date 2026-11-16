@@ -15,6 +15,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { installCountingStorage } from "../../__tests__/counting-storage";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -1448,26 +1449,13 @@ test("the trigger's press either way, Escape and a press outside that closes the
 
 test("nothing but the reader's open and close writes the stored choice: not a press while the panel is shut, a chip's removal or a press in the Labels list", async () => {
   const user = userEvent.setup();
-  window.localStorage.clear();
-  window.localStorage.setItem(PANEL_CHOICE, "collapsed");
+  // Every write of the stored choice, in order, kept by a storage that counts them.
+  const storage = installCountingStorage({ [PANEL_CHOICE]: "collapsed" });
   const { getMyState, listIssues, view } = renderStrip(
     [issue({ labels: ["bug"], title: "Core work" })],
     {},
     "/projects/CORE?label=bug&needs-you=1"
   );
-  // Every write of the stored choice, in order. happy-dom's `Storage` is a proxy that hands out
-  // its own bound methods and ignores one assigned over them, so a `spyOn` of `setItem` sees no
-  // call; a method defined on it is the one the page calls.
-  const writes: string[] = [];
-  const setItem = window.localStorage.setItem.bind(window.localStorage);
-  Object.defineProperty(window.localStorage, "setItem", {
-    configurable: true,
-    value: (key: string, value: string) => {
-      if (key === PANEL_CHOICE) writes.push(value);
-      setItem(key, value);
-    },
-    writable: true,
-  });
 
   try {
     await screen.findByRole("button", { name: "Filters · 2" });
@@ -1478,7 +1466,7 @@ test("nothing but the reader's open and close writes the stored choice: not a pr
     // A chip's removal.
     await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
     expect(screen.getByRole("button", { name: "Filters · 1" })).toBe(trigger);
-    expect(writes).toEqual([]);
+    expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([]);
 
     // One open, one close, and between them a pick in the Labels list and the Escape that
     // closes that list alone.
@@ -1489,16 +1477,14 @@ test("nothing but the reader's open and close writes the stored choice: not a pr
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     await user.keyboard("{Escape}");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(writes).toEqual(["expanded", "collapsed"]);
+    expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([
+      [PANEL_CHOICE, "expanded"],
+      [PANEL_CHOICE, "collapsed"],
+    ]);
   } finally {
     view.unmount();
-    Object.defineProperty(window.localStorage, "setItem", {
-      configurable: true,
-      value: setItem,
-      writable: true,
-    });
+    storage.restore();
     getMyState.mockRestore();
     listIssues.mockRestore();
-    window.localStorage.clear();
   }
 });

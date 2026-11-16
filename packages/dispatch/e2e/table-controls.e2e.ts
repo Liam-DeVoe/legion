@@ -33,6 +33,7 @@ import {
 } from "./fake-broker-helpers";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, openFilterPanel } from "./filters";
+import { settledScrollTop } from "./frames";
 import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
 import { openFilterFields } from "./inbox-filter";
 import { askControls, hasReadingPane, inboxRow, selectRow } from "./inbox-pane";
@@ -47,6 +48,7 @@ import {
   sortedIds,
   valuesOf,
 } from "./inbox-view";
+import { leaveFocus } from "./keyboard-issue";
 import { searchPath } from "./keyboard-palette";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
@@ -2840,25 +2842,10 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
   expect(lost, lost.join("; ")).toEqual([]);
 });
 
-/** The `scrollTop` a table's box settles at once a wheel step has moved it: read in the page
- *  once it has held still for three frames running. The wait is frames rather than time: a
- *  step's scroll lands over frames, and the focus rescue answers a loss a frame and a task after
- *  it, so a box pulled back shows in the frames this reads. A frame WebKit holds back is given up
- *  on after 100 ms, as the rescue's own `FRAME_WAIT_MS` gives it up. */
-async function settledScrollTop(box: Locator): Promise<number> {
-  return box.evaluate(async (node) => {
-    let last = node.scrollTop;
-    for (let still = 0, frames = 0; still < 3 && frames < 60; frames++) {
-      const drawn = Promise.withResolvers<void>();
-      requestAnimationFrame(() => drawn.resolve());
-      setTimeout(drawn.resolve, 100);
-      await drawn.promise;
-      still = node.scrollTop === last ? still + 1 : 0;
-      last = node.scrollTop;
-    }
-    return last;
-  });
-}
+/** How many frames running a table's box or a panel holds still before its `scrollTop` is read
+ *  (`settledScrollTop`): a wheel step's scroll lands over frames, and the focus rescue answers a
+ *  loss a frame and a task after it, so a box pulled back shows within three. */
+const WHEEL_STILL_FRAMES = 3;
 
 /** The row holding the keyboard focus, by the value of `rowAttribute` it carries, or null where
  *  the focus is in no such row. */
@@ -2900,11 +2887,11 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
     // for itself. Measured in WebKit with the pointer at the box's middle: the box stopped at
     // 400 px for the last 20 steps.
     await page.mouse.move(area.x + 4, area.y + area.height / 2);
-    const readings = [await settledScrollTop(box)];
+    const readings = [await settledScrollTop(box, WHEEL_STILL_FRAMES)];
     const wrong: string[] = [];
     for (let step = 1; step <= 25; step++) {
       await page.mouse.wheel(0, 100);
-      const top = await settledScrollTop(box);
+      const top = await settledScrollTop(box, WHEEL_STILL_FRAMES);
       const before = readings.at(-1) ?? 0;
       if (top < before - 1) wrong.push(`step ${step} pulled the box back from ${before} to ${top}`);
       readings.push(top);
@@ -3169,8 +3156,7 @@ test("the Delivery page reaches every facet from its row, in both views, and its
   await page.setViewportSize({ height: 768, width: 1024 });
   await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
   await expect(prs).toHaveCount(3);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  await leaveFocus(page);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   await page.keyboard.press("ArrowDown");
   expect(
@@ -3260,7 +3246,7 @@ test("a filter panel cut to a short window scrolls to its last control @firefox 
   if (area === null) throw new Error("the Filter panel is not on screen");
   await page.mouse.move(area.x + area.width / 2, area.y + area.height / 2);
   for (let step = 0; step < 8; step++) await page.mouse.wheel(0, 100);
-  const top = await settledScrollTop(panel);
+  const top = await settledScrollTop(panel, WHEEL_STILL_FRAMES);
   const end = await panel.evaluate((node) => node.scrollHeight - node.clientHeight);
   if (top < end - 1) wrong.push(`the wheel left the panel at ${top} px of the ${end} it scrolls`);
 
@@ -3274,7 +3260,7 @@ test("a filter panel cut to a short window scrolls to its last control @firefox 
     reached = await last.evaluate((node) => node === document.activeElement);
   }
   if (!reached) wrong.push("Tab never reached the Assignee filter");
-  await settledScrollTop(panel);
+  await settledScrollTop(panel, WHEEL_STILL_FRAMES);
   const shown = await last.evaluate((node) => {
     const own = node.getBoundingClientRect();
     const box = node.closest('[role="dialog"]')?.getBoundingClientRect();

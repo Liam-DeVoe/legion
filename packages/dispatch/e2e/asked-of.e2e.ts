@@ -190,7 +190,8 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await handsOff(alicePage);
 
     // 3. Without a reload, the row leaves her list and enters his, and every count beside it
-    // follows: the band's own, the banner's, and the per-person number on the Agents page.
+    // follows: the band's own, the Blocked on you control's, and the per-person number on the
+    // Agents page.
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
     await expect(alicePage.locator("[data-inbox-row]")).toHaveCount(1);
     await expect(bandHeadings(alicePage)).toHaveText(["Waiting on you (1)"]);

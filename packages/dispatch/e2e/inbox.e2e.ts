@@ -761,9 +761,9 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
 
 // Deferring a row is only worth anything if it stops being asked about, so this case gates the
 // whole rule at the UI: the band, and the two counts that would otherwise keep nagging - the
-// Blocked-on-you banner and the shell's one Inbox count - including after an agent replies,
+// Blocked on you control and the shell's one Inbox count - including after an agent replies,
 // which hands the turn back and is exactly what could pull a deferred ask onto the list.
-test("a snoozed row leaves Later, the banner and the Inbox count alone until un-snoozed", async ({
+test("a snoozed row leaves Later, the Blocked on you control and the Inbox count alone until un-snoozed", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -853,9 +853,9 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
 
 // A credential request is listed above the asks and waits on its approver as much as an ask
 // whose turn is theirs, so it is as much a reason not to say "Nothing needs you" and as much a
-// part of the Inbox count and the Blocked-on-you banner. A request waiting on someone else
-// is in neither. A secret request is decided on the secrets broker's own page, so its row is a
-// plain link to the page the broker named for it, `approve_url`, as the broker gave it.
+// part of the Inbox count and the Blocked on you control's count. A request waiting on someone
+// else is in neither. A secret request is decided on the secrets broker's own page, so its row is
+// a plain link to the page the broker named for it, `approve_url`, as the broker gave it.
 test("a pending credential request alone is listed, counted, and keeps the empty state away", async ({
   browser,
 }, testInfo) => {
@@ -1539,7 +1539,7 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
 // `features/inbox/BlockedOnYou.tsx`): open questions whose next move is a person's, on issues
 // assigned to them. Widening the list they are looking at is not more work waiting on them, so
 // no count moves with it; another issue assigned to them is, so they all move together.
-test("the Inbox count, the banner and an Agents card count the reader's own work, whatever the filter lists", async ({
+test("the Inbox count, the Blocked on you control and an Agents card count the reader's own work, whatever the filter lists", async ({
   browser,
 }) => {
   await setLiveSessions([{ session_id: session.actor.id, title: "e2e-session-title" }]);

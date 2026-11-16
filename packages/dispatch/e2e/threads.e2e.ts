@@ -454,8 +454,8 @@ test("a session retraction leaves its reason on the card and removes the human's
     bobSession
   );
 
-  // The retraction takes the question out of the human's Inbox, live: the "Blocked on you"
-  // strip counts what the server lists, and it drops with no reload.
+  // The retraction takes the question out of the human's Inbox, live: the Blocked on you control
+  // counts what the server lists, and it goes with no reload once nothing waits on the reader.
   await expect(inboxPage.getByRole("button", { name: /^Blocked on you:/ })).toHaveCount(0);
   // The row itself: a question the server withdraws leaves the list at once, at every width and
   // with no reload - a withdrawn question with a live answer form invites an answer the server
