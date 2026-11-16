@@ -7,6 +7,9 @@ import {
   borderDefault,
   linkHoverText,
   linkText,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -86,6 +89,37 @@ export function drawsEdge(edge: GraphEdge): boolean {
     Object.hasOwn(NODE_LABELS, edge.node.kind)
   );
 }
+
+/** The edges a list of what references `reference` shows of a read's `edges`: those it draws
+ *  (`drawsEdge`), and with `page` none whose citing item - the node, or the ask, comment or
+ *  message a block of one belongs to (`blockItem`) - is an ask, comment or message of the issue
+ *  `reference` names, since the new page's outline is that issue's conversation. One function, so
+ *  a control that counts the list counts the rows the list shows. Undefined while there is no
+ *  read. */
+export function listedEdges(
+  edges: readonly GraphEdge[] | null | undefined,
+  reference: string,
+  page: boolean
+): GraphEdge[] | undefined {
+  const drawn = edges?.filter(drawsEdge);
+  const route = page ? parseNodeReference(reference) : undefined;
+  const issueKey = route !== undefined && "key" in route ? route.key : undefined;
+  if (issueKey === undefined) {
+    return drawn;
+  }
+  return drawn?.filter(
+    (edge) =>
+      !isBlockItemKind((blockItem(edge.node) ?? edge.node).kind) || edge.node.issue_key !== issueKey
+  );
+}
+
+/** The colours of the list's heading, its lines and its rows: the application's, and with `page`
+ *  the new page's own tokens (`PAGE_COLORS`), as every colour of Details is. Its words, its
+ *  excerpt and its links keep the application's on both. */
+const LIST_TOKENS = {
+  app: { heading: textSecondaryOnSurface, line: textMutedOnSurface, row: borderDefault },
+  page: { heading: pageMutedText, line: pageQuietText, row: pageLineBorder },
+} as const;
 
 /** Beyond this the row clamps the excerpt and offers to expand it. The real clamp is CSS, so
  *  this is the text shape that makes a clamp likely rather than a measurement. */
@@ -251,10 +285,14 @@ export function ReferencedByToggle({
  *  the list outright — so this component has one behaviour. */
 export function ReferencedBy({
   className,
+  page = false,
   reference,
   toggle,
 }: {
   className?: string;
+  /** Whether the list is drawn in the new page's Details: in the page's colours, and without the
+   *  issue's own asks, comments and messages, which that page's outline holds (`listedEdges`). */
+  page?: boolean;
   reference: string;
   /** The control that discloses this panel: its `id` (which the control names in
    *  `aria-controls`) and the fact that it already reads `Referenced by (N)`, so the panel
@@ -263,21 +301,20 @@ export function ReferencedBy({
   toggle?: { id: string };
 }): ReactNode {
   const query = useQuery(referencesQuery(reference));
-  const edges = query.data?.edges?.filter(drawsEdge);
+  const edges = listedEdges(query.data?.edges, reference, page);
   const groups = groupBySource(edges ?? []);
+  const tokens = LIST_TOKENS[page ? "page" : "app"];
 
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>
       {toggle === undefined ? (
-        <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
+        <h3 className={`text-sm font-semibold ${tokens.heading}`}>
           Referenced by{edges === undefined ? "" : ` (${edges.length})`}
         </h3>
       ) : null}
-      {query.isPending ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>Loading references…</p>
-      ) : null}
+      {query.isPending ? <p className={`text-sm ${tokens.line}`}>Loading references…</p> : null}
       {query.isError ? (
-        <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
+        <p className={`flex flex-wrap items-center gap-2 text-sm ${tokens.line}`}>
           <span>Referenced by unavailable.</span>
           <button
             className={`font-medium underline ${linkText} ${linkHoverText}`}
@@ -290,13 +327,13 @@ export function ReferencedBy({
         </p>
       ) : null}
       {edges?.length === 0 ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>Nothing references this yet.</p>
+        <p className={`text-sm ${tokens.line}`}>Nothing references this yet.</p>
       ) : null}
       {groups.length === 0 ? null : (
         <ul className="space-y-2">
           {groups.map((group) => (
-            <li className={`rounded-lg border p-3 ${borderDefault}`} key={group.key}>
-              <div className={`text-xs font-medium ${textMutedOnSurface}`}>
+            <li className={`rounded-lg border p-3 ${tokens.row}`} key={group.key}>
+              <div className={`text-xs font-medium ${tokens.line}`}>
                 {group.path === undefined ? (
                   <span>{group.label}</span>
                 ) : (
@@ -322,9 +359,7 @@ export function ReferencedBy({
                     <li
                       key={`${edge.node.kind}:${edge.node.id}:${edge.kind}:${edge.direction}:${edge.block?.id ?? ""}`}
                     >
-                      <div
-                        className={`flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurface}`}
-                      >
+                      <div className={`flex flex-wrap items-center gap-x-1 text-xs ${tokens.line}`}>
                         {group.edges.length === 1 ? null : (
                           <>
                             <span>{edgeLabel(edge)}</span>

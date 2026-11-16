@@ -33,7 +33,8 @@ import { stateForIssue } from "../issue/pins";
 import { RepoControl } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
-import { ReferencedBy } from "../refs/ReferencedBy";
+import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
+import { referencesQuery } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { BlockedByControl, IssueLine } from "./BlockedByControl";
@@ -228,6 +229,12 @@ export function IssueMarginPanel({
       ? []
       : [{ key: edge.node.issue_key, title: edge.excerpt?.text ?? "" }]
   );
+  // The list Referenced by opens, as the cache holds it: this never reads it itself, so the
+  // control has a number only once the list has been read, and then it is the rows the list
+  // shows, since the issue's count also holds its own asks, comments and messages, which the list
+  // leaves out (`listedEdges`, dispatch://INFRA-3948 R10).
+  const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
+  const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does (R31): the approvals are all this reads of the count, so it
   // hands it no decisions.
@@ -508,7 +515,8 @@ export function IssueMarginPanel({
           {/* Details' own control of the list, with the name, the role and the states of the
               application's `ReferencedByToggle`, in the page's ink rather than its link blue. A
               count of zero is a fact and not a control, as there: opening it would only say
-              that nothing references the issue. */}
+              that nothing references the issue. Otherwise it reads the rows the list shows once
+              the list has been read. */}
           {issue.referenced_by_count === 0 ? (
             <span
               className={`inline-flex min-h-11 items-center text-sm md:min-h-0 ${pageQuietText}`}
@@ -523,12 +531,15 @@ export function IssueMarginPanel({
               onClick={() => setReferencesOpen((open) => !open)}
               type="button"
             >
-              {`Referenced by (${issue.referenced_by_count})`}
+              {referencesListed === undefined
+                ? PROPERTY_LABELS.referenced_by
+                : `${PROPERTY_LABELS.referenced_by} (${referencesListed})`}
             </button>
           )}
           {referencesOpen ? (
             <ReferencedBy
               className="w-full"
+              page
               reference={issueReference}
               toggle={{ id: referencesPanelId }}
             />
