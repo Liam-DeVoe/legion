@@ -90,8 +90,8 @@ The work goes to whoever already owns that code. You file an issue only when nob
 ## Link an issue to its approved root
 
 A class root is an issue whose spec states a class of work, so that each issue of that class is
-its child: for example, a root whose spec says that each fix of one subsystem is its child.
-Before you file an issue, or give one to a tree, find the root it belongs to. That is a class root whose class holds it, or the root of a running tree whose unfinished work
+its child. Before you file an issue, or give one to a tree, find the root it belongs
+to. That is a class root whose class holds it, or the root of a running tree whose unfinished work
 holds it. Such a root counts only when a person approved its spec. A mention of the class in prose
 is not a link. Only a Dispatch `child_of` link is one.
 
