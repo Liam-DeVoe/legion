@@ -714,9 +714,10 @@ func (c *comparisonReader) onNamedBranch(
 }
 
 // standingCommit is where a result's commit stands while the check's words have not moved
-// and no retraction stands against it. It answers no standing without both comparison fields.
+// and no retraction stands against it. It answers no standing without both comparison fields, and
+// none for a result that counts for nothing (model.CheckResult.NotCounted).
 func standingCommit(result model.CheckResult) string {
-	if result.Retracted != nil || result.CheckWordsMoved == nil || *result.CheckWordsMoved || result.CommitStands == nil {
+	if result.Retracted != nil || result.NotCounted != "" || result.CheckWordsMoved == nil || *result.CheckWordsMoved || result.CommitStands == nil {
 		return ""
 	}
 	return result.CommitStands.Answer

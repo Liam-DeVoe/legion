@@ -384,7 +384,8 @@ type issueCheckResults struct {
 // error.
 //
 // A check CI proves carries `ci` too, read from GitHub at the issue's newest pull request
-// head, and holds no result a role recorded: its results are the one derived from the run its
+// head, and a role's result of it counts for nothing (not_counted). Its results are the one
+// derived from the run its
 // `ci_check` names (deriveCIResults), which is judged as a recorded result is, beside each
 // result a run of its CI job recorded (role ci, branch set), newest first. A reader of one
 // result of such a check finds the derived one by its id (ci-run:<check run id>), not as the
@@ -759,20 +760,19 @@ func (s *server) readCheckAttributes(ctx context.Context, check *resolvedCheck) 
 	return nil
 }
 
-// validCICheck reports whether check, a block the results read loaded with its results, is one
-// CI proves: it carries ci_check and keeps the four rules of such a check, the three of
-// docs.CICheckRule and that no result a role recorded stands against it, which holdsRoleResult
-// answers from the rows the read loaded. Only such a check is CI's to the results routes; any
-// other is an ordinary check, whatever its ci_check says.
-func validCICheck(check model.CheckBlock, holdsRoleResult bool) bool {
+// validCICheck reports whether check is one CI proves: it carries ci_check and keeps the three
+// rules of such a block (docs.CICheckRule). The kind of a check is its block's alone, read again
+// at each read, so no row stored against it changes it: a role's result of such a check counts for
+// nothing (notCountedOnCICheck). Any other check is an ordinary check, whatever its ci_check says.
+func validCICheck(check model.CheckBlock) bool {
 	attributes := docs.CheckAttributesOfBlock(check)
-	return docs.CarriesCICheck(attributes) && docs.CICheckRule(attributes) == "" && !holdsRoleResult
+	return docs.CarriesCICheck(attributes) && docs.CICheckRule(attributes) == ""
 }
 
 // refuseResultOfAnotherRecorder refuses a result whose recorder is not the one that does the work
 // of its check (R12: nobody writes a result for work that it did not do), in this order:
 //
-//  1. A check CI proves (docs.CICheckRuleIn answers "") takes no result from any credential but
+//  1. A check CI proves (docs.CICheckRule answers "") takes no result from any credential but
 //     a CI job's results token: 409 CHECK_PROVED_BY_CI, naming the block and the job.
 //  2. A results token records only the result of a check CI proves whose ci_check, trimmed, is
 //     the name of the token's check run: 409 CHECK_NOT_THIS_JOBS, naming the check, its
@@ -783,17 +783,14 @@ func validCICheck(check model.CheckBlock, holdsRoleResult bool) bool {
 //     has held the body's commit to the token's already.
 //
 // Any other credential's result for any other check is judged by the rest of the route. Whether
-// a role recorded a result against the block, which decides whether it is CI's, is read through
-// q: the pool before the transaction opens, and the transaction itself under the locks. run is
-// the token's check run (ciJobCheckRun), and nil for every other credential.
+// the check is CI's is its block's alone (validCICheck), and q reads the check's repository: the
+// pool before the transaction opens, and the transaction itself under the locks. run is the
+// token's check run (ciJobCheckRun), and nil for every other credential.
 func (s *server) refuseResultOfAnotherRecorder(ctx context.Context, q queryer, check resolvedCheck, credential *model.Credential, run *githubapp.CheckRun) error {
 	carries := docs.CarriesCICheck(check.Attributes)
 	rule := ""
 	if carries {
-		var err error
-		if rule, err = docs.CICheckRuleIn(ctx, q, check.ArtifactID, check.BlockID, check.Attributes); err != nil {
-			return err
-		}
+		rule = docs.CICheckRule(check.Attributes)
 	}
 	provedByCI := carries && rule == ""
 	if credential == nil || !credential.ResultsOnly {
@@ -906,8 +903,8 @@ func ciJobActor(actor model.Actor) model.Actor {
 // the rule of the project's results route (cutObserved); its surface and negative control are
 // the check's; its commit is the run's, which ciJobRefusal held the body's to; its session and
 // actor are the run's (ciJobActor); and Branch is the branch whose push the run ran on, which
-// marks the row a CI job's, so the fourth rule of its check never counts it
-// (docs.CICheckRuleIn). Attestation is the in-toto statement of its run
+// marks the row a CI job's, which the results read tells from a role's (notCountedOnCICheck).
+// Attestation is the in-toto statement of its run
 // (attestedResult.statement), as the project's results route builds one: attempt is the run's
 // attempt (runNumbersOf), and principal the broker's principal of the run (resultPrincipal).
 func ciJobCheckResult(input checkResultInput, check resolvedCheck, actor model.Actor, run githubapp.CheckRun, ci oauthwire.CIRun, attempt int, principal string, issueKey string) model.CheckResult {
@@ -1123,7 +1120,7 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 
 // insertCheckResult writes one result's row and fills in the created_at the row takes, which
 // the record route answers with: the pointer is the caller's own value, not a copy of it. A
-// role's row, whose Branch is "", stores a null branch (docs.CICheckRuleIn). A role's row stores a
+// role's row, whose Branch is "", stores a null branch. A role's row stores a
 // null statement; a CI job's stores its statement with the row's own recorded_at
 // (stampedAttestation), and the result answers the stored one, so the record's answer is what the
 // read answers.

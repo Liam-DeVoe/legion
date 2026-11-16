@@ -387,20 +387,20 @@ const SPEC_WRITING_POINTER = "Write a spec as skill://dispatch-writing-specs say
 
 /** The rules a check block naming the CI check run that proves it keeps, written once for the
  *  three tools that write a document. The server holds every document write to them
- *  (`docs.CICheckRuleIn`), for each check block the write adds or whose ci_check, run, when or
+ *  (`docs.CICheckRule`), for each check block the write adds or whose ci_check, run, when or
  *  negative_control it changes. */
 const CI_CHECK_RULE =
   "A check block whose ci_check names the CI check run that proves it carries no run, keeps when " +
-  "before_merge, names its negative_control, and holds no result a role recorded. A write that " +
-  "adds a check block, or changes a check's ci_check, run, when or negative_control, so that it " +
-  "breaks one of those rules is refused with 400 INVALID_CI_CHECK, which names the block and the " +
-  "rule. A check that already holds a result a role recorded never becomes CI's: write a new " +
-  "check block under a new id.";
+  "before_merge and names its negative_control. A write that adds a check block, or changes a " +
+  "check's ci_check, run, when or negative_control, so that it breaks one of those rules is " +
+  "refused with 400 INVALID_CI_CHECK, which names the block and the rule. The kind of a check is " +
+  "its block's alone: a result a role recorded against a check before it named a ci_check counts " +
+  "for nothing once it does.";
 
 /** Which check CI proves, written once for the two tools that record and read results, each
  *  ending it with its own punctuation. */
 const CHECK_PROVED_BY_CI =
-  "A check whose ci_check names a CI check run, and that holds no result a role recorded, is proved by CI";
+  "A check whose ci_check names a CI check run, and that keeps the rules of such a block, is proved by CI";
 
 /**
  * The `images` argument of the three tools that write text a person reads: local picture files,

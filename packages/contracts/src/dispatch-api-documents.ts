@@ -278,7 +278,7 @@ export type BlockRepairedEventPayload = z.output<typeof BlockRepairedEventPayloa
 
 /** A browser-authored block breaks a rule settlement holds it to: an ask block it cannot read,
  *  which it marks malformed and awaits repair, or, with `block_type: "check"`, a check block whose
- *  `ci_check` breaks one of the four rules, which settlement deletes. `reason` is the ask's reason
+ *  `ci_check` breaks one of the three rules, which settlement deletes. `reason` is the ask's reason
  *  or the check's rule. An ask's event carries no `block_type`. */
 export const BlockInvalidEventPayloadSchema = z
   .strictObject({

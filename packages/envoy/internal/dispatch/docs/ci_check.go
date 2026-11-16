@@ -1,32 +1,28 @@
 package docs
 
 import (
-	"context"
 	"fmt"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// The four rules a `check` block carrying `ci_check` keeps, in the order CICheckRuleIn reads them.
+// The three rules a `check` block carrying `ci_check` keeps, in the order CICheckRule reads them.
 // Such a check is proved by the GitHub check run its `ci_check` names, so no role runs it. The
-// fourth rule counts only a result a role recorded: a result the CI job itself recorded
-// (check_results.branch set) never breaks it, so its text, a recorded result, means a role's.
+// rules are the block's alone: no row stored against a check changes its kind, so a role's result
+// a build that counted such rows took while it served beside this one changes nothing for good.
 const (
 	ciCheckRuleRun             = "a check proved by CI carries no run"
 	ciCheckRuleWhen            = "ci_check takes when of before_merge"
 	ciCheckRuleNegativeControl = "a check proved by CI names its negative control"
-	ciCheckRuleRecorded        = "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one"
 )
 
 // CheckWhenBeforeMerge is the `when` a check proved by CI takes, and the default of a check that
 // names none (pmdoc/schema/blocks.json).
 const CheckWhenBeforeMerge = "before_merge"
 
-// CheckAttributes is what a check block says of how it is proved: the attributes the four rules
+// CheckAttributes is what a check block says of how it is proved: the attributes the three rules
 // read and the results write path judges, read as the rules read them: `ci_check`, run and
 // negative control with the spaces around them trimmed, as the editor cannot show them, and a
 // blank `when` as the default, before_merge. A check block as the results read serves it
@@ -67,8 +63,8 @@ func CarriesCICheck(check CheckAttributes) bool {
 
 // CICheckRule is the first of the three attribute rules check breaks, read as a check carrying
 // `ci_check` (CarriesCICheck), and "" when it breaks none: it carries no run, its `when` is
-// before_merge, and it names its negative control. The fourth rule, that no result a role
-// recorded stands against it, is read from the database (CICheckRuleIn).
+// before_merge, and it names its negative control. These three are the whole rule: the kind of a
+// check is its block's, read again at each read, and no row stored against it changes it.
 func CICheckRule(check CheckAttributes) string {
 	switch {
 	case check.Run != "":
@@ -81,37 +77,8 @@ func CICheckRule(check CheckAttributes) string {
 	return ""
 }
 
-// CICheckRuleIn is the first of the four rules check, the check block blockID of the document
-// artifactID, breaks, read as a check carrying `ci_check` (CarriesCICheck), and "" when it breaks
-// none: the three of CICheckRule, then that no result a role recorded stands against it, read
-// through q (the pool, or the transaction of the write that asks) only when the other three leave
-// that to decide. A role's row is one whose branch is null; a row a CI job recorded names the
-// branch its push ran on and is not counted, so the job's own results never take the block from
-// CI, and settlement never deletes its `ci_check` for them. Every reader of the rules that has no
-// results loaded comes here: a document write's refusal (refuseCICheckBlocks), settlement's repair
-// of what a browser leaves (reconcileCICheckBlocks) and the refusal of a result against a check
-// CI proves.
-func CICheckRuleIn(ctx context.Context, q Queryer, artifactID, blockID string, check CheckAttributes) (string, error) {
-	if rule := CICheckRule(check); rule != "" {
-		return rule, nil
-	}
-	var recorded bool
-	if err := q.QueryRow(ctx, `
-		select exists(
-			select 1 from check_results
-			where check_artifact_id = $1::uuid and check_block_id = $2 and branch is null
-		)
-	`, artifactID, blockID).Scan(&recorded); err != nil {
-		return "", fmt.Errorf("read whether check %s of document %s holds a result a role recorded: %w", blockID, artifactID, err)
-	}
-	if recorded {
-		return ciCheckRuleRecorded, nil
-	}
-	return "", nil
-}
-
 // ErrInvalidCICheck refuses a write that leaves a check block carrying `ci_check` that breaks one
-// of the four rules (CICheckRuleIn). It is the caller's to fix, never a schema refusal.
+// of the three rules (CICheckRule). It is the caller's to fix, never a schema refusal.
 type ErrInvalidCICheck struct {
 	BlockID string
 	CICheck string
@@ -145,7 +112,7 @@ func checkBlockNodes(tree *pmdoc.Node) []*pmdoc.Node {
 
 // CheckBlockOf is the check block node holds, with the attributes a check block carries, each as
 // written: its id, `ci_check`, run, `when`, negative control and surface. Every reader of a check
-// block's attributes comes here: the four rules through CheckAttributesOf, settlement and the
+// block's attributes comes here: the three rules through CheckAttributesOf, settlement and the
 // results routes, which serve the block. The rules read it through CheckAttributesOfBlock.
 func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 	var check model.CheckBlock
@@ -163,16 +130,15 @@ func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 	return check
 }
 
-// refuseCICheckBlocks refuses tree, the tree an agent's or API write to artifactID leaves, when a
-// check block the write introduces carries `ci_check` and breaks one of the four rules, naming the
-// first such block in document order (ErrInvalidCICheck). A block is introduced when prior, the
-// tree before the write, holds no check block under its id, or one whose `ci_check`, run, `when`
-// or negative control differ; a nil prior (a new document, or one outside the schema) holds none.
-// So an edit elsewhere in the document never meets a block another writer left broken. Whether a
-// role recorded a result against the block is read in the write's transaction, and only for a
-// block that keeps the other three rules. A browser's write never comes here: settlement repairs
-// what it leaves.
-func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree, prior *pmdoc.Node) error {
+// refuseCICheckBlocks refuses tree, the tree an agent's or API write leaves, when a check block
+// the write introduces carries `ci_check` and breaks one of the three rules (CICheckRule), naming
+// the first such block in document order (ErrInvalidCICheck). A block is introduced when prior,
+// the tree before the write, holds no check block under its id, or one whose `ci_check`, run,
+// `when` or negative control differ; a nil prior (a new document, or one outside the schema) holds
+// none. So an edit elsewhere in the document never meets a block another writer left broken. No
+// row stored against a block is a reason to refuse it. A browser's write never comes here:
+// settlement repairs what it leaves.
+func refuseCICheckBlocks(tree, prior *pmdoc.Node) error {
 	// held is read from prior at the first block carrying ci_check, so a write that leaves none
 	// walks prior not at all.
 	var held map[string]CheckAttributes
@@ -192,44 +158,29 @@ func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree
 		if before, ok := held[block.BlockID]; ok && before == check {
 			continue
 		}
-		rule, err := CICheckRuleIn(ctx, tx, artifactID, block.BlockID, check)
-		if err != nil {
-			return err
-		}
-		if rule != "" {
+		if rule := CICheckRule(check); rule != "" {
 			return &ErrInvalidCICheck{BlockID: block.BlockID, CICheck: check.CICheck, Rule: rule}
 		}
 	}
 	return nil
 }
 
-// reconcileCICheckBlocks holds every check block of tree, the document settlement read, to the four
-// rules. A browser's write is never refused, so a check block it leaves carrying a `ci_check` that
-// breaks a rule is repaired here: its `ci_check` is deleted, in tree and, through repairLive, in the
-// live document, and one block.invalid names the block, the rule it broke and block_type "check",
-// which the issue's Activity reads as the refusal. A repaired block carries no `ci_check`, so a
-// later settlement repairs it no more. Whether a role recorded a result against a block is read in
-// tx, the settlement's transaction, and only for a block that keeps the other three rules: a
-// result the CI job recorded is no reason to repair it. actor is the settlement's, as its ask
+// reconcileCICheckBlocks holds every check block of tree, the document settlement read, to the
+// three rules (CICheckRule). A browser's write is never refused, so a check block it leaves carrying
+// a `ci_check` that breaks a rule is repaired here: its `ci_check` is deleted, in tree and, through
+// repairLive, in the live document, and one block.invalid names the block, the rule it broke and
+// block_type "check", which the issue's Activity reads as the refusal. A repaired block carries no
+// `ci_check`, so a later settlement repairs it no more. No row stored against a block is a reason
+// to repair it: the kind of a check is its block's alone. actor is the settlement's, as its ask
 // events name.
-func (r *settlementReconciliation) reconcileCICheckBlocks(
-	ctx context.Context,
-	tx pgx.Tx,
-	artifactID string,
-	owner artifactOwner,
-	tree *pmdoc.Node,
-	actor model.Actor,
-) error {
+func (r *settlementReconciliation) reconcileCICheckBlocks(artifactID string, owner artifactOwner, tree *pmdoc.Node, actor model.Actor) {
 	for _, node := range checkBlockNodes(tree) {
 		block := CheckBlockOf(node)
 		check := CheckAttributesOfBlock(block)
 		if !CarriesCICheck(check) {
 			continue
 		}
-		rule, err := CICheckRuleIn(ctx, tx, artifactID, block.BlockID, check)
-		if err != nil {
-			return err
-		}
+		rule := CICheckRule(check)
 		if rule == "" {
 			continue
 		}
@@ -242,7 +193,6 @@ func (r *settlementReconciliation) reconcileCICheckBlocks(
 			}))
 		}
 	}
-	return nil
 }
 
 // deleteJudgedCICheck deletes the `ci_check` of a check block that still carries the attributes

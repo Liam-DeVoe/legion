@@ -111,7 +111,7 @@ export function writeProbeSpec(dir: string): void {
 export const CI_CHECK = "c1";
 export const ORDINARY_CHECK = "k1";
 
-/** The negative control both checks name: a check CI proves names one (docs.CICheckRuleIn). */
+/** The negative control both checks name: a check CI proves names one (docs.CICheckRule). */
 const NEGATIVE_CONTROL = "A build whose server does not build.";
 
 /** The seeded issue's Verification document. */

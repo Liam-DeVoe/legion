@@ -528,7 +528,7 @@ func TestAJobsResultAtAnotherCommitIsRefused(t *testing.T) {
 }
 
 // TestAJobsResultOfARunOfNoBranchIsRefused: a job records a result for the push of a branch, and
-// its row names that branch, which is what keeps the row out of the fourth rule of its check. A
+// its row names that branch, which is how the results read tells it from a role's. A
 // run of a tag, and a ref that names an empty branch, are refused, and nothing is stored.
 func TestAJobsResultOfARunOfNoBranchIsRefused(t *testing.T) {
 	rig := newCIJobRig(t)
@@ -603,12 +603,12 @@ func TestAResultsTokenOfAnotherProjectIsRefused(t *testing.T) {
 	}
 }
 
-// TestAJobsResultLeavesTheCheckCIs: the job's result is no result a role recorded, so c1 stays a
-// check CI proves. An edit elsewhere in the document leaves it a settlement to owe, which holds
-// every check block of the document to the four rules (reconcileCICheckBlocks); that settlement
-// keeps c1's ci_check and appends no block.invalid. A write that changes c1's negative control,
-// which holds c1 to the four rules again (refuseCICheckBlocks), is stored. A settlement with
-// nothing owed judges no block, so the edit is what makes the first half able to fail.
+// TestAJobsResultLeavesTheCheckCIs: the job's result leaves c1 a check CI proves. An edit elsewhere
+// in the document leaves it a settlement to owe, which holds every check block of the document to
+// the three rules (reconcileCICheckBlocks); that settlement keeps c1's ci_check and appends no
+// block.invalid. A write that changes c1's negative control, which holds c1 to the three rules
+// again (refuseCICheckBlocks), is stored. A settlement with nothing owed judges no block, so the
+// edit is what makes the first half able to fail.
 func TestAJobsResultLeavesTheCheckCIs(t *testing.T) {
 	rig := newCIJobRig(t)
 	jobRecorded(t, "the job's result for c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))

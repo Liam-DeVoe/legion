@@ -494,11 +494,11 @@ proves it. It has one section for each of the checks `k1` to `k5` of dispatch://
 Verification document, and each runs that check's `run` and asserts its `negative_control`:
 
 - `k1`: a check with `ci_check` is stored and `dispatch doc-read` reads it back; the documents API
-  refuses `400 INVALID_CI_CHECK` each of the four writes that break a rule, naming the block and
+  refuses `400 INVALID_CI_CHECK` each of the three writes that break a rule, naming the block and
   the rule, and stores nothing of them: `ci_check` beside a `run`, `ci_check` with a `when` of
-  `after_merge`, `ci_check` with no `negative_control`, and `ci_check` added to a check that
-  holds a result a role recorded. A `ci_check` on a fresh block id is stored, and a new block
-  under the old id is refused again. A check carrying neither `ci_check` nor `run` is stored as
+  `after_merge`, and `ci_check` with no `negative_control`. A `ci_check` on a fresh block id is
+  stored, and so is one added to a check that holds a result a role recorded, since the kind of a
+  check is its block's alone. A check carrying neither `ci_check` nor `run` is stored as
   before. A document socket that declares schema version 3 is admitted with the scope
   `readonly`, and one that declares version 4 with `read-write` (`e2e/acceptance/socket-scope.ts`,
   the Hocuspocus frames the browser sends). The live editor's half of `k1` is the browser row of

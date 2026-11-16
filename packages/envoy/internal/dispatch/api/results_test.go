@@ -2676,13 +2676,12 @@ func TestResultAgainstACheckCIProvesIsRefused(t *testing.T) {
 }
 
 // A result and a ci_check written against one block at once can both commit, and the block then
-// holds a recorded result, so it is no check CI proves. Crafted here as a browser's write that
-// gives a ci_check to a check already holding a result, before any settlement: the results read
-// shows it as an ordinary check carrying its ci_check and its recorded result, and it takes a
-// further result. Its sibling, given the same ci_check and holding no result, is CI's. The next
-// settlement takes the inert ci_check off the block holding results, with one block.invalid
-// naming the fourth rule, and keeps its sibling's.
-func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
+// holds a role's result. Crafted here as a browser's write that gives a ci_check to a check already
+// holding a result, before any settlement. The kind of a check is its block's alone, so c1 is CI's
+// as its sibling c2 is: the role's result counts for nothing and says why, a further role's result
+// of either is 409 CHECK_PROVED_BY_CI, and the next settlement keeps both ci_checks and posts no
+// block.invalid.
+func TestACICheckHoldingARolesResultIsCIs(t *testing.T) {
 	documents, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "RESCR", "Raced", "A spec\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
@@ -2694,34 +2693,28 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 	writeBrowserDocument(t, documents, verification.Artifact.ID, ciCheckBlock("c1", ciCheckKept)+"\n"+ciCheckBlock("c2", ciCheckKept))
 
 	held := checkOf(t, readResults(t, handler, issue.Key), "c1")
-	if held.CICheck != ciCheckRun || len(held.Results) != 1 || held.Results[0].ID != decodeBody[recordedResult](t, first).Result.ID {
-		t.Fatalf("c1 reads %+v, want its ci_check and the result recorded against it", held)
+	if held.CICheck != ciCheckRun || len(held.Results) != 1 || held.Results[0].ID != decodeBody[recordedResult](t, first).Result.ID ||
+		held.Results[0].NotCounted != model.ResultNotCountedRoleOnCICheck {
+		t.Fatalf("c1 reads %+v, want its ci_check and the role's result, counted for nothing", held)
 	}
-	if again := recordResult(t, handler, issue.Key, resultBody("c1", "fail", newHeadCommit, map[string]any{"role": "tester", "failed": 1})); again.Code != http.StatusCreated {
-		t.Fatalf("a further result against c1: status=%d body=%s, want 201", again.Code, again.Body.String())
-	}
-	if results := checkOf(t, readResults(t, handler, issue.Key), "c1").Results; len(results) != 2 {
-		t.Fatalf("c1 holds %+v, want both results", results)
-	}
-
-	refused := recordResult(t, handler, issue.Key, resultBody("c2", "pass", headCommit, nil))
-	if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" {
-		t.Fatalf("a result against c2: status=%d body=%s, want 409 CHECK_PROVED_BY_CI", refused.Code, refused.Body.String())
+	for _, blockID := range []string{"c1", "c2"} {
+		refused := recordResult(t, handler, issue.Key, resultBody(blockID, "pass", headCommit, nil))
+		if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" {
+			t.Fatalf("a result against %s: status=%d body=%s, want 409 CHECK_PROVED_BY_CI", blockID, refused.Code, refused.Body.String())
+		}
 	}
 
 	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
 		t.Fatalf("settle the issue's documents: %v", err)
 	}
 	settled := readResults(t, handler, issue.Key)
-	if c1 := checkOf(t, settled, "c1"); c1.CICheck != "" || len(c1.Results) != 2 {
-		t.Fatalf("c1 once settled reads %+v, want it without its ci_check and holding both results", c1)
+	for _, blockID := range []string{"c1", "c2"} {
+		if check := checkOf(t, settled, blockID); check.CICheck != ciCheckRun {
+			t.Fatalf("%s once settled reads %+v, want its ci_check %q kept", blockID, check, ciCheckRun)
+		}
 	}
-	if c2 := checkOf(t, settled, "c2"); c2.CICheck != ciCheckRun {
-		t.Fatalf("c2 once settled reads %+v, want its ci_check %q kept", c2, ciCheckRun)
-	}
-	want := []ciCheckRefusalEvent{{BlockID: "c1", Reason: ciCheckRecordedRule, BlockType: "check"}}
-	if got := ciCheckRefusalEvents(t, handler, issue.Key); !slices.Equal(got, want) {
-		t.Fatalf("block.invalid events = %+v, want %+v", got, want)
+	if got := ciCheckRefusalEvents(t, handler, issue.Key); len(got) != 0 {
+		t.Fatalf("block.invalid events = %+v, want none", got)
 	}
 }
 

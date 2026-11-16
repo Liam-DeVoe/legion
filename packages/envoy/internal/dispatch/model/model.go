@@ -1340,6 +1340,12 @@ const (
 	PassSubjectReasonNoResult   = "no_result"
 )
 
+// ResultNotCountedRoleOnCICheck is why a role's result of a check CI proves counts for nothing
+// (CheckResult.NotCounted): only that check's CI job records its result. The kind of a check is its
+// block's alone, so such a row, which a build that counted such rows took while it served beside
+// a newer one, changes nothing about the check.
+const ResultNotCountedRoleOnCICheck = "a role's result of a check CI proves counts for nothing: only a run of the CI job its ci_check names records its result"
+
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
 // (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
@@ -1482,6 +1488,10 @@ type CheckResult struct {
 	// use. It is set on a result a CI job recorded and on no other, and left out of the JSON
 	// wherever it is nil: a role's result and a derived result carry none.
 	Attestation *ResultAttestation `json:"attestation,omitempty"`
+	// NotCounted is why this result counts for nothing, where it does: a role's result of a check
+	// CI proves (ResultNotCountedRoleOnCICheck). No surface counts such a result as evidence, and
+	// it is left out of the JSON on every result that counts.
+	NotCounted string `json:"not_counted,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
 	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
@@ -1516,9 +1526,10 @@ type CheckResultRetraction struct {
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
 // `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check
-// holds no result a role recorded: its results are the one derived from that run (id
+// is its block's kind alone: its results are the one derived from that run (id
 // `ci-run:<check run id>`) beside each result a run of its CI job recorded (role `ci`, Branch
-// set), newest first, so a reader finds the derived one by its id and not by its place.
+// set), newest first, so a reader finds the derived one by its id and not by its place, and a
+// role's result of it carries NotCounted.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -2099,7 +2110,7 @@ type BlockRepairedEventPayload struct {
 
 // BlockInvalidEventPayload records a block that browser editing left breaking a rule: an ask block
 // settlement cannot read, which it marks `invalid`, or, with BlockType "check", a check block whose
-// ci_check breaks one of the four rules, which it deletes. Reason is the ask's reason or the rule.
+// ci_check breaks one of the three rules, which it deletes. Reason is the ask's reason or the rule.
 // BlockType is absent for an ask.
 type BlockInvalidEventPayload struct {
 	BlockID     string `json:"block_id"`

@@ -90,20 +90,20 @@ type ciRun struct {
 	appSlug     string
 }
 
-// deriveCIResults answers every check CI proves among checks: its `ci` member, and, where the
-// run that decides it passed or failed, the result derived from that run, merged into the
-// results the read loaded for it, newest first (newestResultsFirst). Each check carries the
-// results the read loaded for it, which say whether a role recorded one and so whether it is
-// CI's at all: a result its CI job recorded (Branch set) is no role's. An issue holding no check
-// CI proves asks nothing of the database or of GitHub. issueKey is the route's issue, whose
-// Verification document holds the checks and whose pull request heads they are read at. Only a
-// failed read of Dispatch's own database is an error; whatever GitHub answers is a case of the
-// answer.
+// deriveCIResults answers every check CI proves among checks (validCICheck, its block alone): its
+// `ci` member, and, where the run that decides it passed or failed, the result derived from that
+// run, merged into the results the read loaded for it, newest first (newestResultsFirst). A role's
+// result the read loaded for such a check counts for nothing and says why (notCountedOnCICheck). An
+// issue holding no check CI proves asks nothing of the database or of GitHub. issueKey is the
+// route's issue, whose Verification document holds the checks and whose pull request heads they are
+// read at. Only a failed read of Dispatch's own database is an error; whatever GitHub answers is a
+// case of the answer.
 func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
-		if validCICheck(checks[index], holdsRoleResult(checks[index].Results)) {
+		if validCICheck(checks[index]) {
+			notCountedOnCICheck(&checks[index])
 			name := docs.CheckAttributesOfBlock(checks[index]).CICheck
 			proved = append(proved, provedCI{check: &checks[index], name: name})
 			names[name] = struct{}{}
@@ -141,11 +141,16 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	return nil
 }
 
-// holdsRoleResult reports whether results, every result recorded against one check, hold one a
-// role recorded: a row with no branch, which the fourth rule of a check carrying `ci_check`
-// counts (docs.CICheckRuleIn).
-func holdsRoleResult(results []model.CheckResult) bool {
-	return slices.ContainsFunc(results, func(result model.CheckResult) bool { return result.Branch == "" })
+// notCountedOnCICheck marks each result the read loaded for check, a check CI proves, that no CI
+// job recorded: a role's, which a build that counted such rows took while it served beside this
+// one. It counts for nothing (standingCommit) and says why (model.ResultNotCountedRoleOnCICheck).
+// It runs before the derived result is merged in, so that one is never marked.
+func notCountedOnCICheck(check *model.CheckBlock) {
+	for index := range check.Results {
+		if check.Results[index].Branch == "" {
+			check.Results[index].NotCounted = model.ResultNotCountedRoleOnCICheck
+		}
+	}
 }
 
 // newestResultsFirst orders results as the read of the stored ones does (loadCheckResults):

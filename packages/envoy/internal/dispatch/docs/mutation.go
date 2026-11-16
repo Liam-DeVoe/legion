@@ -405,7 +405,7 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	if err := refuseBlockPointers(ctx, op.tx, artifactID, tree.Node(), weighedFrom, offsets); err != nil {
 		return err
 	}
-	if err := refuseCICheckBlocks(ctx, op.tx, artifactID, tree.Node(), weighedFrom); err != nil {
+	if err := refuseCICheckBlocks(tree.Node(), weighedFrom); err != nil {
 		return err
 	}
 	// The tree before the write has served every use it has, so it is let go before the record's
@@ -634,7 +634,7 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	if err := refuseBlockPointers(ctx, tx, artifactID, tree, nil, offsets); err != nil {
 		return "", err
 	}
-	if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, nil); err != nil {
+	if err := refuseCICheckBlocks(tree, nil); err != nil {
 		return "", err
 	}
 	update, err := encodeDocumentTree(tree)

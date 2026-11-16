@@ -79,12 +79,13 @@ func liveCIChecks(t *testing.T, service *Service, artifactID string) map[string]
 	return checks
 }
 
-// A browser's write is never refused, so settlement holds the check blocks it leaves to the four
-// rules: each block carrying a ci_check that breaks one - a block holding a recorded result, a run,
-// a when of after_merge, no negative control - loses its ci_check in the live document and in the
-// version settlement writes, and one block.invalid names the block, the rule and block_type check
-// at that version. A block keeping every rule keeps its ci_check. A later settlement of the same
-// document repairs nothing again and adds no event.
+// A browser's write is never refused, so settlement holds the check blocks it leaves to the three
+// rules: each block carrying a ci_check that breaks one - a run, a when of after_merge, no negative
+// control - loses its ci_check in the live document and in the version settlement writes, and one
+// block.invalid names the block, the rule and block_type check at that version. A block keeping
+// every rule keeps its ci_check, c1 too, though a role's result stands against it: the kind of a
+// check is its block's alone. A later settlement of the same document repairs nothing again and
+// adds no event.
 func TestSettlementDeletesTheCICheckOfEachBrokenCheckABrowserWrote(t *testing.T) {
 	database, service := blockIndexService(t)
 	checks := writeIndexedDocument(t, database, service, "verification", ciCheckOf("c1", `negative_control="Break the build and watch the run fail."`))
@@ -105,7 +106,6 @@ func TestSettlementDeletesTheCICheckOfEachBrokenCheckABrowserWrote(t *testing.T)
 	settleBrowserWrite(t, service, checks)
 
 	want := []invalidCheck{
-		{BlockID: "c1", Reason: ciCheckRuleRecorded, BlockType: "check", Version: 2},
 		{BlockID: "c2", Reason: ciCheckRuleRun, BlockType: "check", Version: 2},
 		{BlockID: "c3", Reason: ciCheckRuleWhen, BlockType: "check", Version: 2},
 		{BlockID: "c4", Reason: ciCheckRuleNegativeControl, BlockType: "check", Version: 2},
@@ -113,7 +113,7 @@ func TestSettlementDeletesTheCICheckOfEachBrokenCheckABrowserWrote(t *testing.T)
 	if got := invalidChecks(t, database); !reflect.DeepEqual(got, want) {
 		t.Fatalf("block.invalid events = %+v, want %+v", got, want)
 	}
-	wantLive := map[string]string{"c1": "", "c2": "", "c3": "", "c4": "", "c5": "go-test"}
+	wantLive := map[string]string{"c1": "go-test", "c2": "", "c3": "", "c4": "", "c5": "go-test"}
 	if got := liveCIChecks(t, service, checks); !reflect.DeepEqual(got, wantLive) {
 		t.Fatalf("the live document's ci_checks = %v, want %v", got, wantLive)
 	}
@@ -124,8 +124,8 @@ func TestSettlementDeletesTheCICheckOfEachBrokenCheckABrowserWrote(t *testing.T)
 	`, checks).Scan(&version, &markdown); err != nil {
 		t.Fatalf("read the latest version: %v", err)
 	}
-	if version != 2 || strings.Count(markdown, `ci_check=`) != 1 || !strings.Contains(markdown, `:::check{#c5 `) {
-		t.Fatalf("version %d stores %q, want version 2 holding c5's ci_check alone", version, markdown)
+	if version != 2 || strings.Count(markdown, `ci_check=`) != 2 || !strings.Contains(markdown, `:::check{#c5 `) {
+		t.Fatalf("version %d stores %q, want version 2 holding the ci_checks of c1 and c5 alone", version, markdown)
 	}
 	for _, id := range []string{"c1", "c2", "c3", "c4", "c5"} {
 		if !strings.Contains(markdown, ":::check{#"+id) {
