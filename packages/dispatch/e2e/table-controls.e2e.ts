@@ -2306,6 +2306,10 @@ test("every table with no controls draws its rows in the shared markup and offer
 test("no press in the shared controls drops the keyboard focus onto the page, at every width", async ({
   page,
 }) => {
+  // Three pages at two widths, each press waiting out its write. Measured in an issue pod at
+  // c17d720e: the row ran out of the config's 60 s budget 7 of 7 times in Chromium at its last
+  // width, and with a longer one it finished in 57.7 s and 1.0 min; it takes its siblings' budget.
+  test.setTimeout(150_000);
   const scene = await seedSurfaces();
   // Enough issues for two of the List's pages at 25 a page.
   await Promise.all(
