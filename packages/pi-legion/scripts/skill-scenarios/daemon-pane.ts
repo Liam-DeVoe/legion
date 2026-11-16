@@ -298,17 +298,18 @@ export function serves(
 
 /** The default the daemon of `checkout` gives the count setting `key` when legion.yaml leaves it
  * out, which is the value the rig's daemon runs with, having no legion.yaml: daemon-pane.go's
- * `count-default`, over that checkout's config source. Throws what the reading refused. */
+ * `count-default`, over that checkout's config package, every source of which the read parses and
+ * so keys the answer on (`cachedRead`). Throws what the reading refused. */
 export function countDefault(checkout: string, key: string): number {
   const daemon = daemonOf(checkout);
-  const config = path.join(daemon, "internal", "config", "config.go");
+  const config = path.join(daemon, "internal", "config");
   const command = ["count-default", key];
   const printed = cachedRead(
     PROGRAM,
     () => runDaemonPane(DAEMON_MODULE, [...command, config]),
     command,
     daemon,
-    [config]
+    goSources(config)
   ).trim();
   const value = Number(printed);
   if (!Number.isSafeInteger(value))

@@ -656,25 +656,139 @@ test.skipIf(skip)(
 );
 
 // The launch failure limit the stand-in fails a claim's refused turns at, read out of the daemon's
-// config source. Catches: a number this program writes for itself, and an entry of another shape
-// read as a default.
+// config package in either of the two shapes the daemon has kept a count's default in: an entry
+// of config.go's table of count keys (main ff2a10ef's, the base label's) and a row of
+// keytable.go's key table (this checkout's, which holds no entry, so no reading of this
+// checkout's own reaches the entry's shape). Each shape is read through a substitute checkout of
+// the test's own, and this checkout's through its own package.
+/** A substitute checkout whose daemon's config package holds each of `files`, a file name mapped
+ * to the source after its package clause; a name given again is written over. */
+function configOver(name: string, files: Readonly<Record<string, string>>): string {
+  const checkout = path.join(rig, `count-defaults-${name}`);
+  const config = path.join(checkout, "packages", "daemon", "internal", "config");
+  mkdirSync(config, { recursive: true });
+  for (const [file, body] of Object.entries(files))
+    writeFileSync(path.join(config, file), `package config\n\n${body}\n`);
+  return checkout;
+}
+/** config.go's table of count keys holding `entries`, as main ff2a10ef writes it. */
+function countKeys(...entries: string[]): string {
+  return `var countKeys = []struct{ key string; defaultValue int }{\n${entries.map((entry) => `\t${entry},\n`).join("")}}`;
+}
+/** keytable.go's key table holding `rows`, as this checkout writes it. */
+function keyTable(...rows: string[]): string {
+  return `var topLevelKeys = func() []keyDescriptor {\n\ttable := []keyDescriptor{\n${rows.join("")}\t}\n\treturn table\n}()`;
+}
+/** The key table's row of the count setting `key`, whose default is `value`. */
+function countRow(key: string, value: string): string {
+  return `\t\t{\n\t\t\tName: "${key}", RequiredBy: "no",\n\t\t\tDescription: "How many.",\n\t\t\tPositive:    &positiveKey{Value: ${value}, Count: func(c *Config) *int { return &c.Count }},\n\t\t},\n`;
+}
+/** A key table row of a count kept some other way: a reader and a Default of its own, no Positive. */
+const ROUND_CAP_ROW =
+  '\t\t{\n\t\t\tName: "review_round_cap", Default: "`3`", RequiredBy: "no",\n\t\t\tRead: reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),\n\t\t},\n';
+
+// Catches: the entry's branch dropped, a number this program writes for itself, and an entry of
+// another shape read as a default, or none read as a default rather than refused naming both
+// shapes.
 test.skipIf(skip)(
-  "the count default reading takes the daemon's own default and refuses what it cannot read",
+  "the count default reading takes the base label's table entry and refuses what it cannot read",
   () => {
-    const checkout = path.join(rig, "count-defaults");
-    const config = path.join(checkout, "packages", "daemon", "internal", "config");
-    mkdirSync(config, { recursive: true });
-    writeFileSync(
-      path.join(config, "config.go"),
-      'package config\n\nvar countKeys = []struct{ key string; defaultValue int }{\n\t{"launch_failure_limit", 7},\n\t{"prompt_failure_limit", limit},\n}\n'
-    );
+    const checkout = configOver("entry", {
+      "config.go": countKeys('{"launch_failure_limit", 7}', '{"prompt_failure_limit", limit}'),
+    });
     expect(countDefault(checkout, "launch_failure_limit")).toBe(7);
     expect(() => countDefault(checkout, "prompt_failure_limit")).toThrow(
       "gives prompt_failure_limit a default of limit, which is no integer literal"
     );
     expect(() => countDefault(checkout, "worker_wake_burst")).toThrow(
-      'holds no {"worker_wake_burst", <default>, …} entry'
+      'holds no {"worker_wake_burst", <default>, …} entry and no {Name: "worker_wake_burst", …, Positive: &positiveKey{Value: <default>, …}} row'
     );
+  },
+  600_000
+);
+
+// Catches: the row's branch dropped, config.go read alone, a test file's row read as the daemon's
+// (its 99 would disagree with the row's 9), and a row naming the key with no Positive read as a
+// default rather than refused.
+test.skipIf(skip)(
+  "the count default reading takes the key table's row out of the package's sources but its tests",
+  () => {
+    const checkout = configOver("row", {
+      "config.go": "type Config struct{ Count int }",
+      "keytable.go": keyTable(countRow("launch_failure_limit", "9"), ROUND_CAP_ROW),
+      "keytable_test.go": keyTable(countRow("launch_failure_limit", "99")),
+    });
+    expect(countDefault(checkout, "launch_failure_limit")).toBe(9);
+    expect(() => countDefault(checkout, "review_round_cap")).toThrow(
+      'holds no {"review_round_cap", <default>, …} entry and no {Name: "review_round_cap", …, Positive: &positiveKey{Value: <default>, …}} row'
+    );
+  },
+  600_000
+);
+
+// Catches: a package holding both shapes read as whichever one is found first where they
+// disagree, under which the stand-in fails claims at a limit the daemon may not run with, and
+// refused where they agree.
+test.skipIf(skip)(
+  "the count default reading takes a package holding both shapes only where they agree",
+  () => {
+    const checkout = configOver("both", {
+      "config.go": countKeys('{"launch_failure_limit", 4}', '{"prompt_failure_limit", 3}'),
+      "keytable.go": keyTable(
+        countRow("launch_failure_limit", "4"),
+        countRow("prompt_failure_limit", "5")
+      ),
+    });
+    expect(countDefault(checkout, "launch_failure_limit")).toBe(4);
+    expect(() => countDefault(checkout, "prompt_failure_limit")).toThrow(
+      /gives prompt_failure_limit a default of 3 at \S+\/config\.go:\d+:\d+ and of 5 at \S+\/keytable\.go:\d+:\d+/
+    );
+  },
+  600_000
+);
+
+// This checkout's own default, held to the number its key table's row writes, read here by a
+// second reading of the row's text. Catches: the reading that refused this checkout's daemon at
+// services_up (f7aa520e), which read config.go's entry alone after the defaults moved into the
+// key table.
+test.skipIf(skip)(
+  "the count default reading takes this checkout's own default out of its key table",
+  () => {
+    const keytable = readFileSync(
+      path.join(DAEMON_MODULE, "internal", "config", "keytable.go"),
+      "utf8"
+    );
+    const [, value = ""] =
+      /Name: "launch_failure_limit",[^}]*Positive: +&positiveKey\{Value: (\d+),/.exec(keytable) ??
+      [];
+    expect(value).not.toBe("");
+    expect(countDefault(path.resolve(DAEMON_MODULE, "../.."), "launch_failure_limit")).toBe(
+      Number(value)
+    );
+  },
+  600_000
+);
+
+// The count default is kept in the facts cache under every source of the config package it
+// parses (daemon-pane.ts's `cachedRead`). Catches: an answer kept under config.go's bytes alone,
+// under which a changed key table is answered with the default it wrote before.
+test.skipIf(skip)(
+  "a count default is kept under every source of the config package, and a changed key table is read again",
+  () => {
+    const kept = process.env.SKILL_SCENARIOS_WORK;
+    process.env.SKILL_SCENARIOS_WORK = path.join(rig, "count-facts-work");
+    try {
+      const checkout = configOver("cached", {
+        "config.go": "type Config struct{ Count int }",
+        "keytable.go": keyTable(countRow("launch_failure_limit", "9")),
+      });
+      expect(countDefault(checkout, "launch_failure_limit")).toBe(9);
+      configOver("cached", { "keytable.go": keyTable(countRow("launch_failure_limit", "11")) });
+      expect(countDefault(checkout, "launch_failure_limit")).toBe(11);
+    } finally {
+      if (kept === undefined) delete process.env.SKILL_SCENARIOS_WORK;
+      else process.env.SKILL_SCENARIOS_WORK = kept;
+    }
   },
   600_000
 );

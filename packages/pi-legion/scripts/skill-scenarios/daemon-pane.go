@@ -15,7 +15,7 @@
 //	                         prints the code of the daemon's refusal of a completion of a phase
 //	                         the role does not run, then on a second line the daemon's own
 //	                         message for it, read out of the daemon's source (notCurrentPhase)
-//	count-default <key> [<config source>]
+//	count-default <key> [<config package dir>]
 //	                         prints the default of the count setting `key` (legion.yaml), read
 //	                         out of the daemon's source (countDefault)
 //	claim-refusal <name> [<claim package dir>]
@@ -57,7 +57,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | count-default <key> [<config source>] | claim-refusal <name> [<claim package dir>] | pane < request.json"
+const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | count-default <key> [<config package dir>] | claim-refusal <name> [<claim package dir>] | pane < request.json"
 
 func main() {
 	args := os.Args[1:]
@@ -83,11 +83,11 @@ func main() {
 		}
 		err = printNotCurrentPhase(args[2], args[3], args[4], engine, intakeDir)
 	case (len(args) == 2 || len(args) == 3) && args[0] == "count-default":
-		file := defaultConfigFile
+		dir := defaultConfigDir
 		if len(args) == 3 {
-			file = args[2]
+			dir = args[2]
 		}
-		err = printCountDefault(args[1], file)
+		err = printCountDefault(args[1], dir)
 	case (len(args) == 2 || len(args) == 3) && args[0] == "claim-refusal":
 		dir := defaultClaimDir
 		if len(args) == 3 {
@@ -129,13 +129,13 @@ func printPhase(role claim.Role) error {
 	return fmt.Errorf("%q works no phase", role)
 }
 
-// defaultConfigFile is where the daemon reads legion.yaml and keeps each setting's default, read
-// relative to the module, and taken as an argument as defaultEngineFile is.
-const defaultConfigFile = "internal/config/config.go"
+// defaultConfigDir is the package the daemon reads legion.yaml in and keeps each setting's default
+// in, read relative to the module, and taken as an argument as defaultEngineFile is.
+const defaultConfigDir = "internal/config"
 
 // printCountDefault prints the default of the count setting `key` (countDefault).
-func printCountDefault(key, file string) error {
-	value, err := countDefault(key, file)
+func printCountDefault(key, dir string) error {
+	value, err := countDefault(key, dir)
 	if err != nil {
 		return err
 	}
@@ -144,44 +144,111 @@ func printCountDefault(key, file string) error {
 }
 
 // countDefault is the default the daemon gives the count setting `key` when legion.yaml leaves it
-// out, read out of the source at `file`: the integer literal beside the key's string literal in
-// the entry of the daemon's table of count keys that names it (`{"<key>", <default>, …}`). The rig
-// runs with no legion.yaml, so that default is the value the daemon runs with. An entry of
-// another shape, or none, is an error, never a number this invents.
-func countDefault(key, file string) (int, error) {
-	parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+// out, read out of the config package at `dir`, every file of it but its tests. The rig runs with
+// no legion.yaml, so that default is the value the daemon runs with. The daemon has kept that
+// default in one of two shapes (countEntry), and this reads both, since one program reads each
+// label's checkout. A default that is no integer literal, none in either shape, or two that
+// disagree is an error, never a number this invents.
+func countDefault(key, dir string) (int, error) {
+	sources, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
-		return 0, fmt.Errorf("read the daemon's %s: %w", file, err)
+		return 0, fmt.Errorf("list the daemon's %s: %w", dir, err)
 	}
-	value, found := 0, false
-	var read error
-	ast.Inspect(parsed, func(node ast.Node) bool {
-		if found || read != nil {
+	type reading struct {
+		value int
+		at    string
+	}
+	var readings []reading
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		files := token.NewFileSet()
+		parsed, err := parser.ParseFile(files, source, nil, 0)
+		if err != nil {
+			return 0, fmt.Errorf("read the daemon's %s: %w", source, err)
+		}
+		var read error
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			if read != nil {
+				return false
+			}
+			entry, isLiteral := node.(*ast.CompositeLit)
+			if !isLiteral {
+				return true
+			}
+			given, named := countEntry(entry, key)
+			if !named {
+				return true
+			}
+			number, isNumber := given.(*ast.BasicLit)
+			if !isNumber || number.Kind != token.INT {
+				read = fmt.Errorf("%s gives %s a default of %s, which is no integer literal", source, key, types.ExprString(given))
+				return false
+			}
+			value, err := strconv.Atoi(number.Value)
+			if err != nil {
+				read = err
+				return false
+			}
+			readings = append(readings, reading{value, files.Position(entry.Pos()).String()})
 			return false
+		})
+		if read != nil {
+			return 0, read
 		}
-		entry, isLiteral := node.(*ast.CompositeLit)
-		if !isLiteral || len(entry.Elts) < 2 {
-			return true
-		}
-		if named, isText := stringLiteral(entry.Elts[0]); !isText || named != key {
-			return true
-		}
-		number, isNumber := entry.Elts[1].(*ast.BasicLit)
-		if !isNumber || number.Kind != token.INT {
-			read = fmt.Errorf("%s gives %s a default of %s, which is no integer literal", file, key, types.ExprString(entry.Elts[1]))
-			return false
-		}
-		value, read = strconv.Atoi(number.Value)
-		found = read == nil
-		return false
-	})
-	if read != nil {
-		return 0, read
 	}
-	if !found {
-		return 0, fmt.Errorf("%s holds no {%q, <default>, …} entry: the daemon keeps that default some other way now", file, key)
+	if len(readings) == 0 {
+		return 0, fmt.Errorf("%s holds no {%q, <default>, …} entry and no {Name: %q, …, Positive: &positiveKey{Value: <default>, …}} row: the daemon keeps that default some other way now", dir, key, key)
 	}
-	return value, nil
+	for _, other := range readings[1:] {
+		if other.value != readings[0].value {
+			return 0, fmt.Errorf("%s gives %s a default of %d at %s and of %d at %s: which one the daemon runs with is not read here", dir, key, readings[0].value, readings[0].at, other.value, other.at)
+		}
+	}
+	return readings[0].value, nil
+}
+
+// countEntry is the expression `entry` gives the count setting `key` as its default, in either
+// shape the daemon has kept count defaults in, and false for a literal that gives `key` none:
+//   - `{"<key>", <default>, …}`, an entry of the table of count keys in config.go, main
+//     `ff2a10ef`'s, the base label's;
+//   - `{Name: "<key>", …, Positive: &positiveKey{Value: <default>, …}}`, a row of the loader's
+//     key table in keytable.go, this checkout's.
+func countEntry(entry *ast.CompositeLit, key string) (ast.Expr, bool) {
+	if len(entry.Elts) >= 2 {
+		if named, isText := stringLiteral(entry.Elts[0]); isText && named == key {
+			return entry.Elts[1], true
+		}
+	}
+	if named, isText := stringLiteral(keyedField(entry, "Name")); !isText || named != key {
+		return nil, false
+	}
+	pointer, isPointer := keyedField(entry, "Positive").(*ast.UnaryExpr)
+	if !isPointer {
+		return nil, false
+	}
+	positive, isLiteral := pointer.X.(*ast.CompositeLit)
+	if !isLiteral {
+		return nil, false
+	}
+	given := keyedField(positive, "Value")
+	return given, given != nil
+}
+
+// keyedField is the value `literal` gives its field `name` (`name: <value>`), and nil when it
+// gives that field none.
+func keyedField(literal *ast.CompositeLit, name string) ast.Expr {
+	for _, element := range literal.Elts {
+		field, isField := element.(*ast.KeyValueExpr)
+		if !isField {
+			continue
+		}
+		if key, isKey := field.Key.(*ast.Ident); isKey && key.Name == name {
+			return field.Value
+		}
+	}
+	return nil
 }
 
 // defaultEngineFile is where the daemon builds the workflow's refusals, read relative to the
