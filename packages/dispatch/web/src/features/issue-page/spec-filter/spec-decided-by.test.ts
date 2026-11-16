@@ -244,6 +244,55 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
   expect(decided?.words).toEqual({ markdown: text, source, tree });
 });
 
+// R5 and departure 2 of dispatch://INFRA-3939's plan: an agent's decision is quoted on the
+// because line by its first line, by R1's one-line rule, and that rule cuts a node's line from
+// its reading's first block (`lineWords`, which the page's every other one-line place reads). A
+// decision's reading opens with its own `##` heading, and the whole reading joins that heading
+// and the paragraph under it with one space, so a quote cut from it runs the two together into
+// a line nobody wrote (seen on a running build at 8caa4357: "Keep every address the old page
+// answered Chosen so that no link a person keeps breaks, as R5.").
+test("an agent's decision is quoted by its first block's line, never its heading run into its words", () => {
+  const text = "## Keep it\n\nKeep the model pure. The page reads it.";
+  const tree = {
+    content: [
+      { attrs: { level: 2 }, content: [{ text: "Keep it", type: "text" }], type: "heading" },
+      {
+        content: [{ text: "Keep the model pure. The page reads it.", type: "text" }],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1", { text, tree })]), [
+    decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))], text }),
+  ]);
+  const quote = groups[0]?.runs[0]?.decision?.quote;
+  expect(quote, "the because line runs the decision's heading into its words").not.toContain(
+    "Keep it Keep"
+  );
+  expect(quote).toBe("Keep it");
+});
+
+// R5 with the tester's F20: a reference the quote cites is named in plain words, and naming it
+// changes no sentence its author wrote. A statement's name is its own first words, which on an
+// INFRA spec open with a label ("R2."), so a sentence end read after the naming ends the quote
+// inside the name (seen on a running build at 8caa4357: "... no link a person keeps breaks, as
+// R5.", where the author wrote "as dispatch://INFRA-1196/spec#b-r-home says.").
+test("a reference named in an agent's quote ends no sentence at its name's label", () => {
+  const cited = statementRef("r2");
+  const text = `Keep every address, as ${cited} says. Then more follows.`;
+  const groups = bodyOf(
+    issueTree([statement("r1"), statement("r2"), decisionNode("d1", { text })]),
+    [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))], text })],
+    READER,
+    [],
+    (reference) => (reference === cited ? "R2. Every address…" : undefined)
+  );
+  expect(groups[0]?.runs[0]?.decision?.quote).toBe(
+    "Keep every address, as R2. Every address… says."
+  );
+});
+
 // R5: every decision after the first that shaped a statement is named after "informed by" on
 // its line; reading (c) of dispatch://INFRA-3939's plan names it by its own words, cut as a
 // chip names its target, each reference in them named and never an address.
