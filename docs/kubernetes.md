@@ -3094,7 +3094,7 @@ The auth service refuses a token while it is away, or, for a daemon held to its 
 at boot each refused attempt is logged as the `connect Envoy NATS` probe's retry with its `detail` (`nats: Authorization Violation`), and the daemon serves nothing, its `/readyz` answering nothing, until the token is admitted;
 while running each refused reconnect is logged at warn as `NATS refused the connection's credential` with its `error`.
 A seed's refusal, or a refusal of a connection with no credential, still refuses boot, and a seed's connection the server refuses twice with the same error still closes.
-NATS tells the daemon only that it was refused, never why: the reason is in the secrets broker's log, on its `natscallout: refused a NATS connection` line, as its `reason` (for example `project not visible to the account's person: <KEY>`) and its `label` (for example `service_not_listed`, `shared_lane`, `project_not_visible`), which `broker_nats_callout_decisions_total` counts as its `reason`.
+NATS tells the daemon only that it was refused, never why: the reason is in the secrets broker's log, on its `natscallout: refused a NATS connection` line, as its `reason` (for example `project not visible to the account's person: <KEY>`) and its `label` (for example `service_not_listed`, `no_complete_pass`, `project_not_visible`), which `broker_nats_callout_decisions_total` counts as its `reason`.
 
 A NATS permission violation on a JetStream call (a refused consumer or stream grant) is reported asynchronously:
 the server tells the connection of it well before the blocked call's own attempt bound runs out, but the blocked call itself does not return early on that report
