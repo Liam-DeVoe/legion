@@ -8,7 +8,7 @@ import (
 )
 
 // mergeBaseSentences are the sentences two existing rows' descriptions carried at this slice's
-// merge base (legion/INFRA-3862-nodes at 1ae82444c2, read from its own GET /api/v1), each written
+// merge base (legion/INFRA-3862-nodes at 078e2f73ab, read from its own GET /api/v1), each written
 // whole. c-blob-unchanged (dispatch://INFRA-3862/artifact/verification-md#b-c-blob-unchanged)
 // allows a head to add sentences to an existing row's description that document a field or a
 // refusal it adds, and fails on any other difference, "a changed or removed sentence included".
