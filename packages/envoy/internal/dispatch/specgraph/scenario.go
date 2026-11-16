@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -91,8 +90,7 @@ type scenarioResult struct {
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
 //     it that Parse reads with no problem, and no directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it;
-//   - ties.json, {"<check id>":["<path or glob>", …]}, each tie as NewTie takes it; a check that
-//     it does not name has a tie that is not known;
+//   - ties.json, as ReadTies reads it: a check that it does not name has a tie that is not known;
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit"}]: check_version
 //     names an approved version of the check, whose Digest the result carries; kind is run or
@@ -133,7 +131,7 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.History, err = readWith(fsys, "history.json", ReadFixtureHistory); err != nil {
 		return s, err
 	}
-	if s.Ties, err = readTies(fsys); err != nil {
+	if s.Ties, err = readWith(fsys, "ties.json", ReadTies); err != nil {
 		return s, err
 	}
 	if s.Results, err = readResults(fsys, s.Approved); err != nil {
@@ -255,23 +253,6 @@ func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (
 		return v, &ScenarioError{File: name, Err: err}
 	}
 	return v, nil
-}
-
-// readTies reads ties.json.
-func readTies(fsys fs.FS) (map[string]Tie, error) {
-	var paths map[string][]string
-	if err := readJSON(fsys, "ties.json", &paths); err != nil {
-		return nil, err
-	}
-	ties := make(map[string]Tie, len(paths))
-	for _, check := range slices.Sorted(maps.Keys(paths)) {
-		tie, err := NewTie(paths[check])
-		if err != nil {
-			return nil, scenarioFault("ties.json", "check %q: %w", check, err)
-		}
-		ties[check] = tie
-	}
-	return ties, nil
 }
 
 // readResults reads results.json, each result carrying the Digest of the approved version of its

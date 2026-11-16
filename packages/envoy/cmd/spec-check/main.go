@@ -1,11 +1,12 @@
 // Command spec-check judges a directory of spec files, a checkout's .dispatch/spec, by the rules
 // of package specgraph, lists what changed between two such directories, compares one with an
 // approved spec and prints the approved text, checks that no CI file of a repository runs that
-// comparison, and derives the states of a scenario. It reads the directory as the Dispatch
-// server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file directly in it,
-// within the size bound, and passes over every other entry. Every rule is specgraph's (Parse,
-// Validate, Compare, CIFilesThatCompare, ReadScenario, Derive and WaitCycle); the command states
-// none of its own.
+// comparison, derives the states of a scenario, names each program check that CI refuses at a
+// commit, and lists the files that changed between two commits. It reads the directory as the
+// Dispatch server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file
+// directly in it, within the size bound, and passes over every other entry. Every rule is
+// specgraph's (Parse, Validate, Compare, CIFilesThatCompare, ReadScenario, Derive, WaitCycle,
+// GoTies, Citations and GitHistory); the command states none of its own.
 //
 // Usage:
 //
@@ -16,6 +17,9 @@
 //	spec-check print --approved <approved.json> --id <id> [--id <id>...]
 //	spec-check guard --root <dir>
 //	spec-check state --scenario <dir> [--json]
+//	spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
+//	    --reports <dir> --needs <file> [--ties <file>] [--json <file>] [--allow-empty]
+//	spec-check changed --repo <root> --base <commit> [--head <commit>]
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -74,17 +78,44 @@
 // error naming the file and the fault, for one it does not: a file or a field that the format does
 // not hold, a missing file, or a spec file that does not parse.
 //
+// citations names each program check of a directory of spec files that CI refuses at the commit of
+// the repository at <root> (specgraph.Citations, R48): its test is not in the code (GoCode, go list
+// in <root>), the code cannot be searched for it, its selector picks two tests, its job is not in
+// the workflow or spec-citations does not wait for it, or code that its test reads changed and the
+// job did not run the test. --changed names the paths that changed since the base commit, in the
+// form changed prints; --all-changed says that there is no base commit. --reports holds one
+// directory per report artifact of the run, spec-report--<job> or spec-report--<job>--<leg>, each
+// with the go test -json report.jsonl; --needs holds toJSON(needs) of the spec-citations job, the
+// result of each job it waits for. The tie of each check is what <root>'s
+// .github/scripts/go-test-reads.sh says its test reads (GoTies), or with --ties the ties of a file in
+// the form of a scenario's ties.json (ReadTies). Each refused check is one line on standard error,
+// "spec-check: <dir>/<file>:<line>: <check>: <detail>", where the detail begins with the rule, with
+// "spec-check: <dir>: <n> program checks; <k> refused" on standard output, exit 1; none is "spec-check:
+// <dir>: <n> program checks; each is cited", exit 0. --json writes the faults to a file as one line of
+// JSON, [{"check","rule","detail"}], [] for none, making its directory. With --allow-empty, a
+// directory that does not exist or holds no spec file is "spec-check: <dir>: holds no spec file; no
+// check to cite", exit 0. A spec file that does not parse is exit 2 with its problems.
+//
+// changed prints the paths whose content differs between the trees of two commits of the git
+// clone at <root>, both paths of a move (GitHistory), sorted, one a line on standard output, with
+// "spec-check: <root>: <n> paths changed from <base> to <head>" on standard error; --head is HEAD
+// when not given. A commit that git cannot read and a path that holds a line break are exit 2 with
+// one line naming them.
+//
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage. Each entry of a directory that is
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
-// Paths are printed absolute. Every line but the usage, the JSON of checks and of state, the
-// blocks of print, and the statement, check and wait lines of state is written by runnerlog.Say
+// Each path of a file or a directory the command reads is printed absolute. Every line but the
+// usage, the JSON of checks and of state, the blocks of print, the statement, check and wait lines
+// of state, and the paths of changed is written by runnerlog.Say
 // with the prefix "spec-check: ", so no text a file name, a file or an argument holds starts a line
 // of the runner's log or names a workflow command. Each statement, check and wait line starts with
 // its fixed word and passes through runnerlog.Printable for the same reason. A JSON line holds no
 // raw line break, as encoding/json escapes each control character, and checks and state write the
 // "[" of each "##[" in it as \u005b, which a JSON reader reads back as "[". print writes each block
 // as the approved spec holds it, since a change copies it byte for byte; no CI job runs print.
+// changed writes each path as git gives it, the data of a file, which the citations job writes its
+// standard output to.
 package main
 
 import (
@@ -92,6 +123,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -107,22 +139,28 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
        spec-check compare --dir <dir> --approved <approved.json>
        spec-check print --approved <approved.json> --id <id> [--id <id>...]
        spec-check guard --root <dir>
-       spec-check state --scenario <dir> [--json]`
+       spec-check state --scenario <dir> [--json]
+       spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
+           --reports <dir> --needs <file> [--ties <file>] [--json <file>] [--allow-empty]
+       spec-check changed --repo <root> --base <commit> [--head <commit>]`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
-// checks and of state, the blocks of print, and the statement, check and wait lines of state.
+// checks and of state, the blocks of print, the statement, check and wait lines of state, and the
+// paths of changed.
 const prefix = "spec-check: "
 
 // subcommands is each subcommand by its name: it takes the arguments after the name and answers
 // the exit status.
 var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
-	"tree":    runTree,
-	"changes": runChanges,
-	"checks":  runChecks,
-	"compare": runCompare,
-	"print":   runPrint,
-	"guard":   runGuard,
-	"state":   runState,
+	"tree":      runTree,
+	"changes":   runChanges,
+	"checks":    runChecks,
+	"compare":   runCompare,
+	"print":     runPrint,
+	"guard":     runGuard,
+	"state":     runState,
+	"citations": runCitations,
+	"changed":   runChanged,
 }
 
 func main() {
@@ -207,6 +245,21 @@ func absolute(stderr io.Writer, path string) (string, bool) {
 		return "", false
 	}
 	return abs, true
+}
+
+// isDirectory is whether path is a directory; when not, it has written the line that says why.
+func isDirectory(stderr io.Writer, path string) bool {
+	switch info, err := os.Stat(path); {
+	case errors.Is(err, fs.ErrNotExist):
+		say(stderr, "%s: does not exist", path)
+	case err != nil:
+		say(stderr, "%s: cannot be read: %s", path, err)
+	case !info.IsDir():
+		say(stderr, "%s: is not a directory", path)
+	default:
+		return true
+	}
+	return false
 }
 
 // judged is one directory of spec files, read and judged: its tree, every problem of Parse and,

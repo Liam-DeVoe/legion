@@ -61,3 +61,25 @@ func TestNewTieRefusesAnotherForm(t *testing.T) {
 		t.Error("NewTie accepts a tie of no path")
 	}
 }
+
+// ReadTies reads the ties form of a scenario's ties.json and of spec-check citations --ties: one
+// known tie for each check it names, none for a check it does not, and a refusal of text after the
+// object and of a tie that NewTie refuses, naming the check.
+func TestReadTies(t *testing.T) {
+	t.Parallel()
+	ties, err := ReadTies(strings.NewReader(`{"check-b":["b/*"],"check-a":["go.work","a/**"]}` + "\n"))
+	if err != nil || len(ties) != 2 || !ties["check-a"].Known || !slices.Equal(ties["check-a"].Paths, []string{"a/**", "go.work"}) || !ties["check-b"].Covers("b/x.go") {
+		t.Fatalf("ReadTies = %+v, %v; want the two known ties", ties, err)
+	}
+	for text, want := range map[string]string{
+		`{"check-a":["a/*"]} {}`: "text after the JSON value",
+		`{"check-a":["a/*.go"]}`: `check "check-a": specgraph: tie entry "a/*.go"`,
+		`{"check-a":[]}`:         `check "check-a": specgraph: a tie holds no path`,
+		`["a/*"]`:                "cannot unmarshal array",
+		`{"check-a":["a/*"]`:     "unexpected EOF",
+	} {
+		if got, err := ReadTies(strings.NewReader(text)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("ReadTies(%q) = %+v, %v; want an error holding %q", text, got, err, want)
+		}
+	}
+}

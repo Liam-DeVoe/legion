@@ -3100,6 +3100,30 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `TestScenarios` runs the built binary on each scenario and compares its stdout with `want.txt` byte for byte.
   No flag of a test writes `want.txt`, so a difference is a fault of the code or a question about the spec.
 
+- `cmd/spec-check citations` fails on a program check of The Spec whose test is missing from the code or did not run although code that the test reads changed (R48;
+  `cmd/spec-check/citations.go`, rules of `specgraph.Citations`):
+  `--dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed) --reports <dir> --needs <file> [--ties <file>] [--json <file>] [--allow-empty]`.
+  Each program check of `<dir>` gets the first rule it breaks:
+  `no-test` (no runner or selector),
+  `test-lookup-failed` (`go list` in `<root>` cannot list the selector's package, which go answers the same for a package that is gone and for a workspace that lacks the module),
+  `test-not-in-code` and `two-tests` (`specgraph.GoCode` counts the top-level funcs of the selector's name that go test runs, in package p and p_test),
+  `job-not-in-workflow` and `job-not-awaited` (the check's job is not a job of `--workflow`, or the job `spec-citations` there does not need it, so it cannot read its report),
+  and `test-not-run`: code that the test reads changed and a leg of its job did not run the test as a pass or a failure.
+  Changed means a path of `--changed` that the check's tie covers, a tie that is not known (R8: such a check runs on each push), or `--all-changed`, for a commit with no base commit.
+  The tie is what `<root>`'s `.github/scripts/go-test-reads.sh` says `go test <package>` reads (`specgraph.GoTies`, the closure that `check-ci-filters.sh` holds each filter to, with `ci_job_reads.py`'s RULES), or, with `--ties`, a file in the form of a scenario's `ties.json` (`specgraph.ReadTies`).
+  `--reports` holds one directory per report artifact of the run, `spec-report--<job>` or `spec-report--<job>--<leg>`, each with the go test -json `report.jsonl`;
+  a directory that does not exist holds no report, and an artifact of a job that `spec-citations` does not need is a warning and passed over.
+  `--needs` holds `toJSON(needs)` of `spec-citations`, exactly the jobs it needs, each with its result; a job ran when its result is `success` or `failure`.
+  Each refused check is one line on stderr, `spec-check: <dir>/<file>:<line>: <check>: <detail>`, with `spec-check: <dir>: <n> program checks; <k> refused` on stdout, exit 1;
+  none is `spec-check: <dir>: <n> program checks; each is cited`, exit 0.
+  `--json` writes the faults as one line, `[{"check","rule","detail"}]`, `[]` for none, the input `Input.Uncited` of the states at that commit.
+  With `--allow-empty`, a directory with no spec file is `spec-check: <dir>: holds no spec file; no check to cite`, exit 0.
+  A spec file that does not parse, an input it cannot read, and a `--needs` that does not name exactly the jobs `spec-citations` needs are exit 2 and write no `--json` file.
+  `spec-check changed --repo <root> --base <commit> [--head <commit>]` prints the paths that `--changed` reads: those whose content differs between the two commits' trees (`specgraph.GitHistory`, `git diff --no-renames`, so a move gives both paths), sorted, one a line on stdout, with `spec-check: <root>: <n> paths changed from <base> to <head>` on stderr;
+  `--head` is `HEAD` when not given.
+  The paths are the data of a file and do not pass through `runnerlog.Say`, so a path that holds a line break, and a commit that git cannot read, are exit 2 with one line naming them.
+  `TestCitationsCommand` runs the built binary on each fixture of `specgraph`'s `TestCitations` over a copy of `testdata/citations/repo`, and `TestChanged` over a scratch git repository.
+
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.
   Only the process stopping ends a flight early:

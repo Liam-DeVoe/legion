@@ -1,8 +1,11 @@
 package specgraph
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -31,6 +34,30 @@ func NewTie(paths []string) (Tie, error) {
 		}
 	}
 	return Tie{Paths: slices.Compact(slices.Sorted(slices.Values(paths))), Known: true}, nil
+}
+
+// ReadTies reads ties in the form of a scenario's ties.json, {"<check id>":["<path or glob>", …]},
+// each tie as NewTie takes it. A check that the form does not name has no entry, which reads as a
+// tie that is not known. It refuses text after the object, and names the check of a tie that
+// NewTie refuses.
+func ReadTies(r io.Reader) (map[string]Tie, error) {
+	var paths map[string][]string
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(&paths); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("text after the JSON value")
+	}
+	ties := make(map[string]Tie, len(paths))
+	for _, check := range slices.Sorted(maps.Keys(paths)) {
+		tie, err := NewTie(paths[check])
+		if err != nil {
+			return nil, fmt.Errorf("check %q: %w", check, err)
+		}
+		ties[check] = tie
+	}
+	return ties, nil
 }
 
 // isTieEntry is whether entry has one of the three forms of a tie.
