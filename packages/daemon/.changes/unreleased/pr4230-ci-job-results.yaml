@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  The reviewer's and the tester's role prompts say that a check carrying `ci_check` takes its results from CI: the one `dispatch results` derives from its CI run, and each one its CI job recorded, which stand for both roles.

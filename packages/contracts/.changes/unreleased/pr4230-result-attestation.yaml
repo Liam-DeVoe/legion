@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  The statement types of a CI job's result are named for both results routes: `ResultAttestation`, `ResultPredicate`, `ResultTest`, `ResultRun` and `ResultRecorder` (before, `SpecCheckAttestation`, `SpecCheckPredicate`, `SpecCheckTest`, `SpecCheckRun` and `SpecCheckRecorder`). `CheckResult` gains `branch` and `attestation`, set on a result a CI job recorded and left out on every other, and `CheckBasis` gains the kind `branch_head`. The `dispatch_result` and `dispatch_results` tools say that a CI job records the result of a check its `ci_check` names, and the issue form of `dispatch_results` takes `json`.
