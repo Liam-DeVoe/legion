@@ -16,15 +16,22 @@ type Finding struct {
 	Fix     string  `json:"fix"`
 }
 
+// DroppedFinding is a finding of the reply that the review dropped because its quote is not in
+// the text: its rule set, and its quote as the model wrote it. The quote is kept to show what
+// the model quoted: words of the record, or words of the text that it changed.
+type DroppedFinding struct {
+	RuleSet RuleSet `json:"rule_set"`
+	Quote   string  `json:"quote"`
+}
+
 // Reviewed is what one review answered.
 type Reviewed struct {
 	// Findings are the places where the text breaks a rule; none where the text passed.
 	Findings []Finding
-	// Dropped is the rule set of each finding of the reply whose quote is not in the text, in
-	// the reply's order. The review drops such a finding: its quote is words of the record or
-	// of nothing, so its fix has no words of the text to stand in place of. A review whose every
-	// finding is dropped found nothing.
-	Dropped []RuleSet
+	// Dropped are the findings of the reply whose quote is not in the text, in the reply's
+	// order. The review drops such a finding: its fix has no words of the text to stand in place
+	// of. A review whose every finding is dropped found nothing.
+	Dropped []DroppedFinding
 	// Rewrite is the text with each finding fixed, nil where the review found nothing or the
 	// model wrote none.
 	Rewrite *Text
@@ -67,7 +74,7 @@ func Review(ctx context.Context, m Model, rules []RuleSet, record Record) (Revie
 	text := quoteForm(readerFields(record.Text))
 	for _, finding := range reply.Findings {
 		if quote := quoteForm(finding.Quote); quote == "" || !strings.Contains(text, quote) {
-			reviewed.Dropped = append(reviewed.Dropped, finding.RuleSet)
+			reviewed.Dropped = append(reviewed.Dropped, DroppedFinding{RuleSet: finding.RuleSet, Quote: finding.Quote})
 			continue
 		}
 		reviewed.Findings = append(reviewed.Findings, finding)

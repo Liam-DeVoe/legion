@@ -172,10 +172,10 @@ func TestAFindingOfARuleSetThatIsOffIsMalformed(t *testing.T) {
 	}
 }
 
-// A finding whose quote is not in the text is dropped and counted by its rule set: the quote is
-// looked up as the harness's quote check reads it, so case, emphasis and white space do not
-// count, and a quote of the record is not the text's. A review whose every finding is dropped
-// found nothing, and its rewrite is not kept.
+// A finding whose quote is not in the text is dropped and kept with its rule set and its quote as
+// the model wrote it: the quote is looked up as the harness's quote check reads it, so case,
+// emphasis and white space do not count, and a quote of the record is not the text's. A review
+// whose every finding is dropped found nothing, and its rewrite is not kept.
 func TestAFindingWhoseQuoteIsNotInTheTextIsDropped(t *testing.T) {
 	rewrite := keptRewrite()
 	reply := func(findings ...Finding) string {
@@ -196,8 +196,9 @@ func TestAFindingWhoseQuoteIsNotInTheTextIsDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(reviewed.Findings, []Finding{ofText}) || !slices.Equal(reviewed.Dropped, []RuleSet{RulePointers, RulePointers}) {
-		t.Errorf("findings %+v, dropped %v; want the text's finding kept and the two others dropped", reviewed.Findings, reviewed.Dropped)
+	dropped := []DroppedFinding{{RuleSet: RulePointers, Quote: ofRecord.Quote}, {RuleSet: RulePointers, Quote: empty.Quote}}
+	if !reflect.DeepEqual(reviewed.Findings, []Finding{ofText}) || !slices.Equal(reviewed.Dropped, dropped) {
+		t.Errorf("findings %+v, dropped %+v; want the text's finding kept and the two others dropped with their quotes", reviewed.Findings, reviewed.Dropped)
 	}
 	if reviewed.Rewrite == nil {
 		t.Error("a review with a finding kept lost its rewrite")
@@ -207,7 +208,7 @@ func TestAFindingWhoseQuoteIsNotInTheTextIsDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reviewed.Findings) != 0 || reviewed.Rewrite != nil || !slices.Equal(reviewed.Dropped, []RuleSet{RulePointers}) {
+	if len(reviewed.Findings) != 0 || reviewed.Rewrite != nil || !slices.Equal(reviewed.Dropped, dropped[:1]) {
 		t.Errorf("a review whose one finding quotes the record = %+v, want no finding, no rewrite and one dropped", reviewed)
 	}
 }

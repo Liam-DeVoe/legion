@@ -66,13 +66,20 @@ func callsOf(calls []reviewer.Call) []reviewerCall {
 	return read
 }
 
+// droppedFinding is a finding the review dropped because its quote is not in the text: its rule
+// set, and its quote as the model wrote it.
+type droppedFinding struct {
+	RuleSet string `json:"rule_set"`
+	Quote   string `json:"quote"`
+}
+
 // reviewerDraftAnswer is what the draft route answers: the reader the review read for, the
-// findings, the rule set of each finding the review dropped because its quote is not in the text
-// (absent for none), the rewrite (null for none) and why it would not post, and each model call.
+// findings, each finding the review dropped because its quote is not in the text (absent for
+// none), the rewrite (null for none) and why it would not post, and each model call.
 type reviewerDraftAnswer struct {
 	Reader     string             `json:"reader"`
 	Findings   []reviewFinding    `json:"findings"`
-	Dropped    []string           `json:"dropped,omitempty"`
+	Dropped    []droppedFinding   `json:"dropped,omitempty"`
 	Rewrite    *model.TextWording `json:"rewrite"`
 	NotApplied string             `json:"not_applied,omitempty"`
 	Calls      []reviewerCall     `json:"calls"`
@@ -144,8 +151,8 @@ func (s *server) reviewDraft(w http.ResponseWriter, r *http.Request) {
 	answer := reviewerDraftAnswer{
 		Reader: reader, Findings: findingsOf(reviewed.Findings), Calls: callsOf(reviewed.Calls),
 	}
-	for _, set := range reviewed.Dropped {
-		answer.Dropped = append(answer.Dropped, string(set))
+	for _, dropped := range reviewed.Dropped {
+		answer.Dropped = append(answer.Dropped, droppedFinding{RuleSet: string(dropped.RuleSet), Quote: dropped.Quote})
 	}
 	if reviewed.Rewrite != nil {
 		rewrite := wordingOf(*reviewed.Rewrite)

@@ -3327,13 +3327,14 @@ It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is
   On a model group of kind `azure` each call sends its schema in OpenAI's strict mode (`agentloop.Request.StrictFinal`), so the endpoint holds the reply to the schema; the review's schema there requires `rewrite`, null for none.
 
 - A finding whose quote is not in the text is dropped: the review looks the quote up lower-cased, without `*`, backticks and curly quotes, and with each run of white space as one space, as the harness's quote check does.
-  A review whose every finding is dropped found nothing, and the draft route's `dropped` gives the rule set of each dropped finding.
+  A review whose every finding is dropped found nothing.
+  The draft route's `dropped` gives each dropped finding as `{rule_set, quote}`, the quote as the model wrote it, so a reader can see whether the model quoted the record or changed the text's words.
 
 - Every decision is a row of `writing_check_events` with its reader and project: `held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`.
 
 The routes: `GET /api/v1/held/{id}` reads a held text (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`); `PATCH /api/v1/held/{id}` edits it, which the reviewer reads again; `POST /api/v1/held/{id}/post {reason}` posts it as written; only its writer session edits or posts it (`403 HELD_NOT_WRITER`).
 The `dispatch` command's `held`, `held-edit` and `held-post` call them.
-`POST /api/v1/reviewer/draft {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, the rule set of each finding it dropped, its rewrite and each model call's deployment, tries and served model, and writes nothing.
+`POST /api/v1/reviewer/draft {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, the rule set and quote of each finding it dropped, its rewrite and each model call's deployment, tries and served model, and writes nothing.
 The leased sweep (lease `reviewer-sweep`, every 10 seconds, Background loops above) reviews again a text a stopped process left in review, and acts on a writer that did not act in time or has gone.
 
 ### Rewrite and Define
@@ -4154,7 +4155,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/reviewer/draft` (POST; cookie, trusted header, or bearer)
 
-  The reviewer's review of a draft, `{kind, text, title?, options?, multiple?, issue?, reader?}`: answers `{reader, findings, rewrite, not_applied?, calls}`, each call naming the deployment its request named and the model the provider served, and writes nothing.
+  The reviewer's review of a draft, `{kind, text, title?, options?, multiple?, issue?, reader?}`: answers `{reader, findings, dropped?, rewrite, not_applied?, calls}`, `dropped` being each finding the review dropped as `{rule_set, quote}`, each call naming the deployment its request named and the model the provider served, and writes nothing.
   With no reviewer's model group set it is `503 REVIEWER_NO_MODEL`; a model call that gives no answer is `502 REVIEWER_MODEL_FAILED`.
 
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)

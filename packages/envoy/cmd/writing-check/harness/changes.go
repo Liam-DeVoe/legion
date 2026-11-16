@@ -194,15 +194,15 @@ func (r *changeRun) Name() string { return r.plan.name }
 
 // TraceStep is one thing a change did to a case's text, as cases.jsonl keeps it: the change, what
 // came of it, and its detail. A review's step holds what the draft route answered: its findings,
-// the rule set of each finding it dropped because its quote is not in the text, and a rewrite
-// that was not applied with the reason. Change 7a's step where the writer writes again holds the
-// writing check's findings.
+// each finding it dropped because its quote is not in the text (its rule set and its quote as the
+// model wrote it), and a rewrite that was not applied with the reason. Change 7a's step where the
+// writer writes again holds the writing check's findings.
 type TraceStep struct {
-	Change   string         `json:"change"`
-	Outcome  string         `json:"outcome"`
-	Detail   string         `json:"detail,omitempty"`
-	Findings []TraceFinding `json:"findings,omitempty"`
-	Dropped  []string       `json:"dropped,omitempty"`
+	Change   string                    `json:"change"`
+	Outcome  string                    `json:"outcome"`
+	Detail   string                    `json:"detail,omitempty"`
+	Findings []TraceFinding            `json:"findings,omitempty"`
+	Dropped  []reviewer.DroppedFinding `json:"dropped,omitempty"`
 	// Rewrite is the review's rewrite where it was not applied, as the harness holds a text
 	// (rewritten), and NotApplied the reason the draft route gave.
 	Rewrite    string `json:"rewrite,omitempty"`
@@ -411,12 +411,12 @@ type wording struct {
 
 // draftAnswer is what POST /api/v1/reviewer/draft answers.
 type draftAnswer struct {
-	Reader     string             `json:"reader"`
-	Findings   []reviewer.Finding `json:"findings"`
-	Dropped    []string           `json:"dropped,omitempty"`
-	Rewrite    *wording           `json:"rewrite"`
-	NotApplied string             `json:"not_applied,omitempty"`
-	Calls      []serverCall       `json:"calls"`
+	Reader     string                    `json:"reader"`
+	Findings   []reviewer.Finding        `json:"findings"`
+	Dropped    []reviewer.DroppedFinding `json:"dropped,omitempty"`
+	Rewrite    *wording                  `json:"rewrite"`
+	NotApplied string                    `json:"not_applied,omitempty"`
+	Calls      []serverCall              `json:"calls"`
 }
 
 // priced is the server's calls as the outputs record them, each priced at its model's price over
@@ -457,9 +457,9 @@ func retryable(err error) bool {
 
 // draft is the reviewer's review of the text as it stands, the candidate's, through the draft
 // route. It traces a review step of change, with detail; the step holds what the route answered:
-// the findings, and a rewrite that was not applied with the reason. reviewed is false where the
-// model gave no usable answer after the retries, which posts the text as written in production
-// (R5).
+// the findings, the findings it dropped, and a rewrite that was not applied with the reason.
+// reviewed is false where the model gave no usable answer after the retries, which posts the text
+// as written in production (R5).
 func (r *changeRun) draft(ctx context.Context, t *textRun, change, detail string) (answer draftAnswer, reviewed bool, err error) {
 	t.trace(change, "review", detail)
 	step := len(t.out.Trace) - 1

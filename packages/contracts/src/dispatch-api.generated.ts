@@ -2779,7 +2779,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description The reviewer's review of a draft {kind, text, title?, options?, multiple?, issue?, reader?}, which writes nothing: kind is ask, issue, comment, message, document or decision_block (400 REVIEWER_DRAFT_INPUT for any other, or a blank text); text an ask's question, an issue's spec or any other kind's body; issue the issue the draft would be on, whose record it reads; reader the person it is for, else the issue's assignee or its project's default. Answers {reader, findings, dropped?, rewrite, not_applied?, calls}: findings each {rule_set, quote, why, fix}, dropped the rule set of each finding the review left out because its quote is not in the text, rewrite {title?, body, options?, multiple?} or null, not_applied why the rewrite would not post, and calls each model call {purpose, deployment, attempts?, served, fault?}, attempts being its tries where it asked again after a reply that was not the object its schema names, served being the model id the provider says answered. It answers whenever the reviewer's model group is set, whatever DISPATCH_REVIEWER_<KIND> say; with none set it is 503 REVIEWER_NO_MODEL, and a model call that gives no answer is 502 REVIEWER_MODEL_FAILED. */
+    /** @description The reviewer's review of a draft {kind, text, title?, options?, multiple?, issue?, reader?}, which writes nothing: kind is ask, issue, comment, message, document or decision_block (400 REVIEWER_DRAFT_INPUT for any other, or a blank text); text an ask's question, an issue's spec or any other kind's body; issue the issue the draft would be on, whose record it reads; reader the person it is for, else the issue's assignee or its project's default. Answers {reader, findings, dropped?, rewrite, not_applied?, calls}: findings each {rule_set, quote, why, fix}, dropped each finding the review left out because its quote is not in the text, as {rule_set, quote} with the quote as the model wrote it, rewrite {title?, body, options?, multiple?} or null, not_applied why the rewrite would not post, and calls each model call {purpose, deployment, attempts?, served, fault?}, attempts being its tries where it asked again after a reply that was not the object its schema names, served being the model id the provider says answered. It answers whenever the reviewer's model group is set, whatever DISPATCH_REVIEWER_<KIND> say; with none set it is 503 REVIEWER_NO_MODEL, and a model call that gives no answer is 502 REVIEWER_MODEL_FAILED. */
     post: operations["postApiV1ReviewerDraft"];
     delete?: never;
     options?: never;
@@ -4825,6 +4825,10 @@ export interface components {
       superseded_approval?: components["schemas"]["SupersededApproval"];
       unparsed_openers?: components["schemas"]["UnparsedOpeners"];
     };
+    DroppedFinding: {
+      quote: string;
+      rule_set: string;
+    };
     DuplicateCandidate: {
       href: string;
       key: string;
@@ -6172,7 +6176,7 @@ export interface components {
     };
     ReviewerDraftAnswer: {
       calls: components["schemas"]["ReviewerCall"][] | null;
-      dropped?: string[];
+      dropped?: components["schemas"]["DroppedFinding"][];
       findings: components["schemas"]["ReviewFinding"][] | null;
       not_applied?: string;
       reader: string;
@@ -14912,6 +14916,7 @@ export type DocumentRead = components["schemas"]["DocumentRead"];
 export type DocumentReadInput = components["schemas"]["DocumentReadInput"];
 export type DocumentReferenceSummary = components["schemas"]["DocumentReferenceSummary"];
 export type DocumentWriteAdvice = components["schemas"]["DocumentWriteAdvice"];
+export type DroppedFinding = components["schemas"]["DroppedFinding"];
 export type DuplicateCandidate = components["schemas"]["DuplicateCandidate"];
 export type EditArtifactInput = components["schemas"]["EditArtifactInput"];
 export type EditArtifactResponse = components["schemas"]["EditArtifactResponse"];

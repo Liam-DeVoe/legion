@@ -507,12 +507,13 @@ func TestChangeFourPostsTheReviewersRewrite(t *testing.T) {
 }
 
 // A scored case's line holds the text a person sees, the string its text_sha256 hashes, an ask's
-// options with it; and a review's step holds the findings the draft route answered and the
-// rewrite that was not applied beside the reason.
+// options with it; and a review's step holds the findings the draft route answered, each finding
+// it dropped with its rule set and quote, and the rewrite that was not applied beside the reason.
 func TestACaseLineHoldsItsTextAndWhatTheReviewReturned(t *testing.T) {
 	finding := []reviewer.Finding{{RuleSet: reviewer.RuleNoslop, Quote: "spin up", Why: "A phrasal verb.", Fix: "start"}}
+	dropped := []reviewer.DroppedFinding{{RuleSet: reviewer.RulePointers, Quote: "The store keeps … rows."}}
 	fake := newFakeDispatch(t,
-		draftAnswer{Findings: finding, Rewrite: &wording{Body: "Lost the first line."}, NotApplied: "it drops the first line"},
+		draftAnswer{Findings: finding, Dropped: dropped, Rewrite: &wording{Body: "Lost the first line."}, NotApplied: "it drops the first line"},
 		draftAnswer{},
 	)
 	run, _ := changeRig(t, []string{changeReviewRewrite}, fake)
@@ -531,10 +532,11 @@ func TestACaseLineHoldsItsTextAndWhatTheReviewReturned(t *testing.T) {
 		t.Fatal(err)
 	}
 	type step struct {
-		Outcome    string             `json:"outcome"`
-		Findings   []reviewer.Finding `json:"findings"`
-		Rewrite    string             `json:"rewrite"`
-		NotApplied string             `json:"not_applied"`
+		Outcome    string                    `json:"outcome"`
+		Findings   []reviewer.Finding        `json:"findings"`
+		Dropped    []reviewer.DroppedFinding `json:"dropped"`
+		Rewrite    string                    `json:"rewrite"`
+		NotApplied string                    `json:"not_applied"`
 	}
 	type caseLine struct {
 		CaseID      string `json:"case_id"`
@@ -563,14 +565,14 @@ func TestACaseLineHoldsItsTextAndWhatTheReviewReturned(t *testing.T) {
 		t.Fatal("the comment's line holds no trace")
 	}
 	review := comment.ChangeTrace[0]
-	if review.Outcome != "review" || !slices.Equal(review.Findings, finding) {
-		t.Errorf("the review step = %+v, want the review's findings", review)
+	if review.Outcome != "review" || !slices.Equal(review.Findings, finding) || !slices.Equal(review.Dropped, dropped) {
+		t.Errorf("the review step = %+v, want the review's findings and the finding it dropped", review)
 	}
 	if review.Rewrite != "Lost the first line." || review.NotApplied != "it drops the first line" {
 		t.Errorf("the review step keeps rewrite %q beside reason %q, want the rewrite not applied and its reason", review.Rewrite, review.NotApplied)
 	}
-	if len(ask.ChangeTrace) == 0 || ask.ChangeTrace[0].Findings != nil || ask.ChangeTrace[0].Rewrite != "" {
-		t.Errorf("a clean review's step = %+v, want no findings and no rewrite", ask.ChangeTrace)
+	if len(ask.ChangeTrace) == 0 || ask.ChangeTrace[0].Findings != nil || ask.ChangeTrace[0].Dropped != nil || ask.ChangeTrace[0].Rewrite != "" {
+		t.Errorf("a clean review's step = %+v, want no findings, none dropped and no rewrite", ask.ChangeTrace)
 	}
 }
 

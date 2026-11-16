@@ -674,6 +674,35 @@ func TestTheReviewerDraftRouteAnswersAndWritesNothing(t *testing.T) {
 	}
 }
 
+// The draft route answers each finding the review dropped because its quote is not in the text,
+// with its rule set and its quote as the model wrote it.
+func TestTheDraftRouteAnswersEachDroppedFindingWithItsQuote(t *testing.T) {
+	const notInText = "This names … the problem."
+	isReview := func(request modeltest.Request) bool { return strings.Contains(request.Text, reviewMarker) }
+	reply, err := json.Marshal(map[string]any{
+		"findings": []map[string]string{
+			{"rule_set": "phrases", "quote": vacuousPhrase, "why": "It states no fact.", "fix": "Say what fails."},
+			{"rule_set": "phrases", "quote": notInText, "why": "It states no fact.", "fix": "Say what fails."},
+		},
+		"rewrite": map[string]any{"body": "Status\nThe test fails on its first call."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig := newReviewRig(t, ReviewerConfig{}, modeltest.New(t, modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: string(reply)}}))
+	response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer/draft", map[string]any{
+		"kind": "comment", "text": "Status\n" + vacuousPhrase, "issue": rig.issue,
+	}, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("the draft route: %d %s", response.Code, response.Body.String())
+	}
+	answer := decodeBody[reviewerDraftAnswer](t, response)
+	if len(answer.Findings) != 1 || answer.Findings[0].Quote != vacuousPhrase ||
+		!slices.Equal(answer.Dropped, []droppedFinding{{RuleSet: "phrases", Quote: notInText}}) {
+		t.Fatalf("the draft's findings %+v, dropped %+v; want the text's finding kept and the other dropped with its quote", answer.Findings, answer.Dropped)
+	}
+}
+
 // The draft route weighs the reviewer's rewrite of an ask's options as every rewrite is weighed:
 // one that keeps their labels, their number and their order would post, and one that changes a
 // label, the order or the count would not, saying why. No option of a rewrite carries an id.
