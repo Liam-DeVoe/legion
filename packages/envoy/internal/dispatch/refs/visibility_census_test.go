@@ -46,6 +46,11 @@ import (
 // exported read of the store that takes none, from the same source, and holds each one to
 // readsWithoutAViewer, which names it with the reason it answers no reader. A read in neither
 // place fails here, named, and so does an entry of that table that names no such read.
+//
+// Last, it holds the kinds a writer may reserve for its author to what each read of a node answers
+// (requireEachAuthorKindAnswersItsAuthorAlone): a node of each at `project` is read by a second
+// person and an author-only one is not, a lens kind takes no author-only node, and the registry's
+// author flag is on for exactly those kinds.
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -143,6 +148,7 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 				"a read that takes one is held to the predicates above, and a read that is gone needs no reason", function)
 		}
 	}
+	requireEachAuthorKindAnswersItsAuthorAlone(t, ctx, database)
 }
 
 // Why each exported read of the store that takes no acting person binds no visibility
