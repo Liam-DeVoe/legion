@@ -413,6 +413,26 @@ def apply_rules(session: Session, rules: dict, source: str, seen: set) -> list:
     return reads
 
 
+def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
+    """What `go test <pkgs>` run in workdir reads, by the closure each gate is held to, with
+    ci_job_reads.RULES applied: (sorted globs, problem messages). go-test-reads.sh prints it, and
+    packages/envoy/cmd/spec-check reads it as the tie of a check of The Spec."""
+    import ci_job_reads as data
+    session = Session()
+    why = f"go test {' '.join(pkgs)} in {workdir}"
+    tested = run(workdir, pkgs, why, env=env)
+    reads = closure(session, data.RULES, tested, set())
+    # closure() passes over a package go list gives no directory, as it gives none to a third-party
+    # one under GOPROXY=off. A package the command names with none, as a path that is gone, leaves
+    # the closure unknown.
+    for pkg in session.listing(tested, deps=False):
+        if not pkg.get("Dir") and not pkg.get("Standard"):
+            cause = " ".join((pkg.get("Error") or {}).get("Err", "").split())[:300]
+            session.problems.append(error(None, f"go list finds no directory of {pkg.get('ImportPath')} for {why}, so "
+                                                f"its closure is unknown: {cause}"))
+    return sorted({r.glob for r in reads if r.glob}), [p.message for p in session.problems]
+
+
 GO_FILE_NAMES = ("go.mod", "go.sum", "go.work", "go.work.sum")
 
 

@@ -65,7 +65,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go-test-reads.sh; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
@@ -526,6 +526,41 @@ printf 'go 1.21\n\nuse ./missing\n' > "$root/go.work"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "says the closure is unknown" "$(contains "$out" 'so the closure of .* is unknown')"
+
+echo "case: go-test-reads.sh gives a test's closure with its RULES reads"
+# The tie of a check of The Spec (packages/envoy/cmd/spec-check reads it): what `go test <package>`
+# reads by the closure each filter is held to, with ci_job_reads.py's RULES applied.
+root=$(fixture test-reads)
+run_reads() {
+  set +e
+  out=$("$root/.github/scripts/go-test-reads.sh" "$@" 2>/dev/null)
+  status=$?
+  set -e
+}
+# reads_hold <path>: true when the reads of the last answer hold path itself.
+reads_hold() {
+  python3 -c 'import json, sys; print(str(sys.argv[1] in json.loads(sys.argv[2])["reads"]).lower())' "$1" "$out" 2>/dev/null ||
+    echo false
+}
+# problems_name <text>: true when a problem of the last answer holds text.
+problems_name() {
+  python3 -c 'import json, sys; print(str(any(sys.argv[1] in p for p in json.loads(sys.argv[2])["problems"])).lower())' "$1" "$out" 2>/dev/null ||
+    echo false
+}
+run_reads mod ./lib
+check "exits 0" "$(is "$status" 0)"
+check "reads the file of the fixture's RULES row for mod/lib/lib_test.go" "$(reads_hold fixtures/data.json)"
+check "reads the package it tests" "$(reads_hold 'mod/lib/*')"
+check "reads the workspace file" "$(reads_hold go.work)"
+replace "$root/.github/scripts/ci_job_reads.py" \
+  'RULES = {"mod/lib/lib_test.go": [Read("fixtures/data.json", "lib_test.go reads ../../fixtures/data.json")]}' 'RULES = {}'
+run_reads mod ./lib
+check "the control: with no RULES row it still exits 0" "$(is "$status" 0)"
+check "and still reads the package it tests" "$(reads_hold 'mod/lib/*')"
+check "and no longer reads fixtures/data.json" "$(is "$(reads_hold fixtures/data.json)" false)"
+run_reads mod ./gone
+check "a package that is gone exits 1" "$(is "$status" 1)"
+check "with a problem that names it" "$(problems_name ./gone)"
 
 echo "case: CI_OK_SELECTED_BY misses a job changes gates"
 root=$(fixture ci-ok-missing)

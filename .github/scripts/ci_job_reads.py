@@ -386,6 +386,10 @@ RULES = {
         Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
+    f"{ENVOY}/internal/dispatch/specgraph/gocode_test.go": [
+        run(f"{ENVOY}/internal/dispatch/specgraph/testdata/citations/repo", ["./..."],
+            "internal/dispatch/specgraph/gocode_test.go: GoCode.Find runs go list -json in testdata/citations/repo with GOWORK=off",
+            mode="build", env={"GOWORK": "off"})],
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
     f"{ENVOY}/internal/dispatch/store/counts_in_documents_test.go": reads(
