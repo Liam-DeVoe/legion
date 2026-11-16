@@ -41,11 +41,12 @@ import (
 // The window a run has belongs to the record: going_requests.ends_at, written by the POST. A pod
 // that dies mid-run stores no terminal frame, so a reader on another pod ends the stream itself
 // once the run is past that moment with nothing terminal stored (readGoingStream), and
-// sweepGoingRequests ends the runs nobody reads. At the deadline the running answer, a reader
-// and the sweep may each try to end one run, so which of them ends it is settled by the table
-// (the going_events_terminal index of migration 20261105152945) and never by whichever is first:
-// every terminal write is an insert that does nothing on a conflict, and the writer that loses
-// reads the stored terminal frame and reports that one (endGoingRun).
+// sweepGoingRequests ends the runs nobody reads, each in the day after its deadline
+// (goingSweepWindow). At the deadline the running answer, a reader and the sweep may each try to
+// end one run, so which of them ends it is settled by the table (the going_events_terminal index
+// of migration 20261105152945) and never by whichever is first: every terminal write is an insert
+// that does nothing on a conflict, and the writer that loses reads the stored terminal frame and
+// reports that one (endGoingRun).
 
 // goingRequestColumns is the going_requests select list scanGoingRequest reads, in scan order.
 const goingRequestColumns = `id::text, author, project, words, created_at, ends_at`
@@ -167,24 +168,25 @@ func (s *server) readGoingRequest(ctx context.Context, id string) (goingRequest,
 	`, id))
 }
 
-// readLiveGoingRun is the run id names as a write made for it reads it (withinGoingRun): its id in
-// the lowercase text its interaction node is keyed by, its recorded author, and whether it is live,
-// now() < ends_at, the database's own clock against the window the POST wrote from that clock,
-// whatever frames the run has stored. pgx.ErrNoRows where the record holds no such run.
-func (s *server) readLiveGoingRun(ctx context.Context, id string) (string, model.Actor, bool, error) {
-	var run string
+// readLiveGoingRun is the run id names as a write made for it reads it (withinGoingRun): its
+// recorded author, and whether it is live, now() < ends_at, the database's own clock against the
+// window the POST wrote from that clock, whatever frames the run has stored. id is the run's uuid
+// in the lowercase text its interaction node is keyed by (uuid.UUID.String), the one spelling of
+// it the caller sends on, and no other: Postgres reads some of the spellings uuid.Parse admits and
+// refuses the URN form (SQLSTATE 22P02). pgx.ErrNoRows where the record holds no such run.
+func (s *server) readLiveGoingRun(ctx context.Context, id string) (model.Actor, bool, error) {
 	var stored []byte
 	var live bool
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select id::text, author, now() < ends_at from going_requests where id = $1::uuid
-	`, id).Scan(&run, &stored, &live); err != nil {
-		return "", model.Actor{}, false, err
+		select author, now() < ends_at from going_requests where id = $1::uuid
+	`, id).Scan(&stored, &live); err != nil {
+		return model.Actor{}, false, err
 	}
 	var author model.Actor
 	if err := json.Unmarshal(stored, &author); err != nil {
-		return "", model.Actor{}, false, fmt.Errorf("decode going request author: %w", err)
+		return model.Actor{}, false, fmt.Errorf("decode going request author: %w", err)
 	}
-	return run, author, live, nil
+	return author, live, nil
 }
 
 // goingNodeLock takes a run's interaction node row, $1 the kind and $2 the run's id, as the
@@ -448,9 +450,39 @@ func scanGoingEvent(row pgx.Row) (goingEvent, error) {
 	return event, nil
 }
 
-// sweepGoingRequests ends every run that is past its ends_at with no terminal frame stored, with
-// the deadline's error (contracts.GoingErrorAnswerDidNotArrive). Ending those runs is what
-// nothing else does: the pod that was answering one may have died, and nobody may be reading it.
+// goingSweepWindow is how far back from now the sweep reads a run's ends_at (goingOverdueRuns): a
+// run whose deadline passed longer ago than this is not read by it at all. The window exists
+// because a run is kept until an erase removes it, so going_requests holds every run ever asked
+// and grows with each, and the sweep reads that table once a maintenance pass, every minute
+// (MaintenanceSweepInterval). Read over every overdue run, its cost would grow with the whole of
+// that history; bounded, it reads through going_requests_ends_at (migration
+// 20261116232634_going_requests_ends_at_index) the runs whose deadline passed in the last day,
+// however many runs are kept. A day is far longer than the sweep needs to reach a run: a run past
+// its ends_at is inside the window for some 1,440 passes, any one of which ends it. A run that
+// leaves the window with no ending is one no pass ended in that day, every process of the
+// deployment down for as long, and what ends it then is its reader: the stream ends a run past its
+// ends_at with no terminal frame stored when it reads it (streamGoingAnswer, on readGoingStream's
+// PastDeadline), and a run nobody reads keeps nobody waiting on its ending.
+const goingSweepWindow = 24 * time.Hour
+
+// goingOverdueRuns is the sweep's read of the runs it ends, $1 the terminal frame names and $2
+// goingSweepWindow in seconds: every run whose ends_at passed within that window of now with no
+// terminal frame stored, oldest deadline first. Both bounds key going_requests_ends_at, so the
+// read is that index's range for the last day and not a scan of every run kept. It is named
+// rather than written inline so that its plan is held to that index
+// (TestTheGoingSweepReadsItsWindowThroughTheEndsAtIndex).
+const goingOverdueRuns = `
+	select r.id::text
+	from going_requests r
+	where r.ends_at <= now()
+	  and r.ends_at > now() - make_interval(secs => $2)
+	  and not exists (select 1 from going_events e where e.request_id = r.id and e.name = any($1::text[]))
+	order by r.ends_at, r.id`
+
+// sweepGoingRequests ends every run whose ends_at passed within goingSweepWindow of now with no
+// terminal frame stored, with the deadline's error (contracts.GoingErrorAnswerDidNotArrive).
+// Ending those runs is what nothing else does: the pod that was answering one may have died, and
+// nobody may be reading it. An older run is left to its reader, as goingSweepWindow says.
 // It deletes no run: a run is kept, row, frames and node, until an erase removes it
 // (dispatch://INFRA-1950/spec#b-r-interaction), where the release before deleted every run past
 // contracts.GoingRequestTTL. That value is read nowhere in this build.
@@ -464,13 +496,7 @@ func scanGoingEvent(row pgx.Row) (goingEvent, error) {
 // over, and any other failure of one run's ending is kept and answered once the pass is done, so
 // one run neither fails the pass nor costs the runs read after it their ending.
 func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
-	rows, err := pool.Query(ctx, `
-		select r.id::text
-		from going_requests r
-		where r.ends_at <= now()
-		  and not exists (select 1 from going_events e where e.request_id = r.id and e.name = any($1::text[]))
-		order by r.ends_at, r.id
-	`, goingTerminalNames)
+	rows, err := pool.Query(ctx, goingOverdueRuns, goingTerminalNames, goingSweepWindow.Seconds())
 	if err != nil {
 		return err
 	}

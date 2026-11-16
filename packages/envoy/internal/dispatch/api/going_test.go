@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // goingRig is the record under test: a server on the harness's database, called directly. These
@@ -324,6 +327,98 @@ func TestARunAndItsFramesAreKeptPastTheHour(t *testing.T) {
 	}
 	if _, state, err := rig.server.readGoingStream(ctx, recent.ID, 0); err != nil || state.Terminal != 0 {
 		t.Fatalf("run %s, not overdue, reads %+v (%v) after the sweep, want no terminal frame", recent.ID, state, err)
+	}
+}
+
+// The sweep reads back goingSweepWindow from now and no further. A run whose ends_at passed inside
+// that window, an hour short of its far end, with no ending stored is ended by one pass with the
+// deadline's error, as every overdue run the sweep reads is. A run whose ends_at passed an hour
+// before the window opens is not read by the sweep: it holds no frame after the pass, still past
+// its deadline with no ending stored, and its reader ends it, since the stream ends a run past its
+// ends_at with no terminal frame stored (streamGoingAnswer) with that same error, and stores it.
+// A run inside its own window is left to run.
+func TestTheGoingSweepEndsTheRunsOfItsWindowAndLeavesAnOlderOneToItsReader(t *testing.T) {
+	routes := newGoingRoutesRig(t, nil)
+	rig := goingRig{server: routes.server, database: routes.database}
+	ctx := context.Background()
+	insideBy, outsideBy := goingSweepWindow-time.Hour, goingSweepWindow+time.Hour
+	inside := rig.record(t, "asked most of a day ago")
+	rig.age(t, inside.ID, insideBy+time.Minute, insideBy)
+	older := rig.record(t, "asked more than a day ago")
+	rig.age(t, older.ID, outsideBy+time.Minute, outsideBy)
+	live := rig.record(t, "asked just now")
+
+	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	deadline := fmt.Sprintf(`1 %s {"code":%q}`, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
+	if frames := rig.frames(t, inside.ID); len(frames) != 1 || frames[0] != deadline {
+		t.Fatalf("run %s, past its deadline by %v, inside the sweep's window of %v, holds %v after the sweep, want the deadline's ending %s",
+			inside.ID, insideBy, goingSweepWindow, frames, deadline)
+	}
+	_, state, err := rig.server.readGoingStream(ctx, older.ID, 0)
+	if err != nil || state.Terminal != 0 || !state.PastDeadline {
+		t.Fatalf("run %s, past its deadline by %v, before the sweep's window of %v, reads %+v (%v) after the sweep, want it past its deadline with no ending stored: the sweep reads no run older than its window",
+			older.ID, outsideBy, goingSweepWindow, state, err)
+	}
+	if frames := rig.frames(t, older.ID); len(frames) != 0 {
+		t.Fatalf("run %s, before the sweep's window, holds %v after the sweep, want no frame", older.ID, frames)
+	}
+	if frames := rig.frames(t, live.ID); len(frames) != 0 {
+		t.Fatalf("the sweep ended a run still inside its own window: %v", frames)
+	}
+
+	response := routes.stream(t, older.ID, goingAsker.ID, "")
+	want := fmt.Sprintf("id: 1\nevent: %s\ndata: {\"code\":\"%s\"}\n\n", contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
+	if response.Code != http.StatusOK || response.Body.String() != want {
+		t.Fatalf("the stream of run %s, which the sweep left, answers %d %q, want 200 and the deadline's error %q",
+			older.ID, response.Code, response.Body.String(), want)
+	}
+	if frames := rig.frames(t, older.ID); len(frames) != 1 || frames[0] != deadline {
+		t.Fatalf("run %s holds %v once its reader read it, want the ending the reader wrote stored, %s", older.ID, frames, deadline)
+	}
+}
+
+// TestTheGoingSweepReadsItsWindowThroughTheEndsAtIndex holds the sweep's read (goingOverdueRuns)
+// to going_requests_ends_at (migration 20261116232634): under the plan Postgres builds for the
+// values the sweep sends, and under the generic plan a prepared statement settles on, it reads
+// going_requests through that index alone, never a scan of the table, and the index condition
+// carries both bounds of the window - ends_at at or before now, and after now less the window -
+// so the read is that index's range for the last day and not every run ever kept. A condition
+// holding the upper bound alone would read the index from its first entry, every run kept, which
+// is the cost the window is there to bound.
+func TestTheGoingSweepReadsItsWindowThroughTheEndsAtIndex(t *testing.T) {
+	rig := newGoingRig(t)
+	ctx := context.Background()
+	const index = "going_requests_ends_at"
+	custom := planWithoutSeqScans(t, rig.database, goingOverdueRuns, goingTerminalNames, goingSweepWindow.Seconds())
+	connection, err := rig.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the generic plan: %v", err)
+	}
+	defer connection.Release()
+	generic := explaintest.GenericPlan(t, ctx, connection, "going_overdue_runs", goingOverdueRuns,
+		[]string{"text[]", "double precision"},
+		[]string{"'{" + strings.Join(goingTerminalNames, ",") + "}'", fmt.Sprint(goingSweepWindow.Seconds())},
+		"set local enable_seqscan = off")
+	firstKeys := explaintest.NewIndexKeys(rig.database.Pool)
+	for _, read := range []struct {
+		name string
+		plan json.RawMessage
+	}{{"the sweep's read", custom}, {"the sweep's read under a generic plan", generic}} {
+		if explaintest.SeqScansRelation(t, read.plan, "going_requests") {
+			t.Errorf("%s scans going_requests:\n%s", read.name, read.plan)
+		}
+		firstKeys.RequireIndexKeyed(t, read.plan, index, read.name, explaintest.CondRequired)
+		for _, scan := range explaintest.IndexScans(t, read.plan) {
+			if scan.Index != index {
+				continue
+			}
+			if !strings.Contains(scan.Cond, "ends_at <=") || !strings.Contains(scan.Cond, "ends_at >") {
+				t.Errorf("%s reads %s on `%s`, want both bounds of the window in the index condition, ends_at <= now() and ends_at > now() less the window:\n%s",
+					read.name, scan, scan.Cond, read.plan)
+			}
+		}
 	}
 }
 

@@ -387,6 +387,55 @@ func TestAWriteNamingARunItMayNotWriteForStoresNothing(t *testing.T) {
 	}
 }
 
+// A run named in the header in another of the spellings uuid.Parse admits - RFC 4122's URN form,
+// the braced form, upper case - is the run its canonical id names, and a write made for it is
+// admitted exactly as one naming that id is. withinGoingRun sends the parsed uuid's own spelling
+// on, to the lookup and to the context, and never the header's: sent as written, the URN form
+// reaches readLiveGoingRun's $1::uuid, which Postgres refuses ("invalid input syntax for type
+// uuid", SQLSTATE 22P02), and the write answers 500 where the canonical id answers 201; and a
+// spelling put on the context would be the far end of every changed_by_run the write appends,
+// which names no interaction node. Each comment written for the run, under each spelling, answers
+// 201 and holds the one changed_by_run its write appended, to the run's canonical id, and no
+// tuple points at the spelling as the header wrote it.
+func TestAWriteNamingARunInAnotherUuidSpellingIsAdmittedAsTheCanonicalID(t *testing.T) {
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
+	server := directServer(deps)
+	ctx := context.Background()
+	issue := createTestIssue(t, handler, "RUU", "The issue a run named in every spelling writes on")
+	run, err := server.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: "alice"}, "", "Write for me, however my run is spelled.")
+	if err != nil {
+		t.Fatalf("record alice's run: %v", err)
+	}
+	runWindowAhead(t, database, run.ID)
+	for _, spelling := range []struct{ name, header string }{
+		{"the canonical id", run.ID},
+		{"the URN form", "urn:uuid:" + run.ID},
+		{"the braced form", "{" + run.ID + "}"},
+		{"upper case", strings.ToUpper(run.ID)},
+	} {
+		response := requestForRun(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
+			map[string]any{"body": "A comment written for the run named in " + spelling.name + "."}, "alice", spelling.header)
+		t.Logf("a comment written for the run named in %s (%s): status=%d body=%s", spelling.name, spelling.header, response.Code, response.Body.String())
+		if response.Code != http.StatusCreated {
+			t.Errorf("a comment written for the run named in %s (%s) answers %d %s, want 201, as one naming the canonical id is answered",
+				spelling.name, spelling.header, response.Code, response.Body.String())
+			continue
+		}
+		comment := decodeBody[writtenRecord](t, response).ID
+		if held := changedByRunCount(t, database, graphstore.KindComment, comment, run.ID); held != 1 {
+			t.Errorf("the comment written for the run named in %s holds %d changed_by_run tuples to the canonical id %s, want the one its write appended",
+				spelling.name, held, run.ID)
+		}
+		if spelling.header == run.ID {
+			continue
+		}
+		if stray := tuplesIntoRun(t, database, spelling.header); stray != 0 {
+			t.Errorf("%d tuples point at the run as %s spells it (%s), want none: a changed_by_run names the canonical id",
+				stray, spelling.name, spelling.header)
+		}
+	}
+}
+
 // A version written for a run names as changed by it each block whose words it changed and each
 // block it dropped, and not a block it left as it was.
 func TestAVersionWrittenForARunNamesTheBlocksItChanged(t *testing.T) {

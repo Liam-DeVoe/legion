@@ -54,11 +54,17 @@ func (s *server) withinGoingRun(handler http.HandlerFunc) http.HandlerFunc {
 		}
 		// Decided before the read, as the stream decides it: readLiveGoingRun casts $1::uuid, so
 		// an id that is not a uuid would come back as a Postgres error rather than pgx.ErrNoRows.
-		if _, err := uuid.Parse(named[0]); len(named) != 1 || err != nil {
+		// What goes on is the parsed uuid's own spelling and never the header's: uuid.Parse also
+		// admits `urn:uuid:<id>`, `{<id>}` and upper case, the URN form of which Postgres refuses
+		// (SQLSTATE 22P02, a 500), and the run on the context is the id every changed_by_run
+		// tuple points at, the lowercase text the interaction node is keyed by.
+		parsed, err := uuid.Parse(named[0])
+		if len(named) != 1 || err != nil {
 			writeGoingRequestNotFound(w)
 			return
 		}
-		run, author, live, err := s.readLiveGoingRun(r.Context(), named[0])
+		run := parsed.String()
+		author, live, err := s.readLiveGoingRun(r.Context(), run)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeGoingRequestNotFound(w)
 			return
