@@ -114,7 +114,12 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 		}
 		return "", false
 	}
-	conn, err := bus.Dial(connectionName, settings.URLs, lookup, bus.WithConnectInBackground(), bus.WithSilentCutDetection())
+	// WithImmediateReconnect: every other client of the hub waits on this one. A restart drops
+	// the service's own connection with theirs, and a client that comes back before the service
+	// has resubscribed is refused until it does, so the service retries at once where they wait a
+	// second (internal/bus).
+	conn, err := bus.Dial(connectionName, settings.URLs, lookup,
+		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithImmediateReconnect())
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}

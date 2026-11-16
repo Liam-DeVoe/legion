@@ -86,9 +86,13 @@ func TestTheServiceAnswersInsideTheGoClientsConnectDeadline(t *testing.T) {
 		service := startService(t, url, keys, blockingFor(3*time.Second), Decide)
 		t.Cleanup(service.Close)
 		err, took := connectService(t)
+		// The client is gone before the raised budget would have answered. Which of the two
+		// two-second timers fires first — nats.go's own handshake deadline or the server giving
+		// up and refusing — is a race, and the point is that neither waits for the answer: it
+		// would have come at three seconds.
 		require.Error(t, err, "a client admitted with the budget at %s: the budget would be arbitrary", raisedBudget)
-		require.NotErrorIs(t, err, nats.ErrAuthorization,
-			"with the budget at %s the client was refused after %s, not failed: the control proves nothing", raisedBudget, took)
+		require.Less(t, took, raisedBudget,
+			"the client waited %s, so the answer at %s could still have reached it and the control proves nothing", took, raisedBudget)
 	})
 }
 
