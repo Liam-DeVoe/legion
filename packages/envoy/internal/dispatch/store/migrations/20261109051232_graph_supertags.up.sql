@@ -191,10 +191,12 @@ with seed as (
 }$schema$::json as document
 ),
 supertag_names (name) as (
+  -- The root's closed list (dispatch://INFRA-1098/spec, R21), and only it: `proposed` is a value
+  -- of a node's state and no type, and there is no `agent` supertag, since the role is the agent.
   values ('issue'), ('document'), ('document version'), ('block'), ('callout'), ('ask'),
          ('requirement'), ('plan_task'), ('check'), ('result'), ('decision'), ('reading'),
-         ('criterion'), ('proposed'), ('constraint'), ('lens'), ('risk'), ('comment'),
-         ('message'), ('person'), ('session'), ('role'), ('agent'), ('page'), ('interaction'),
+         ('criterion'), ('constraint'), ('lens'), ('risk'), ('comment'),
+         ('message'), ('person'), ('session'), ('role'), ('page'), ('interaction'),
          ('delivery_attempt'), ('component'), ('supertag'), ('attribute')
 ),
 block_types as (

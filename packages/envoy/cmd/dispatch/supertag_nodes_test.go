@@ -37,23 +37,24 @@ var typeMigrations = []string{
 // pmdoc, so what the store holds is compared with the file itself.
 const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 
-// closedSupertags is the list of types the root spec closes at twenty-nine names
-// (dispatch://INFRA-1149/spec, R6). The store holds one supertag node for each, and beyond them
-// only an entry an approved document of this tree creates (authorisedSupertags), so this list is
-// written here as the test's own copy: a seed that adds or drops a name has to be read by a
-// person before this test agrees with it.
+// closedSupertags is the root's closed list of types, twenty-seven names
+// (dispatch://INFRA-1098/spec, R21; dispatch://INFRA-1149/spec, R6): `proposed` is a value of a
+// node's state and no type, and the role is the agent, so neither is a supertag. The store holds
+// one supertag node for each, and beyond them only an entry an approved document of this tree
+// creates (authorisedSupertags), so this list is written here as the test's own copy: a seed that
+// adds or drops a name has to be read by a person before this test agrees with it.
 var closedSupertags = []string{
 	"issue", "document", "document version", "block", "callout", "ask", "requirement",
-	"plan_task", "check", "result", "decision", "reading", "criterion", "proposed",
-	"constraint", "lens", "risk", "comment", "message", "person", "session", "role", "agent",
+	"plan_task", "check", "result", "decision", "reading", "criterion",
+	"constraint", "lens", "risk", "comment", "message", "person", "session", "role",
 	"page", "interaction", "delivery_attempt", "component", "supertag", "attribute",
 }
 
 // authorisedSupertags is every supertag the closed list does not name that an approved document
 // of this tree creates, each with the reference of the document that creates it. A bare
-// prohibition would refuse a correct store: the root's own c-derived requires the thirtieth
-// entry below, so a test that allowed the closed list alone would fail the build that
-// requirement asks for. What the check is for is a supertag nobody authorised, so an entry
+// prohibition would refuse a correct store: the root's own c-derived requires the entry below
+// once dispatch://INFRA-1950 seeds it, so a test that allowed the closed list alone would fail the
+// build that requirement asks for. What the check is for is a supertag nobody authorised, so an entry
 // beyond the closed list passes only where this list names its document, and the run prints
 // every one of them with that reference.
 //
