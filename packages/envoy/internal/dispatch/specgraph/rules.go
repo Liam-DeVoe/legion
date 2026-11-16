@@ -237,10 +237,16 @@ func (v *validator) check(c Check) {
 	v.code(c.Pos, c.ID, "failing example", c.FailingExample)
 }
 
+// sentenceSpace is each character that Python's \s matches, the white space at which ste-lint, the
+// ASD-STE100 program of R49, splits a line into its sentences: the ASCII white space, the
+// separators of Unicode (U+00A0 and U+202F among them), U+001C to U+001F and U+0085. Go's \s is
+// ASCII alone and leaves out \v.
+const sentenceSpace = `\s\v\x{1c}-\x{1f}\x{85}\p{Z}`
+
 // sentenceEnd is the end of a sentence that more text follows: ".", "!" or "?", then white space,
 // where ste-lint splits a line into its sentences. A dot inside a word, such as the one of 1.2 or
 // Node.js, ends no sentence.
-var sentenceEnd = regexp.MustCompile(`[.!?]\s+\S`)
+var sentenceEnd = regexp.MustCompile(`[.!?][` + sentenceSpace + `]+[^` + sentenceSpace + `]`)
 
 func (v *validator) component(c Component) {
 	if c.Name == "" || c.Purpose == "" || sentenceEnd.MatchString(c.Purpose) {

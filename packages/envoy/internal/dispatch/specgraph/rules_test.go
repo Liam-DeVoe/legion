@@ -272,6 +272,16 @@ func TestTheOtherRules(t *testing.T) {
 			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
 		},
 		{
+			name: "a component whose purpose is two sentences joined by a no-break space",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Purpose = "It keeps each issue.\u00a0It keeps each result." })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
+			name: "a component whose purpose is two sentences joined by a narrow no-break space",
+			tree: Tree{Components: []Component{component("dispatch", func(c *Component) { c.Purpose = "It keeps each issue.\u202fIt keeps each result." })}},
+			want: Problem{pos(20), "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"},
+		},
+		{
 			name: "a component whose parent is an interface",
 			tree: Tree{Components: []Component{
 				component("dispatch", nil), component("legion", nil),
