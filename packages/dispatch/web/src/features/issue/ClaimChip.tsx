@@ -137,10 +137,12 @@ export function claimIsTakeable(
  * their marks (dispatch://INFRA-1196 R19, R22): both instants after their ages (`Timestamp`'s
  * `exact`), the moment the issue comes free as "free for another agent from" and the date and
  * time, and "· running state unknown" where the registry could not be read at all, which is a
- * claim nobody has judged rather than a held one. There `author` names the holder as that page
- * names an author (`AgentName`'s `author`), and `inRow` draws the claim as the value of a row
- * of Details, which draws the label: plain words in the ink that wrap and cut no word, not a
- * pill. Outside it, neither changes anything.
+ * claim nobody has judged rather than a held one. There no part is cut: the holder's name
+ * wraps rather than ellipsizes, in the pill too (decision 104 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md). There `author` names the holder as that
+ * page names an author (`AgentName`'s `author`), and `inRow` draws the claim as the value of a
+ * row of Details, which draws the label: plain words in the ink that wrap and cut no word, not
+ * a pill. Outside it, neither changes anything.
  */
 export function ClaimChip({
   author = false,
@@ -202,10 +204,13 @@ export function ClaimChip({
     return `${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`;
   };
   const inDetails = page !== null && inRow;
-  // In a row of Details nothing of the claim stops its line from wrapping (dispatch://INFRA-3935
-  // R4): each part may shrink, and a long one breaks inside itself only where no break between
-  // words is left. Everywhere else each part stays whole, as on `main`.
-  const part = inDetails ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
+  // Inside `NoTooltips` nothing of the claim stops its line from wrapping, in a row of Details
+  // (dispatch://INFRA-3935 R4) and in the header's pill alike: each part may shrink, and a long
+  // one breaks inside itself only where no break between words is left, since the holder's name
+  // and the instants are values, which wrap there (decision 104 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). Outside it each part stays whole, as on
+  // `main`.
+  const part = page === null ? "shrink-0" : "min-w-0 [overflow-wrap:anywhere]";
   return (
     <span
       className={
@@ -230,7 +235,7 @@ export function ClaimChip({
       <AgentName
         actor={claim.actor}
         author={author}
-        className={inDetails ? undefined : "min-w-0 truncate"}
+        className={page === null ? "min-w-0 truncate" : undefined}
         inline
       />
       <span aria-hidden="true" className={part} {...page?.pageChrome}>
@@ -275,7 +280,7 @@ export function ClaimChip({
                         "from", and a `Timestamp` would finish the sentence with "in 3 minutes"
                         or, inside the last minute of the wait, with "just now" - which reads as
                         free while the server still refuses the take. */}
-                    <time dateTime={takeableAt} {...page.authorText}>
+                    <time className={part} dateTime={takeableAt} {...page.authorText}>
                       {exactTimeLabel(new Date(takeableAt))}
                     </time>
                   </>

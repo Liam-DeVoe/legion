@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import * as ts from "typescript";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { artifact as specDocument } from "../../__tests__/proof-document";
@@ -22,6 +25,7 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
+import * as theme from "../../theme/classes";
 import {
   calloutWarningBg,
   calloutWarningBorder,
@@ -87,9 +91,12 @@ import {
 /**
  * The shared controls on the new issue page's surface (dispatch://INFRA-3935 R2 and R6): inside
  * `NoTooltips` each file of R9 sets no `title`, draws what a `title` held, says the page's words
- * with their marks, and draws every colour in the page's palette; outside it, each draws what
+ * with their marks, draws every colour in the page's palette, and lets every value it draws wrap
+ * (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md); outside it, each draws what
  * `main` draws. Each case mounts the controls through `draw` (`shared-controls-fixture.tsx`),
- * from fixtures that the controls' own test files on `main` build the same way.
+ * from fixtures that the controls' own test files on `main` build the same way. One case reads
+ * source rather than a drawing: every page colour pair of an `ON_PAGE` table is registered in
+ * `CONTRAST_CHECKS` (decision 99(c) of the same artifact).
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -112,6 +119,10 @@ interface Mount {
   readonly outside?: (root: HTMLElement) => readonly Element[];
   /** Whether the mount draws no colour at all (a `Timestamp` alone takes its host's). */
   readonly colourless?: boolean;
+  /** The values the mount draws that no `data-author-text` mark finds, each found by its text
+   *  (a `MultiSelect`'s option, a route, a login inside the words around it): the wrap case
+   *  reads these as values too. */
+  readonly values?: readonly string[];
 }
 
 /** A drawn mount, settled, with the elements its files of R9 draw. */
@@ -434,11 +445,18 @@ function notesWith(approval: ArtifactApproval): Artifact {
 }
 
 /** The gate's steps as Details draws them: the spec waits on a request for its version 1, the
- *  decisions were sent back with a reason, and the verification has no document yet. */
-function stepEntries(): StepEntry[] {
+ *  decisions were sent back with a reason, and the verification has no document yet. `values`
+ *  names the two documents and gives the reason, which the wrap case makes long. */
+function stepEntries(
+  values = {
+    decisions: "decisions.md",
+    reason: "The second decision cites no evidence.",
+    spec: "spec.md",
+  }
+): StepEntry[] {
   return [
     {
-      document: doc(SPEC_ID, "spec.md", {
+      document: doc(SPEC_ID, values.spec, {
         latest_version: 2,
         state: "awaiting",
         waiting_on: "human",
@@ -447,10 +465,10 @@ function stepEntries(): StepEntry[] {
       step: "spec",
     },
     {
-      document: doc(DECISIONS_ID, "decisions.md", {
+      document: doc(DECISIONS_ID, values.decisions, {
         by: { id: "bob", kind: "user" },
         latest_version: 3,
-        reason: "The second decision cites no evidence.",
+        reason: values.reason,
         state: "changes_requested",
         version: 3,
       }),
@@ -1020,12 +1038,16 @@ const MOUNTS: readonly Mount[] = [
     node: () => (
       <IssueLabels
         disabled={false}
+        issueKey="CORE-1"
         labels={["api", "frontend"]}
         onSave={async () => undefined}
         project="CORE"
         saving={false}
       />
     ),
+    // With a label the control draws "+", and its name is `main`'s on both surfaces, key given
+    // or not (dispatch://INFRA-3935 R1); only an issue with no label is named by the words it
+    // draws (`labelsEmptyAndSaving`).
     settle: pressing("Edit labels"),
   },
   {
@@ -1057,14 +1079,15 @@ const MOUNTS: readonly Mount[] = [
   },
 ];
 
-/** Every marker `RouteReach.tsx` draws, each by its test id. */
-function routeMarkers(): ReactNode {
+/** Every marker `RouteReach.tsx` draws, each by its test id: the role nobody holds is `nobody`,
+ *  and the role an unresponsive session holds `unresponsive`, which the wrap case makes long. */
+function routeMarkers(nobody = "role:architect", unresponsive = "role:reviewer"): ReactNode {
   return (
     <>
       <RouteReachUnknownMarker testId="route-unknown" />
       <UnreachableRouteMarker
         issue={{
-          route: "role:architect",
+          route: nobody,
           route_holder: null,
           route_status: "no_holder",
           route_status_reason: null,
@@ -1084,7 +1107,7 @@ function routeMarkers(): ReactNode {
       />
       <UnresponsiveRouteMarker
         issue={{
-          route: "role:reviewer",
+          route: unresponsive,
           route_holder: STALLED_SESSION,
           route_status: "holder_unresponsive",
           route_status_reason: null,
@@ -1307,6 +1330,7 @@ const labelsEmptyAndSaving: Mount = {
     <>
       <IssueLabels
         disabled={false}
+        issueKey="CORE-1"
         labels={[]}
         onSave={async () => undefined}
         project="CORE"
@@ -1695,6 +1719,761 @@ function expectMarks(root: HTMLElement, words: readonly (readonly [string, Mark]
 }
 
 // ---------------------------------------------------------------------------------------------
+// Every mount with long values, for the case that every value wraps
+// ---------------------------------------------------------------------------------------------
+
+/** Values as long as a reader's can be, each with no space to break at, so that only a class
+ *  that breaks inside a word keeps one inside its row: part H's tester found a 44-character
+ *  repository name running past Details' row (decision 104 of
+ *  dispatch://INFRA-1196/artifact/part-decisions-md). A session's title begins with the word the
+ *  mounts find its name by. */
+const LONG = {
+  component: "a-component-whose-identifier-runs-on-past-its-row",
+  componentTitle: "A-component-whose-title-runs-on-past-the-row-of-Details",
+  document: "a-specification-whose-file-name-runs-on.md",
+  githubTitle: "Ship-the-new-issue-page-with-a-pull-request-title-that-runs-on",
+  handedOnBy: "a-person-who-handed-the-question-on-with-a-long-login@example.com",
+  inheritedRepository: "acme/its-parents-repository-with-a-long-name",
+  label: "a-label-with-forty-characters-and-no-gap",
+  liveTitle: "Implementer-of-the-new-issue-page-whose-title-runs-on-past-its-row",
+  login: "a-person-whose-login-runs-on-past-the-row@example.com",
+  question: "Should-we-ship-the-new-issue-page-before-its-header-is-done?",
+  reason: "The-second-decision-cites-no-evidence-for-its-claim-at-all.",
+  repository: "acme/the-repository-with-a-44-character-name",
+  retired: "a-retired-component-whose-identifier-runs-on",
+  route: "role:an-architect-role-whose-address-runs-on-past-its-row",
+  stalledTitle: "Reviewer-of-the-new-issue-page-whose-title-runs-on-past-its-row",
+  tmux: "the-tmux-session-of-a-long-running-agent:3",
+  url: "https://example.com/a-path-of-notes-that-runs-on-past-the-row-of-details",
+} as const;
+
+/** `mount` with each read it makes answered in long values: each session's title, each
+ *  priority's, the component's id and title, and each reviewer's login. A mount's own `node`
+ *  still sets the answers it needs after these, as it does after `answerDefaults`. */
+function withLongReads(mount: Mount): Mount {
+  return {
+    ...mount,
+    node: () => {
+      stubs.listAgents.mockResolvedValue([
+        listed(LIVE_SESSION, LONG.liveTitle),
+        listed(STALLED_SESSION, LONG.stalledTitle, "unresponsive"),
+      ]);
+      const rows = priorities.priorities;
+      if (rows === null) throw new Error("the fixture lists no priorities to lengthen");
+      stubs.listPriorities.mockResolvedValue({
+        ...priorities,
+        priorities: rows.map((row) => ({
+          ...row,
+          title: `${row.title}-under-a-title-that-runs-on-past-its-row`,
+        })),
+      });
+      const components = architecture.components;
+      if (components === null) throw new Error("the fixture has no components to lengthen");
+      stubs.getArchitecture.mockResolvedValue({
+        ...architecture,
+        components: components.map((component) => ({
+          ...component,
+          id: LONG.component,
+          title: LONG.componentTitle,
+        })),
+      });
+      stubs.listArtifactReviews.mockResolvedValue(
+        reviews.map((review) => ({
+          ...review,
+          actor: { id: `${review.actor.id}-whose-login-runs-on-past-the-row`, kind: "user" },
+        }))
+      );
+      return mount.node();
+    },
+  };
+}
+
+/** `mount`, and its twin that draws long values in place of its props' (`long.node`) or names
+ *  the values it draws that no mark finds (`long.values`). */
+function withLongValues(
+  mount: Mount,
+  long: Pick<Mount, "values"> & Partial<Pick<Mount, "node">>
+): readonly [Mount, Mount] {
+  return [mount, { ...mount, ...long }];
+}
+
+/** An issue whose components line draws `components`, for the long-valued twins. */
+function componentsIssue(
+  key: string,
+  components: Partial<Parameters<typeof IssueComponentsLine>[0]["issue"]["components"]>
+): Parameters<typeof IssueComponentsLine>[0]["issue"] {
+  return {
+    components: {
+      ids: [],
+      inherited_from: null,
+      mode: "explicit",
+      reason: null,
+      unknown: [],
+      ...components,
+    },
+    key,
+    project: "CORE",
+    status: "todo",
+    title: "Ship",
+  };
+}
+
+/** The twin of each mount of `EVERY_MOUNT` whose values are its props, drawing long ones in
+ *  their place, and of each that draws a value no `data-author-text` mark finds, naming it. */
+const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
+  // The refused copy prints the key it could not copy.
+  withLongValues(mountNamed("CopyButton, copied and refused"), { values: ["CORE-1"] }),
+  withLongValues(mountNamed("MultiSelect, open with a pick, details and a refusal"), {
+    node: () => (
+      <MultiSelect
+        emptyMessage="No labels yet."
+        error="Labels must be 1–40 characters."
+        label="Labels"
+        onChange={() => undefined}
+        onOpenChange={() => undefined}
+        open
+        optionDetail={(value) => (value === LONG.label ? "3" : undefined)}
+        options={[LONG.label, "docs"]}
+        searchLabel="Search labels"
+        selected={["docs"]}
+      />
+    ),
+    values: [LONG.label],
+  }),
+  withLongValues(mountNamed("Pill, LabelPill and StatusPill"), {
+    node: () => (
+      <>
+        <Pill>3</Pill>
+        <LabelPill>{LONG.label}</LabelPill>
+        <LabelPill selected>2 unread replies</LabelPill>
+        <StatusPill>In progress</StatusPill>
+      </>
+    ),
+    values: [LONG.label],
+  }),
+  withLongValues(mountNamed("ProofDocument, two open decisions and a block's references"), {
+    node: () => {
+      stubs.listIssueAsks.mockResolvedValue([
+        { ...blockAsk("ask-b1", "b-1", LONG.question), last_reply: null },
+        { ...blockAsk("ask-b2", "b-2", "Which region?"), last_reply: null },
+      ]);
+      return proofDocument();
+    },
+    values: [LONG.question],
+  }),
+  withLongValues(mountNamed("AskCard, an open blocking question with its session's handles open"), {
+    node: () => {
+      const ask = openAsk({
+        asked_of_at: "2026-10-09T00:00:00Z",
+        asked_of_by: LONG.handedOnBy,
+        author: {
+          id: LIVE_SESSION,
+          kind: "session",
+          origin: { session_title: LONG.liveTitle, tmux: LONG.tmux },
+        },
+        waiting_on_person: LONG.login,
+      });
+      return (
+        <AskCard ask={ask} getAskThread={async () => threadOf(ask)} initialThread={threadOf(ask)} />
+      );
+    },
+    values: [LONG.login, LONG.handedOnBy, LONG.tmux],
+  }),
+  withLongValues(mountNamed("ApprovalSteps, Details' size with versions and reasons"), {
+    node: () => (
+      <ApprovalSteps
+        entries={stepEntries({
+          decisions: `decisions-${LONG.document}`,
+          reason: LONG.reason,
+          spec: LONG.document,
+        })}
+        primaryArtifactId={SPEC_ID}
+        versions={{ asks: [specRequest], issueKey: "CORE-1" }}
+      />
+    ),
+    values: [LONG.document, LONG.reason],
+  }),
+  withLongValues(mountNamed("AssigneeControl, both variants, assigned and not"), {
+    node: () => (
+      <>
+        <AssigneeControl assignee={LONG.login} issueKey="CORE-1" />
+        <AssigneeControl assignee={null} issueKey="CORE-2" />
+        <AssigneeControl assignee={LONG.login} issueKey="CORE-3" variant="header" />
+        <AssigneeControl assignee={null} issueKey="CORE-4" variant="header" />
+      </>
+    ),
+    values: [LONG.login],
+  }),
+  withLongValues(mountNamed("GitHubLink, a pull request, a plain link and an unsafe one"), {
+    node: () => {
+      const answered = stubs.githubRest.getMockImplementation();
+      if (answered === undefined) throw new Error("no GitHub answer to draw a long title over");
+      stubs.githubRest.mockImplementation(async (...read) =>
+        read[0] === "repos/owner/repository/pulls/7"
+          ? githubAnswer({
+              head: { sha: "abcdef" },
+              merged: false,
+              state: "open",
+              title: LONG.githubTitle,
+            })
+          : answered(...read)
+      );
+      return (
+        <>
+          <GitHubLink link={{ url: "https://github.com/owner/repository/pull/7" }} />
+          <GitHubLink link={{ url: LONG.url }} />
+          <GitHubLink link={{ url: `javascript:${LONG.url}` }} />
+        </>
+      );
+    },
+    values: [LONG.githubTitle, LONG.url],
+  }),
+  withLongValues(
+    mountNamed("IssueComponentsLine, an explicit set, inherited, none and not attached"),
+    {
+      node: () => (
+        <>
+          <IssueComponentsLine
+            issue={componentsIssue("CORE-1", {
+              ids: [LONG.component],
+              inherited_from: "CORE-9",
+              unknown: [LONG.retired],
+            })}
+          />
+          <IssueComponentsLine
+            issue={componentsIssue("CORE-2", { mode: "none", reason: LONG.reason })}
+          />
+          <IssueComponentsLine inRow issue={componentsIssue("CORE-4", { ids: [LONG.component] })} />
+        </>
+      ),
+      values: [LONG.component, LONG.componentTitle, LONG.retired, LONG.reason],
+    }
+  ),
+  withLongValues(mountNamed("IssueLabels, its chips and its picker open"), {
+    node: () => (
+      <IssueLabels
+        disabled={false}
+        issueKey="CORE-1"
+        labels={[LONG.label, "api"]}
+        onSave={async () => undefined}
+        project="CORE"
+        saving={false}
+      />
+    ),
+    values: [LONG.label],
+  }),
+  withLongValues(labelsEmptyAndSaving, {
+    node: () => (
+      <>
+        <IssueLabels
+          disabled={false}
+          issueKey="CORE-1"
+          labels={[]}
+          onSave={async () => undefined}
+          project="CORE"
+          saving={false}
+        />
+        <IssueLabels
+          disabled={false}
+          labels={[LONG.label]}
+          onSave={async () => undefined}
+          project="CORE"
+          saving
+        />
+        <IssueLabels
+          disabled={false}
+          labels={[LONG.label]}
+          onSave={async () => undefined}
+          project="CORE"
+          saving={false}
+          variant="rail"
+        />
+      </>
+    ),
+    values: [LONG.label],
+  }),
+  withLongValues(
+    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    {
+      node: () => (
+        <>
+          <RepoControl
+            issueKey="CORE-1"
+            project="CORE"
+            repo={LONG.repository}
+            resolvedRepo={LONG.repository}
+          />
+          <RepoControl
+            issueKey="CORE-2"
+            project="CORE"
+            repo={null}
+            resolvedRepo={LONG.inheritedRepository}
+          />
+          <RepoControl
+            inRow
+            issueKey="CORE-3"
+            project="CORE"
+            repo={LONG.repository}
+            resolvedRepo={LONG.repository}
+          />
+        </>
+      ),
+      values: [LONG.repository, LONG.inheritedRepository],
+    }
+  ),
+  withLongValues(mountNamed("RouteReach, each marker"), {
+    node: () => routeMarkers(LONG.route, LONG.route),
+    values: [LONG.route],
+  }),
+]);
+
+/** What holds an element at its width or on one line: `shrink-0` and `flex-none` keep its width
+ *  in a flex row, `whitespace-nowrap`, `text-nowrap` and `whitespace-pre` keep its words on one
+ *  line, and `truncate` cuts what does not fit. */
+const HOLDS_ITS_LINE = [
+  "flex-none",
+  "shrink-0",
+  "text-nowrap",
+  "truncate",
+  "whitespace-nowrap",
+  "whitespace-pre",
+];
+
+/** What lets a value break inside a word: `[overflow-wrap:anywhere]` and its equivalents. */
+const BREAKS_ANYWHERE = [
+  "[overflow-wrap:anywhere]",
+  "break-all",
+  "break-words",
+  "wrap-anywhere",
+  "wrap-break-word",
+];
+
+/** What keeps a value within its line's width. */
+const STAYS_IN_ITS_LINE = ["max-w-full", "min-w-0"];
+
+/**
+ * The elements inside a value that are no part of its text, skipped by name. A count (an
+ * option's detail, the open decisions' count) is never read as a value at all: it carries no
+ * author-text mark and no mount names it among its values.
+ */
+const NOT_VALUES: readonly (readonly [what: string, selector: string])[] = [
+  // An icon draws no text.
+  ["an icon", "svg, svg *"],
+  // `AgentName`'s state mark is the dot before a session's name, named by its reading
+  // (dispatch://INFRA-3935 R2).
+  ["AgentName's state mark", "[data-agent-name] > [role='img']"],
+  // `AssigneeControl`'s initial is drawn from `data-initial` and adds no letter to the name.
+  ["AssigneeControl's initial", "[data-initial]"],
+];
+
+/** The text an element holds itself, not inside a child element. */
+function ownText(element: Element): string {
+  return [...element.childNodes]
+    .filter((node) => node.nodeType === node.TEXT_NODE)
+    .map((node) => node.textContent)
+    .join("");
+}
+
+/**
+ * Each value `mount` draws among `drawn`: every element with the author-text mark, and each
+ * element holding one of `mount.values` in its own text. A value inside `sr-only` is read aloud
+ * and drawn in no row, and a native `<option>` is drawn by the browser's own list, which no class
+ * wraps, so neither is read. `missing` takes each value of `mount.values` that nothing draws.
+ */
+function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[]): Element[] {
+  const shown = drawn.filter((element) => element.closest(".sr-only, select") === null);
+  const values = new Set(shown.filter((element) => element.hasAttribute(AUTHOR_TEXT_ATTRIBUTE)));
+  for (const value of mount.values ?? []) {
+    const holders = shown.filter((element) => ownText(element).includes(value));
+    if (holders.length === 0) missing.push(`${mount.name}: draws no ${value}`);
+    for (const holder of holders) values.add(holder);
+  }
+  return [...values];
+}
+
+/** An element as the wrap case names it: its tag and class, and the start of its text. */
+function described(element: Element): string {
+  return `<${element.tagName.toLowerCase()} class="${element.getAttribute("class") ?? ""}">${(element.textContent ?? "").slice(0, 32)}`;
+}
+
+/** What of `HOLDS_ITS_LINE` an element carries, its inline `flex-shrink: 0` among them. */
+function holdsItsLine(element: Element): string[] {
+  const held = classOf(element).filter((token) => HOLDS_ITS_LINE.includes(token));
+  return element instanceof HTMLElement && element.style.flexShrink === "0"
+    ? [...held, "flex-shrink: 0"]
+    : held;
+}
+
+/** Why `value` cannot wrap inside its row: it breaks nowhere inside a word, it has no bound on
+ *  its width, or it, an element of its text inside it, or an element around it up to `root`
+ *  holds its line or its width. */
+function wrapOffences(mountName: string, value: Element, root: Element): string[] {
+  const named = `${mountName}: ${described(value)}`;
+  const offences: string[] = [];
+  const own = classOf(value);
+  if (!own.some((token) => BREAKS_ANYWHERE.includes(token))) {
+    offences.push(`${named} breaks nowhere inside a word`);
+  }
+  if (!own.some((token) => STAYS_IN_ITS_LINE.includes(token))) {
+    offences.push(`${named} carries neither max-w-full nor min-w-0`);
+  }
+  const inside = [...value.querySelectorAll("*")].filter(
+    (element) => !NOT_VALUES.some(([, selector]) => element.matches(selector))
+  );
+  const around: Element[] = [];
+  let outer = value.parentElement;
+  while (outer !== null && outer !== root) {
+    around.push(outer);
+    outer = outer.parentElement;
+  }
+  const read: readonly (readonly [string, readonly Element[]])[] = [
+    ["it", [value]],
+    ["inside it", inside],
+    ["around it", around],
+  ];
+  for (const [where, elements] of read) {
+    for (const element of elements) {
+      const held = holdsItsLine(element);
+      if (held.length === 0) continue;
+      offences.push(
+        `${named}: ${where === "it" ? "it" : `${described(element)} ${where}`} carries ${held.join(" ")}`
+      );
+    }
+  }
+  return offences;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The page colour pairs of the `ON_PAGE` tables
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The files whose `ON_PAGE` table holds the page's colours for their elements inside
+ * `NoTooltips`. `theme/text-on-background.test.ts` cannot pair those: it reads a class only where
+ * it names an export of `classes.ts`, and `ON_PAGE.detail` names none (decision 99(c) of
+ * dispatch://INFRA-1196/artifact/part-decisions-md). The case reads each file's source, as that
+ * test does, rather than a list of pairs the file exports: which element draws an entry, and on
+ * which ground, is a fact of the file's markup, and a list beside it could say other than the
+ * markup draws.
+ */
+const ON_PAGE_FILES = [
+  "components/MultiSelect.tsx",
+  "features/doc/ApprovalChip.tsx",
+  "features/inbox/AskCard.tsx",
+] as const;
+
+/** The page's two grounds, the paper and the pane, on which an element of these files is drawn
+ *  where no element of its own file draws a ground under it: a control is laid on one of them
+ *  (B registers each of the page's inks on both). */
+const PAGE_GROUNDS = ["page-paper", "page-pane"] as const;
+
+/** A source file, parsed, with each `const` of it by its name: a name declared in two of its
+ *  functions keeps both. */
+interface ParsedSource {
+  readonly declarations: ReadonlyMap<string, readonly ts.Expression[]>;
+  readonly path: string;
+  readonly source: ts.SourceFile;
+}
+
+function parsedSource(path: string): ParsedSource {
+  const source = ts.createSourceFile(
+    path,
+    readFileSync(join(import.meta.dir, "..", "..", path), "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  );
+  const declarations = new Map<string, ts.Expression[]>();
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      declarations.set(node.name.text, [
+        ...(declarations.get(node.name.text) ?? []),
+        node.initializer,
+      ]);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return { declarations, path, source };
+}
+
+/** `node` with what changes only its type taken off: brackets, `as`, `satisfies` and `!`. */
+function bare(node: ts.Expression): ts.Expression {
+  return ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node)
+    ? bare(node.expression)
+    : node;
+}
+
+/** What a function of the file returns: an arrow's body, or each `return` of its block. */
+function returnedBy(node: ts.Expression): ts.Expression[] {
+  const fn = bare(node);
+  if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return [];
+  if (!ts.isBlock(fn.body)) return [fn.body];
+  const returned: ts.Expression[] = [];
+  const visit = (child: ts.Node) => {
+    if (ts.isReturnStatement(child) && child.expression !== undefined)
+      returned.push(child.expression);
+    else if (!ts.isFunctionLike(child)) ts.forEachChild(child, visit);
+  };
+  ts.forEachChild(fn.body, visit);
+  return returned;
+}
+
+/** Each entry of the table `name` names: a table of the file (`ON_PAGE`, `PAGE_URGENCY_ACCENT`),
+ *  else an object `classes.ts` exports (`pageStateText`), each entry as its class strings. */
+function tableEntries(
+  name: string,
+  file: ParsedSource,
+  depth: number
+): ReadonlyMap<string, readonly string[]> {
+  const entries = new Map<string, readonly string[]>();
+  for (const declared of file.declarations.get(name) ?? []) {
+    const table = bare(declared);
+    if (!ts.isObjectLiteralExpression(table)) continue;
+    for (const property of table.properties) {
+      if (ts.isPropertyAssignment(property) && !ts.isComputedPropertyName(property.name)) {
+        entries.set(property.name.text, classStrings(property.initializer, file, depth + 1));
+      }
+    }
+  }
+  const exported: unknown = (theme as Readonly<Record<string, unknown>>)[name];
+  if (entries.size === 0 && typeof exported === "object" && exported !== null) {
+    for (const [key, value] of Object.entries(exported)) {
+      if (typeof value === "string") entries.set(key, [value]);
+    }
+  }
+  return entries;
+}
+
+/**
+ * Every class string `node` can make at run time, read from its file's source: a ternary, `??`
+ * and `||` one for each side, a template one for each combination of its parts, a name what the
+ * file's `const` of that name makes or the string `classes.ts` exports under it, `table.key` that
+ * entry, `table[key]` each entry, and a call of the file's own function what it returns. Anything
+ * else - a prop, a hook's answer, another module's function - makes the empty string, which names
+ * no colour: only an element's page colours are read, and those are written in these forms.
+ */
+function classStrings(node: ts.Expression, file: ParsedSource, depth = 0): string[] {
+  if (depth > 24) return [""];
+  const made = (expression: ts.Expression) => classStrings(expression, file, depth + 1);
+  const expression = bare(node);
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+    return [expression.text];
+  }
+  if (ts.isConditionalExpression(expression)) {
+    return [...new Set([...made(expression.whenTrue), ...made(expression.whenFalse)])];
+  }
+  if (
+    ts.isBinaryExpression(expression) &&
+    (expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      expression.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+  ) {
+    return [...new Set([...made(expression.left), ...made(expression.right)])];
+  }
+  if (ts.isTemplateExpression(expression)) {
+    let strings = [expression.head.text];
+    for (const span of expression.templateSpans) {
+      const parts = made(span.expression);
+      strings = [
+        ...new Set(
+          strings.flatMap((before) => parts.map((part) => `${before}${part}${span.literal.text}`))
+        ),
+      ];
+    }
+    return strings;
+  }
+  if (ts.isIdentifier(expression)) {
+    const declared = file.declarations.get(expression.text);
+    if (declared !== undefined) return [...new Set(declared.flatMap(made))];
+    const exported: unknown = (theme as Readonly<Record<string, unknown>>)[expression.text];
+    return typeof exported === "string" ? [exported] : [""];
+  }
+  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
+    return [
+      ...(tableEntries(expression.expression.text, file, depth).get(expression.name.text) ?? [""]),
+    ];
+  }
+  if (ts.isElementAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
+    const entries = [...tableEntries(expression.expression.text, file, depth).values()];
+    return entries.length === 0 ? [""] : [...new Set(entries.flat())];
+  }
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
+    const returned = (file.declarations.get(expression.expression.text) ?? []).flatMap(returnedBy);
+    return returned.length === 0 ? [""] : [...new Set(returned.flatMap(made))];
+  }
+  return [""];
+}
+
+/** The `ON_PAGE` entries an expression reads, through the file's own `const`s. */
+function onPageEntries(node: ts.Node, file: ParsedSource, seen = new Set<ts.Node>()): string[] {
+  if (seen.has(node)) return [];
+  seen.add(node);
+  if (
+    ts.isPropertyAccessExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "ON_PAGE"
+  ) {
+    return [node.name.text];
+  }
+  const read: string[] = [];
+  if (ts.isIdentifier(node)) {
+    for (const declared of file.declarations.get(node.text) ?? []) {
+      read.push(...onPageEntries(declared, file, seen));
+    }
+  }
+  ts.forEachChild(node, (child) => {
+    read.push(...onPageEntries(child, file, seen));
+  });
+  return [...new Set(read)];
+}
+
+/** The page colours one class string draws, each by its state: `""` at rest, else its variants
+ *  (`hover`, `refused`, `placeholder`). */
+interface PageLook {
+  readonly bg: ReadonlyMap<string, string>;
+  readonly text: ReadonlyMap<string, string>;
+}
+
+/** The page colours of `className`, or `undefined` for `main`'s look, a string with a colour of
+ *  `main`'s, which is never drawn inside `NoTooltips` (dispatch://INFRA-3935 R6; the colour case
+ *  holds that). The focus rule `main` keeps inside `NoTooltips` is no ground and no text
+ *  (decision 58 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+function pageLook(className: string): PageLook | undefined {
+  const bg = new Map<string, string>();
+  const text = new Map<string, string>();
+  for (const token of tokens(className)) {
+    const { utility, variants } = splitToken(token);
+    if (variants.some((variant) => FOCUS_VARIANTS.includes(variant))) continue;
+    if (RAW_COLOR_PATTERN.test(utility)) return undefined;
+    const colour = /^(bg|text)-(.+)$/.exec(utility);
+    if (colour?.[2] === undefined || !Object.hasOwn(PAGE_COLORS, colour[2])) continue;
+    (colour[1] === "bg" ? bg : text).set(variants.join(":"), colour[2]);
+  }
+  return { bg, text };
+}
+
+/** One page colour pair an element draws. */
+interface DrawnPair {
+  readonly entries: readonly string[];
+  readonly ground: string;
+  readonly line: number;
+  readonly state: string;
+  readonly text: string;
+}
+
+/** Each page colour pair the elements of `file` that read an `ON_PAGE` entry draw, in each state
+ *  of theirs and of the elements around them: the text an element's class gives it, else the
+ *  nearest around it; on the ground its class gives it, else each ground of the nearest element
+ *  around it that draws one in every look it can take, with the grounds of the looks on the way
+ *  that draw one; else the page's grounds. */
+function onPagePairs(file: ParsedSource): DrawnPair[] {
+  const pairs: DrawnPair[] = [];
+  const visit = (node: ts.Node, around: readonly (readonly PageLook[])[]) => {
+    const opening = ts.isJsxElement(node)
+      ? node.openingElement
+      : ts.isJsxSelfClosingElement(node)
+        ? node
+        : undefined;
+    const classAttribute = opening?.attributes.properties.find(
+      (attribute): attribute is ts.JsxAttribute =>
+        ts.isJsxAttribute(attribute) && attribute.name.getText() === "className"
+    );
+    const value = classAttribute?.initializer;
+    const expression =
+      value === undefined
+        ? undefined
+        : ts.isJsxExpression(value)
+          ? value.expression
+          : ts.isStringLiteral(value)
+            ? value
+            : undefined;
+    if (opening === undefined || expression === undefined) {
+      ts.forEachChild(node, (child) => visit(child, around));
+      return;
+    }
+    const looks = classStrings(expression, file).flatMap((className) => {
+      const look = pageLook(className);
+      return look === undefined ? [] : [look];
+    });
+    const entries = onPageEntries(expression, file);
+    if (entries.length > 0) {
+      const line = file.source.getLineAndCharacterOfPosition(opening.getStart()).line + 1;
+      const states = new Set(
+        [...looks, ...around.flat()].flatMap((look) => ["", ...look.bg.keys(), ...look.text.keys()])
+      );
+      for (const look of looks) {
+        for (const state of states) {
+          const own = look.text.get(state) ?? look.text.get("");
+          const texts = own === undefined ? textAround(around, state) : [own];
+          for (const text of texts) {
+            for (const ground of groundsOf(look, around, state)) {
+              pairs.push({ entries, ground, line, state, text });
+            }
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, (child) => visit(child, [looks, ...around]));
+  };
+  visit(file.source, []);
+  return pairs;
+}
+
+/** The text colours the nearest element around draws in `state`, which an element of no text
+ *  colour of its own takes. */
+function textAround(around: readonly (readonly PageLook[])[], state: string): string[] {
+  for (const looks of around) {
+    const texts = looks.flatMap((look) => {
+      const text = look.text.get(state) ?? look.text.get("");
+      return text === undefined ? [] : [text];
+    });
+    if (texts.length > 0) return [...new Set(texts)];
+  }
+  return [];
+}
+
+/** The grounds an element of `look` is drawn on in `state`: its own, else those of the elements
+ *  around it out to the first that draws a ground in every look it can take, else the page's. */
+function groundsOf(
+  look: PageLook,
+  around: readonly (readonly PageLook[])[],
+  state: string
+): string[] {
+  const own = look.bg.get(state) ?? look.bg.get("");
+  if (own !== undefined) return [own];
+  const grounds = new Set<string>();
+  for (const looks of around) {
+    let through = looks.length === 0;
+    for (const outer of looks) {
+      const ground = outer.bg.get(state) ?? outer.bg.get("");
+      if (ground === undefined) through = true;
+      else grounds.add(ground);
+    }
+    if (!through) return [...grounds];
+  }
+  return [...grounds, ...PAGE_GROUNDS];
+}
+
+/** Whether `CONTRAST_CHECKS` holds `text` on `ground` as words, at 4.5:1: a check of the same
+ *  swatches at 3:1 is a shape's (B's twisty), which no word may lean on. */
+function registeredAsText(text: string, ground: string): boolean {
+  const colours: Readonly<Partial<Record<string, theme.ColorPair>>> = PAGE_COLORS;
+  const foreground = colours[text];
+  const background = colours[ground];
+  return theme.CONTRAST_CHECKS.some(
+    (check) =>
+      check.minRatio === 4.5 &&
+      check.foreground.light.name === foreground?.light.name &&
+      check.foreground.dark.name === foreground?.dark.name &&
+      check.background.light.name === background?.light.name &&
+      check.background.dark.name === background?.dark.name
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
 // The cases
 // ---------------------------------------------------------------------------------------------
 
@@ -2034,7 +2813,8 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       ["Implementer", "author-text"],
       ["Reviewer", "author-text"],
       ["Old planner", "author-text"],
-      [UNNAMED_SESSION, "author-text"],
+      // A session nothing names, not an author here, reads as one (decision 107).
+      [CONTROL_LABELS.unnamed_author, "page-chrome"],
     ]);
   });
 
@@ -2122,6 +2902,17 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       [CONTROL_LABELS.add_label, "page-chrome"],
       [ANSWER_LINES.saving_labels, "page-chrome"],
       ["api", "author-text"],
+    ]);
+    // The control of an issue with no label is named by the words it draws, then the issue's
+    // key (WCAG 2.5.3, dispatch://INFRA-3935 R2); one with a label, here saving, keeps `main`'s
+    // name (R1), as the control the mount above opens does.
+    expect(
+      within(view.container)
+        .getAllByRole("button", { name: /labels?\b/iu })
+        .map((control) => [control.getAttribute("aria-label"), control.textContent])
+    ).toEqual([
+      [`${CONTROL_LABELS.add_label} to CORE-1`, CONTROL_LABELS.add_label],
+      ["Edit labels", ANSWER_LINES.saving_labels],
     ]);
   });
 
@@ -2423,6 +3214,116 @@ test("inside NoTooltips AgentName's link draws in the page's ink with its underl
   });
 });
 
+// Decision 107 of dispatch://INFRA-1196/artifact/part-decisions-md (that issue's R22,
+// dispatch://INFRA-3935 R5): inside `NoTooltips` every form of `AgentName`, given a session's actor
+// or its bare id, names a session the agent list does not hold and no write stamped a title on by
+// B's word for an agent nothing names, which carries the page's mark, and never by its short id,
+// an address that names nobody. Its `data-agent-name` keeps the full id, and so does the copy an
+// asker's row offers. Outside, each form draws `main`'s short id, with the full id as its title.
+test("inside NoTooltips a session nothing names reads as An agent, never by its short id", async () => {
+  // Not in the agent list `answerDefaults` answers, and no stored title on the actor or the id.
+  const nameless = "0123456789abcdef";
+  const actor: Actor = { id: nameless, kind: "session" };
+  const control = (name: ReactNode) => <button type="button">{name}</button>;
+  const forms: readonly (readonly [string, () => ReactNode])[] = [
+    ["link, actor", () => <AgentName actor={actor} />],
+    ["link, id", () => <AgentName sessionId={nameless} storedTitle={undefined} />],
+    ["inline, actor", () => <AgentName actor={actor} inline />],
+    ["inline, id", () => <AgentName inline sessionId={nameless} storedTitle={undefined} />],
+    ["static, actor", () => <AgentName actor={actor} kind="static" />],
+    ["static, id", () => <AgentName kind="static" sessionId={nameless} storedTitle={undefined} />],
+    ["control, actor", () => <AgentName actor={actor} control={control} kind="control" />],
+    [
+      "control, id",
+      () => (
+        <AgentName control={control} kind="control" sessionId={nameless} storedTitle={undefined} />
+      ),
+    ],
+  ];
+  const eachForm: Mount = {
+    name: "AgentName, a session nothing names, in each form",
+    node: () =>
+      forms.map(([name, form]) => (
+        <div data-case={name} key={name}>
+          {form()}
+        </div>
+      )),
+    settle: async (view) => {
+      await waitFor(() =>
+        expect(view.container.querySelectorAll(`[data-agent-state="not-running"]`)).toHaveLength(
+          forms.length
+        )
+      );
+    },
+  };
+  // Each form's name as a reader sees it: a control's in the host's control, which the live
+  // link's arrow stands beside; every other form's, the form's whole text.
+  const drawnNames = (root: HTMLElement) =>
+    [...root.querySelectorAll("[data-case]")].map((drawn) => {
+      const agent = drawn.querySelector("[data-agent-name]");
+      return {
+        form: drawn.getAttribute("data-case"),
+        id: agent?.getAttribute("data-agent-name"),
+        name: (drawn.querySelector("button") ?? drawn).textContent,
+        title: agent?.getAttribute("title") ?? null,
+      };
+    });
+
+  await readDrawn(eachForm, "inside", (view) => {
+    const root = view.container;
+    const word = CONTROL_LABELS.unnamed_author;
+    expect(drawnNames(root)).toEqual(
+      forms.map(([form]) => ({ form, id: nameless, name: word, title: null }))
+    );
+    expectMarks(root, [[word, "page-chrome"]]);
+    expect(
+      within(root)
+        .getAllByText(word)
+        .map((name) => name.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`))
+    ).toEqual(forms.map(() => null));
+    expect(
+      within(root).getAllByRole("link", { name: `Open live conversation with ${word}` })
+    ).toHaveLength(2);
+    expect(view.baseElement.innerHTML).not.toContain("session:");
+  });
+
+  await readDrawn(eachForm, "outside", (view) => {
+    expect(drawnNames(view.container)).toEqual(
+      forms.map(([form]) => ({ form, id: nameless, name: "session:01234567…", title: nameless }))
+    );
+  });
+
+  // A row that offers a copy of the session's id still copies the full id inside: the asker's
+  // copy handles beside its name.
+  const askedByNameless: Mount = {
+    name: "AskCard, asked by a session nothing names, with its handles open",
+    node: () => {
+      const ask = openAsk({ author: actor });
+      return (
+        <AskCard ask={ask} getAskThread={async () => threadOf(ask)} initialThread={threadOf(ask)} />
+      );
+    },
+    settle: async (view, user) => {
+      await settleReads();
+      await user.click(
+        within(view.container).getByRole("button", {
+          expanded: false,
+          name: CONTROL_LABELS.unnamed_author,
+        })
+      );
+      await within(view.container).findByRole("button", { name: /Copy session ID/ });
+    },
+  };
+  await readDrawn(askedByNameless, "inside", (view) => {
+    const asker = view.container.querySelector(`[data-agent-name="${nameless}"]`);
+    expect(asker?.querySelector("button")?.textContent).toBe(CONTROL_LABELS.unnamed_author);
+    expect(
+      within(view.container).getByRole("button", { name: `Copy session ID ${nameless}` })
+    ).toBeTruthy();
+    expect(view.baseElement.innerHTML).not.toContain("session:");
+  });
+});
+
 // dispatch://INFRA-3935 R6 names the version link: it is drawn inside `NoTooltips` alone, so it is
 // the page's link, in the ink with its underline, and never `main`'s link blue.
 test("inside NoTooltips ApprovalSteps' version link draws in B's page colours", async () => {
@@ -2491,4 +3392,57 @@ test("inside NoTooltips RouteReach's markers draw in B's page colours", async ()
       expect(classOf(marker).filter((token) => token.includes("page-"))).toEqual([]);
     }
   });
+});
+
+// Decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md (dispatch://INFRA-3935 R4
+// and R6): inside `NoTooltips` every value a shared control draws - a name, an id, a title, a
+// key, an instant - keeps its line's width and breaks anywhere, and nothing it is drawn in holds
+// its width or its line, so a long one wraps inside its row rather than run past it. Each mount
+// of `EVERY_MOUNT` is drawn with long values (`LONG_VALUES`, `withLongReads`). A value is an
+// element with the author-text mark, or one holding a value its mount names.
+test("inside NoTooltips every value a shared control draws can wrap", async () => {
+  const offences: string[] = [];
+  const missing: string[] = [];
+  let read = 0;
+  for (const mount of EVERY_MOUNT) {
+    const long = withLongReads(LONG_VALUES.get(mount) ?? mount);
+    await readDrawn(long, "inside", (view, elements) => {
+      for (const value of drawnValues(long, elements, missing)) {
+        read += 1;
+        offences.push(...wrapOffences(long.name, value, view.baseElement));
+      }
+    });
+  }
+  expect(missing).toEqual([]);
+  expect([...new Set(offences)]).toEqual([]);
+  // A walk that found no value would pass with nothing read.
+  expect(read).toBeGreaterThan(EVERY_MOUNT.length);
+});
+
+// Decision 99(c) of dispatch://INFRA-1196/artifact/part-decisions-md (dispatch://INFRA-3935 R9):
+// each page colour pair an element of an `ON_PAGE` table draws - its text on its ground, at rest,
+// under the pointer, refused, and as a field's placeholder - is one `classes.ts` registers in
+// `CONTRAST_CHECKS` as words, so `palette.test.ts` measures it.
+test("every page colour pair of the ON_PAGE tables is registered in CONTRAST_CHECKS", () => {
+  const unregistered: string[] = [];
+  const unread: string[] = [];
+  for (const path of ON_PAGE_FILES) {
+    const file = parsedSource(path);
+    const pairs = onPagePairs(file);
+    for (const { entries, ground, line, state, text } of pairs) {
+      if (registeredAsText(text, ground)) continue;
+      unregistered.push(
+        `${path}:${line} ${entries.map((entry) => `ON_PAGE.${entry}`).join(", ")}: ${text} text on ${ground}${state === "" ? "" : ` (${state})`}`
+      );
+    }
+    // Each entry that draws a text colour is read by an element the walk found, so no pair of
+    // the table goes unread.
+    const drawn = new Set(pairs.flatMap((pair) => pair.entries));
+    for (const [entry, strings] of tableEntries("ON_PAGE", file, 0)) {
+      const draws = strings.some((className) => (pageLook(className)?.text.size ?? 0) > 0);
+      if (draws && !drawn.has(entry)) unread.push(`${path}: ON_PAGE.${entry}`);
+    }
+  }
+  expect(unread).toEqual([]);
+  expect([...new Set(unregistered)]).toEqual([]);
 });

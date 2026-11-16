@@ -77,10 +77,14 @@ export function IssueComponentsLine({
     inDetails
       ? ((tree.data?.components ?? []).find((component) => component.id === id)?.title ?? id)
       : id;
-  // In a row of Details nothing of the line stops its wrap (dispatch://INFRA-3935 R4): the
-  // words break between themselves, and a long name breaks inside its chip only where no break
-  // between words is left. Everywhere else each part stays whole, as on `main`.
-  const part = inDetails ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
+  // Inside `NoTooltips` nothing of the line stops its wrap, in a row of Details
+  // (dispatch://INFRA-3935 R4) and in the header alike: the words break between themselves, and
+  // a long name breaks inside its chip only where no break between words is left, since a
+  // component, the issue it is inherited from and a reason are values, which wrap there
+  // (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside it each part
+  // stays whole, as on `main`.
+  const part = page === null ? "shrink-0" : "min-w-0 [overflow-wrap:anywhere]";
+  const value = "max-w-full [overflow-wrap:anywhere]";
   // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
   // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the line is the ink in a row
   // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
@@ -94,7 +98,7 @@ export function IssueComponentsLine({
       <span className={`${part} text-xs ${quiet}`} {...page?.pageChrome}>
         {page?.CONTROL_LABELS.components_inherited_from ?? "inherited from"}{" "}
         <Link
-          className={`dispatch-inline-link underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
+          className={`dispatch-inline-link underline ${page === null ? `${linkText} ${linkHoverText}` : `${pageInkText} ${value}`}`}
           to={buildIssuePath({ key: components.inherited_from, kind: "issue" })}
           {...page?.authorText}
         >
@@ -104,7 +108,7 @@ export function IssueComponentsLine({
     );
   return (
     <div
-      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
+      className={`flex ${page === null ? "shrink-0" : "min-w-0 flex-wrap"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
       data-testid="issue-components"
     >
       {inDetails ? null : (
@@ -123,7 +127,9 @@ export function IssueComponentsLine({
           ) : (
             <>
               {page.CONTROL_LABELS.components_none} —{" "}
-              <span {...page.authorText}>{components.reason}</span>
+              <span className={value} {...page.authorText}>
+                {components.reason}
+              </span>
             </>
           )}
         </span>
@@ -151,7 +157,10 @@ export function IssueComponentsLine({
                 <>retired: {id}</>
               ) : (
                 <>
-                  {page.CONTROL_LABELS.components_retired}: <span {...page.authorText}>{id}</span>
+                  {page.CONTROL_LABELS.components_retired}:{" "}
+                  <span className={value} {...page.authorText}>
+                    {id}
+                  </span>
                 </>
               )}
             </span>
@@ -193,7 +202,7 @@ export function IssueComponentsLine({
       )}
       {write.error === null ? null : (
         <span
-          className={`shrink-0 text-xs ${page === null ? dangerText : pageFailedText}`}
+          className={`${page === null ? "shrink-0" : value} text-xs ${page === null ? dangerText : pageFailedText}`}
           role="alert"
           {...page?.authorText}
         >
