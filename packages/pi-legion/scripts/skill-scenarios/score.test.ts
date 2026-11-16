@@ -29,6 +29,20 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
  */
 const stagings: (() => void)[] = [];
 
+/** The bound of each hook of this file that does real work rather than wait on anything: the
+ *  staging below, which writes every staged world and builds the pushed-code run's repository, and
+ *  the scoring further down, which runs one child Bun process over the whole of it. Measured on
+ *  2026-11-15 in an issue pod with two CPUs, three runs at each of two heads: with the pod quiet the
+ *  staging took 1.2 to 1.9 s and the scoring 2.0 to 2.5 s. Bun's default for a hook is 5 s, which
+ *  nobody chose for this work, and with the pod's two CPUs loaded each hook crossed it at both heads:
+ *  the staging ran 5.5 s once, and the scoring 7.1 s and 8.0 s, where a scoring run under the default
+ *  read 5008 to 5066 ms, the cutoff stopping its child rather than the length of its work. Thirty
+ *  seconds is twelve times the slower quiet cost, so a loaded machine still finishes, and a hook that
+ *  hangs still fails this file: a scoring child that hangs is stopped at 30 s, and a staging that
+ *  hangs, which Bun cannot interrupt since it runs on this thread, is reported timed out once it
+ *  returns (a 40 s stall failed the file at 44 s, measured). */
+const HOOK_WORK_TIMEOUT_MS = 30_000;
+
 beforeAll(() => {
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
@@ -37,7 +51,7 @@ beforeAll(() => {
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-});
+}, HOOK_WORK_TIMEOUT_MS);
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -3084,11 +3098,12 @@ for (const [n, faults] of [2, 4, 3].entries())
  *  read in a hook, below the one that stages that world. */
 let out = "";
 let scoredExitCode: number | null = null;
+// Bounded as the staging hook at the top of this file is, and for the same measured reason.
 beforeAll(() => {
   const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
-});
+}, HOOK_WORK_TIMEOUT_MS);
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
