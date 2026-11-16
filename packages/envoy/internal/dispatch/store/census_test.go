@@ -1364,19 +1364,32 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 // still prints its report rather than exiting without one. Here the read waits on an ACCESS
 // EXCLUSIVE holder under a statement timeout shorter than the lock timeout, so Postgres cancels it
 // as a statement timeout (57014), as it cancels a slow count of a large table.
+//
+// The refused read never finishes while the holder holds its lock, so it is refused however long
+// the statement timeout is, and refused as a statement timeout at any length short of
+// pgmigrate.LockTimeout: the statement timeout starts with the statement, lock_timeout only once
+// the read waits, and Postgres reports the one due first when both have run out. Every other
+// statement of the census runs under the same statement timeout, the "select 0" census and
+// catalog reads that wait on nothing, and one that outlasted it would fail the census or add a
+// refusal. The census sets lock_timeout to the constant LockTimeout and offers no option for it,
+// so the statement timeout is a second short of it, as far from what those statements take as the
+// read's 57014 allows. That is the one bound of real time left in this row, PostgreSQL's own,
+// which no clock of the test's reaches. LongTransaction is an hour, so the holder, opened just
+// before the census, is never old enough to refuse.
 func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testing.T) {
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "things", "access exclusive")), 10)
-	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{StatementTimeout: time.Second})
+	timeout := pgmigrate.LockTimeout - time.Second
+	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{StatementTimeout: timeout, LongTransaction: time.Hour})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
-	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "could not read things within the 1s statement timeout (SQLSTATE 57014)") || !strings.Contains(got[0], pid) {
+	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "could not read things within the "+timeout.String()+" statement timeout (SQLSTATE 57014)") || !strings.Contains(got[0], pid) {
 		t.Errorf("refusals = %v, want one naming the table, 57014 and %s", got, pid)
 	}
 	out := reportText(report)
-	if !strings.Contains(out, "touches things: not read, its read outlasted the 1s statement timeout;") || !strings.HasSuffix(out, "census: REFUSED (1 reason)\n") {
+	if !strings.Contains(out, "touches things: not read, its read outlasted the "+timeout.String()+" statement timeout;") || !strings.HasSuffix(out, "census: REFUSED (1 reason)\n") {
 		t.Errorf("report:\n%s", out)
 	}
 }
