@@ -288,6 +288,46 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
 ];
 
 /**
+ * A listing's structural sharing, by issue key rather than by place. TanStack's own
+ * (`replaceEqualDeep`) pairs a new answer's rows with the cached ones by index, so one issue
+ * moving up a listing (its `updated_at` changed, or its status) hands every row it passed a new
+ * object, though none of them changed. Paired by key, every issue an answer did not change keeps
+ * the object the page already holds, so a memoised row or Board card of it draws nothing again;
+ * the cached array itself is kept where nothing in it changed.
+ */
+function shareIssuesByKey(cached: unknown, next: unknown): unknown {
+  if (!Array.isArray(cached) || !Array.isArray(next)) return replaceEqualDeep(cached, next);
+  const before = new Map<unknown, unknown>(
+    cached.map((issue: { readonly key?: unknown }) => [issue?.key, issue])
+  );
+  let unchanged = cached.length === next.length;
+  const shared = next.map((issue: { readonly key?: unknown }, index) => {
+    const held = before.get(issue?.key);
+    const kept = held === undefined ? issue : replaceEqualDeep(held, issue);
+    if (kept !== cached[index]) unchanged = false;
+    return kept;
+  });
+  return unchanged ? cached : shared;
+}
+
+/** `shareIssuesByKey` for a page of a listing: its `issues` by key, and the cached page kept
+ *  where its other fields (`total`, `limit`, `offset`, all numbers) and its issues are the same.
+ *  The issues are not handed to `replaceEqualDeep` again, which would pair them by place. */
+function sharePageByKey(cached: unknown, next: unknown): unknown {
+  const issuesOf = (page: unknown) =>
+    typeof page === "object" && page !== null ? (page as { issues?: unknown }).issues : undefined;
+  const issues = shareIssuesByKey(issuesOf(cached), issuesOf(next));
+  if (!Array.isArray(issues) || typeof cached !== "object" || cached === null)
+    return replaceEqualDeep(cached, next);
+  const page: Record<string, unknown> = { ...(next as object), issues };
+  const held = cached as Record<string, unknown>;
+  const same =
+    Object.keys(held).length === Object.keys(page).length &&
+    Object.entries(page).every(([field, value]) => held[field] === value);
+  return same ? cached : page;
+}
+
+/**
  * A project's issue list - plain, or server-filtered by labels - shared by the Board, the List,
  * the filter strip and the issue header's label picker. Every observer sets the query's function,
  * so each one takes it from here. A fetch that starts while a board move on the project is
@@ -296,6 +336,7 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
  */
 export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
   queryOptions({
+    structuralSharing: shareIssuesByKey,
     queryKey: [...projectIssuesQueryKey(project, labels), ...(open ? ["open"] : [])],
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
@@ -316,6 +357,7 @@ export const projectDoneIssuesQuery = (
   window: { readonly closed_since?: string; readonly closed_before?: string }
 ) =>
   queryOptions({
+    structuralSharing: shareIssuesByKey,
     queryKey: [
       ...projectIssuesQueryKey(project, []),
       "done",
@@ -342,6 +384,7 @@ export const projectDonePageQuery = (
   }
 ) =>
   queryOptions({
+    structuralSharing: sharePageByKey,
     queryKey: [
       ...projectIssuesQueryKey(project, []),
       "done-page",
@@ -417,6 +460,7 @@ export const advancesIssuesParams = (listing: AdvancesListing, open = false) => 
  *  and every listing whose rows advance it (`priorityWriteTargets`, `api/event-refresh.ts`). */
 export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
   queryOptions({
+    structuralSharing: shareIssuesByKey,
     // Typed as widely as the project listing's key (`projectIssuesQueryKey`), so the table that
     // reads one or the other sees one options type rather than two that differ by their key.
     queryKey: [

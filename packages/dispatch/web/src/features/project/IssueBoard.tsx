@@ -12,7 +12,15 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { useQueryClient } from "@tanstack/react-query";
-import { type CSSProperties, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  memo,
+  type ReactNode,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
@@ -69,6 +77,13 @@ const boardCollisionDetection: CollisionDetection = (args) => {
 };
 
 const boardFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
+
+// The sensors' options, made once: `useSensor` keeps its sensor while its options are the same
+// object, and a new object each render would hand dnd-kit new activators, whose context then
+// draws every card's drag hooks again.
+const MOUSE_OPTIONS = { activationConstraint: { distance: 8 } };
+const TOUCH_OPTIONS = { activationConstraint: { delay: 150, tolerance: 5 } };
+const MINUTE_MS = 60_000;
 
 /** The card `node` sits in, or is. */
 const cardAround = (node: Element | null): HTMLElement | null =>
@@ -169,21 +184,39 @@ function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode 
   );
 }
 
+/** What a card is drawn from. A card is drawn again only when one of these changes
+ *  (`sameCard`): the issue, its Legion card and facts and its queue number keep their identity
+ *  across reads where nothing in them changed (the query cache's structural sharing), so a live
+ *  change to one issue draws that issue's card, not the Board's 1,500. */
+interface CardProps {
+  readonly item: Item;
+  /** The Board's clock, to the minute, which Time in Legion phase counts from. */
+  readonly nowMs: number;
+  /** The column, and the lane, the card stands in (its column's drop id). */
+  readonly place?: string;
+  readonly unread: boolean;
+}
+
+const sameCard = (a: CardProps, b: CardProps): boolean =>
+  a.item.issue === b.item.issue &&
+  a.item.place === b.item.place &&
+  a.item.card?.card === b.item.card?.card &&
+  a.item.facts === b.item.facts &&
+  a.nowMs === b.nowMs &&
+  a.place === b.place &&
+  a.unread === b.unread;
+
 /** One card: today's card (key, title, priority, claim, progress, labels, open asks, unread),
  *  and for an issue with a card on the Legion board its Legion fields. The whole card is the
- *  drag handle: an 8 px mouse move or a 150 ms touch hold lifts it. */
-function BoardCard({
+ *  drag handle: an 8 px mouse move or a 150 ms touch hold lifts it. Its drag hooks draw it
+ *  again whenever the drag context changes, so what it shows is a body of its own (`CardBody`),
+ *  drawn again only when its data changes. */
+const BoardCard = memo(function BoardCard({
   item,
   nowMs,
   place,
   unread,
-}: {
-  item: Item;
-  nowMs: number;
-  /** The column, and the lane, the card stands in (its column's drop id). */
-  place: string;
-  unread: boolean;
-}): ReactNode {
+}: CardProps): ReactNode {
   const { issue } = item;
   const { attributes, isDragging, listeners, setNodeRef, transform } = useDraggable({
     attributes: { role: "article", roleDescription: "card", tabIndex: -1 },
@@ -214,6 +247,16 @@ function BoardCard({
       {...attributes}
       {...listeners}
     >
+      <CardBody item={item} nowMs={nowMs} unread={unread} />
+    </article>
+  );
+}, sameCard);
+
+/** What a card shows inside its drag handle. */
+const CardBody = memo(function CardBody({ item, nowMs, unread }: CardProps): ReactNode {
+  const { issue } = item;
+  return (
+    <>
       <Link
         className={`flex flex-col text-sm ${linkText} ${linkHoverText}`}
         data-issue-link
@@ -252,9 +295,9 @@ function BoardCard({
         )}
       </div>
       <LegionFacts item={item} nowMs={nowMs} />
-    </article>
+    </>
   );
-}
+}, sameCard);
 
 /** What the Board's columns are: the issues' statuses, or their Legion phases. */
 export type BoardBy = "status" | "legion_phase";
@@ -471,7 +514,9 @@ export function IssueBoard({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string>();
-  const nowMs = Date.now();
+  // To the minute, the finest Time in Legion phase shows, so a render within the same minute
+  // leaves every card's props as they were.
+  const nowMs = Math.floor(Date.now() / MINUTE_MS) * MINUTE_MS;
   // While a card is dragged, and until the drop's own changes are drawn, the anchor leaves the
   // page alone: the dragged card moves under the reader's hand by a transform, and a commit then
   // would read that move as content shifting around it. Released two frames after the drop, when
@@ -497,8 +542,8 @@ export function IssueBoard({
     scope: { id: `board:${project}` },
   });
   const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } })
+    useSensor(MouseSensor, MOUSE_OPTIONS),
+    useSensor(TouchSensor, TOUCH_OPTIONS)
   );
   const openKey = [...projectIssuesQueryKey(project, []), "open"];
 
