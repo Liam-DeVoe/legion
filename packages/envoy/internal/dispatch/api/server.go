@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,6 +113,16 @@ type Deps struct {
 	// verifier stays non-nil while its issuer is undiscovered, so such a bearer
 	// is answered 503 then, never taken for a personal token.
 	OIDC ServiceTokenVerifier
+	// OIDCAccounts are the Kubernetes service-account subjects this deployment admits
+	// (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS), each `system:serviceaccount:<namespace>:<name>`. A
+	// verified token of any other subject is refused 401 SERVICE_ACCOUNT_NOT_ADMITTED before any
+	// handler reads a row (serviceTokenActor). Empty admits every verified subject of the issuer
+	// and audience, as a deployment that names none always did.
+	OIDCAccounts []string
+	// AccessAccounts are the service-account subjects that may read the membership answer (GET
+	// /api/v1/access/projects/{key} and GET /api/v1/access/person; cmd/dispatch:
+	// DISPATCH_ACCESS_ACCOUNTS). Every other caller is 403 ACCESS_ACCOUNT_REQUIRED there.
+	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
@@ -216,6 +227,10 @@ type DepsInput struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          ServiceTokenVerifier
+	// OIDCAccounts and AccessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts; cmd/dispatch
+	// has checked each subject's form and that every access account is also admitted.
+	OIDCAccounts   []string
+	AccessAccounts []string
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *brokertoken.Verifier
@@ -321,6 +336,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		GitHub:                 github,
 		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
 		OIDC:                   input.OIDC,
+		OIDCAccounts:           input.OIDCAccounts,
+		AccessAccounts:         input.AccessAccounts,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentSecrets:           agentSecretsClient,
@@ -1027,7 +1044,11 @@ var (
 // an operator the token was verified and refused rather than simply unknown. A
 // token the verifier could not judge because its issuer has not been discovered
 // is a 503 OIDC_ISSUER_UNAVAILABLE, never a 401: the caller retries rather than
-// reads its token as refused.
+// reads its token as refused. A verified token of an account the deployment does not
+// name (Deps.OIDCAccounts) is 401 SERVICE_ACCOUNT_NOT_ADMITTED: optionalActor is the
+// one caller resolution of every route, both sockets and every write, so the refusal
+// comes before any handler reads or writes a row. A deployment that names no account
+// admits every verified one, as it did before the list existed.
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
@@ -1044,7 +1065,12 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "OIDC_TOKEN_INVALID",
 			"service-account token rejected (%s)", reason)
 	}
+	// The subject is verified, so the access-log line names it whether or not it is admitted.
 	accesslog.Note(r.Context(), accesslog.KindService, claims.Subject)
+	if len(s.deps.OIDCAccounts) > 0 && !slices.Contains(s.deps.OIDCAccounts, claims.Subject) {
+		return model.Actor{}, false, errorf(http.StatusUnauthorized, "SERVICE_ACCOUNT_NOT_ADMITTED",
+			"the service account %s is not one this deployment admits (DISPATCH_OIDC_ACCOUNTS)", claims.Subject)
+	}
 	// A credential that holds no scope, not the absence of one: a pod's projected token proves a
 	// workload and no person, so it acts as nobody.
 	return model.Actor{Service: &claims.Subject, Credential: scopelessCredential}, false, nil
