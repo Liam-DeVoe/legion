@@ -106,8 +106,8 @@ type specCheckFacts struct {
 
 // specFiles is what the route reads of the spec files at a commit: how many problems the graph
 // logic finds in them and the first one, as specgraph.Judge orders them, and, when it finds none,
-// their checks by id. A file over notes.MaxFileSize is one problem, as it is to every reader of
-// spec files.
+// their checks by id. Each file over notes.MaxFileSize is one problem, as it is to every reader
+// of spec files, and then the graph logic reads none of them.
 type specFiles struct {
 	Problems int                       `json:"problems,omitempty"`
 	First    string                    `json:"first,omitempty"`
@@ -172,6 +172,11 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	numbers, err := runNumbersOf(run)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	principal, err := resultPrincipal(run)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -246,7 +251,7 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 			Repository: run.Repository, WorkflowRef: run.WorkflowRef, Ref: run.Ref, EventName: run.EventName,
 			RunID: run.RunID, Attempt: numbers.attempt, CheckRunID: run.CheckRunID, RunnerEnvironment: run.RunnerEnvironment,
 		},
-		recorder: model.SpecCheckRecorder{Session: actor.Credential.Session, Principal: resultPrincipal(run.WorkflowRef)},
+		recorder: model.SpecCheckRecorder{Session: actor.Credential.Session, Principal: principal},
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -335,11 +340,13 @@ func runNumbersOf(run oauthwire.CIRun) (runNumbers, error) {
 
 // projectMapsRepository answers whether project maps repository, by the name it was mapped
 // under or the name it was renamed to (repo_projects.renamed_to), which is the name GitHub
-// names a run's repository by.
+// names a run's repository by. GitHub spells a repository as its owner does and Dispatch stores
+// a mapping's names lowercased (canonicalRepo), so both sides are compared lowercased, as every
+// comparison of a repository is (refs.CanonicalRepoSQL).
 func (s *server) projectMapsRepository(ctx context.Context, project, repository string) (bool, error) {
 	var mapped bool
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select exists (select 1 from repo_projects where project = $1 and (repo = $2 or renamed_to = $2))`,
+		select exists (select 1 from repo_projects where project = $1 and (lower(repo) = lower($2) or lower(renamed_to) = lower($2)))`,
 		project, repository).Scan(&mapped); err != nil {
 		return false, fmt.Errorf("read whether %s maps %s: %w", project, repository, err)
 	}
@@ -393,8 +400,9 @@ func (s *server) specCheckRun(ctx context.Context, reader *repositoryReader, rep
 // specFilesAt is what the spec files of repository at commit hold: the process's cached answer, or
 // the files GitHub serves read with the graph logic's one reading of them (specgraph.Judge), with
 // no retired list, since the files hold no history. A commit whose tree holds no spec directory
-// holds no check, and a file over notes.MaxFileSize is a problem of the files, not a GitHub that
-// did not answer.
+// holds no check. A file over notes.MaxFileSize is a problem of the files, not a GitHub that did
+// not answer: each listed file over it is one problem, found before any file is read, as
+// spec-check counts them (notes.ReadSet), and where none is, a file GitHub serves over it is one.
 func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repository, commit string) (specFiles, error) {
 	s.specReads.init()
 	key := repository + "@" + commit
@@ -413,14 +421,24 @@ func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repo
 		return specFiles{}, err
 	}
 	var files specFiles
-	read, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
-	switch {
-	case errors.Is(err, notes.ErrFileTooLarge):
-		files = specFiles{Problems: 1, First: err.Error()}
-	case err != nil:
-		return specFiles{}, err
-	default:
-		files = judgeSpecFiles(read)
+	for _, file := range listing.Files {
+		if err := notes.CheckSize(file.Path, file.Size); err != nil {
+			if files.Problems == 0 {
+				files.First = err.Error()
+			}
+			files.Problems++
+		}
+	}
+	if files.Problems == 0 {
+		read, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
+		switch {
+		case errors.Is(err, notes.ErrFileTooLarge):
+			files = specFiles{Problems: 1, First: err.Error()}
+		case err != nil:
+			return specFiles{}, err
+		default:
+			files = judgeSpecFiles(read)
+		}
 	}
 	if encoded, err := json.Marshal(files); err == nil {
 		s.specReads.checks.Put(key, encoded)
@@ -458,34 +476,45 @@ func jobAndLeg(name string) (job, leg string) {
 	return name, ""
 }
 
-// resultPrincipal is the broker's principal of a result entry's run: workflow-results: and the
-// run's workflow, which its workflow_ref names before its "@<ref>".
-func resultPrincipal(workflowRef string) string {
-	workflow, _, _ := strings.Cut(workflowRef, "@")
-	return "workflow-results:" + workflow
+// resultPrincipal is the broker's principal of a result entry's run, read by the broker's own
+// rule from what the broker authenticated (oauthwire.WorkflowPath, oauthwire.ResultPrincipal):
+// workflow-results:, the repository and the path of the workflow file, which its workflow_ref
+// names before "@" and the run's ref. The verifier admits a results token only where the path
+// reads (brokertoken.wholeRun), so a run whose path does not read is Dispatch's own fault, a 500.
+func resultPrincipal(run oauthwire.CIRun) (string, error) {
+	workflow, ok := oauthwire.WorkflowPath(run.WorkflowRef, run.Repository, run.Ref)
+	if !ok {
+		return "", fmt.Errorf("read the workflow of a results token: %s is not %s/<path>@%s", run.WorkflowRef, run.Repository, run.Ref)
+	}
+	return oauthwire.ResultPrincipal(run.Repository, workflow), nil
 }
 
 // cutObserved is what a result keeps of what a job observed: the text whole when it is
-// contracts.SpecCheckObservedMax runes or fewer, else its first runes and
-// contracts.SpecCheckObservedCutNote, that many runes in all, so the stored text says that it was
-// cut. `dispatch result --project` cuts by the same rule before it sends the text.
+// contracts.SpecCheckObservedMax runes or fewer, else its first contracts.SpecCheckObservedStart
+// runes, contracts.SpecCheckObservedCutNote and its last contracts.SpecCheckObservedEnd runes,
+// that many runes in all, so the stored text keeps the test's name at its start and why it failed
+// at its end, and says that the middle was cut. `dispatch result --project` cuts by the same rule
+// before it sends the text.
 func cutObserved(text string) string {
-	if utf8.RuneCountInString(text) <= contracts.SpecCheckObservedMax {
+	runes := utf8.RuneCountInString(text)
+	if runes <= contracts.SpecCheckObservedMax {
 		return text
 	}
-	return cutToRunes(text, contracts.SpecCheckObservedMax-utf8.RuneCountInString(contracts.SpecCheckObservedCutNote)) + contracts.SpecCheckObservedCutNote
+	return text[:runeOffset(text, contracts.SpecCheckObservedStart)] + contracts.SpecCheckObservedCutNote +
+		text[runeOffset(text, runes-contracts.SpecCheckObservedEnd):]
 }
 
-// cutToRunes is text cut to its first limit runes.
-func cutToRunes(text string, limit int) string {
+// runeOffset is the byte offset in text of its rune numbered n, counted from 0, and len(text)
+// for an n past its last rune.
+func runeOffset(text string, n int) int {
 	runes := 0
 	for i := range text {
-		if runes == limit {
-			return text[:i]
+		if runes == n {
+			return i
 		}
 		runes++
 	}
-	return text
+	return len(text)
 }
 
 // specCheckRow is one row of spec_check_results before it is written, and the attestation the

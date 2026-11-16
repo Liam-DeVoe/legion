@@ -430,8 +430,8 @@ func sameCaller(got, want brokertoken.Caller) bool {
 // TestAResultsTokenIsRefusedWhereNotServed: a results token is no session's credential to a
 // verifier whose service did not ask for it, whether or not that verifier serves a read-only
 // token, as a build before the switch refused it: it reads the project scope results as a word it
-// does not know. Dispatch's own verifier serves read-only tokens and no results token until its
-// route list names a route for one, and the Envoy listener's serves neither.
+// does not know. The Envoy listener's verifier serves neither token, and Dispatch's serves both
+// (cmd/dispatch, brokerTokenVerifier) on the routes its read and results lists name.
 func TestAResultsTokenIsRefusedWhereNotServed(t *testing.T) {
 	caller := newSigner(t)
 	for _, readOnly := range []bool{false, true} {
@@ -524,7 +524,8 @@ func TestAResultsScopeBesideANamedProjectScopeIsRefused(t *testing.T) {
 
 // TestAResultsTokenWithoutCIIsRefused: a results token carries the run it was minted for, every
 // field of it, in the forms the broker mints, since what it may write is held to that run's
-// commit and job; one that carries none, a run missing a field, or a run whose commit is not 40
+// commit and job; one that carries none, a run missing a field, a run whose workflow_ref is not
+// its repository, a path and its ref (oauthwire.WorkflowPath), or a run whose commit is not 40
 // lowercase hex or whose run, attempt or check run is not a positive decimal, is no session's
 // credential even to a verifier that serves results tokens. So is one naming no project, no
 // person, or a service, none of which a result entry mints, and a run beside a read-only token.
@@ -551,6 +552,10 @@ func TestAResultsTokenWithoutCIIsRefused(t *testing.T) {
 		"a run whose attempt is negative":    spoiled(func(a *brokertoken.Introspection) { a.CI.RunAttempt = "-1" }),
 		"a run whose check run is past int64": spoiled(func(a *brokertoken.Introspection) {
 			a.CI.CheckRunID = "99999999999999999999"
+		}),
+		"a run whose workflow_ref does not end in its ref": spoiled(func(a *brokertoken.Introspection) { a.CI.Ref = "refs/heads/other" }),
+		"a run whose workflow_ref is not under its repository": spoiled(func(a *brokertoken.Introspection) {
+			a.CI.Repository = "example-org/other-repo"
 		}),
 		"no project":                  spoiled(func(a *brokertoken.Introspection) { a.Project = "" }),
 		"no person":                   spoiled(func(a *brokertoken.Introspection) { a.Person, a.Service = "", "example-fleet" }),

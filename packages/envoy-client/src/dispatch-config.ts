@@ -1,3 +1,4 @@
+import { SESSION_VAR } from "@legion/broker-client/environment";
 import { PERSON_TRADE_VAR } from "@legion/broker-client/signins";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
@@ -245,8 +246,8 @@ export function dispatchUrl(env: DispatchEnvironment, config: EnvoyConfig): stri
  * token the secrets broker trades this machine's identity for (`AGENT_SECRETS_URL` with
  * `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). No bearer is read, and no person's
  * sign-in is traded (`PERSON_TRADE_VAR` off), so the write never carries a person's credential.
- * The trade names no session of the caller's, since the broker's entry for such a caller fixes
- * the session. Off, it says why as an `error`.
+ * The trade names no session: `SESSION_VAR` is blanked for it, since the broker's entry for such a
+ * caller fixes the session. Off, it says why as an `error`.
  */
 export function ownIdentityDispatch(env: DispatchEnvironment): DispatchConfigResolution {
   const url = nonEmpty(env.DISPATCH_URL);
@@ -256,7 +257,7 @@ export function ownIdentityDispatch(env: DispatchEnvironment): DispatchConfigRes
     );
   }
   if (httpUrl(url) === undefined) return offWithError("DISPATCH_URL must be an http or https URL");
-  const machine = { ...env, [PERSON_TRADE_VAR]: "off" };
+  const machine = { ...env, [PERSON_TRADE_VAR]: "off", [SESSION_VAR]: "" };
   let route: BrokerRoute;
   try {
     route = brokerRouteConfigured(machine);

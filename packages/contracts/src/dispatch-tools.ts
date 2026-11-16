@@ -1737,11 +1737,13 @@ export const dispatchToolSpecs = [
       "GitHub and from the spec files at the commit. The recorder is the run, and no person. " +
       "Spec files that the graph logic refuses hold no check: 409 SPEC_FILES_REFUSED names the " +
       `first problem. A result keeps ${SPEC_CHECK_OBSERVED_MAX} characters of observed. The ` +
-      "command sends a longer text cut, with a last line that says so, and it sends a NUL as " +
-      "U+FFFD. verdict could_not_run is a test that did " +
+      "command sends a longer text as its start and its end, with a line between them that says " +
+      "the middle was cut, and it sends a NUL as U+FFFD. verdict could_not_run is a test that did " +
       "not finish. The command prints the stored result as JSON, an in-toto statement of the " +
-      "run. It reads DISPATCH_URL, AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY " +
-      "(github-actions in a GitHub Actions job), and no session. " +
+      "run. It reads DISPATCH_URL, AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY " +
+      "(github-actions in a GitHub Actions job), AGENT_SECRETS_MACHINE_AUDIENCE, and the runner's " +
+      "ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN, or " +
+      "AGENT_SECRETS_MACHINE_TOKEN_FILE in their place. Its trade names no session. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
