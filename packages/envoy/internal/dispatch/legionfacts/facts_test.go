@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
@@ -51,7 +53,7 @@ func TestEveryIssueLegionWorkedGetsAStoredRowAndNoOtherIssueDoes(t *testing.T) {
 	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
-	stored, err := Read(t.Context(), seeded.database.Pool, project, seeded.now)
+	stored, err := readStored(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}
@@ -98,7 +100,7 @@ func TestEachStoredFactEqualsTheSourceItComesFrom(t *testing.T) {
 	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
-	stored, err := Read(t.Context(), seeded.database.Pool, project, seeded.now)
+	stored, err := readStored(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}
@@ -157,7 +159,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	if len(first) != len(rows) {
 		t.Fatalf("the first write changed %d rows, want all %d of them", len(first), len(rows))
 	}
-	written, err := Read(t.Context(), seeded.database.Pool, project, seeded.now)
+	written, err := readStored(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}
@@ -175,7 +177,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	if len(again) != 0 {
 		t.Errorf("the second write of the same rows changed %d rows (%v), want none", len(again), again)
 	}
-	unmoved, err := Read(t.Context(), seeded.database.Pool, project, seeded.now)
+	unmoved, err := readStored(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the facts after the second write: %v", err)
 	}
@@ -195,7 +197,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	if !slices.Equal(changed, []string{moved.Issue}) {
 		t.Errorf("the write answered %v, want the one key %s whose review rounds moved", changed, moved.Issue)
 	}
-	after, err := Read(t.Context(), seeded.database.Pool, project, seeded.now)
+	after, err := readStored(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the facts after the move: %v", err)
 	}
@@ -224,7 +226,7 @@ func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the project's facts: %v", err)
 	}
-	board, err := Read(t.Context(), seeded.database.Pool, project, seeded.now)
+	board, err := readStored(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the project's facts as the board does: %v", err)
 	}
@@ -285,7 +287,7 @@ func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 	}
 
 	readAt := asOf.Add(2 * time.Hour)
-	board, err := Read(t.Context(), seeded.database.Pool, project, readAt)
+	board, err := Read(t.Context(), seeded.database.Pool, project, []string{issue}, nil, readAt)
 	if err != nil {
 		t.Fatalf("read the facts as the board does: %v", err)
 	}
@@ -326,6 +328,21 @@ func readWhole(ctx context.Context, q Querier, project string) (map[string]Row, 
 		rows[row.Issue] = row
 	}
 	return rows, nil
+}
+
+// readStored is the board's Read of every stored row of the project, each as of at: Read given
+// every key the project holds a row of, so a check of what a pass stored reads it through the
+// board's own statement and columns, whichever of the rows a board would show.
+func readStored(ctx context.Context, q Querier, project string, at time.Time) (map[string]Row, error) {
+	result, err := q.Query(ctx, `select issue_key from issue_facts where project_key = $1`, project)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := pgx.CollectRows(result, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	return Read(ctx, q, project, keys, nil, at)
 }
 
 // sameRow is whether two rows hold the same facts, each field compared as its own type: the times

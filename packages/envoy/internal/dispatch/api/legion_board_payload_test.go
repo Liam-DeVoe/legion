@@ -75,16 +75,16 @@ func runLegionFactsConsumer(t *testing.T, database *store.Store, project string,
 	}()
 	started := time.Now()
 	for {
-		rows, err := legionfacts.Read(t.Context(), database.Pool, project, time.Now().UTC())
-		if err != nil {
-			t.Fatalf("read the stored facts of %s: %v", project, err)
+		var rows int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from issue_facts where project_key = $1`, project).Scan(&rows); err != nil {
+			t.Fatalf("count the stored facts of %s: %v", project, err)
 		}
-		if len(rows) >= want {
-			t.Logf("the facts consumer wrote %d rows of %s in %s", len(rows), project, time.Since(started).Round(time.Millisecond))
+		if rows >= want {
+			t.Logf("the facts consumer wrote %d rows of %s in %s", rows, project, time.Since(started).Round(time.Millisecond))
 			return
 		}
 		if time.Since(started) > time.Minute {
-			t.Fatalf("the facts consumer wrote %d rows of %s in %s, want %d", len(rows), project, time.Since(started).Round(time.Millisecond), want)
+			t.Fatalf("the facts consumer wrote %d rows of %s in %s, want %d", rows, project, time.Since(started).Round(time.Millisecond), want)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -126,6 +126,8 @@ func TestTheBoardsBodyAtInfrasSizeFitsTheFirstPayloadBound(t *testing.T) {
 	raw, packed := len(body), gzipped(t, body)
 
 	board := decodeBody[legionBoardResponse](t, response)
+	// Every tree of the rig holds an open child on a card, so the board shows every tree and
+	// carries the row of every issue with Legion phase work: the largest body this rig makes.
 	if len(board.Issues) != len(fixture.PhaseWork) {
 		t.Errorf("the board carries %d issues entries, want the %d issues with Legion phase work",
 			len(board.Issues), len(fixture.PhaseWork))

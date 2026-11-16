@@ -26,6 +26,31 @@
 -- ranges of each project: the rows whose writer sorts before the running build and those that
 -- sort after it. A settled deployment holds neither, so the read is two probes a project.
 --
+-- issue_facts_root, (project_key, root_key), is the Legion board's read of the rows of the trees
+-- it shows (R22, legionfacts.Read): the board serves the facts of every open issue, read through
+-- issue_facts_closed (20261113082157) where closed_at is null, and of the issues it shows, which
+-- are the issue of each card, read by key through the primary key, and every issue of a tree a
+-- card stands in, read by that tree's root through this index. Without it the read of a tree
+-- would be the project's whole range of the primary key with root_key filtered after it, which
+-- grows with every issue the project's Legion work ever covered.
+--
+-- It replaces issue_facts_changed (20261111093100, as 20261115155340 left it, recording into the
+-- change log's outbox), so the change row an issue_facts write logs names the days that count the
+-- issue (R26): a Legion day row counts an issue on its close day alone (evals.ReadLegionDay), so
+-- the days a change of its facts can move are its close day before the change and its close day
+-- after it, and no day of its work. t_old is the row's closed_at before the change and t_new its
+-- closed_at after it, each null where the issue was open (or had no row) before, or is open (or
+-- has no row) after:
+--   an insert carries null and the new row's closed_at,
+--   a delete carries the old row's closed_at and null,
+--   an update carries the old row's closed_at and the new row's,
+-- so an open issue's change carries null in both and names no day, though it is logged all the
+-- same, since the Legion board serves every open issue's row (legionfacts.Read). The evals
+-- refresher rewrites exactly the days the two name (evals' refresher_work.go), and reads no row to
+-- find them. Before this, the two held the span of days the issue's work fell in (work_first_at,
+-- work_last_at), which names days that count no change of the issue and leaves out the close days
+-- that do.
+--
 -- issue_filings (20261113082155), which the same passes write, gains its own written_build, the
 -- build that wrote the filing, '' for a filing no build of this release wrote, for the same reason:
 -- the rule that decides whose filing an issue is lives in the build, so the build a project's
@@ -45,12 +70,12 @@
 -- issue_facts is: issue_facts holds one row per issue Legion worked, 8.5 MB for 28,000 rows in the
 -- measurement that migration cites, and issue_filings one row per issue a Legion session filed,
 -- fewer, both far below the census's 1 GiB bound on a table a migration locks
--- (pgmigrate.CensusTableLimit), and the ACCESS EXCLUSIVE each alter takes, which its build holds
--- on to, lasts as long as the catalog change and one read of the table, under the runner's
--- five-second bound on the wait. It takes issue_facts before issue_filings, the order the one
--- writer of both takes them in (legionfacts' writePass writes a project's rows before its
--- filings), so it closes no cycle with a write. The statements read no row to refuse it and
--- rewrite none, and the census answers 0.
+-- (pgmigrate.CensusTableLimit), and the ACCESS EXCLUSIVE each alter takes, which its builds hold
+-- on to, lasts as long as the catalog change and one read of the table for each index, under the
+-- runner's five-second bound on the wait. It takes issue_facts before issue_filings, the order the
+-- one writer of both takes them in (legionfacts' writePass writes a project's rows before its
+-- filings), so it closes no cycle with a write. Replacing the function locks no table. The
+-- statements read no row to refuse it and rewrite none, and the census answers 0.
 --
 -- No release before this one writes issue_facts or issue_filings: both tables ship in this
 -- release (20261111090000, 20261113082155), so no build that names their columns without these
@@ -64,6 +89,21 @@ alter table issue_facts
     add column growth jsonb not null default '{}'::jsonb,
     add column written_build text not null default '';
 create index issue_facts_written_build on issue_facts (project_key, written_build);
+create index issue_facts_root on issue_facts (project_key, root_key);
 alter table issue_filings add column written_build text not null default '';
 create index issue_filings_written_build on issue_filings (project_key, written_build);
 drop index issue_facts_open;
+
+create or replace function issue_facts_changed() returns trigger language plpgsql as $$
+declare
+  ignored constant text[] := array['updated_at'];
+begin
+  if tg_op = 'INSERT' then
+    perform delivery_change_log_pending('issue_facts', null, new.project_key, new.issue_key, null, new.closed_at);
+  elsif tg_op = 'DELETE' then
+    perform delivery_change_log_pending('issue_facts', null, old.project_key, old.issue_key, old.closed_at, null);
+  elsif (to_jsonb(old) - ignored) is distinct from (to_jsonb(new) - ignored) then
+    perform delivery_change_log_pending('issue_facts', null, new.project_key, new.issue_key, old.closed_at, new.closed_at);
+  end if;
+  return null;
+end $$;

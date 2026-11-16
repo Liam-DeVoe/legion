@@ -27,10 +27,11 @@ import (
 //   - delivery_changes, woken by delivery.ChangesChannel. Each change names the days it touches
 //     (refresher_work.go): a pull request's merge day and the start day of the deploy run that
 //     ships it now and of the one that shipped it before; a run's start day and the merge days of
-//     the pull requests it ships now and shipped before; a stored Legion fact's close day; a
-//     filing's day; and, through eval_day_members, the day each of those items was counted on
-//     before, so an item whose day or project moved rewrites the day it left as well as the day
-//     it joined. A settings change (the delivery settings, or a repository's
+//     the pull requests it ships now and shipped before; and, through eval_day_members, the day
+//     each of those items was counted on before, so an item whose day or project moved rewrites
+//     the day it left as well as the day it joined. A stored Legion fact's change and a filing's
+//     name their days themselves: an issue's close day before and after the change, a filing's
+//     day before and after. A settings change (the delivery settings, or a repository's
 //     mapping in repo_projects, 20261113170752) begins the delivery walk again, and a mapping
 //     begins every project's Legion walk again too.
 //   - the event log up to its safe horizon, woken by the events channel: an issue event that can

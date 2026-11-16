@@ -18,18 +18,22 @@ body: |-
   reads every project whole. A later page that meets the loss holds its cursor where it stood and
   has the page after it answer the loss.
   The board at `GET /api/v1/projects/{key}/legion/board` gains `issues`, a map keyed by issue key
-  of those stored rows, read with one indexed read that computes nothing but each open fact's
-  growth to the moment of the read; the live push carries the same map, entry by entry. Its
-  header says how many issues of the project carry Legion phase work, the oldest `updated_at` it
-  served and the age of the consumer's cursor, so a project with no Legion work (no Legion
-  issues, no rows) reads differently from one whose backfill has not run (Legion issues, no
-  rows).
+  of the stored rows of every open issue with Legion phase work and of every issue the board
+  shows: each card's issue and every issue of a tree a card stands in. A closed issue the board
+  does not show is served by the eval items route alone, by its close day, so every issue has one
+  source and the body follows the open work and what the daemon runs rather than the project's
+  history. The rows are read by key, by tree root and as the project's open rows, each through an
+  index, and the read computes nothing but each open fact's growth to the moment of the read; the
+  live push carries the same map, entry by entry. Its header says how many issues of the project
+  carry Legion phase work, the oldest `updated_at` of the rows it served and the age of the
+  consumer's cursor, so a project with no Legion work (no Legion issues, no rows) reads
+  differently from one whose backfill has not run (Legion issues, no rows).
   Each card now says what the slot it holds is used for (`working`, `between_turns`,
   `held_children`, `held_person` or `held_idle`), why it waits (`ready`, `slot`, `blocked` or
   `person`) with the time since and the issues a blocker link holds it on, its place in the
   daemon's waiting line, when it took its slot and its tree's slot. Both rules live beside the
   phases rather than in the route, because the stored rows answer them too.
   A facts write logs itself on the `delivery_changes` feed under the new kind `issue_facts`,
-  carrying the project, the issue and the span of days that issue's work falls in, so every view
-  built on the facts is woken and a reader of per-day rows rewrites the days that moved and no
-  other.
+  carrying the project, the issue and the issue's close before and after the write, so every
+  view built on the facts is woken and the per-day rows rewrite the close days that count the
+  issue, which the change names, and no other day; a change of an open issue names no day.

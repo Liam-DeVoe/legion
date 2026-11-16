@@ -18,8 +18,10 @@ import (
 //
 // An issue_facts row holds no repository: Repo carries the project key and Ref the issue key,
 // because a stored Legion fact belongs to a project and an issue (migration 20261111093100). Its
-// TOld and TNew are the two ends of the span of days that issue's work falls in, never the row's
-// time before and after.
+// TOld and TNew are the issue's closed_at before and after the change (migration 20261116151147),
+// since a Legion day row counts an issue on its close day alone: an insert carries TNew alone, a
+// delete TOld alone, and each is nil where the issue was or is open, so a change of an open
+// issue's facts carries neither.
 //
 // The three eval kinds hold none either: Repo carries the project key and Ref the eval id
 // (migrations 20261113082200 to 20261113082202). An eval_readings row is one statement's readings

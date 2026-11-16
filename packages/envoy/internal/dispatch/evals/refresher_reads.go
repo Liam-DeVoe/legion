@@ -246,40 +246,6 @@ type projectDay struct {
 	day     time.Time
 }
 
-// legionItemDays is, for each (project, issue key) whose stored facts changed, the UTC day the
-// issue closed on as its row stands now and the day eval_day_members holds it under: both
-// primary-key reads, and neither where the issue is open and was never counted.
-func (s *Store) legionItemDays(ctx context.Context, issues [][2]string) ([]projectDay, error) {
-	projects, keys := make([]string, len(issues)), make([]string, len(issues))
-	for i, issue := range issues {
-		projects[i], keys[i] = issue[0], issue[1]
-	}
-	rows, err := s.database.Pool.Query(ctx, `
-		select given.project, facts.closed_at, member.day
-		from unnest($1::text[], $2::text[]) as given(project, issue)
-		left join issue_facts facts on facts.project_key = given.project and facts.issue_key = given.issue
-		left join eval_day_members member on member.project_key = given.project and member.family = $3
-			and member.row_key = given.issue
-	`, projects, keys, KindLegion)
-	if err != nil {
-		return nil, fmt.Errorf("read the close days of %d issues: %w", len(issues), err)
-	}
-	var days []projectDay
-	var project string
-	var closed, held *time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&project, &closed, &held}, func() error {
-		for _, at := range []*time.Time{closed, held} {
-			if at != nil {
-				days = append(days, projectDay{project: project, day: measures.Midnight(*at)})
-			}
-		}
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the close days of %d issues: %w", len(issues), err)
-	}
-	return days, nil
-}
-
 // subtreeFilingDays is the project and the UTC day of every filing of each of keys and of every
 // issue below them, down the parent links (issues_parent_key) to refs.IssueDepthCap: the filings
 // whose repository a move of those issues' repository or parent can move.

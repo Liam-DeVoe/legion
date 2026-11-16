@@ -12,10 +12,10 @@ import (
 )
 
 // issueFactsChange is one delivery_changes row of the stored per-issue Legion facts: the project
-// in Repo and the issue in Ref, with the span of days that issue's work falls in (migration
-// 20261111093100).
-func issueFactsChange(project, issue string, first, last time.Time) delivery.Change {
-	return delivery.Change{Seq: 1, Kind: "issue_facts", Repo: project, Ref: issue, TOld: &first, TNew: &last}
+// in Repo and the issue in Ref, with the issue's close before and after the change (migration
+// 20261116151147).
+func issueFactsChange(project, issue string, closedBefore, closedAfter time.Time) delivery.Change {
+	return delivery.Change{Seq: 1, Kind: "issue_facts", Repo: project, Ref: issue, TOld: &closedBefore, TNew: &closedAfter}
 }
 
 // boardViewShowing is a Legion board of project naming the issues given, as a recompute's answer
@@ -40,10 +40,11 @@ func viewShowingIssues(spec deliveryLiveSpec, issues []string) *deliveryView {
 
 // TestAnIssueFactsChangeTouchesTheLegionBoardOfItsProject: a write of one issue's stored Legion
 // facts moves the Legion board of that issue's project and no other view at all. The board's read
-// takes every row of its project (legionfacts.Read), so a row of an issue the board names nowhere
-// yet - the first row of an issue, a row a build's whole read writes - moves its answer as much as
-// a row of an issue it already shows does, and a board that marked only the issues it names would
-// stand behind its GET until some other write woke it.
+// takes the rows of the issues it shows, every issue of each tree a card stands in among them
+// (legionfacts.Read), so a row of an issue the board names nowhere yet - a new member of a shown
+// tree, the first row of an issue, a row a build's whole read writes - moves its answer as much
+// as a row of an issue it already shows does, and a board that marked only the issues it names
+// would stand behind its GET until some other write woke it.
 //
 // No delivery view is woken, whichever issue it names: the stored facts have one reader
 // (legionfacts.Read, which the board calls), so no timeline, measures or pipeline answer can
@@ -94,15 +95,18 @@ func TestAnIssueFactsChangeTouchesTheLegionBoardOfItsProject(t *testing.T) {
 		change.Ref, change.Repo, woken, len(tests), left, deliveryLiveKinds[legionBoardView].delivery)
 }
 
-// writeIssueFacts writes one issue's stored Legion facts, whose work falls between first and
-// last. The row is written by hand rather than computed, so the span the change carries is the
-// one the check states.
-func writeIssueFacts(t *testing.T, database *store.Store, project, issue string, first, last time.Time) {
+// writeIssueFacts writes one issue's stored Legion facts, in the tree of root, whose work falls
+// between first and last, closed at closed or open where it is nil, as the facts consumer writes
+// one issue's row (legionfacts.WriteProject). The row is written by hand rather than computed, so
+// the row a check reads is the one it states.
+func writeIssueFacts(t *testing.T, database *store.Store, project, issue, root string, first, last time.Time, closed *time.Time) {
 	t.Helper()
-	if _, err := database.Pool.Exec(t.Context(), `
-		insert into issue_facts (project_key, issue_key, opened_at, work_first_at, work_last_at)
-		values ($1, $2, $3, $4, $5)
-	`, project, issue, first, first, last); err != nil {
+	row := legionfacts.Row{
+		Project: project, Issue: issue, OpenedAt: first, ClosedAt: closed, RootKey: root,
+		WorkFirstAt: &first, WorkLastAt: &last, UpdatedAt: time.Now().UTC(),
+	}
+	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
+		legionfacts.ProjectWrite{Project: project, Rows: []legionfacts.Row{row}, Stated: []string{issue}}); err != nil {
 		t.Fatalf("write the stored facts of %s: %v", issue, err)
 	}
 }
@@ -125,8 +129,10 @@ func recomputeOfView(t *testing.T, frame DeliveryLiveView) func(deliveryHubNote)
 // open Delivery page. The board carries that issue's stored row in its issues map, so the write
 // is recomputed and sent as a delta of the one entry, and the recompute sends no freshness frame,
 // because the board reads no delivery row and judges no verdict. The first row of an issue the
-// board names nowhere reaches it the same way, as the entry its GET would answer. The timeline
-// shows none of them and is sent nothing at all.
+// board names nowhere, a closed new member of a tree it shows, which only the read of that tree by
+// its root brings into the map, reaches it the same way, as the entry its GET would answer. A
+// closed row of a tree the board does not show recomputes it into the same body, which sends
+// nothing. The timeline shows none of them and is sent nothing at all.
 //
 // It holds the hub to one recompute of the board for each write of its project and to none of
 // any other view: the hub recomputes every view when its event feed is taken again, which no
@@ -150,11 +156,17 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	board.freshness(t, 5*time.Second, "the verdict after the board's first snapshot")
 	rig.settle(t)
 
-	// INFRA-4 is on the board's cards, and INFRA-99 on none and with no row before its write.
+	// INFRA-4 is on the board's cards, and INFRA-99 on none and with no row before its write: a
+	// closed new member of the tree of INFRA-3, whose card the board shows, so neither its key nor
+	// the open rows bring it in, and its stored root alone does.
 	workedAt := rig.clock.Now().Add(-5 * time.Hour)
-	for _, issue := range []string{"INFRA-4", "INFRA-99"} {
+	for _, write := range []struct {
+		issue  string
+		closed *time.Time
+	}{{"INFRA-4", nil}, {"INFRA-99", new(workedAt.Add(2 * time.Hour))}} {
+		issue := write.issue
 		shown := rig.mark()
-		writeIssueFacts(t, rig.database, "INFRA", issue, workedAt, workedAt.Add(time.Hour))
+		writeIssueFacts(t, rig.database, "INFRA", issue, "INFRA-3", workedAt, workedAt.Add(time.Hour), write.closed)
 		rig.hub.catchUpNow()
 		rig.waitFor(t, shown, 5*time.Second, "a recompute of the board of "+issue+"'s project", recomputeOfView(t, boardFrame))
 		delta := board.delta(t, 5*time.Second, "b")
@@ -168,11 +180,21 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 				issue, boardRecomputes, allRecomputes)
 		}
 	}
+	// INFRA-98 is a closed issue, the root of a tree no card stands in: its row wakes the board of
+	// its project, whose recompute answers the body it sent, so nothing is sent.
+	unshown := rig.mark()
+	writeIssueFacts(t, rig.database, "INFRA", "INFRA-98", "INFRA-98", workedAt, workedAt.Add(time.Hour), new(workedAt.Add(2*time.Hour)))
+	rig.hub.catchUpNow()
+	rig.waitFor(t, unshown, 5*time.Second, "a recompute of the board of INFRA-98's project", recomputeOfView(t, boardFrame))
+	board.none(t, viewMaxWait, "the facts write of INFRA-98, of a tree the board does not show")
+	if n := rig.count(unshown, recomputeOfView(t, boardFrame)); n != 1 {
+		t.Errorf("the facts write of INFRA-98 recomputed the board %d times, want once", n)
+	}
 	timeline.none(t, viewMaxWait, "the facts writes of issues the timeline does not show")
 
 	// A row of a project no open view shows leaves the hub idle and tells no page anything.
 	idle := rig.mark()
-	writeIssueFacts(t, rig.database, "OPS", "OPS-1", workedAt, workedAt.Add(time.Hour))
+	writeIssueFacts(t, rig.database, "OPS", "OPS-1", "OPS-1", workedAt, workedAt.Add(time.Hour), nil)
 	rig.hub.catchUpNow()
 	rig.waitNoRecompute(t, viewMaxWait)
 	board.none(t, time.Second, "the facts write of a project no view shows")
@@ -180,7 +202,7 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	if n := rig.count(idle, recomputeBegin(deliveryCauseChange)); n != 0 {
 		t.Errorf("the facts write of another project recomputed %d views, want none", n)
 	}
-	t.Log("the facts writes of INFRA-4, on a card, and INFRA-99, on none, each recomputed the board once and sent it one delta carrying its entry and no freshness frame, and sent the timeline nothing; a write of OPS-1 recomputed nothing and sent nothing")
+	t.Log("the facts writes of INFRA-4, on a card, and INFRA-99, closed and on none in a tree the board shows, each recomputed the board once and sent it one delta carrying its entry and no freshness frame, and sent the timeline nothing; a write of INFRA-98, of a tree the board does not show, recomputed it once and sent nothing; a write of OPS-1 recomputed nothing and sent nothing")
 }
 
 // batchRows is how many stored facts rows one whole read of a project of INFRA's size rewrites:

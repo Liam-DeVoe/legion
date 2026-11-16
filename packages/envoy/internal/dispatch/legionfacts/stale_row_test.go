@@ -48,7 +48,7 @@ func TestAnIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 	if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
-	stored, err := Read(t.Context(), pool, project, seeded.now)
+	stored, err := readStored(t.Context(), pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestAnIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 		t.Fatalf("write the facts again: %v", err)
 	}
 
-	after, err := Read(t.Context(), pool, project, seeded.now)
+	after, err := readStored(t.Context(), pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}

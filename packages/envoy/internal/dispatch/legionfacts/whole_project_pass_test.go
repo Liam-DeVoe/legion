@@ -52,7 +52,7 @@ func TestAProjectWhoseIssuesCarryNoWorkIsComputedWholeOnceAndNotAgain(t *testing
 	first := run.at
 	run.pass(t)
 	marked := computedWholeAt(t, run)
-	stored, err := Read(t.Context(), run.database.Pool, quiet, run.at)
+	stored, err := readStored(t.Context(), run.database.Pool, quiet, run.at)
 	if err != nil {
 		t.Fatalf("read the stored facts of %s: %v", quiet, err)
 	}

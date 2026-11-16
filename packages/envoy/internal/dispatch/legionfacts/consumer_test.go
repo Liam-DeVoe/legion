@@ -458,11 +458,11 @@ func TestAPassWithNoInputMovingWritesNoRowOpenOrClosed(t *testing.T) {
 	}
 
 	readAt, tenOn := started, started.Add(10*time.Minute)
-	first, err := Read(t.Context(), run.database.Pool, run.fixture.Project, readAt)
+	first, err := readStored(t.Context(), run.database.Pool, run.fixture.Project, readAt)
 	if err != nil {
 		t.Fatalf("read the facts at %s: %v", readAt, err)
 	}
-	second, err := Read(t.Context(), run.database.Pool, run.fixture.Project, tenOn)
+	second, err := readStored(t.Context(), run.database.Pool, run.fixture.Project, tenOn)
 	if err != nil {
 		t.Fatalf("read the facts at %s: %v", tenOn, err)
 	}

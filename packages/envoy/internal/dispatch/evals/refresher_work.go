@@ -36,9 +36,13 @@ import (
 //     the delivery walk again; a change of repo_projects (whose change names the repository) also
 //     begins every project's Legion walk again, since the mapping decides the repository an issue
 //     or a filing with none of its own resolves to (ReadLegionDay).
-//   - issue_facts: the Legion close day of the issue, read from its row, and the day
-//     eval_day_members holds it under, so an issue closed again on another day rewrites its old
-//     day and its new one, and an open issue whose facts moved touches no day.
+//   - issue_facts: the issue's Legion close day before the change and after it, which the change
+//     names itself (t_old and t_new, migration 20261116151147) and no read is made to find: a
+//     Legion day counts an issue on its close day alone, so an issue closed again on another day
+//     rewrites its old day and its new one, and an open issue whose facts moved touches no day.
+//     eval_day_members is not read for it, since the day it holds the issue under is the close
+//     day before the change, which the change already names: the days rewritten are the days
+//     the change marks, and no other.
 //   - issue_filings: the filing's day before and after, in the filing's project.
 //   - eval_readings: no day, since the readings write keeps a logged eval's day rows itself; the
 //     eval's zero rows are filled up to today, which a reading measured before its eval's first
@@ -145,15 +149,13 @@ func (r *refresh) loadSettings(ctx context.Context) error {
 }
 
 // pageWork is what one page of the feeds names: the pull requests and runs whose rows changed, by
-// row key; the issues whose stored facts changed, by project and key; the filing days that moved,
-// by project; the issues whose repository or parent moved; the projects whose count of unowned P0
-// issues may have moved; the logged evals whose readings changed, by project; and the walks to
-// begin again.
+// row key; the Legion days the facts and filing changes name, by project; the issues whose
+// repository or parent moved; the projects whose count of unowned P0 issues may have moved; the
+// logged evals whose readings changed, by project; and the walks to begin again.
 type pageWork struct {
 	prs        map[string]pullRequestRef
 	runs       map[string]runRef
-	issues     map[[2]string]bool
-	filings    map[string]map[time.Time]bool
+	legion     map[string]map[time.Time]bool
 	reparented map[string]bool
 	unowned    map[string]bool
 	logged     map[string]map[string]bool
@@ -176,9 +178,9 @@ type runRef struct {
 
 func newPageWork() *pageWork {
 	return &pageWork{
-		prs: map[string]pullRequestRef{}, runs: map[string]runRef{}, issues: map[[2]string]bool{},
-		filings: map[string]map[time.Time]bool{}, reparented: map[string]bool{}, unowned: map[string]bool{},
-		logged: map[string]map[string]bool{}, restart: map[string]bool{},
+		prs: map[string]pullRequestRef{}, runs: map[string]runRef{}, legion: map[string]map[time.Time]bool{},
+		reparented: map[string]bool{}, unowned: map[string]bool{}, logged: map[string]map[string]bool{},
+		restart: map[string]bool{},
 	}
 }
 
@@ -206,15 +208,16 @@ func (w *pageWork) addChange(change delivery.Change) {
 		if change.Repo != "" {
 			w.restart[walkLegion] = true
 		}
-	case delivery.ChangeKindIssueFacts:
-		w.issues[[2]string{change.Repo, change.Ref}] = true
-	case delivery.ChangeKindIssueFilings:
+	case delivery.ChangeKindIssueFacts, delivery.ChangeKindIssueFilings:
+		// Each names its Legion days itself, in its project: a facts change the issue's close day
+		// before and after it, a filing change the filing's day before and after it, nil where
+		// there is none.
 		for _, at := range []*time.Time{change.TOld, change.TNew} {
 			if at != nil {
-				if w.filings[change.Repo] == nil {
-					w.filings[change.Repo] = map[time.Time]bool{}
+				if w.legion[change.Repo] == nil {
+					w.legion[change.Repo] = map[time.Time]bool{}
 				}
-				w.filings[change.Repo][measures.Midnight(*at)] = true
+				w.legion[change.Repo][measures.Midnight(*at)] = true
 			}
 		}
 	case delivery.ChangeKindEvalReadings:
@@ -641,10 +644,9 @@ func (r *refresh) writeDelivery(ctx context.Context, read DeliveryDay, project s
 	return nil
 }
 
-// applyLegion writes the Legion days w names: the close day and the held day of each issue whose
-// stored facts changed, the filing days that moved, and the filing days and the close and held days
-// of every issue below an issue whose repository or parent moved, whose repository rows resolve
-// through it.
+// applyLegion writes the Legion days w names: the days the facts and filing changes named, and the
+// filing days and the close and held days of every issue below an issue whose repository or
+// parent moved, whose repository rows resolve through it.
 func (r *refresh) applyLegion(ctx context.Context, w *pageWork) error {
 	days := map[string]map[time.Time]bool{}
 	add := func(project string, day time.Time) {
@@ -652,15 +654,6 @@ func (r *refresh) applyLegion(ctx context.Context, w *pageWork) error {
 			days[project] = map[time.Time]bool{}
 		}
 		days[project][day] = true
-	}
-	if len(w.issues) > 0 {
-		touched, err := r.store.legionItemDays(ctx, slices.Collect(maps.Keys(w.issues)))
-		if err != nil {
-			return err
-		}
-		for _, day := range touched {
-			add(day.project, day.day)
-		}
 	}
 	if len(w.reparented) > 0 {
 		moved := slices.Sorted(maps.Keys(w.reparented))
@@ -676,8 +669,8 @@ func (r *refresh) applyLegion(ctx context.Context, w *pageWork) error {
 			add(day.project, day.day)
 		}
 	}
-	for project, filed := range w.filings {
-		for day := range filed {
+	for project, named := range w.legion {
+		for day := range named {
 			add(project, day)
 		}
 	}

@@ -452,7 +452,7 @@ func (r *refresherRig) writeIssueEvent(t *testing.T, issue, kind, payload string
 
 // TestEachLegionChangeRewritesExactlyItsDays: over a hand-written Legion history of EVAL, once
 // every day is walked,
-//   - an issue that reopens rewrites the day it had closed on (eval_day_members' day), and its
+//   - an issue that reopens rewrites the day it had closed on (the change's t_old), and its
 //     close on a later day rewrites that day alone;
 //   - an issue whose close moves from one day to another in one write rewrites both, and the day
 //     it left, which holds no other input, becomes zero rows and logs an eval_days change naming

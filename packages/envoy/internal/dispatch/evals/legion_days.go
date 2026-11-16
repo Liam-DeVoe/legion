@@ -48,9 +48,12 @@ import (
 // (ZeroLegionDay, ProjectDay.WithZeros).
 //
 // Each issue counted is an item of the family `legion` in eval_day_members, keyed by its issue
-// key, on its close day with its repository, so an issue that closes again on another day
-// rewrites the day it left as well as the day it joined. A filing's day is the time of its
-// `issue.created` event, which never moves, so a filing is no item.
+// key, on its close day with its repository. The day an issue leaves when it closes again on
+// another day is named by the change of its facts itself (t_old, migration 20261116151147); the
+// members say where each issue below an issue whose repository or parent moved was counted
+// (subtreeCloseDays), and a write that moves a member off a day records that day owed a rewrite
+// (eval_days_owed). A filing's day is the time of its `issue.created` event, which never moves,
+// so a filing is no item.
 
 // The slugs of the Legion evals (dispatch://INFRA-2916/artifact/plan-md, "The seeded catalogue"):
 // an eval's id is EvalID(project, slug).

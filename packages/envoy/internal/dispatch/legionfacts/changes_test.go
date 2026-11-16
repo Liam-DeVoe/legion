@@ -16,23 +16,23 @@ const factsProject = "LEGION"
 
 var factsOpened = time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 
-// factsDatabase is a database of its own, with no Legion history: these checks state each span
-// themselves, so the span a change carries is the one the check wrote and no computation's.
+// factsDatabase is a database of its own, with no Legion history: these checks state each close
+// themselves, so the days a change names are the ones the check wrote and no computation's.
 func factsDatabase(t *testing.T) *store.Pool {
 	t.Helper()
 	return storetest.Open(t).Pool
 }
 
-// workedAt is a moment of the history these checks state their spans in: the hour of a UTC day of
+// workedAt is a moment of the history these checks state their rows in: the hour of a UTC day of
 // November 2026.
 func workedAt(day, hour int) time.Time {
 	return time.Date(2026, 11, day, hour, 0, 0, 0, time.UTC)
 }
 
-// workedRow is one issue's row carrying the span of its measured work. A nil first and last is an
-// issue with no measured work, which still has a row.
-func workedRow(issue string, first, last *time.Time) Row {
-	return Row{Project: factsProject, Issue: issue, OpenedAt: factsOpened, WorkFirstAt: first, WorkLastAt: last}
+// workedRow is one issue's row carrying the span of its measured work and its close, nil while it
+// is open. A nil first and last is an issue with no measured work, which still has a row.
+func workedRow(issue string, first, last, closed *time.Time) Row {
+	return Row{Project: factsProject, Issue: issue, OpenedAt: factsOpened, WorkFirstAt: first, WorkLastAt: last, ClosedAt: closed}
 }
 
 // changeLogHead is the newest change the log holds once the outbox is drained, which a check reads
@@ -64,29 +64,40 @@ func changesLogged(t *testing.T, pool *store.Pool, seq int64) []delivery.Change 
 	return changes
 }
 
-// sameMoment is whether a change's end of a span is the moment wanted.
+// sameMoment is whether one of a change's two moments is the moment wanted.
 func sameMoment(got *time.Time, want time.Time) bool { return got != nil && got.Equal(want) }
 
-// spanDays is the UTC days a change's span covers, both ends counted: the days a reader of
-// per-day rows rewrites for that change.
-func spanDays(change delivery.Change) []string {
-	if change.TOld == nil || change.TNew == nil {
-		return nil
-	}
+// markedDays is the UTC days a change names, each once and in order: the day of its t_old and the
+// day of its t_new, where each is set. They are the days a reader of per-day rows rewrites for
+// that change (evals' refresher), so for a facts change they must be the issue's close day before
+// the change and after it, and no other.
+func markedDays(change delivery.Change) []string {
 	days := []string{}
-	for day := change.TOld.UTC().Truncate(24 * time.Hour); !day.After(change.TNew.UTC()); day = day.AddDate(0, 0, 1) {
-		days = append(days, day.Format(time.DateOnly))
+	for _, at := range []*time.Time{change.TOld, change.TNew} {
+		if at != nil {
+			days = append(days, at.UTC().Format(time.DateOnly))
+		}
 	}
-	return days
+	slices.Sort(days)
+	return slices.Compact(days)
 }
 
-// changesByIssue is the changes read, by the issue each names in its ref.
-func changesByIssue(changes []delivery.Change) map[string]delivery.Change {
-	by := make(map[string]delivery.Change, len(changes))
-	for _, change := range changes {
-		by[change.Ref] = change
+// closeMarkProblems is what is wrong with the days a facts change marked, against the close days
+// the change moved the issue between: a marked day that is none of them, and one of them left
+// unmarked. An open issue's change wants no day at all.
+func closeMarkProblems(marked, closes []string) []string {
+	var problems []string
+	for _, day := range marked {
+		if !slices.Contains(closes, day) {
+			problems = append(problems, "marks "+day+", which is no close day of the issue")
+		}
 	}
-	return by
+	for _, day := range closes {
+		if !slices.Contains(marked, day) {
+			problems = append(problems, "leaves the close day "+day+" unmarked")
+		}
+	}
+	return problems
 }
 
 // TestOneFactsWriteLogsOneIssueFactsChange: a write of one issue's facts logs exactly one change
@@ -94,11 +105,11 @@ func changesByIssue(changes []delivery.Change) map[string]delivery.Change {
 // repository: a Legion fact belongs to a project and an issue.
 func TestOneFactsWriteLogsOneIssueFactsChange(t *testing.T) {
 	pool := factsDatabase(t)
-	first, last := workedAt(4, 9), workedAt(4, 17)
+	first, last, closed := workedAt(4, 9), workedAt(4, 17), workedAt(4, 18)
 	head := changeLogHead(t, pool)
 
 	written, err := WriteProject(t.Context(), pool, ProjectWrite{
-		Project: factsProject, Rows: []Row{workedRow("LEGION-1", &first, &last)}, Whole: true,
+		Project: factsProject, Rows: []Row{workedRow("LEGION-1", &first, &last, &closed)}, Whole: true,
 	})
 	if err != nil {
 		t.Fatalf("write the facts: %v", err)
@@ -111,11 +122,12 @@ func TestOneFactsWriteLogsOneIssueFactsChange(t *testing.T) {
 	if logged.Kind != "issue_facts" || logged.Repo != factsProject || logged.Ref != "LEGION-1" || logged.RunKind != "" {
 		t.Fatalf("the change = %+v, want kind issue_facts, repo %s, ref LEGION-1 and no run kind", logged, factsProject)
 	}
-	if !sameMoment(logged.TOld, first) || !sameMoment(logged.TNew, last) {
-		t.Fatalf("the change's span = %v to %v, want %s to %s", logged.TOld, logged.TNew, first, last)
+	if logged.TOld != nil || !sameMoment(logged.TNew, closed) {
+		t.Fatalf("the change's moments = %v and %v, want none before (the row is new) and its close %s after",
+			logged.TOld, logged.TNew, closed)
 	}
-	t.Logf("1 row written, %d issue changed, %d change logged: kind %s, repo %s, ref %s, %d day",
-		len(written), len(changes), logged.Kind, logged.Repo, logged.Ref, len(spanDays(logged)))
+	t.Logf("1 row written, %d issue changed, %d change logged: kind %s, repo %s, ref %s, marking %v",
+		len(written), len(changes), logged.Kind, logged.Repo, logged.Ref, markedDays(logged))
 }
 
 // TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange: a pass whose inputs did not move logs
@@ -124,7 +136,7 @@ func TestOneFactsWriteLogsOneIssueFactsChange(t *testing.T) {
 func TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange(t *testing.T) {
 	pool := factsDatabase(t)
 	first, last := workedAt(4, 9), workedAt(4, 17)
-	row := workedRow("LEGION-2", &first, &last)
+	row := workedRow("LEGION-2", &first, &last, nil)
 	if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: factsProject, Rows: []Row{row}, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
@@ -154,83 +166,82 @@ func TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange(t *testing.T) {
 		len(rewritten), moved.RowsAffected(), len(changes))
 }
 
-// TestAFactsChangesSpanNamesTheDaysTheWorkFallsIn: the span a change carries names the days a
-// reader of per-day rows rewrites. An issue whose work falls in two UTC days names both days, and
-// one whose work falls in a single day names that day alone.
-func TestAFactsChangesSpanNamesTheDaysTheWorkFallsIn(t *testing.T) {
+// TestAFactsChangeMarksTheIssuesCloseDaysAndNoWorkDay: a change of an issue's facts marks the day
+// rows that count the issue, which are its close day before the change and after it, because a
+// Legion day row counts an issue on its close day alone (dispatch://INFRA-2916, R26). The change's
+// t_old holds the row's closed_at before and its t_new the closed_at after, each null where the
+// issue was or is open (migration 20261116151147), so no day of the issue's work is named.
+//
+// One closed issue whose work falls on two days is written, its work moved with its close where
+// it stood, its close moved two days on, reopened and closed again, and then its row deleted; an
+// issue that stays open has its facts move twice. Each change is judged by the days it marks
+// against the close days it moved between, and the same judgement over a change naming the
+// issue's work days, the negative control, must find it wrong.
+func TestAFactsChangeMarksTheIssuesCloseDaysAndNoWorkDay(t *testing.T) {
 	pool := factsDatabase(t)
-	for _, test := range []struct {
-		issue       string
-		first, last time.Time
-		wantDays    []string
+	first, last := workedAt(4, 22), workedAt(5, 3)
+	movedFirst, movedLast := workedAt(4, 20), workedAt(5, 6)
+	closed, closedLater, closedAgain := workedAt(6, 10), workedAt(8, 9), workedAt(9, 15)
+	steps := []struct {
+		what   string
+		write  ProjectWrite
+		closes []string
 	}{
-		{"LEGION-3", workedAt(4, 22), workedAt(5, 3), []string{"2026-11-04", "2026-11-05"}},
-		{"LEGION-4", workedAt(6, 1), workedAt(6, 23), []string{"2026-11-06"}},
-	} {
+		{"a closed issue whose work falls on two days is written",
+			ProjectWrite{Rows: []Row{workedRow("LEGION-3", &first, &last, &closed)}, Stated: []string{"LEGION-3"}},
+			[]string{"2026-11-06"}},
+		{"its work moves and its close stands",
+			ProjectWrite{Rows: []Row{workedRow("LEGION-3", &movedFirst, &movedLast, &closed)}, Stated: []string{"LEGION-3"}},
+			[]string{"2026-11-06"}},
+		{"its close moves two days on",
+			ProjectWrite{Rows: []Row{workedRow("LEGION-3", &movedFirst, &movedLast, &closedLater)}, Stated: []string{"LEGION-3"}},
+			[]string{"2026-11-06", "2026-11-08"}},
+		{"it reopens",
+			ProjectWrite{Rows: []Row{workedRow("LEGION-3", &movedFirst, &movedLast, nil)}, Stated: []string{"LEGION-3"}},
+			[]string{"2026-11-08"}},
+		{"it closes again",
+			ProjectWrite{Rows: []Row{workedRow("LEGION-3", &movedFirst, &movedLast, &closedAgain)}, Stated: []string{"LEGION-3"}},
+			[]string{"2026-11-09"}},
+		{"its row goes",
+			ProjectWrite{Stated: []string{"LEGION-3"}},
+			[]string{"2026-11-09"}},
+		{"an open issue whose work falls on two days is written",
+			ProjectWrite{Rows: []Row{workedRow("LEGION-4", &first, &last, nil)}, Stated: []string{"LEGION-4"}},
+			nil},
+		{"the open issue's work moves",
+			ProjectWrite{Rows: []Row{workedRow("LEGION-4", &movedFirst, &movedLast, nil)}, Stated: []string{"LEGION-4"}},
+			nil},
+	}
+	marks := 0
+	for _, step := range steps {
 		head := changeLogHead(t, pool)
-		if _, err := WriteProject(t.Context(), pool, ProjectWrite{
-			Project: factsProject, Rows: []Row{workedRow(test.issue, &test.first, &test.last)}, Whole: true,
-		}); err != nil {
-			t.Fatalf("write the facts of %s: %v", test.issue, err)
+		step.write.Project = factsProject
+		if _, err := WriteProject(t.Context(), pool, step.write); err != nil {
+			t.Fatalf("%s: write the facts: %v", step.what, err)
 		}
 		changes := changesLogged(t, pool, head)
 		if len(changes) != 1 {
-			t.Fatalf("the facts of %s logged %d changes, want one: %+v", test.issue, len(changes), changes)
+			t.Fatalf("%s: logged %d changes, want one: %+v", step.what, len(changes), changes)
 		}
-		days := spanDays(changes[0])
-		if !slices.Equal(days, test.wantDays) {
-			t.Errorf("%s spans the days %v, want %v", test.issue, days, test.wantDays)
+		marked := markedDays(changes[0])
+		marks += len(marked)
+		for _, problem := range closeMarkProblems(marked, step.closes) {
+			t.Errorf("%s: the change %s (it marks %v, the close days are %v)", step.what, problem, marked, step.closes)
 		}
-		t.Logf("%s worked %s to %s: %d change logged over %d day(s), %v", test.issue,
-			test.first.Format(time.RFC3339), test.last.Format(time.RFC3339), len(changes), len(days), days)
+		t.Logf("%s: the change carries %v and %v and marks %v; the close days are %v", step.what,
+			changes[0].TOld, changes[0].TNew, marked, step.closes)
 	}
-}
+	if marks == 0 {
+		t.Fatal("no change marked a day, so the judgement above read nothing")
+	}
 
-// TestAFactsUpdateThatMovesTheWorkCoversBothDays: an update carries the union of the old row's
-// span and the new row's, so the day that held the work and the day that holds it now are both
-// rewritten. A row that had no measured work carries null at both ends, and the union of that
-// with a real span is the real span.
-func TestAFactsUpdateThatMovesTheWorkCoversBothDays(t *testing.T) {
-	pool := factsDatabase(t)
-	wasFirst, wasLast := workedAt(4, 9), workedAt(4, 17)
-	nowFirst, nowLast := workedAt(5, 9), workedAt(5, 17)
-	if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: factsProject, Whole: true, Rows: []Row{
-		workedRow("LEGION-5", &wasFirst, &wasLast),
-		workedRow("LEGION-6", nil, nil),
-	}}); err != nil {
-		t.Fatalf("write the facts: %v", err)
+	// The negative control: a change naming the issue's work days is judged by the same rule and
+	// found wrong.
+	workSpan := delivery.Change{Kind: "issue_facts", Repo: factsProject, Ref: "LEGION-3", TOld: &movedFirst, TNew: &movedLast}
+	problems := closeMarkProblems(markedDays(workSpan), []string{"2026-11-06", "2026-11-08"})
+	if len(problems) == 0 {
+		t.Errorf("a mark of the work's days %v passes as the close days, so the judgement proves nothing", markedDays(workSpan))
 	}
-	head := changeLogHead(t, pool)
-
-	written, err := WriteProject(t.Context(), pool, ProjectWrite{Project: factsProject, Whole: true, Rows: []Row{
-		workedRow("LEGION-5", &nowFirst, &nowLast),
-		workedRow("LEGION-6", &nowFirst, &nowLast),
-	}})
-	if err != nil {
-		t.Fatalf("move the work of both issues: %v", err)
-	}
-	changes := changesLogged(t, pool, head)
-	if len(changes) != 2 {
-		t.Fatalf("two moved rows logged %d changes, want two: %+v", len(changes), changes)
-	}
-	byIssue := changesByIssue(changes)
-	moved, measured := byIssue["LEGION-5"], byIssue["LEGION-6"]
-	if !sameMoment(moved.TOld, wasFirst) || !sameMoment(moved.TNew, nowLast) {
-		t.Fatalf("the moved issue's span = %v to %v, want %s to %s, which covers both days",
-			moved.TOld, moved.TNew, wasFirst, nowLast)
-	}
-	movedDays := spanDays(moved)
-	if want := []string{"2026-11-04", "2026-11-05"}; !slices.Equal(movedDays, want) {
-		t.Errorf("the moved issue spans the days %v, want %v", movedDays, want)
-	}
-	if !sameMoment(measured.TOld, nowFirst) || !sameMoment(measured.TNew, nowLast) {
-		t.Fatalf("the newly measured issue's span = %v to %v, want %s to %s, the real span of the two",
-			measured.TOld, measured.TNew, nowFirst, nowLast)
-	}
-	measuredDays := spanDays(measured)
-	if want := []string{"2026-11-05"}; !slices.Equal(measuredDays, want) {
-		t.Errorf("the newly measured issue spans the days %v, want %v", measuredDays, want)
-	}
-	t.Logf("%d rows changed, %d changes logged: the moved issue spans %d days %v, the newly measured one %d day %v",
-		len(written), len(changes), len(movedDays), movedDays, len(measuredDays), measuredDays)
+	t.Logf("%d changes judged, %d days marked; the negative control, a mark of the work's days %v, is found wrong: %v",
+		len(steps), marks, markedDays(workSpan), problems)
 }

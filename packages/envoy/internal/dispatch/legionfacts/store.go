@@ -388,8 +388,8 @@ func deleteStaleProjectRows(ctx context.Context, q Querier, write ProjectWrite, 
 
 // deleteRows runs one of the two deletions, or the stamp a Yielded write makes in its place, and
 // answers the keys it deleted or stamped, in the order Postgres took them. Each row it deletes or
-// stamps logs a delivery change of kind issue_facts carrying that row's day span, which the
-// table's own trigger writes on a delete as it does on a write (migration 20261111093100), so
+// stamps logs a delivery change of kind issue_facts carrying that row's close day, which the
+// table's own trigger writes on a delete as it does on a write (migration 20261116151147), so
 // every reader of the facts is told the row went, and the build a stamp hands the row to is woken
 // to compute it again.
 func deleteRows(ctx context.Context, q Querier, project, statement string, args ...any) ([]string, error) {
@@ -422,13 +422,29 @@ func storedMap[V any](values map[string]V) map[string]V {
 	return values
 }
 
-// Read answers the stored rows of a project, by issue key, each as of at (Row.At). It is the
-// board's read of the facts: rows, and no computation but the close of each open part at the
-// read's own clock, and of each row the columns the board shows (boardColumns), every other field
-// of the Row it answers left at its zero value (narrow). The evals read every column of the rows
-// of a window's closed issues instead (ReadClosedIn).
-func Read(ctx context.Context, q Querier, project string, at time.Time) (map[string]Row, error) {
-	read, err := readRows(ctx, q, project, false, `where project_key = $1`, project)
+// Read answers the stored rows the Legion board serves, by issue key, each as of at (Row.At): the
+// project's rows of keys, the issue of each card; of every issue whose tree root is one of roots,
+// the trees the cards stand in; and of every open issue of the project, which no other route
+// serves, since the items route serves an issue by its close day (dispatch://INFRA-2916, R22). No
+// other row is read: a closed issue of no shown tree is the items route's (ReadClosedIn), so the
+// read and the board's body follow the open work and what the daemon runs, not every issue the
+// project's Legion work ever covered. The read is three index reads, by key, by root and of the
+// open rows (shownWhere), never the project's rows filtered after they are read.
+//
+// It is the board's read of the facts: rows, and no computation but the close of each open part
+// at the read's own clock, and of each row the columns the board shows (boardColumns), every other
+// field of the Row it answers left at its zero value (narrow). The evals read every column of the
+// rows of a window's closed issues instead (ReadClosedIn).
+func Read(ctx context.Context, q Querier, project string, keys, roots []string, at time.Time) (map[string]Row, error) {
+	// A nil list goes to Postgres as null, which `= any` answers null for, and `not (null)` would
+	// leave out every row of the trees and every open row; an empty array answers false.
+	if keys == nil {
+		keys = []string{}
+	}
+	if roots == nil {
+		roots = []string{}
+	}
+	read, err := readRows(ctx, q, project, false, shownWhere, project, keys, roots)
 	if err != nil {
 		return nil, err
 	}
@@ -438,6 +454,19 @@ func Read(ctx context.Context, q Querier, project string, at time.Time) (map[str
 	}
 	return rows, nil
 }
+
+// shownWhere is Read's clause, which completes boardSelect, as three reads of the project's rows:
+// the rows of the keys given, each a probe of the primary key (project_key, issue_key); the rows
+// of the trees given, each root a range of issue_facts_root (project_key, root_key), migration
+// 20261116151147; and the open rows, the range of issue_facts_closed (project_key, closed_at
+// desc), migration 20261113082157, where closed_at is null, which a btree answers as an index
+// condition. Each later read leaves out what an earlier one answered rather than the three being
+// merged, so no row is answered twice and no answered row is compared with another; a card's row
+// the tree's range reaches again is dropped by its filter, a cost bounded by the board's cards.
+const shownWhere = `where project_key = $1 and issue_key = any($2)
+	union all ` + boardSelect + `where project_key = $1 and root_key = any($3) and not (issue_key = any($2))
+	union all ` + boardSelect + `where project_key = $1 and closed_at is null
+		and not (issue_key = any($2)) and not (root_key = any($3))`
 
 // ReadClosedIn answers the stored rows of the project's issues that closed from from up to to,
 // newest close first, through issue_facts_closed (migration 20261113082157), each as of at

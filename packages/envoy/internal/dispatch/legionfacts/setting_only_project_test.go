@@ -37,7 +37,7 @@ func TestAProjectNamingADaemonTheSamplerNeverReadGetsItsFacts(t *testing.T) {
 
 	run.pass(t)
 	for project, want := range map[string]int{named: len(histories[named].PhaseWork), unnamed: 0} {
-		stored, err := Read(ctx, run.database.Pool, project, run.at)
+		stored, err := readStored(ctx, run.database.Pool, project, run.at)
 		if err != nil {
 			t.Fatalf("read the stored facts of %s: %v", project, err)
 		}

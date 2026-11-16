@@ -1,9 +1,15 @@
 package legionfacts
 
 import (
+	"encoding/json"
+	"fmt"
+	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -138,6 +144,97 @@ func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
 		t.Fatalf("the read of the filings another build wrote reads %v; want issue_filings_written_build:\n%s", scans, plan)
 	}
 	t.Logf("of 20,000 filings of five projects recorded under the running build, the read answered %v through %v", other, scans)
+}
+
+// TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone: Read, the Legion board's read of the facts,
+// answers the rows of the keys it is given, of every issue of the trees it is given and of every
+// open issue of the project, and no other row, and its statement (boardSelect and shownWhere)
+// reaches issue_facts through the primary key for the keys, through issue_facts_root (migration
+// 20261116151147) for the trees and through issue_facts_closed (migration 20261113082157) for the
+// open rows, each scan keyed by its own condition, never a scan of the table nor a read of the
+// project's whole range filtered after it. The store is five projects of 4,000 stored rows each,
+// in trees of ten, one in fifty open, analyzed; the board of FC names 34 cards, 24 of them in the
+// 12 trees it shows and 10 whose stored root is another, and a key no row holds. The plan is
+// taken twice: with the values, as the planner prices them, and as the generic plan pgx's cached
+// statement settles on, which knows no value of the lists, with sequential scans off so it names
+// only the indexes the statement can prove.
+func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
+	ctx := t.Context()
+	pool := factsDatabase(t)
+	if _, err := pool.Exec(ctx, `
+		insert into issue_facts (project_key, issue_key, opened_at, closed_at, root_key, tree_depth)
+		select project, project || '-' || n, now() - make_interval(days => n % 365 + 1),
+		       case when n % 50 <> 0 then now() - make_interval(days => n % 365) end,
+		       project || '-' || ((n - 1) / 10 * 10 + 1), case when n % 10 = 1 then 0 else 1 end
+		from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project, generate_series(1, 4000) as n;
+		analyze issue_facts;
+	`); err != nil {
+		t.Fatalf("seed the facts: %v", err)
+	}
+	var roots, keys []string
+	want := map[string]bool{}
+	for tree := range 12 {
+		root := 10*tree*3 + 1
+		roots = append(roots, fmt.Sprintf("FC-%d", root))
+		for n := root; n < root+10; n++ {
+			want[fmt.Sprintf("FC-%d", n)] = true
+		}
+		keys = append(keys, fmt.Sprintf("FC-%d", root+tree%10), fmt.Sprintf("FC-%d", root+(tree+5)%10))
+	}
+	for n := 2001; n <= 2010; n++ {
+		keys, want[fmt.Sprintf("FC-%d", n)] = append(keys, fmt.Sprintf("FC-%d", n)), true
+	}
+	keys = append(keys, "FC-9999")
+	for n := 50; n <= 4000; n += 50 {
+		want[fmt.Sprintf("FC-%d", n)] = true
+	}
+	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	rows, err := Read(ctx, pool, "FC", keys, roots, at)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got, wanted := slices.Sorted(maps.Keys(rows)), slices.Sorted(maps.Keys(want)); !slices.Equal(got, wanted) {
+		t.Errorf("Read answered the %d rows %v, want the %d of the keys, the trees and the open rows %v", len(got), got, len(wanted), wanted)
+	}
+
+	statement := boardSelect + shownWhere
+	judge := func(how string, plan json.RawMessage) []explaintest.IndexScan {
+		t.Helper()
+		if explaintest.SeqScansRelation(t, plan, "issue_facts") {
+			t.Errorf("%s, the board's read scans issue_facts sequentially:\n%s", how, plan)
+		}
+		scans := explaintest.IndexScans(t, plan)
+		for _, index := range []struct{ name, column string }{{"issue_facts_pkey", "issue_key"}, {"issue_facts_root", "root_key"}, {"issue_facts_closed", "closed_at IS NULL"}} {
+			if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool {
+				return scan.Index == index.name && strings.Contains(scan.Cond, index.column)
+			}) {
+				t.Errorf("%s, the board's read reads %v; want %s keyed by %s:\n%s", how, scans, index.name, index.column, plan)
+			}
+		}
+		return scans
+	}
+	var raw []byte
+	if err := pool.QueryRow(ctx, "explain (analyze, format json) "+statement, "FC", keys, roots).Scan(&raw); err != nil {
+		t.Fatalf("explain the board's read: %v", err)
+	}
+	custom := judge("with its values", explaintest.OnePlan(t, raw))
+	text, err := pool.Query(ctx, "explain (analyze, buffers) "+statement, "FC", keys, roots)
+	if err != nil {
+		t.Fatalf("explain the board's read as text: %v", err)
+	}
+	lines, err := pgx.CollectRows(text, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("explain the board's read as text: %v", err)
+	}
+	connection, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the plan: %v", err)
+	}
+	defer connection.Release()
+	generic := judge("under the generic plan", explaintest.GenericPlan(t, ctx, connection, "board_facts", statement,
+		[]string{"text", "text[]", "text[]"}, []string{"'FC'", "array['FC-1']", "array['FC-1']"}, "set local enable_seqscan = off"))
+	t.Logf("of 20,000 rows of five projects, Read answered %d of FC for %d keys and %d trees, through %v (with its values) and %v (generic); the plan with its values:\n%s",
+		len(rows), len(keys), len(roots), custom, generic, strings.Join(lines, "\n"))
 }
 
 // TestTheStoredFilingsReadKeepsItsIndexesUnderAGenericPlan: the read of a project's stored filings

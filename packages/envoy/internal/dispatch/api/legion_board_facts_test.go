@@ -17,9 +17,12 @@ import (
 )
 
 // writeLegionFacts writes the stored facts of three issues of the project, as the facts consumer
-// would have written them, and answers the oldest updated_at of the rows. The rows are written by
-// hand rather than computed, so a check reads the numbers it wrote: the board serves stored rows
-// and computes none of them, which is the whole of what these tests hold it to.
+// would have written them, and answers the oldest updated_at of the rows the board of
+// seedLegionBoard serves. The third row, which that board does not serve, is the oldest of the
+// three, so a header that counted it would read an older facts_updated_at than the one answered.
+// The rows are written by hand rather than computed, so a check reads the numbers it wrote: the
+// board serves stored rows and computes none of them, which is the whole of what these tests hold
+// it to.
 func writeLegionFacts(t *testing.T, database *store.Store, project string, now time.Time) time.Time {
 	t.Helper()
 	oldest := now.Add(-4 * time.Minute)
@@ -37,10 +40,12 @@ func writeLegionFacts(t *testing.T, database *store.Store, project string, now t
 		WorkHours:    2, ReviewRounds: 0, RootKey: project + "-3", TreeDepth: 0,
 		SlotHours: 6, WaitingReason: "waiting for a child", UpdatedAt: oldest,
 	}, {
-		// A closed issue, which is on no card and carries an entry all the same.
+		// A closed issue of a tree no card stands in (seedLegionBoard's finished issue), which
+		// carries no entry and moves no facts_updated_at, though it is the oldest row: the board
+		// serves the facts of the open issues and of the issues it shows alone.
 		Project: project, Issue: project + "-7", OpenedAt: now.Add(-30 * time.Hour),
 		ClosedAt: &closed, HoursByPhase: map[string]float64{}, WorkHours: 0, RootKey: project + "-7",
-		UpdatedAt: now.Add(-3 * time.Minute),
+		UpdatedAt: now.Add(-5 * time.Minute),
 	}}
 	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
 		legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
@@ -59,12 +64,13 @@ func writeLegionFactsCursor(t *testing.T, database *store.Store, at time.Time) {
 	`, []string{"events", "legion_observations", "delivery_changes"}, at)
 }
 
-// TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked: the issues map is the project's stored
-// rows, one entry for every issue with Legion phase work and none for an issue no Legion role
-// worked, open and closed alike and whatever an issue's hours are. Each entry carries the hours,
-// the work time, the review rounds, the root and the depth in the tree the row holds as of the
-// moment of the read, because the board serves the row and computes nothing but the close of
-// each open part at its own clock (legionfacts.Row.At).
+// TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked: over the facts' own rig, whose every
+// tree holds an open child on a card, the board shows every tree, so the issues map is the
+// project's stored rows: one entry for every issue with Legion phase work and none for an issue no
+// Legion role worked, open and closed alike, whatever an issue's hours are, on a card or not.
+// Each entry carries the hours, the work time, the review rounds, the root and the depth in the
+// tree the row holds as of the moment of the read, because the board serves the row and computes
+// nothing but the close of each open part at its own clock (legionfacts.Row.At).
 func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
@@ -81,9 +87,9 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 		t.Fatalf("write the project's facts: %v", err)
 	}
 	board := legionBoardOf(t, handler, fixture.Project)
-	// The rows as the board's read closed them, at the moment its body is computed as of: the
-	// one computation the read makes (legionfacts.Row.At).
-	stored, err := legionfacts.Read(t.Context(), database.Pool, fixture.Project, board.ComputedAt)
+	// The rows of the issues the board carries as the board's read closed them, at the moment its
+	// body is computed as of: the one computation the read makes (legionfacts.Row.At).
+	stored, err := legionfacts.Read(t.Context(), database.Pool, fixture.Project, slices.Collect(maps.Keys(board.Issues)), nil, board.ComputedAt)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}
@@ -205,6 +211,77 @@ func TestTheBoardPushedLiveIsTheBoardTheGETAnswers(t *testing.T) {
 		t.Fatal("the pushed board carries no issues entry, so the comparison proves nothing of the map")
 	}
 	t.Logf("a board of %d issues entries: %d fields compared, %d differed", len(entries), compared, differed)
+}
+
+// TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther: the issues map holds the stored facts
+// of every open issue with Legion phase work and of every issue the board shows, and of no other
+// issue (dispatch://INFRA-2916, R22): the issue of every card, every issue of a tree a card stands
+// in, whose stored root is that card's tree, and every open row. So a child of a shown tree the
+// daemon names on no card, or names nowhere at all, carries its entry, and so does an open issue
+// on no card in no shown tree, a parked one, whose facts no other route serves; a closed issue of
+// a tree the daemon no longer shows carries none, nor does any closed issue of a tree the daemon
+// never showed: their facts are the items route's, by close day, and the board's body follows the
+// open work and what the daemon runs rather than the project's history.
+//
+// The header's facts_updated_at is the oldest updated_at of the rows the answer serves, so a row
+// the board does not serve, the oldest of the project's, moves it not at all.
+func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	// The board seedLegionBoard draws: cards for INFRA-10, -1 and -2 (the queue), -3 (design), its
+	// child -4 (implementing), -5 (with a person) and -6 (held); INFRA-7 is done and on no card,
+	// the root of a tree no card stands in, and INFRA-8 is -3's child its tree has not started.
+	seedLegionBoard(t, database, "INFRA", now)
+	closed := now.Add(-26 * time.Hour)
+	row := func(issue, root string, depth int, updated time.Duration, closedAt *time.Time) legionfacts.Row {
+		return legionfacts.Row{
+			Project: "INFRA", Issue: issue, OpenedAt: now.Add(-48 * time.Hour), ClosedAt: closedAt,
+			HoursByPhase: map[string]float64{"implementing": 1}, WorkHours: 1, RootKey: root,
+			TreeDepth: depth, UpdatedAt: now.Add(-updated),
+		}
+	}
+	rows := []legionfacts.Row{
+		row("INFRA-3", "INFRA-3", 0, 5*time.Minute, nil),
+		row("INFRA-4", "INFRA-3", 1, 4*time.Minute, nil),
+		row("INFRA-6", "INFRA-6", 0, 3*time.Minute, nil),
+		// A child of a shown tree the daemon names on no card.
+		row("INFRA-8", "INFRA-3", 1, 2*time.Minute, nil),
+		// A child of a shown tree the daemon names nowhere: it closed before the daemon's reads.
+		row("INFRA-12", "INFRA-3", 1, 6*time.Minute, &closed),
+		// A closed issue of a tree the daemon no longer shows: done, on no card, its own root.
+		row("INFRA-7", "INFRA-7", 0, 7*time.Minute, &closed),
+		// A tree the daemon never showed, the oldest rows of the project.
+		row("INFRA-20", "INFRA-20", 0, 9*time.Minute, &closed),
+		row("INFRA-21", "INFRA-20", 1, 8*time.Minute, &closed),
+		// An open issue on no card and in no shown tree: parked, its own root.
+		row("INFRA-30", "INFRA-30", 0, time.Minute, nil),
+	}
+	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
+		legionfacts.ProjectWrite{Project: "INFRA", Rows: rows, Whole: true}); err != nil {
+		t.Fatalf("write the stored facts of INFRA: %v", err)
+	}
+
+	board := legionBoardOf(t, handler, "INFRA")
+	want := []string{"INFRA-12", "INFRA-3", "INFRA-30", "INFRA-4", "INFRA-6", "INFRA-8"}
+	got := slices.Sorted(maps.Keys(board.Issues))
+	if !slices.Equal(got, want) {
+		t.Errorf("the board carries the entries of %v, want those of the open issues and the issues it shows, %v", got, want)
+	}
+	if _, carded := legionCardHeld(board, "INFRA-30"); carded {
+		t.Error("INFRA-30 has a card of its own, so its entry proves nothing of an open issue on no card")
+	}
+	if _, carded := legionCardHeld(board, "INFRA-8"); carded {
+		t.Error("INFRA-8 has a card of its own, so its entry proves nothing of a child on no card")
+	}
+	oldestShown := now.Add(-6 * time.Minute)
+	if board.Header.FactsUpdatedAt == nil || !board.Header.FactsUpdatedAt.Equal(oldestShown) {
+		t.Errorf("facts_updated_at = %v, want %s, the oldest updated_at of the rows the board serves",
+			board.Header.FactsUpdatedAt, oldestShown)
+	}
+	t.Logf("the project stores %d rows; the board shows %d cards and carries %d entries %v, the oldest updated %s",
+		len(rows), countBoardCards(board), len(board.Issues), got, board.Header.FactsUpdatedAt)
 }
 
 // TestTheBoardHeaderTellsNoLegionWorkFromNoBackfill: the header's two facts fields are read apart,

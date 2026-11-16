@@ -159,8 +159,11 @@ func boardFactsReads(ran []ranStatement) []ranStatement {
 	return reads
 }
 
-// TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts: the board's read of the stored facts is one
-// index read of issue_facts, and it reads neither the event log nor the daemon's observations.
+// TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts: the board's read of the stored facts reads
+// issue_facts through three index ranges (R22): the primary key keyed by the cards' issues,
+// issue_facts_root keyed by the roots of the trees they stand in, and an index keyed by
+// closed_at for the project's open rows; and it reads neither the event log nor the daemon's
+// observations.
 //
 // The statement explained is the statement the request itself ran: the server reads through a
 // traced pool, the request's statements are recorded with their arguments, and every one of them
@@ -169,9 +172,10 @@ func boardFactsReads(ran []ranStatement) []ranStatement {
 //
 // Two plans are taken. The first is over the one project's rows alone, which is what a deployment
 // of one project holds; the second is over ten projects' rows, which is what Dispatch holds. The
-// second is the plan held to the index: which plan Postgres takes for `where project_key = $1`
-// depends on how much of the table the one project is, and reading a whole table every row of
-// which is wanted is the right plan for that table.
+// second is the plan held to the three ranges, each scan keyed by its own condition, never the
+// project's whole range filtered after it: which plan Postgres takes depends on how much of the
+// table the one project is, and reading a whole table every row of which is wanted is the right
+// plan for that table.
 func TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts(t *testing.T) {
 	log := &statementLog{}
 	handler, database, fixture := boardAtInfraSize(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), log)})
@@ -213,12 +217,16 @@ func TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts(t *testing.T) {
 			if population != "ten projects' rows" {
 				continue
 			}
-			if len(scans) == 0 {
-				t.Errorf("over ten projects' rows the board's read of the stored facts reads no index:\n%s", explained.text)
-				continue
+			for _, index := range []struct{ name, column string }{{"issue_facts_pkey", "issue_key"}, {"issue_facts_root", "root_key"}, {"issue_facts_closed", "closed_at IS NULL"}} {
+				if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool {
+					return scan.Index == index.name && strings.Contains(scan.Cond, index.column)
+				}) {
+					t.Errorf("over ten projects' rows the board's read of the stored facts reads %v, want %s keyed by %s:\n%s",
+						scans, index.name, index.column, explained.text)
+				}
 			}
 			for _, scan := range scans {
-				t.Logf("the read takes %s", scan)
+				t.Logf("the read takes %s, keyed by %s", scan, scan.Cond)
 			}
 		}
 		if population == "one project's rows" {
