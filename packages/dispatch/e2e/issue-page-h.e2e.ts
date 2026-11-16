@@ -690,6 +690,42 @@ test("every property with a value is visible in Details at every width @phone", 
   });
 });
 
+/** A label of the most characters Dispatch takes (`IssueLabels.tsx`'s `maxLabelLength`, and the
+ *  server's `LABELS_INPUT` refusal "each label must be 1 to 40 characters"), with no space to
+ *  break it at. */
+const LONGEST_LABEL = "a-label-of-forty-characters-and-no-space";
+
+// R4 and (5): the Labels row lists every label, none cut. Found by the tester on the preview of
+// d4344116: on INFRA-3570 a 40-character label ran 39 px past Details' edge at 1440 px and was
+// cut, at 390 px as well.
+test("a label of the most characters Dispatch takes is whole in Details at every width @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { two } = seeded.keys;
+    expect(LONGEST_LABEL).toHaveLength(40);
+    await patchIssue(two, { labels: [LONGEST_LABEL] });
+    const desktopProject = test.info().project.name !== "iphone";
+    for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${two}`);
+      await openDetails(page);
+      const row = detailsRow(page, PROPERTY_LABELS.labels);
+      const label = row.getByText(LONGEST_LABEL, { exact: true });
+      await expect(label).toBeVisible();
+      const [labelBox, rowBox] = [await label.boundingBox(), await row.boundingBox()];
+      expect(labelBox, `the label has no box at ${width} px`).not.toBeNull();
+      expect(rowBox, `the Labels row has no box at ${width} px`).not.toBeNull();
+      expect(
+        (labelBox?.x ?? 0) + (labelBox?.width ?? 0),
+        `a label of 40 characters runs past the Labels row at ${width} px`
+      ).toBeLessThanOrEqual((rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1);
+      await assertWholeInDetails(page, [label]);
+    }
+  });
+});
+
 test("each control in Details saves and reads back", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
