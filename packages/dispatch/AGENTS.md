@@ -1390,9 +1390,10 @@ no other page reads. Its typeface is Inter 4.1, shipped as
 `web/src/fonts/inter/InterVariable-subset.woff2` (cut by `subset.sh` beside it, which
 `subset.test.ts` holds the file and its `unicode-range` to) under the family name
 `Dispatch Inter`, which no component names. One rule of `styles.css`,
-`html:has([data-issue-page])`, applies that family to the whole document while the new page is
-drawn, so the `:root` stack, Tailwind's `font-sans` and every other page are not affected, and no
-other page requests the file. Keep it that way: name no `@font-face` `Inter`, set no
+`html:has([data-issue-page])`, sets that family and `--font-sans` (which Tailwind's `font-sans`
+reads) for the whole document while the new page is drawn, so `main`'s `:root` rule and the
+`--font-sans` of Tailwind's theme stay as they are, every other page keeps them, and no other
+page requests the file. Keep it that way: name no `@font-face` `Inter`, set no
 `--font-sans` in `@theme`, and write a rule the new page needs in another form (a floor, a font,
 a padding) as a new rule under `html:has([data-issue-page])`, never as a change to the rule the
 other pages use. Its colours are the `--color-page-*` and `--color-icon-rail*` tokens of the

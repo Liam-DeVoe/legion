@@ -13,12 +13,13 @@ import { wordsOf } from "../refs/tree-fragment";
  *
  * A Change is a comment of the issue anchored to the decision's own words in the decisions
  * document (`DecisionActions.tsx`), which is the write the old Decisions tab made; the decisions
- * read holds no state for it. So the page reads it from the comments it already reads: the
- * newest comment a person anchored to a decision's words since that decision last changed is
- * the change they asked for. The decision then waits on its agent, not on the reader: it says
- * it was changed, it leaves the review list and every count of what waits on the reader, and the
- * change is drawn under it. Once the agent edits the decision, the change is older than its
- * words and the decision waits for review again.
+ * read holds no state for it. So the page reads it from the comments it already reads: every
+ * comment a person anchored to a decision's words since that decision last changed is a change
+ * they asked for, and is drawn under it (`decisionChangeComments`); the newest is the change the
+ * decision waits on (`decisionChanges`). The decision then waits on its agent, not on the
+ * reader: it says it was changed, and it leaves the review list and every count of what waits on
+ * the reader. Once the agent edits the decision, every change is older than its words and the
+ * decision waits for review again.
  */
 
 /** The fields of a comment this module reads. */
@@ -33,8 +34,8 @@ type ChangedDecision = Pick<
 /**
  * Whether `decision` is an entry of the review list (R35): an agent's decision that waits for a
  * person's review - neither kept as it reads now nor replaced, which is the server's
- * `waiting_review` (dispatch://INFRA-1150 R2) - that a `shaped` tie names a statement of this
- * issue for, and that the reader has not asked to change since it last changed (`changed`).
+ * `waiting_review` (dispatch://INFRA-1150 R2) - that a link ties to a statement of this issue,
+ * and that the reader has not asked to change since it last changed (`changed`).
  * `isStatement` answers whether an address names a statement.
  *
  * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
@@ -69,20 +70,22 @@ export function decisionsDocumentId(
 }
 
 /**
- * The change a person asked of each decision, by the decision's own address (`Decision.ref`):
- * the newest comment a person anchored to the decision's words in the decisions document, made
- * after the decision last changed and after it was last kept. A decision that was replaced
- * takes no change: nothing waits on it any longer. Comments are matched by their anchor's
- * quote, which is the decision's text as the server matches quotes (`pmdoc.FindQuote`), so a
- * quote of a decision's words names that decision and no other, and by the document their
+ * Each change a person asked of a decision, by the comment's id, to the decision's own address
+ * (`Decision.ref`): every comment a person anchored to the decision's words in the decisions
+ * document, made after the decision last changed and after it was last kept. A decision that
+ * was replaced takes no change: nothing waits on it any longer. Comments are matched by their
+ * anchor's quote, which is the decision's text as the server matches quotes (`pmdoc.FindQuote`),
+ * so a quote of a decision's words names that decision and no other, and by the document their
  * anchor names, which is the issue's document at the read's address (`decisionsDocumentId`).
+ * Every comment it holds is drawn under its decision; one older than the decision's words is no
+ * change and is not held.
  */
-export function decisionChanges(
+export function decisionChangeComments(
   decisions: Pick<IssueDecisions, "decisions" | "document"> | undefined,
   comments: readonly ChangeComment[] | undefined,
   artifacts: readonly Pick<Artifact, "id" | "slug">[] | null | undefined
-): ReadonlyMap<string, ChangeComment> {
-  const changes = new Map<string, ChangeComment>();
+): ReadonlyMap<string, string> {
+  const changes = new Map<string, string>();
   const rows = (decisions?.decisions ?? []).filter((row) => !row.replaced);
   const document = decisionsDocumentId(artifacts, decisions);
   if (rows.length === 0 || document === undefined) return changes;
@@ -91,7 +94,7 @@ export function decisionChanges(
   const words = new Map(
     rows.map((row) => [
       row.ref,
-      flat(row.text_tree === undefined ? row.text : wordsOf(row.text_tree as DisplayTree)),
+      flat(row.text_tree === undefined ? row.text : wordsOf(row.text_tree)),
     ])
   );
   for (const comment of comments ?? []) {
@@ -102,10 +105,29 @@ export function decisionChanges(
     const quote = flat(anchor.quote);
     if (quote === "") continue;
     const row = rows.find((one) => words.get(one.ref)?.includes(quote) === true);
-    if (row === undefined || !after(comment.created_at, row)) continue;
-    const held = changes.get(row.ref);
+    if (row !== undefined && after(comment.created_at, row)) changes.set(comment.id, row.ref);
+  }
+  return changes;
+}
+
+/**
+ * The change each decision waits on, by the decision's own address (`Decision.ref`): the newest
+ * of the changes a person asked of it (`decisionChangeComments`, which `placed` holds where the
+ * caller has read it already). A decision with none is not held.
+ */
+export function decisionChanges(
+  decisions: Pick<IssueDecisions, "decisions" | "document"> | undefined,
+  comments: readonly ChangeComment[] | undefined,
+  artifacts: readonly Pick<Artifact, "id" | "slug">[] | null | undefined,
+  placed: ReadonlyMap<string, string> = decisionChangeComments(decisions, comments, artifacts)
+): ReadonlyMap<string, ChangeComment> {
+  const changes = new Map<string, ChangeComment>();
+  for (const comment of comments ?? []) {
+    const ref = placed.get(comment.id);
+    if (ref === undefined) continue;
+    const held = changes.get(ref);
     if (held === undefined || compareTimestamps(comment.created_at, held.created_at) > 0) {
-      changes.set(row.ref, comment);
+      changes.set(ref, comment);
     }
   }
   return changes;
