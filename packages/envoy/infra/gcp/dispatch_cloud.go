@@ -119,17 +119,17 @@ func newDispatchCluster(ctx *pulumi.Context, comp *Dispatch, name string, s disp
 		return nil, err
 	}
 	// GKE signs a cluster's service-account tokens as the issuer
-	// https://container.googleapis.com/v1/projects/<project id>/locations/<location>/clusters/<name>,
-	// the URL Google's Workload Identity documentation names the cluster by (its kubernetes.cluster
-	// principal set). It is built from the project, the location and the name rather than taken from
-	// the cluster's selfLink, which the provider documents only as "the server-defined URL for the
-	// resource", a form it does not promise.
+	// https://container.googleapis.com/v1/projects/<project id>/locations/<location>/clusters/<name>
+	// (gkeIssuerPrefix, gkeIssuerCluster), the URL Google's Workload Identity documentation names the
+	// cluster by (its kubernetes.cluster principal set). It is built from the project, the location
+	// and the name rather than taken from the cluster's selfLink, which the provider documents only
+	// as "the server-defined URL for the resource", a form it does not promise.
 	issuer := pulumi.All(project.ProjectId(), cluster.Location, cluster.Name).ApplyT(func(values []interface{}) (string, error) {
 		parts, err := outputStrings(dispatch, values, "the project's id", "the cluster's location", "the cluster's name")
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("https://container.googleapis.com/v1/projects/%s/locations/%s/clusters/%s", parts[0], parts[1], parts[2]), nil
+		return gkeIssuerPrefix + parts[0] + gkeIssuerCluster(parts[1], parts[2]), nil
 	}).(pulumi.StringOutput)
 	return &dispatchCluster{cluster: cluster, issuer: issuer, kubeconfig: dispatchKubeconfig(dispatch, cluster), network: network, project: project}, nil
 }

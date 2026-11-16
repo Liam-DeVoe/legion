@@ -1076,7 +1076,8 @@ func blankAudience(input, value string) error {
 // keeps its exchange audience apart from its enrollment one (internal/broker/config,
 // BROKER_EXCHANGE_K8S_AUDIENCE), so that no token is spendable where another is. It compares the
 // resolved settings, each audience as dispatchAudience reads it, and names both inputs and
-// neither value but the public Azure default.
+// neither value but the public Azure default. The audience listenerAudience must also not be, the
+// cluster's own issuer, is refuseClusterIssuerAudience's.
 func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
 	type named struct{ input, audience string }
 	azureInput := "azureFederationAudience"
@@ -1102,6 +1103,37 @@ func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
 		}
 	}
 	return nil
+}
+
+// The issuer GKE signs a cluster's ServiceAccount tokens as, the URL Google's Workload Identity
+// documentation names the cluster by (its kubernetes.cluster principal set):
+// gkeIssuerPrefix, the project's id, and gkeIssuerCluster's location and name. newDispatchCluster
+// builds the cluster's issuer from these once the project's id resolves.
+const gkeIssuerPrefix = "https://container.googleapis.com/v1/projects/"
+
+// gkeIssuerCluster is the part of a GKE cluster's issuer after its project's id.
+func gkeIssuerCluster(location, name string) string {
+	return "/locations/" + location + "/clusters/" + name
+}
+
+// refuseClusterIssuerAudience refuses a listenerAudience that is this deployment's cluster
+// issuer, naming the input and the issuer. Kubernetes mints the token every pod mounts by default
+// for the API server's audiences, which are the issuer itself unless kube-apiserver's
+// --api-audiences names others, so the listener would admit the default token of any pod that
+// reaches it. The cluster's location and name are the component's own region and hostname, and
+// only the project's id is an output, so an audience naming this cluster under any one project is
+// refused here, before any resource registers, as every other audience refusal is
+// (refuseSharedAudiences).
+func refuseClusterIssuerAudience(s dispatchSettings) error {
+	project, ok := strings.CutPrefix(s.listenerAudience, gkeIssuerPrefix)
+	if !ok {
+		return nil
+	}
+	project, ok = strings.CutSuffix(project, gkeIssuerCluster(s.region, s.hostname))
+	if !ok || project == "" || strings.Contains(project, "/") {
+		return nil
+	}
+	return core.InputErrorf("listenerAudience", "listenerAudience is this cluster's issuer, %s, the audience of the token every pod mounts by default, so Dispatch's listener would admit any pod's own token: give the listener an audience of its own", s.listenerAudience)
 }
 
 // dispatchDeletionProtection resolves deletionProtection, true when the consumer sets nothing. It
@@ -1301,6 +1333,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.azure = azure
 	s.answerer = answerer
 	if err := refuseSharedAudiences(args, s); err != nil {
+		return dispatchSettings{}, err
+	}
+	if err := refuseClusterIssuerAudience(s); err != nil {
 		return dispatchSettings{}, err
 	}
 	if args.DatabaseVersion != nil {

@@ -420,7 +420,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		return url, nil
 	}).(pulumi.StringOutput)
 	// The listener's environment is the checked NATS environment and then its API credential,
-	// which with listenerAudience names the cluster's issuer and refuses an audience that is it.
+	// which with listenerAudience names the cluster's issuer.
 	listenerEnv := pulumi.All(natsURL, cloud.issuer).ApplyT(func(values []any) (corev1.EnvVarArray, error) {
 		parts, err := outputStrings(dispatch, values, "natsUrl", "the cluster's issuer")
 		if err != nil {
@@ -430,11 +430,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", dispatch, err)
 		}
-		api, err := listener.apiEnv(parts[1])
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", dispatch, err)
-		}
-		return append(env, api...), nil
+		return append(env, listener.apiEnv(parts[1])...), nil
 	}).(corev1.EnvVarArrayOutput)
 
 	// Unset, the pods name no priority class. Set, the class is read once and every Deployment

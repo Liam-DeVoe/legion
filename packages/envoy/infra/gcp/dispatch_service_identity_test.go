@@ -353,20 +353,40 @@ func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 
 // A listenerAudience that is the cluster's own issuer is the audience of the token every pod
 // mounts by default (kube-apiserver's --api-audiences defaults to the issuer), so the listener
-// would admit any pod's own token: it is refused, naming listenerAudience, inside the apply that
-// resolves the issuer, which is the first place the component knows it. Any other audience renders.
+// would admit any pod's own token: it is refused, naming listenerAudience and the issuer, before
+// any resource registers, as every other audience refusal is (review F2). The cluster's location
+// and name are the component's own region and hostname, so the issuer is known but for the
+// project's id, and an audience naming this cluster under any project is refused. Any other
+// audience renders: one that only begins with the issuer, and another cluster's.
 func TestDispatchRefusesAListenerAudienceThatIsTheClustersIssuer(t *testing.T) {
-	args := dispatchArgs()
-	args.ListenerAudience = azureIssuer
-	_, err := runDispatch(t, args, true)
-	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: listenerAudience is this cluster's issuer, "+azureIssuer+",")
-	var input *core.InputError
-	require.ErrorAs(t, err, &input)
-	require.Equal(t, "listenerAudience", input.Input)
-
-	args.ListenerAudience = azureIssuer + "/other"
-	_, err = runDispatch(t, args, true)
-	require.NoError(t, err, "an audience that only begins with the issuer is another audience")
+	for _, audience := range []string{
+		azureIssuer,
+		"https://container.googleapis.com/v1/projects/another-project/locations/us-central1/clusters/example-dispatch",
+	} {
+		t.Run(audience, func(t *testing.T) {
+			args := dispatchArgs()
+			args.ListenerAudience = audience
+			_, err := gcp.ResolveDispatch(args)
+			require.ErrorContains(t, err, "listenerAudience is this cluster's issuer, "+audience+",")
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "listenerAudience", input.Input)
+			m, err := runDispatch(t, args, true)
+			require.Error(t, err)
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types(),
+				"nothing registered beyond the test's providers")
+		})
+	}
+	for _, audience := range []string{
+		azureIssuer + "/other",
+		"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/another-cluster",
+		"https://container.googleapis.com/v1/projects/a/b/locations/us-central1/clusters/example-dispatch",
+	} {
+		args := dispatchArgs()
+		args.ListenerAudience = audience
+		_, err := runDispatch(t, args, true)
+		require.NoError(t, err, "%s is another audience than this cluster's issuer", audience)
+	}
 }
 
 // Each audience is rendered as its verifier reads it, trimmed: Dispatch's DISPATCH_OIDC_AUDIENCE,

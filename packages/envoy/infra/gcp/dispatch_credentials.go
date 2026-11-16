@@ -6,8 +6,6 @@ import (
 	metav1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/meta/v1"
 	random "github.com/pulumi/pulumi-random/sdk/v4/go/random"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-
-	"github.com/sjawhar/envoy/infra/core"
 )
 
 // serviceTokenSeconds is the lifetime of each projected ServiceAccount token the app and the
@@ -106,9 +104,8 @@ type dispatchListenerCredential struct {
 	appEnv     corev1.EnvVarArgs
 	appMounts  corev1.VolumeMountArray
 	appVolumes corev1.VolumeArray
-	// apiEnv is the listener's API credential, rendered once the cluster's issuer resolves, where
-	// it refuses a listenerAudience that is that issuer.
-	apiEnv func(issuer string) (corev1.EnvVarArray, error)
+	// apiEnv is the listener's API credential, rendered once the cluster's issuer resolves.
+	apiEnv func(issuer string) corev1.EnvVarArray
 	// checksums are the component Secrets both pods read it from (secretChecksum).
 	checksums map[string]*corev1.Secret
 }
@@ -127,21 +124,15 @@ type dispatchListenerCredential struct {
 // the listener verifies it with the pair ENVOY_OIDC_ISSUER, this cluster's issuer, which mints it,
 // and ENVOY_OIDC_AUDIENCE. No bearer is shared then, so there is no password, no Secret and no
 // checksum, and Dispatch refuses ENVOY_TOKEN beside the file. A listenerAudience that is the
-// cluster's issuer is refused once the issuer resolves: Kubernetes mints a token requested for no
-// audience, the one every pod mounts by default, for the API server's audiences, which are the
-// issuer itself unless kube-apiserver's --api-audiences names others, so the listener would admit
-// the default token of any pod that reaches it.
+// cluster's issuer never reaches here: newDispatchSettings refuses it (refuseClusterIssuerAudience).
 func newDispatchListenerCredential(ctx *pulumi.Context, comp *Dispatch, s dispatchSettings, listenerName string, metadata func(string) *metav1.ObjectMetaArgs, kube []pulumi.ResourceOption) (dispatchListenerCredential, error) {
 	if s.listenerAudience != "" {
 		return dispatchListenerCredential{
 			appEnv:     valueEnv("ENVOY_ACCOUNT_TOKEN_FILE", dispatchListenerTokenFile),
 			appMounts:  corev1.VolumeMountArray{corev1.VolumeMountArgs{Name: pulumi.String(dispatchListenerTokenName), MountPath: pulumi.String(dispatchListenerTokenMount), ReadOnly: pulumi.Bool(true)}},
 			appVolumes: corev1.VolumeArray{projectedTokenVolume(dispatchListenerTokenName, s.listenerAudience)},
-			apiEnv: func(issuer string) (corev1.EnvVarArray, error) {
-				if s.listenerAudience == issuer {
-					return nil, core.InputErrorf("listenerAudience", "listenerAudience is this cluster's issuer, %s, the audience of the token every pod mounts by default, so Dispatch's listener would admit any pod's own token: give the listener an audience of its own", issuer)
-				}
-				return corev1.EnvVarArray{valueEnv("ENVOY_OIDC_ISSUER", issuer), valueEnv("ENVOY_OIDC_AUDIENCE", s.listenerAudience)}, nil
+			apiEnv: func(issuer string) corev1.EnvVarArray {
+				return corev1.EnvVarArray{valueEnv("ENVOY_OIDC_ISSUER", issuer), valueEnv("ENVOY_OIDC_AUDIENCE", s.listenerAudience)}
 			},
 		}, nil
 	}
@@ -157,8 +148,8 @@ func newDispatchListenerCredential(ctx *pulumi.Context, comp *Dispatch, s dispat
 	}
 	return dispatchListenerCredential{
 		appEnv: secretEnv("ENVOY_TOKEN", listenerName, "ENVOY_API_TOKEN"),
-		apiEnv: func(string) (corev1.EnvVarArray, error) {
-			return corev1.EnvVarArray{secretEnv("ENVOY_API_TOKEN", listenerName, "ENVOY_API_TOKEN")}, nil
+		apiEnv: func(string) corev1.EnvVarArray {
+			return corev1.EnvVarArray{secretEnv("ENVOY_API_TOKEN", listenerName, "ENVOY_API_TOKEN")}
 		},
 		checksums: map[string]*corev1.Secret{listenerName: secret},
 	}, nil

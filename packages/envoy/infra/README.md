@@ -977,10 +977,12 @@ naming both: a token for either would be one the NATS auth service admits. `agen
 them, trimmed of surrounding whitespace, so a padded one renders and is compared as the audience
 it names, and one of whitespace alone, which names none, is refused by name rather than turning
 its verifier off; `natsAudience` and `listenerAudience` holding any whitespace are refused.
-A `listenerAudience` that is this cluster's issuer (the `serviceAccountIssuer` output) is refused
-too, once the issuer resolves, naming `listenerAudience`: Kubernetes mints the token every pod
-mounts by default for the API server's audiences, which are the issuer itself unless
-`kube-apiserver --api-audiences` names others, so the listener would admit any pod's own token.
+A `listenerAudience` that is this cluster's issuer (the `serviceAccountIssuer` output, under any
+project, since the cluster's location and name are `region` and `hostname`) is refused too,
+before any resource registers, naming `listenerAudience` and that issuer: Kubernetes mints the
+token every pod mounts by default for the API server's audiences, which are the issuer itself
+unless `kube-apiserver --api-audiences` names others, so the listener would admit any pod's own
+token.
 
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh
@@ -1243,8 +1245,9 @@ seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, a
 `natsSeedSecret` beside `natsAudience` and neither of the two, a `natsAudience` or
 `listenerAudience` holding whitespace or a control character, a `listenerAudience` equal to
-`natsAudience`, `agentSecretsAudience`, `oidcAudience` or the keyless Azure sign-in's audience, a
-`natsAudience` equal to `oidcAudience` or the keyless Azure sign-in's audience, an
+`natsAudience`, `agentSecretsAudience`, `oidcAudience` or the keyless Azure sign-in's audience, or
+to this cluster's issuer, a `natsAudience` equal to `oidcAudience` or the keyless Azure sign-in's
+audience, an `agentSecretsAudience` or `oidcAudience` of whitespace alone, an
 `oidcIssuer` with no `oidcAudience`, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
