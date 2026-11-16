@@ -111,7 +111,8 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   });
   // The reader, whose own turn an open question may be (`IssueTreeReads.viewer`): the shell's
   // one read of who is signed in, so it costs no request of its own.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const who = useQuery(whoAmIQuery());
+  const viewer = who.data?.login;
   const documentIds = (issue.artifacts ?? [])
     .filter(
       (artifact) =>
@@ -166,10 +167,12 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // the tree as it arrives, so asking while any is still out would ask for the addresses known
   // so far and ask again for the rest: measured on this pod, that cost the first load two reads
   // and sometimes three, where the design is "the names come last and all at once" (above) and
-  // the issue's own budget is 40 requests (dispatch://INFRA-1196 c-requests). Every one of these
-  // reads is always enabled, so each ends in an answer or an error and none of them holds the
-  // names for good. Nothing waits on the names: until they land the tree draws with each chip
-  // naming its target's address.
+  // the issue's own budget is 40 requests (dispatch://INFRA-1196 c-requests). The reader's login
+  // is one of the reads this gate waits on: it adds no node, but the tree is built again when
+  // it answers, since it says which questions wait on the reader. Every one of these reads is
+  // always enabled, so each ends in an answer or an error and none of them holds the names for
+  // good. Nothing waits on the names: until they land the tree draws with each chip naming its
+  // target's address.
   const treeRead =
     !asks.isPending &&
     !comments.isPending &&
@@ -177,6 +180,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     !decisions.isPending &&
     !messages.isPending &&
     !results.isPending &&
+    !who.isPending &&
     !documents.pending;
   // The last answer stands while the next one loads, because the key is the set of addresses
   // itself: one comment, message, ask or block arriving changes that set, and without this the
