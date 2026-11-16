@@ -1686,7 +1686,7 @@ jobs:
     #
     # Budget: that 240 s plus the arithmetic of this job's slowest retried step, which is the
     # setup-bun step below at 2562 s - the shard job's step of that name derives the figure -
-    # above the workspace install's 1050 s, the ci-ok report's 1380 s and each reading's 350 s.
+    # above the workspace install's 1050 s, the ci-ok report's 2160 s and each reading's 350 s.
     # 240 + 2562 = 2802 s -> 47 min, which stands above the largest step budget of this job,
     # the setup-bun step's own 43, so no job budget fires before a step's own.
     #
@@ -2146,12 +2146,9 @@ jobs:
       # nightly workflow passes no `ci-ok-changes`, and the step skips.
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''
-        # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
-        # of the check run, 2 x (5 x 30 + 150) = 600 s, and runner-shutdown.sh's check-run read,
-        # 300 s, and annotations loop, 480 s: 1380 s. 1500 s and not rule 8's minimum of 1440 s:
-        # this step posts the required ci-ok check, and a budget that cuts it between those two
-        # ladders loses the check run rather than reporting a failure (ci-budgets.md's Budgets note).
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report", which derives the
+        # report's 2160 s once for every step that runs it.
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-browser

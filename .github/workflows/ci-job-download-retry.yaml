@@ -44,7 +44,7 @@ jobs:
   # faulted site: install-jj, whose two `ci_tools_fetch` calls are 2562 s and whose
   # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 3012 s together (ci-budgets.md's
   # Budgets note) — above setup-bun's 2562 s, the unfaulted workspace install's 1050 s and the
-  # ci-ok report's 1380 s. So 14430 + 3012 = 17442 s -> 291 min, the whole minute above the
+  # ci-ok report's 2160 s. So 14430 + 3012 = 17442 s -> 291 min, the whole minute above the
   # 290.7 that sum gives. What this key read before, and why each site's budget carries the
   # probe's 20 s: .github/ci-budgets.md, "The download-retry job's rig".
   download-retry:
@@ -504,8 +504,8 @@ jobs:
 
       - name: Report ci-ok when this is the run's last job
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: download-retry

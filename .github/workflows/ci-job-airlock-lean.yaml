@@ -35,10 +35,10 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 1200 s, the 20 minutes this job carried, above the
     # 185 s maximum of the four runs made of it on this branch — it was selected by no main push
     # in the window that note names — plus its slowest retried step alone: install-elan's one
-    # `ci_tools_fetch` of the elan tarball, 1281 s, below the ci-ok report, 1380 s (ci-budgets.md's Budgets note, "The ci-ok report"), which is this job's slowest
-    # retried step now. 1200 + 1380 = 2580 s, a whole number of minutes, so the budget is the
-    # next one strictly above it -> 44 min.
-    timeout-minutes: 44
+    # `ci_tools_fetch` of the elan tarball, 1281 s, below the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), which is this job's slowest
+    # retried step now. 1200 + 2160 = 3360 s, a whole number of minutes, so the budget is the
+    # next one strictly above it -> 57 min.
+    timeout-minutes: 57
     env:
       # The built model the two runs below compare the Go code against. Naming no file makes
       # FuzzAirlock skip (internal/broker/airlock/airlock_fuzz_test.go:32-46), and a skip is a
@@ -90,8 +90,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: airlock-lean

@@ -44,7 +44,7 @@ jobs:
     #
     # Budget (ci-budgets.md's Budgets note): those ten minutes, 600 s, plus its slowest retried
     # step alone — setup-bun's two `ci_tools_fetch` calls, 2562 s, above the ci-ok report's
-    # 1380 s. 600 + 2562 = 3162 s -> 53 min.
+    # 2160 s. 600 + 2562 = 3162 s -> 53 min.
     timeout-minutes: 53
     services:
       postgres:
@@ -81,8 +81,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: sessions-script

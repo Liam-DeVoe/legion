@@ -74,10 +74,10 @@ jobs:
       # Both per-ladder figures come from one place, .github/scripts/ci-tools.sh's own
       # `--retry-max-time` block, which writes them as 427 s at 60 and 397 s at 30; neither is
       # derived here.
-      # 427 + 1588 = 2015 s -> 34 min. Rule 8 reads one `ci_tools_fetch` of 1281 s for this step
-      # instead, since a call of a function the sourced file defines is no call of that file
-      # to it and the loop around this one is therefore not multiplied, so this step's 34
-      # minutes are written by hand against the sum above and not against what the gate prices.
+      # 427 + 1588 = 2015 s -> 34 min. Rule 8 charges this step that sum: a loop of calls of a
+      # function the sourced file defines is a reading it refuses unless declared, and its
+      # DECLARED_LIBRARIES entry for this step writes these 2015 s in place of the one
+      # `ci_tools_fetch` of 1281 s it charged before.
       - name: Check the package holds the blob of every mirrored row
         timeout-minutes: 34
         run: |
@@ -161,7 +161,8 @@ jobs:
       # bun-linux-x64 costs its one npm tarball, 427 s. Those last two are that same entry's
       # own figures for a row with no primary. 3 x 1281 + 854 + 427 = 5124 s, which is twelve
       # ladders of at most 427 s -> 86 min.
-      # Why no check refuses this budget: .github/ci-budgets.md, "The tool-fallback job's budget,
+      # Rule 8 charges this step that sum through its DECLARED_LIBRARIES entry for this step, and
+      # holds the 86 minutes above it: .github/ci-budgets.md, "The tool-fallback job's budget,
       # part by part".
       - name: Stage the correct bytes of every row a case serves, before the fault
         timeout-minutes: 86
@@ -1105,8 +1106,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: tool-fallback

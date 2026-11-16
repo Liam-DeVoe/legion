@@ -27,7 +27,7 @@ jobs:
     # 227 s measured maximum, plus its slowest retried step alone — install-jj's two
     # `ci_tools_fetch` calls and its `mise install` of the jj release, 2562 + 450 = 3012 s,
     # above setup-bun's 2562 s, the tmux install's 625 + 775 = 1400 s, the workspace install's
-    # 1050 s, install-omp's 450 s and the ci-ok report's 1380 s. 600 + 3012 = 3612 s -> 61 min.
+    # 1050 s, install-omp's 450 s and the ci-ok report's 2160 s. 600 + 3012 = 3612 s -> 61 min.
     timeout-minutes: 61
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
@@ -127,8 +127,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: pi-envoy

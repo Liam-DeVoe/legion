@@ -381,6 +381,26 @@ declare_entry() {
   chmod +x "$copy"
 }
 
+# declare_in <root> <table> <one entry, in Python>: as declare_entry, for any table of
+# declarations the gate holds — DECLARED_LOOPS, DECLARED_LIBRARIES or DECLARED_CALLS — and onto
+# the copy an earlier call made, so one fixture can carry entries of more than one table
+# (dispatch://INFRA-1545, round 37).
+declare_in() {
+  local root=$1 table=$2 entry=$3 copy="$root/.github/scripts/check-download-retry.sh"
+  local source=$check_script
+  if [ ! -L "$copy" ]; then
+    source="$work/declare-in.sh"
+    cp "$copy" "$source"
+  fi
+  rm "$copy"
+  awk -v table="$table" -v entry="$entry" '
+    index($0, table ":") == 1 { inside = 1 }
+    inside && $0 == "]" { print entry; inside = 0 }
+    { print }
+  ' "$source" > "$copy"
+  chmod +x "$copy"
+}
+
 list_check() {
   local root=$1
   set +e
@@ -3902,7 +3922,10 @@ check "and the same tree with one of them gone passes" "$(is "$status" 0)"
 
 # The four walks rule 8 recurses through each stop at a path already read, so a cycle ends and a
 # file two calls reach is read once. A cycle is what no case wrote, so the stop could go and every
-# case stayed green; without it the check recurses until Python gives up.
+# case stayed green; without it the check recurses until Python gives up. Since round 37 a script
+# that reaches itself and fetches is refused by name as well, each of the pair at its call of the
+# other, since the run a path stops at is charged nothing (dispatch://INFRA-1545, round 37); the
+# check still ends, with those two refusals and no other.
 echo "case: two scripts that call each other are read once each, and the check ends"
 root=$(fixture script-cycle)
 cat > "$root/.github/scripts/cycle-a.sh" <<'SH'
@@ -3930,7 +3953,15 @@ jobs:
         run: .github/scripts/cycle-a.sh
 YAML
 run_check "$root"
-check "exits 0" "$(is "$status" 0)"
+check "exits 1" "$(is "$status" 1)"
+for refusal in \
+  ".github/scripts/cycle-a.sh	5	.github/scripts/cycle-b.sh" \
+  ".github/scripts/cycle-b.sh	3	.github/scripts/cycle-a.sh"; do
+  IFS=$'\t' read -r script line target <<<"$refusal"
+  check "refuses $script, which reaches itself, at its call of $target" \
+    "$(contains "$out" "::error file=$script,line=$line::$script runs or sources $target, and that call reaches $script again")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: a loop around two scripts that call each other and fetch nothing passes"
@@ -7422,6 +7453,1173 @@ done
 check "neither charges nor refuses the text that fetches nothing" \
   "$(is "$(contains "$out" "step 'A loop in bash -c text that fetches nothing'")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+# A library one shell reaches along two paths of different products is charged at the larger,
+# whichever of the two is written first (dispatch://INFRA-1545, round 37). ka-lib.sh defines a
+# function retrying at 180 s and calls it nowhere, so it costs 1050 s once; ka-run.sh sources it
+# and calls that function. Each step sources ka-lib.sh itself, a product of 1, and runs ka-run.sh
+# three times, which reaches ka-lib.sh with a product of 3: the shell waits for three calls of
+# the function, 3 x 1050 = 3150 s, and sourcing the library defines it and fetches nothing. A
+# walk keeping the path found first charged the step sourcing first 1050 s; one keeping the path
+# found last, or the path whose names sort first whatever its product, charged the other 1050 s.
+echo "case: a library reached at two products is charged at the larger, in either order"
+root=$(fixture ka-library-products)
+cat > "$root/.github/scripts/ka-lib.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+ka_fetch() {
+  retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+}
+SH
+cat > "$root/.github/scripts/ka-run.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ka-lib.sh
+ka_fetch
+SH
+chmod +x "$root/.github/scripts/ka-run.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Source first, then the looped run
+        timeout-minutes: 1
+        run: |
+          . .github/scripts/ka-lib.sh
+          for pass in 1 2 3; do .github/scripts/ka-run.sh; done
+      - name: The looped run, then source
+        timeout-minutes: 1
+        run: |
+          for pass in 1 2 3; do .github/scripts/ka-run.sh; done
+          . .github/scripts/ka-lib.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for charge in \
+  "8	Source first, then the looped run" \
+  "13	The looped run, then source"; do
+  IFS=$'\t' read -r line step <<<"$charge"
+  check "charges '$step' the looped run's product, 3150 s" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' carries .timeout-minutes: 1., 60 s, and its own retries take 3150 s to exhaust")"
+  # The step sources the library and runs a script that sources it again, two paths, so it is
+  # refused by name as well where no DECLARED_LIBRARIES entry covers it, though here the larger
+  # product is the step's whole wait (dispatch://INFRA-1545, round 37).
+  check "refuses '$step' by name for the library it reaches along two paths" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' reaches .github/scripts/ka-lib.sh, a library that fetches, along more than one path")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
+
+# A library reached along two paths of one product is charged through the path whose names sort
+# first, whichever of the two is written first (dispatch://INFRA-1545, round 37). ka-z.sh retries
+# at 180 s, 1050 s, and sources ka-lib.sh, which runs ka-z.sh once a job, the first time any
+# shell sources it: the marker file it touches is seen by every later shell. Each step runs
+# ka-z.sh and sources ka-lib.sh, so ka-lib.sh is reached at a product of 1 both from the step
+# and through ka-z.sh. The shell runs ka-z.sh twice in either order, 2 x 1050 = 2100 s: the
+# step's run, and ka-lib.sh's one run, from whichever shell sourced it first. The path the step
+# sources it on, (ka-lib.sh), sorts before (ka-z.sh, ka-lib.sh), and through it ka-lib.sh's run
+# of ka-z.sh is a run to charge, where through ka-z.sh it re-enters a file the path is inside and
+# is charged nothing. A walk keeping the path it found first charged the step running ka-z.sh
+# first 1050 s; one keeping the path it found last, the step sourcing first. Each script reaches
+# itself through the other, and each fetches, so each is refused by name at its call of the
+# other as well: the same shell under other names was charged 1050 s, and a guard each process
+# sets for itself runs ka-z.sh three times, which no walk charges (dispatch://INFRA-1545, round
+# 37).
+echo "case: a library reached along two paths of one product is charged through the path that sorts first, in either order"
+root=$(fixture ka-library-tie)
+cat > "$root/.github/scripts/ka-lib.sh" <<'SH'
+#!/usr/bin/env bash
+[ -e "$RUNNER_TEMP/ka-z.done" ] || { touch "$RUNNER_TEMP/ka-z.done"; .github/scripts/ka-z.sh; }
+SH
+cat > "$root/.github/scripts/ka-z.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+. .github/scripts/ka-lib.sh
+SH
+chmod +x "$root/.github/scripts/ka-z.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run first, then source
+        timeout-minutes: 1
+        run: |
+          .github/scripts/ka-z.sh
+          . .github/scripts/ka-lib.sh
+      - name: Source first, then run
+        timeout-minutes: 1
+        run: |
+          . .github/scripts/ka-lib.sh
+          .github/scripts/ka-z.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for charge in \
+  "8	Run first, then source" \
+  "13	Source first, then run"; do
+  IFS=$'\t' read -r line step <<<"$charge"
+  check "charges '$step' both runs of ka-z.sh, 2100 s" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' carries .timeout-minutes: 1., 60 s, and its own retries take 2100 s to exhaust")"
+  check "refuses '$step' by name for the library it reaches along two paths" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' reaches .github/scripts/ka-lib.sh, a library that fetches, along more than one path")"
+done
+for refusal in \
+  ".github/scripts/ka-z.sh	5	.github/scripts/ka-lib.sh" \
+  ".github/scripts/ka-lib.sh	2	.github/scripts/ka-z.sh"; do
+  IFS=$'\t' read -r script line target <<<"$refusal"
+  check "refuses $script, which reaches itself, at its call of $target" \
+    "$(contains "$out" "::error file=$script,line=$line::$script runs or sources $target, and that call reaches $script again")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
+
+# Where a heredoc's consumer is read, and which line its refusal names (dispatch://INFRA-1545,
+# round 37). A body fed to `bash -e -` is the shell's script, since the `-` after the options is
+# standard input spelled out: its run of kb-c.sh, 1050 s, is the step's own and is charged against
+# the key of 1 minute, 60 s. A body fed to a shell given `-O` is refused by name where it fetches,
+# and the shell is the LAST command in front of the operator, whatever runs before it on the line
+# (`cd … && bash -O extglob <<'EOF'`), and a shell written by its path (`/bin/bash`) is the same
+# shell. The refusal names the operator's own line, which here is the run's second. Round 37's
+# mutation pass found each of these read another way and the step then passed, its run charged
+# nothing: the `-` looked up at the wrong word, the first command of the line taken as the
+# consumer, `/bin/bash` read as the directory, and the line counted back from the `run:` key.
+echo "case: a heredoc's shell is read after bash's options, as the line's last command and by its path, and refused at its operator"
+root=$(fixture kb-heredoc-consumers)
+cat > "$root/.github/scripts/kb-c.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+chmod +x "$root/.github/scripts/kb-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Feed it to bash -e -
+        timeout-minutes: 1
+        run: |
+          bash -e - <<'EOF'
+          .github/scripts/kb-c.sh
+          EOF
+      - name: Feed it to bash -O extglob after a cd
+        timeout-minutes: 1
+        run: |
+          cd "$RUNNER_TEMP" && bash -O extglob <<'EOF'
+          .github/scripts/kb-c.sh
+          EOF
+      - name: Feed it to /bin/bash -O extglob
+        timeout-minutes: 1
+        run: |
+          /bin/bash -O extglob <<'EOF'
+          .github/scripts/kb-c.sh
+          EOF
+      - name: Feed it to bash -O extglob below a line
+        timeout-minutes: 1
+        run: |
+          echo start
+          bash -O extglob <<'EOF'
+          .github/scripts/kb-c.sh
+          EOF
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "charges 'Feed it to bash -e -' the run in its body, 1050 s" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Feed it to bash -e -' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust")"
+for refusal in \
+  "16	Feed it to bash -O extglob after a cd" \
+  "22	Feed it to /bin/bash -O extglob" \
+  "29	Feed it to bash -O extglob below a line"; do
+  IFS=$'\t' read -r line step <<<"$refusal"
+  check "refuses '$step' by name at its operator, line $line" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' feeds a heredoc to a shell given .-O., .+O., .--rcfile. or .--init-file., and the body holds a fetch or names a script that fetches")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
+
+# A function rule 8 does not read is refused where a fetch is written on the last line its reach
+# holds, that line included (dispatch://INFRA-1545, round 37). Each step calls its function twice,
+# and each call makes the one `retry_fetch` at 300 s, 5 x 300 + 150 = 1650 s, so the step waits
+# 3300 s; read as commands of the step, the fetch is charged once, 1650 s, which the key of
+# 28 minutes, 1680 s, holds, so the refusal is all that stands between the step and a pass. The
+# first function is spelled with a blank before its `()`, whose reach runs to the end of the text,
+# and it is written on the last line of a `|-` block, which ends with no newline. The second is
+# defined inside another function's body, whose reach ends at that body's `}`, on the same line as
+# the fetch. Round 37's mutation pass found the reach ending a line short and both steps passing.
+echo "case: a function rule 8 does not read is refused for a fetch on the last line of its reach"
+root=$(fixture kb-function-reach)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A blank function on the last line of a stripped block
+        timeout-minutes: 28
+        run: |-
+          . .github/scripts/ci-retry.sh
+          fetch () { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }; fetch; fetch
+      - name: A nested function whose fetch is on the outer closing line
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          outer() {
+            inner() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }; }
+          outer
+          inner
+          inner
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "11	A blank function on the last line of a stripped block	with a blank before or inside its .()." \
+  "17	A nested function whose fetch is on the outer closing line	inside another function's body"; do
+  IFS=$'\t' read -r line step shape <<<"$refusal"
+  check "refuses '$step' by name at its definition" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' defines a function $shape, a form this check does not read as a function, and a fetch, or a call of a script that fetches, is written after it")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# A shape rule 8 refuses by name is refused for a fetch under `timeout 0`, which is no bound, and
+# not for a fetch that waits for nothing (dispatch://INFRA-1545, round 37). The gate at d766bd4b
+# read `timeout 0` as a bound of 0 s, so a `curl --retry 7 --retry-all-errors --retry-max-time 1`
+# under it was charged 8 x 0 + 1 = 1 s a call, and round 37's mutation pass found each shape
+# asking whether a call costs 1 s rather than 0 s. `timeout 0` sets no limit, so the curl's
+# attempts are unbounded and have no figure: fed to `bash -O extglob`, the body is data to every
+# other rule, so the refusal by name is the only thing that stops the step; in the credentialed
+# publish job the curl is exempted from the other rules (exception (d)), so a function with the
+# `function` keyword and a loop in `bash -c` text are each refused by name, and the curl in each
+# is refused as an excepted site making unbounded attempts of its own. A bare `gh api` in a
+# `bash -c` loop of the same job waits for nothing, so it is refused by nobody: a shape asking
+# whether a call costs other than 1 s refused it.
+echo "case: a shape refused by name is refused for a fetch under timeout 0, and not for one that waits for nothing"
+root=$(fixture kb-one-second-fetch)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Feed a one-second curl to bash -O extglob
+        timeout-minutes: 1
+        run: |
+          bash -O extglob <<'EOF'
+          timeout 0 curl -fsSL --retry 7 --retry-all-errors --retry-max-time 1 -o b https://example.com/b
+          EOF
+YAML
+cat >> "$root/.github/workflows/release.yaml" <<'YAML'
+      - name: Read it in a function with the keyword
+        timeout-minutes: 1
+        run: |
+          function latest { timeout 0 curl -fsSL --retry 7 --retry-all-errors --retry-max-time 1 -o l "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/latest"; }
+          latest
+          latest
+      - name: Read it in a bash -c loop
+        timeout-minutes: 1
+        run: |
+          bash -c 'for pass in 1 2; do timeout 0 curl -fsSL --retry 7 --retry-all-errors --retry-max-time 1 -o l "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/latest"; done'
+      - name: Read it bare in a bash -c loop
+        run: |
+          bash -c 'for pass in 1 2; do gh api "repos/$GITHUB_REPOSITORY/releases/latest"; done'
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the heredoc fed to bash -O extglob by name at its operator" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::step 'Feed a one-second curl to bash -O extglob' of job 'build' feeds a heredoc to a shell given .-O., .+O., .--rcfile. or .--init-file., and the body holds a fetch or names a script that fetches")"
+check "refuses the function with the keyword by name at its definition" \
+  "$(contains "$out" "::error file=.github/workflows/release.yaml,line=23::step 'Read it in a function with the keyword' of job 'publish' defines a function with the .function. keyword, a form this check does not read as a function, and a fetch, or a call of a script that fetches, is written after it")"
+check "refuses the loop in bash -c text by name at its line" \
+  "$(contains "$out" "::error file=.github/workflows/release.yaml,line=29::step 'Read it in a bash -c loop' of job 'publish' runs .bash -c., .sh -c. or .eval. text that holds a loop or a function, and a fetch")"
+for refusal in "22	Read it in a function with the keyword" "28	Read it in a bash -c loop"; do
+  IFS=$'\t' read -r line step <<<"$refusal"
+  check "refuses the curl of '$step' as an excepted site making unbounded attempts" \
+    "$(contains "$out" "::error file=.github/workflows/release.yaml,line=$line::.curl. in step '$step' is a site an exception above leaves unretried, and it makes attempts of its own with no bound this check finds")"
+done
+check "refuses nothing at the bare read in a bash -c loop" \
+  "$(is "$(contains "$out" "Read it bare in a bash -c loop")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+# Five readings of a function that round 37's mutation pass found no case holding
+# (dispatch://INFRA-1545, round 37). Each step fetches through one `retry_fetch` at 300 s,
+# 5 x 300 + 150 = 1650 s, which runs twice, 3300 s, under a key of 28 minutes, 1680 s, so a
+# reading that charges the fetch once passes the key and only a refusal holds the step:
+#   - a function defined inside another over several lines is refused at its definition, and
+#     its reach runs to the outer function's closing brace, not to its own line alone;
+#   - a function whose body is an `if` is refused by name though its test ends in a `{` word,
+#     which is an argument of `[` and opens no group;
+#   - a quoted command word that ends in `()`, `'quiet()' fetchzz`, is a command bash cannot find
+#     and defines nothing, and the next word of that command names no function either: the
+#     `fetch` defined before it is still the one its two calls run;
+#   - of two functions written on one line, the first holds the fetch and is the one called, and
+#     the step is charged both calls; the second definition starts on the line the first body
+#     ends on, which round 37 refuses by name too, since with the fetch in the second the line
+#     went to the first and the fetch was charged once (dispatch://INFRA-1545, round 37);
+#   - `bash -c` text defining a function with the `function` keyword, which writes no `name()`,
+#     is refused as text holding a function.
+echo "case: five readings of a function the gate refuses or charges for both calls"
+root=$(fixture kc-function-readings)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A nested function over several lines
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          outer() {
+            inner() {
+              retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+            }
+          }
+          outer
+          inner
+          inner
+      - name: An if body whose test ends in a brace
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch()
+          if [ -n { ]; then retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; fi
+          fetch
+          fetch
+      - name: A command word quoted to end in parentheses
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch() {
+            retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+          }
+          fetch
+          fetch
+          'quiet()' fetchzz || true
+      - name: Two functions on one line, the fetch in the first
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }; quiet() { :; }
+          fetch
+          fetch
+      - name: A function with the keyword in bash -c text
+        timeout-minutes: 28
+        run: |
+          bash -c 'function fetch { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }; fetch; fetch'
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the nested function at its definition, for the fetch on the line below it" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'A nested function over several lines' of job 'build' defines a function inside another function's body, a form this check does not read as a function, and a fetch, or a call of a script that fetches, is written after it")"
+check "refuses the if body at its name though its test ends in a brace" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=23::step 'An if body whose test ends in a brace' of job 'build' defines a function with a body that is not a .{ … }. group")"
+for step in "A command word quoted to end in parentheses" "Two functions on one line, the fetch in the first"; do
+  check "charges '$step' both calls of the function holding the fetch, 3300 s" \
+    "$(contains "$out" "step '$step' carries .timeout-minutes: 28., 1680 s, and its own retries take 3300 s to exhaust")"
+done
+check "refuses the bash -c text defining a function with the keyword" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=47::step 'A function with the keyword in bash -c text' of job 'build' runs .bash -c., .sh -c. or .eval. text that holds a loop or a function, and a fetch")"
+check "refuses the second definition on the first one's closing line by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=41::step 'Two functions on one line, the fetch in the first' of job 'build' defines a function on the line another function's body ends on")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
+
+# A library function that calls itself inside a loop of no pass is called from outside the
+# library alone (dispatch://INFRA-1545, round 37): the loop around its own call, `for ((i = 0;
+# i < 0; i++))`, runs no pass, so the step that sources the library and calls the function once
+# waits for one `retry_fetch` at 300 s, 1650 s, which its key of 27 minutes, 1620 s, does not
+# exceed. A call inside the function's own body is no call of it: counted as one, its no passes
+# multiply the library's fetch by 0, and the step is charged nothing. Round 37 refuses both
+# readings of the library by name as well, since each can hide passes where it is written
+# otherwise: the function that calls itself, at its definition, and the loop of no pass, at its
+# line (dispatch://INFRA-1545, round 37).
+echo "case: a library function's call of itself is no call of it"
+root=$(fixture kc-library-recursion)
+cat > "$root/.github/scripts/kc-lib.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+fetch_asset() {
+  retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+  for ((i = 0; i < 0; i++)); do
+    fetch_asset
+  done
+}
+SH
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Source the library and fetch once
+        timeout-minutes: 27
+        run: |
+          . .github/scripts/kc-lib.sh
+          fetch_asset
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges the library's fetch once, 1650 s" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Source the library and fetch once' carries .timeout-minutes: 27., 1620 s, and its own retries take 1650 s to exhaust")"
+for refusal in \
+  "3	defines a function that calls itself, directly or through another function" \
+  "5	writes a loop whose written count is no pass"; do
+  IFS=$'\t' read -r line shape <<<"$refusal"
+  check "refuses kc-lib.sh at line $line by name" \
+    "$(contains "$out" "::error file=.github/scripts/kc-lib.sh,line=$line::.github/scripts/kc-lib.sh $shape")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+# A step written as a flow mapping holds its `run:` on the key's own line, so a refusal inside it
+# names that line, even where the step's name before the key holds the text `run: >`
+# (dispatch://INFRA-1545, round 37): only a `|` or a `>` with nothing after it but an indentation
+# figure, a chomping sign and a comment opens a block scalar, whose text starts a line below. The
+# step defines a function with a blank before its `()` and calls it, which rule 8 refuses by name
+# at the definition.
+echo "case: a refusal in a flow-mapping step names the key's line, whatever the name before it holds"
+root=$(fixture kc-flow-step)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - {name: "A run: > in a name", timeout-minutes: 28, run: ". .github/scripts/ci-retry.sh; fetch () { retry_fetch \"the asset\" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }; fetch"}
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the definition on the step's own line" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=7::step 'A run: > in a name' of job 'build' defines a function with a blank before or inside its .().")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+
+# A function holding a loop runs what it is handed in the first loop its body writes, which is
+# the loop rule 2 and rule 8 name (dispatch://INFRA-1545, round 37): here the `for` at line 10
+# makes three passes of the curl the call hands it, and the `while` after it runs `:` alone. The
+# curl's `--max-time` is `"$T"`, so rule 8 names the variable bound, and the passes of the `for`
+# are read; a reading taking the function's last loop named the `while` at line 11 as the loop
+# the curl runs in, in both refusals.
+echo "case: a function's words run in the first loop its body writes"
+root=$(fixture kc-handed-loops)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Hand the curl to the first of two loops
+        timeout-minutes: 28
+        run: |
+          each() {
+            for pass in 1 2 3; do "$@"; done
+            while read -r tidy; do :; done < tidy.txt
+          }
+          each curl -fsSL --retry 7 --retry-all-errors --max-time "$T" -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the for loop as the copy of the retry" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::this loop retries .curl. itself")"
+check "names the call's bound as a variable" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Hand the curl to the first of two loops' carries .timeout-minutes: 28. and this check can put no figure on it: it runs a retried call whose attempts are bounded by a variable rather than by a number — .curl. at .github/workflows/case.yaml:13\.")"
+check "refuses nothing at the while loop's line" "$(is "$(contains "$out" 'line=11::')" false)"
+check "does not name the while loop as the loop the curl runs in" "$(is "$(contains "$out" 'loop at line 11')" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# A call of a function written after a reserved word or a wrapper on its line is a call of it
+# (dispatch://INFRA-1545, round 37): `do fetch`, `then fetch`, `GH_HOST=x fetch`, `! fetch` and
+# `time fetch` each run the function's one `retry_fetch` at 300 s, 5 x 300 + 150 = 1650 s, so
+# each step below waits 3300 s and its key of 28 minutes, 1680 s, is under that. The gate at
+# d766bd4b read a call only where the function's name was its command's first word, charged
+# each step 1650 s and passed it. This tree writes such calls (`if fn`, `! fn`, `elif ! fn`), so
+# they are read, with the wrappers reduce_words strips from any command.
+echo "case: a call of a function after a reserved word or a wrapper is a call of it"
+root=$(fixture u37-calls-after-word)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A call after do in a one-line loop
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }
+          for pass in 1 2; do fetch; done
+      - name: A call after then, and one more
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }
+          if true; then fetch; fi; fetch
+      - name: A call behind an assignment and one after a bang
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }
+          GH_HOST=example.com fetch
+          ! fetch
+      - name: A call after time and one in a brace group
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }
+          time fetch
+          { fetch; }
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for charge in \
+  "8	A call after do in a one-line loop" \
+  "14	A call after then, and one more" \
+  "20	A call behind an assignment and one after a bang" \
+  "27	A call after time and one in a brace group"; do
+  IFS=$'\t' read -r line step <<<"$charge"
+  check "charges '$step' both calls, 3300 s" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' carries .timeout-minutes: 28., 1680 s, and its own retries take 3300 s to exhaust")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
+
+# Four readings of a function that hide a call of its fetch are refused by name, none of them
+# written in this tree (dispatch://INFRA-1545, round 37). Each step's fetch is one `retry_fetch`
+# at 300 s, 1650 s, which runs twice, 3300 s, and each is charged 1650 s, under its key of 28
+# minutes, 1680 s, so the refusal is what holds it; the gate at d766bd4b passed all four. A name
+# defined again after its calls kept the second body only, so the first body's two calls were
+# charged once; a definition on the line another function's body ends on gave its line, and so
+# its fetch, to that other function; a function calling itself was charged for its outside
+# call alone; and a function this check does not read, here one with the `function` keyword,
+# was refused for a fetch from its own line on, which missed the fetch in the function it
+# calls, written above it.
+echo "case: a function defined again, defined on a closing line, calling itself or called from a function this check does not read is refused by name"
+root=$(fixture u37-function-readings)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A function defined again after its calls
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }
+          fetch
+          fetch
+          fetch() { :; }
+          fetch
+      - name: A definition on the line another body ends on
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          quiet() { :; }; fetch() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }
+          fetch
+          fetch
+      - name: A function that calls itself
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; [ -e done ] || { touch done; fetch; }; }
+          fetch
+      - name: A function with the keyword calling one written above it
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          get() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }
+          function twice { get; }
+          twice
+          twice
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "11	A function defined again after its calls	that the same text defines again under the same name.*Give each definition a name of its own" \
+  "20	A definition on the line another body ends on	on the line another function's body ends on.*Start each definition on a line of its own" \
+  "27	A function that calls itself	that calls itself, directly or through another function.*Write the repetition as a loop" \
+  "34	A function with the keyword calling one written above it	with the .function. keyword"; do
+  IFS=$'\t' read -r line step shape <<<"$refusal"
+  check "refuses '$step' by name" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' defines a function $shape")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
+
+# Three loops this check reads by line are refused by name where the text fetches, none of them
+# written in this tree (dispatch://INFRA-1545, round 37). Two loops on one line: the second's
+# three passes priced the first's five, 3 x 1650 = 4950 s where the step waits 8250 s, under a
+# key of 120 minutes, 7200 s. A loop after `then`: read as no loop, its two passes were charged
+# once, 1650 s where the step waits 3300 s, under 28 minutes. A loop of no pass beside a fetch on
+# its line: the fetch, which runs once, was multiplied by those no passes and charged nothing.
+# The gate at d766bd4b passed all three.
+echo "case: two loops on one line, a loop after a reserved word and a loop of no pass are refused by name"
+root=$(fixture u37-loop-readings)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Two loops on one line
+        timeout-minutes: 120
+        run: |
+          . .github/scripts/ci-retry.sh
+          for a in 1 2 3 4 5; do retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; done; for b in 1 2 3; do :; done
+      - name: A loop after then
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          if true; then for a in 1 2; do retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; done; fi
+      - name: A loop of no pass beside a fetch
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          for ((i = 0; i < 0; i++)); do :; done; retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "11	Two loops on one line	two loops on one line.*Write each loop on lines of its own" \
+  "16	A loop after then	a loop after a reserved word on its line.*Open the loop on a line of its own" \
+  "21	A loop of no pass beside a fetch	a loop whose written count is no pass.*Delete the loop"; do
+  IFS=$'\t' read -r line step shape <<<"$refusal"
+  check "refuses '$step' by name" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes $shape")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+# An array whose words this check cannot count makes the loop over its length a loop whose
+# passes it cannot read, which is refused (dispatch://INFRA-1545, round 37). `($names)` splits
+# into as many words as the run finds, `lists[2]=c` adds a third word to two, and `mapfile` fills
+# an array written empty. The gate at d766bd4b counted one, two and no passes, so each step's
+# fetch at 1650 s a pass was charged 1650 s, 3300 s and nothing, each passing its key.
+echo "case: a loop over an array whose words are not all written out is refused for its passes"
+root=$(fixture u37-array-counts)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: An array of an unquoted expansion
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          lists=($names)
+          for ((i = 0; i < ${#lists[@]}; i++)); do
+            retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+          done
+      - name: An array given an element after its words
+        timeout-minutes: 56
+        run: |
+          . .github/scripts/ci-retry.sh
+          lists=(a b)
+          lists[2]=c
+          for ((i = 0; i < ${#lists[@]}; i++)); do
+            retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+          done
+      - name: An array mapfile fills
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          lists=()
+          mapfile -t lists < lists.txt
+          for ((i = 0; i < ${#lists[@]}; i++)); do
+            retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "8	An array of an unquoted expansion	12	11" \
+  "16	An array given an element after its words	21	20" \
+  "25	An array mapfile fills	30	29"; do
+  IFS=$'\t' read -r line step site loop <<<"$refusal"
+  check "refuses '$step' for the loop's unread passes" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' carries .timeout-minutes: [0-9]*. and this check can put no figure on it: it runs a retried call inside a loop whose passes it cannot read — .curl. at .github/workflows/case.yaml:$site, inside the loop at line $loop\.")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+# A `timeout` whose duration this check cannot read as seconds above 0, and a curl `--max-time
+# 0`, bound nothing, and the fetch behind an option of `timeout` stays a fetch
+# (dispatch://INFRA-1545, round 37). The gate at d766bd4b read `timeout 1.5`'s duration, `-k`'s
+# value and `-s`'s signal as the command, so each bare curl behind them was no fetch at all and
+# passed; read `--max-time 0` as a bound written as a variable; and read `timeout 0` as a bound
+# of 0 s, so a curl in a credentialed publish job, which no other rule reads, retrying itself
+# under it was charged 1 s and passed a key of 1 minute. The same job's bare read in a function
+# with the `function` keyword waits for nothing, and is refused by nobody. The curls behind `-k`
+# and `-s` are bounded at 60 s and read at curl's floor, 8 x 60 + 127 = 607 s, which their keys
+# of 11 minutes hold, so rule 1 is all that refuses them.
+echo "case: a timeout or a max-time this check cannot read as seconds above 0 bounds nothing, and hides no fetch"
+root=$(fixture u37-timeout-bounds)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A curl under timeout 1.5
+        run: timeout 1.5 curl -fsSL -o a https://example.com/a
+      - name: A curl under timeout -k 5 60
+        timeout-minutes: 11
+        run: timeout -k 5 60 curl -fsSL -o a https://example.com/a
+      - name: A curl under timeout -s KILL 60
+        timeout-minutes: 11
+        run: timeout -s KILL 60 curl -fsSL -o a https://example.com/a
+      - name: A curl whose max-time is 0
+        timeout-minutes: 28
+        run: curl -fsSL --retry 7 --retry-all-errors --max-time 0 -o a https://example.com/a
+YAML
+cat >> "$root/.github/workflows/release.yaml" <<'YAML'
+      - name: Read it under timeout 0
+        timeout-minutes: 1
+        run: timeout 0 curl -fsSL --retry 7 --retry-all-errors --retry-max-time 1 -o l "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/latest"
+      - name: Read it bare in a function with the keyword
+        run: |
+          function latest { gh api "repos/$GITHUB_REPOSITORY/releases/latest"; }
+          latest
+          latest
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for line in 8 11 14; do
+  check "reads the curl at line $line as a fetch, and refuses it for the floor" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::.curl. in step .* fetches without the floor: it lacks .--retry 7.")"
+done
+check "refuses the curl whose max-time is 0 for a bound above 0" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=17::.curl. in step 'A curl whose max-time is 0' fetches without the floor: it lacks .--max-time <seconds>., which curl resets for each attempt, above 0, since .--max-time 0. sets no limit")"
+check "says no bound of it is written as a variable" "$(is "$(contains "$out" 'written as a variable')" false)"
+check "refuses the curl under timeout 0 in the publish job as unbounded" \
+  "$(contains "$out" "::error file=.github/workflows/release.yaml,line=22::.curl. in step 'Read it under timeout 0' is a site an exception above leaves unretried, and it makes attempts of its own with no bound this check finds")"
+check "refuses nothing at the bare read in a function with the keyword" \
+  "$(is "$(contains "$out" 'line=2[3-7]::')" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+# A heredoc fed to a shell given `-O`, `+O`, `--rcfile` or `--init-file` is refused by name for
+# any fetch in its body, a bare one or a retried `mise x` included (dispatch://INFRA-1545, round
+# 37): no other rule reads that body, so the rules that refuse a bare `wget`, a bare `docker
+# pull` and a retried `mise x` written in a step see none of them there. The gate at d766bd4b
+# refused such a body only where one call of a fetch in it cost more than nothing, and passed
+# all three; the body holding a curl under `timeout 0`, which is no bound, is refused as well.
+echo "case: a heredoc fed to a shell given an option rule 8 does not read is refused for any fetch in its body"
+root=$(fixture u37-heredoc-any-fetch)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A bare wget fed to bash -O extglob
+        run: |
+          bash -O extglob <<'EOF'
+          wget -q -O a https://example.com/a
+          EOF
+      - name: A bare docker pull fed to bash +O extglob
+        run: |
+          bash +O extglob <<'EOF'
+          docker pull example.com/image:1
+          EOF
+      - name: A retried mise x fed to bash --rcfile
+        run: |
+          bash --rcfile /dev/null <<'EOF'
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the tool" 60 -- mise x node@22 -- node --version
+          EOF
+      - name: A curl under timeout 0 fed to bash -O extglob
+        timeout-minutes: 1
+        run: |
+          bash -O extglob <<'EOF'
+          timeout 0 curl -fsSL --retry 7 --retry-all-errors --retry-max-time 1 -o b https://example.com/b
+          EOF
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "9	A bare wget fed to bash -O extglob" \
+  "14	A bare docker pull fed to bash +O extglob" \
+  "19	A retried mise x fed to bash --rcfile" \
+  "26	A curl under timeout 0 fed to bash -O extglob"; do
+  IFS=$'\t' read -r line step <<<"$refusal"
+  check "refuses '$step' by name at its operator" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' feeds a heredoc to a shell given .-O., .+O., .--rcfile. or .--init-file., and the body holds a fetch or names a script that fetches")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
+
+# A run on the line after a backslash continuation is read against the loops of the line its
+# command starts on (dispatch://INFRA-1545, round 37). u37-c.sh retries at 180 s, 1050 s. After
+# `echo start \`, and after a double-quoted string the backslash continues, a three-pass loop
+# opens on the next line and runs the script three times, 3150 s, over a key of 30 minutes,
+# 1800 s; a `while read` opening there has no pass count. The gate at d766bd4b keyed each run
+# to the line its logical line starts on, the line before the loop: it charged the first two
+# 1050 s and refused nothing in the third, passing all three.
+echo "case: a run after a continued line is read against the loops of the line its command starts on"
+root=$(fixture u37-continued-lines)
+cat > "$root/.github/scripts/u37-c.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+chmod +x "$root/.github/scripts/u37-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Bare continuation before a loop
+        timeout-minutes: 30
+        run: |
+          echo start \
+          && for pass in 1 2 3; do .github/scripts/u37-c.sh; done
+      - name: Quoted continuation before a loop
+        timeout-minutes: 30
+        run: |
+          echo "start\
+          "; for pass in 1 2 3; do .github/scripts/u37-c.sh; done
+      - name: Bare continuation before an uncounted loop
+        timeout-minutes: 30
+        run: |
+          echo start \
+          && while read -r id; do .github/scripts/u37-c.sh "$id"; done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for charge in \
+  "8	Bare continuation before a loop" \
+  "13	Quoted continuation before a loop"; do
+  IFS=$'\t' read -r line step <<<"$charge"
+  check "charges '$step' three runs, 3150 s" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' carries .timeout-minutes: 30., 1800 s, and its own retries take 3150 s to exhaust")"
+done
+check "refuses the uncounted loop on the continued line" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::step 'Bare continuation before an uncounted loop' carries .timeout-minutes: 30. and this check can put no figure on it: it runs a retried call inside a loop whose passes it cannot read — .\.github/scripts/u37-c\.sh. at .github/workflows/case.yaml:20, inside the loop at line 20\.")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+# A script that reaches itself and fetches is refused by name at the call that leads back
+# (dispatch://INFRA-1545, round 37): a path stops at a script it is already inside, so the run
+# the shell makes on entering it again was charged nothing. u37-self.sh retries at 180 s,
+# 1050 s, and runs itself once more behind a guard, 2100 s; u37-a.sh retries the same and runs
+# u37-b.sh, which runs u37-a.sh once a job. The gate at d766bd4b charged each step 1050 s,
+# under its key of 30 minutes, and refused nothing.
+echo "case: a script that reaches itself and fetches is refused by name"
+root=$(fixture u37-self-reach)
+cat > "$root/.github/scripts/u37-self.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+[ -n "${U37_INNER:-}" ] || U37_INNER=1 .github/scripts/u37-self.sh
+SH
+cat > "$root/.github/scripts/u37-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+.github/scripts/u37-b.sh
+SH
+cat > "$root/.github/scripts/u37-b.sh" <<'SH'
+#!/usr/bin/env bash
+[ -e "$RUNNER_TEMP/u37.done" ] || { touch "$RUNNER_TEMP/u37.done"; .github/scripts/u37-a.sh; }
+SH
+chmod +x "$root/.github/scripts/u37-self.sh" "$root/.github/scripts/u37-a.sh" \
+  "$root/.github/scripts/u37-b.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the script that runs itself
+        timeout-minutes: 30
+        run: .github/scripts/u37-self.sh
+      - name: Run the script that another runs again
+        timeout-minutes: 30
+        run: .github/scripts/u37-a.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  ".github/scripts/u37-self.sh	5	.github/scripts/u37-self.sh" \
+  ".github/scripts/u37-a.sh	5	.github/scripts/u37-b.sh" \
+  ".github/scripts/u37-b.sh	2	.github/scripts/u37-a.sh"; do
+  IFS=$'\t' read -r script line target <<<"$refusal"
+  check "refuses $script at its call of $target" \
+    "$(contains "$out" "::error file=$script,line=$line::$script runs or sources $target, and that call reaches $script again")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+# A call of a function through a variable, in a text that defines a function that fetches, is
+# refused by name unless declared, and a declaration's figure enters the step's arithmetic
+# (dispatch://INFRA-1545, round 37). The step calls `fetch`, one `retry_fetch` at 300 s,
+# 5 x 300 + 150 = 1650 s, twice through `"$fn"`, 3300 s, which its key of 55 minutes, 3300 s,
+# does not exceed; the site is charged once as written, 1650 s, and the gate at d766bd4b passed
+# the step. A DECLARED_CALLS entry writing the second call's 1650 s puts the step at 3300 s,
+# which that key is refused for and a key of 56 minutes passes; an entry matching no call fails.
+echo "case: a call of a function through a variable is refused unless declared, and its declaration is charged"
+root=$(fixture u37-variable-call)
+write_variable_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch through a variable
+        timeout-minutes: $1
+        run: |
+          . .github/scripts/ci-retry.sh
+          fetch() { retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a; }
+          fn=fetch
+          "\$fn"
+          "\$fn"
+YAML
+}
+write_variable_case 55
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the call through the variable by name, naming the fetch it can reach" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=13::step 'Fetch through a variable' of job 'build' calls a function through a variable, .\\\$fn., and a function this text defines or sources fetches — .curl. at .github/workflows/case.yaml:10\.")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+declare_in "$root" DECLARED_CALLS '    DeclaredCall(".github/workflows/case.yaml", "Fetch through a variable", "$fn", 1650, "the second of two calls of fetch, the first being the site this check counts: 1 x (5 x 300 + 150) = 1650 s"),'
+declare_in "$root" DECLARED_CALLS '    DeclaredCall(".github/workflows/case.yaml", "No such step", "$fn", 0, "a step this fixture does not write"),'
+run_check "$root"
+check "with the call declared, charges the step the declared figure beside the site, 3300 s" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Fetch through a variable' carries .timeout-minutes: 55., 3300 s, and its own retries take 3300 s to exhaust")"
+check "refuses the declaration that matches no call" \
+  "$(contains "$out" "::error file=.github/scripts/check-download-retry.sh,line=1::the declared call figure for .\\\$fn. in .github/workflows/case.yaml step 'No such step' matches no call through that variable")"
+check "with the call declared, refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+ln -sf "$check_script" "$root/.github/scripts/check-download-retry.sh"
+declare_in "$root" DECLARED_CALLS '    DeclaredCall(".github/workflows/case.yaml", "Fetch through a variable", "$fn", 1650, "the second of two calls of fetch, the first being the site this check counts: 1 x (5 x 300 + 150) = 1650 s"),'
+write_variable_case 56
+run_check "$root"
+check "with the call declared and a key above 3300 s, passes" "$(is "$status" 0)"
+
+# A library a step reaches along more than one path is refused by name unless declared
+# (dispatch://INFRA-1545, round 37). u37-lib.sh defines u37_fetch, one `retry_fetch` at 300 s,
+# 1650 s, and the step sources it and calls the function, and runs u37-run.sh, which sources it
+# and calls the function again: 3300 s, which a key of 55 minutes does not exceed. The library
+# is charged once, at its most expensive path, 1650 s, and the gate at d766bd4b passed the step.
+# A DECLARED_LIBRARIES entry writing 3300 s replaces that charge, so the key of 55 minutes is
+# refused and one of 56 passes; an entry matching no step fails.
+echo "case: a library a step reaches along more than one path is refused unless declared, and its declaration is charged"
+root=$(fixture u37-shared-library)
+cat > "$root/.github/scripts/u37-lib.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+u37_fetch() {
+  retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+}
+SH
+cat > "$root/.github/scripts/u37-run.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/u37-lib.sh
+u37_fetch
+SH
+chmod +x "$root/.github/scripts/u37-run.sh"
+write_shared_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Source the library and run a script that sources it too
+        timeout-minutes: $1
+        run: |
+          . .github/scripts/u37-lib.sh
+          u37_fetch
+          .github/scripts/u37-run.sh
+YAML
+}
+write_shared_case 55
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the step by name for the library it reaches twice" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Source the library and run a script that sources it too' reaches .github/scripts/u37-lib.sh, a library that fetches, along more than one path")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+library_entry='    DeclaredLibrary(".github/workflows/case.yaml", "Source the library and run a script that sources it too", ".github/scripts/u37-lib.sh", 3300, "one call of u37_fetch from the step and one from u37-run.sh: 2 x (5 x 300 + 150) = 3300 s"),'
+declare_in "$root" DECLARED_LIBRARIES "$library_entry"
+declare_in "$root" DECLARED_LIBRARIES '    DeclaredLibrary(".github/workflows/case.yaml", "No such step", ".github/scripts/u37-lib.sh", 1650, "a step this fixture does not write"),'
+run_check "$root"
+check "with the library declared, charges the step the declared 3300 s" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Source the library and run a script that sources it too' carries .timeout-minutes: 55., 3300 s, and its own retries take 3300 s to exhaust")"
+check "refuses the declaration that matches no step" \
+  "$(contains "$out" "::error file=.github/scripts/check-download-retry.sh,line=1::the declared library figure for .github/workflows/case.yaml step 'No such step' .github/scripts/u37-lib.sh matches no step")"
+check "with the library declared, refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+ln -sf "$check_script" "$root/.github/scripts/check-download-retry.sh"
+declare_in "$root" DECLARED_LIBRARIES "$library_entry"
+write_shared_case 56
+run_check "$root"
+check "with the library declared and a key above 3300 s, passes" "$(is "$status" 0)"
+
+# A library's fetching function called more than once after sourcing it is refused by name
+# unless declared, for the step that calls it or for the script whose calls they are
+# (dispatch://INFRA-1545, round 37). The step calls u37_fetch in a two-pass loop, and
+# u37-twice.sh, which a second step runs, calls it twice: each waits 3300 s under a key of 55
+# minutes, and each is charged the library once, 1650 s, which the gate at d766bd4b passed. A
+# DECLARED_LIBRARIES entry for the step, and one for the script with no step, each writing
+# 3300 s, replace that charge, so each key of 55 minutes is refused and keys of 56 pass.
+echo "case: a library's fetching function called more than once is refused unless declared, for the step or for the script"
+root=$(fixture u37-library-calls)
+cp "$work/u37-shared-library/.github/scripts/u37-lib.sh" "$root/.github/scripts/"
+cat > "$root/.github/scripts/u37-twice.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/u37-lib.sh
+u37_fetch
+u37_fetch
+SH
+chmod +x "$root/.github/scripts/u37-twice.sh"
+write_calls_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch twice through the library
+        timeout-minutes: $1
+        run: |
+          . .github/scripts/u37-lib.sh
+          for pass in 1 2; do u37_fetch; done
+      - name: Run the script that fetches twice
+        timeout-minutes: $1
+        run: .github/scripts/u37-twice.sh
+YAML
+}
+write_calls_case 55
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the step's loop of calls by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=11::step 'Fetch twice through the library' of job 'build' calls .u37_fetch., which .github/scripts/u37-lib.sh defines and which fetch, more than once")"
+check "refuses the script's two calls by name, naming the step that runs it" \
+  "$(contains "$out" "::error file=.github/scripts/u37-twice.sh,line=4::.github/scripts/u37-twice.sh calls .u37_fetch., which .github/scripts/u37-lib.sh defines and which fetch, more than once.*step 'Run the script that fetches twice' of .github/workflows/case.yaml reaches it")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+declare_in "$root" DECLARED_LIBRARIES '    DeclaredLibrary(".github/workflows/case.yaml", "Fetch twice through the library", ".github/scripts/u37-lib.sh", 3300, "two passes of one call of u37_fetch: 2 x (5 x 300 + 150) = 3300 s"),'
+declare_in "$root" DECLARED_LIBRARIES '    DeclaredLibrary(".github/scripts/u37-twice.sh", None, ".github/scripts/u37-lib.sh", 3300, "two calls of u37_fetch: 2 x (5 x 300 + 150) = 3300 s"),'
+run_check "$root"
+for step in "Fetch twice through the library" "Run the script that fetches twice"; do
+  check "with the calls declared, charges '$step' the declared 3300 s" \
+    "$(contains "$out" "step '$step' carries .timeout-minutes: 55., 3300 s, and its own retries take 3300 s to exhaust")"
+done
+check "with the calls declared, refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+write_calls_case 56
+run_check "$root"
+check "with the calls declared and keys above 3300 s, passes" "$(is "$status" 0)"
+
+# A heredoc whose shell the command in front of its operator does not name as this check reads
+# one is refused by name where its body fetches, and a `-c` after `bash -o pipefail` is read as
+# the text it runs (dispatch://INFRA-1545, round 37). u37-hc.sh retries at 180 s, 1050 s, and
+# each step runs it, or the same retried curl, under a key of 1 minute. The gate at d766bd4b read
+# each body as data and the `-c` text as no text, so it charged every step nothing and passed
+# all six: a shell named by a variable, `ssh` and `/usr/bin/env` naming the shell among their
+# words, a `cat` piped into `bash`, an unquoted body whose command substitution the step's own
+# shell runs, and the `-c` text written after an option's value.
+echo "case: a heredoc whose shell this check cannot name is refused for a fetch in its body, and -c text after -o is read"
+root=$(fixture u37-heredoc-consumers)
+cat > "$root/.github/scripts/u37-hc.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+chmod +x "$root/.github/scripts/u37-hc.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Feed it to a shell named by a variable
+        timeout-minutes: 1
+        run: |
+          "$SHELL" <<'EOF'
+          .github/scripts/u37-hc.sh
+          EOF
+      - name: Feed it to the shell ssh runs
+        timeout-minutes: 1
+        run: |
+          ssh build-host bash <<'EOF'
+          .github/scripts/u37-hc.sh
+          EOF
+      - name: Feed it to bash through env by its path
+        timeout-minutes: 1
+        run: |
+          /usr/bin/env bash <<'EOF'
+          .github/scripts/u37-hc.sh
+          EOF
+      - name: Pipe a printed copy into bash
+        timeout-minutes: 1
+        run: |
+          cat <<'EOF' | bash
+          .github/scripts/u37-hc.sh
+          EOF
+      - name: Substitute a run in an unquoted body
+        timeout-minutes: 1
+        run: |
+          cat > out.txt <<EOF
+          $(.github/scripts/u37-hc.sh)
+          EOF
+      - name: Run -c text after an option's value
+        timeout-minutes: 1
+        run: |
+          . .github/scripts/ci-retry.sh
+          bash -o pipefail -c 'retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b'
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "10	Feed it to a shell named by a variable	a shell named by a variable, .\\\$SHELL." \
+  "16	Feed it to the shell ssh runs	.ssh., which names a shell among its words" \
+  "22	Feed it to bash through env by its path	./usr/bin/env., which names a shell among its words" \
+  "28	Pipe a printed copy into bash	a command whose output a pipe on the operator's line hands to a shell" \
+  "34	Substitute a run in an unquoted body	a command that reads it as data, unquoted and holding a command substitution, which the step's own shell runs before that command reads the body"; do
+  IFS=$'\t' read -r line step consumer <<<"$refusal"
+  check "refuses '$step' by name at its operator" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' feeds a heredoc to $consumer, and the body holds a fetch or names a script that fetches")"
+done
+check "charges the -c text after -o pipefail its retried curl, 1050 s" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=38::step 'Run -c text after an option's value' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
 
 # The promise rule 8 exists to keep: no retried job whose key is below its own sum reaches main.
 # Every case above proves one shape on a fixture written for it, which leaves open whether a shape

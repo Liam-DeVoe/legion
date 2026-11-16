@@ -51,7 +51,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job came in with — it is
     # new here, so no run on main has measured it — plus its slowest retried step alone — the
     # setup-bun step's two `ci_tools_fetch` calls, 2562 s, above either frozen install's
-    # 5 x 180 + 150 = 1050 s and the ci-ok report's 1380 s. 900 + 2562 = 3462 s -> 58 min.
+    # 5 x 180 + 150 = 1050 s and the ci-ok report's 2160 s. 900 + 2562 = 3462 s -> 58 min.
     timeout-minutes: 58
     # The hosts of the old route, named once: the proxy is started with them, and the verdict
     # below quotes them. The proxy faults each of them and every subdomain of one, and refuses
@@ -249,8 +249,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: proof-sdk-offline

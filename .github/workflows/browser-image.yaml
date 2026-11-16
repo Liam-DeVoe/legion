@@ -58,16 +58,16 @@ jobs:
     # maximum and its slowest retried step alone — install-crane's one `ci_tools_fetch`, which
     # is 1281 s at this change's bound and so is above the record step's two `crane manifest`
     # reads at 2 x (5 x 60 + 150) = 900 s and the decide step's one `crane config` read of
-    # 450 s - until the ci-ok report took the lead at 1380 s (ci-budgets.md's Budgets note, "The
+    # 450 s - until the ci-ok report took the lead at 2160 s (ci-budgets.md's Budgets note, "The
     # ci-ok report"), which is this job's slowest retried step now. The record step led that list
     # while a `ci_tools_fetch` was 741 s. The job holds that step AND the
-    # 77 s measured above it, so its key is the two together, 77 + 1380 = 1457 s -> 26 min: 25
-    # would do for the sum, and the job takes one minute above the report step's own 25, since
+    # 77 s measured above it, so its key is the two together, 77 + 2160 = 2237 s -> 39 min: 38
+    # would do for the sum, and the job takes one minute above the report step's own 38, since
     # a job ceiling equal to a step's ceiling cuts that step
     # before its budget can name the site, which rule 8 refuses since dispatch://INFRA-1545. A run whose row already names a served digest skips
     # the buildx, login and build steps and their post steps, 61 s of those 74, and is left
     # with about 13 s of work.
-    timeout-minutes: 26
+    timeout-minutes: 39
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of
@@ -457,15 +457,11 @@ jobs:
           ref: ${{ github.sha }}
           sparse-checkout: .github
           persist-credentials: false
-      # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
-      # of the check run, 2 x (5 x 30 + 150) = 600 s, and runner-shutdown.sh's check-run read,
-      # 300 s, and annotations loop, 480 s: 1380 s. 1500 s and not rule 8's minimum of 1440 s:
-      # this step posts the required ci-ok check, and a budget that cuts it between those two
-      # ladders loses the check run rather than reporting a failure (the Budgets note of
-      # .github/ci-budgets.md).
+      # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report", which derives the report's
+      # 2160 s once for every step that runs it.
       - name: Report ci-ok when this is the run's last job
         if: always()
-        timeout-minutes: 25
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: browser-image

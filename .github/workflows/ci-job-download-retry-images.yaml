@@ -39,14 +39,15 @@ jobs:
   # steps enforce, 2720 + 920 + 500 s, and about 200 s of checkout, bypass clearing and rig
   # steps, which is 5540 s — and the rule adds its single slowest retried step. That step is the
   # ci-ok report, the one download of this job that is not a faulted build: its `gh api` read
-  # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, and runner-shutdown.sh's
-  # check-run read and annotations loop, 300 + 480 = 780 s, 1380 s together (ci-budgets.md's
-  # Budgets note, "The ci-ok report"). So 5540 + 1380 = 6920 s -> 116 min. Each build's budget
+  # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, and two calls of
+  # runner-shutdown.sh's check-run read and annotations loop, 2 x (300 + 480) = 1560 s, 2160 s
+  # together (ci-budgets.md's Budgets note, "The ci-ok report").
+  # So 5540 + 2160 = 7700 s -> 129 min. Each build's budget
   # carries 20 s more than it did before the probe, for the two 10 s bounded requests the probe
   # makes between the proxy's start and the build, which `report` measures from the former.
   download-retry-images:
     runs-on: ubuntu-24.04
-    timeout-minutes: 116
+    timeout-minutes: 129
     env:
       SMOKE_IMAGE: legion-envoy-smoke:download-retry
     steps:
@@ -165,8 +166,8 @@ jobs:
 
       - name: Report ci-ok when this is the run's last job
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: download-retry-images

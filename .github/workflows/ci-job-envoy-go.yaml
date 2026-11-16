@@ -45,7 +45,7 @@ jobs:
     # the 53 the paragraph above derives and its 1376 s measured maximum, plus its slowest
     # retried step alone — the setup-bun step's two `ci_tools_fetch` calls, 2562 s, above
     # packages/envoy's `go mod download` and the workspace install at 5 x 180 + 150 = 1050 s
-    # each and the ci-ok report's 1380 s. 3600 + 2562 = 6162 s -> 103 min.
+    # each and the ci-ok report's 2160 s. 3600 + 2562 = 6162 s -> 103 min.
     timeout-minutes: 103
     services:
       postgres:
@@ -204,8 +204,8 @@ jobs:
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go

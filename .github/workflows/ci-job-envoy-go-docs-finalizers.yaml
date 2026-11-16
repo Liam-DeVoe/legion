@@ -49,10 +49,10 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 2400 s, the 40 minutes the paragraph above derives —
     # six minutes above the step's 34-minute deadline, and above the 1136.829 s in the package
     # and the 71 s before it that the slowest green run measured — plus its slowest retried
-    # step alone: the ci-ok report, 1380 s (ci-budgets.md's Budgets note, "The ci-ok report"), above packages/envoy's
-    # `go mod download` at 5 x 180 + 150 = 1050 s. 2400 + 1380 = 3780 s, a whole number of
-    # minutes, so the budget is the next one strictly above it -> 64 min.
-    timeout-minutes: 64
+    # step alone: the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above packages/envoy's
+    # `go mod download` at 5 x 180 + 150 = 1050 s. 2400 + 2160 = 4560 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 77 min.
+    timeout-minutes: 77
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -117,8 +117,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go-docs-finalizers

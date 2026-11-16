@@ -71,7 +71,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): those 30 minutes, 1800 s, plus its slowest retried
     # step alone — install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the
     # jj release are 2562 + 450 = 3012 s, above setup-bun's two calls at 2562 s, the workspace
-    # install's and the Go module download's 1050 s each, the ci-ok report's 1380 s and
+    # install's and the Go module download's 1050 s each, the ci-ok report's 2160 s and
     # install-omp's `mise install` of 450 s. 1800 + 3012 = 4812 s -> 81 min.
     timeout-minutes: 81
 
@@ -148,8 +148,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: plugin-pack

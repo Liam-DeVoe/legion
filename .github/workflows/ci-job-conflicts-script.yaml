@@ -26,7 +26,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): this job carried none, so its unretried term is its
     # 41 s measured maximum, plus its slowest retried step alone — the setup-bun step's two
     # `ci_tools_fetch` calls, 2562 s, above the workspace install's 5 x 180 + 150 = 1050 s and
-    # the ci-ok report's 1380 s. 41 + 2562 = 2603 s -> 44 min.
+    # the ci-ok report's 2160 s. 41 + 2562 = 2603 s -> 44 min.
     timeout-minutes: 44
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,8 +53,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: conflicts-script

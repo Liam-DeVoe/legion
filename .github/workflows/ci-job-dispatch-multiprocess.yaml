@@ -34,10 +34,10 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes this job carried, above its
     # 1043 s measured maximum and holding the step's own `-timeout 20m`, plus its slowest
-    # retried step alone — the ci-ok report, 1380 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
-    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 1800 + 1380 = 3180 s, a whole number of
-    # minutes, so the budget is the next one strictly above it -> 54 min.
-    timeout-minutes: 54
+    # retried step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
+    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 1800 + 2160 = 3960 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 67 min.
+    timeout-minutes: 67
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -79,8 +79,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-multiprocess

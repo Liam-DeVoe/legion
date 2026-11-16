@@ -105,11 +105,11 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes
     # this job carried, plus its slowest retried step alone — the ci-ok report's `gh api` read
-    # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, and runner-shutdown.sh's
-    # check-run read and annotations loop, 300 + 480 = 780 s, 1380 s together (ci-budgets.md's
-    # Budgets note, "The ci-ok report"). 1800 + 1380 = 3180 s, a whole number of minutes, so
-    # the budget is the next one strictly above it -> 54 min.
-    timeout-minutes: 54
+    # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, and two calls of
+    # runner-shutdown.sh's check-run read and annotations loop, 2 x (300 + 480) = 1560 s, 2160 s
+    # together (ci-budgets.md's Budgets note, "The ci-ok report"). 1800 + 2160 = 3960 s, a whole
+    # number of minutes, so the budget is the next one strictly above it -> 67 min.
+    timeout-minutes: 67
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of the
@@ -316,12 +316,9 @@ jobs:
           persist-credentials: false
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && github.event_name == 'pull_request'
-        # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
-        # of the check run, 2 x (5 x 30 + 150) = 600 s, and runner-shutdown.sh's check-run read,
-        # 300 s, and annotations loop, 480 s: 1380 s. 1500 s and not rule 8's minimum of 1440 s:
-        # this step posts the required ci-ok check, and a budget that cuts it between those two
-        # ladders loses the check run rather than reporting a failure (ci-budgets.md's Budgets note).
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report", which derives the
+        # report's 2160 s once for every step that runs it.
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: worker-image

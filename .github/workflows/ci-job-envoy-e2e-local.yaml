@@ -35,7 +35,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 92 s
     # measured maximum, plus its slowest retried step alone — the setup-bun step's two
     # `ci_tools_fetch` calls, 2562 s, above packages/envoy's `go mod download` and the
-    # workspace install at 5 x 180 + 150 = 1050 s each and the ci-ok report's 1380 s.
+    # workspace install at 5 x 180 + 150 = 1050 s each and the ci-ok report's 2160 s.
     # 600 + 2562 = 3162 s -> 53 min.
     timeout-minutes: 53
     steps:
@@ -96,8 +96,8 @@ jobs:
           path: packages/envoy/out/e2e
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 1500 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 25
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-e2e-local
