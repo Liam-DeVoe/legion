@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     servers: url,
     timeout: 10_000,
     name: "legion-e2e-nats-stream",
-    ...natsAuthOptions(seed),
+    ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
   });
   try {
     if (command === "last") {

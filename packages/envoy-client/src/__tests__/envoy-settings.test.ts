@@ -67,7 +67,10 @@ describe("envoySettings", () => {
       token: "file-token",
       inbound: {
         natsUrls: ["nats://nats.internal.example:4222"],
-        natsSeed: { value: "SUFILESEED", source: `envoy.natsSeed in ${config.path}` },
+        natsCredential: {
+          kind: "seed",
+          seed: { value: "SUFILESEED", source: `envoy.natsSeed in ${config.path}` },
+        },
       },
       heartbeatMs: 90_000,
       tmuxPlaceCacheMs: 30_000,
@@ -97,7 +100,7 @@ describe("envoySettings", () => {
       token: "environment-token",
       inbound: {
         natsUrls: ["nats://one.internal.example:4222", "nats://two.internal.example:4222"],
-        natsSeed: { value: "SUENVSEED", source: "NATS_NKEY_SEED" },
+        natsCredential: { kind: "seed", seed: { value: "SUENVSEED", source: "NATS_NKEY_SEED" } },
       },
       heartbeatMs: 25,
       tmuxPlaceCacheMs: 30_000,
@@ -120,7 +123,10 @@ describe("envoySettings", () => {
       enabled: true,
       token: "pointer-token",
       inbound: {
-        natsSeed: { value: "SUPOINTERSEED", source: `NATS_NKEY_SEED_FILE (${seedFile})` },
+        natsCredential: {
+          kind: "seed",
+          seed: { value: "SUPOINTERSEED", source: `NATS_NKEY_SEED_FILE (${seedFile})` },
+        },
       },
     });
   });
@@ -282,7 +288,10 @@ describe("envoySettings", () => {
       enabled: true,
       url: "http://127.0.0.1:9020",
       token: undefined,
-      inbound: { natsUrls: ["nats://nats.internal.example:4222"], natsSeed: undefined },
+      inbound: {
+        natsUrls: ["nats://nats.internal.example:4222"],
+        natsCredential: { kind: "none" },
+      },
       heartbeatMs: 90_000,
       tmuxPlaceCacheMs: 30_000,
       passDeadlineMs: 90_000,
@@ -519,7 +528,10 @@ describe("the NATS seed in envoy.json", () => {
       enabled: true,
       inbound: {
         natsUrls: ["nats://one.internal.example:4222"],
-        natsSeed: { value: "SUFILESEED", source: `envoy.natsSeed in ${config.path}` },
+        natsCredential: {
+          kind: "seed",
+          seed: { value: "SUFILESEED", source: `envoy.natsSeed in ${config.path}` },
+        },
       },
     });
   });
@@ -573,7 +585,12 @@ describe("the NATS seed in envoy.json", () => {
     };
     expect(envoySettings(same, config)).toMatchObject({
       enabled: true,
-      inbound: { natsSeed: { value: "SUSEED", source: `envoy.natsSeed in ${config.path}` } },
+      inbound: {
+        natsCredential: {
+          kind: "seed",
+          seed: { value: "SUSEED", source: `envoy.natsSeed in ${config.path}` },
+        },
+      },
     });
   });
 
@@ -590,7 +607,7 @@ describe("the NATS seed in envoy.json", () => {
     ]) {
       expect(envoySettings({ ENVOY_NATS_URL: named }, config)).toMatchObject({
         enabled: true,
-        inbound: { natsUrls: [named], natsSeed: { value: "SUFILESEED" } },
+        inbound: { natsUrls: [named], natsCredential: { seed: { value: "SUFILESEED" } } },
       });
     }
     for (const other of ["nats://one.internal.example:4223", "tls://one.internal.example:4222"]) {
@@ -618,7 +635,10 @@ describe("the NATS seed in envoy.json", () => {
       enabled: true,
       inbound: {
         natsUrls: ["nats://elsewhere.internal.example:4222"],
-        natsSeed: { value: "SUPOINTERSEED", source: `NATS_NKEY_SEED_FILE (${seedFile})` },
+        natsCredential: {
+          kind: "seed",
+          seed: { value: "SUPOINTERSEED", source: `NATS_NKEY_SEED_FILE (${seedFile})` },
+        },
       },
     });
   });
@@ -644,7 +664,7 @@ describe("the NATS seed in envoy.json", () => {
       enabled: true,
       inbound: {
         natsUrls: fileServers,
-        natsSeed: { value: "SUENVSEED", source: "NATS_NKEY_SEED" },
+        natsCredential: { kind: "seed", seed: { value: "SUENVSEED", source: "NATS_NKEY_SEED" } },
       },
     });
     expect(dispatchAsToken(dispatchSettings(env, config))).toEqual({

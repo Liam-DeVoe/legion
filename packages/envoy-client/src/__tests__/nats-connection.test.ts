@@ -19,7 +19,7 @@ describe("natsConnectionOptions", () => {
     const options = natsConnectionOptions({
       servers: ["nats://127.0.0.1:4222"],
       name: "test",
-      seed: undefined,
+      credential: { kind: "none" },
     });
     expect(options.ignoreAuthErrorAbort).toBe(true);
   });
@@ -42,7 +42,7 @@ describe("natsConnectionOptions", () => {
     const options = natsConnectionOptions({
       servers: ["nats://127.0.0.1:4222"],
       name: "test",
-      seed: undefined,
+      credential: { kind: "none" },
     });
     expect(options.reconnect).toBe(true);
     expect(options.maxReconnectAttempts).toBe(-1);

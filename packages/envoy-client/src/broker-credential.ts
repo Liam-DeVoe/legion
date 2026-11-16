@@ -18,6 +18,7 @@
 // token — is resolved first and unchanged, so a session that has a token by any of those routes
 // behaves exactly as it did before this module existed.
 
+import type { DpopKey } from "@legion/broker-client/dpop";
 import {
   BROKER_URL_VAR,
   BROKER_VARIABLES,
@@ -247,6 +248,48 @@ async function clientFor(
   return { entry, made: await making };
 }
 
+/** A live token of the broker's for a caller acting as `own`, and the key it is bound to. */
+export interface TradedToken {
+  readonly token: BrokerToken;
+  readonly key: DpopKey;
+}
+
+/**
+ * The token this process holds, or trades now, for a caller of `env` acting as the session
+ * `own`, and the key the broker bound it to, out of the one client {@link clientFor} keeps for
+ * that session. A person's sign-in refused for good is remembered against that sign-in
+ * (`Held.refused`), so later calls fail with the same words.
+ */
+async function tradedToken(env: BrokerEnvironment, own: string): Promise<TradedToken> {
+  const { entry, made } = await clientFor(env, own);
+  const { client } = made;
+  if (client === undefined) {
+    throw new Error(
+      "AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY no longer name a broker and an identity to trade"
+    );
+  }
+  try {
+    return { token: await client.token(), key: client.key };
+  } catch (error) {
+    if (made.signIn !== "" && isFinalRefusal(error)) entry.refused.set(made.signIn, error);
+    throw error;
+  }
+}
+
+/**
+ * The token source of a NATS connection acting as `session` (`nats-credential.ts`): each call
+ * answers the token {@link brokerCredential} presents for the same session, and the key it is
+ * bound to, since both are this process's one client for that session (`CLIENTS`). A session
+ * name read from a function is read at each call, so a process that moved to another session
+ * takes that session's token.
+ */
+export function brokerTokenFor(
+  env: BrokerEnvironment,
+  session: BrokerSessionName | undefined
+): () => Promise<TradedToken> {
+  return () => tradedToken(env, sessionName(session));
+}
+
 /**
  * This machine's broker credential for `session`: `Authorization: DPoP <access token>` and a
  * proof of the token's key naming the request's method, its target URI and the token it is
@@ -298,24 +341,11 @@ export function brokerCredential(
       url: string,
       acting?: string
     ): Promise<Readonly<Record<string, string>>> {
-      const { entry, made } = await clientFor(env, own(acting));
-      const { client } = made;
-      if (client === undefined) {
-        throw new Error(
-          "AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY no longer name a broker and an identity to trade"
-        );
-      }
-      let token: BrokerToken;
-      try {
-        token = await client.token();
-      } catch (error) {
-        if (made.signIn !== "" && isFinalRefusal(error)) entry.refused.set(made.signIn, error);
-        throw error;
-      }
+      const { token, key } = await tradedToken(env, own(acting));
       presented = token.accessToken;
       return {
         Authorization: `DPoP ${token.accessToken}`,
-        DPoP: await client.key.proof({ method, url, accessToken: token.accessToken }),
+        DPoP: await key.proof({ method, url, accessToken: token.accessToken }),
       };
     },
     stale(acting?: string): void {

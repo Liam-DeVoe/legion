@@ -156,14 +156,28 @@ listener's warning returns, so a reword reaches both languages from one place.
 
 ## NATS connection
 
-`natsConnectionOptions({ servers, name, seed })` (`@legion/envoy-client/nats-connection`) is the
-nats.js `connect` options every session plugin dials with: the credential `natsAuthOptions` builds
-from the seed (`src/nats-auth.ts`, which the package does not export, so a plugin dials only with
-these options), reconnecting forever 2 s apart, and a ping every 10 s (`NATS_PING_INTERVAL_MS`)
-with the connection dropped on the tick that finds two pings unanswered (`NATS_MAX_PINGS_OUT`). So a
+`natsConnectionOptions({ servers, name, credential })` (`@legion/envoy-client/nats-connection`) is
+the nats.js `connect` options every session plugin dials with: the credential `natsAuthOptions`
+builds from the resolved `NatsCredential` (`src/nats-auth.ts`, which the package does not export, so
+a plugin dials only with these options), reconnecting forever 2 s apart, and a ping every 10 s
+(`NATS_PING_INTERVAL_MS`) with the connection dropped on the tick that finds two pings unanswered
+(`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
 within 52 s when that redial also hangs on nats.js's 20 s dial timeout and the 2 s wait; nats.js's
 default 120 s interval left a frozen path for up to 6 minutes.
+
+A session's NATS credential (`@legion/envoy-client/nats-credential`) is one of three: the nkey user
+a seed names, the session's broker token, or none. The broker token is the one the session's
+listener calls already present (`brokerTokenFor`), put on the CONNECT as its token, with a proof of
+its key over the nonce the server sent that one connection as its signature
+(`DpopKey.connectionProof`), which is what the auth service of a hub that runs one admits as that
+session alone. `brokerNatsCredential(env, session)` holds it: `ready()` takes a live token before a
+dial, `authenticator(nonce)` signs one snapshot of it per CONNECT and presents nothing, starting a
+trade, where it holds no live token, and `renew()` takes the token again, the next session's after
+a switch. `keepNatsCredential(connection, credential, warn)` renews ahead of each token's expiry and
+reconnects the connection with each new token, before the server drops the user the old one was
+admitted as; a renewal that fails is retried at 2 s doubling to a minute and warned about once,
+then every 30 minutes, never naming the token.
 
 nats.js 2.29.3, the last 2.x release, leaves a redial's socket open when it gives up on that dial
 at its 20 s timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes
@@ -462,16 +476,22 @@ one of the two set. A `notice` says why nothing is wrong: `<file> sets envoy.ena
 Envoy is off`, `<file> names no Envoy listener or NATS server, and neither ENVOY_URL nor
 ENVOY_NATS_URL is set: Envoy is off`, or the missing-file text. An `error` names what could not be
 read or used. `ENVOY_URL`, `ENVOY_NATS_URL` (comma-separated), `ENVOY_TOKEN_FILE` then
-`ENVOY_TOKEN`, and `NATS_NKEY_SEED_FILE` then `NATS_NKEY_SEED` each override their own field of the
-section; with no `envoy` section, `ENVOY_URL` or `ENVOY_NATS_URL` alone names an Envoy, which is
-how a Legion pane gets the one its daemon names. An empty `ENVOY_*` variable counts as unset; an
-empty `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` is refused, naming it. `inbound` is how the session
-takes inbound messages: `{ natsUrls, natsSeed }`, never with an empty `natsUrls`, or `{ off }`, `off`
-saying why: `Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)` when nothing names one, a
-seed's refusal (below), or `this session opens no NATS connection` for a caller that opens none
-(`{ nats: false }`: the `dispatch` command, `claude-envoy`'s `envoy-send`,
-pi-legion's extension). The seed is resolved only when there are NATS servers
-to use it on, so that caller resolves none. A set `_FILE` pointer that
+`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE` then `NATS_NKEY_SEED`, and `NATS_AUTH` each override their own
+field of the section; with no `envoy` section, `ENVOY_URL` or `ENVOY_NATS_URL` alone names an Envoy,
+which is how a Legion pane gets the one its daemon names. An empty `ENVOY_*` or `NATS_AUTH` variable
+counts as unset; an empty `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` is refused, naming it. `inbound`
+is how the session takes inbound messages: `{ natsUrls, natsCredential }`, never with an empty
+`natsUrls`, or `{ off }`, `off` saying why: `Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)`
+when nothing names one, a credential's refusal (below), or `this session opens no NATS connection`
+for a caller that opens none (`{ nats: false }`: the `dispatch` command, `claude-envoy`'s
+`envoy-send`, pi-legion's extension). The credential is resolved only when there are NATS servers
+to use it on, so that caller resolves none. A seed is the credential wherever one is set. Otherwise
+`NATS_AUTH`, else `envoy.natsAuth`, names it: `broker` is the session's broker token, and `none`, or
+nothing set, is no credential, whatever broker route the machine has, since that route says nothing
+about whether the hub runs an auth service. `broker` on a machine with no broker route
+(`NATS_AUTH is broker, but <gap>`), either value beside a seed (`NATS_AUTH is broker, and
+NATS_NKEY_SEED names an nkey seed: set one of the two`) and any other value (`NATS_AUTH is "x", which
+is neither broker nor none`) turn off inbound messages alone. A set `_FILE` pointer that
 cannot be read is refused, never a fallback. The file's `envoy.token` goes with `ENVOY_URL` only
 when it names the origin of the listener written in the file (`http://127.0.0.1:9020` when it names
 none), and is otherwise refused with `ENVOY_URL names <origin>, but <file>'s envoy.token is for
@@ -486,8 +506,9 @@ other servers than <file>'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`. T
 alone, so its refusal (that pairing, a `natsSeed` command that fails, or a seed variable that cannot
 be read) leaves Envoy on with its listener and bearer, and turns off inbound messages: `inbound.off`
 names the refusal. A credential from the variables
-goes with whatever address resolves. `natsAuthOptions` takes the resolved seed and names its source
-when it is not a user seed; `natsSeedFromEnvironment` resolves one from the two variables alone.
+goes with whatever address resolves. `natsAuthOptions` takes the resolved credential and names a
+seed's source when it is not a user seed; `natsSeedFromEnvironment` resolves one from the two
+variables alone.
 
 Every caller resolves through `session-settings.ts`. `sessionConfigFile(harness, env)` is the file
 `envoyConfigPath` chooses, with the rule's refusal of a relative path as `error` instead of a

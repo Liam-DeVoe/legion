@@ -1119,13 +1119,13 @@ export default function envoyExtension(pi: PiApi): void {
   // this session uses, and a queued task dials through its handle, which closes a connection the
   // task was refused while the dial was in flight rather than leave it dangling.
   const dialNats = async (): Promise<NatsConnection> => {
-    const { natsUrls, natsSeed } = requireInbound();
+    const { natsUrls, natsCredential } = requireInbound();
     // nats.js re-subscribes existing subscriptions on its own once reconnected.
     return (natsConnectStore[NATS_CONNECT] ?? connect)(
       natsConnectionOptions({
         servers: natsUrls,
         name: `omp-${sessionID || "unknown"}`,
-        seed: natsSeed,
+        credential: natsCredential,
       })
     );
   };

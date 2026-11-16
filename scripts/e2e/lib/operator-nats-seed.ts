@@ -17,6 +17,9 @@ import {
  * Throws naming `label` when Envoy resolves none: a file that turns Envoy off or cannot be read, a
  * seed variable that cannot be read, or a file's seed for other servers (which leave Envoy on with
  * inbound messages off, `inbound.off` naming the refusal, and are a refusal here all the same).
+ * Throws too where the operator's settings name a session's broker token (`NATS_AUTH=broker`): a
+ * hub's auth service grants that token one session's own channels, and these scripts read the
+ * hub's other subjects and its streams, so they connect with a seed or with none.
  */
 export function operatorNatsSeed(
   servers: string,
@@ -30,5 +33,15 @@ export function operatorNatsSeed(
   if (!settings.enabled) throw new Error(`${refused}: ${settings.error ?? settings.notice}`);
   const { inbound } = settings;
   if ("off" in inbound) throw new Error(`${refused}: ${inbound.off}`);
-  return inbound.natsSeed;
+  const credential = inbound.natsCredential;
+  switch (credential.kind) {
+    case "seed":
+      return credential.seed;
+    case "none":
+      return undefined;
+    case "broker":
+      throw new Error(
+        `${refused}: NATS_AUTH (or envoy.natsAuth) names a session's broker token, which a hub grants only that session's own channels; set NATS_NKEY_SEED_FILE for ${label}`
+      );
+  }
 }

@@ -1,6 +1,6 @@
 import type { ConnectionOptions } from "nats";
-import type { NatsSeed } from "./envoy-settings";
 import { natsAuthOptions } from "./nats-auth";
+import type { NatsCredential } from "./nats-credential";
 
 /**
  * How often a session pings its NATS server, and how many pings may go unanswered. nats.js 2.29.3
@@ -13,7 +13,8 @@ import { natsAuthOptions } from "./nats-auth";
 export const NATS_PING_INTERVAL_MS = 10_000;
 export const NATS_MAX_PINGS_OUT = 2;
 
-/** The `connect` options every session plugin dials NATS with: its credential, reconnecting forever
+/** The `connect` options every session plugin dials NATS with: its credential (`natsAuthOptions`:
+ * a seed's nkey user, the session's broker token, or none), reconnecting forever
  * 2 s apart (so the connection never closes on its own and only the plugin's shutdown ends it),
  * the ping check above, and never giving up over a refused credential.
  *
@@ -28,12 +29,12 @@ export const NATS_MAX_PINGS_OUT = 2;
 export function natsConnectionOptions(input: {
   readonly servers: readonly string[];
   readonly name: string;
-  readonly seed: NatsSeed | undefined;
+  readonly credential: NatsCredential;
 }): ConnectionOptions {
   return {
     servers: [...input.servers],
     name: input.name,
-    ...natsAuthOptions(input.seed),
+    ...natsAuthOptions(input.credential),
     reconnect: true,
     maxReconnectAttempts: -1,
     reconnectTimeWait: 2_000,

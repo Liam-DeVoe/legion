@@ -2302,7 +2302,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         natsConnectionOptions({
           servers: inbound.natsUrls,
           name: `claude-envoy-channel-${identity.id}`,
-          seed: inbound.natsSeed,
+          credential: inbound.natsCredential,
         }),
       )
       session = await startChannelSession({

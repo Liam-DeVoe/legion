@@ -167,14 +167,18 @@ async function forwardMessages(
 }
 
 export async function runBridge(config: BridgeConfig): Promise<void> {
+  // The production server's nkey user, when it requires one: the seed a command run from the
+  // operator's shell sends to that server (operator-nats-seed.ts).
+  const seed = operatorNatsSeed(
+    config.upstreamUrl,
+    "SMOKE_UPSTREAM_NATS",
+    process.env,
+    process.cwd()
+  );
   const upstream = await connect({
     servers: config.upstreamUrl,
     name: `legion-e2e-bridge-upstream-${config.repository}`,
-    // The production server's nkey user, when it requires one: the seed a command run from the
-    // operator's shell sends to that server (operator-nats-seed.ts).
-    ...natsAuthOptions(
-      operatorNatsSeed(config.upstreamUrl, "SMOKE_UPSTREAM_NATS", process.env, process.cwd())
-    ),
+    ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
     reconnect: true,
     maxReconnectAttempts: -1,
     reconnectTimeWait: 2_000,

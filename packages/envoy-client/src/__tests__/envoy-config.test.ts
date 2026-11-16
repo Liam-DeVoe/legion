@@ -913,7 +913,12 @@ describe("a ! command in envoy.json", () => {
     expect(envoySettings(env, config)).toMatchObject({
       enabled: true,
       token: "listener-secret",
-      inbound: { natsSeed: { value: "SUSEED", source: `envoy.natsSeed in ${file}` } },
+      inbound: {
+        natsCredential: {
+          kind: "seed",
+          seed: { value: "SUSEED", source: `envoy.natsSeed in ${file}` },
+        },
+      },
     });
   });
 
@@ -1372,7 +1377,7 @@ describe("a checkout's .envoy/envoy.json", () => {
         token: "environment-token",
         inbound: {
           natsUrls: ["nats://pane.internal.example:4222"],
-          natsSeed: { value: "SUENVSEED" },
+          natsCredential: { kind: "seed", seed: { value: "SUENVSEED" } },
         },
       });
       expect(dispatchSettings(pane, config)).toEqual({
