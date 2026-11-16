@@ -48,7 +48,8 @@ type Config struct {
 	// BROKER_LISTEN_ADDR: the host:port the broker listens on.
 	ListenAddr string
 	// BROKER_METRICS_LISTEN_ADDR: the address the broker's metrics port binds, default
-	// 127.0.0.1:13382, which answers GET /metrics in the Prometheus text format and nothing else.
+	// 127.0.0.1:13382, which answers GET /metrics in the Prometheus text format and the NATS auth
+	// service's liveness at GET /livez (natscallout.Livez), and nothing else.
 	// It is a port of its own rather than a route of the API's, so that who may scrape a pod is
 	// the deployment's to decide apart from who may call the broker: the API's address is the one
 	// the load balancer sends every caller to. It is a third port of the same process, bound and
@@ -311,8 +312,9 @@ type Config struct {
 	// is private, whether a person may see it, and what kind of member a person is
 	// (internal/broker/projectaccess), an absolute http(s) URL, read without the slashes it ends
 	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
-	// Dispatch nothing, a token or an enrollment that names no project is made as before, and
-	// one that names a project is refused, since nothing could say its person may see it.
+	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
+	// project that operator's own setting chose, are minted as before; a person's trade that
+	// names a project is refused, since nothing could say that person may see it.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
@@ -472,9 +474,12 @@ type Config struct {
 	// projected token, whitespace-separated
 	// <service account>=<project>=<person>[=<session>] entries, such as
 	// system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com. The token minted
-	// for a pod of the account may write that one project, acts for that person, and writes under
+	// for a pod of the account may write that one project, a project key that exchange.NewSet
+	// refuses the start over when it is not one, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
-	// session. The session is everything after the third "=", so it alone may carry one. A
+	// session. An entry may name no project (<service account>==<person>): the shared
+	// public-session account's, whose tokens act for that person and name no project. The
+	// session is everything after the third "=", so it alone may carry one. A
 	// namespace's default account is refused, as is an account listed twice. Needs
 	// BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present.
 	// Unset, no account exchanges.
@@ -1068,17 +1073,19 @@ func exchangeFields(text string, want int) ([]string, bool) {
 
 // parseExchangeAccounts reads setting's whitespace-separated
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
-// lists, in order. It refuses, naming the entry: one not of that form or with a blank field; an
-// account that is not system:serviceaccount:<namespace>:<name>; a namespace's default account; and
-// an account listed twice, since one account writes as one identity. exchange.NewSet is the second
+// lists, in order. The project may be empty (<service account>==<person>), which is the shared
+// public-session account's entry: its named tokens act for the person and name no project. It
+// refuses, naming the entry: one not of that form or with a blank account or person; an account
+// that is not system:serviceaccount:<namespace>:<name>; a namespace's default account; and an
+// account listed twice, since one account writes as one identity. exchange.NewSet is the second
 // gate, and the session name's own form is its to refuse.
 func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, error) {
 	var entries []exchange.AccountEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
 		fields, ok := exchangeFields(text, 4)
-		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
-			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the session everything after the third =, got %q", setting, text)
+		if !ok || fields[0] == "" || fields[2] == "" {
+			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the project empty for an entry naming none and the session everything after the third =, got %q", setting, text)
 		}
 		if !serviceAccountPattern.MatchString(fields[0]) {
 			return nil, fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)

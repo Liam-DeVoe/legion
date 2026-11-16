@@ -48,8 +48,8 @@ func sessionOption(key *ecdsa.PrivateKey, current func() string) nats.Option {
 // same authorization error (v1.53.1, nats.go:4086: `if nc.current.lastErr == err &&
 // !nc.Opts.IgnoreAuthErrorAbort { nc.ar = true }`), and a hub whose connections this service
 // admits refuses every one of them while the service is away, which a restart of the hub itself
-// causes. internal/bus sets the option for every connection it makes (connect.go); giveUpOnRefusal
-// leaves it off, which is the control.
+// causes. natscred sets the option on exactly the connections the auth service decides (Session,
+// Service), as a session here is; giveUpOnRefusal leaves it off, which is the control.
 func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal bool, options ...nats.Option) *nats.Conn {
 	t.Helper()
 	settings := []nats.Option{
@@ -220,6 +220,10 @@ func TestConnectionsSurviveTheAuthServiceStoppingUntilTheirUserExpires(t *testin
 	defer pub.Close()
 	receives := func(payload string) {
 		t.Helper()
+		// A round trip on nc first: after a reconnect nats.go has written the subscription again,
+		// but the server reads nc's socket and pub's on goroutines of their own, so without it the
+		// publish can reach the server before the subscription does and go to no one.
+		require.NoError(t, nc.Flush())
 		require.NoError(t, pub.Publish(bus.DeliverSubject(a.id), []byte(payload)))
 		require.NoError(t, pub.Flush())
 		msg, err := own.NextMsg(5 * time.Second)

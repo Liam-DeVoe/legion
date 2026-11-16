@@ -213,8 +213,12 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	otherClient.ClientID = "another-client"
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "everything"
+	// INFRA-3885: a named answer may name no project when it names a person (an account entry may
+	// name none), and names at most one.
 	namedNoProject := liveToken(caller.jkt, time.Hour)
 	namedNoProject.ProjectScope, namedNoProject.Projects = brokertoken.ProjectScopeNamed, nil
+	namedTwoProjects := liveToken(caller.jkt, time.Hour)
+	namedTwoProjects.ProjectScope, namedTwoProjects.Projects = brokertoken.ProjectScopeNamed, []string{"INFRA", "OSSV"}
 	serviceWithProjects := serviceToken(caller.jkt, time.Hour)
 	serviceWithProjects.Projects = []string{"INFRA"}
 	// Each row names whether Verify admits it, so a row that answers otherwise fails by name with
@@ -233,7 +237,8 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"neither person nor service", nobody, false},
 		{"another client", otherClient, false},
 		{"unknown scope", unknownScope, false},
-		{"named with no project", namedNoProject, false},
+		{"named with no project, for a person", namedNoProject, true},
+		{"named with two projects", namedTwoProjects, false},
 		{"service with projects", serviceWithProjects, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {

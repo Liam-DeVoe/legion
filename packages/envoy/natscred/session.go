@@ -47,9 +47,11 @@ const signTimeout = 10 * time.Second
 // lapsed while the broker was down connects again once a live one is traded.
 //
 // The Keeper runs the client's renewal loop (brokerclient.Client.Run) and reconnects the
-// connection with each token it lands that is not the one the connection presented, which it
-// trades RenewBefore ahead of the token in hand: the service answers a session's user with its
-// token's expiry, so the connection moves to the next token before the server drops it.
+// connection on each token it lands after the first that is not the one the connection
+// presented. The loop trades on its first pass, just after the connection presented a live token,
+// so that first token is no renewal and the Keeper skips it; each after it is traded RenewBefore
+// ahead of the token in hand, and the service answers a session's user with its token's expiry,
+// so the connection moves to the next token before the server drops it.
 func Session(client *brokerclient.Client) (nats.Option, Keeper) {
 	credential := &sessionCredential{
 		key: client.Key(),
@@ -110,12 +112,19 @@ func (c *sessionCredential) token() string {
 	return c.presented
 }
 
-// Keep runs the renewal loop until ctx ends or nc closes, reconnecting nc with each token it
-// lands that nc did not present. It returns too when the broker refuses the session's identity in
-// a way no retry cures (brokerclient.RefusedError.Permanent): the connection then keeps the user it
-// has until that expires, and each reconnect after asks the broker again.
+// Keep runs the renewal loop until ctx ends or nc closes, reconnecting nc on each token it lands
+// after the first that nc did not present: the loop's first pass trades at once (Client.Run),
+// just after nc presented a live token, so the first is skipped. It returns too when the broker
+// refuses the session's identity in a way no retry cures (brokerclient.RefusedError.Permanent):
+// the connection then keeps the user it has until that expires, and each reconnect after asks the
+// broker again.
 func (c *sessionCredential) Keep(ctx context.Context, nc *nats.Conn) {
+	first := true
 	_ = c.run(ctx, func(_ context.Context, token *brokerclient.Token) error {
+		if first {
+			first = false
+			return nil
+		}
 		if token.AccessToken == c.token() {
 			return nil
 		}

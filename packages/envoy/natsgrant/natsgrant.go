@@ -396,15 +396,15 @@ func NamesSystemSubject(p Permissions) (string, bool) {
 }
 
 // OpenDirection returns the first direction of p, "publish" then "subscribe", whose allow list is
-// empty, and true. An empty allow list is not "nothing": nats-io/jwt/v2 drops it when it encodes a
-// user (types.go, omitempty), and nats-server applies no restriction to a direction whose allow and
-// deny lists are both empty (server/accounts.go, client.go), so a user answered with one may
-// publish, or subscribe, to every subject. Permissions carries no deny list, so no grant of this
-// package can close a direction any other way, and the auth service refuses every grant this
-// names (internal/broker/natscallout).
-// A blank entry counts as the same fault: jwt drops it when it adds it to a user
-// (StringList.Add), so a list of blank entries encodes as an empty one, and no grant of this
-// package means a blank subject.
+// empty or holds a blank entry, and true. An empty allow list is not "nothing": nats-io/jwt/v2
+// drops it when it encodes a user (types.go, omitempty), and nats-server then applies no allow
+// list to that direction (server/accounts.go, client.go), so a user answered with one may publish,
+// or subscribe, to every subject but the ones a deny list names. A deny list beside it narrows
+// that and closes nothing, so an empty allow list is open whatever PublishDeny or SubscribeDeny
+// hold, and the auth service refuses every grant this names (internal/broker/natscallout).
+// A blank entry is the same fault: jwt skips an empty entry when it adds it to a user
+// (StringList.Add skips ""), so a list of "" encodes as an empty one, and a whitespace entry names
+// no subject any grant of this package means.
 func OpenDirection(p Permissions) (string, bool) {
 	blank := func(entry string) bool { return strings.TrimSpace(entry) == "" }
 	switch {

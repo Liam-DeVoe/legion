@@ -1075,20 +1075,12 @@ func peerReread(current *policy.Current, dropAirlockName func(string)) func(cont
 // every method there but GET and HEAD is 405 - so a scraper or a probe reaches no route of the API
 // through it, and no caller of the API reaches either (the API's mux registers neither).
 //
-// /livez answers 503 while the auth service's loop has not turned for its staleness bound
-// (natscallout.Service.LivenessHandler), so the Deployment's liveness probe kills a replica whose
-// loop has stalled and its connection to the hub resets; and 200 when this broker runs no auth
-// service, or has not started it yet, since nothing then can stall.
+// GET /livez is natscallout.Livez on the auth service this broker started, which answers the whole
+// of it, the broker that runs no auth service included.
 func metricsHandler(registry *metrics.Registry, callout *atomic.Pointer[natscallout.Service]) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", registry.Handler())
-	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
-		if service := callout.Load(); service != nil {
-			service.LivenessHandler().ServeHTTP(w, r)
-			return
-		}
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	mux.Handle("GET /livez", natscallout.Livez(callout.Load))
 	return mux
 }
 

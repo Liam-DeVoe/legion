@@ -52,6 +52,11 @@ type rig struct {
 	url    string
 	server *testnats.Server
 	log    *lockedBuffer
+
+	// settings and deps are the auth service's, which startService starts again after a stop.
+	settings natscallout.Settings
+	deps     natscallout.Deps
+	service  *natscallout.Service
 }
 
 // newRig starts a callout hub and the auth service in front of it, deciding sessions with
@@ -71,18 +76,35 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
 	require.NoError(t, err)
 	log := &lockedBuffer{}
-	service, err := natscallout.Start(t.Context(), natscallout.Settings{
-		URLs:     []string{url},
-		SeedFile: write("service.seed", keys.ServiceSeed), IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
-		XKeySeedFile: write("xkey.seed", keys.XKeySeed), Services: services,
-	}, natscallout.Deps{Introspect: introspect, ServiceToken: serviceToken, Log: slog.New(slog.NewTextHandler(log, nil))})
+	r := &rig{
+		url: url, server: server, log: log,
+		settings: natscallout.Settings{
+			URLs:     []string{url},
+			SeedFile: write("service.seed", keys.ServiceSeed), IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
+			XKeySeedFile: write("xkey.seed", keys.XKeySeed), Services: services,
+		},
+		deps: natscallout.Deps{Introspect: introspect, ServiceToken: serviceToken, Log: slog.New(slog.NewTextHandler(log, nil))},
+	}
+	r.startService(t)
+	return r
+}
+
+// startService starts the auth service in front of the rig's hub, on the hub's keys and the
+// rig's answers, closed when the test ends, and returns once the hub sends it each connection.
+func (r *rig) startService(t *testing.T) {
+	t.Helper()
+	service, err := natscallout.Start(t.Context(), r.settings, r.deps)
 	require.NoError(t, err)
 	t.Cleanup(service.Close)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	require.NoError(t, service.Ready(ctx))
-	return &rig{url: url, server: server, log: log}
+	r.service = service
 }
+
+// stopService stops the auth service, so the hub has nobody to ask about a connection and
+// admits none but its own users until startService.
+func (r *rig) stopService() { r.service.Close() }
 
 // thumbprint is the RFC 7638 thumbprint of key, which the broker binds a token to.
 func thumbprint(t *testing.T, key *ecdsa.PrivateKey) string {

@@ -1024,6 +1024,62 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 	}
 }
 
+// TestAPodsEntryNamingAPrivateProjectIsHeldToItsPerson is the credential the production path
+// makes for a private project: a pod's account listed in BROKER_EXCHANGE_ACCOUNTS with the
+// project PRIV and the person it acts for. Against a Dispatch stand-in that says the entry's
+// person sees PRIV, the pod's trade is answered a token whose introspection names exactly [PRIV]
+// under the named scope; against one that says they do not, the same trade is refused naming the
+// project and the person.
+func TestAPodsEntryNamingAPrivateProjectIsHeldToItsPerson(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		listed []string
+		minted bool
+	}{
+		{name: "the entry's person sees PRIV", listed: []string{person}, minted: true},
+		{name: "the entry's person does not see PRIV", listed: nil, minted: false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			databaseURL := storetest.URL(t)
+			cluster, github := oidctest.New(t), oidctest.New(t)
+			clusterKey := cluster.PublishKey(t, "cluster-key")
+			github.PublishKey(t, "github-key")
+			dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+				privateProject: {Visibility: "private", Owner: privateOwner, Listed: c.listed},
+			}, map[string]string{person: projectaccess.MemberFull})
+			env := append(projectAccessEnv(t, databaseURL, cluster, github, dispatch),
+				"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+privateProject+"="+person)
+			broker := startBroker(t, brokerOptions{Env: env})
+			broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+			live := newLiveBroker(broker.Addr, proofKey(t))
+			apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+			live.registered(t, mintPodToken(t, cluster, clusterKey, podAccount, enrolmentAudience, firstPodUID), heldSession,
+				accountToken(t, cluster, clusterKey, registrarAccount))
+
+			status, body := live.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, podAccount, exchangeAudience, firstPodUID), heldSession))
+			if !c.minted {
+				description, _ := body["error_description"].(string)
+				t.Logf("the refusal: %d %v %s", status, body["error"], description)
+				if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil ||
+					!strings.Contains(description, "its entry names the project "+privateProject+", which its person "+person+" cannot see") {
+					t.Fatalf("the pod's trade = %d %v %q, want 400 invalid_request naming %s and %s", status, body["error"], description, privateProject, person)
+				}
+				return
+			}
+			token, _ := body["access_token"].(string)
+			if status != http.StatusOK || token == "" {
+				t.Fatalf("the pod's trade = %d %v, want an access token", status, body)
+			}
+			status, answer := live.introspect(t, token, apiToken)
+			t.Logf("introspection of the pod's token: %d %v", status, answer)
+			if got := projectsOf(t, answer); status != http.StatusOK || answer["active"] != true || answer["project_scope"] != oauthwire.ProjectScopeNamed ||
+				answer["person"] != person || !slices.Equal(got, []string{privateProject}) {
+				t.Fatalf("introspection = %d %v, want a live named token acting for %s naming exactly [%s]", status, answer, person, privateProject)
+			}
+		})
+	}
+}
+
 // googleExchangeEnv is exchangeEnv with the Google half configured: the issuer standing in for
 // Google's, the audience a machine's identity token must carry, the two fleets, the pins of the
 // first, and the person and project the first writes for. The second fleet is listed with no pin
