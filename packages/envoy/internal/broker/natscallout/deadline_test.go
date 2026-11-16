@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // raisedBudget is what the control raises decideBudget to: past the two seconds a Go client's
@@ -25,12 +26,13 @@ const raisedBudget = 2500 * time.Millisecond
 // authorization timeout. A stub that answers in 100 ms is admitted.
 //
 // The control is what makes the budget mean anything: raise decideBudget to 2.5 s with the same
-// blocking stub, and the client fails its connect rather than being refused. Without it a shorter
-// budget would look like caution; with it, an answer the budget would have stopped is shown to
-// cost the connection.
+// blocking stub, and the client fails its connect rather than being refused, and the server logs
+// giving up on the request (hubGaveUp, which the server writes to its debug log only). Without it
+// a shorter budget would look like caution; with it, an answer the budget would have stopped is
+// shown to cost the connection, and the server's log is shown to name it.
 func TestTheServiceAnswersInsideTheGoClientsConnectDeadline(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
-	server, url := testnats.StartWithCalloutServer(t, keys)
+	server, url := startDebugCalloutServer(t, keys)
 	account := "system:serviceaccount:example-ns:example-daemon"
 
 	// blockingFor is a ServiceToken that takes wait, as a verifier waiting on a key set would,
@@ -75,7 +77,10 @@ func TestTheServiceAnswersInsideTheGoClientsConnectDeadline(t *testing.T) {
 		require.ErrorIs(t, err, nats.ErrAuthorization,
 			"the client failed its connect after %s rather than being refused", took)
 		require.Less(t, took, 2*time.Second, "the refusal reached the client after %s, past its connect's own deadline", took)
-		require.NotContains(t, server.Log()[before:], "not received in time",
+		// The server gives up one authorization timeout after it sent the request, so by then it
+		// has said so, had it given up.
+		time.Sleep(testnats.CalloutAuthTimeout*time.Second - took + 100*time.Millisecond)
+		require.Zero(t, strings.Count(server.Log()[before:], hubGaveUp),
 			"the server gave up on the service rather than reading its refusal")
 	})
 
@@ -85,6 +90,7 @@ func TestTheServiceAnswersInsideTheGoClientsConnectDeadline(t *testing.T) {
 		t.Cleanup(func() { decideBudget = was })
 		service := startService(t, url, keys, blockingFor(3*time.Second), Decide)
 		t.Cleanup(service.Close)
+		before := len(server.Log())
 		err, took := connectService(t)
 		// The client is gone before the raised budget would have answered. Which of the two
 		// two-second timers fires first — nats.go's own handshake deadline or the server giving
@@ -93,6 +99,9 @@ func TestTheServiceAnswersInsideTheGoClientsConnectDeadline(t *testing.T) {
 		require.Error(t, err, "a client admitted with the budget at %s: the budget would be arbitrary", raisedBudget)
 		require.Less(t, took, raisedBudget,
 			"the client waited %s, so the answer at %s could still have reached it and the control proves nothing", took, raisedBudget)
+		testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the server's log to say it gave up on the request", func() bool {
+			return strings.Contains(server.Log()[before:], hubGaveUp)
+		})
 	})
 }
 

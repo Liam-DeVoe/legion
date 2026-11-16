@@ -2,6 +2,7 @@ package natscallout
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // startService runs the auth service against the server at url with keys' seeds, deps and decide,
@@ -136,7 +139,8 @@ func TestTheHubAdmitsASessionThroughTheService(t *testing.T) {
 // Each authorization request the hub sends is sealed to the service's curve key: a second client
 // holding the service's NATS user, but not that key, reads bytes that are no JWT. The control is a
 // hub configured with no curve key, whose requests that client reads in the clear, and which the
-// service refuses: a request in the clear means every token and proof crossed the wire unsealed.
+// service refuses under its own label: a request in the clear means every token and proof crossed
+// the wire unsealed.
 func TestRequestsAreEncryptedToTheServiceKey(t *testing.T) {
 	for _, row := range []struct {
 		name   string
@@ -150,7 +154,8 @@ func TestRequestsAreEncryptedToTheServiceKey(t *testing.T) {
 			}
 			url := testnats.StartWithCallout(t, config)
 			a := newSession(t, "ses_a", 15*time.Minute)
-			startService(t, url, keys, Deps{Introspect: introspector(a)}, Decide)
+			log := &logtest.Buffer{}
+			startService(t, url, keys, Deps{Introspect: introspector(a), Log: slog.New(slog.NewTextHandler(log, nil))}, Decide)
 
 			eavesdropper, err := testnats.ConnectSeed(t, url, keys.ServiceSeed)
 			require.NoError(t, err)
@@ -164,6 +169,9 @@ func TestRequestsAreEncryptedToTheServiceKey(t *testing.T) {
 				require.NoError(t, err, "the service did not admit the session")
 			} else {
 				require.ErrorIs(t, err, nats.ErrAuthorization, "the service admitted a session whose request reached it in the clear")
+				testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log", func() bool {
+					return strings.Contains(log.String(), "label="+labelUnsealed)
+				})
 			}
 			request, err := seen.NextMsg(5 * time.Second)
 			require.NoError(t, err)
