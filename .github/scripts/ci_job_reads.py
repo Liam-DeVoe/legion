@@ -1015,17 +1015,18 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
 # and 65.6 s in that pair.
 #
-# -timeout 18m. A call's limit is the smallest whole minute at which its slowest
+# -timeout 19m. A call's limit is the smallest whole minute at which its slowest
 # package takes at most half of it, measured on the largest reading this branch
 # has of that package (dispatch://INFRA-1075). This call's slowest package is
-# cmd/dispatch at 525.9 s (run 43691345741, job 132742525106), which is
-# 48.7 per cent of 18m and would be 51.6 per cent of 17m, the whole minute below
-# it. The limit leaves 554.1 s above that package's own
+# internal/dispatch/pmdoc at 567.3 s (run 43797411630, job 133069317516), which is
+# 49.8 per cent of 19m and would be 52.5 per cent of 18m, the whole minute below
+# it; cmd/dispatch's largest, 525.9 s (run 43691345741, job 132742525106), asked
+# 18m. The limit leaves 572.7 s above the slowest package's own
 # time, far over the 60 s of pmdoc's perCallReportMargin, which is the floor a
 # package that reads the test binary's deadline sets for itself.
 lead="{UNIT_TEST_LEAD_TEXT}"
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
-printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{SHUTDOWN_PATTERN}' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{SHUTDOWN_PATTERN}' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
 unit=$!
 # The tests the race detector makes impossible, which the race job of each of these
 # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:

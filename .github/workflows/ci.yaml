@@ -5145,7 +5145,7 @@ jobs:
     # workflow_dispatch run of this file on the branch:
     #
     #   call              slowest package       limit  fills    read in
-    #   the package list  cmd/dispatch 525.9 s   18m   48.7 %   run 43691345741
+    #   the package list  pmdoc 567.3 s         19m   49.8 %   run 43797411630
     #   race-impossible   docs 310.3 s           11m   47.0 %   run 43733795306
     #   pgmigrate         pgmigrate 386.1 s      13m   49.5 %   run 42779139068
     #   shutdown          cmd/dispatch 76.1 s     3m   42.3 %   run 43723760337
@@ -5162,7 +5162,7 @@ jobs:
     # off it.
     #
     # Three calls run tests that read a margin off the binary's own deadline, and each clears it:
-    # 18m leaves 554.1 s over cmd/dispatch's own time in the package list, against the 60 s of
+    # 19m leaves 572.7 s over internal/dispatch/pmdoc's own time in the package list, against the 60 s of
     # pmdoc's perCallReportMargin; 11m leaves 349.7 s over the documents package's time in the
     # race-impossible call, against its 30 s of roomWaitMargin; and 3m leaves 103.9 s over
     # cmd/dispatch's time in the shutdown call, against the 30 s of eventsStartDrain
@@ -5174,7 +5174,7 @@ jobs:
     #
     # The job's own bound follows the largest measured time this branch has of a green run of
     # it, 795 s (run 43602043317, job 132468719806), 13.25 minutes, plus the largest of those
-    # limits, 18 minutes, plus 6: 13.25 + 18 + 6 = 37.25, so 38. Green runs, as the test job's
+    # limits, 19 minutes, plus 6: 13.25 + 19 + 6 = 38.25, so 39. Green runs, as the test job's
     # bound reads them: the longest red one, 773 s (run 43138709383, job 130920279111), would
     # ask 37. The eight runs of 2026-11-08 whose file carried TEMPORARY profiling
     # and -p sweep steps (runs 42439260413 to 42506378238, up to 1,655 s) ran work this job does
@@ -5183,7 +5183,7 @@ jobs:
     # lane varies by two minutes between two attempts of one commit and does not settle inside a
     # one-minute band. The nine calls of the unit step run at the same time, so the step's own
     # worst case is the longest of them rather than their sum.
-    timeout-minutes: 38
+    timeout-minutes: 39
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5554,12 +5554,13 @@ jobs:
           # to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
           # and 65.6 s in that pair.
           #
-          # -timeout 18m. A call's limit is the smallest whole minute at which its slowest
+          # -timeout 19m. A call's limit is the smallest whole minute at which its slowest
           # package takes at most half of it, measured on the largest reading this branch
           # has of that package (dispatch://INFRA-1075). This call's slowest package is
-          # cmd/dispatch at 525.9 s (run 43691345741, job 132742525106), which is
-          # 48.7 per cent of 18m and would be 51.6 per cent of 17m, the whole minute below
-          # it. The limit leaves 554.1 s above that package's own
+          # internal/dispatch/pmdoc at 567.3 s (run 43797411630, job 133069317516), which is
+          # 49.8 per cent of 19m and would be 52.5 per cent of 18m, the whole minute below
+          # it; cmd/dispatch's largest, 525.9 s (run 43691345741, job 132742525106), asked
+          # 18m. The limit leaves 572.7 s above the slowest package's own
           # time, far over the 60 s of pmdoc's perCallReportMargin, which is the floor a
           # package that reads the test binary's deadline sets for itself.
           lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
@@ -5568,7 +5569,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/agent-secrets"
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
@@ -6375,7 +6376,7 @@ jobs:
   # stream reads. They build only under the `multiprocess` tag, so envoy-go's unit run leaves
   # them out, and they are a job of their own for the reason dispatch-memory is: each `go test`
   # call of envoy-go's unit step is held to a -timeout sized from its slowest package's measured time
-  # (18m for the package list, which runs cmd/dispatch), which rows of tens of seconds each would
+  # (19m for the package list, which runs cmd/dispatch), which rows of tens of seconds each would
   # move - one here waits out a durable hand-over or a maintenance loop's tick - and the memory
   # tests already took that step red at 600 s when it ran under go test's default ten-minute
   # deadline (run 37116639565). Each row's NATS runs in its own test process (internal/testnats),
@@ -6683,7 +6684,7 @@ jobs:
   #
   # They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and
   # they are kept out of it: each `go test` call of that step is held to a -timeout sized from its slowest
-  # package's measured time (18m for the package list, which runs cmd/broker), which rows of tens
+  # package's measured time (19m for the package list, which runs cmd/broker), which rows of tens
   # of seconds each would move - these wait out a migration race, a ten-second fan-out window and
   # a twelve-second drain - and the memory tests already took that step red at 600 s when it ran
   # under go test's default ten-minute deadline (run 37116639565). A job of their own rather than
