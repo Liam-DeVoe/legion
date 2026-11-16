@@ -4121,6 +4121,7 @@ export interface components {
       key: string;
       name: string;
       open_asks: number;
+      visibility?: string;
     };
     CredentialCapabilities: {
       machine_code_page: boolean;
@@ -5670,6 +5671,7 @@ export interface components {
       key: string;
       name: string;
       open_asks: number;
+      visibility?: string;
     };
     ProjectDefaultAssignee: {
       assignee: string;

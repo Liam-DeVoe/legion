@@ -242,6 +242,9 @@ export const ProjectSchema = z
      *  a person. */
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
     created_at: z.string(),
+    /** `private` for a private project, and absent for a public one, so a deployment where every
+     *  project is public carries the project as it always did. */
+    visibility: z.literal("private").optional(),
   })
   .readonly();
 
