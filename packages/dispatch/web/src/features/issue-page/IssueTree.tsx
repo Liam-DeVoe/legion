@@ -13,7 +13,7 @@ import { bringOnScreen } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { useTakeOutlineRequest } from "./outline-request";
+import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
@@ -131,7 +131,16 @@ export function IssueTree({
   // back to the row the reader left, not to the first row (R9).
   const [stop, setStop] = useState<string | undefined>(undefined);
   const [pinned, setPinned] = useState<ReadonlySet<string>>(() => new Set());
-  const [zoom, setZoom] = useState<string | undefined>(undefined);
+  // Focus branch is the page's, held above the tree with the Contents list's requests
+  // (`outline-request.tsx`), and it outlives a view drawn in the tree's place where the zoom does
+  // not: the tree drawn again as the view is turned off is a new one, and the request that zoomed
+  // the one before was acted on already, so it drew every branch while the toggle read on. A tree
+  // drawn while Focus branch is on is zoomed to the last request's node from its first render,
+  // that node's branch alone, as the tree before it was (`branchAtMount`). It is no new request,
+  // so it moves no focus: the reader is taken nowhere, and the opening stays inside the branch.
+  const [focusBranch] = useFocusBranch();
+  const branchAtMount = useRef(focusBranch ? request?.id : undefined);
+  const [zoom, setZoom] = useState<string | undefined>(branchAtMount.current);
   // How much of the whole tree the cycle key draws: its first lines, their bodies down to the
   // second level, then everything.
   const [cycle, setCycle] = useState(0);
@@ -481,7 +490,10 @@ export function IssueTree({
   // takes the focus where it stands as soon as it is drawn, and gives it to the question once the
   // question's read has answered. The question is where it stays, and its row is held on screen
   // while the reads still out draw rows above it (`holdOnFocus`): the page scrolls for the
-  // question alone.
+  // question alone. A tree drawn again zoomed to Focus branch's node (`branchAtMount`) is no page
+  // opening on what waits: it opens on the branch's first row, the node itself, where it stands,
+  // since going to a question would leave the zoom for one outside the branch, drawing every
+  // branch while the toggle read on, and below 1024 px zoom deeper for one inside it.
   const opening = useRef<{ done: boolean; row?: HTMLElement }>({ done: false });
   useEffect(() => {
     const settle = new AbortController();
@@ -522,7 +534,10 @@ export function IssueTree({
       held.done = true;
       return;
     }
-    const question = nodesInOrder(root).find((node) => node.type === "ask" && node.waiting);
+    const question =
+      branchAtMount.current === undefined
+        ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)
+        : undefined;
     if (question !== undefined) {
       held.done = true;
       holdOnFocus.current = question.id;

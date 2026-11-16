@@ -15,7 +15,12 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import type { TreeNode } from "./issue-tree";
-import { OutlineRequestProvider, useAskOutline, useOutlineRequest } from "./outline-request";
+import {
+  OutlineRequestProvider,
+  useAskOutline,
+  useFocusBranch,
+  useOutlineRequest,
+} from "./outline-request";
 import {
   type Landing,
   type OutlineWriter,
@@ -162,10 +167,12 @@ function renderTree(
   return { address: () => seen.path, edited, ...view };
 }
 
-/** What the page-body harness hands back from inside the providers: the Contents list's ask,
- *  the row writer, and the switch that takes the tree off the page and draws it again. */
+/** What the page-body harness hands back from inside the providers: the Contents list's ask and
+ *  its Focus branch's setter, the row writer, and the switch that takes the tree off the page and
+ *  draws it again. */
 interface PageHold {
   ask?: (id: string | undefined, focusBranch: boolean) => void;
+  focusBranch?: (next: boolean) => void;
   show?: (shown: boolean) => void;
   writer?: OutlineWriter;
 }
@@ -174,6 +181,7 @@ interface PageHold {
  *  `OutlineRequestProvider`, under the page's row writer, while it is shown. */
 function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNode {
   held.ask = useAskOutline();
+  held.focusBranch = useFocusBranch()[1];
   held.writer = useOutlineWriter();
   const request = useOutlineRequest();
   const [shown, setShown] = useState(true);
@@ -199,8 +207,9 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
 /**
  * The tree under the providers the page's `slots/providers.tsx` draws around its body - the row
  * writer and the Contents list's requests - with `reader` signed in. It hands back the list's
- * ask, the writer's landing, a switch that takes the tree off the page and draws it again (a
- * view drawn in its place and turned off), and a redraw over another tree (a read answering).
+ * ask and its Focus branch toggle, the writer's landing, a switch that takes the tree off the
+ * page and draws it again (a view drawn in its place and turned off), and a redraw over another
+ * tree (a read answering).
  */
 function renderPageTree(root: TreeNode, reader = "alice") {
   const client = new QueryClient({
@@ -230,6 +239,7 @@ function renderPageTree(root: TreeNode, reader = "alice") {
   return {
     ask: (id: string | undefined, focusBranch: boolean) =>
       act(async () => held.ask?.(id, focusBranch)),
+    focusBranch: (next: boolean) => act(async () => held.focusBranch?.(next)),
     land: (under: string, to: Landing["to"] = "newest") =>
       act(async () => held.writer?.land({ to, under: { id: under, kind: "comment" } })),
     redraw: (drawn: TreeNode) => view.rerender(draw(drawn)),
@@ -481,19 +491,30 @@ test("a Change the reader typed in comes back with its decision's body", async (
   expect((back as HTMLTextAreaElement).value).toBe("Say more about the flag.");
 });
 
-// R9, WCAG 2.1.1: every control of a row is out of the tab order, so a button that no key of the
-// keymap presses - Copy reference, Change answer, a command's Copy - is a stop of `f`, after the
-// row's links, and Enter on the one it stopped on presses it.
-test("f reaches Copy reference after the row's links, and Enter presses it", async () => {
+// R9, WCAG 2.1.1, decision 69: every control of a row is out of the tab order, so `f` steps
+// through the focused row's chips, then the links its words hold, then each control of the row
+// that no key of the keymap presses - Change answer, Copy reference, a command's Copy - in the
+// row's order, and the last stop comes back round to the first. Enter on the one it stopped on
+// follows it or presses it.
+test("f steps through a row's chips, links and then the controls no key presses", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const writeText = spyOn({ writeText: async (_text: string) => undefined }, "writeText");
   const original = navigator.clipboard;
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-  const reference = buildDispatchReference({ id: "comment-1", key: KEY, kind: "comment" });
+  const reference = buildDispatchReference({ id: "ask-1", key: KEY, kind: "ask" });
+  // A question the reader answered, so its row draws Change answer before its Reply, which `r`
+  // presses, and Copy reference; its words link an issue, and it names a block of the spec.
   const root = node({
     children: [
       node({
+        answer: {
+          at: "2026-11-16T09:00:00Z",
+          by: { id: "alice", kind: "user" },
+          selected: [],
+          text: "Behind a flag.",
+        },
+        author: { id: "bob", kind: "user" },
         chips: [
           {
             answered: true,
@@ -502,27 +523,32 @@ test("f reaches Copy reference after the row's links, and Enter presses it", asy
             ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
-        id: "comment-1",
+        id: "ask-1",
+        question: true,
         reference,
-        text: "The first words.",
-        type: "comment",
+        state: "answered",
+        text: "Do we ship it as dispatch://CORE-7 says?",
+        type: "ask",
       }),
     ],
     id: KEY,
     type: "issue",
   });
+  /** Presses `f` and reads what it left the focus on. */
+  const stop = async (): Promise<string | null | undefined> => {
+    await user.keyboard("f");
+    return document.activeElement?.textContent;
+  };
   try {
-    const view = renderTree(root);
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    await user.keyboard("f");
-    expect(document.activeElement?.textContent).toBe("The spec block");
-    await user.keyboard("f");
-    expect(document.activeElement?.textContent).toBe(CONTROL_LABELS.copy_reference);
+    const { container } = renderPageTree(root, "alice").view;
+    await waitFor(() => expect(focusedRow(container)).toBe("ask-1"));
+    expect(await stop()).toBe("The spec block");
+    expect(await stop()).toBe("CORE-7");
+    expect(await stop()).toBe(CONTROL_LABELS.change_answer);
+    expect(await stop()).toBe(CONTROL_LABELS.copy_reference);
     await user.keyboard("{Enter}");
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(reference));
-    // The last stop comes back to the first.
-    await user.keyboard("f");
-    expect(document.activeElement?.textContent).toBe("The spec block");
+    expect(await stop()).toBe("The spec block");
   } finally {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: original });
   }
@@ -904,6 +930,55 @@ test("a focus taken off the opening's row while the row stays on the page ends t
   expect(document.activeElement).toBe(document.body);
 });
 
+// Decision 63, R8: where no question waits on the reader the page opens on the outline's first
+// row, whose body opens with the focus (R7), and scrolls nothing - not even for a first row
+// taller than the window, which the page's one rule (`identity-block.ts`'s `bringOnScreen`)
+// would put at the top under the band, the page opening scrolled past its header (89 px at 1440
+// by 900 on the real INFRA-1196). The reader's first move places the row it moves to as every
+// move does.
+test("the first row the page opens on scrolls nothing, and the first j places the next row", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  // happy-dom lays nothing out, so the rows' boxes are given: the first row 100 px down and
+  // twice the window's height tall, the second under it, below the window's foot. Every other
+  // box is empty.
+  const tall = 2 * window.innerHeight;
+  const second = { bottom: 100 + tall + 40, top: 100 + tall };
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const id = this.matches("[data-node-row]") ? this.dataset.nodeId : undefined;
+    if (id === "comment-1") return new DOMRect(0, 100, 800, tall);
+    if (id === "comment-2") return new DOMRect(0, second.top, 800, second.bottom - second.top);
+    return new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    const { container } = renderTree(root);
+    await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+    expect(scrolled, "the first row's focus at load scrolled the page").not.toHaveBeenCalled();
+
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(container)).toBe("comment-2"));
+    expect(scrolled).toHaveBeenCalledTimes(1);
+    // Scrolled by that much, the second row stands whole inside the window.
+    const by = (scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0;
+    expect(second.top - by).toBeGreaterThanOrEqual(0);
+    expect(second.bottom - by).toBeLessThanOrEqual(window.innerHeight);
+  } finally {
+    boxes.mockRestore();
+    scrolled.mockRestore();
+  }
+});
+
 // The tester's F16: what a key reports when it has nowhere to go is drawn at the row it was
 // pressed on, and the reader's next move lets it go.
 test("a key with nowhere to go says so at its row, until the next move", async () => {
@@ -990,6 +1065,110 @@ test("a request sent with useAskOutline takes the outline to a node, or to its b
   await tree.ask("comment-2", false);
   await waitFor(() => expect(focusedRow(container)).toBe("comment-2"));
   expect(container.querySelector("[data-crumb]")).toBeNull();
+});
+
+// Part J's planner's finding: Focus branch is the page's, held above the outline by
+// `outline-request.tsx`'s provider, and it outlives a view drawn in the outline's place, where
+// the outline's zoom did not: the outline drawn again as the view is turned off is a new one,
+// and the request that zoomed the one before was acted on already, so it drew every branch while
+// the toggle read on. Drawn again while Focus branch is on, the outline draws the last request's
+// branch alone, as the outline before it did, and takes the reader nowhere: it is no new
+// request, and the focus stays where the view left it. Focus branch turned off, as the Contents
+// list turns it (part J's R2), draws the whole outline again.
+test("an outline drawn again while Focus branch is on draws the last request's branch alone", async () => {
+  setViewport(1440);
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "comment-1a", text: "Under the first.", type: "comment" })],
+        held: 1,
+        id: "comment-1",
+        text: "The first words.",
+        type: "comment",
+      }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const tree = renderPageTree(root);
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  // The Contents list's toggle: Focus branch on, and the outline sent to the entry's branch.
+  await tree.focusBranch(true);
+  await tree.ask("comment-1", true);
+  await waitFor(() => expect(rowsFor(container, "comment-2")).toHaveLength(0));
+  const branch = [...container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+    (row) => row.dataset.nodeId
+  );
+
+  // A view drawn in the outline's place, and turned off from a control outside the outline.
+  const control = document.createElement("button");
+  document.body.append(control);
+  try {
+    await tree.show(false);
+    await act(async () => control.focus());
+    await tree.show(true);
+    expect(
+      [...container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+        (row) => row.dataset.nodeId
+      )
+    ).toEqual(branch);
+    expect(rowsFor(container, "comment-2")).toHaveLength(0);
+    expect(container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull();
+    expect(document.activeElement, "drawing the outline again moved the focus").toBe(control);
+
+    await tree.focusBranch(false);
+    await tree.ask("comment-1", false);
+    await waitFor(() => expect(rowsFor(container, "comment-2")).toHaveLength(1));
+    expect(container.querySelector("[data-crumb]")).toBeNull();
+  } finally {
+    control.remove();
+  }
+});
+
+// The same outline drawn again where nothing holds the focus: the opening places it, but this is
+// no page opening on what waits on the reader (R7), so it does not go to a question outside the
+// branch, which would leave the zoom and draw every branch while the toggle read on. It puts the
+// focus on the branch's first row, the node Focus branch is on, where it stands.
+test("an outline drawn again on Focus branch's node opens on that node, not on a question outside it", async () => {
+  setViewport(1440);
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "comment-1a", text: "Under the first.", type: "comment" })],
+        held: 1,
+        id: "comment-1",
+        text: "The first words.",
+        type: "comment",
+      }),
+      node({ id: "ask-1", question: true, text: "Which flag?", type: "ask", waiting: true }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const tree = renderPageTree(root);
+  const { container } = tree.view;
+  // The page opens on the question that waits on the reader (R7).
+  await waitFor(() => expect(focusedRow(container)).toBe("ask-1"));
+  await tree.focusBranch(true);
+  await tree.ask("comment-1", true);
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+  expect(rowsFor(container, "ask-1")).toHaveLength(0);
+
+  await tree.show(false);
+  await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+  expect(document.activeElement).toBe(document.body);
+  await tree.show(true);
+  await waitFor(() =>
+    expect(focusedRow(container), "the outline drawn again opened on another row").toBe("comment-1")
+  );
+  expect(
+    [...container.querySelectorAll<HTMLElement>("[data-node-row]")].map((row) => row.dataset.nodeId)
+  ).toEqual(["comment-1", "comment-1a"]);
+  expect(rowsFor(container, "ask-1")).toHaveLength(0);
+  expect(container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull();
 });
 
 // The fold's half of the tester's F1: a reply the reader wrote under a folded branch is not left
