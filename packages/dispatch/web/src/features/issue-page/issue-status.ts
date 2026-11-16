@@ -3,9 +3,15 @@ import {
   pageStatusIdleText,
   pageStatusProgressText,
 } from "../../theme/classes";
+import type { IssueStatus } from "../project/board-model";
 
-/** The statuses of work that moves: started, and not done. */
-const MOVING_STATUSES: ReadonlySet<string> = new Set(["in_progress", "needs_review", "testing"]);
+/** The statuses of work that moves: started, and not done. Typed by the status names, so a
+ *  misspelt one fails the type check rather than leave an issue idle. */
+const MOVING_STATUSES: ReadonlySet<string> = new Set<IssueStatus>([
+  "in_progress",
+  "needs_review",
+  "testing",
+]);
 
 /** The status's colour, as the prototype's `.st-*` gives it. */
 export function statusTone(status: string): string {
