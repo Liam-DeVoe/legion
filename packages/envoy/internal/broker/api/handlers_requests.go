@@ -95,6 +95,11 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	case errors.Is(err, policy.ErrUnknownSecret):
 		writeError(w, http.StatusBadRequest, "UNKNOWN_SECRET", err.Error())
 		return
+	case errors.Is(err, requests.ErrProjectAccessUnavailable):
+		// A requested secret belongs to a Dispatch project, and the broker could not ask Dispatch
+		// about it. Nothing was decided; the same request succeeds once Dispatch answers.
+		writeError(w, http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE", err.Error())
+		return
 	case errors.Is(err, pgx.ErrNoRows):
 		// The proof was verified moments ago against a live enrollment, but it was revoked (or
 		// its lease lapsed) before Create read it or locked it to write — the same race
@@ -360,6 +365,11 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		// not at fault: an App with no installation, a Google login that needs a new sign-in, an
 		// upstream that could not be asked. Its message says why and never holds the stored value.
 		writeError(w, http.StatusBadGateway, "MINT_FAILED", err.Error())
+		return
+	case errors.Is(err, requests.ErrProjectAccessUnavailable):
+		// The grant holds a secret of a Dispatch project, which is checked again on every release,
+		// and Dispatch did not answer. Nothing was released and the grant stays live.
+		writeError(w, http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE", err.Error())
 		return
 	case err != nil:
 		writeInternal(w, "read grant values", err)

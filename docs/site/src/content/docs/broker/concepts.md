@@ -480,6 +480,43 @@ does any change to a list or to the project tag. A secret with no list and no pr
 same bytes into the digest that it always did. Whether a project is private is Dispatch's, not
 the version's, so a grant of a tagged secret is checked again on every release.
 
+### A private project's secrets
+
+A Dispatch project can be private: only its own people, and the agents working for them on it, see
+it. A secret whose `dispatch-project` tag names a private project goes only to a **credential that
+names that project** and whose person may still see it:
+
+- A **session** names its projects when it enrols. The helper sends the list
+  `AGENT_SECRETS_PROJECTS` holds (project keys separated by spaces, `PRIV CORE`), or
+  `agent-secrets register --projects`, and the broker takes it only when Dispatch says the session's
+  person may see every project on it. A restricted member's session must name at least one; a
+  session naming none enrols as before. The list is fixed for the session's life: start a new
+  session to name another, and `agent-secrets self` prints it as a `projects:` line.
+- A **pod** names no list of its own: its project is the one its operator's entry in
+  `BROKER_EXCHANGE_ACCOUNTS` maps its service account to, for that entry's person.
+
+Every other credential is denied the secret `project-not-named`: a session naming another project
+or none, a person on the project's access list whose session does not name it, and a pod whose
+entry maps another project. The denial names no project, so `agent-secrets` says to start the
+session with `AGENT_SECRETS_PROJECTS` naming it. A tag naming a key Dispatch holds no project for is
+denied to everyone, with the same words.
+
+Whether a project is private, and who may see it, is Dispatch's, so the broker asks Dispatch before
+it decides a request, a release or an approval of a tagged secret, and never while it holds a
+database lock. It keeps an answer for 30 seconds. A live grant of a tagged secret is checked again
+on every release: once the project turns private and the session does not name it, or its person
+leaves the access list, the grant ends for good, and making the project public again does not
+bring it back. The airlock is held to the same rule: a connection of such a grant is refused, and
+a pod holding its values asks the broker again within ten minutes. While Dispatch cannot be
+reached, a tagged secret is neither granted nor released (`503 PROJECT_ACCESS_UNAVAILABLE`) and
+its grants stay live; a secret with no tag is served as before, and a deployment that tags nothing
+asks Dispatch nothing at all.
+
+A request of a private project, by its secrets, its session's projects or the issue its reason
+names, is the project's own: a person who may not see the project does not find it in any list,
+cannot open its page, and cannot decide it ([Approve a request](/legion/broker/guides/approve-a-request/)).
+The model judge leaves every such secret to a person ([the model judge](#the-model-judge)).
+
 ## Requests and grants
 
 A session asks for one or more secrets by name in a **request**, signed with its key and carrying a

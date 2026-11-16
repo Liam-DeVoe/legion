@@ -31,6 +31,10 @@ const (
 	// plainSecret is the same secret with no tag, the control: every session gets it as today.
 	plainSecret = "PLAIN_SHARED_KEY"
 	plainValue  = "plain-shared-value"
+	// lateSecret is a secret of LATE, a public project the run asks Dispatch about only while
+	// Dispatch is down.
+	lateSecret  = "LATE_KEY"
+	lateProject = "LATE"
 
 	// The pod of PRIV's service: the service it is registered as, the account its pods run as
 	// (which BROKER_EXCHANGE_ACCOUNTS maps to PRIV for its owner), and the account its daemon
@@ -52,6 +56,7 @@ func TestThePrivateSecretGoesOnlyToTheSessionThatNamesIt(t *testing.T) {
 	brokertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
 	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		privateProject: {Visibility: "private", Owner: privateOwner},
+		lateProject:    {Visibility: "public", Owner: privateOwner},
 	}, map[string]string{privateOwner: projectaccess.MemberFull})
 	tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
 	if err := os.WriteFile(tokenFile, []byte(dispatch.Token+"\n"), 0o600); err != nil {
@@ -60,6 +65,7 @@ func TestThePrivateSecretGoesOnlyToTheSessionThatNamesIt(t *testing.T) {
 	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []secrets.LocalSecret{
 		requesterRow(privSecret, policy.OwnerShared, policy.TierAgent, privValue, map[string]string{policy.TagProject: privateProject}),
 		requesterRow(plainSecret, policy.OwnerShared, policy.TierAgent, plainValue, nil),
+		requesterRow(lateSecret, policy.OwnerShared, policy.TierAgent, "late-value", map[string]string{policy.TagProject: lateProject}),
 	}}
 	store.write(t)
 	cli := buildAgentSecrets(t)
@@ -128,6 +134,19 @@ func TestThePrivateSecretGoesOnlyToTheSessionThatNamesIt(t *testing.T) {
 	if dispatch.Calls() == 0 {
 		t.Fatal("the broker asked Dispatch nothing, so no decision above read the project: the run is blind")
 	}
+
+	t.Run("while Dispatch is down a tagged secret is refused 503 and an untagged one is served", func(t *testing.T) {
+		dispatch.SetDown(true)
+		defer dispatch.SetDown(false)
+		// LATE_KEY's project was never asked about, so no answer the broker's client still holds
+		// (projectaccess.CacheTTL) stands in for Dispatch.
+		code, stdout, stderr := named.run(t, cli, base, lateSecret, "--", "sh", "-c", "echo ran")
+		if code == 0 || strings.Contains(stdout, "ran") || !strings.Contains(stderr, "PROJECT_ACCESS_UNAVAILABLE") {
+			t.Fatalf("agent-secrets %s while Dispatch is down exited %d with stdout %q, want a failure naming PROJECT_ACCESS_UNAVAILABLE and nothing run\nstderr: %s",
+				lateSecret, code, stdout, stderr)
+		}
+		reads(t, named, plainSecret, plainValue)
+	})
 }
 
 // enrolProjectSession is enrolCLISession for a session naming projects: the real client's keygen
