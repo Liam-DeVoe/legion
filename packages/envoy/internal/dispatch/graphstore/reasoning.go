@@ -58,6 +58,18 @@ const (
 // the one kind of lens a risk stands under, and a kind a lens keeps once it holds it (D13a).
 const LensKindPreMortem = "pre-mortem"
 
+// The attributes the reads of those nodes answer as each node's text, as the tuple that states
+// each value spells it. A lens's verdict and a risk's heading are attributes of their types
+// (migration 20261116123354 declares both), carried on the node's row as the catalogue's words
+// are. A finding's text is a value tuple of the finding's block node and no attribute of any
+// type: the block supertag's attributes mirror pmdoc/schema/blocks.json field by field, so a
+// new one would be a schema bump.
+const (
+	AttributeVerdict = "verdict"
+	AttributeHeading = "heading"
+	AttributeText    = "text"
+)
+
 // blockKind is the kind the store addresses a block by, which refs.BlockNodeKind spells for the
 // packages that may import refs, and this one may not. Every block carries the supertag block
 // alone, whatever its type, so a rule that names a block type - a requirement, a check - reads

@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -96,19 +99,22 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 // person holds at least one node the reader may see, through each node's own kind's predicate,
 // or where the reader is that person, and otherwise, byte for byte, what a login nobody holds
 // answers. carol's only node is a comment reserved for her: bob reads her page as a login nobody
-// holds, and carol reads her own with the comment as author. alice holds a project comment and
-// one reserved for her: bob's page of her lists the project one alone, and hers lists both. Each
-// row answers its state and its visibility.
+// holds, and carol reads her own with the comment as author. alice holds a project comment, one
+// reserved for her, and a lens on the issue reserved for her: bob's page of her lists the project
+// comment alone, and hers lists all three, the lens titled by its verdict and opening the issue's
+// page. Each row answers its state and its visibility.
 //
 // The store's writer takes no comment reserved for its author (graphstore.ErrVisibilityNotAdmitted),
 // so each such comment's node is seeded as such a write would store it
-// (graphstoretest.SeedAuthorOnly), with its row and its authored_by tuple beside it.
+// (graphstoretest.SeedAuthorOnly), with its row and its authored_by tuple beside it. The lens is
+// written through the one write path of its kind (writeReasoningNodes).
 func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "PAGE", "A person's page", "# Spec\n\nA passage.\n")
 	public := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark alice wrote for everyone."}, "alice")
 	alicesPrivate := seedAuthorOnlyComment(t, database, issue.Key, model.Actor{Kind: "user", ID: "alice"}, "A remark alice keeps.")
 	carolsPrivate := seedAuthorOnlyComment(t, database, issue.Key, model.Actor{Kind: "user", ID: "carol"}, "A remark carol keeps.")
+	alicesLens := writeAuthorOnlyLens(t, database, issue.Key, model.Actor{Kind: "user", ID: "alice"}, "A verdict alice keeps.")
 	page := func(person, reader string) *httptest.ResponseRecorder {
 		t.Helper()
 		return dispatchRequest(t, handler, http.MethodGet, "/api/v1/people/"+person+"/nodes", nil, reader)
@@ -128,17 +134,30 @@ func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testin
 		t.Errorf("bob reads carol's page, whose only node is reserved for her, as %d %s, and a login nobody holds as %d %s",
 			hidden.Code, hidden.Body.String(), nobody.Code, nobody.Body.String())
 	}
-	requirePage(t, page("carol", "carol"), "carol", map[string]string{carolsPrivate: graphstore.VisibilityAuthor})
+	comment := func(visibility string) personPageRow {
+		return personPageRow{kind: graphstore.KindComment, visibility: visibility}
+	}
+	requirePage(t, page("carol", "carol"), "carol", map[string]personPageRow{carolsPrivate: comment(graphstore.VisibilityAuthor)})
 
-	requirePage(t, page("alice", "bob"), "alice", map[string]string{public.ID: graphstore.VisibilityProject})
-	requirePage(t, page("alice", "alice"), "alice", map[string]string{
-		public.ID: graphstore.VisibilityProject, alicesPrivate: graphstore.VisibilityAuthor,
+	requirePage(t, page("alice", "bob"), "alice", map[string]personPageRow{public.ID: comment(graphstore.VisibilityProject)})
+	requirePage(t, page("alice", "alice"), "alice", map[string]personPageRow{
+		public.ID: comment(graphstore.VisibilityProject), alicesPrivate: comment(graphstore.VisibilityAuthor),
+		alicesLens: {kind: graphstore.KindLens, visibility: graphstore.VisibilityAuthor,
+			title: "A verdict alice keeps.", href: "/issues/" + issue.Key},
 	})
 }
 
-// requirePage fails unless response is person's page, 200, listing exactly the comments want
-// names, each live and at the visibility want gives it.
-func requirePage(t *testing.T, response *httptest.ResponseRecorder, person string, want map[string]string) {
+// personPageRow is what a row of a person's page is held to: its kind and visibility, and, where
+// they are set, its title and the dashboard path it opens.
+type personPageRow struct {
+	kind, visibility string
+	title, href      string
+}
+
+// requirePage fails unless response is person's page, 200, listing exactly the nodes want names,
+// each live, of the kind and at the visibility want gives it, and with the title and the href want
+// gives it where want gives one.
+func requirePage(t *testing.T, response *httptest.ResponseRecorder, person string, want map[string]personPageRow) {
 	t.Helper()
 	if response.Code != http.StatusOK {
 		t.Fatalf("the page of %s answers %d %s, want 200", person, response.Code, response.Body.String())
@@ -149,16 +168,44 @@ func requirePage(t *testing.T, response *httptest.ResponseRecorder, person strin
 		t.Fatalf("the page of %s = %+v, want %d rows", person, read, len(want))
 	}
 	for _, row := range read.Rows {
-		visibility, listed := want[row.ID]
-		if !listed || row.Kind != graphstore.KindComment {
+		wanted, listed := want[row.ID]
+		if !listed || row.Kind != wanted.kind {
 			t.Errorf("the page of %s lists %+v, which is none of %v", person, row, want)
 			continue
 		}
-		if row.State != graphstore.StateLive || row.Visibility != visibility {
+		if row.State != graphstore.StateLive || row.Visibility != wanted.visibility {
 			t.Errorf("the page of %s answers %s at state %q and visibility %q, want %q and %q",
-				person, row.ID, row.State, row.Visibility, graphstore.StateLive, visibility)
+				person, row.ID, row.State, row.Visibility, graphstore.StateLive, wanted.visibility)
+		}
+		if (wanted.title != "" && row.Title != wanted.title) || (wanted.href != "" && row.Href != wanted.href) {
+			t.Errorf("the page of %s titles %s %q and opens it at %q, want %q at %q",
+				person, row.ID, row.Title, row.Href, wanted.title, wanted.href)
 		}
 	}
+}
+
+// writeAuthorOnlyLens writes a lens on issue reserved for author, a cookie's person, with verdict
+// as its verdict, through the one write path of a lens (writeReasoningNodes), and answers its id.
+func writeAuthorOnlyLens(t *testing.T, database *store.Store, issue string, author model.Actor, verdict string) string {
+	t.Helper()
+	ctx := context.Background()
+	id := uuid.NewString()
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		_, err := writeReasoningNodes(ctx, tx, reasoningWrite{
+			issue: issue, proving: author, recorded: author, at: time.Now().UTC(),
+			nodes: []reasoningNode{{
+				kind: graphstore.KindLens, id: id, visibility: graphstore.VisibilityAuthor,
+				parentKind: graphstore.KindIssue, parentID: issue,
+				attributes: map[string]any{graphstore.AttributeVerdict: verdict},
+				tuples: []graphstore.Tuple{{FromKind: graphstore.KindLens, FromID: id, Kind: graphstore.TupleHasKind,
+					ToKind: graphstore.KindLensKind, ToID: "trade-off"}},
+			}},
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("write %s's lens on %s: %v", author.ID, issue, err)
+	}
+	return id
 }
 
 // seedAuthorOnlyComment writes a comment on issue reserved for author as the comment write would

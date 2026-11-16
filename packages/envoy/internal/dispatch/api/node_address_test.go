@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -19,8 +23,12 @@ import (
 // author.
 //
 // The fixture is the private-node seed: an issue with a spec of public blocks and one block its
-// author reserved for herself, a comment everyone reads and one she keeps to herself. A second
-// issue, of another project, holds nodes of its own.
+// author reserved for herself, a comment everyone reads and one she keeps to herself. On the
+// spec's first block stands a pre-mortem lens, with a finding and a risk under it and a second
+// risk its author keeps to herself, each written through the one write path of those kinds
+// (writeReasoningNodes); each stands under the issue by the walk of its part_of up to the block
+// and its document. A second issue, of another project, holds nodes of its own, a lens on that
+// issue among them.
 func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 	fixture := seedPrivateNode(t, true)
 	ctx := context.Background()
@@ -33,6 +41,31 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 	}
 	otherComment := createThreadComment(t, fixture.handler, other.Key, map[string]any{"body": "A remark elsewhere."}, "alice").ID
 	document := "dispatch://" + fixture.refKey
+
+	lens, risk, privateRisk, otherLens := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	finding := graphstore.KindLens + "/" + lens + "#finding"
+	writeReasoning := func(issue string, nodes ...reasoningNode) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			_, err := writeReasoningNodes(ctx, tx, reasoningWrite{issue: issue, proving: author, recorded: author, at: time.Now().UTC(), nodes: nodes})
+			return err
+		}); err != nil {
+			t.Fatalf("write the reasoning nodes under %s: %v", issue, err)
+		}
+	}
+	writeReasoning(fixture.issue,
+		reasoningNode{kind: graphstore.KindLens, id: lens, parentKind: refs.BlockNodeKind, parentID: fixture.first,
+			tuples: []graphstore.Tuple{{FromKind: graphstore.KindLens, FromID: lens, Kind: graphstore.TupleHasKind,
+				ToKind: graphstore.KindLensKind, ToID: graphstore.LensKindPreMortem}}},
+		reasoningNode{kind: refs.BlockNodeKind, id: finding, parentKind: graphstore.KindLens, parentID: lens,
+			tuples: []graphstore.Tuple{{FromKind: refs.BlockNodeKind, FromID: finding, Kind: graphstore.AttributeText,
+				ToKind: graphstore.KindValue, ToID: "A finding of the pre-mortem."}}},
+		reasoningNode{kind: graphstore.KindRisk, id: risk, parentKind: graphstore.KindLens, parentID: lens,
+			attributes: map[string]any{graphstore.AttributeHeading: "A risk everyone reads."}},
+		reasoningNode{kind: graphstore.KindRisk, id: privateRisk, visibility: graphstore.VisibilityAuthor,
+			parentKind: graphstore.KindLens, parentID: lens, attributes: map[string]any{graphstore.AttributeHeading: "A risk she keeps."}},
+	)
+	writeReasoning(other.Key, reasoningNode{kind: graphstore.KindLens, id: otherLens, parentKind: graphstore.KindIssue, parentID: other.Key})
 
 	for _, test := range []struct {
 		name, id   string
@@ -49,6 +82,13 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 		{"a comment by its dispatch address", "dispatch://" + fixture.issue + "/comment/" + fixture.publicComment, reader, graphstore.KindComment, fixture.publicComment, graphstore.VisibilityProject},
 		{"the private block to its author", fixture.private, author, refs.BlockNodeKind, fixture.private, graphstore.VisibilityAuthor},
 		{"the private comment to its author", "comment/" + fixture.privateComment, author, graphstore.KindComment, fixture.privateComment, graphstore.VisibilityAuthor},
+		{"a lens on a block by its store address", "lens/" + lens, reader, graphstore.KindLens, lens, graphstore.VisibilityProject},
+		{"a lens on a block by its dispatch address", "dispatch://lens/" + lens, reader, graphstore.KindLens, lens, graphstore.VisibilityProject},
+		{"a finding by its node id", finding, reader, graphstore.KindLensBlock, finding, graphstore.VisibilityProject},
+		{"a finding by its dispatch address", "dispatch://lens/" + lens + "#b-finding", reader, graphstore.KindLensBlock, finding, graphstore.VisibilityProject},
+		{"a risk by its store address", "risk/" + risk, reader, graphstore.KindRisk, risk, graphstore.VisibilityProject},
+		{"a risk by its dispatch address", "dispatch://risk/" + risk, reader, graphstore.KindRisk, risk, graphstore.VisibilityProject},
+		{"the private risk to its author", "risk/" + privateRisk, author, graphstore.KindRisk, privateRisk, graphstore.VisibilityAuthor},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			node, err := FindNodeUnderIssue(ctx, pool, test.who, fixture.issue, test.id)
@@ -79,7 +119,13 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 		{"this issue's block under another", other.Key, fixture.first, reader},
 		{"a comment nobody wrote", fixture.issue, "comment/00000000-0000-4000-8000-000000000000", reader},
 		{"a block no version holds", fixture.issue, fixture.refKey + "#nosuchblock", reader},
-		{"a kind the registry does not resolve", fixture.issue, "lens/00000000-0000-4000-8000-000000000000", reader},
+		{"a kind the registry does not resolve", fixture.issue, "interaction/00000000-0000-4000-8000-000000000000", reader},
+		{"a lens nobody invoked", fixture.issue, "lens/00000000-0000-4000-8000-000000000000", reader},
+		{"another issue's lens", fixture.issue, "lens/" + otherLens, reader},
+		{"this issue's lens under another", other.Key, "lens/" + lens, reader},
+		{"this issue's finding under another", other.Key, finding, reader},
+		{"this issue's risk under another", other.Key, "risk/" + risk, reader},
+		{"the private risk to another reader", fixture.issue, "risk/" + privateRisk, reader},
 		{"a kind with no loader", fixture.issue, "supertag/requirement", reader},
 		{"a kind that names nothing", fixture.issue, "widget/" + fixture.issue, reader},
 		{"no kind", fixture.issue, fixture.issue, reader},
@@ -102,5 +148,42 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 					test.key, test.id, refused.status, refused.code, refused.message, want)
 			}
 		})
+	}
+
+	// The other issue's lens is found under that issue, so its 404 under this one is where it
+	// stands and not a lens no read answers.
+	if node, err := FindNodeUnderIssue(ctx, pool, reader, other.Key, "lens/"+otherLens); err != nil || node.ID != otherLens {
+		t.Errorf("FindNodeUnderIssue(%q, the lens on it) = %s %s, %v; want that lens", other.Key, node.Kind, node.ID, err)
+	}
+	// Each node answers the text and the parent its loader reads: the finding its text, under its
+	// lens; the risk its heading; the lens the block it was invoked on.
+	for _, test := range []struct{ id, text, parentKind, parentID string }{
+		{"lens/" + lens, "", refs.BlockNodeKind, fixture.first},
+		{finding, "A finding of the pre-mortem.", graphstore.KindLens, lens},
+		{"risk/" + risk, "A risk everyone reads.", graphstore.KindLens, lens},
+	} {
+		node, err := FindNodeUnderIssue(ctx, pool, reader, fixture.issue, test.id)
+		if err != nil {
+			t.Fatalf("FindNodeUnderIssue(%q, %q): %v", fixture.issue, test.id, err)
+		}
+		if node.Parent == nil || node.Parent.Kind != test.parentKind || node.Parent.ID != test.parentID {
+			t.Errorf("%s stands under %+v, want %s %s", test.id, node.Parent, test.parentKind, test.parentID)
+		}
+		if test.text == "" {
+			continue
+		}
+		edges, err := refs.Edges(ctx, pool, reader, refs.Query{Direction: "in", Kind: graphstore.KindLens, ID: lens})
+		if err != nil {
+			t.Fatalf("read the edges into the lens: %v", err)
+		}
+		var excerpt string
+		for _, edge := range edges {
+			if edge.Node.ID == node.ID && edge.Excerpt != nil {
+				excerpt = edge.Excerpt.Text
+			}
+		}
+		if excerpt != test.text {
+			t.Errorf("the edge from %s into its lens shows %q, want %q", test.id, excerpt, test.text)
+		}
 	}
 }

@@ -572,8 +572,12 @@ var indexPasses = map[string]string{
 	"outbox/publisher.go#recordBatch": "the batch of events the publisher sent and the destinations each reached",
 	// The record of a fallback pass splices in the same arms for each copy the pass published:
 	// the copy's delivered_to and the session its topic names.
-	"outbox/mentions.go#recordFallbackCopies":   "the fallback copies the pass published and the topic each reached",
-	"refs/blocks.go#IndexBlocks":                "the version's render",
+	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
+	// The index pass also retracts the pointer tuples at each block the render drops
+	// (retractGonePointers), which it reads off the store: the store's own relations, which no
+	// projection holds, retracted because the render no longer holds their block, so it mends
+	// neither side from the other.
+	"refs/blocks.go#IndexBlocks":                "the version's render, and the pointer tuples the store holds at each block the render drops",
 	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
 	"refs/blocks.go#replaceBlockRefs":           "the version's render",
 	"refs/refs.go#Stamp":                        "the event that recorded the write",

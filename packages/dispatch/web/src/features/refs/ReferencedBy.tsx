@@ -37,10 +37,12 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   comment: "Comment",
   comment_block: "Comment",
   component: "Component",
-  // A constraint and a kind of the lens catalogue read under the kind's own name until
-  // dispatch://INFRA-1196 gives them the words a person reads.
+  // A constraint, a kind of the lens catalogue, a lens, a finding of a lens and a risk read under
+  // the kind's own name until dispatch://INFRA-1196 gives them the words a person reads.
   constraint: "constraint",
   issue: "Issue",
+  lens: "lens",
+  lens_block: "lens_block",
   lens_kind: "lens_kind",
   message: "Message",
   message_block: "Message",
@@ -48,6 +50,7 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   // because a reader opens the agent and not the page.
   page: "Agent page",
   person: "Person",
+  risk: "risk",
   // A role is the agent Dispatch keeps across a restart, and a session is one run of one.
   role: "Agent",
   session: "Session",

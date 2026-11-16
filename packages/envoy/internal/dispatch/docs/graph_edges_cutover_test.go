@@ -77,6 +77,7 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "comments", fate: "a reply's replies_to an ask's part; dispatch://INFRA-1152 writes it"},
 	{relation: "messages", fate: "a message's replies_to a message's block; dispatch://INFRA-1152 writes it"},
 	{relation: "graph_tuples", fate: "the store itself, which answers an edge of a moved kind while the row that names it carries its node, and the store's own relations, which no row projects; it stays"},
+	{relation: "graph_tuples", fate: "the store's own relations out of a finding of a lens, answered as a lens_block; it stays"},
 }
 
 // graphEdgeRow is one row of graph_edges, every column of it, as both readings compare them: the
@@ -429,11 +430,12 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 	return reading
 }
 
-// storeClass is whether row is one the tuple arm answers as its class `store` (migration
-// 20261116091932): a relation the store holds with no projection row behind it, of a kind
-// changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any node, or
-// part_of or authored_by out of an interaction, a lens, a risk or a constraint. It is the
-// migration's own rule, read over a row: a row it leaves out - a comment's authored_by, a block's
+// storeClass is whether row is one the tuple arms answer as the class `store` (migrations
+// 20261116091932 and 20261116160000): a relation the store holds with no projection row behind
+// it, of a kind changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any
+// node, or part_of or authored_by out of an interaction, a lens, a finding of a lens (the
+// lens_block the arm after the tuple arm writes it as), a risk or a constraint. It is the
+// migrations' own rule, read over a row: a row it leaves out - a comment's authored_by, a block's
 // part_of its parent - that the view answers is held to the previous release's reading, which
 // answers none of them.
 func storeClass(row graphEdgeRow) bool {
@@ -443,7 +445,7 @@ func storeClass(row graphEdgeRow) bool {
 		return true
 	case graphstore.TuplePartOf, graphstore.TupleAuthoredBy:
 		return slices.Contains([]string{
-			graphstore.KindInteraction, graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint,
+			graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk, graphstore.KindConstraint,
 		}, row.fromKind)
 	}
 	return false

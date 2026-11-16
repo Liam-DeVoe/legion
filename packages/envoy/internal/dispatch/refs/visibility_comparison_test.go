@@ -83,14 +83,28 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 	if entry, held := nodeRegistry[graphstore.KindLensKind]; held && entry.authorOnly {
 		t.Errorf("the registry flags %s, which is always project-visible", graphstore.KindLensKind)
 	}
-	// The kinds of that child registered so far, each as R1 has it: a constraint is flagged and
-	// compares the person a credential proves, and a lens kind of the catalogue is registered
-	// unflagged. Both are written by migration 20261116123354, which is where they register.
-	if entry, held := nodeRegistry[graphstore.KindConstraint]; !held || !entry.authorOnly || entry.visibility.compares != comparesPerson {
-		t.Errorf("the registry holds %s as %+v (held %t), want it flagged and comparing the person", graphstore.KindConstraint, entry, held)
+	// The kinds of that child registered so far, each as R1 has it: a constraint, a lens, a finding
+	// of a lens and a risk are flagged and compare the person a credential proves, and a lens kind
+	// of the catalogue is registered unflagged. The first two are written by migration
+	// 20261116123354 and the other three by the reasoning write, which is where they register. A
+	// finding is stored as a block, so its entry reads the store under that kind, and every other
+	// entry under its own.
+	for _, kind := range []string{graphstore.KindConstraint, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk} {
+		if entry, held := nodeRegistry[kind]; !held || !entry.authorOnly || entry.visibility.compares != comparesPerson {
+			t.Errorf("the registry holds %s as %+v (held %t), want it flagged and comparing the person", kind, entry, held)
+		}
 	}
 	if _, held := nodeRegistry[graphstore.KindLensKind]; !held {
 		t.Errorf("the registry holds no %s, which the catalogue's migration writes", graphstore.KindLensKind)
+	}
+	for _, kind := range VisibilityKinds() {
+		want := ""
+		if kind == graphstore.KindLensBlock {
+			want = BlockNodeKind
+		}
+		if stored := nodeRegistry[kind].visibility.storedKind; stored != want {
+			t.Errorf("the registry reads %s's nodes under the stored kind %q, want %q", kind, stored, want)
+		}
 	}
 
 	admitted := graphstore.AuthorOnlyKinds()
@@ -200,6 +214,15 @@ func TestAKindComparesThePersonOrTheCredentialItsEntryStates(t *testing.T) {
 		{"the credential kind, written by nobody", node(credentialComparedTestKind, "by-nobody", graphstore.VisibilityAuthor, shared), nil},
 		{"a comment, written by alice's cookie", node(graphstore.KindComment, "11111111-1111-4111-8111-111111111111", graphstore.VisibilityAuthor, aliceCookie),
 			[]string{"alice's cookie"}},
+		// The kinds of dispatch://INFRA-1950 this build registers with the person comparison, a
+		// finding among them, which the store keys as a block and every predicate reads under that
+		// kind, so a finding reserved for its author is no more visible than a lens.
+		{"a lens, written by alice's personal token", node(graphstore.KindLens, "22222222-2222-4222-8222-222222222222", graphstore.VisibilityAuthor, aliceToken),
+			[]string{"alice's cookie", "alice's personal token", "alice's proved session"}},
+		{"a finding of a lens, written by alice's cookie", node(BlockNodeKind, graphstore.KindLens+"/22222222-2222-4222-8222-222222222222#f1", graphstore.VisibilityAuthor, aliceCookie),
+			[]string{"alice's cookie", "alice's personal token", "alice's proved session"}},
+		{"a risk, written by bob's cookie", node(graphstore.KindRisk, "33333333-3333-4333-8333-333333333333", graphstore.VisibilityAuthor, bobCookie),
+			[]string{"bob's cookie", "bob's personal token"}},
 	}
 	for _, written := range nodes {
 		// The store takes the two test kinds at author, which this binary admits; a comment it
@@ -222,37 +245,40 @@ func TestAKindComparesThePersonOrTheCredentialItsEntryStates(t *testing.T) {
 		// which the loader's own read does: a comment's loader reads its comments row, which
 		// this fixture holds none of, so the four rendered forms are a comment's predicate here.
 		storeKinds bool
-		read       func(t *testing.T, who model.Actor, kind, id string) bool
+		// read answers whether the form finds the node, given the kind the graph addresses it by
+		// and the kind the store keys it by, which differ for a finding of a lens alone.
+		read func(t *testing.T, who model.Actor, kind, stored, id string) bool
 	}{
-		{"the loader's read (Node)", true, func(t *testing.T, who model.Actor, kind, id string) bool {
+		{"the loader's read (Node)", true, func(t *testing.T, who model.Actor, kind, _, id string) bool {
 			_, found, err := Node(ctx, tx, who, kind, id, true)
 			if err != nil {
 				t.Fatalf("read %s %s: %v", kind, id, err)
 			}
 			return found
 		}},
-		{"VisibleKind", false, func(t *testing.T, who model.Actor, kind, id string) bool {
+		{"VisibleKind", false, func(t *testing.T, who model.Actor, kind, _, id string) bool {
 			return predicateHolds(t, ctx, tx, `select `+VisibleKind(kind, "$1", "$2"), id, VisibilityArg(who))
 		}},
-		{"VisibleKindRow", false, func(t *testing.T, who model.Actor, kind, id string) bool {
+		{"VisibleKindRow", false, func(t *testing.T, who model.Actor, kind, stored, id string) bool {
 			return predicateHolds(t, ctx, tx, `select exists (select 1 from graph_nodes n where n.kind = $3 and n.id = $1 and `+
-				VisibleKindRow(kind, "n", "$2")+`)`, id, VisibilityArg(who), kind)
+				VisibleKindRow(kind, "n", "$2")+`)`, id, VisibilityArg(who), stored)
 		}},
-		{"VisibleEnd", false, func(t *testing.T, who model.Actor, kind, id string) bool {
+		{"VisibleEnd", false, func(t *testing.T, who model.Actor, kind, _, id string) bool {
 			return predicateHolds(t, ctx, tx, `select `+VisibleEnd("$3::text", "$1", true, "$2"), id, VisibilityArg(who), kind)
 		}},
-		{"VisibleNode", false, func(t *testing.T, who model.Actor, kind, id string) bool {
-			return predicateHolds(t, ctx, tx, `select `+VisibleNode("$3::text", "$1", "$2"), id, VisibilityArg(who), kind)
+		{"VisibleNode", false, func(t *testing.T, who model.Actor, _, stored, id string) bool {
+			return predicateHolds(t, ctx, tx, `select `+VisibleNode("$3::text", "$1", "$2"), id, VisibilityArg(who), stored)
 		}},
 	}
 	for _, written := range nodes {
+		kind := graphstore.AddressKind(written.node.Kind, written.node.ID)
 		for _, reader := range readers {
 			want := slices.Contains(written.readBy, reader.name)
 			for _, form := range forms {
 				if form.storeKinds && written.node.Kind == graphstore.KindComment {
 					continue
 				}
-				got := form.read(t, reader.who, written.node.Kind, written.node.ID)
+				got := form.read(t, reader.who, kind, written.node.Kind, written.node.ID)
 				t.Logf("%s, read by %s through %s: found %t", written.name, reader.name, form.name, got)
 				if got != want {
 					t.Errorf("%s, read by %s through %s, answers found %t, want %t", written.name, reader.name, form.name, got, want)

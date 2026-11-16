@@ -3094,11 +3094,12 @@ type ArtifactReferences struct {
 //
 // A block node (kind `block`, id `<document ref_key>#<block id>`) also carries BlockID, its
 // document's reference as Document, and ChangedVersion, the document version in which its text
-// last changed (ChangedAt is that version's time). Text and Pin are set only on the node a
-// reference read names: Text is the block's whole current text, and Pin answers a reference pinned
-// to a version.
+// last changed (ChangedAt is that version's time). A finding of a lens (kind `lens_block`, id
+// `lens/<uuid>#<block id>`) carries BlockID and no Document, and its parent is its lens. Text and
+// Pin are set only on the node a reference read names: Text is the block's whole current text,
+// and Pin answers a reference pinned to a version.
 type GraphNode struct {
-	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,issue,lens_kind,message,message_block,page,person,role,session,supertag"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session,supertag"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`

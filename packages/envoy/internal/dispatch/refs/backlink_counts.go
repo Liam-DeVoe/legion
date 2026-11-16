@@ -340,9 +340,10 @@ func liveVisibleNode(kind, address string) string {
 }
 
 // liveVisibleNodeOf is liveVisibleNode over an edge whose source kind is a column, kindExpr,
-// holding one of kinds: the same one read of the node's row, with each kind's own predicate from
-// the registry over a row of that kind (VisibleKindRow), so a kind the registry does not hold
-// counts nothing, exactly as liveVisibleNode counts nothing of it.
+// holding the stored kind of one of kinds: the same one read of the node's row, with each kind's
+// own predicate from the registry over a row of that kind (VisibleKindRow), the row's kind read as
+// the graph addresses it (graphstore.AddressKindSQL: a finding's block row is a lens_block), so a
+// kind the registry does not hold counts nothing, exactly as liveVisibleNode counts nothing of it.
 func liveVisibleNodeOf(kinds []string, kindExpr, address string) string {
 	var visible strings.Builder
 	for _, kind := range kinds {
@@ -350,7 +351,7 @@ func liveVisibleNodeOf(kinds []string, kindExpr, address string) string {
 	}
 	return `exists (select 1 from graph_nodes live
 		where live.kind = ` + kindExpr + ` and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `'
-			and case live.kind` + visible.String() + ` else false end)`
+			and case ` + graphstore.AddressKindSQL(`live.kind`, `live.id`) + visible.String() + ` else false end)`
 }
 
 // backlinkArm is one arm of graph_edges whose edge kind is a SQL literal rather than a column:
@@ -455,26 +456,48 @@ func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 // storedSQL is an arm of the store alone (storedFrom): the current tuples of the arm's kind
 // pointing at the addresses bound as $1 out of a node of one of its kinds, read through
 // graph_tuples_inbound as tupleSQL reads them, with the view's two rules over the node each comes
-// from and no projection row to consult. A source kind is counted only while this build resolves
-// it (nodeKinds, bound as $2), as the mention arm over refs is, so the count holds no edge whose
-// node the list behind it cannot answer; and its node is counted only while it is not gone and
-// the acting person may see it, by that kind's own predicate (liveVisibleNodeOf).
+// from and no projection row to consult. A source is read under the kind the store keys it by
+// and counted under the kind the graph addresses it by (graphstore.AddressKindSQL), so a finding
+// of a lens, a block row whose id names its lens, counts as the lens_block the view's own arm
+// writes it as, and a block arm counts no finding. A source kind is counted only while this build
+// resolves it (nodeKinds, bound as $2), as the mention arm over refs is, so the count holds no
+// edge whose node the list behind it cannot answer; and its node is counted only while it is not
+// gone and the acting person may see it, by that kind's own predicate (liveVisibleNodeOf).
 func (a backlinkArm) storedSQL(target backlinkTarget) string {
 	counted, join, keyed, _ := target.read(`tuple.to_id`)
+	addressed := graphstore.AddressKindSQL(`tuple.from_kind`, `tuple.from_id`)
+	stored := make([]string, 0, len(a.storedFrom))
+	for _, kind := range a.storedFrom {
+		if kind := storedKindOf(kind); !slices.Contains(stored, kind) {
+			stored = append(stored, kind)
+		}
+	}
 	return `select ` + counted + ` from graph_tuples tuple` + join +
 		` where tuple.to_kind = '` + target.kind + `' and tuple.kind = '` + a.kind +
-		`' and tuple.from_kind in ('` + strings.Join(a.storedFrom, `', '`) + `') and tuple.from_kind = any($2)` +
+		`' and tuple.from_kind in (` + quotedKinds(stored) + `) and ` + addressed + ` in (` + quotedKinds(a.storedFrom) +
+		`) and ` + addressed + ` = any($2)` +
 		` and ` + keyed + ` and ` + currentTuple("tuple") +
 		` and ` + liveVisibleNodeOf(a.storedFrom, `tuple.from_kind`, `tuple.from_id`)
 }
 
 // authoredByReasoning is the arm that counts, on a person's or a session's node, the authored_by
 // tuples from a node of the kinds dispatch://INFRA-1950 adds, which the view answers from the
-// tuples alone (TupleKinds). The same tuple out of a comment is no edge of the view, so it is
-// none of these, and a source kind reaches the count in the commit that registers it.
+// tuples alone (TupleKinds), a finding's as the lens_block its own arm writes. The same tuple out
+// of a comment is no edge of the view, so it is none of these, and a source kind reaches the count
+// in the commit that registers it.
 var authoredByReasoning = backlinkArm{kind: graphstore.TupleAuthoredBy, storedFrom: []string{
-	graphstore.KindConstraint, graphstore.KindInteraction, graphstore.KindLens, graphstore.KindRisk,
+	graphstore.KindConstraint, graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk,
 }}
+
+// lensStandsOn is the arm that counts, on a node a lens may be invoked on, the part_of tuple of
+// each lens invoked on it: what stands on the node raises its count, as R1 names the backlink
+// counts among the reads that leave a hidden node out. P9 lets a lens stand on any node under an
+// issue - the issue, a document and its blocks, an ask, a comment or a message and its blocks,
+// another lens, a finding, a risk or a constraint - so each of those kinds holds this arm, keyed on
+// the lens as the near end of the tuple. The arms that count a lens's own children, its findings
+// and its risks, are the lens kind's, and a constraint's place under its issue is the issue's, so
+// no tuple is counted by two arms.
+var lensStandsOn = backlinkArm{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindLens}}
 
 // backlinkArms is, for each node kind nodeRegistry resolves, every arm of graph_edges whose edge
 // kind is a literal and whose target is a node of that kind, and each edge kind the view's tuple
@@ -501,6 +524,9 @@ var backlinkArms = map[string][]backlinkArm{
 		// artifacts_issue_key, partial on issue_key is not null.
 		{kind: "attached_to", from: `artifacts a`, where: `a.issue_key is not null`, toID: `a.issue_key`,
 			fromKind: "artifact", fromID: `a.ref_key`},
+		// graph_tuples_inbound: a lens invoked on the issue, and a constraint written under it,
+		// each placed there by its part_of tuple (lensStandsOn).
+		{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindConstraint, graphstore.KindLens}},
 	},
 	// The view addresses an artifact by artifacts.ref_key, so each arm starts at artifacts
 	// through the unique artifacts_ref_key_key and joins the table that points at it.
@@ -523,6 +549,9 @@ var backlinkArms = map[string][]backlinkArm{
 		// answered while the block's own row carries its node.
 		{kind: "part_of", from: `artifacts a join document_blocks d on d.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: "block", fromID: `d.node_id`, projected: `d.node_kind`, tupleKind: TupleInDocument, projectedIn: "document_blocks"},
+		// graph_tuples_inbound: a lens invoked on the document, its part_of at the document's
+		// ref_key; a block's membership is in_document, so this arm counts none of it.
+		lensStandsOn,
 	},
 	"ask": {
 		// comments_ask_id_text.
@@ -532,6 +561,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// its position filter.
 		{kind: "part_of", from: `ask_blocks b`, where: `b.position is not null`, toID: `b.ask_id::text`,
 			fromKind: "ask_block", fromID: `b.node_id`},
+		lensStandsOn,
 	},
 	"comment": {
 		// comments_reply_to_text.
@@ -544,6 +574,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// one carries its position filter.
 		{kind: "part_of", from: `comment_blocks b`, where: `b.position is not null`, toID: `b.comment_id::text`,
 			fromKind: "comment_block", fromID: `b.node_id`},
+		lensStandsOn,
 	},
 	"message": {
 		// messages_in_reply_to_text.
@@ -552,6 +583,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// message_blocks_message_id_text, with the view's position filter.
 		{kind: "part_of", from: `message_blocks b`, where: `b.position is not null`, toID: `b.message_id::text`,
 			fromKind: "message_block", fromID: `b.node_id`},
+		lensStandsOn,
 	},
 	"component": {
 		// components_parent_node, on the same expression the arm selects.
@@ -582,34 +614,52 @@ var backlinkArms = map[string][]backlinkArm{
 	"page":   {},
 	// A kind of the lens catalogue is pointed at by the has_kind tuple of each lens of that kind,
 	// and a constraint by the constrained_by tuples of each requirement block held to it and of
-	// the lens kind whose source it is: the view answers each from the tuples alone, so each is an
-	// arm of the store alone, counted through the predicate of the kind its tuple comes from. A
-	// lens reaches the first count in the commit that registers it.
+	// the lens kind whose source it is, and by the part_of of a lens invoked on it: the view
+	// answers each from the tuples alone, so each is an arm of the store alone, counted through the
+	// predicate of the kind its tuple comes from.
 	graphstore.KindLensKind: {{kind: graphstore.TupleHasKind, storedFrom: []string{graphstore.KindLens}}},
 	graphstore.KindConstraint: {
 		{kind: graphstore.TupleConstrainedBy, storedFrom: []string{BlockNodeKind, graphstore.KindLensKind}},
+		lensStandsOn,
 	},
+	// A lens is pointed at by the part_of tuples of what stands under it - its findings and its
+	// risks, and a lens invoked on it - and by the triggered_by tuple of each lens it triggered. A
+	// triggered_by joins two lenses, so it is counted once, on the lens it points at: the lens that
+	// triggered, whose count says how many lenses its findings invoked. A finding and a risk are
+	// pointed at by the part_of of a lens invoked on them. Each is an arm of the store alone, the
+	// view's tuple arms answering every one of them, a finding's part_of as the lens_block its own
+	// arm writes (migration 20261116160000).
+	graphstore.KindLens: {
+		{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk}},
+		{kind: graphstore.TupleTriggeredBy, storedFrom: []string{graphstore.KindLens}},
+	},
+	graphstore.KindLensBlock: {lensStandsOn},
+	graphstore.KindRisk:      {lensStandsOn},
 	// No arm of the view whose edge kind is a literal targets a document's block: such a block
-	// is pointed at by mentions alone, a reply naming the block of an ask, a comment or a
-	// message instead. The entry is present and empty so a block is counted from its mention
-	// arms rather than refused.
-	"block": {},
+	// is pointed at by mentions, a reply naming the block of an ask, a comment or a message
+	// instead, and by the tuples of the store alone - a lens invoked on it, and the prevented_by of
+	// each risk its check covers.
+	"block": {lensStandsOn, {kind: graphstore.TuplePreventedBy, storedFrom: []string{graphstore.KindRisk}}},
 	// A reply names the block it answers by node id, and the prefix of that id is what tells an
 	// ask's part from a comment's block, so each of these two arms carries the test the view's
 	// own arm carries. Both read comments_replies_to_block, partial on replies_to_block is not
-	// null, and neither carries a position filter, as the view's arms do not.
+	// null, and neither carries a position filter, as the view's arms do not. A lens invoked on an
+	// item's block points at it too.
 	"comment_block": {
 		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` not like 'ask/%'`, toID: `c.replies_to_block`,
 			fromKind: "comment", fromID: `c.id::text`},
+		lensStandsOn,
 	},
 	"ask_block": {
 		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` like 'ask/%'`, toID: `c.replies_to_block`,
 			fromKind: "comment", fromID: `c.id::text`},
+		lensStandsOn,
 	},
 	"message_block": {
 		// messages_replies_to_block, partial on replies_to_block is not null.
 		{kind: "replies_to", from: `messages m`, where: `m.replies_to_block is not null`, toID: `m.replies_to_block`,
 			fromKind: "message", fromID: `m.id::text`},
+		lensStandsOn,
 	},
 }
 
