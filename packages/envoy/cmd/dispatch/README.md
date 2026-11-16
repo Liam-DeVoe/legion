@@ -362,8 +362,9 @@ It opens the redelivery bucket as the server does, at `ENVOY_NATS_REPLICAS` copi
 a value other than a whole number from 1 to 5 stops it before it connects.
 It runs no keeper: the server's keeper raises the bucket back to the server's value every 30 seconds, and a refused raise names the bucket, `raise KV_envoy_webhook_redelivery: ENVOY_NATS_REPLICAS=3: context deadline exceeded` under a grant without its stream update.
 Run inside the Dispatch container it reaches that deployment's NATS with `ENVOY_ALLOW_REMOTE_NATS=1 envoy-dispatch redeliver-webhooks …`.
-It connects as the nkey user `NATS_NKEY_SEED_FILE` (or `NATS_NKEY_SEED`) names and runs no `!` command, so it never reads `envoy.natsSeed`:
-a run against a NATS that requires a user needs `NATS_NKEY_SEED_FILE`.
+It connects with the server's own NATS credential, the nkey user `NATS_NKEY_SEED_FILE` (or `NATS_NKEY_SEED`) names or the platform token `NATS_SERVICE_TOKEN_FILE` names, one of them and never both, and runs no `!` command, so it never reads `envoy.natsSeed`:
+a run against a NATS that requires a credential needs `NATS_NKEY_SEED_FILE` or `NATS_SERVICE_TOKEN_FILE`.
+In a pod `gcp:Dispatch` renders with `natsAudience`, `NATS_SERVICE_TOKEN_FILE` is already set, and adding a seed variable beside it refuses the run, naming both.
 
 ## CI reconcile
 

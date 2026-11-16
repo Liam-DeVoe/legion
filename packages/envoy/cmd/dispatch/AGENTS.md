@@ -259,9 +259,10 @@ chosen window without moving the cursor; it opens the database `DATABASE_URL` na
 server does, and refuses to run without it, but migrates nothing. The README's "Webhook
 redelivery" section has the rules: every failed delivery, 4xx included, is asked for again on a
 backoff until GitHub records it `OK` or 72 hours after its first failed attempt, GitHub's rate
-limits, the log lines. Like `natstail`, it connects as the nkey user `NATS_NKEY_SEED_FILE` (or
-`NATS_NKEY_SEED`) names and runs no `!` command, so it never reads `envoy.natsSeed`: a run
-against a NATS that requires a user needs `NATS_NKEY_SEED_FILE`.
+limits, the log lines. It connects with the server's own NATS credential, the nkey user
+`NATS_NKEY_SEED_FILE` (or `NATS_NKEY_SEED`) names or the platform token `NATS_SERVICE_TOKEN_FILE`
+names, and runs no `!` command, so it never reads `envoy.natsSeed`: a run against a NATS that
+requires a credential needs `NATS_NKEY_SEED_FILE` or `NATS_SERVICE_TOKEN_FILE`.
 
 With `DISPATCH_FILE_STORE_BUCKET` set, uploaded files' bytes live in that bucket under
 `files/sha256/<hash>` (`internal/dispatch/files`; `main.go`'s `openFileStore` builds the store

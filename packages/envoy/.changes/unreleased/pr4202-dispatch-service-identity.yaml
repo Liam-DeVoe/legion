@@ -7,12 +7,12 @@ body: |-
   `natsSeedSecret` beside it. On an app that rolls (more than one replica) with `natsInCluster`,
   `envoy-dispatch`'s start then waits for its first NATS connect, so a refused NATS credential
   stalls the rollout while the old pods serve; elsewhere it shows as `"nats":false` on `/healthz`.
-  With `listenerAudience` the app calls its listener with its own
-  projected token, which the listener verifies against the cluster's issuer, and no shared bearer,
-  Secret or generated password exists.
+  With `listenerAudience` the app calls its listener with its own projected token, which the
+  listener verifies against the cluster's issuer, and no shared bearer, Secret or generated
+  password exists.
   `envoy-dispatch` takes `ENVOY_ACCOUNT_TOKEN_FILE`, the file holding its own projected
-  ServiceAccount token, which every listener call presents, read at call time and never at boot;
-  set beside `ENVOY_TOKEN`, it refuses to start, naming both.
+  ServiceAccount token, which every listener call presents, read at call time, reused for at most
+  30 seconds, and never read at boot; set beside `ENVOY_TOKEN`, it refuses to start, naming both.
 time: 2026-11-16T11:00:07Z
 custom:
-    Issue: pr4150
+    Issue: pr4202

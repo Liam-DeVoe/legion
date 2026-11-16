@@ -947,7 +947,8 @@ projected volume `listener-account-token`, whose one source is a `serviceAccount
 `listener-account-token` and mounted read-only into `envoy-dispatch` alone at
 `/var/run/secrets/envoy-listener`; `ENVOY_ACCOUNT_TOKEN_FILE` names
 `/var/run/secrets/envoy-listener/listener-account-token` in `ENVOY_TOKEN`'s place, and Dispatch
-reads it for its calls, never at boot (`packages/envoy/cmd/dispatch/README.md`). The listener
+reads it for its calls, never at boot, reusing what it read for at most 30 seconds
+(`packages/envoy/cmd/dispatch/README.md`). The listener
 verifies that token with the pair it carries in `ENVOY_API_TOKEN`'s place: `ENVOY_OIDC_ISSUER`,
 this component's cluster issuer (the `serviceAccountIssuer` output), and `ENVOY_OIDC_AUDIENCE`,
 `listenerAudience`. No bearer exists then: the Secret `<hostname>-listener` and the generated
@@ -958,9 +959,11 @@ which admits the app's pods alone on port 9020: give no other workload a token f
 Pin `envoyImage` to a build whose Dispatch reads `ENVOY_ACCOUNT_TOKEN_FILE`; an older one sends no
 bearer, and the listener refuses every call. Setting or unsetting `listenerAudience` rolls both
 Deployments in one update, and until both have rolled, a call from an app pod to a listener pod
-holding the other credential is refused. Unset, the app and the listener share the generated
-bearer as before. Each audience holding an nkey seed, whitespace or a control character is refused
-by name before the component registers a resource, and `clusterOnly` refuses both.
+holding the other credential is refused with a 401, which Dispatch does not retry: a delivery
+sent between mismatched pods in that window settles as failed. Unset, the app and the listener
+share the generated bearer as before. Each audience holding an nkey seed, whitespace or a control
+character is refused by name before the component registers a resource, and `clusterOnly`
+refuses both.
 
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh
@@ -1092,8 +1095,9 @@ app pod gets a projected volume of its own, `agent-secrets-account-token`, whose
 `agent-secrets-account-token` and mounted read-only into `envoy-dispatch` at
 `/var/run/secrets/dispatch`; `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names
 `/var/run/secrets/dispatch/agent-secrets-account-token`. The kubelet rewrites that file in place
-before the token expires and Dispatch reads it on every call, so nothing stores the token, no
-rotation restarts a pod, and no Secret Manager secret, grant or SecretProviderClass exists for it.
+before the token expires and Dispatch reads it at call time, reusing it for at most 30 seconds, so
+nothing stores the token, no rotation restarts a pod, and no Secret Manager secret, grant or
+SecretProviderClass exists for it.
 The URL must be reachable from the app pod's own network, because Dispatch's broker client dials
 it directly, never through the front door's SOCKS5 proxy, which only the NATS clients use and only
 without `natsInCluster`: an Internet host through Cloud NAT, an in-cluster Service, or a name a
@@ -1449,10 +1453,11 @@ and `<hostname>-tailnet-auth-key` on the front door. The
 Kubernetes provider replaces a Secret whose data changes, so a new value (a new
 `signInClientSecret` or `tailnetAuthKey`, a replaced generated secret) gives the Secret a new
 resourceVersion and rolls the pods that read it once the new Secret exists, and an unchanged
-Secret never rolls a pod. The listener's bearer, `ENVOY_API_TOKEN` in `<hostname>-listener`, is on
-both templates, since the listener serves with it and `envoy-dispatch` sends it as `ENVOY_TOKEN`:
-the two Deployments roll in the same update, and until both have, a call from the app to a
-listener pod on the other token is refused. `DISPATCH_AGENT_TOKEN` is also the `agentToken`
+Secret never rolls a pod. Without `listenerAudience`, the listener's bearer, `ENVOY_API_TOKEN` in
+`<hostname>-listener`, is on both templates, since the listener serves with it and
+`envoy-dispatch` sends it as `ENVOY_TOKEN`: the two Deployments roll in the same update, and until
+both have, a call from the app to a listener pod on the other token is refused, so a delivery sent
+in that window settles as failed. `DISPATCH_AGENT_TOKEN` is also the `agentToken`
 output, so a consumer that hands it to its agents passes them the new value too.
 `<hostname>-tailnet-tls` carries no checksum: a renewed certificate rolls no pod.
 
@@ -1496,7 +1501,8 @@ these are preconditions of that procedure, not guarantees the component makes.
   negative generation or a repeated one.
 
 The projected tokens need no restart either: the kubelet rewrites them in place, and Dispatch
-reads the broker token and, with `listenerAudience`, the listener token on every call, the keyless
+reads the broker token and, with `listenerAudience`, the listener token at call time, reusing each
+for at most 30 seconds (`brokertoken.AccountTokenCacheTTL`), the keyless
 Azure form's token on every exchange with Entra — the answerer's sign-in as much as the embedder's
 — and the answerer's bearer token on every call, and with `natsAudience` both Envoy containers read
 the NATS token at each connect. The secrets the component does not own carry no checksum, so after rotating one, restart

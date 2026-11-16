@@ -182,11 +182,11 @@ type DispatchArgs struct {
 	NatsAudience string `pulumi:"natsAudience,optional"`
 	// ListenerAudience moves the app's calls to its listener onto the app's own identity: the app
 	// presents a projected token of <hostname> for this audience on every call, read at call time
-	// from the file ENVOY_ACCOUNT_TOKEN_FILE names, and the listener verifies it with
-	// ENVOY_OIDC_ISSUER, this cluster's own issuer, and ENVOY_OIDC_AUDIENCE, this audience. No
-	// shared bearer exists then: the app carries no ENVOY_TOKEN, the listener no ENVOY_API_TOKEN,
-	// and neither the Secret <hostname>-listener nor its generated token is registered. Unset,
-	// the two share that generated bearer, as before.
+	// and reused for at most 30 seconds, from the file ENVOY_ACCOUNT_TOKEN_FILE names, and the
+	// listener verifies it with ENVOY_OIDC_ISSUER, this cluster's own issuer, and
+	// ENVOY_OIDC_AUDIENCE, this audience. No shared bearer exists then: the app carries no
+	// ENVOY_TOKEN, the listener no ENVOY_API_TOKEN, and neither the Secret <hostname>-listener nor
+	// its generated token is registered. Unset, the two share that generated bearer, as before.
 	ListenerAudience string `pulumi:"listenerAudience,optional"`
 
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
@@ -196,10 +196,11 @@ type DispatchArgs struct {
 	// AgentSecretsUrl and agentSecretsAudience turn on Dispatch's secrets-broker relay together:
 	// DISPATCH_AGENT_SECRETS_URL (an absolute http(s) URL with no path; a trailing slash is
 	// trimmed, as Dispatch trims it) and the audience of the projected ServiceAccount token the
-	// app presents to the broker on every call, read at call time from the file
-	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names. AgentSecretsAudience is the broker's
-	// BROKER_K8S_OIDC_AUDIENCE: the kubelet mints the token for it and refreshes it in place, so
-	// no token is an input, a stored secret or part of the component's state. Set both or neither.
+	// app presents to the broker on every call, read at call time and reused for at most 30
+	// seconds, from the file DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names. AgentSecretsAudience
+	// is the broker's BROKER_K8S_OIDC_AUDIENCE: the kubelet mints the token for it and refreshes
+	// it in place, so no token is an input, a stored secret or part of the component's state. Set
+	// both or neither.
 	AgentSecretsUrl      string `pulumi:"agentSecretsUrl,optional"`
 	AgentSecretsAudience string `pulumi:"agentSecretsAudience,optional"`
 
