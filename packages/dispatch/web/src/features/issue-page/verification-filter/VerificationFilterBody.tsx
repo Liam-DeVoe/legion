@@ -2,10 +2,13 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  useCallback,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { Link } from "react-router-dom";
 
 import type { Actor, CheckBlock } from "../../../api/types";
 import {
@@ -28,6 +31,8 @@ import {
   pageWordsText,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
+import { useMarkdownHeadline } from "../../refs/markdown-engine";
+import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
@@ -120,8 +125,10 @@ export function VerificationFilterBody({
 }: {
   /** Whether the coverage read and the results read have both answered. Until they have, the
    *  body draws its tree with no row and no line in it, so it never says that an issue has no
-   *  checks before the reads that hold them are in (part V's R1); a failed read leaves it so,
-   *  since the page has no word for one here. */
+   *  checks before the reads that hold them are in (part V's R1); a read that fails before it
+   *  first answers leaves it so, since the page has no word for one here (part V's departure
+   *  6). A read that has answered once stays answered when a later refetch fails: the body
+   *  draws what it last answered (the slot's `answered`). */
   answered?: boolean;
   /** The issue's checks with the results recorded against them, as the results read answers
    *  them (`GET /api/v1/issues/{key}/results`), which the page has already read for its tree. */
@@ -450,9 +457,9 @@ const RESULT_FACTS = "mt-1 min-w-0 [&_dl]:grid-cols-[fit-content(50%)_minmax(0,1
 
 /** What a pointer's press inside a check's words, its latest result's cell or a statement's
  *  words belongs to rather than to the row: a link or a button, whose press is its own (a link
- *  in the words, a statement's "more" control, the copy control, the line of earlier results),
- *  and the drawn facts, where a reader reads and selects as in the facts beside the words
- *  (part V's departure 5). */
+ *  in the words, the link of a statement's parent line, a statement's "more" control, the copy
+ *  control, the line of earlier results), and the drawn facts, where a reader reads and selects
+ *  as in the facts beside the words (part V's departure 5). */
 const OWN_PRESS = "a, button, [data-node-body]";
 
 /** Whether a pointer's press belongs to a link, a button or the drawn facts inside the element
@@ -741,11 +748,12 @@ function Headings(): ReactNode {
  * statement no check of this issue serves holds no group and so says nothing of being open
  * (part V's R8). A pointer's press on its words cell does what Enter on its row does: it opens
  * the facts of each of its checks, or shuts them where all of them are drawn (the tester's
- * F21); a press on its "more" control or on a link in its words is that control's own. The
- * control and the links are tab stops, as every control of the view is (R8). As a card its left
- * edge is the statement's teal, or the failed red where it reads Not met or no check serves it,
- * so the card says so before its words are read (R6). How it stands is the issue's reading of
- * it, whatever a words query left of its checks (part V's departure 10).
+ * F21); a press on its "more" control, on a link in its words or on its parent line's link is
+ * that control's own. The control and the links are tab stops, as every control of the view is
+ * (R8). As a card its left edge is the statement's teal, or the failed red where it reads Not
+ * met or no check serves it, so the card says so before its words are read (R6). How it stands
+ * is the issue's reading of it, whatever a words query left of its checks (part V's departure
+ * 10).
  *
  * Where the coverage read counts more checks for it than the view with no query draws under it,
  * the rest serve it from issues under this one, and it says how many in one line after its
@@ -1131,24 +1139,61 @@ function Author({ actor }: { actor: Actor | undefined }): ReactNode {
 
 /** The other statements a check is drawn under, each named by its first words as every chip of
  *  the page names its target (R4, `node-row-chip.ts`): a check serves several statements and
- *  this body draws it under each. A target the reference read has not named draws nothing. */
+ *  this body draws it under each. A target's name is its stored excerpt, which is markdown, so
+ *  it is read as plain words, as the outline's chip reads it (`NodeRow.tsx`'s `Chip`, the
+ *  tester's F18): no mark the author typed and no `dispatch://` address is drawn (part V's
+ *  departure 7, R22). A target the reference read has not named, one whose reading has not
+ *  answered, and one that reads as no words draw nothing, a comma stands only between targets
+ *  that are drawn, and the line is drawn only where one is. */
 function AlsoUnder({ chips }: { chips: readonly NodeChip[] }): ReactNode {
-  const named = chips.filter((chip) => chip.name !== "");
-  if (named.length === 0) return null;
+  // Each target's plain words, by its stored name, as its reading answers.
+  const [plain, setPlain] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const take = useCallback((name: string, words: string) => {
+    setPlain((held) => (held.get(name) === words ? held : new Map(held).set(name, words)));
+  }, []);
+  const named = chips.flatMap((chip) => {
+    const words = chipWords(plain.get(chip.name) ?? "");
+    return words === "" ? [] : [{ ref: chip.ref, words }];
+  });
   return (
-    <p
-      className={`mt-0.5 min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
-      data-node-trail=""
-    >
-      <span {...pageChrome}>{CONTROL_LABELS.also_under} </span>
-      {named.map((chip, place) => (
-        <span data-node-chip="" key={chip.ref}>
-          {place === 0 ? null : <span {...pageChrome}>, </span>}
-          <span {...authorText}>{chipWords(chip.name)}</span>
-        </span>
-      ))}
-    </p>
+    <>
+      {chips.map((chip) =>
+        chip.name === "" ? null : <PlainChipName key={chip.ref} name={chip.name} onRead={take} />
+      )}
+      {named.length === 0 ? null : (
+        <p
+          className={`mt-0.5 min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
+          data-node-trail=""
+        >
+          <span {...pageChrome}>{CONTROL_LABELS.also_under} </span>
+          {named.map((chip, place) => (
+            <span data-node-chip="" key={chip.ref}>
+              {place === 0 ? null : <span {...pageChrome}>, </span>}
+              <span {...authorText}>{chip.words}</span>
+            </span>
+          ))}
+        </p>
+      )}
+    </>
   );
+}
+
+/** Reads one target's stored name as plain words, as the outline's chip reads it
+ *  (`useMarkdownHeadline`, cut by `chipWords` after), and hands them to `onRead` once the
+ *  reading answers, as `RowText.tsx`'s `PlainName` does. It draws nothing: the line that names
+ *  the targets draws them, so it knows which of them it draws. */
+function PlainChipName({
+  name,
+  onRead,
+}: {
+  name: string;
+  onRead: (name: string, words: string) => void;
+}): null {
+  const plain = useMarkdownHeadline(undefined, Math.max(name.length, 1), name);
+  useLayoutEffect(() => {
+    if (plain !== undefined) onRead(name, plain.text);
+  }, [name, onRead, plain]);
+  return null;
 }
 
 /** Each gap the node carries, said in full where the picture draws "No check proves this"
@@ -1173,22 +1218,38 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
 }
 
 /** The one line a row draws for the node its words came from, where the filter draws that node
- *  as no row (R2, R1's first-line rule): its kind and its first line. */
+ *  as no row (R2, R1's first-line rule): its kind and its first line. The line is the link a
+ *  reader follows to that node where the model gives it an address, as the outline's
+ *  `ParentLink` draws it (R18), and text where it gives none or the address does not parse. The
+ *  link is a tab stop, as every control of the view is: the tree's keys move between rows and
+ *  reach no link inside one (part V's R8). */
 function ParentLine({ node }: { node: TreeNode }): ReactNode {
-  if (node.parentLine === undefined) return null;
+  const line = node.parentLine;
+  if (line === undefined) return null;
+  const route = line.reference === undefined ? undefined : parseNodeReference(line.reference);
   return (
     <p
       className={`mt-0.5 flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
       data-node-parent-line=""
-      data-parent-id={node.parentLine.id}
-      data-parent-type={node.parentLine.type}
+      data-parent-id={line.id}
+      data-parent-type={line.type}
     >
       <span className="shrink-0" {...pageChrome}>
-        {NODE_TYPE_NAMES[node.parentLine.type]}
+        {NODE_TYPE_NAMES[line.type]}
       </span>
-      <span className="min-w-0 break-words" {...authorText}>
-        {node.parentLine.line}
-      </span>
+      {route === undefined ? (
+        <span className="min-w-0 break-words" {...authorText}>
+          {line.line}
+        </span>
+      ) : (
+        <Link
+          className={`dispatch-inline-link min-w-0 break-words underline decoration-page-bullet underline-offset-[3px] ${pageQuietText}`}
+          to={buildReferencePath(route)}
+          {...authorText}
+        >
+          {line.line}
+        </Link>
+      )}
     </p>
   );
 }

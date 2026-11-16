@@ -106,8 +106,8 @@ function textsOf(view: RenderResult, selector: string): string[] {
 }
 
 /** What the page says in its own words: the text of each `[data-page-chrome]` element with
- *  every `[data-author-text]` descendant taken out, which is what c-plain-words reads word by
- *  word (`e2e/issue-page.ts`'s `chromeTexts`). */
+ *  every `[data-author-text]` descendant taken out, which is how `page-words.ts` says a reader of
+ *  the page's words reads them, and what c-plain-words reads word by word. */
 function chromeTexts(view: RenderResult): string[] {
   return [...view.container.querySelectorAll("[data-page-chrome]")]
     .map((element) => {
@@ -531,8 +531,8 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     expect(
       view.container.querySelectorAll(`[aria-label="${CONTROL_LABELS.copy_command}"]`).length
     ).toBe(commands.length);
-    // The screenshot is drawn as a picture, through the bytes route every other picture of
-    // Dispatch is drawn through.
+    // The screenshot is drawn as a picture: the opened facts hold an `img` for it. Whether its
+    // bytes load is row 1's to read in the browser (`e2e/issue-page-v.e2e.ts`).
     expect(view.container.querySelectorAll("[data-node-body] img").length).toBeGreaterThan(0);
 
     // The focus leaving it closes what the focus opened.
@@ -602,6 +602,65 @@ test("a statement is marked as context, with its words and the node they came fr
       card?.querySelector("[data-node-parent-line]")?.getAttribute("data-parent-type"),
       card?.querySelector("[data-node-parent-line]")?.textContent,
     ]).toEqual(["comment", `${NODE_TYPE_NAMES.comment}${askedBy.text}`]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R18 and part V's R8: a statement's parent line is the link a reader follows to the node its
+// words came from where that node has an address, as the outline's parent line is
+// (`NodeRow.tsx`'s `ParentLink`), and the link is a tab stop, since the tree's keys move between
+// rows and reach no link inside one. A parent with no address is named by its words alone.
+test("a statement's parent line links the node it came from where that node has an address", () => {
+  const served = passing("c-one");
+  const other = passing("c-two");
+  const linked = statementNode("r1", "The reader reaches the comment this came from.", [
+    checkNode(served),
+  ]);
+  const unlinked = statementNode("r2", "The reader reads where this came from.", [
+    checkNode(other),
+  ]);
+  const addressed = node({
+    children: [linked],
+    id: "comment-1",
+    reference: `dispatch://${ISSUE_KEY}/comment/comment-1`,
+    text: "Where do I see what proves this?",
+    type: "comment",
+  });
+  const unaddressed = node({
+    children: [unlinked],
+    id: "comment-2",
+    text: "And where do I see this one?",
+    type: "comment",
+  });
+  const view = drawBody([addressed, unaddressed], [served, other]);
+  try {
+    const withAddress = view.container.querySelector(
+      `[data-verification-card][data-node-id="${linked.id}"] [data-node-parent-line]`
+    );
+    expect([
+      withAddress?.getAttribute("data-parent-id"),
+      withAddress?.getAttribute("data-parent-type"),
+      withAddress?.textContent,
+    ]).toEqual([addressed.id, "comment", `${NODE_TYPE_NAMES.comment}${addressed.text}`]);
+    expect(
+      [...(withAddress?.querySelectorAll<HTMLAnchorElement>("a") ?? [])].map((link) => [
+        link.getAttribute("href"),
+        link.tabIndex,
+        link.textContent,
+        link.hasAttribute("data-author-text"),
+      ])
+    ).toEqual([[`/issues/${ISSUE_KEY}/comments/comment-1`, 0, addressed.text, true]]);
+
+    const withoutAddress = view.container.querySelector(
+      `[data-verification-card][data-node-id="${unlinked.id}"] [data-node-parent-line]`
+    );
+    expect([
+      withoutAddress?.getAttribute("data-parent-id"),
+      withoutAddress?.getAttribute("data-parent-type"),
+      withoutAddress?.textContent,
+    ]).toEqual([unaddressed.id, "comment", `${NODE_TYPE_NAMES.comment}${unaddressed.text}`]);
+    expect(withoutAddress?.querySelectorAll("a")).toHaveLength(0);
   } finally {
     view.unmount();
   }
@@ -720,10 +779,9 @@ test("a chip draws the statements in one state alone, and pressing it again draw
   }
 });
 
-// Part V's departure 4, the reviewer's finding at the checkpoint's `VerificationFilterBody.tsx:128`:
-// no chip is held back from the reader. The keyboard reaches a chip whose state holds no
-// statement, as it reaches every chip, and its press draws the page's line for that state rather
-// than a table with nothing in it.
+// Part V's departure 4, the reviewer's finding at the checkpoint: no chip is held back from the
+// reader. The keyboard reaches a chip whose state holds no statement, as it reaches every chip,
+// and its press draws the page's line for that state rather than a table with nothing in it.
 test("a chip whose state holds no statement draws the page's line for it", async () => {
   const user = userEvent.setup();
   const met = passing("c-one");
@@ -1055,6 +1113,103 @@ test("a check's words draw their links from the results read's tree", async () =
   }
 });
 
+// Part V's departure 7 and R22, and the tester's F18: a check that serves two statements is drawn
+// under each and names the other by its first words, which are that statement's stored excerpt
+// read as plain words, as the outline's chip reads them: no mark the author typed and no
+// address, cut at a word within 32 characters. A statement that reads as no words, one whose
+// words are a picture alone, is named by nothing, with no comma for it, and a check whose only
+// other statement is such a one draws no "Also under" at all.
+test("a check under two statements names the other by its words with no mark of markdown", async () => {
+  const twice = passing("c-one");
+  const thrice = passing("c-two");
+  const pictured = passing("c-three");
+  const plain = statementNode("r1", "The page draws it.");
+  const marked = statementNode("r2", "**Do** `x` dispatch://CORE-2 now, then the rest of it.");
+  const picture = statementNode("r3", "![](https://example.com/shot.png)");
+  // A check's row under one statement, naming the others it serves as the tree names them.
+  const under = (block: CheckBlock, others: readonly TreeNode[]): TreeNode => ({
+    ...checkNode(block),
+    alsoUnder: others.map((other) => ({
+      answered: true,
+      gone: false,
+      name: other.text,
+      ref: other.reference ?? "",
+    })),
+  });
+  const view = drawBody(
+    [
+      {
+        ...plain,
+        children: [
+          under(twice, [marked]),
+          under(thrice, [picture, marked]),
+          under(pictured, [picture]),
+        ],
+      },
+      { ...marked, children: [under(twice, [plain]), under(thrice, [plain, picture])] },
+      { ...picture, children: [under(thrice, [plain, marked]), under(pictured, [plain])] },
+    ],
+    [twice, thrice, pictured]
+  );
+  try {
+    // The trail of a check's row under a statement, and the words of each target it names.
+    const trailOf = (statement: TreeNode, block: CheckBlock) => {
+      const trails = view.container.querySelectorAll(
+        `[data-verification-card][data-node-id="${statement.id}"] [data-verification-check][data-node-id="${checkNode(block).id}"] [data-node-trail]`
+      );
+      return [...trails].map((trail) => ({
+        names: [...trail.querySelectorAll("[data-node-chip]")].map((chip) =>
+          (chip.textContent ?? "").replace(/^, /u, "")
+        ),
+        text: trail.textContent,
+      }));
+    };
+    const named = await waitFor(() => {
+      const [trail] = trailOf(plain, twice);
+      expect(trail?.names).toHaveLength(1);
+      return trail?.names[0] ?? "";
+    });
+    expect(named, `"Also under" names r2 by no words: "${named}"`).not.toBe("");
+    expect(named, `"Also under" draws a backtick: "${named}"`).not.toContain("`");
+    expect(named, `"Also under" draws an asterisk: "${named}"`).not.toContain("*");
+    expect(named, `"Also under" draws an address: "${named}"`).not.toContain("dispatch://");
+    expect(
+      named.length,
+      `"Also under" names r2 by more than 32 characters: "${named}"`
+    ).toBeLessThanOrEqual(32);
+    expect(named).toBe("Do x CORE-2 now, then the rest…");
+    expect(trailOf(plain, twice)).toEqual([
+      { names: [named], text: `${CONTROL_LABELS.also_under} ${named}` },
+    ]);
+    expect(trailOf(marked, twice)).toEqual([
+      { names: [plain.text], text: `${CONTROL_LABELS.also_under} ${plain.text}` },
+    ]);
+    // The picture names nothing, and no comma stands for it.
+    expect(trailOf(plain, thrice)).toEqual([
+      { names: [named], text: `${CONTROL_LABELS.also_under} ${named}` },
+    ]);
+    expect(trailOf(marked, thrice)).toEqual([
+      { names: [plain.text], text: `${CONTROL_LABELS.also_under} ${plain.text}` },
+    ]);
+    expect(trailOf(picture, thrice)).toEqual([
+      {
+        names: [plain.text, named],
+        text: `${CONTROL_LABELS.also_under} ${plain.text}, ${named}`,
+      },
+    ]);
+    // A check whose only other statement is the picture says it is under nothing else.
+    expect(trailOf(plain, pictured)).toEqual([]);
+    expect(trailOf(picture, pictured)).toEqual([
+      { names: [plain.text], text: `${CONTROL_LABELS.also_under} ${plain.text}` },
+    ]);
+    expect(view.container.querySelector("[data-verification-body]")?.textContent).not.toContain(
+      "dispatch://"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 /** Lays every element out `height` px tall until the answer is called, as
  *  `NodeRow.drawn.test.tsx` lays a row out: no DOM of a unit test lays anything out, and a
  *  statement's cut reads the words' own boxes (`CutWords`, through `NodeRow.tsx`'s
@@ -1075,11 +1230,13 @@ function layOut(height: number): () => void {
   };
 }
 
-// Part V's R8: the keyboard alone reaches each control of the view, with Tab in reading order:
-// each chip, the "more" control of a cut statement, each check's words, each link in a check's
-// words, the line of earlier results and, in the opened facts, the copy control of a command.
-// The view passes `tabStops` to G's `CutWords`, `NodeFacts` and `RowText`, so none of them takes
-// its controls out of the tab order. The issue's row comes before the chip All, so the Tab after
+// Part V's R8: the keyboard reaches each control of the view by Tab: each chip, the "more"
+// control of a cut statement, each check's words, each link in a check's words, the line of
+// earlier results and, in the opened facts, the copy control of a command. This reads that each
+// of them holds tab index 0, so none is out of the tab order; the order Tab takes them in is
+// read in the browser, where row 4 of `e2e/issue-page-v.e2e.ts` walks it. The view passes
+// `tabStops` to G's `CutWords`, `NodeFacts` and `RowText`, so none of them takes its controls out
+// of the tab order. In document order the issue's row comes before the chip All, so the Tab after
 // `t k` reaches the first chip.
 test("each control of the view is a tab stop", async () => {
   const user = userEvent.setup();

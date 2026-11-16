@@ -23,9 +23,15 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own
   // (R1). The results read holds a result's commit, its verdict and its withdrawal, which the
   // tree does not carry (`verification-filter/statement-state.ts`). The view draws its rows only
-  // once both have answered, so it never says that an issue has no checks before they are in.
+  // once both have answered, so it never says that an issue has no checks before they are in
+  // (part V's departure 6).
   const coverage = useQuery(issueCoverageQuery(issue.key));
   const results = useQuery(issueResultsQuery(issue.key));
+  // A read has answered where it holds data, and not by its status: a background refetch that
+  // fails sets TanStack Query's status to error and keeps the data it last answered, and a view
+  // drawn by `isSuccess` would empty itself on one failed refetch and take its tab stop and the
+  // reader's presses with it.
+  const answered = coverage.data !== undefined && results.data !== undefined;
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it (R1). The target is read
@@ -60,7 +66,7 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
       {/* The stage's column, which the body draws its own measure in (part V's R6). */}
       <div className="flex w-full min-w-0 flex-col">
         <VerificationFilterBody
-          answered={coverage.isSuccess && results.isSuccess}
+          answered={answered}
           checks={checks}
           context={view.context}
           emptyLine={

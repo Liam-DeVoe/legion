@@ -183,17 +183,18 @@ export async function namedCommit(page: Page): Promise<string | null> {
   return read.commit;
 }
 
-/** One element that reaches past the card it is drawn in. */
+/** One element that reaches past a side of the card it is drawn in. */
 export interface Overflowing {
   /** The card's own description: its tag and its node id. */
   readonly card: string;
-  /** How far past the card the element reaches, in CSS pixels. */
+  /** How far past the card's left or right edge the element reaches, in CSS pixels. */
   readonly over: number;
   readonly what: string;
 }
 
-/** Every element whose painted box reaches more than a pixel past the view's card it sits in.
- *  Fails where the view draws no card. */
+/** Every element whose painted box reaches more than a pixel sideways past the view's card it
+ *  sits in: past its left edge or its right edge; above and below are not measured. Fails where
+ *  the view draws no card. */
 export async function boxesPastTheirCard(page: Page): Promise<Overflowing[]> {
   const read = await readCards(page, ({ card, issuePage: issue }) => {
     const describe = (element: Element): string => {

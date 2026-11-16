@@ -185,8 +185,8 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         `a card draws other checks than the ones that serve its statement at ${width} px`
       ).toEqual(Object.fromEntries(cards.map((card) => [card.id, servedBy.get(card.id) ?? []])));
 
-      // No value renders outside its card at any width, and no two values overlap: the sixteen
-      // faults of the old tab this requirement is here for.
+      // No value reaches past either side of its card at any width, and no two values overlap:
+      // the sixteen faults of the old tab this requirement is here for.
       expect(
         await boxesPastTheirCard(page),
         `an element reaches past its card at ${width} px`
@@ -496,11 +496,11 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
     });
     await page.setViewportSize(DESKTOP);
     await openPreset(page, seeded.key, "verification");
-    await expectIssuePageDrawn(page);
     await expect(
       verificationCardBoxes(page).first(),
       "the Verification view draws no statement on the rewritten answer"
     ).toBeVisible();
+    await expectIssuePageDrawn(page);
     await expect
       .poll(
         async () =>
@@ -518,7 +518,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
   });
 });
 
-// c-view, row 2. The reviewer's finding on verification.e2e.ts:440: an issue that holds no
+// c-view, row 2. The reviewer's finding on `verification.e2e.ts`: an issue that holds no
 // statement and no check says so in the Verification view's own column once the load has
 // settled, in the page's one line for it, and the line is read inside the tree the view draws
 // and not off the whole page, which says it nowhere else. The body is counted before the page's
